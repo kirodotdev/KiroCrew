@@ -58,7 +58,7 @@ from kiro_crew.embeddings import (
     reset_shared_embedder,
     start_background_model_download,
 )
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _reset_embedding_singletons = embeddings_helpers._reset_embedding_singletons
@@ -574,6 +574,45 @@ class TestModelContextPolicy:
         finally:
             embedder.close()
         assert len(_SwappingLlama.instances) == 2
+
+    def test_bundled_model_loads_when_fstat_and_stat_disagree_on_ctime(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A model under models/ is stamped on load and re-stamped by path after.
+
+        On Windows ``os.fstat`` reports the change time as ``st_ctime`` and
+        ``os.stat`` reports the creation time, so a stamp built from the
+        descriptor never equals one built from the path, and every load of an
+        unchanged file was discarded as changed on disk.
+        """
+        monkeypatch.setattr("kiro_crew.embeddings.config_dir", lambda: tmp_path)
+        models_dir().mkdir(parents=True)
+        model = _write_gguf_model(models_dir() / "model.gguf", architecture="qwen3")
+        real_fstat = os.fstat
+
+        def windows_fstat(fd: int) -> os.stat_result:
+            info = real_fstat(fd)
+            fields = list(info)
+            fields[9] += 1  # st_ctime: the change time, not the creation time
+            extra = {
+                name: getattr(info, name)
+                for name in ("st_atime_ns", "st_mtime_ns", "st_ctime_ns", "st_blksize", "st_blocks")
+                if hasattr(info, name)
+            }
+            extra["st_ctime_ns"] = info.st_ctime_ns + 1_000_000_000
+            return os.stat_result(fields, extra)
+
+        monkeypatch.setattr(os, "fstat", windows_fstat)
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        embedder = LlamaCppEmbedder(model_path=model)
+        try:
+            with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+                assert embedder.wait_ready(timeout=FALLBACK_TIMEOUT_SECS)
+        finally:
+            embedder.close()
+        assert "changed on disk" not in caplog.text
+        assert len(fake_cls.instances) == 1
 
     def test_vendored_embed_truncates_to_the_logical_batch_by_default(self) -> None:
         """Pin the binding behaviour the trained-window clamp relies on.
