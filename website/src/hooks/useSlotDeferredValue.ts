@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * `useDeferredValue`, scoped to one VISIT to the session that produced the value.
@@ -28,8 +28,20 @@ import { useDeferredValue, useMemo, useState } from 'react'
  * pre-send transcript, and the new message only appeared once the deferred
  * render finally committed, often not until the stream went quiet. Counting
  * visits makes that frame belong to an earlier visit, so it is never shown.
+ *
+ * `sameShape` opts a value out of the deferral when it only grew in place: it
+ * is asked whether `next` differs from the last value handed to the deferral
+ * in a way cheap enough to render at urgent priority (a streaming reply's tail
+ * row getting longer). When it says yes, the deferral keeps its earlier input,
+ * so React schedules no background pass, and the current value renders in this
+ * commit. A deferred render of an earlier, real change that is still pending
+ * keeps showing its previous value, as without `sameShape`.
  */
-export function useSlotDeferredValue<T>(slot: string | null | undefined, value: T): T {
+export function useSlotDeferredValue<T>(
+  slot: string | null | undefined,
+  value: T,
+  sameShape?: (deferredInput: T, next: T) => boolean,
+): T {
   const key = slot ?? null
   // Visit counter: bumped each time the slot changes. Derived during render
   // (the documented "store info from previous renders" pattern) so this very
@@ -38,6 +50,27 @@ export function useSlotDeferredValue<T>(slot: string | null | undefined, value: 
   const visit = seen.slot === key ? seen.visit : seen.visit + 1
   if (seen.slot !== key) setSeen({ slot: key, visit })
   const frame = useMemo(() => ({ visit, value }), [visit, value])
-  const deferred = useDeferredValue(frame)
-  return deferred.visit === frame.visit ? deferred.value : value
+  // Both refs describe COMMITTED renders only, so they are written in a layout
+  // effect: a background render that React interrupts and throws away must not
+  // leave its frame behind for the next urgent render to compare against.
+  //
+  // fedRef: the frame last handed to useDeferredValue.
+  // liveRef: the last value rendered live, and the deferral input it grew from.
+  // A tail-only run keeps the deferral on the frame it started from while the
+  // live values are what the reader sees; when a real change then defers, that
+  // frame is still the committed deferred one, and returning it would roll the
+  // reply back to its first chunk, so the last live value is returned instead.
+  const fedRef = useRef(frame)
+  const liveRef = useRef<{ base: typeof frame; value: T } | null>(null)
+  const fed = fedRef.current
+  const input = fed !== frame && fed.visit === visit && sameShape?.(fed.value, value) ? fed : frame
+  const deferred = useDeferredValue(input)
+  const rendersLive = deferred.visit !== visit || deferred === input
+  useLayoutEffect(() => {
+    fedRef.current = input
+    if (rendersLive && deferred === input) liveRef.current = { base: input, value }
+  })
+  if (rendersLive) return value
+  const live = liveRef.current
+  return live && live.base === deferred ? live.value : deferred.value
 }

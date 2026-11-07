@@ -10,6 +10,27 @@ import type { DisplayItem, TurnItem } from '../types'
 import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
 
+/**
+ * True when `next` is `prev` with only its LAST message and LAST display item
+ * replaced: a streaming flush growing the reply in place. Rendering that at
+ * urgent priority touches one row, so deferring it would only add a second
+ * page render per chunk, and on a slow device the background pass kept being
+ * interrupted by the next chunk, so the reply's text stopped updating.
+ * Anything else (a new row, a landed page, a regroup) stays deferred.
+ */
+export function grewOnlyAtTail(
+  prev: { messages: ChatMessage[]; displayItems: DisplayItem[] },
+  next: { messages: ChatMessage[]; displayItems: DisplayItem[] },
+): boolean {
+  const pm = prev.messages, nm = next.messages, pd = prev.displayItems, nd = next.displayItems
+  if (pm.length !== nm.length || pd.length !== nd.length || nm.length === 0 || nd.length === 0) return false
+  const a = pm[pm.length - 1], b = nm[nm.length - 1]
+  if (a.ts !== b.ts || a.role !== b.role) return false
+  for (let i = 0; i < nm.length - 1; i++) if (pm[i] !== nm[i]) return false
+  for (let i = 0; i < nd.length - 1; i++) if (pd[i] !== nd[i]) return false
+  return true
+}
+
 interface TranscriptRowsOptions {
   messages: ChatMessage[]
   slotRunning: boolean
@@ -71,7 +92,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // messages they came from, so every deferred reader (the transcript, the
   // turn minimap, the Navigation tab) sees the same snapshot by construction.
   const liveTranscript = useMemo(() => ({ messages, displayItems }), [messages, displayItems])
-  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript)
+  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript, grewOnlyAtTail)
   // MCP App payloads live outside the message list, so promote after the
   // transcript defer: the FIRST render that can draw an iframe must already use
   // the same TurnBlock subtree that later grouping will keep. Short turns are
