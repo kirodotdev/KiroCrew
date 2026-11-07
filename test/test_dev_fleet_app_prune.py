@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -623,7 +624,9 @@ async def test_prune_run_unions_regular_and_forced_names(reset_prune_state):
 
 
 @pytest.mark.asyncio
-async def test_worktree_remove_refuses_when_pod_reactivates_before_mutation(reset_prune_state):
+async def test_worktree_remove_refuses_when_pod_reactivates_before_mutation(
+    reset_prune_state, tmp_path
+):
     """TOCTOU guard: pod inactivity is verified before _GIT_MUTATION_LOCK is
     acquired; if the pod comes back while the worker queues on the lock, the
     recheck inside the lock must refuse the removal (never delete a live
@@ -660,7 +663,9 @@ async def test_worktree_remove_refuses_when_pod_reactivates_before_mutation(rese
             fleet_state_mod, "_head_contained_in_pr", new_callable=AsyncMock, return_value=True
         ),
         patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="a" * 40),
-        patch.object(runtime_mod, "_load_cfg", return_value=object()),
+        patch.object(
+            runtime_mod, "_load_cfg", return_value=SimpleNamespace(pod_root=tmp_path / "absent")
+        ),
         patch.object(runtime_mod, "_POD_AVAILABLE", True),
         patch.object(runtime_mod.rt, "require_backend", return_value=None),
         patch.object(runtime_mod.rt, "active_names", side_effect=lambda cfg: next(active_calls)),
