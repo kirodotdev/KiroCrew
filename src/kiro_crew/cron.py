@@ -562,6 +562,10 @@ class CronService:
         # under the store lock (_drain_pending_removals_locked), so a completed
         # one-shot is eventually removed and never re-fires meanwhile.
         self._pending_removals: set[str] = set()
+        # The schedule that fired, for each queued ``delete_after_run`` consume:
+        # the drain keeps a row given a new schedule since. An entry lives until
+        # the drain resolves its id, independently of the held run records.
+        self._fired_schedules: dict[str, CronSchedule] = {}
         # Completed runs whose result merge has not been saved yet, the newest
         # run per job id (see _hold_run_record). The guard covers the dict and
         # every apply of a held record: the loop holds, worker threads re-apply

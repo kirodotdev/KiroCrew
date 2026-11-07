@@ -771,8 +771,12 @@ def apply_job_update(
     if _alert_after is not None:
         job.alert_after_failures = _alert_after
 
-    # Schedule changes (already validated above)
+    # Schedule changes (already validated above). A recurring schedule is not
+    # deleted after its first run, so a one-shot made recurring clears
+    # ``delete_after_run``.
     if "cron_expr" in kwargs and kwargs["cron_expr"]:
         job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+        job.delete_after_run = False
     elif "every_secs" in kwargs and kwargs["every_secs"]:
         job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+        job.delete_after_run = False
