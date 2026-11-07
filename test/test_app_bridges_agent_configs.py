@@ -814,6 +814,48 @@ class TestPruneAbortsOnUnreadableAgent:
             keep.is_file()
         ), "prune must retain the agent — a non-object spec is unreadable, not removed"
 
+    def test_non_object_mcp_servers_manifest_is_unreadable_not_empty(self, tmp_path, app_env):
+        """A non-object ``mcpServers`` makes the manifest UNPARSEABLE, not empty.
+
+        ``from_dict`` raises on it, so ``get_app_manifest`` returns None and the boot
+        prune (``_prune_stale_app_resources``) is never handed a malformed manifest
+        whose empty map it would read as "declares none" and use to delete every
+        live bridge. The empty forms ``dict()`` accepted (``[]``, ``""``) still parse
+        to an empty map, so this does not newly reject a manifest main accepted.
+        """
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_dir = app_env["home"] / "apps" / "test-app"
+        from kiro_crew.apps.manager_records import get_app_manifest
+
+        with pytest.raises(ValueError, match="mcpServers must be an object"):
+            AppManifest.from_dict(
+                {
+                    "name": "test-app",
+                    "version": "1.0.0",
+                    "displayName": "Test App",
+                    "description": "d",
+                    "author": "a",
+                    "mcpServers": 5,
+                }
+            )
+        # On disk: a non-object mcpServers makes get_app_manifest fail closed (None),
+        # the same signal an otherwise-unreadable manifest gives.
+        (app_dir / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "test-app",
+                    "version": "1.0.0",
+                    "displayName": "Test App",
+                    "description": "d",
+                    "author": "a",
+                    "mcpServers": 5,
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert get_app_manifest("test-app") is None
+
 
 class TestShippedAgentTemplatesAreRenderedByTheGateway:
     """A shipped template is rendered BY THE GATEWAY, from values it computes itself.

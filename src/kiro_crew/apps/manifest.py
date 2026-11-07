@@ -1141,6 +1141,20 @@ class AppManifest:
             else NotificationsConfig()
         )
 
+        # ``mcpServers`` accepts exactly what ``dict(...)`` accepts -- an object, and
+        # the empty ``[]`` / ``""`` forms that yield ``{}`` -- and turns a genuine
+        # non-object (a scalar or bool, where ``dict`` raises TypeError; a non-empty
+        # list or string, where it raises ValueError) into ONE clear ``ValueError``.
+        # The raise is deliberate: a reader that skips ``validate`` then fails
+        # closed, because ``get_app_manifest`` returns ``None`` on a parse error, so
+        # the ownership PUT and the boot prune treat the manifest as UNREADABLE and
+        # keep the app's live bridges rather than reading an empty map as "declares
+        # none". The install path surfaces this ``ValueError`` as a clean refusal.
+        try:
+            mcp_servers = dict(data.get("mcpServers", {}))  # noqa: N806
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mcpServers must be an object") from exc
+
         contrib_raw = data.get("contributes", {})
         contributes = (
             Contributes.from_dict(contrib_raw)
@@ -1175,7 +1189,7 @@ class AppManifest:
             sops=[
                 str(s) for s in (data["sops"] if isinstance(data.get("sops"), list) else []) if s
             ],
-            mcpServers=dict(data.get("mcpServers", {})),  # noqa: N815
+            mcpServers=mcp_servers,  # noqa: N815
             config_keys=config_keys,
             config_keys_error=config_keys_error,
             crons=crons,

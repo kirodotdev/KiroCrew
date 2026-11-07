@@ -541,8 +541,9 @@ def _app_declared_server_names() -> frozenset[str]:
             continue
         manifest, _app_root = _registration_source(entry.name)
         if manifest is None:
-            # bridges returns None for a manifest it could not parse. That app's
-            # declared servers are UNKNOWN, not empty, and "empty" is what
+            # bridges returns None for a manifest it could not parse -- including a
+            # non-object ``mcpServers``, which ``from_dict`` now raises on. That
+            # app's declared servers are UNKNOWN, not empty, and "empty" is what
             # deletes its live bridges.
             raise AppOwnershipUnreadable(f"app {entry.name!r}: manifest unreadable")
         servers = manifest.mcpServers or {}
