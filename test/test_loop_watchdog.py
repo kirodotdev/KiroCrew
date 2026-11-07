@@ -279,7 +279,7 @@ class _PagingFixture:
     major-fault counter, recording every alarm arm and the WARNING lines.
     The default budget is the managed-service one, above ``stall_after``."""
 
-    def __init__(self, *, exit_after: float = _MANAGED_BUDGET) -> None:
+    def __init__(self, *, exit_after: float = _MANAGED_BUDGET, beat: bool = True) -> None:
         self.clock = _Clock()
         self.arms: list[float] = []
         self.major_faults: int | None = 0
@@ -293,7 +293,8 @@ class _PagingFixture:
             self.fault_reads.append(native_thread_id)
             if self.on_fault_read is not None:
                 self.on_fault_read()
-            return self.major_faults
+            # As the real reader: no thread id, no procfs row to read.
+            return None if native_thread_id is None else self.major_faults
 
         self.wd = LoopStallWatchdog(
             stall_after=30.0,
@@ -310,7 +311,8 @@ class _PagingFixture:
         # The daemon thread runs a no-op, so only the test steps check().
         self.wd._run = lambda: None  # type: ignore[method-assign]
         self.wd.start()
-        self.wd.beat()
+        if beat:
+            self.wd.beat()
         self.arms.clear()
 
     def poll_at(self, silence: float, *, add_faults: int = 0) -> None:
@@ -334,6 +336,21 @@ def test_a_paging_loop_thread_re_arms_the_exit_and_says_so_once() -> None:
         assert fx.fault_reads[-1] == threading.get_native_id()
         assert len(fx.paging_lines()) == 1
         assert "40 major faults" in fx.paging_lines()[0]
+    finally:
+        fx.wd.stop()
+
+
+def test_paging_before_the_first_beat_still_defers_the_exit() -> None:
+    """The first beat lands at least one heartbeat interval after start(), so
+    paging that starts right after boot must already find the loop thread."""
+    fx = _PagingFixture(beat=False)
+    try:
+        fx.poll_at(10.0)  # the baseline
+        fx.poll_at(15.0, add_faults=40)  # also crosses enrich_after
+        assert fx.arms == [_MANAGED_BUDGET]
+        assert fx.fault_reads[-1] == threading.get_native_id()
+        assert len(fx.paging_lines()) == 1
+        assert f"loop thread {threading.get_ident():#x} is at" in "\n".join(fx.handler.messages)
     finally:
         fx.wd.stop()
 
