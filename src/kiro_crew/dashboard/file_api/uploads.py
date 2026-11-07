@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         _VIDEO_HINT_EXT,
         _ZIP_CONTAINER_EXTS,
         OWNER_ONLY_FILE_MODE,
+        PATH_MARKS,
         SNIFF_BYTES,
         WINDOWS_DEVICE_STEMS,
         _PathProbeBusy,
@@ -87,17 +88,12 @@ def _fit_stored_name(safe_name: str, name_max: int | None = None) -> str:
 
 
 def _safe_upload_name(name: str) -> str:
-    """*name* with every character outside letters, digits, ``_``, ``.`` and ``-``
-    replaced by ``_``, after composing it to NFC.
-
-    A macOS browser sends ``é`` as ``e`` plus a combining accent, and ``\\w`` does not
-    match the accent, so without NFC the name was stored as ``cafe_``. Composed, it is
-    one letter. A mark with no composed form (an Indic vowel sign, say) is still
-    replaced: the image-path grammar in ``image_refs`` reads ``\\w`` too, and a stored
-    path it cannot match would stop an uploaded picture from reaching the model.
+    """*name* composed to NFC, with every character other than a letter, digit,
+    ``_``, ``.``, ``-`` or a mark in ``image_refs.PATH_MARKS`` replaced by ``_``:
+    what the image-path grammar reads, so a stored picture still reaches the model.
     """
     name = unicodedata.normalize("NFC", name)
-    return "".join(ch if ch in "_.-" or ch.isalnum() else "_" for ch in name)
+    return "".join(ch if ch in "_.-" or ch.isalnum() or ch in PATH_MARKS else "_" for ch in name)
 
 
 def _upload_dir() -> Path:

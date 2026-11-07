@@ -370,6 +370,7 @@ from kiro_crew.hooks import (  # noqa: F401
     safe_read_file_bytes,
     safe_read_prefix,
 )
+from kiro_crew.image_refs import PATH_MARKS  # noqa: F401 - owner: uploads
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.outbound_files import OutboundFile  # noqa: F401
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime  # noqa: F401
