@@ -249,6 +249,30 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     expect(getByTestId('crew-work-waiting').textContent).toBe('Waiting · 1 open')
   })
 
+  it('open work whose workers all wait in their own loop (CI) reads running, not waiting', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 1, person: 0, items: [{ worker: 'w', stale_at_ms: 0, looping: true }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByTestId, queryByText, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(queryByTestId('crew-work-waiting')).toBeNull()
+    expect(getByTestId('crew-work-running').textContent).toBe('1 running')
+  })
+
+  it('one looping worker beside one with no loop still reads waiting', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 2, person: 0, items: [{ worker: 'w', stale_at_ms: 0, looping: true }, { worker: 'v', stale_at_ms: NOW + 14 * 60_000 }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+      { key: 'v', title: 'worker two', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByTestId, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(queryByTestId('crew-work-running')).toBeNull()
+    expect(getByTestId('crew-work-waiting').textContent).toBe('Waiting · 2 open')
+  })
+
   it('a loop whose open item went quiet past the window reads stalled', () => {
     const slots = [
       { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,

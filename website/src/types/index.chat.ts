@@ -15,6 +15,9 @@ export interface CrewWorkItemFacts {
   /** Epoch ms it is stale from while its worker's turn is not running
    *  (`work_ledger.is_stale`, read by the gateway); `0` for never. */
   stale_at_ms: number
+  /** Its worker's own loop will wake it (`ledger_wake.worker_looping`): idle
+   *  between checks, waiting on CI, still running. Absent from an older gateway. */
+  looping?: boolean
 }
 
 /** A conductor's work ledger in brief (`crew_work` on its slot row). */

@@ -56,7 +56,8 @@ export function CrewStateWord({ kind, title, className = '' }: { kind: CrewState
 export interface CrewRowOwnState { kind: CrewStateKind; word: string; title: string }
 
 const CREW_NEEDS_YOU_KEYS = new Set(['pending_approval', 'subagent_awaiting', 'crew_approval', 'needs_input', 'loop_waiting'])
-const CREW_RUNNING_KEYS = new Set(['running', 'goal_loop', 'subagents', 'snapshot_live_work', 'workflow', 'structured_monitor_action'])
+// `crew_running`: idle, but every open item's worker waits in its own loop (CI).
+const CREW_RUNNING_KEYS = new Set(['running', 'goal_loop', 'subagents', 'snapshot_live_work', 'workflow', 'structured_monitor_action', 'crew_running'])
 const CREW_WAITING_KEYS = new Set(['subagents_waiting', 'structured_monitor_passive', 'crew_waiting'])
 
 /** `working`: one of the crew's sessions is mid-turn (or the root's own live work).
