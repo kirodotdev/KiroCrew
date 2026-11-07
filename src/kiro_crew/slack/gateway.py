@@ -130,6 +130,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
     LEAKED_TOOL_CALL_NOTE,
     NO_TOOL_CALLS_NOTE,
     SUBAGENT_COMPLETION_META_KEY,
@@ -629,6 +630,7 @@ from kiro_crew.subagent import (
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
     ORPHAN_NOTICE_OWED,
+    HostSpawnDecision,
     SpawnApprovalUnreachable,
     SubagentDelivery,
     SubagentInfo,

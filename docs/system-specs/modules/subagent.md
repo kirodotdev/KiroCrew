@@ -1703,7 +1703,11 @@ Spawn flow (`subagent_manager/admission/gate.py`), first matching rung wins:
    callback's own: the dashboard gate allows 2 hours for an attended prompt
    (`DashboardState._APPROVAL_TIMEOUT`) and 180 seconds for a background run
    (`_BACKGROUND_APPROVAL_TIMEOUT_SECS`). Timeout or rejection frees the
-   concurrency slot.
+   concurrency slot. The callback returns a `HostSpawnDecision` when the
+   gateway answered with nobody asked ([slack-gateway](slack-gateway.md),
+   background approvals item 7), so the crew-log decision says `by: host`;
+   otherwise a bare `bool`, which still reads as a person's answer even for a
+   dashboard-only or channel prompt's expiry.
 6. **Otherwise**: rejected with `spawn rejected: no approval mechanism configured`.
 
 **Channel-side approval delivery (issue #2381 item 1).** The single host-wide
