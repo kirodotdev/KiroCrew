@@ -5504,6 +5504,7 @@
         "budget": "orçamento",
         "couldn_t_start_the_run": "Não foi possível iniciar a execução",
         "couldn_t_validate_the_script": "Não foi possível validar o script",
+        "couldn_t_load_examples": "Não foi possível carregar os exemplos",
         "invalid_fix_before_running": "Inválido — corrija antes de executar:",
         "load_example": "Carregar exemplo…",
         "run": "Executar",

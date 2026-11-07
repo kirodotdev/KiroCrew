@@ -72,6 +72,13 @@ export const apiErrorCode = (e: unknown): string =>
   e instanceof ApiError ? errorBodyCode(e.body) : ''
 
 /**
+ * True for the gateway's refusal of a call to an app that is switched off: the
+ * `app_not_enabled` code the app reverse proxy answers with. Keyed on the code,
+ * not the 403, because the same routes answer 403 to other refusals too.
+ */
+export const isAppNotEnabledError = (e: unknown): boolean => apiErrorCode(e) === 'app_not_enabled'
+
+/**
  * The `code` a raw refusal body names, or `''`. The body-level half of
  * {@link apiErrorCode}, for readers that run before an ApiError exists --
  * `friendlyErrText` builds the ApiError's message from the raw body.

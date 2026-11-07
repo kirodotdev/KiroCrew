@@ -5504,6 +5504,7 @@
         "budget": "budget",
         "couldn_t_start_the_run": "Impossibile avviare l’esecuzione",
         "couldn_t_validate_the_script": "Impossibile convalidare lo script",
+        "couldn_t_load_examples": "Impossibile caricare gli esempi",
         "invalid_fix_before_running": "Non valido — correggi prima di eseguire:",
         "load_example": "Carica un esempio…",
         "run": "Esegui",

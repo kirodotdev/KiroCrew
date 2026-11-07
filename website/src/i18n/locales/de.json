@@ -5442,6 +5442,7 @@
         "budget": "Budget",
         "couldn_t_start_the_run": "Ausführung konnte nicht gestartet werden",
         "couldn_t_validate_the_script": "Skript konnte nicht validiert werden",
+        "couldn_t_load_examples": "Beispiele konnten nicht geladen werden",
         "invalid_fix_before_running": "Ungültig — vor der Ausführung beheben:",
         "load_example": "Beispiel laden…",
         "run": "Ausführen",

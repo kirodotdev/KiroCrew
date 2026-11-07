@@ -5353,6 +5353,7 @@
         "budget": "बजट",
         "couldn_t_start_the_run": "रन शुरू नहीं हो सका",
         "couldn_t_validate_the_script": "स्क्रिप्ट मान्य नहीं हो सकी",
+        "couldn_t_load_examples": "उदाहरण लोड नहीं हो सके",
         "invalid_fix_before_running": "अमान्य — चलाने से पहले ठीक करें:",
         "load_example": "उदाहरण लोड करें…",
         "run": "चलाएँ",

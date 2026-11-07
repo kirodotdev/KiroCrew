@@ -5290,6 +5290,7 @@
         "budget": "予算",
         "couldn_t_start_the_run": "実行を開始できませんでした",
         "couldn_t_validate_the_script": "スクリプトを検証できませんでした",
+        "couldn_t_load_examples": "例を読み込めませんでした",
         "invalid_fix_before_running": "無効 — 実行前に修正してください：",
         "load_example": "例を読み込み…",
         "run": "実行",
