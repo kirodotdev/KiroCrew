@@ -35,9 +35,11 @@ from kiro_crew.relay_client.protocol import (
     ERR_MESSAGE_TOO_LARGE,
     ERR_UNSUPPORTED_FRAME,
     FEATURE_FLOW_CREDIT,
+    FEATURE_MOVE_DONE,
     FEATURE_REQUEST_CREDIT,
     MAX_STREAMS_PER_CONNECTION,
     MAX_TEXT_FRAME_BYTES,
+    MOVE_DONE_WAIT_SECONDS,
     MOVE_QUIET_GRACE_SECONDS,
     MOVE_WINDOW_MAX_SECONDS,
     OFFERED_FEATURES,
@@ -110,6 +112,8 @@ class RelayTimings:
     move_grace: float = MOVE_QUIET_GRACE_SECONDS
     #: The longest an old connection drains before the client closes it itself.
     drain_backstop: float = DRAIN_BACKSTOP_SECONDS
+    #: With ``move-done`` agreed, how long an old connection waits for it.
+    move_done_wait: float = MOVE_DONE_WAIT_SECONDS
 
 
 Stream = Union[HttpStream, WsStream]
@@ -158,6 +162,10 @@ class HostConnection:
         #: Set when the relay asked this connection to move; the client opens the next one.
         self.move_requested = asyncio.Event()
         self.move_close_in: float = 0.0
+        #: Set when the relay said it will relay no more requests here (``move-done``).
+        self.move_done = asyncio.Event()
+        #: True once a drain gave up waiting for ``move-done`` and used the grace.
+        self.move_done_fell_back = False
         self.http_streams_idle = asyncio.Event()
         self.http_streams_idle.set()
         #: Set whenever a request head arrives; a draining connection clears it to
@@ -261,6 +269,11 @@ class HostConnection:
     async def drain_and_close(self, *, quiet: float = 0.0) -> None:
         """Let open HTTP requests finish, then close with 1000.
 
+        When this connection's ``ready`` listed ``move-done``, the close waits for
+        the relay's ``move-done`` instead of a quiet grace; see
+        ``_drain_until_move_done``. Without it within ``move_done_wait``, or with
+        a relay that did not list it, the rule below applies.
+
         Once none is in flight, the connection stays open until no new request has
         arrived for *quiet* seconds, and serves any that does: the relay may have
         written one here just before it stopped routing to this connection, and it
@@ -280,6 +293,9 @@ class HostConnection:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(self._timings.drain_backstop, 0.0)
         quiet = quiet if math.isfinite(quiet) and quiet > 0 else 0.0
+        if FEATURE_MOVE_DONE in self.features:
+            if await self._drain_until_move_done(deadline):
+                return
         while True:
             if self._ended.is_set():
                 return  # closed under the drain: a newer move, the relay or a stop
@@ -304,6 +320,44 @@ class HostConnection:
                     continue  # a request was admitted as the grace ran out: serve it
                 break  # quiet for the whole grace
         await self.close(1000)
+
+    async def _drain_until_move_done(self, deadline: float) -> bool:
+        """With ``move-done`` agreed, close once the relay says nothing more comes here.
+
+        Called when the new connection is ready. Every request that arrives here
+        in the meantime is served as usual by the read loop. Once ``move-done``
+        arrives, this closes with 1000 as soon as the HTTP streams opened before
+        it have finished; frames for those open streams are still handled.
+
+        Returns ``True`` when the drain is over: closed here, or closed under it.
+        Returns ``False`` when ``move-done`` did not come within
+        ``move_done_wait``, so the caller falls back to the quiet grace, which is
+        counted and logged.
+        """
+        loop = asyncio.get_running_loop()
+        wait = self._timings.move_done_wait
+        wait = wait if math.isfinite(wait) and wait > 0 else 0.0
+        wait = min(wait, max(deadline - loop.time(), 0.0))
+        await _first_set(self.move_done, self._ended, timeout=wait)
+        if self._ended.is_set():
+            return True  # closed under the drain: a newer move, the relay or a stop
+        if not self.move_done.is_set():
+            self.move_done_fell_back = True
+            logger.warning(
+                "relay move: no move-done within %.1f s of the new connection's ready; "
+                "closing the old connection on the quiet grace instead",
+                wait,
+            )
+            return False
+        while not self.http_streams_idle.is_set():
+            remaining = max(deadline - loop.time(), 0.0)
+            if not await _first_set(self.http_streams_idle, self._ended, timeout=remaining):
+                logger.info("relay move: open requests outlived the drain backstop; closing anyway")
+                break
+            if self._ended.is_set():
+                return True
+        await self.close(1000)
+        return True
 
     async def _close_ws(
         self, ws: aiohttp.ClientWebSocketResponse, code: int, reason: str = ""
@@ -498,6 +552,23 @@ class HostConnection:
         )
         self.move_close_in = float(min(frame["closeInSeconds"], MOVE_WINDOW_MAX_SECONDS))
         self.move_requested.set()
+
+    async def _on_move_done(self, frame: Dict[str, Any]) -> None:
+        if FEATURE_MOVE_DONE not in self.features:
+            # Only a relay that listed it in ready may send it.
+            raise FrameError(ERR_UNSUPPORTED_FRAME, "frame type 'move-done' is not agreed")
+        last_id = frame.get("lastId")
+        if not self.move_requested.is_set():
+            # Only an answer to this connection's own reconnect counts. An early one
+            # kept would let a later drain close as soon as HTTP is idle, without
+            # waiting for the move-done that belongs to that move.
+            logger.info("relay sent move-done before any move was asked for; ignored")
+            return
+        logger.debug(
+            "relay sent move-done (last id %s)",
+            last_id if isinstance(last_id, int) and not isinstance(last_id, bool) else "not given",
+        )
+        self.move_done.set()
 
     async def _on_error(self, frame: Dict[str, Any]) -> None:
         sid = frame.get("id")

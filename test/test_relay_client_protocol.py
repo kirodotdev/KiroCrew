@@ -144,7 +144,7 @@ def test_the_hello_the_client_builds_matches_the_fixture() -> None:
     hello = protocol.build_hello(client_version="9.9.9")
     required = {k for k, v in shape["fields"].items() if v["required"]}
     assert required <= set(hello) <= set(shape["fields"])
-    assert hello["features"] == ["flow-credit", "ws-flow", "request-credit"]
+    assert hello["features"] == ["flow-credit", "ws-flow", "request-credit", "move-done"]
     assert "opaque" not in hello["features"]
     # Every feature offered is one the hello fixture names as known in version 1.
     known = shape["fields"]["features"]["notes"]
