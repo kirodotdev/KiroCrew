@@ -154,6 +154,13 @@ card-initiated mint (`idle|minting|waiting|granted|failed|expired`, with
 `oauth_url` only while `waiting`), and the frontend keeps polling it at its own
 cadence. Approval-URL ownership stays with the mint engine.
 
+The POST, like `POST /api/connections/test`, refuses a registry provider the
+gallery hides (`registry.is_visible`, the predicate behind `get_visible_providers`)
+with the same 400 `unknown_provider` as an unknown slug, so a stale tab or a
+hand-built request cannot start a sign-in or a Test session for it. Cancel and
+Disconnect still reach every registry provider, so a grant stored before its
+provider was hidden stays revocable.
+
 A cold mint whose URL is rejected by `oauth_url_contains_credential` disposes
 that dedicated process, protected PID, and ephemeral spec, then creates one
 fresh dedicated attempt with a new provider OAuth state. The retry keeps the
