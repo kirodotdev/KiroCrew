@@ -24,7 +24,10 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     parse_workflow_command,
 )
-from kiro_crew.dashboard.kas_local_commands import answer_kas_inspect_command
+from kiro_crew.dashboard.kas_local_commands import (
+    KAS_KIRO_CLI_ONLY_COMMANDS,
+    answer_kas_inspect_command,
+)
 from kiro_crew.dashboard.kas_local_commands import answers_locally as kas_answers_locally
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
 from kiro_crew.dashboard.state import (
@@ -139,10 +142,12 @@ async def _answer_slash_for_harness(
     turn boundary. Any other command gets a notice naming *backend*'s harness as a
     person reads it.
 
-    On KAS, ``/agent``, ``/context``, ``/help``, ``/mcp``, ``/model``, ``/tools`` and
-    ``/usage`` are answered from the dashboard's own state (``kas_local_commands``,
-    which reads KAS's own registration); *message* is the whole command line, for
-    ``/model <id>`` and for the arguments ``answers_locally`` leaves to the notice.
+    On KAS, ``/agent``, ``/code``, ``/context``, ``/help``, ``/hooks``, ``/knowledge``,
+    ``/mcp``, ``/model``, ``/tools`` and ``/usage`` are answered by
+    ``kas_local_commands`` (from the dashboard's own state, or KAS's own verb for
+    ``/code``, ``/knowledge`` and ``/context add|remove|clear``); *message* is the
+    whole command line, for their arguments and for those ``answers_locally``
+    leaves to the notice.
     Another harness gets the notice for them.
 
     Returns the outcome it records: ``discarded``, ``queued``, ``shown``,
@@ -782,8 +787,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # model reads "/clear" as a request and the conversation stays. KAS also
     # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
     # Answer here instead, before any session work: /clear takes the same discard
-    # reset_conversation queues, /agent, /context, /help, /mcp, /model, /tools and
-    # /usage are read from the dashboard's own state (kas_local_commands), and every
+    # reset_conversation queues, /agent, /context, /help, /hooks, /mcp, /model, /tools
+    # and /usage are read from the dashboard's own state, /context add|remove|clear,
+    # /code and /knowledge go to KAS's own verbs (kas_local_commands), and every
     # other command gets a notice rather than
     # reaching the model. /compact passes through: on KAS the session handle
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
@@ -791,16 +797,21 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
     # either, so /clear alone is answered here for them too; their other commands
     # keep the prompt path, where those harnesses serve the ones they know.
+    # A kiro-cli command that is not a Crew harness command (/knowledge, /effort,
+    # /plan, /rewind) is answered here on KAS alone; anywhere else it stays text.
+    _kas_only_word = not is_slash and first_word.lower() in KAS_KIRO_CLI_ONLY_COMMANDS
     if (
-        is_slash
+        (is_slash or _kas_only_word)
         and not _is_cc_provider
         and first_word != "/compact"
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
         _command_backend = await _slash_command_backend(state, session_key)
-        if _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS or (
-            _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
-        ):
+        if (
+            _command_backend == ACP_BACKEND_KAS
+            if _kas_only_word
+            else _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS
+        ) or (_this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR):
             turn_exit.local_command = first_word
             await _answer_slash_for_harness(
                 state, slot, session_key, first_word, _command_backend, message

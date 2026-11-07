@@ -852,6 +852,14 @@ class AcpSessionProvider(LLMProvider):
             return False
         return await self._guarded(discard()) is True
 
+    async def kas_command_call(self, command: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """Forward to the session handle: one of KAS's ``/context``, ``/knowledge``
+        or ``/code`` verbs for this session, or None when it cannot be sent."""
+        call = getattr(self._handle, "kas_command_call", None)
+        if call is None:
+            return None
+        return await self._guarded(call(command, params))
+
     async def steer(self, message: str) -> bool:
         """Forward a mid-turn steer to the session handle (kiro _session/steer).
 
