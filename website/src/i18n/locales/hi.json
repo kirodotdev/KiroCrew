@@ -165,6 +165,13 @@
     "memberChanged_one": "{{name}}: नीचे {{count}} बदलाव दिया गया है।",
     "memberChanged_other": "{{name}}: नीचे {{count}} बदलाव दिए गए हैं।"
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "पैकेज"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "सर्वर ने अनुरोध स्वीकार कर लिया, लेकिन उसका जवाब पढ़ा नहीं जा सका।",

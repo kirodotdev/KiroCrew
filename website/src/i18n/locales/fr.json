@@ -175,6 +175,13 @@
     "memberChanged_many": "{{name}} : {{count}} modifications listées ci-dessous.",
     "memberChanged_other": "{{name}} : {{count}} modifications listées ci-dessous."
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "Packages"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "Le serveur a accepté la requête, mais la réponse n'a pas pu être lue.",

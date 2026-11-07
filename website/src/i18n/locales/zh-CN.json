@@ -155,6 +155,13 @@
     "title": "能力",
     "memberChanged_other": "{{name}}：下方列出 {{count}} 项变更。"
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "包"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "服务器已接受请求，但无法读取其响应。",

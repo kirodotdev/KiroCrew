@@ -165,6 +165,13 @@
     "memberChanged_one": "{{name}}: নিচে {{count}} টি পরিবর্তন তালিকাভুক্ত।",
     "memberChanged_other": "{{name}}: নিচে {{count}} টি পরিবর্তন তালিকাভুক্ত।"
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "প্যাকেজ"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "সার্ভার অনুরোধ গ্রহণ করেছে, কিন্তু তার উত্তর পড়া যায়নি।",

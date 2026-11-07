@@ -229,7 +229,9 @@ export class AcpAdapter implements ProviderAdapter {
     sessionProcess: 'ACP subprocess',
     processCountLabel: 'acp_cli',
     configFile: 'kirocrew.json',
-    pluginRegistryName: 'Packages',
+    // A getter, not a literal: the name is shown inside translated copy, and
+    // the adapter is built once, so it must read the language at use time.
+    get pluginRegistryName() { return i18nT('providers.adapters.acp.plugin_registry_name') },
     hooksSection: 'ACP Agent Hooks',
   }
 

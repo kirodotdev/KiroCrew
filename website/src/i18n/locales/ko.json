@@ -155,6 +155,13 @@
     "title": "기능",
     "memberChanged_other": "{{name}}: 아래에 변경 사항 {{count}}개가 나열되어 있습니다."
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "패키지"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "서버가 요청을 수락했지만 응답을 읽을 수 없었습니다.",
