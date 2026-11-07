@@ -273,6 +273,10 @@ describe('composerSendState', () => {
     [{ running: false, hasContent: true }, 'idle'],
     [{ running: true, hasContent: true }, 'queue'],
     [{ running: true, hasContent: false }, 'idle'],
+    [{ running: true, hasContent: true, busyAction: 'queue' }, 'queue'],
+    [{ running: true, hasContent: true, busyAction: 'steer' }, 'steer'],
+    [{ running: true, hasContent: false, busyAction: 'steer' }, 'idle'],
+    [{ running: false, hasContent: true, busyAction: 'steer' }, 'idle'],
   ] as const)('%o -> %s', (args, want) => {
     expect(composerSendState(args)).toBe(want)
   })

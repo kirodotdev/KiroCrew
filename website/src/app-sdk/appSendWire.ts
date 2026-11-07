@@ -77,6 +77,9 @@ export function appApiSendWire(api: AppApi, agent?: string): SendWire {
       slot: payload.slot,
       agent: agent || '',
       ...(payload.meta ? { meta: payload.meta } : {}),
+      // The same flag the dashboard wire sends. The gateway decides: it steers a
+      // person's send and queues an app-token one (`chat_send.py`).
+      ...(payload.steer ? { steer: payload.steer } : {}),
     }).then(
       (parsed: unknown): SendResponseLike => ({ ok: true, json: () => Promise.resolve(parsed) }),
       (err: unknown): SendResponseLike => {
