@@ -48,6 +48,19 @@ describe('appApiSendWire', () => {
     expect(receipt.status).toBe('dispatched')
   })
 
+  it('forwards a steer flag, and a steered receipt is a delivery', async () => {
+    const post = vi.fn().mockResolvedValue({ ok: true, steered: true })
+    const receipt = await sendTurn({ message: 'go left', slot: 'slot-1', steer: true, wire: appApiSendWire(apiWith(post)) })
+    expect(post).toHaveBeenCalledWith('/api/chat?ws=1', expect.objectContaining({ message: 'go left', steer: true }))
+    expect(receipt.status).toBe('dispatched')
+  })
+
+  it('sends no steer key when the send does not ask to steer', async () => {
+    const post = vi.fn().mockResolvedValue({ ok: true })
+    await sendTurn({ message: 'hi', wire: appApiSendWire(apiWith(post)) })
+    expect(post.mock.calls[0][1]).not.toHaveProperty('steer')
+  })
+
   it('classifies a queued acceptance as queued, not as a delivery receipt', async () => {
     const post = vi.fn().mockResolvedValue({ ok: true, queued: true })
     const receipt = await sendTurn({ message: 'hi', wire: appApiSendWire(apiWith(post)) })
