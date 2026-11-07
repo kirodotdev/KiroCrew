@@ -167,6 +167,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         logger,
         reconcile_enabled_app_resources,
         refresh_app_agents,
+        refresh_app_agents_if_enabled,
         register_app,
     )
     from kiro_crew.apps.bridges_skills import (  # noqa: F401
@@ -247,6 +248,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.manager import (  # noqa: F401
         app_data_dir,
         app_dir,
+        app_enabled_state,
         get_app,
         get_app_manifest,
         list_apps,
