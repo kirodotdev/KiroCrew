@@ -379,7 +379,7 @@ the facade imports an owner.
 
 | Owner | Responsibility |
 |---|---|
-| `slack/handler_runtime/access.py` | Who may drive the bot and the live references the handler reads: the owner, allowlist and tracked-channel predicates and their setters, per-session Trust and YOLO (kept by `messaging.session_trust` and `safety_override`), the orchestrator config and dashboard state the gateway installs after import, the background-task set shutdown cancels |
+| `slack/handler_runtime/access.py` | Who may drive the bot and the live references the handler reads: the owner, allowlist and tracked-channel predicates and their setters (the tracked-channel predicate refuses an id whose remove is still saving), per-session Trust and YOLO (kept by `messaging.session_trust` and `safety_override`), the orchestrator config and dashboard state the gateway installs after import, the background-task set shutdown cancels |
 | `slack/handler_runtime/inbound.py` | What an inbound message resolves to before a turn: the `!temporary` / `!incognito` modifiers, the thread agent and project overrides and their off-loop hydration, the default agent and the channel-config writes, the hand-off of a linked thread's message to its dashboard slot |
 | `slack/handler_runtime/agent_names.py` | Which kiro agent a thread can name: the project agents a working tree defines, the resolution of a typed name against those, the user-level specs, kiro-cli's built-in agents and the companion-plugin agents (whose walk, `_iter_cc_agent_names`, is the facade's), and the list `!agent` / `!ta` print |
 | `slack/handler_runtime/dispatch.py` | What a message does before a turn opens (`_dispatch_before_turn`): the linked-thread hand-off, a hook's canned reply, the `status` and `sessions` keywords, the privacy modifiers, the `!` commands and the keyword commands, then the first OPTIONS expiry; `maybe_handle_keyword_command` (shared with the transport path) and `_handle_sessions_command` |
@@ -1249,6 +1249,7 @@ Available to all allowed users.
 - Requires `channels:read` scope (for public channels) and `groups:read` (for private)
 - A user joining a monitored channel prompts nothing: multi-user access is disabled, so there is no allowlist prompt to send
 - If `tracking_channels` is empty, no monitoring occurs
+- The owner's allowlist and tracking controls (the approve and deny buttons, the remove buttons, the channels modal's add and remove) go through `_save_then_apply` (`slack/interactions_settings.py`): an add reaches the running set only after `config.json` saved it; a remove applies at once and again after its own save. Until a remove's save returns, its id is in `handler._removes_in_flight`: `is_tracked_channel` refuses it whatever puts it back in the set (a config reload, the modal, a select), and an add whose save returns meanwhile leaves it out, because saves run one at a time in click order, so that add was clicked before the remove. One gap is left: a config reload that read the file before the remove's save can put a channel back for that one reload cycle, until the cycle that the write removing it from the file wakes. A refused save (a wrong-shaped entry, an unreadable config, a disk error) replaces the success text with what is in force (a refused Keep still tracks or allows the id; a refused deny or Ignore leaves it off), that it was not saved, and why, and records no SEL event
 - Tracked channels are capability-probed (`slack/scope_probe.py`, one `conversations.history` call with `limit=1`) after the socket connects at startup or on a reconnect, and whenever a channel is added to tracking. A `missing_scope`/`channel_not_found` result logs a warning and pushes a dashboard notification — a private channel tracked under an install predating `groups:history` would otherwise fail silently. Deferred (`asyncio.create_task`), best-effort: transient network errors report nothing
 - `/<command> @user` refuses for the same reason
 - `/<command> #channel` adds a tracking channel via owner approval
@@ -1646,7 +1647,8 @@ no `slack.*` write can change the connection. `_on_slack_config_change`
 - `slack.tracking_channels` / `slack.open_channels` → the orchestrator's sets AND
   the `handler` module globals, mutated IN PLACE so the Slack-native modal, which
   edits those same set objects, and a CLI write converge on one set rather than
-  two that disagree.
+  two that disagree. A channel this puts back while an owner's remove of it is
+  still saving stays refused by `is_tracked_channel` until that save returns.
 - `slack.channels` / `slack.dm_activation` / `messaging.*` / `trusted_bot_*` /
   `home_tab_sessions_per_kind` / `forward_to_agent_callback` → the shared config
   object every Slack read reaches through `handler.slack_cfg()`, updated
