@@ -14,6 +14,7 @@ import { api } from '../../api/client'
 // do not export ApiError, and an `instanceof` against a missing mock export
 // throws inside the reconnect heal's own catch.
 import { ApiError } from '../../api/apiError'
+import { recoverableQueryClients } from '../../api/queryClient'
 import { refreshDashboardReads } from '../../api/dashboardRefresh'
 import { forgetUnobservedMemberThreads, MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECTIONS_QUERY_PREFIX } from '../../api/membersQuery'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
@@ -232,6 +233,16 @@ export function invalidateRefreshQueries(qc: QueryClient, kinds?: readonly strin
   onCronsStale?.()
 }
 
+/** Re-read one slot's pins, or every slot's when no slot is named, on this
+ *  socket's client and on every app client: an app's embedded `ChatPanel`
+ *  reads its pins on that app's own client (`app-sdk/appQueryClient.ts`). */
+export function invalidateChatPins(queryClient: QueryClient, slotKey?: string): void {
+  const queryKey = slotKey ? ['chat-pins', slotKey] : ['chat-pins']
+  for (const client of new Set([queryClient, ...recoverableQueryClients()])) {
+    void client.invalidateQueries({ queryKey })
+  }
+}
+
 /** Reconnect: re-read the caches whose one-shot frames may have been missed
  *  while the socket was down. */
 export function refreshServerStateAfterReconnect(queryClient: QueryClient): void {
@@ -241,6 +252,8 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // Invalidate every slot's summary (the key is per-slot and we cannot
   // know which ones moved); react-query only refetches the observed ones.
   queryClient.invalidateQueries({ queryKey: ['session-summary'] })
+  // Same for a `pins_changed` frame: every slot's pins, on every client.
+  invalidateChatPins(queryClient)
   // A missed removal may have reused a slot key. Discard cached content
   // and cancel old reads before refetching observed cards.
   queryClient.resetQueries({ queryKey: ['dashboard-card'] })

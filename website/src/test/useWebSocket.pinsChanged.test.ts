@@ -15,6 +15,7 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { registerRecoverableQueryClient } from '../api/queryClient'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -117,5 +118,42 @@ describe('useWebSocket pins_changed frame', () => {
     const keys = spy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))
     expect(keys).toContain(JSON.stringify(['chat-pins', 'dashboard:chat-1']))
     expect(keys).not.toContain(JSON.stringify(['chat-pins', 'dashboard:chat-2']))
+  })
+
+  // An app's embedded ChatPanel reads its pins on that app's own client, which
+  // the host registers; the frame and the reconnect must reach it too.
+  function appClientHoldingPins(slotKey: string) {
+    const appClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    registerRecoverableQueryClient(appClient)
+    appClient.setQueryData(['chat-pins', slotKey], [])
+    return appClient
+  }
+
+  it('invalidates the named slot\'s pins on a registered app client', () => {
+    const appClient = appClientHoldingPins('dashboard:chat-42')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'pins_changed', data: { slot_key: 'dashboard:chat-42' } })
+    })
+
+    expect(appClient.getQueryState(['chat-pins', 'dashboard:chat-42'])?.isInvalidated).toBe(true)
+  })
+
+  it('invalidates a registered app client\'s pins on a reconnect', () => {
+    // A pins_changed frame sent while the socket was down is never replayed.
+    const appClient = appClientHoldingPins('dashboard:chat-7')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    expect(appClient.getQueryState(['chat-pins', 'dashboard:chat-7'])?.isInvalidated).toBe(false)
+
+    act(() => { ws.onclose?.(new CloseEvent('close')) })
+    const reconnected = WS_INSTANCES[WS_INSTANCES.length - 1]
+    act(() => { reconnected.simulateOpen() })
+
+    expect(appClient.getQueryState(['chat-pins', 'dashboard:chat-7'])?.isInvalidated).toBe(true)
   })
 })
