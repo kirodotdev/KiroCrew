@@ -2181,11 +2181,12 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
      to `subprocess.DEVNULL`, and stdout + stderr redirected to
      `~/.kiro/crew/gateway.log` (the same file the `kirocrew logs` command
      tails for foreground gateways). Detach is per-platform: POSIX uses
-     `start_new_session=True`; Windows uses `creationflags=DETACHED_PROCESS
+     `start_new_session=True`; Windows uses `creationflags=CREATE_NO_WINDOW
      | CREATE_NEW_PROCESS_GROUP` (there is no setsid) — both via
-     `platform_compat`. The spawn returns immediately, the command then
-     waits for readiness (next bullet), and the user can follow logs via
-     `kirocrew logs -f`.
+     `platform_compat`. The replacement owns a hidden console, so the console
+     programs it starts inherit it instead of each opening a visible window.
+     The spawn returns immediately, the command then waits for readiness
+     (next bullet), and the user can follow logs via `kirocrew logs -f`.
    - Report success only once the replacement answers `/api/ready` and its
      run marker records a pid that differs from the previous gateway's pid
      when one is known (`_wait_gateway_ready`). Only this fork path verifies
