@@ -61,6 +61,8 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         model_effort_pair_ids?: boolean
         /** Present when this session's harness lists other models than the configured backend. */
         models_backend?: string
+        /** The session's ultracode switch; present only while its harness advertises one. */
+        ultracode?: boolean
       }>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
@@ -118,6 +120,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Turn the live session's ultracode switch on or off; answers the value it reads back. */
+    chatSlotUltracode: (slot: string, enabled: boolean) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/ultracode', { enabled }).then(j) as Promise<{ ok: boolean; ultracode: boolean }>,
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>

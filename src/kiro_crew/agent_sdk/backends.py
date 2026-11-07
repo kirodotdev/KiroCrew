@@ -193,6 +193,9 @@ with no row here.
    * - ``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``
      - driver-internal (whether an unpinned session serves a pseudo-model the
        registry cannot name, so the advertised effort option answers there)
+   * - ``ACP_BACKENDS_ULTRACODE_CONFIG_OPTION``
+     - driver-internal (whether the session's advertised ``ultracode`` switch is
+       read and written, by ``AcpProvider.ultracode_enabled`` / ``set_ultracode``)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -1173,6 +1176,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
     CC_PERMISSION_MODE_ENV,
     CC_PIN_INHERITED_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
@@ -1182,6 +1186,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
+    ULTRACODE_CONFIG_OPTION_ID,
     effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_levels,

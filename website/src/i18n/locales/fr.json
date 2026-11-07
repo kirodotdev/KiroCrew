@@ -9731,6 +9731,10 @@
       "no_matches_for": "Aucun résultat pour",
       "no_noun_match": "Aucun(e) {{noun}} correspondant(e)"
     },
+    "ultracodeToggle": {
+      "hint": "Découpe les grosses tâches en étapes confiées à des agents auxiliaires. Cela change la façon dont le travail est planifié, pas l’intensité de la réflexion de Claude. Plus lent, et consomme davantage de ton quota Claude. S’applique à ce chat uniquement, dès ton prochain message.",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "Copié",
       "copy_command": "Copier la commande",

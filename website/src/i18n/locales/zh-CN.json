@@ -9281,6 +9281,10 @@
       "no_matches_for": "没有匹配",
       "no_noun_match": "没有匹配的{{noun}}"
     },
+    "ultracodeToggle": {
+      "hint": "把大任务拆成若干步骤，交给辅助智能体执行。它改变工作的规划方式，而不是 Claude 思考的深度。速度更慢，并会消耗更多 Claude 用量。仅对此聊天生效，从下一条消息开始。",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "已复制",
       "copy_command": "复制命令",

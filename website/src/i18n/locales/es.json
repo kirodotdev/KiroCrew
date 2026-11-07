@@ -9731,6 +9731,10 @@
       "no_matches_for": "Sin coincidencias para",
       "no_noun_match": "No hay {{noun}} que coincidan"
     },
+    "ultracodeToggle": {
+      "hint": "Divide las tareas grandes en pasos que realizan agentes auxiliares. Cambia cómo se planifica el trabajo, no cuánto piensa Claude. Es más lento y consume más de tu cuota de Claude. Solo se aplica a este chat, desde tu próximo mensaje.",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "Copiado",
       "copy_command": "Copiar comando",

@@ -1097,6 +1097,23 @@ default. A slot clear (`every_model=True`) also drops the levels stored for mode
 the session ran before, so a fallback restore does not re-apply one; a refused
 write puts them back. `test_claude_effort_live_clear.py` pins each outcome.
 
+### The ultracode switch
+
+claude-agent-acp (0.97.0 and later) advertises an `ultracode` option (dynamic
+workflows on every task) in `configOptions`, only on a model that supports it, as an
+`on`/`off` select. It changes how Claude Code plans work, not which tools run or how
+they are approved, so it is the one claude option beside `effort` and `model` that a
+user may write (`ACP_BACKENDS_ULTRACODE_CONFIG_OPTION`; another harness's option of
+the same id stays unread). `AcpProvider.ultracode_enabled` reads it live, so
+`selection-capabilities` carries `ultracode` only while the session advertises it and
+the model picker shows the switch only then. `POST /api/chat/slots/{slot}/ultracode`
+writes it with `session/set_config_option` and answers the value the reply carries;
+it refuses with 409 `ultracode_not_offered` when the session has no switch and
+`turn_in_flight` while a turn runs, answers 502 `ultracode_refused` when the
+adapter rejects the write, and persists nothing: the switch is the adapter's
+per-session state, seeded from Claude settings at session start.
+`test_claude_ultracode_toggle.py` pins the read, the write and both 409s.
+
 ## Model registry
 
 `src/kiro_crew/model_registry.json` is the shared model data source for

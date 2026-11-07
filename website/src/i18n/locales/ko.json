@@ -9281,6 +9281,10 @@
       "no_matches_for": "일치하는 항목 없음:",
       "no_noun_match": "일치하는 {{noun}} 없음"
     },
+    "ultracodeToggle": {
+      "hint": "큰 작업을 보조 에이전트가 수행하는 단계로 나눕니다. 작업을 계획하는 방식이 바뀌며, Claude가 얼마나 깊이 생각하는지는 바뀌지 않습니다. 더 느리고 Claude 사용량을 더 많이 씁니다. 이 채팅에만 다음 메시지부터 적용됩니다.",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "복사됨",
       "copy_command": "명령 복사",

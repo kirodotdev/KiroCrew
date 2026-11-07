@@ -1983,7 +1983,8 @@ specified compatibility change.
   - `slot_model` — the per-slot and bulk model routes, the per-slot route's
     request-free core `switch_slot_model` (also run by the in-turn `/model <id>`
     on KAS), and the live model switch;
-  - `slot_effort` — the selection capabilities and the reasoning-effort route;
+  - `slot_effort` — the selection capabilities, the reasoning-effort route and the
+    ultracode switch;
   - `slot_settings` — the auto-compact threshold, the turn timeout and the tab
     colour;
   - `session_relaunch` — reload (`reload_slot_session`), workspace and project;
