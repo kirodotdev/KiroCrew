@@ -759,7 +759,7 @@ def _snapshot_sqlite_pinned(
     Read-only on the source (``mode=ro``), so staging a pod can never write to the
     operator's live store.
     """
-    import sqlite3
+    from kiro_crew._sqlite_compat import sqlite3
 
     tmp_name = f".{dst_name}.staging"
     src_fd: int | None = None
