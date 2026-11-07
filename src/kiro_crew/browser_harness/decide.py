@@ -74,8 +74,8 @@ NO = 0.3
 #: The least probability a Choice pick and a Box confidence must carry to be used.
 PICK_P_MIN = 0.6
 BOX_CONFIDENCE_MIN = 0.6
-#: Choice options per request; the provider takes at most 255.
-MAX_OPTIONS = 200
+#: Choice options per request; the strictest local decision server takes at most 100.
+MAX_OPTIONS = 100
 #: Longest image side the provider accepts.
 IMAGE_MAX_DIM = 1568
 
