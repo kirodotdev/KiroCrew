@@ -253,9 +253,10 @@ async def test_an_oidc_sign_in_records_its_start_url_on_the_stored_token(
         )
 
     async def _fake_profiles(access_token, *, region, session):
-        return [
-            control_plane.KiroProfile(arn="arn:aws:kiro:eu-west-1:1:profile/p1", profile_name="P1")
-        ]
+        profile = control_plane.KiroProfile(
+            arn="arn:aws:kiro:eu-west-1:1:profile/p1", profile_name="P1"
+        )
+        return control_plane.ProfileListing(profiles=[profile], url="https://cps.test/", pages=1)
 
     monkeypatch.setattr(builder_id, "register_client", _fake_register)
     monkeypatch.setattr(builder_id, "start_device_authorization", _fake_start)
