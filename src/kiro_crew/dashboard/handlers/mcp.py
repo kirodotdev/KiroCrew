@@ -1066,6 +1066,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.config.loader import read_endorsed_config_text  # noqa: F401
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
         _mark_agent_entries_disabled,
         _shared_agent_home_declined,

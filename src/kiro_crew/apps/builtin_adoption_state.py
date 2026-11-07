@@ -80,12 +80,14 @@ def read_base_adoption_nav() -> dict[str, LegacyNav]:
 
 
 def _base_agent_raw() -> dict[str, Any]:
-    from kiro_crew.config.loader import config_path, read_config_text
+    from kiro_crew.config.loader import config_path, read_endorsed_config_text
 
     path = config_path()
-    if not path.is_file():
-        return {}
-    raw = json.loads(read_config_text(path))
+    try:
+        # Read as the load reads it, so a deleted file serves its endorsed copy.
+        raw = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        return {}  # neither the file nor an endorsed copy
     agent_raw = raw.get("agent") if isinstance(raw, dict) else None
     return agent_raw if isinstance(agent_raw, dict) else {}
 

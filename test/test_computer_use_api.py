@@ -874,8 +874,11 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously."""
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 21, f"scanner reached {len(coded)} coded sites, expected 21"
-        assert all(f.code_value for f in coded)
+        assert len(coded) == 20, f"scanner reached {len(coded)} coded sites, expected 20"
+        # The PUT's keystone-field refusal answers with the code ``keystone_patch``
+        # raised (``KeystoneFieldRefused.code``), and its pending-file refusal with
+        # ``PendingEditBlocksSave.code``, so those two sites have no literal.
+        assert sum(1 for f in coded if not f.code_value) == 2
 
     # -- PUT /api/computer-use/config --
 

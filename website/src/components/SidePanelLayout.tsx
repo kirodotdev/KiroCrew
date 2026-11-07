@@ -26,6 +26,8 @@ export interface SidePanelTab {
   description?: string
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
+  /** The dot's accessible name; defaults to "update available". */
+  dotLabel?: string
   /** Count pill after the label, for items waiting on the user inside this tab
    *  (e.g. Skills while generated skill candidates wait for review). Nothing
    *  renders at a count of 0. `label` names what is counted, count included,
@@ -539,7 +541,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                       ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4" style={{ background: t.tile }}>{t.icon}</span>
                       : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
-                    {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                    {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
                     <TabCountBadge badge={t.badge} />
                     <ChevronRight size={15} className="text-muted-strong shrink-0" />
                   </button>
@@ -634,7 +636,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                       {t.icon}
                     </span>}
                 {t.label}
-                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
                 {/* The dot, when present, already holds the row's right edge. */}
                 <TabCountBadge badge={t.badge} className={t.dot ? '' : 'ml-auto'} />
               </button>

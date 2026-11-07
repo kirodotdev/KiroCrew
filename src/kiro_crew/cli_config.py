@@ -640,6 +640,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         except ConfigReadError as e:
             print(f"❌ Cannot edit a corrupt config.json: {e}", file=sys.stderr)
             sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
+            sys.exit(1)
         except OSError as e:
             # A read-only or full data home, or a refused link: report it and stop,
             # rather than letting the CLI die on a traceback.
@@ -696,6 +699,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
             recorded = record_acks(keys)
         except ConfigReadError as e:
             print(f"❌ Cannot read a corrupt config.json: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
             sys.exit(1)
         except OSError as e:
             print(f"❌ Could not record acknowledgments: {e}", file=sys.stderr)

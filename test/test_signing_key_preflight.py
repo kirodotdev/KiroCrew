@@ -610,6 +610,7 @@ class TestPreflightNeverRunsOnTheEventLoop:
         from unittest.mock import MagicMock
 
         orch = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
+        orch._background_tasks = set()
         monkeypatch.setattr(gateway.crash_guard, "install_loop_handler", MagicMock())
         monkeypatch.setattr(gateway.platform_compat, "raise_nofile_soft_limit", MagicMock())
         monkeypatch.setattr(gateway, "data_home", lambda: tmp_path)
@@ -639,6 +640,7 @@ class TestPreflightHasABootDeadline:
         from unittest.mock import MagicMock
 
         orch = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
+        orch._background_tasks = set()
         monkeypatch.setattr(gateway.crash_guard, "install_loop_handler", MagicMock())
         monkeypatch.setattr(gateway.platform_compat, "raise_nofile_soft_limit", MagicMock())
         monkeypatch.setattr(gateway, "data_home", lambda: tmp_path)

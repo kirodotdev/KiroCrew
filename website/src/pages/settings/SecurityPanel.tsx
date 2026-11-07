@@ -34,6 +34,7 @@ import { ThirdPartyAppsCard, TrustedRegistriesCard } from './SecurityPanelTrust'
 import { RedactionSection } from './SecurityPanelRedaction'
 import { FEATURES, LayersSection } from './SecurityPanelLayers'
 import { GovernancePolicyViewer } from './SecurityPanelGovernance'
+import { ConfigPendingCards } from './SecurityPanelConfigPending'
 export { trustFailureMessage, registryTrustFailureMessage } from './SecurityPanelTrust'
 export { RedactionAllowedHostsCard, RedactionSection } from './SecurityPanelRedaction'
 export { FEATURE_LABEL_KEY, FEATURE_DESCRIPTION_KEY } from './SecurityPanelLayers'
@@ -278,6 +279,9 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
       listLabel={i18nT('pages.settings.securityPanel.security_sections')}
       backLabel={i18nT('settings.tabs.security.label')}
       basePath={basePath}
+      // Settings files edited outside the dashboard: pinned above every section,
+      // so the bell note's link lands on it whichever section is open.
+      banner={<ConfigPendingCards />}
     >
       {active => {
         const key = active as SecuritySectionKey | null

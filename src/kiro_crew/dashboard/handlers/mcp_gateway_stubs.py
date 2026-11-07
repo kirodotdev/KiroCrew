@@ -682,9 +682,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             return web.json_response({"error": "config.json is corrupt"}, status=500)
         except ConfigWriteRefused as exc:
             await _restore_revoked()
-            return web.json_response(
-                {"error": str(exc), "code": "config_write_refused"}, status=400
-            )
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         except OSError as exc:
             await _restore_revoked()
             # OSError can carry a filesystem path; keep it server-side and send

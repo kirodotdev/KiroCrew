@@ -180,6 +180,7 @@
       "too_many_open_sessions_http_429_close_old": "बहुत ज़्यादा सेशन खुले हैं। कुछ पुराने सेशन बंद करो (वे History में बने रहते हैं और कभी भी दोबारा खोले जा सकते हैं), फिर दोबारा कोशिश करो।",
       "subagents_still_running_or_queued": "अभी भी चल रहे हैं या कतार में हैं: {{list}}।",
       "subagents_could_not_be_checked": "कुछ उप-एजेंट जाँचे नहीं जा सके।",
+      "file_pending_review": "यह सेटिंग फ़ाइल {{productName}} के बाहर बदली गई, इसलिए यह सेव नहीं हुआ। पहले सेटिंग → सुरक्षा में बदलाव देखो (लागू करो या छोड़ दो), फिर दोबारा कोशिश करो।",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "टर्मिनल में kirocrew token चलाऐँ, फिर नीचे साइन-इन URL पेस्ट करें और Enter दबाएँ।",
       "session_expired": "सत्र समाप्त हो गया।",
@@ -7219,7 +7220,8 @@
       "try_again": "फिर से कोशिश करें"
     },
     "errorNotice": {
-      "dismiss": "खारिज करें"
+      "dismiss": "खारिज करें",
+      "review_pending_change": "बदलाव देखो"
     },
     "excalidrawBlock": {
       "render_failed": "आरेख रेंडर नहीं हो सका — स्रोत दिखाया जा रहा है"
@@ -19271,6 +19273,48 @@
         "support": "सहायता"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} को {{productName}} के बाहर बदला गया",
+          "intro": "यह बदलाव अभी लागू नहीं है। इसे इस्तेमाल करने के लिए लागू करो, या {{productName}} का पिछला सहेजा गया संस्करण वापस लाने के लिए इसे छोड़ दो।",
+          "added": "{{key}} जोड़ा गया",
+          "added_value": "{{key}} जोड़ा गया: {{after}}",
+          "added_hidden": "{{key}} जोड़ा गया (मान छिपा है)",
+          "removed": "{{key}} हटाया गया",
+          "removed_value": "{{key}} हटाया गया (पहले {{before}} था)",
+          "removed_hidden": "{{key}} हटाया गया (मान छिपा है)",
+          "changed": "{{key}} बदला गया",
+          "changed_value": "{{key}} को {{before}} से {{after}} किया गया",
+          "changed_hidden": "{{key}} बदला गया (मान छिपा है)",
+          "hint_sandbox_off": "प्रोसेस सैंडबॉक्स बंद करता है।",
+          "hint_sandbox_changed": "एजेंट कितनी सख़्ती से सैंडबॉक्स में चलें, यह बदलता है।",
+          "hint_unsandboxed_exec": "एजेंट को सैंडबॉक्स के बाहर कमांड चलाने देता है।",
+          "hint_third_party_apps": "थर्ड-पार्टी ऐप चलने देता है।",
+          "hint_auto_approve": "कौन-से टूल तुमसे पूछे बिना चलें, यह बदलता है।",
+          "hint_agent_env": "हर एजेंट जिन एनवायरनमेंट वेरिएबल के साथ शुरू होता है, उन्हें बदलता है।",
+          "hint_deny_all_off": "हर बिल्ट-इन कमांड रोक नियम बंद करता है।",
+          "hint_deny_rules": "कौन-से कमांड रोक नियम लागू हों, यह बदलता है।",
+          "hint_computer_use_on": "एजेंट को इस कंप्यूटर की स्क्रीन, कीबोर्ड और माउस चलाने देता है।",
+          "hint_section": "फ़ाइल के इस हिस्से में सुरक्षा सेटिंग हैं।",
+          "no_key_changes": "कोई सेटिंग नहीं बदली। सिर्फ़ फ़ाइल की बनावट अलग है।",
+          "truncated": "यहाँ दिखाई गई कुंजियों से ज़्यादा कुंजियाँ बदली हैं।",
+          "invalid_json": "बदली गई फ़ाइल मान्य JSON नहीं है, इसलिए इसे लागू नहीं किया जा सकता। फ़ाइल ठीक करो, या बदलाव छोड़ दो।",
+          "removed_file": "फ़ाइल मिटा दी गई। {{productName}} का पिछला सहेजा गया संस्करण लागू रहता है। फ़ाइल वापस लाने के लिए छोड़ दो।",
+          "pending_changed": "तुम्हारे देखते समय फ़ाइल फिर से बदल गई। सूची अब नया बदलाव दिखा रही है।",
+          "apply_refused_action": "फ़ाइल ठीक करो, या बदलाव छोड़ दो।",
+          "apply": "लागू करो",
+          "apply_file": "{{file}} का बदलाव लागू करो",
+          "apply_title": "{{file}} का बदलाव लागू करना है?",
+          "apply_body": "{{productName}} यह बदलाव तुरंत इस्तेमाल करने लगेगा। इससे नीचे दिए गए सुरक्षा बदलाव होंगे।",
+          "apply_edit": "बदलाव लागू करो",
+          "apply_turn_off_sandbox": "लागू करो और सैंडबॉक्स बंद करो",
+          "discard": "छोड़ दो",
+          "discard_file": "{{file}} का बदलाव छोड़ दो",
+          "discard_title": "{{file}} का बदलाव छोड़ना है?",
+          "discard_body": "{{productName}} {{file}} को अपने पिछले सहेजे गए संस्करण से बदल देगा। {{productName}} के बाहर किया गया बदलाव खो जाएगा।",
+          "nav_dot": "{{productName}} के बाहर बदली गई सेटिंग फ़ाइलें",
+          "search_description": "{{productName}} के बाहर सेटिंग फ़ाइलों में किए गए बदलाव देखो, फिर उन्हें लागू करो या छोड़ दो।",
+          "read_failed": "{{productName}} के बाहर बदली गई सेटिंग फ़ाइलें जाँची नहीं जा सकीं।"
+        },
         "add": "जोड़ें",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "कस्टम अस्वीकार पैटर्न (regex) जोड़ें, जैसे rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "अपने खुद के अस्वीकार पैटर्न जोड़ें (Python-संगत regex)। ये बिल्ट-इन नियमों के साथ-साथ {{productName}} के PreToolUse गेट पर लागू किए जाते हैं।",

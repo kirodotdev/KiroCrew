@@ -719,9 +719,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # operator's own input being declined (400), not a server failure, and
             # the message -- env-var keys only, never the value -- is the instruction.
             _log_sel("denied", f"{path_key}=write_refused")
-            return web.json_response(
-                {"error": str(exc), "code": "config_write_refused"}, status=400
-            )
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         except _session_environments.ProfileIdCollision as exc:
             # A ``ValueError`` too: the operator's input, refused before any write.
             _log_sel("denied", f"{path_key}=profile_id_collision")

@@ -83,6 +83,16 @@ def _crew_sensitive_paths() -> list[str]:
     ]
 
 
+def _sealed(path: str, readonly: set[str]) -> bool:
+    """*path* is sealed read-only: named itself, or inside a read-only DIRECTORY bind.
+
+    The endorsed copies of the read+write leaves sit inside ``config-provenance``,
+    which every sandbox binds read-only as a directory, so no entry of their own is
+    needed for the shell to be unable to write them.
+    """
+    return path in readonly or any(path.startswith(entry + os.sep) for entry in readonly)
+
+
 def _expected_exceptions() -> set[str]:
     home = _home()
     return {
@@ -472,7 +482,7 @@ class TestTheReconciliationIsComplete:
         unaccounted = [
             path
             for path in _crew_sensitive_paths()
-            if path not in hidden and path not in readonly and path not in exceptions
+            if path not in hidden and not _sealed(path, readonly) and path not in exceptions
         ]
         assert not unaccounted, (
             "crew-home paths the tool gate fences but the OS sandbox does not, and that "
@@ -490,7 +500,9 @@ class TestTheReconciliationIsComplete:
         """
         hidden, readonly, _files = _launcher_sets(mode)
         unrestricted = {
-            path for path in _crew_sensitive_paths() if path not in hidden and path not in readonly
+            path
+            for path in _crew_sensitive_paths()
+            if path not in hidden and not _sealed(path, readonly)
         }
         declared = _expected_exceptions()
 

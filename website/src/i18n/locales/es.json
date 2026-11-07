@@ -190,6 +190,7 @@
       "too_many_open_sessions_http_429_close_old": "Hay demasiadas sesiones abiertas. Cierra algunas sesiones antiguas (permanecen en el Historial y puedes reabrirlas cuando quieras) e inténtalo de nuevo.",
       "subagents_still_running_or_queued": "Aún en ejecución o en cola: {{list}}.",
       "subagents_could_not_be_checked": "No se pudieron comprobar algunos subagentes.",
+      "file_pending_review": "Este archivo de ajustes se cambió fuera de {{productName}}, así que no se guardó. Revisa primero el cambio en Ajustes → Seguridad (Aplicar o Descartar) y vuelve a intentarlo.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Ejecuta kirocrew token en una terminal, pega abajo la URL de inicio de sesión y pulsa Intro.",
       "session_expired": "La sesión ha caducado.",
@@ -7411,7 +7412,8 @@
       "try_again": "Reintentar"
     },
     "errorNotice": {
-      "dismiss": "Descartar"
+      "dismiss": "Descartar",
+      "review_pending_change": "Revisar el cambio"
     },
     "excalidrawBlock": {
       "render_failed": "No se pudo representar el diagrama: se muestra el código fuente"
@@ -19764,6 +19766,48 @@
         "support": "Soporte"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} se cambió fuera de {{productName}}",
+          "intro": "Este cambio aún no está en vigor. Aplícalo para empezar a usarlo, o descártalo para recuperar la versión que {{productName}} guardó por última vez.",
+          "added": "Se añadió {{key}}",
+          "added_value": "Se añadió {{key}}: {{after}}",
+          "added_hidden": "Se añadió {{key}} (valor oculto)",
+          "removed": "Se quitó {{key}}",
+          "removed_value": "Se quitó {{key}} (era {{before}})",
+          "removed_hidden": "Se quitó {{key}} (valor oculto)",
+          "changed": "Se cambió {{key}}",
+          "changed_value": "Se cambió {{key}} de {{before}} a {{after}}",
+          "changed_hidden": "Se cambió {{key}} (valor oculto)",
+          "hint_sandbox_off": "Desactiva el sandbox de procesos.",
+          "hint_sandbox_changed": "Cambia el nivel de aislamiento de los agentes en el sandbox.",
+          "hint_unsandboxed_exec": "Permite que los agentes ejecuten comandos fuera del sandbox.",
+          "hint_third_party_apps": "Permite que se ejecuten apps de terceros.",
+          "hint_auto_approve": "Cambia qué herramientas se ejecutan sin preguntarte.",
+          "hint_agent_env": "Cambia las variables de entorno con las que arranca cada agente.",
+          "hint_deny_all_off": "Desactiva todas las reglas integradas que bloquean comandos.",
+          "hint_deny_rules": "Cambia qué reglas de bloqueo de comandos se aplican.",
+          "hint_computer_use_on": "Permite que los agentes controlen la pantalla, el teclado y el ratón de este equipo.",
+          "hint_section": "Esta parte del archivo contiene ajustes de seguridad.",
+          "no_key_changes": "No cambió ningún ajuste. Solo es distinto el formato del archivo.",
+          "truncated": "Cambiaron más claves de las que se muestran aquí.",
+          "invalid_json": "El archivo editado no es JSON válido, así que no se puede aplicar. Corrige el archivo o descarta el cambio.",
+          "removed_file": "El archivo se eliminó. La versión que {{productName}} guardó por última vez sigue en vigor. Descarta para recuperar el archivo.",
+          "pending_changed": "El archivo volvió a cambiar mientras lo revisabas. La lista muestra ahora el último cambio.",
+          "apply_refused_action": "Corrige el archivo o descarta el cambio.",
+          "apply": "Aplicar",
+          "apply_file": "Aplicar el cambio en {{file}}",
+          "apply_title": "¿Aplicar el cambio en {{file}}?",
+          "apply_body": "{{productName}} empezará a usar este cambio de inmediato. Hace los cambios de seguridad que se indican abajo.",
+          "apply_edit": "Aplicar cambio",
+          "apply_turn_off_sandbox": "Aplicar y desactivar el sandbox",
+          "discard": "Descartar",
+          "discard_file": "Descartar el cambio en {{file}}",
+          "discard_title": "¿Descartar el cambio en {{file}}?",
+          "discard_body": "{{productName}} sobrescribirá {{file}} con la última versión que guardó. Se perderá el cambio hecho fuera de {{productName}}.",
+          "nav_dot": "Archivos de ajustes cambiados fuera de {{productName}}",
+          "search_description": "Revisa los cambios hechos en los archivos de ajustes fuera de {{productName}} y luego aplícalos o descártalos.",
+          "read_failed": "No se pudo comprobar si hay archivos de ajustes cambiados fuera de {{productName}}."
+        },
         "add": "Añadir",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "Añade un patrón de denegación personalizado (regex), p. ej. rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "Añade tus propios patrones de denegación (regex compatible con Python). Se aplican en la barrera PreToolUse de {{productName}} junto con las reglas integradas.",

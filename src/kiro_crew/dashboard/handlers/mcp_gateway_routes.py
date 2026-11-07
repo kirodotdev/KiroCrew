@@ -22,7 +22,7 @@ from aiohttp import web
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
-from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_roster, read_config_text
+from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_roster, read_endorsed_config_text
 from kiro_crew.dashboard.chat_utils import run_to_completion
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.mcp_config_files import _is_valid_mcp_name, _offload_config_write
@@ -122,12 +122,12 @@ def _local_overlay_section() -> dict:
     from kiro_crew.config.loader import config_local_path
 
     path = config_local_path()
-    if not path.is_file():
-        return {}
     try:
-        raw = json.loads(read_config_text(path))
+        # Read as the load reads it, with no is_file() check first: a deleted overlay
+        # whose endorsed copy is in force is that copy.
+        raw = json.loads(read_endorsed_config_text(path))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        # Unreadable overlay: treat as absent. The loader logs and ignores it
+        # Absent (neither file nor endorsed copy) or unreadable overlay: treat as absent. The loader logs and ignores it
         # too, so behaving otherwise here would diverge from the runtime.
         return {}
     if not isinstance(raw, dict):

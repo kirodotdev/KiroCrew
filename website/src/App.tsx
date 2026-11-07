@@ -315,7 +315,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -507,7 +507,7 @@ export default function App() {
               touch
               replace
               onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
-              badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
+              badge={settingsDotLabel ? <span title={settingsDotLabel.title} role="status" aria-label={settingsDotLabel.label} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
             />
             <button
               type="button"

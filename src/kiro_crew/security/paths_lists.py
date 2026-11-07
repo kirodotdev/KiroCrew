@@ -577,6 +577,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # shell. The dashboard PUT handler is the only writer and it opens the path
     # directly, not through this gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Verbatim endorsed copies of the two leaves above (``config.loosening_provenance``);
+    # no OS mask: their directory is a read-only bind that in-sandbox loaders read.
+    "config-provenance/endorsed/denied_commands.json",
+    "config-provenance/endorsed/computer_use.json",
     # Browser Mode's durable ENABLE gate. Same class of control as
     # ``computer_use.json`` directly above: while it is present the browse proxy
     # is registered and the ``browser_*`` tools are in the agent's tool list,

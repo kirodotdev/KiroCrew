@@ -26,7 +26,7 @@ from kiro_crew import name_grant, permission_floor
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.fields import _safe_int
-from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+from kiro_crew.config.loader import config_local_path, config_path, read_endorsed_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.resolution import _deep_merge
 from kiro_crew.constants import (
@@ -1416,7 +1416,7 @@ def _written_approval_window() -> int:
     merged: dict = {}
     for path in (config_path(), config_local_path()):
         try:
-            document = json.loads(read_config_text(path))
+            document = json.loads(read_endorsed_config_text(path))
         except (OSError, ValueError):
             continue
         if isinstance(document, dict):
