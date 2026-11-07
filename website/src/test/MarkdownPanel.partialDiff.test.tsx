@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, within, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { PartialCause } from '../utils/fileReadQuery'
 
 vi.mock('../pierre', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -96,8 +97,8 @@ class StubEventSource {
 const liveStream = () => StubEventSource.instances.filter(s => !s.closed).at(-1)!
 const frame = (content: string) => act(async () => { liveStream().onmessage!({ data: JSON.stringify({ content, mtime: 1 }) }) })
 
-function Panel({ partial = true, content = capped, readOnly = true, liveWatch = false, active = true }: {
-  partial?: boolean; content?: string; readOnly?: boolean; liveWatch?: boolean; active?: boolean
+function Panel({ partial = 'truncated', content = capped, readOnly = true, liveWatch = false, active = true }: {
+  partial?: PartialCause | false; content?: string; readOnly?: boolean; liveWatch?: boolean; active?: boolean
 }) {
   return (
     <MemoryRouter>
@@ -182,7 +183,7 @@ describe('MarkdownPanel diff of a partial (capped) read', () => {
     render(
       <MemoryRouter>
         <QueryClientProvider client={qc}>
-          <MarkdownPanel embedded active readOnly={false} initialDiffMode={false} onContentChange={() => {}} onSave={async () => {}} onClose={() => {}} filePath="/repo/big.py" content={capped} partial />
+          <MarkdownPanel embedded active readOnly={false} initialDiffMode={false} onContentChange={() => {}} onSave={async () => {}} onClose={() => {}} filePath="/repo/big.py" content={capped} partial="truncated" />
         </QueryClientProvider>
       </MemoryRouter>,
     )
@@ -257,7 +258,7 @@ describe('MarkdownPanel diff of a partial (capped) read', () => {
       <MemoryRouter>
         <QueryClientProvider client={qc}>
           <div data-testid="tab">
-            <MarkdownPanel embedded active liveWatch initialDiffMode={false} onContentChange={() => {}} onSave={async () => {}} onClose={() => {}} filePath="/repo/big.md" content={capped} partial />
+            <MarkdownPanel embedded active liveWatch initialDiffMode={false} onContentChange={() => {}} onSave={async () => {}} onClose={() => {}} filePath="/repo/big.md" content={capped} partial="truncated" />
           </div>
         </QueryClientProvider>
       </MemoryRouter>,

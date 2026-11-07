@@ -30,7 +30,8 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
 import { useCommentHint } from './useCommentHint'
-import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar } from './MarkdownPanelBody'
+import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar, partialReason } from './MarkdownPanelBody'
+import type { PartialCause } from '../utils/fileReadQuery'
 import { findCoords, findUniqueCoords, resolveSourcePos } from './markdownPanelSourcePos'
 import { FindHighlightCtor, cssHighlights, FIND_HL_SUPPORTED, useMarkdownPanelFind } from './useMarkdownPanelFind'
 import { useMarkdownPanelDisk, useMarkdownPanelDiff } from './useMarkdownPanelDisk'
@@ -66,15 +67,14 @@ interface Props {
    *  (image, pdf, video, …) keep their own viewer — they are binary too, and
    *  they read the file through `/api/file-raw`, not through this buffer. */
   binary?: boolean
-  /** The read that filled the buffer did not hand over the whole file -- cut at
-   *  the gateway's cap (`X-Truncated`) or with credentials redacted
-   *  (`X-Redacted`). Host-owned like `binary`, for the same reason: the seed
-   *  read that fills a tab runs before any panel mounts, and the body cannot
-   *  tell about itself (a whole file may quote the redaction tag). Decides only
-   *  WORDS and a file name once the file is gone: the banner and the close
-   *  prompt say "only part of it", and a download of it carries a `.partial`
-   *  tag before the extension (`notes.partial.md`). */
-  partial?: boolean
+  /** Why the read that filled the buffer did not hand over the whole file
+   *  (`partialReadCause`). Host-owned like `binary`, for the same reason: the
+   *  seed read that fills a tab runs before any panel mounts, and the body
+   *  cannot tell about itself (a whole file may quote the redaction tag).
+   *  Decides only WORDS and a file name once the file is gone: the banner and
+   *  the close prompt say "only part of it" and name the cause, and a download
+   *  of it carries a `.partial` tag before the extension (`notes.partial.md`). */
+  partial?: PartialCause | false
   /** The buffer is the host's "file not found" sentence (`PanelTab.placeholder`),
    *  not a copy of the file: no banner and no close guard offer to keep it. */
   placeholder?: boolean
@@ -91,7 +91,7 @@ interface Props {
    *  cannot represent — where a save would overwrite them. `undefined` means
    *  the caller has no verdict to report and the stored one stands. `partial`
    *  travels the same way, for the same read. */
-  onDiskContent?: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent?: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onSave: (filePath: string, content: string) => Promise<void>
   onClose: () => void
   liveWatch?: boolean
@@ -384,7 +384,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const showsEditor = editing && (!isRichType || canEditRich)
   // A capped, redacted or lossily decoded read is not the file: saving it would
   // replace the real bytes with the cut-short or placeholder text.
-  const partialSaveBlocked = !!partial && showsEditor
+  const partialSaveBlocked = showsEditor && partial
   // A rich type in source mode keeps wrap and line numbers in the ⋯ menu, so its
   // header gains only Preview and Save.
   const richSourceShown = canEditRich && editing
@@ -446,7 +446,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // edits that were NOT persisted.
   const panelNotices = (partialSaveBlocked || saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
     <div className="flex flex-col gap-1.5">
-      {partialSaveBlocked && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_cannot_save')}</div>}
+      {partialSaveBlocked && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partialSaveBlocked) })}</div>}
       {/* No hand-off: the editor buffer holds the unsaved edits this save failed to write. */}
       <ErrorNotice message={saveError} onDismiss={() => setSaveError(null)} testId="markdown-panel-save-error" />
       <ErrorNotice message={actionError} askAgent={!dirty} onDismiss={() => setActionError(null)} testId="markdown-panel-action-error" />
@@ -1039,7 +1039,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const editGenRef = useRef(0)
   const handleSave = useCallback(async () => {
     // Every path to a save (button, Cmd+S, Snapshot) lands here.
-    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save')); return }
+    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partial) })); return }
     setSaving(true); setSaveError(null)
     const editGen = editGenRef.current
     try {
@@ -1119,11 +1119,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     )
     if (gone) {
       const body = partialNow
-        ? (dirtyNow ? 'components.markdownPanel.close_partial_copy_dirty_body' : 'components.markdownPanel.close_partial_copy_body')
-        : (dirtyNow ? 'components.markdownPanel.close_last_copy_dirty_body' : 'components.markdownPanel.close_last_copy_body')
+        ? i18nT(dirtyNow ? 'components.markdownPanel.close_partial_copy_dirty_body' : 'components.markdownPanel.close_partial_copy_body', { name, reason: partialReason(partialNow) })
+        : i18nT(dirtyNow ? 'components.markdownPanel.close_last_copy_dirty_body' : 'components.markdownPanel.close_last_copy_body', { name })
       if (!(await ask({
         title: i18nT('components.markdownPanel.close_last_copy'),
-        body: rescue(i18nT(body, { name })),
+        body: rescue(body),
         confirmLabel: i18nT('components.markdownPanel.close_last_copy_button'),
       }))) return
     } else if (unverified) {

@@ -2999,7 +2999,7 @@
       "copy_url_of": "Copy URL of {{name}}"
     },
     "markdownPanel": {
-      "partial_copy_cannot_save": "Only part of this file was loaded (it was cut short or had credentials redacted), so it can't be saved over the file on disk.",
+      "partial_copy_cannot_save": "Only part of this file was loaded ({{reason}}), so it can't be saved over the file on disk.",
       "add_to_artifact_library": "Add to artifact library",
       "adding": "Adding…",
       "adding_2": "Adding...",
