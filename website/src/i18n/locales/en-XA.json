@@ -11712,6 +11712,7 @@
       "promote_slug_taken_open": "[Øþèñ {{slug}} ········]",
       "promote_slug_taken_open_older": "[Øþèñ øĺðèŕ {{taken}} ··········]",
       "published": "[Þùƀĺìşĥèð ({{visibility}}) ···········]",
+      "published_on_provider": "[Þùƀĺìşĥèð ţø {{provider}} ({{visibility}}) ··············]",
       "published_rolling_out": "[Þùƀĺìşĥèð — şţìĺĺ ŕøĺĺìñğ øùţ ····················]",
       "published_distribution_disabled": "[Þùƀĺìşĥèð — ðèĺìṽèŕý ñèţẁøŕķ ðìşàƀĺèð ···················]",
       "published_notice_generic": "[Þùƀĺìşĥèð — ĺìñķ ɱàý ñøţ ẁøŕķ ýèţ ·················]",

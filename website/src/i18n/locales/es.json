@@ -12279,6 +12279,7 @@
       "promote_slug_taken_open": "Abrir «{{slug}}»",
       "promote_slug_taken_open_older": "Abrir el anterior «{{taken}}»",
       "published": "Publicado ({{visibility}})",
+      "published_on_provider": "Publicado en {{provider}} ({{visibility}})",
       "published_sync_issue": "Publicado (problema de sincronización)",
       "published_rolling_out": "Publicado: aún se está desplegando",
       "published_distribution_disabled": "Publicado: red de entrega deshabilitada",
