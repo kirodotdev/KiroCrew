@@ -12222,6 +12222,8 @@
         "menu_crewlog_desc": "本会话做了什么、花了多少：状态、用量、时间线、工具、审批、子代理"
       },
       "stopEventCard": {
+        "force_stopped": "已强制停止，会话已重置",
+        "force_stopped_2": "[已强制停止，会话已重置]",
         "stop_declined_compacting": "停止被拒绝：上下文正在压缩",
         "stop_declined_compacting_2": "[压缩中：压缩上下文时拒绝了一次停止；没有任何东西被停止，压缩已自行完成]",
         "stop_failed_session_reset": "停止失败，会话已重置",

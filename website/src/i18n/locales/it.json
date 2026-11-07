@@ -12742,6 +12742,8 @@
         "menu_crewlog_desc": "Cosa ha fatto questa sessione e quanto è costata: stato, consumo, cronologia, strumenti, approvazioni, subagenti"
       },
       "stopEventCard": {
+        "force_stopped": "Arresto forzato, sessione reimpostata",
+        "force_stopped_2": "[Arresto forzato, sessione reimpostata]",
         "stop_declined_compacting": "Arresto rifiutato: il contesto era in compattazione",
         "stop_declined_compacting_2": "[Compattazione: un arresto è stato rifiutato mentre il contesto si compattava; nulla è stato fermato e la compattazione è terminata da sola]",
         "stop_failed_session_reset": "Arresto non riuscito, sessione reimpostata",

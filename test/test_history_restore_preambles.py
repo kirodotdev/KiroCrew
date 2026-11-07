@@ -18,7 +18,8 @@ from kiro_crew.history import ConversationLog
 class TestStopEventContextInjection:
     """Tests for context.py stop_event note injection."""
 
-    def test_context_injection_stop_event(self, tmp_path):
+    @pytest.mark.parametrize(("state", "outcome"), [("stopped", "soft"), ("force_stopped", "hard")])
+    def test_context_injection_stop_event(self, tmp_path, state, outcome):
         """context.py emits the system note for resolved stop events."""
         import json
 
@@ -32,8 +33,8 @@ class TestStopEventContextInjection:
             {
                 "kind": "stop_event",
                 "id": "stop-abc",
-                "state": "stopped",
-                "outcome": "soft",
+                "state": state,
+                "outcome": outcome,
             }
         )
         log.append("sess1", "system", stop_data)

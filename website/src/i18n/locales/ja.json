@@ -12222,6 +12222,8 @@
         "menu_crewlog_desc": "このセッションの作業と消費: 状態、使用量、時系列、ツール、承認、サブエージェント"
       },
       "stopEventCard": {
+        "force_stopped": "強制停止したため、セッションをリセットしました",
+        "force_stopped_2": "[強制停止、セッションをリセット]",
         "stop_declined_compacting": "停止は拒否されました：コンテキストの圧縮中でした",
         "stop_declined_compacting_2": "[圧縮中: コンテキストの圧縮中に停止が拒否されました。何も停止されず、圧縮は自動的に完了しました]",
         "stop_failed_session_reset": "停止に失敗したため、セッションをリセットしました",

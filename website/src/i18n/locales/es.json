@@ -12742,6 +12742,8 @@
         "menu_crewlog_desc": "Qué hizo esta sesión y cuánto costó: estado, consumo, cronología, herramientas, aprobaciones, subagentes"
       },
       "stopEventCard": {
+        "force_stopped": "Detención forzada, sesión restablecida",
+        "force_stopped_2": "[Detención forzada, sesión restablecida]",
         "stop_declined_compacting": "Detención rechazada: el contexto se estaba compactando",
         "stop_declined_compacting_2": "[Compactando: se rechazó una detención mientras el contexto se compactaba; nada se detuvo y la compactación terminó por sí sola]",
         "stop_failed_session_reset": "No se pudo detener, sesión restablecida",
