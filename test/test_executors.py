@@ -106,6 +106,17 @@ def test_static_asset_pool_is_isolated_bounded_named_and_reset() -> None:
     assert ex.static_asset_executor() is not static
 
 
+def test_folder_scan_pool_is_isolated_bounded_named_and_reset() -> None:
+    folders = ex.folder_scan_executor()
+    assert folders is ex.folder_scan_executor()
+    assert folders is not ex.subprocess_executor()
+    assert folders._max_workers == ex._MAX_FOLDER_SCAN_WORKERS
+    assert folders._thread_name_prefix == "mc-folders"
+    assert _ran_on(folders, lambda: 3 + 3) == 6
+    ex.shutdown_maintenance_executor()
+    assert ex.folder_scan_executor() is not folders
+
+
 def test_memory_preparation_pool_is_one_named_worker_and_fresh_per_pass() -> None:
     # Fresh per pass: a stopped pass's worker can still hold its thread, and the
     # next gateway's pass must not queue behind it.

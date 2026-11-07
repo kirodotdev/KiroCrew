@@ -189,6 +189,12 @@ _MAX_DISCOVERY_WORKERS = 4
 # blank, and a flood of asset requests queues among itself.
 _MAX_STATIC_ASSET_WORKERS = 4
 
+# The chat sidebar's folder list counts archived sessions per folder on every GET,
+# and an empty-only folder delete runs the same scan. A pool of their own keeps
+# that answer from queueing behind process-tree walks and PTY teardown on
+# subprocess_executor.
+_MAX_FOLDER_SCAN_WORKERS = 2
+
 # Memory filesystem work and explicit embedding requests stay off the default
 # executor used by DNS. Prompt construction shares this pool but never embeds.
 # run_in_embed_pool admits work before submission, so a burst waits as cancellable
@@ -441,6 +447,7 @@ _mcp_probe_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _static_asset_pool: ThreadPoolExecutor | None = None
+_folder_scan_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
 _memory_background_pool: ThreadPoolExecutor | None = None
 _recall_pool: ThreadPoolExecutor | None = None
@@ -630,6 +637,25 @@ def static_asset_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _static_asset_pool
+
+
+def folder_scan_executor() -> ThreadPoolExecutor:
+    """Return the pool for the chat folders' archived-session scans, creating it on first use.
+
+    Threads are named ``mc-folders``. Kept off :func:`subprocess_executor`, whose
+    workers process-tree walks can hold past their callers' timeouts, so the
+    sidebar's folder list does not wait for them.
+    """
+    global _folder_scan_pool
+    if _folder_scan_pool is None:
+        with _lock:
+            if _folder_scan_pool is None:
+                _folder_scan_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_FOLDER_SCAN_WORKERS,
+                    thread_name_prefix="mc-folders",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _folder_scan_pool
 
 
 def image_executor() -> ThreadPoolExecutor:
@@ -1528,7 +1554,7 @@ def shutdown_maintenance_executor() -> None:
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _memory_background_pool
-    global _static_asset_pool
+    global _static_asset_pool, _folder_scan_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _tool_gate_pool, _stt_pool
     global _path_resolve_pool
     global _path_probe_pool, _path_transfer_pool
@@ -1541,6 +1567,7 @@ def shutdown_maintenance_executor() -> None:
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
         static_asset_pool, _static_asset_pool = _static_asset_pool, None
+        folder_scan_pool, _folder_scan_pool = _folder_scan_pool, None
         embed_pool, _embed_pool = _embed_pool, None
         memory_background_pool, _memory_background_pool = _memory_background_pool, None
         recall_pool, _recall_pool = _recall_pool, None
@@ -1568,6 +1595,8 @@ def shutdown_maintenance_executor() -> None:
         discovery_pool.shutdown(wait=False, cancel_futures=True)
     if static_asset_pool is not None:
         static_asset_pool.shutdown(wait=False, cancel_futures=True)
+    if folder_scan_pool is not None:
+        folder_scan_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
     if memory_background_pool is not None:
