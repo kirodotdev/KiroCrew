@@ -18311,9 +18311,7 @@
         "turn_it_off_only_when_a_gateway_already_answers": "このマシンでゲートウェイを起動します。このアプリのポートがすでに別のマシンのクルーにつながっている場合を除き、オンのままにしてください。そうでないと、次回アプリを開いたとき（この設定が反映されるとき）に接続できません。そのためには、Connection メニューの「Set Remote Host…」でこのポートのクルーを保存し、さらにトンネルが必要です：そこで「Keep an SSH tunnel to this crew open」にチェックを入れる（macOS と Linux）か、ご自身の SSH トンネルを維持してください。これがオフのときは 設定 → リモートクルー の接続は止まるため、条件を満たしません。",
         "turn_it_off_only_when_a_gateway_already_answers_summary": "「Set Remote Host…」とトンネルですでにクルーにつながっている場合を除き、オンのままにします。そうでないとアプリは接続できません。",
         "feature_previews_save_denied": "機能プレビューを変更できるのはこの {{productName}} の所有者だけのため、「{{name}}」は元に戻されました。",
-        "feature_previews_save_failed": "「{{name}}」を保存できなかったため、元に戻されました。もう一度お試しください。",
-        "feature_previews_carry_failed": "「{{name}}」はこのブラウザーでのみオンです。この {{productName}} に保存できませんでした。ページを再読み込みしてもう一度お試しください。それまではオンのままです。",
-        "feature_previews_carry_denied": "「{{name}}」はここに保存される前に、このブラウザーでオンにされました。保存できるのはこの {{productName}} の所有者だけのため、このブラウザーでのみオンのままになります。"
+        "feature_previews_save_failed": "「{{name}}」を保存できなかったため、元に戻されました。もう一度お試しください。"
       },
       "discordPanel": {
         "allowed_server_channel_ids": "許可されたサーバーチャネル ID",

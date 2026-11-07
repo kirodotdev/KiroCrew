@@ -19275,9 +19275,7 @@
         "turn_it_off_only_when_a_gateway_already_answers": "Inicia um gateway nesta máquina. Deixe ativado, a menos que a porta deste app já chegue a uma Crew em outra máquina; caso contrário, o app não conseguirá se conectar na próxima vez que abrir, que é quando isto entra em vigor. Para isso, a Crew precisa estar salva para esta porta com “Set Remote Host…” no menu Connection, mais um túnel: marque “Keep an SSH tunnel to this crew open” ali (macOS e Linux) ou mantenha seu próprio túnel SSH em execução. As conexões de Configurações → Crew remota param quando isto está desativado, então não contam.",
         "turn_it_off_only_when_a_gateway_already_answers_summary": "Deixe ativado, a menos que “Set Remote Host…” e um túnel já cheguem a uma crew. Caso contrário, o app não conseguirá se conectar.",
         "feature_previews_save_denied": "Só o proprietário deste {{productName}} pode alterar as prévias de recursos, então “{{name}}” voltou ao estado anterior.",
-        "feature_previews_save_failed": "Não foi possível salvar “{{name}}”, então ele voltou ao estado anterior. Tente de novo.",
-        "feature_previews_carry_failed": "“{{name}}” está ativado só neste navegador: não foi possível salvá-lo neste {{productName}}. Recarregue a página para tentar de novo; até lá ele continua ativado.",
-        "feature_previews_carry_denied": "“{{name}}” foi ativado neste navegador antes de poder ser salvo aqui. Só o proprietário deste {{productName}} pode salvá-lo, então ele continua ativado só neste navegador."
+        "feature_previews_save_failed": "Não foi possível salvar “{{name}}”, então ele voltou ao estado anterior. Tente de novo."
       },
       "discordPanel": {
         "allowed_server_channel_ids": "IDs de canais de servidor permitidos",
