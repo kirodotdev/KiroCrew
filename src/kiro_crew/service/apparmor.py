@@ -757,13 +757,23 @@ def _substitutable_by_others(
         mode = info.st_mode
         if mode & 0o022:
             what = "file" if component == resolved else "directory"
+            if expected_uid is None:  # the AppImage launcher case
+                remedy = (
+                    "Move the AppImage under a directory only you and root can write "
+                    f"to (for example ~/Applications), or tighten the permissions on {component}."
+                )
+            else:  # the service case: a venv launcher
+                remedy = (
+                    "If the venv was made under umask 002 (pip and `python -m venv` "
+                    "follow the umask), run `chmod -R g-w <venv>` on the venv that "
+                    f"holds {resolved}; otherwise tighten the permissions on {component}. "
+                    "Then re-run `kirocrew service install`."
+                )
             return (
                 f"the {what} {component} is group- or world-writable (mode "
                 f"{mode & 0o7777:04o}), so another local user could put their own "
                 f"executable at {resolved} and inherit the unprivileged userns "
-                "grant this profile carries. Move the AppImage under a directory "
-                "only you and root can write to (for example ~/Applications), or "
-                f"tighten the permissions on {component}."
+                f"grant this profile carries. {remedy}"
             )
         # A directory's OWNER can rename or replace entries inside it no matter
         # what the 0o022 bits say — owner-write is a different bit, and the walk
