@@ -14047,6 +14047,11 @@
       "error_title": "このボードを読み取れませんでした"
     },
     "devFleetPage": {
+      "create_release_worktree": "リリースワークツリー",
+      "create_release_worktree_hint": "最新の安定版リリースにワークツリーを作成",
+      "creating_release_worktree": "作成中…",
+      "release_worktree_created": "{{version}} に {{name}} を作成しました",
+      "release_worktree_failed": "リリース用ワークツリーを作成できませんでした",
       "actions": "アクション",
       "applies_the_last_pull_build_the_dashboard_will_b": "最後のプル+ビルドを適用します。ダッシュボードは一時的に切断され、自動的に再接続されます。",
       "backend_unavailable": "バックエンド利用不可",

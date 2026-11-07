@@ -14402,6 +14402,11 @@
       "error_title": "এই বোর্ড পড়া গেল না"
     },
     "devFleetPage": {
+      "create_release_worktree": "রিলিজ worktree",
+      "create_release_worktree_hint": "সর্বশেষ স্থিতিশীল রিলিজে একটি worktree তৈরি করো",
+      "creating_release_worktree": "তৈরি করা হচ্ছে…",
+      "release_worktree_created": "{{version}}-এ {{name}} তৈরি করা হয়েছে",
+      "release_worktree_failed": "রিলিজ worktree তৈরি করা যায়নি",
       "actions": "অ্যাকশন",
       "applies_the_last_pull_build_the_dashboard_will_b": "শেষ পুল+বিল্ড প্রয়োগ করে। ড্যাশবোর্ড অল্প সময়ের জন্য বিচ্ছিন্ন হয়ে নিজেই আবার কানেক্ট করবে।",
       "backend_unavailable": "ব্যাকএন্ড উপলব্ধ নয়",

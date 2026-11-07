@@ -14402,6 +14402,11 @@
       "error_title": "यह बोर्ड पढ़ा नहीं जा सका"
     },
     "devFleetPage": {
+      "create_release_worktree": "रिलीज़ वर्कट्री",
+      "create_release_worktree_hint": "नवीनतम स्थिर रिलीज़ पर वर्कट्री बनाओ",
+      "creating_release_worktree": "बना रहे हैं…",
+      "release_worktree_created": "{{name}} को {{version}} पर बनाया गया",
+      "release_worktree_failed": "रिलीज़ वर्कट्री नहीं बनाई जा सकी",
       "actions": "कार्रवाइयां",
       "applies_the_last_pull_build_the_dashboard_will_b": "पिछले पुल+बिल्ड को लागू करता है। डैशबोर्ड थोड़ी देर डिस्कनेक्ट होकर अपने-आप फिर कनेक्ट हो जाएगा।",
       "backend_unavailable": "बैकएंड उपलब्ध नहीं है",
