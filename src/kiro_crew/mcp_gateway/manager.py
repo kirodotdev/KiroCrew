@@ -1653,16 +1653,22 @@ class GatewayManager:
             # SIGKILL skips gatewayd's pool.shutdown_all(), so its pooled MCP
             # backends (each a session leader via start_new_session) reparent to
             # init and leak. Reap the pgids gatewayd persisted out-of-band.
-            await self._reap_orphaned_backends()
+            await self._reap_orphaned_backends("supervisor SIGKILLed a wedged gatewayd")
+            return
+        if platform_compat.IS_WINDOWS:
+            # SIGTERM on Windows is TerminateProcess: gatewayd never ran its
+            # drain, so its backends are as orphaned as after a SIGKILL.
+            logger.info("mcp-gateway: reaping pooled backends of terminated pid=%s", proc.pid)
+            await self._reap_orphaned_backends("TerminateProcess skips gatewayd's drain on Windows")
 
-    async def _reap_orphaned_backends(self) -> None:
-        """Best-effort tree-kill of pooled backends left orphaned by a SIGKILLed
-        gatewayd, read from the ``<socket>.backends`` record the daemon
-        maintains. Only entries whose start id still matches the live process
-        are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
+    async def _reap_orphaned_backends(self, reason: str) -> None:
+        """Best-effort tree-kill of pooled backends left orphaned by a gatewayd
+        that died without draining, read from the ``<socket>.backends`` record
+        the daemon maintains. Only entries whose start id still matches the live
+        process are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
         await backend_record.reap(
             backend_record.record_path(self._spec.socket_path),
-            reason="supervisor SIGKILLed a wedged gatewayd",
+            reason=reason,
         )
 
     async def _clear_stale_socket(self) -> None:
