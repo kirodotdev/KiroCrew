@@ -74,8 +74,10 @@ class _Renewal(enum.Enum):
 _STOP_MESSAGES = {
     CloseAction.STOP_UPGRADE: "the relay needs a newer protocol version: update Kiro Crew",
     CloseAction.STOP_PROTOCOL: "the relay refused this client's hello",
-    CloseAction.STOP_REPLACED: "another instance of this Crew holds its relay connection",
 }
+
+#: What status says while the client waits out another instance holding the Crew.
+_REPLACED_MESSAGE = "another instance of this Crew holds its relay connection"
 
 
 class RelayClient:
@@ -297,6 +299,11 @@ class RelayClient:
                     self._fail(_STOP_MESSAGES[action])
                     await self._lose_url()
                     return
+                if action is CloseAction.WAIT_REPLACED:
+                    await self._lose_url()
+                    if not await self._renewed_for_this_instance():
+                        return
+                    continue
                 # Status says why it is reconnecting; the next ready clears it.
                 self._state = STATE_RECONNECTING
                 self._error = f"the last relay connection ended: {_describe(end)}"
@@ -377,6 +384,26 @@ class RelayClient:
             self._credential = None
             return _Renewal.LATER
         return _Renewal.RENEWED
+
+    async def _renewed_for_this_instance(self) -> bool:
+        """Renew the lease on the backoff steps until a renewal succeeds for this instance.
+
+        Close 4409 says another instance holds a host token at least as new, so a
+        dial now would only take the Crew back from it. The lease source keeps
+        renewing, and waits out ``takeoverAfter`` while the service says the
+        identity is in use; the client dials again once a renewal issues this
+        instance a host token. ``False`` when the client stopped or the source
+        cannot renew at all.
+        """
+        while not self._stopping.is_set():
+            self._state, self._error = STATE_RECONNECTING, _REPLACED_MESSAGE
+            await self._wait(self._backoff.next_delay())
+            if self._stopping.is_set():
+                break
+            renewal = await self._renew()
+            if renewal is not _Renewal.LATER:
+                return renewal is _Renewal.RENEWED
+        return False
 
     async def _serve(self, credential: HostCredential) -> tuple[ConnectionEnd, float]:
         """Serve connections until the current one ends; return how, and for how long."""
