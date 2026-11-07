@@ -709,6 +709,11 @@ class WebexDispatcher:
             # Running it now is safe: is_busy is False, so there is no re-entry
             # loop, and stranding the message would lose it silently.
             await self.handle_message(inbound)
+        else:
+            # A turn Webex did not start ends without draining this queue.
+            drain_when_free(
+                channel=_CHANNEL, session_key=session_key, is_busy=self.sessions.is_busy
+            )
 
     # ── Live config ────────────────────────────────────────────────────────
 
