@@ -701,17 +701,21 @@ async def test_each_spawn_is_listed_once_live_then_queued_then_persisted() -> No
 @pytest.mark.asyncio
 async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_path) -> None:
     """A slow sibling's delivery timed out waiting on the tool's turn and QUEUED
-    its announce; the tool then collected it inline. The queued announce is
-    removed (no duplicate completion turn), its delivery mark is written, and
-    its id stays out of the inline-collected set, where nothing would discard
-    it and the 'set empty, disarm' path would never fire again."""
+    its announce; the tool then collected it inline, and that turn landed. At the
+    landed release the queued announce is removed (no duplicate completion turn),
+    its delivery mark is owed, and its id stays out of the inline-collected set,
+    where nothing would discard it and the 'set empty, disarm' path would never
+    fire again."""
     import types
 
     from chat_test_helpers import _make_state
 
     from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY
     from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
-    from kiro_crew.dashboard.handlers.messaging import api_spawn_mark_collected
+    from kiro_crew.dashboard.handlers.messaging import (
+        _settle_collected_on_slot,
+        api_spawn_mark_collected,
+    )
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.subagent_completion_meta import single_completion_meta
 
@@ -739,22 +743,30 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
         )
     )
 
+    # The mark alone settles nothing on the tab, a dashboard tab's own included:
+    # the turn that received the reply can still be stopped.
+    assert [q for q in slot._queue if q.get("kind") == SUBAGENT_COMPLETION_KIND]
+    state.subagents.settle_queued_delivery.assert_not_awaited()
+
+    # That turn's landed release settles them on the tab (``_settle_inline``).
+    settled = _settle_collected_on_slot(slot, {"a1", "b1"}, state.subagents)
+
     assert not [q for q in slot._queue if q.get("kind") == SUBAGENT_COMPLETION_KIND]
     assert slot._subagents_inline_collected == {"b1"}
-    state.subagents.settle_queued_delivery.assert_awaited_once_with(owed)
+    assert settled == owed
 
 
 @pytest.mark.asyncio
-async def test_a_repeated_mark_leaves_an_already_reported_member_out_of_the_set(
+async def test_a_settle_leaves_an_already_reported_member_out_of_the_set(
     tmp_path,
 ) -> None:
-    """The tool re-sends a mark whose first attempt timed out. If that first
-    attempt already settled a queued announce, the member has reached the parent
-    and no later check discards its id, so the repeat must not add it to the
-    inline-collected set. A member still running is added as before."""
+    """A landed release settles a member that already reached the parent (an
+    earlier settle took its queued announce). No later check discards its id, so
+    the settle must not add it to the inline-collected set. A member still
+    running is added as before."""
     from chat_test_helpers import _make_state
 
-    from kiro_crew.dashboard.handlers.messaging import api_spawn_mark_collected
+    from kiro_crew.dashboard.handlers.messaging import _settle_collected_on_slot
 
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
@@ -762,19 +774,12 @@ async def test_a_repeated_mark_leaves_an_already_reported_member_out_of_the_set(
         "a1": MagicMock(_reported_to_parent=True, parent_session_key="dashboard:chat-1"),
         "b1": MagicMock(_reported_to_parent=False, parent_session_key="dashboard:chat-1"),
     }
-    state.subagents = MagicMock(
-        get=MagicMock(side_effect=infos.get), settle_queued_delivery=AsyncMock()
-    )
+    state.subagents = MagicMock(get=MagicMock(side_effect=infos.get))
 
-    await api_spawn_mark_collected(
-        _Req(
-            state,
-            body={"ids": ["a1", "b1"], "parent_session": "dashboard:chat-1", "written": True},
-        )
-    )
+    owed = _settle_collected_on_slot(slot, {"a1", "b1"}, state.subagents)
 
     assert slot._subagents_inline_collected == {"b1"}
-    state.subagents.settle_queued_delivery.assert_not_awaited()
+    assert owed == []
 
 
 def test_spawn_list_never_says_none_running_over_a_partial_queue() -> None:
@@ -898,22 +903,33 @@ async def test_an_unreadable_queue_answers_503_not_404() -> None:
 @pytest.mark.asyncio
 async def test_collected_ids_are_bounded_and_known(tmp_path) -> None:
     """Only ids the gateway knows, each of bounded length, and never more than
-    the cap in total: an id no completion will match is never evicted."""
+    the cap in total: an id no completion will match is never evicted. Each mark
+    is settled on the slot by its turn's landed release."""
     import types
 
     from chat_test_helpers import _make_state
 
     from kiro_crew.dashboard.handlers import messaging
+    from kiro_crew.parent_turns import ParentTurnLedger
 
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     known = {f"k{i:04d}" for i in range(1500)}
-    child = types.SimpleNamespace(parent_session_key="dashboard:chat-1")
+    token = ("dashboard:chat-1", object(), 1)
+    child = types.SimpleNamespace(
+        parent_session_key="dashboard:chat-1",
+        _reported_to_parent=False,
+        _spawned_under=token,
+        _seen_done_under=token,
+    )
+    state.sessions = types.SimpleNamespace(
+        parent_turns=ParentTurnLedger(), turn_token=lambda _key, open_attempt=True: token
+    )
     state.subagents = MagicMock()
     state.subagents.get = MagicMock(side_effect=lambda aid: child if aid in known else None)
     for start in range(0, 1500, 200):
         ids = [f"k{i:04d}" for i in range(start, start + 200)] + ["x" * 500, "unknown1"]
-        body = {"ids": ids, "parent_session": "dashboard:chat-1", "written": True}
-        await messaging.api_spawn_mark_collected(_Req(state, body=body))
+        flagged = messaging._flag_collected_inline(state, ids, "dashboard:chat-1")
+        messaging._settle_collected_on_slot(slot, flagged, state.subagents)
     assert len(slot._subagents_inline_collected) == messaging._COLLECTED_IDS_CAP
     assert slot._subagents_inline_collected <= known

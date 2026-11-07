@@ -585,16 +585,40 @@ class TestApiSpawnMarkCollected:
         assert _payload(_run(mod.api_spawn_mark_collected, req)) == {"status": "no_slot"}
 
     def test_records_ids_bounded_and_skips_non_strings(self) -> None:
+        from kiro_crew.parent_turns import ParentTurnLedger
+
         slot = SimpleNamespace(_subagents_inline_collected=set(), _queue=[])
-        child = SimpleNamespace(parent_session_key="dashboard:chat-1")
+        ledger = ParentTurnLedger()
+        token = ("dashboard:chat-1", object(), 1)
+        children: dict[str, Any] = {}
+
+        def _child(aid: str) -> Any:
+            return children.setdefault(
+                aid,
+                SimpleNamespace(
+                    parent_session_key="dashboard:chat-1",
+                    _spawned_under=token,
+                    _seen_done_under=token,
+                ),
+            )
+
         state = _state(subagents=_mgr())
-        state.subagents.get.return_value = child
+        state.sessions = SimpleNamespace(
+            parent_turns=ledger, turn_token=lambda _key, open_attempt=True: token
+        )
+        state.subagents.get.side_effect = _child
         state.get_slot.return_value = slot
         ids: list[Any] = [f"a{i}" for i in range(250)] + ["", 7]
         body = {"ids": ids, "parent_session": "dashboard:chat-1", "written": True}
         resp = _run(mod.api_spawn_mark_collected, _Req(state, body))
         assert _payload(resp) == {"status": "ok", "marked": len(ids)}
-        assert len(slot._subagents_inline_collected) == 200
+        flagged = [c for c in children.values() if getattr(c, "_collected_inline", False)]
+        assert len(flagged) == 200
+        assert {c._inline_state for c in flagged} == {"pending"}
+        assert ledger.pending(token)
+        # A dashboard tab's own mark is pending too: nothing settles on the slot
+        # until the turn that received the reply lands.
+        assert slot._subagents_inline_collected == set()
 
 
 # ── result paging helpers ──

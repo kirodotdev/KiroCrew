@@ -47,7 +47,6 @@ if TYPE_CHECKING:
         logger,
         read_state,
         record_panel_dismissal_outcome,
-        settles_at_release,
         spawn_parent_claim,
         subagent_event_slot,
         warm_project_agents_for_spawn,
@@ -426,11 +425,10 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     redundant LLM turn whose response shadows any [OPTIONS:] buttons the
     synthesis message rendered.
 
-    Only a dashboard-born parent's flagged children reach its slot here
-    (:func:`_settle_collected_on_slot`). Every other parent's mark is pending until
-    the turn that received it releases (``kiro_crew.parent_turns``), and only a
-    landed release settles its children on a tab that shows the parent
-    (``_settle_inline``).
+    Every parent's mark is pending until the turn that received it releases
+    (``kiro_crew.parent_turns``), and only a landed release settles its children
+    on a tab that shows the parent (``_settle_inline``, through
+    :func:`_settle_collected_on_slot`).
     """
     state: DashboardState = request.app["state"]
     try:
@@ -455,24 +453,11 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     # caller that does not say so (a kirocrew-core from before this mark moved
     # behind the write) may have marked a reply the parent never received.
     written = body.get("written") is True
-    flagged = _flag_collected_inline(state, ids, parent_session) if written else set()
+    if written:
+        _flag_collected_inline(state, ids, parent_session)
     slot_name = dashboard_slot_key(parent_session)
-    if not slot_name:
+    if not slot_name or not state.get_slot(slot_name):
         return web.json_response({"status": "no_slot"})
-    slot = state.get_slot(slot_name)
-    if not slot:
-        return web.json_response({"status": "no_slot"})
-    if not written or settles_at_release(parent_session):
-        # A pending mark changes nothing on the slot: a completion queued there
-        # must still play if the turn that received the reply never lands.
-        return web.json_response({"status": "ok", "marked": len(ids)})
-    owed = _settle_collected_on_slot(slot, flagged, state.subagents)
-    if owed and state.subagents is not None:
-        try:
-            await state.subagents.settle_queued_delivery(owed)
-        except Exception:
-            logger.debug("Could not settle inline-collected deliveries", exc_info=True)
-    state.push_slots_update()
     return web.json_response({"status": "ok", "marked": len(ids)})
 
 
@@ -509,9 +494,8 @@ def _settle_collected_on_slot(slot: Any, ids: set[str], subagents: Any = None) -
     if subagents is not None:
         # A completion still queued was settled above. One already handed to
         # the parent and not queued (injected, or settled by an earlier
-        # mark whose reply the tool never saw) has passed every check that
-        # would discard its id, so it stays out of the set. That makes a
-        # repeated mark a no-op, which the tool relies on when it re-sends one.
+        # release) has passed every check that would discard its id, so it
+        # stays out of the set.
         wanted = {
             aid
             for aid in wanted
@@ -531,8 +515,7 @@ def _flag_collected_inline(state: DashboardState, ids: list[Any], parent_session
     so no caller can suppress a completion owed to a parent it is not. Bounded
     like the slot set: the first 200 ids, each at most ``_COLLECTED_ID_MAX_LEN``.
 
-    Every parent but a dashboard-born one (``settles_at_release``), a tab open on
-    it or not, gets only a pending mark (``kiro_crew.parent_turns``): it is held
+    Every parent gets only a pending mark (``kiro_crew.parent_turns``): it is held
     under the attempt now holding the parent's permit, and the end of that
     attempt confirms it if the turn landed and revokes it otherwise. It is held
     only when that attempt is the one that spawned the child (``_spawned_under``,
@@ -540,19 +523,17 @@ def _flag_collected_inline(state: DashboardState, ids: list[Any], parent_session
     (``_seen_done_under``, stamped by ``GET /api/spawn/{id}``): a mark processed
     after its attempt ended, while no turn or a later attempt holds the permit (an
     in-claim retry, the same task's next turn, another turn, an injection or a
-    compaction), flags nothing, so the completion is delivered. A dashboard-born
-    parent's tab route acknowledges on the mark.
+    compaction), flags nothing, so the completion is delivered.
     """
     flagged: set[str] = set()
     mgr = state.subagents
     if mgr is None or not parent_session:
         return flagged
-    held = settles_at_release(parent_session)
     ledger = ledger_of(state.sessions)
-    token = None
-    if held and ledger is not None:
-        token = state.sessions.turn_token(parent_session, open_attempt=False)
-    if held and token is None:
+    if ledger is None:
+        return flagged
+    token = state.sessions.turn_token(parent_session, open_attempt=False)
+    if token is None:
         return flagged
     foreign = 0
     for aid in ids[:200]:
@@ -564,7 +545,7 @@ def _flag_collected_inline(state: DashboardState, ids: list[Any], parent_session
         if getattr(record, "parent_session_key", None) != parent_session:
             foreign += 1
             continue
-        if token is not None and (
+        if (
             getattr(record, "_seen_done_under", None) != token
             or getattr(record, "_spawned_under", None) != token
         ):
@@ -572,13 +553,11 @@ def _flag_collected_inline(state: DashboardState, ids: list[Any], parent_session
             # is not the one holding the permit now: that attempt ended and the
             # reply reached no live turn.
             continue
-        if token is not None:
-            record._inline_state = "pending"
-            record._inline_token = token
+        record._inline_state = "pending"
+        record._inline_token = token
         record._collected_inline = True
         flagged.add(aid)
-    if token is not None and ledger is not None:
-        ledger.hold_marks(token, sorted(flagged))
+    ledger.hold_marks(token, sorted(flagged))
     if foreign:
         logger.warning(
             "mark-collected: ignored %d id(s) that are not children of the calling parent",
