@@ -12,6 +12,7 @@ import logging
 import os
 import stat as _stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.config import loosening_provenance
@@ -23,8 +24,10 @@ from kiro_crew.config.paths import (
     config_dir,
     config_package_dir,
 )
-from kiro_crew.config.sections import WorkspaceConfig
 from kiro_crew.user_json import strip_utf8_bom
+
+if TYPE_CHECKING:
+    from kiro_crew.config.sections import WorkspaceConfig
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -674,6 +677,10 @@ def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:
     silently fall back to the base directory for a workspace the first load
     had placed elsewhere.
     """
+    # Function-local: the schema stack is heavy, and the per-session Connection
+    # bridge imports this module only for :func:`read_local_secret`.
+    from kiro_crew.config.sections import WorkspaceConfig
+
     dirname = entry.dir if entry is not None and entry.dir else WorkspaceConfig().dir
     p = Path(dirname).expanduser()
     if p.is_absolute():

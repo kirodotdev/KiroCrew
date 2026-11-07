@@ -22240,7 +22240,6 @@
       "custom_title": "Secrets personnalisés",
       "custom_description": "Clés chiffrées pour les serveurs MCP et les paramètres .env. Référence-en une sous la forme secret://YOUR_KEY ; la valeur n’est jamais affichée dans le chat.",
       "custom_authorize": "Pour permettre à un agent d’un chat de membre d’appeler une API approuvée avec un secret, accorde à l’agent {{server}}, puis lance la commande ci-dessous dans un shell ou sur la page Terminal.",
-      "custom_authorize_windows": "Appeler une API avec un secret personnalisé n'est pas encore disponible sur Windows.",
       "custom_empty": "Aucun secret personnalisé stocké pour l'instant. Ajoutez-en un pour le référencer depuis un serveur MCP sous la forme secret://YOUR_KEY.",
       "managed_config_error": "Certains identifiants automatiques sont masqués, car $KIROCREW_HOME/config.json (par défaut : ~/.kiro/crew/config.json) n’a pas pu être lu.",
       "managed_name_hint": "Enregistrer ici met à jour {{name}} dans la section des identifiants automatiques. — {{productName}}",

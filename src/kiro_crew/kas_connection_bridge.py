@@ -3,18 +3,23 @@
 Started by :mod:`kiro_crew.kas_env_shim` from a launch snapshot that names a
 ``connection`` instead of a url. It is :class:`kiro_crew.kas_http_bridge.Bridge`
 with one change: every message goes to the gateway's Connection proxy
-(``/api/connection-proxy``) over the owner-only dashboard Unix socket, never to
-the vendor. This process holds no token and no vendor url; the gateway adds the
-bearer (:mod:`kiro_crew.connections.crew_oauth_proxy`).
+(``/api/connection-proxy``), never to the vendor. This process holds no token and
+no vendor url; the gateway adds the bearer
+(:mod:`kiro_crew.connections.crew_oauth_proxy`).
 
-Transport is the same one ``kirocrew-secrets`` uses (:mod:`kiro_crew.mcp_secrets`):
-Unix socket only with no TCP fallback, and the answering peer must be this user's
-recorded gateway before any byte is sent. Windows has no such channel, so the
-launch refuses there.
+Transport is the one ``kirocrew-secrets`` uses (:mod:`kiro_crew.mcp_secrets`), and
+the answering peer must be this user's recorded gateway before any byte is sent.
+On POSIX that is the owner-only dashboard Unix socket, with no TCP fallback. On
+Windows, which has no Unix socket, it is loopback TCP, with the peer proven from
+the kernel's table for this exact connection.
+
+One of these runs per session per Connection, so it imports only leaf modules:
+never the config loader, which composes the platform and plugin stack.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import urllib.error
@@ -30,30 +35,49 @@ REFUSAL_HEADER = "X-Crew-Proxy-Refusal"
 
 
 class _GatewayOpener:
-    """``open(request, timeout)`` over the attested dashboard socket only."""
+    """``open(request, timeout)`` to this user's recorded gateway only."""
 
     def __init__(self, port: int) -> None:
         self._port = port
 
     def _verify_peer(self, sock: Any) -> None:
-        from kiro_crew.cli_server_peer import _connected_unix_peer_is_recorded_gateway
+        from kiro_crew import cli_server_peer, platform_compat
         from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 
-        if check_peer_is_self(
-            sock
-        ) is not PeerCredResult.MATCH or not _connected_unix_peer_is_recorded_gateway(
-            sock, self._port
-        ):
-            raise PermissionError("the dashboard socket is not answered by this user's gateway")
+        if platform_compat.IS_WINDOWS:
+            ok = (
+                cli_server_peer._connected_peer_verdict(sock)
+                is cli_server_peer._ConnectedPeerVerdict.MATCH
+            )
+        else:
+            ok = check_peer_is_self(
+                sock
+            ) is PeerCredResult.MATCH and cli_server_peer._connected_unix_peer_is_recorded_gateway(
+                sock, self._port
+            )
+        if not ok:
+            # The gateway never sees this refusal, so it is audited here. A grant is
+            # not: the proxy audits what it admits.
+            with contextlib.suppress(Exception):
+                cli_server_peer._audit_peer_denied(
+                    "connection_bridge", self._port, "peer is not this user's recorded gateway"
+                )
+            # An OSError, so urllib wraps it as URLError and the bridge answers the
+            # engine with an error instead of dying.
+            raise PermissionError("the dashboard is not answered by this user's gateway")
 
     def open(self, request: urllib.request.Request, timeout: float) -> Any:
-        from kiro_crew.dashboard.urls import dashboard_socket_path
-        from kiro_crew.loopback_http import unix_socket_urlopen
+        from kiro_crew import platform_compat
+        from kiro_crew.config.paths import config_dir
+        from kiro_crew.dashboard.urls import dashboard_socket_name
+        from kiro_crew.loopback_http import tcp_verified_urlopen, unix_socket_urlopen
 
+        if platform_compat.IS_WINDOWS:
+            return tcp_verified_urlopen(request, timeout, verify_peer=self._verify_peer)
         return unix_socket_urlopen(
             request,
             timeout,
-            socket_path=dashboard_socket_path(self._port),
+            socket_path=config_dir() / dashboard_socket_name(self._port),
             verify_peer=self._verify_peer,
         )
 
@@ -77,7 +101,7 @@ class ConnectionBridge(Bridge):
 
 def build_bridge(doc: dict[str, Any], *, server: str, out: Any, err: Any) -> ConnectionBridge:
     """The bridge a verified ``connection`` snapshot describes."""
-    from kiro_crew.config.loader import read_local_secret
+    from kiro_crew.config.loader_locations import read_local_secret
 
     port = int(doc["port"])
     headers = {
