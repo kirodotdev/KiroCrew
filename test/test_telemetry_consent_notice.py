@@ -155,6 +155,35 @@ def test_cli_status_shows_both_switches(
     assert "Pinned by:   DO_NOT_TRACK" in out
 
 
+@pytest.mark.parametrize("posture", [True, "raises"])
+def test_cli_status_does_not_promise_local_only_on_an_exporting_host(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    posture: object,
+) -> None:
+    def _egress(tel: object) -> bool:
+        if posture == "raises":
+            raise RuntimeError("provider unavailable")
+        return True
+
+    monkeypatch.setattr(provider, "otlp_egress_active", _egress)
+    _write_config(home, {"telemetry": {"enabled": True}})
+    cc._telemetry(_ns("status"))
+    out = capsys.readouterr().out
+    assert "stays on this machine" not in out
+    assert "also sent to the metrics destination configured for this machine" in out
+
+
+def test_cli_status_says_local_only_without_an_export_destination(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(provider, "otlp_egress_active", lambda tel: False)
+    _write_config(home, {"telemetry": {"enabled": True}})
+    cc._telemetry(_ns("status"))
+    assert "Local metric recording (stays on this machine)" in capsys.readouterr().out
+
+
 def test_cli_warns_when_an_env_var_overrides_the_write(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

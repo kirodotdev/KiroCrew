@@ -221,6 +221,9 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           else if (privacyExit.current === 'finish') markOnboarded()
           else setShowOnboarding(true)
         }}
+        // Hidden, not acknowledged: privacyAcked stays false, so the chapter
+        // opens again at the next load.
+        onAskAgent={() => setShowPrivacy(false)}
       />
 
       {/* First-run chapter 3 — Customize + feature tour (theme → about you →
