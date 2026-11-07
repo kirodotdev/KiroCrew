@@ -1048,10 +1048,11 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
               primary={approveDisabled || p.script_validation?.ok !== false}
               /* Collapsed, aria-disabled rather than disabled: a disabled
                  button gets no hover or focus, so its tip could never say
-                 that Review comes first. The click guard below holds it. */
+                 that Review comes first. The click guard below holds it, and
+                 the aria-disabled classes repeat a disabled primary's look. */
               aria-disabled={!open || undefined}
               disabled={open && approveDisabled}
-              className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
               onClick={() => { if (!approveDisabled && detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
