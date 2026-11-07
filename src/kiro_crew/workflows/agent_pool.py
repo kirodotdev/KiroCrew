@@ -37,6 +37,7 @@ import time
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
@@ -190,6 +191,10 @@ class _WorkflowSessionWorker:
         # process (new pid). One shared writer lives in messaging.identity; it
         # is fail-safe by contract, so it can never break the turn.
         await publish_turn_identity(self._sessions, self._key)
+        if self._is_new:
+            # A cold start or a reset's fresh conversation: the first prompt waits
+            # (bounded) for the agent spec's MCP servers, as the cold path does.
+            await wait_for_declared_mcp(self._provider, UNATTENDED_MCP_WAIT_SECS)
         # Honor the pool's per-task timeout: a wedged turn is terminated here
         # instead of holding a _task_sema permit until the run-level ceiling.
         if self._memory_scope is not None:
@@ -460,6 +465,8 @@ def build_pooled_agent_fn(
             # and the identity-cap overflow session both run on their own
             # kiro-cli process with no ambient session key.
             await publish_turn_identity(sessions, key)
+            if is_new:
+                await wait_for_declared_mcp(provider, UNATTENDED_MCP_WAIT_SECS)
             if memory_scope is not None:
                 prompt = await memory_scope.prompt(
                     context_builder,
