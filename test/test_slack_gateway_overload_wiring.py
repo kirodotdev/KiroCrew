@@ -333,6 +333,8 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
     # (the crewmate-prune barrier); a bare orchestrator has none, as the
     # ``__init__`` this test skips would have set.
     orch.dashboard_state = None
+    # ``run`` reads the routed-server list before the overlay pass; nothing routed.
+    orch._cfg = SimpleNamespace(mcp_gateway=SimpleNamespace(stub_servers=[]))
     order = []
 
     async def bind_dashboard():

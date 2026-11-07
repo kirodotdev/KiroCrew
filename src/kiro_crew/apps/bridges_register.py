@@ -412,6 +412,31 @@ def reconcile_enabled_app_resources() -> dict[str, int]:
     return counts
 
 
+def refresh_enabled_app_agents() -> None:
+    """Re-materialize every ENABLED app's agent configs, and nothing else. Blocking.
+
+    The gateway runs this before it builds the MCP overlay from ``~/.kiro/agents``: an
+    app agent's managed-server spec names the RUNNING launcher
+    (``_materialize_managed_refs``), and :func:`reconcile_enabled_app_resources` runs
+    only after the overlay. Same source, admission gate and skips as the agent half of
+    :func:`register_app`: a shipped builtin's manifest is the package's own.
+    """
+    for info in list_apps():
+        name = info.get("name") or ""
+        if not info.get("enabled") or not name or info.get("resources") == "app":
+            continue
+        try:
+            manifest, app_root = _registration_source(name)
+            if manifest is None or not manifest.agents:
+                continue
+            if _registration_denied(name, action="resource_register", app_root=app_root):
+                _deregister_agents(name)
+                continue
+            _register_agents(name, manifest, app_root)
+        except Exception as exc:  # noqa: BLE001 — one bad app must not stop the rest
+            logger.warning("App agent refresh failed for %s: %s", name, exc)
+
+
 def app_conversation_keys(app_name: str, *, mapped_keys: Iterable[str] | None = None) -> list[str]:
     """Session keys that still hold a resume pointer and belong to *app_name*.
 
