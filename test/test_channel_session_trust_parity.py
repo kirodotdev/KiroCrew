@@ -1,7 +1,7 @@
-"""One session-trust grant, five channels.
+"""One session-trust grant, six channels.
 
-Webex, WeCom, iLink (weixin) and iMessage render no approve/deny widget, so they run
-with ``decider=None``, which denies every tool by default. Each passes
+Webex, WeCom, iLink (weixin), iMessage and Signal render no approve/deny widget,
+so they run with ``decider=None``, which denies every tool by default. Each passes
 ``ChannelTurn.auto_approve_session``, reading the same process-global
 ``safety_override`` grant the dashboard toggle and Slack's ``/kirocrew yolo`` arm.
 
@@ -375,6 +375,26 @@ def _build_imessage(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
     return mod, "IMessageRenderer", d, inbound
 
 
+def _build_signal(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
+    from kiro_crew.signal_cli import transport_dispatch as mod
+    from kiro_crew.signal_cli.client import KIND_DATA, SignalInbound
+
+    d = mod.SignalDispatcher(
+        sessions=sessions,
+        ctx_builder=ctx,
+        cfg=_cfg("signal"),
+        agent=None,
+        conv_log=None,
+        approval_mode="interactive",
+    )
+    d.client = _Client()
+    inbound = SignalInbound(kind=KIND_DATA, text="hi", source_number="+15550100")
+    inbound.principal = "+15550100"
+    # The operator's turn: the transport's verdict (SignalTransport.is_operator).
+    inbound.operator = True
+    return mod, "SignalRenderer", d, inbound
+
+
 def _build_teams(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
     from kiro_crew.teams import transport_dispatch as mod
     from kiro_crew.teams.client import TeamsInbound
@@ -401,6 +421,7 @@ def _build_teams(sessions: Any, ctx: Any) -> tuple[Any, str, Any, Any]:
 
 _CHANNELS: dict[str, Any] = {
     "imessage": _build_imessage,
+    "signal": _build_signal,
     "teams": _build_teams,
     "webex": _build_webex,
     "wecom": _build_wecom,
@@ -410,12 +431,14 @@ _CHANNELS: dict[str, Any] = {
 #: Channels that pass a real ``decider``, so a prompt IS clickable there. Their
 #: no-grant case ends in a refusal too -- the decider denies by default -- but only
 #: once its deadline passes, so these tests shorten it rather than waiting.
-_WIDGET_CHANNELS = frozenset({"teams", "webex"})
+#: Signal's "widget" is a numbered prompt answered by a typed reply.
+_WIDGET_CHANNELS = frozenset({"signal", "teams", "webex"})
 
 #: Where each widget channel's click deadline lives, so the deny-by-default path
 #: can resolve immediately instead of waiting one out. Read per call inside the
 #: decider, so patching the module attribute is enough.
 _APPROVAL_DEADLINE_SYMBOL = {
+    "signal": "kiro_crew.signal_cli.transport_dispatch.TEXT_APPROVAL_TIMEOUT_S",
     "teams": "kiro_crew.teams.approvals.APPROVAL_TIMEOUT_SECS",
     "webex": "kiro_crew.messaging.approval.APPROVAL_TIMEOUT_S",
 }

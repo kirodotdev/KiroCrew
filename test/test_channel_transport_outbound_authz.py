@@ -81,6 +81,7 @@ class TestEveryTransportDecidesForItself:
         for channel in (
             "discord",
             "imessage",
+            "signal_cli",
             "slack",
             "teams",
             "telegram",

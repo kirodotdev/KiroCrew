@@ -233,6 +233,26 @@ class FakeIMessageClient:
         pass
 
 
+class FakeSignalClient:
+    """signal-cli stand-in: no own identity, so Note to Self never matches."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def send(self, recipient: str, text: str) -> str:
+        self.sent.append((recipient, text))
+        return "1700000000000"
+
+    def set_message_handler(self, fn: Any) -> None:
+        pass
+
+    def is_self(self, ident: str) -> bool:
+        return False
+
+    def self_ids(self) -> frozenset[str]:
+        return frozenset()
+
+
 class FakeWhatsAppClient:
     def __init__(self) -> None:
         from kiro_crew.whatsapp.jids import OwnIdentity
@@ -324,7 +344,9 @@ class ChannelCase:
 
     @property
     def transport_module(self) -> str:
-        return f"kiro_crew.{self.name}.transport"
+        # Signal's package is ``signal_cli``: ``signal`` would shadow the stdlib.
+        package = {"signal": "signal_cli"}.get(self.name, self.name)
+        return f"kiro_crew.{package}.transport"
 
     @property
     def audit_operation(self) -> str:
@@ -333,6 +355,7 @@ class ChannelCase:
     @property
     def subscription_name(self) -> str:
         parts = {"imessage": "IMessage", "whatsapp": "WhatsApp", "wecom": "WeCom"}
+        # ``title()`` already yields "Signal".
         return f"{parts.get(self.name, self.name.title())}Dispatcher"
 
     def section(self, roster: Sequence[Any], **overrides: Any) -> SimpleNamespace:
@@ -441,6 +464,8 @@ def channel_cases() -> tuple[ChannelCase, ...]:
     from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
     from kiro_crew.imessage.transport import IMessageTransport
     from kiro_crew.imessage.transport_dispatch import IMessageDispatcher
+    from kiro_crew.signal_cli.transport import SignalTransport
+    from kiro_crew.signal_cli.transport_dispatch import SignalDispatcher
     from kiro_crew.teams.transport import TeamsTransport
     from kiro_crew.teams.transport_dispatch import TeamsDispatcher
     from kiro_crew.telegram.transport import TelegramTransport
@@ -647,6 +672,24 @@ def channel_cases() -> tuple[ChannelCase, ...]:
         audit_secret="5550109999",
     )
 
+    signal = ChannelCase(
+        name="signal",
+        make_transport=_transport_factory(SignalTransport, FakeSignalClient, "allowed_numbers"),
+        make_dispatcher=_dispatcher_factory(SignalDispatcher, "signal", FakeSignalClient),
+        section_fields=_fields_factory("allowed_numbers"),
+        boot=("+15550100000",),
+        added=("+1 555 010 0001",),
+        expect_boot=frozenset({"+15550100000"}),
+        expect_added=frozenset({"+15550100001"}),
+        boot_id="+15550100000",
+        added_id="+15550100001",
+        authorize=_authorizer("signal"),
+        roster_key="allowed_numbers",
+        audit_fields={"allowed_numbers": ["+15550109999"]},
+        audit_outcomes=("allow_list_changed",),
+        audit_secret="5550109999",
+    )
+
     whatsapp = ChannelCase(
         name="whatsapp",
         make_transport=whatsapp_transport,
@@ -768,7 +811,7 @@ def channel_cases() -> tuple[ChannelCase, ...]:
         ),
     )
 
-    return (telegram, discord, webex, teams, imessage, whatsapp, wecom, weixin, feishu)
+    return (telegram, discord, webex, teams, imessage, signal, whatsapp, wecom, weixin, feishu)
 
 
 def cases_with_toggle() -> tuple[ChannelCase, ...]:
@@ -912,6 +955,7 @@ def normalizer_cases() -> tuple[tuple[str, Callable[[Any], Any], Any, Any], ...]
     so the caller keeps its previous roster instead of emptying it.
     """
     from kiro_crew.imessage.transport import allowed_handles_from_config
+    from kiro_crew.signal_cli.transport import allowed_numbers_from_config
     from kiro_crew.teams.transport import allowed_emails_from_config
     from kiro_crew.wecom.transport import allowed_userids_from_config
 
@@ -932,6 +976,14 @@ def normalizer_cases() -> tuple[tuple[str, Callable[[Any], Any], Any, Any], ...]
         ),
         ("imessage-non-list", allowed_handles_from_config, "+15550100000", None),
         ("imessage-none", allowed_handles_from_config, None, None),
+        (
+            "signal-normalizes",
+            allowed_numbers_from_config,
+            ["+1 (555) 010-0000", "", 7, "A1B2C3D4-0000-4000-8000-00000000ABCD"],
+            ["+15550100000", "a1b2c3d4-0000-4000-8000-00000000abcd"],
+        ),
+        ("signal-non-list", allowed_numbers_from_config, "+15550100000", None),
+        ("signal-none", allowed_numbers_from_config, None, None),
         (
             "wecom-flattens",
             allowed_userids_from_config,

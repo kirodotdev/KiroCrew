@@ -18,6 +18,7 @@ from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.signal_cli.transport import SIGNAL_CAPABILITIES
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
@@ -38,6 +39,7 @@ CHANNELS: dict[str, TransportCapabilities] = {
     "WeCom": WECOM_CAPABILITIES,
     "Weixin": WEIXIN_CAPABILITIES,
     "iMessage": IMESSAGE_CAPABILITIES,
+    "Signal": SIGNAL_CAPABILITIES,
     "WhatsApp": WHATSAPP_CAPABILITIES,
     "Feishu": FEISHU_CAPABILITIES,
 }
@@ -139,14 +141,14 @@ class TestTheProseNamesTheTwoExceptions:
 class TestTheZeroWidgetSection:
     """The canonical no-buttons section, and the one channel that breaks its rule.
 
-    Four ``max_buttons=0`` channels deliver the list as numbered lines; WhatsApp's
+    Five ``max_buttons=0`` channels deliver the list as numbered lines; WhatsApp's
     renderer drops a completed trailer instead. Both halves are pinned to the code.
     """
 
-    def test_the_zero_button_channels_are_the_five_named(self) -> None:
+    def test_the_zero_button_channels_are_the_six_named(self) -> None:
         zero = {name for name, caps in CHANNELS.items() if caps.max_buttons == 0}
-        assert zero == {"WeCom", "Weixin", "iMessage", "WhatsApp", "Feishu"}, (
-            f"{DOC.name} names five zero-widget channels; the code now says "
+        assert zero == {"WeCom", "Weixin", "iMessage", "Signal", "WhatsApp", "Feishu"}, (
+            f"{DOC.name} names six zero-widget channels; the code now says "
             f"{sorted(zero)}. Update 'Choices on a channel with no buttons'."
         )
 
@@ -155,7 +157,7 @@ class TestTheZeroWidgetSection:
         assert "## Choices on a channel with no buttons" in text
         section = text.split("## Choices on a channel with no buttons", 1)[1]
         section = section.split("\n## ", 1)[0]
-        for name in ("WeCom", "Weixin", "iMessage", "WhatsApp", "Feishu"):
+        for name in ("WeCom", "Weixin", "iMessage", "Signal", "WhatsApp", "Feishu"):
             assert name in section, f"the zero-widget section does not name {name}"
 
     #: Every file that records the WhatsApp strip, and the shortest anchor that proves

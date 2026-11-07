@@ -85,6 +85,7 @@ const CHANNEL_LABEL_KEY: Record<string, string> = {
   teams: 'pages.servicesTab.teams',
   weixin: 'pages.servicesTab.weixin',
   imessage: 'pages.servicesTab.imessage',
+  signal: 'pages.servicesTab.signal',
   whatsapp: 'pages.servicesTab.whatsapp',
   feishu: 'pages.servicesTab.feishu',
 }

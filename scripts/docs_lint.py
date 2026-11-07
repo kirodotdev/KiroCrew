@@ -251,6 +251,7 @@ CODE_COUPLED_DOCS: dict[str, tuple[str, ...]] = {
     "src/kiro_crew/docs/discord-integration.md": ("website/src/pages/settings/DiscordPanel.tsx",),
     "src/kiro_crew/docs/feishu-integration.md": ("website/src/pages/settings/FeishuPanel.tsx",),
     "src/kiro_crew/docs/imessage-integration.md": ("website/src/pages/settings/IMessagePanel.tsx",),
+    "src/kiro_crew/docs/signal-integration.md": ("website/src/pages/settings/SignalPanel.tsx",),
     "src/kiro_crew/docs/slack-integration.md": ("website/src/pages/settings/SlackPanel.tsx",),
     "src/kiro_crew/docs/teams-integration.md": ("website/src/pages/settings/TeamsPanel.tsx",),
     "src/kiro_crew/docs/telegram-integration.md": ("website/src/pages/settings/TelegramPanel.tsx",),

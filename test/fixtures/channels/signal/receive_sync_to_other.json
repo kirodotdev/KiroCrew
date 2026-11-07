@@ -1,0 +1,34 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "signal-cli jsonRpc 'receive' notification (man/signal-cli-jsonrpc.5.adoc, 'Receiving messages'; both the on-start params.envelope and the subscribeReceive params.result.envelope shapes) with field names from the MessageEnvelope / DataMessage / SyncDataMessage JSON records in signal-cli's src/main/java/org/asamk/signal/json/. Values are synthetic; only the FIELD NAMES and nesting are the claim.",
+    "captured_at": "2026-10-15",
+    "note": "Transcribed from signal-cli 0.14.x docs and source, NOT captured from a live account. Load-bearing fields: sourceNumber/sourceUuid (sender; number may be null for a numberless account), dataMessage.message, dataMessage.groupInfo (group refusal), syncMessage.sentMessage.destinationNumber/destinationUuid (Note to Self), timestamp (message id)."
+  },
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "+447700900001",
+      "sourceNumber": "+447700900001",
+      "sourceUuid": "aaaaaaaa-1111-4111-8111-111111111111",
+      "sourceName": "Owner",
+      "sourceDevice": 1,
+      "timestamp": 1700000000300,
+      "serverReceivedTimestamp": 1700000000305,
+      "serverDeliveredTimestamp": 1700000000309,
+      "syncMessage": {
+        "sentMessage": {
+          "destination": "+447700900002",
+          "destinationNumber": "+447700900002",
+          "destinationUuid": "bbbbbbbb-2222-4222-8222-222222222222",
+          "timestamp": 1700000000300,
+          "message": "see you at 8",
+          "expiresInSeconds": 0,
+          "viewOnce": false
+        }
+      }
+    },
+    "account": "+447700900001"
+  }
+}

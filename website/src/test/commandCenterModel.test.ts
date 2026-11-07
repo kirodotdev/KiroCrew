@@ -10,7 +10,7 @@ const sources = (extra: Partial<CommandCenterSources> = {}): CommandCenterSource
 })
 
 describe('command center projection', () => {
-  it.each(['slack', 'discord', 'telegram', 'whatsapp', 'webex', 'wecom', 'teams', 'weixin', 'imessage', 'feishu', 'unified'])('matches the backend safe key for %s without dropping its namespace', namespace => {
+  it.each(['slack', 'discord', 'telegram', 'whatsapp', 'webex', 'wecom', 'teams', 'weixin', 'imessage', 'signal', 'feishu', 'unified'])('matches the backend safe key for %s without dropping its namespace', namespace => {
     expect(slotKey(`${namespace}:1785.12/你好 é²-_.`)).toBe(`${namespace}_1785.12_你好_é²-_.`)
     expect(slotKey(`${namespace}_1785.12`)).toBe(`${namespace}_1785.12`)
   })

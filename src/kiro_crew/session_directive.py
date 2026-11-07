@@ -15,8 +15,8 @@ the marker out of what it stores or renders. There are TWO consumers, one per
 turn loop: :func:`dashboard.chat_turn.tool_results._on_tool_result`, the ``EVENT_TOOL_RESULT``
 phase (the dashboard-driven surfaces, which own ``slot.key``), and
 :class:`messaging.driver.TurnDriver` (the standalone channel transports —
-Telegram, Discord, standalone Slack, iMessage, Teams, Webex, WeCom, Weixin —
-whose dispatchers inject a consumer bound to the turn's session key via
+Telegram, Discord, standalone Slack, iMessage, Signal, Teams, Webex, WeCom,
+Weixin — whose dispatchers inject a consumer bound to the turn's session key via
 ``messaging.dispatch.build_directive_consumer``). Both funnel into
 ``dashboard.session_directive_apply.apply_session_directive``, so the security
 boundaries live in one place.

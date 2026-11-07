@@ -173,7 +173,17 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: mid-turn override parsing, attachment handling, media ingestion), and in
 #: several cases the busy path is not a plain ``on_busy(session_key)``.
 #: Listing them here would assert a migration that has not happened.
-_PRE_TURN_CHANNELS = ("webex", "imessage", "feishu")
+_PRE_TURN_CHANNELS = ("webex", "imessage", "feishu", "signal")
+
+#: Channel types whose package directory is not named after them. Signal's
+#: package is ``signal_cli`` because ``signal`` would shadow the stdlib module.
+_PACKAGE_DIRS = {"signal": "signal_cli"}
+
+
+def _dispatch_src(channel: str) -> str:
+    package = _PACKAGE_DIRS.get(channel, channel)
+    return (_SRC / package / "transport_dispatch.py").read_text(encoding="utf-8")
+
 
 #: Rostered channels deliberately NOT on the shared helper: they run extra steps
 #: between the busy check and rotation, or their own busy checks from
@@ -197,21 +207,21 @@ def _calls_pre_turn_helper(path: pathlib.Path) -> bool:
 class TestPreTurnRatchet:
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
     def test_dispatcher_uses_the_shared_helper(self, channel: str) -> None:
-        src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
+        src = _dispatch_src(channel)
         assert "resolve_pre_turn(" in src, f"{channel} does not call resolve_pre_turn"
 
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
     def test_dispatcher_does_not_hand_roll_the_sequence(self, channel: str) -> None:
         """The ordering has ONE owner: a dispatcher calling ``maybe_rotate`` itself
         holds a second copy of the sequence that can drift."""
-        src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
+        src = _dispatch_src(channel)
         assert "maybe_rotate(" not in src, f"{channel} still rotates outside the helper"
 
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
     def test_compact_command_releases_the_notice_latch(self, channel: str) -> None:
         """After ``/compact`` the soft context notice must fire again next cycle;
         without the release it warns only once ever."""
-        src = (_SRC / channel / "transport_dispatch.py").read_text(encoding="utf-8")
+        src = _dispatch_src(channel)
         assert "clear_awaiting(" in src, f"{channel} never releases the awaiting latch"
 
     def test_every_rostered_channel_is_accounted_for(self) -> None:
