@@ -5654,6 +5654,15 @@ each accepted extension to the Range-capable `<audio>` viewer. An uploaded audio
 file remains an ordinary attachment path in the agent turn; upload does not imply
 transcription.
 
+The OOXML templates `.dotx`, `.xltx` and `.potx` upload in the composer and the
+Files panel wherever `.docx`, `.xlsx` and `.pptx` do, under the same ZIP signature
+check (`_ZIP_CONTAINER_EXTS`, which knowledge import reads too), and their template
+MIME types are registered for downloads. An uploaded template stays an ordinary
+attachment path in the agent turn: Office preview, the Files-panel viewer and file
+search key on the base extensions only. `doc_parser` does not parse templates
+either, so a channel attachment of one reaches the agent as the file, not as
+extracted text.
+
 
 ### UI Pages
 
