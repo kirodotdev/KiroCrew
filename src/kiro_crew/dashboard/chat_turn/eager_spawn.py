@@ -948,7 +948,7 @@ async def _spawn_admitted_prefetch(
                 # alias applied, so no override applies.
                 crew_agent=crew_alias,
                 model=_requested_model or None,
-                cwd=slot.project or None,
+                cwd=slot.claim_cwd,
                 # Same opt-in as the turn's claim: the chat shows the notice.
                 fallback_hidden_cwd=True,
                 speculative=True,

@@ -942,7 +942,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # carry different watchdog windows.
         crew_agent=crew_alias,
         model=_requested_model or None,
-        cwd=slot.project or None,
+        cwd=slot.claim_cwd,
         # The chat says when its folder is an earlier run's hidden scratch folder.
         fallback_hidden_cwd=True,
         # The persisted channel stays separate from the dashboard-owned key

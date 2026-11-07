@@ -591,6 +591,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
             )
+        # Supersedes a clear this switch replaced, or a cwd-less claim still answers the default.
+        slot.project_cleared = False
+        state.sessions.mark_retire_on_next_claim(session_key, slot.project or None)
         # Mark for the periodic flush: the flush writes a slot's metadata
         # line only while ``_dirty`` is set, and nothing else on this path
         # sets it. The switch is allowed on a started conversation, so
@@ -725,7 +728,44 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_project", session_key)
         if denied is not None:
             return denied
+        armed = bound = project
+        if not project:
+            from kiro_crew.config.paths import CWD_CLEARED
+
+            before_resolve = slot.project
+            try:
+                agent, kind = slot.agent or "", slot.agent_kind or ""
+                armed = await state.sessions.resolve_arm_cwd(session_key, CWD_CLEARED)
+                bound = await state.sessions.resolve_arm_cwd(session_key, CWD_CLEARED, agent, kind)
+            except Exception:
+                logger.debug("resolve of the cleared workspace failed", exc_info=True)
+                return web.json_response(
+                    {
+                        "error": "the default workspace could not be resolved",
+                        "code": "default_workspace_unresolved",
+                    },
+                    status=500,
+                )
+            if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+                return _slot_not_found()
+            if effective_session_key(slot) != session_key:
+                return web.json_response(
+                    {
+                        "error": "slot session was rebound during the switch",
+                        "code": "session_rebound",
+                    },
+                    status=409,
+                )
+            denied = _app_cancel_denied(request, slot, "chat.slot_project", session_key)
+            if denied is not None:
+                return denied
+            if slot.project is not before_resolve:
+                return web.json_response(
+                    {"error": "a newer project change landed", "code": "project_superseded"},
+                    status=409,
+                )
         old_project = slot.project
+        old_cleared = slot.project_cleared
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
         # writes this field without the lock, and may legitimately write the
@@ -734,6 +774,9 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
         slot.project = committed_project
+        if project or old_project:
+            slot.project_cleared = not project
+        slot._dirty = True
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -751,8 +794,16 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
                 from kiro_crew.dashboard.transcript_binding import rollback_project
 
+                if slot.project is committed_project:
+                    slot.project_cleared = old_cleared
                 rollback_project(slot, committed_project, old_project)
+                slot._dirty = True
                 return _slot_not_found()
+            if slot.project is not committed_project:
+                return web.json_response(
+                    {"error": "a newer project change landed", "code": "project_superseded"},
+                    status=409,
+                )
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
         # Only on an actual change — avoids a needless cold start on a no-op set.
@@ -776,7 +827,10 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # same 409 the sibling switch handlers use.
                 from kiro_crew.dashboard.transcript_binding import rollback_project
 
+                if slot.project is committed_project:
+                    slot.project_cleared = old_cleared
                 rollback_project(slot, committed_project, old_project)
+                slot._dirty = True
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -784,6 +838,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            state.sessions.mark_retire_on_next_claim(session_key, armed)
             # Determine whether a start that captured the OLD cwd is already
             # in flight BEFORE scheduling the replacement eager spawn, because
             # that scheduling cancels any prior eager task and roots a new one
@@ -830,5 +885,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 from kiro_crew.dashboard.transcript_binding import arm_project_reset
 
                 arm_project_reset(state, slot, session_key)
+            if not project:
+                state.sessions.drop_resume_outside(session_key, bound)
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})

@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -770,6 +771,16 @@ class _ChatSlot:
         write_project(self._binding, value)
 
     @property
+    def project_cleared(self) -> bool:
+        """Whether the group cleared its project; shared with ``project``."""
+        return self._binding.cleared
+
+    @project_cleared.setter
+    def project_cleared(self, value: bool) -> None:
+        self._binding.cleared = value
+        self._binding.assigned = self._binding.assigned or value
+
+    @property
     def reasoning_effort(self) -> str:
         """The slot's reasoning effort: "" = provider default, else a level."""
         return self._reasoning_effort
@@ -791,6 +802,26 @@ class _ChatSlot:
     def is_closing(self) -> bool:
         """Whether slot teardown currently fences new monitor admission."""
         return self._closing > 0
+
+    @property
+    def claim_cwd(self) -> str | None:
+        """The cwd a claim must state for this slot, or ``None`` to state none.
+
+        ``CWD_CLEARED`` is reserved for a project that was actually cleared, because that is
+        when a warm pooled child's binding has been invalidated. A slot that never had a
+        project states nothing, keeping the warm pool and its stored-cwd resume override.
+
+        The cleared MARKER is consulted ONLY while the project is empty, which is the only
+        state it can describe: a set project answers for itself, so a marker left behind by an
+        earlier clear cannot redirect it to the default workspace. That gating is the
+        invariant, rather than resetting the marker at each of the ~18 assignment sites, so a
+        site added later cannot reintroduce the redirect. The marker is persisted and restored
+        beside the project, and the project itself is written even when empty, so a clear
+        survives a restart instead of being overwritten by the directory that was on disk.
+        """
+        if not self.project and getattr(self, "project_cleared", False):
+            return CWD_CLEARED
+        return self.project or None
 
     @property
     def _dirty(self) -> bool:

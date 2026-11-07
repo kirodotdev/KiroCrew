@@ -228,6 +228,9 @@ class SessionLifecycleOwner(Protocol):
 
     _compact_cooldown_until: MutableMapping[str, float]
     _compact_pending_verdict: MutableMapping[str, float]
+
+    def _allocation_boundary(self) -> Any: ...
+
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
 

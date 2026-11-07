@@ -214,10 +214,13 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
     env = getattr(session, "extra_env", None)
     effort = getattr(session, "reasoning_effort_override", None)
     launch = getattr(session, "app_launch_agent", "")
+    # A pending arm names where the successor binds; the old provider's directory is stale.
+    boundary = getattr(owner, "_allocation_boundary", None)
+    armed = boundary is not None and owner._fold_key(key) in boundary().state.retire_arms
     return {
         "agent": getattr(session, "agent", "") or None,
         "approval_policy": getattr(session, "approval_policy", ""),
-        "cwd": getattr(session.provider, "cwd", None) or None,
+        "cwd": None if armed else getattr(session.provider, "cwd", None) or None,
         "channel_id": owner.get_channel(key) or None,
         "model": getattr(session, "requested_model", "") or None,
         "crew_agent": getattr(session, "capability_member", "") or None,

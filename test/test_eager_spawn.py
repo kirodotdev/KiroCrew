@@ -29,6 +29,7 @@ from kiro_crew.config.loader import (
     MemoryStoreConfig,
     ResolvedBindings,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -147,6 +148,15 @@ class TestEagerSpawn:
     @pytest.fixture(autouse=True)
     def _no_debounce(self, monkeypatch):
         monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_slot_claims_the_clear_itself(self):
+        slot = _ChatSlot("t1")
+        slot.project, slot.project_cleared = "", True
+        state = _mock_state(slot)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            await _eager_spawn(state, slot)
+        assert state.sessions.get_or_create.await_args.kwargs["cwd"] is CWD_CLEARED
 
     @pytest.mark.asyncio
     async def test_creates_session_with_slot_bindings_and_releases(self, tmp_path):
