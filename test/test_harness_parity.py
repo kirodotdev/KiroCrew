@@ -1792,12 +1792,13 @@ def test_the_identity_test_declarations_are_all_still_live():
 
 @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
 def test_merge_card_kept_prompt_rule_is_kiro_only(backend: str) -> None:
-    """H5: only kiro-cli's "kept the prompt" contract consumes an unlanded merge card.
+    """H5: only the Kiro "kept the prompt" contract consumes an unlanded merge card.
 
-    The turn below left before landing after a real ``end_turn``: kiro-cli kept
-    the prompt, so its card is consumed. No other harness has been checked
-    against that contract, so its card stays queued and a wrong guess sends it
-    twice instead of losing it.
+    The turn below left before landing after a real ``end_turn``: on kiro-cli
+    and on KAS (the default, which also runs the Kiro CLI pick) the live
+    session kept the prompt, so its card is consumed. No other harness has been
+    checked against that contract, so its card stays queued and a wrong guess
+    sends it twice instead of losing it.
     """
     from types import SimpleNamespace
 
@@ -1817,4 +1818,4 @@ def test_merge_card_kept_prompt_rule_is_kiro_only(backend: str) -> None:
         needs_conversation_discard=False,
         needs_session_reset=False,
     )
-    assert _merge_cards_reached_the_model(turn) is (backend == ACP_BACKEND_KIRO)
+    assert _merge_cards_reached_the_model(turn) is (backend in ACP_BACKENDS_KIRO_FAMILY)

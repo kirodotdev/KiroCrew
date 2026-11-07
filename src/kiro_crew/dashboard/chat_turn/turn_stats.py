@@ -419,14 +419,16 @@ def _merge_cards_reached_the_model(turn: _ChatTurn) -> bool:
     stream mid-answer with no terminal, so the turn lands while the
     finally's reset kills a runtime that may still be answering, and the
     reloaded session may lack the prompt. The card is delivered again
-    rather than lost. The kept-prompt clause is kiro-cli's contract, so it
-    counts only when the turn ran on kiro-cli; any other harness consumes a
-    card only on a landed turn, and a wrong guess there repeats the card.
+    rather than lost. The kept-prompt clause is the Kiro contract, so it
+    counts only on kiro-cli and KAS (which runs the Kiro CLI pick); any other
+    harness consumes a card only on a landed turn, so a wrong guess there
+    repeats the card.
     """
-    on_kiro_cli = getattr(getattr(turn, "client", None), "is_kiro_backend", None) is True
+    provider = getattr(turn, "client", None)
+    on_kiro = any(getattr(provider, n, None) is True for n in ("is_kiro_backend", "is_kas_backend"))
     return (
         (turn._turn_lands and not turn._empty_verdict_left_prompt_unanswered)
-        or (on_kiro_cli and _kiro_cli_kept_the_prompt(turn))
+        or (on_kiro and _kiro_cli_kept_the_prompt(turn))
     ) and not _native_session_lacks_the_prompt(turn)
 
 
