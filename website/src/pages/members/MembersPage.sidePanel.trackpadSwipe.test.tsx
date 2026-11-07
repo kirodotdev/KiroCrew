@@ -562,14 +562,60 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
     })
 
-    it('a leftward run brings the Dashboard forward when another tab is showing', async () => {
+    it('a leftward run over an open panel leaves the tab on screen alone', async () => {
       const chat = await openOncall()
       await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
       fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
-      swipe(chat, 15)
-      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+      expect(swipe(chat, 15)).toBe(0)
       expect(sliding()).toBe(false)
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
+      expect(dashTab()).toHaveAttribute('aria-selected', 'false')
+    })
+
+    it('a leftward run over a floating Profile card on Goals leaves the card and the panel tab alone', async () => {
+      await openOncall()
+      await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      fireEvent.click(screen.getByTestId('member-identity-pill'))
+      fireEvent.click(await screen.findByRole('tab', { name: 'Goals' }))
+      const card = await screen.findByTestId('crew-profile-card')
+      expect(screen.queryByTestId('crew-profile-docked')).toBeNull()
+      expect(swipe(screen.getByTestId('crew-profile-pane-goals'), 15)).toBe(0)
+      expect(sliding()).toBe(false)
+      expect(card).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Goals' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('a rightward run over a floating Profile card on Goals leaves the card and the open panel alone', async () => {
+      await openOncall()
+      await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      fireEvent.click(screen.getByTestId('member-identity-pill'))
+      fireEvent.click(await screen.findByRole('tab', { name: 'Goals' }))
+      const card = await screen.findByTestId('crew-profile-card')
+      expect(screen.queryByTestId('crew-profile-docked')).toBeNull()
+      expect(swipe(screen.getByTestId('crew-profile-pane-goals'), -20, 30)).toBe(0)
+      expect(sliding()).toBe(false)
+      expect(card).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Goals' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByTestId('member-side-panel')).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('a leftward run over a docked Profile card on Goals keeps the card and the panel hidden', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      await openOncall()
+      fireEvent.click(screen.getByTestId('member-identity-pill'))
+      fireEvent.click(await screen.findByRole('tab', { name: 'Goals' }))
+      await screen.findByTestId('crew-profile-docked')
+      expect(swipe(screen.getByTestId('crew-profile-pane-goals'), 20, 30)).toBe(0)
+      expect(sliding()).toBe(false)
+      expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Goals' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
     })
 
     it('a rightward run drags the open panel out with the fingers, then settles closed', async () => {
