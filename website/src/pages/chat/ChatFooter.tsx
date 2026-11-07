@@ -279,12 +279,14 @@ export function useStreamIdle(tick: number | string, active: boolean, ms: number
 /** Quiet time, past a slow first token, before the footer says a running turn has shown nothing new. */
 export const STALL_MS = 45_000
 
+const EMPTY_ACTIVITY_KEY = '0::0'
+
 /** Changes whenever the current turn visibly moves: a row lands, the newest row
  *  changes role, or a row near the end grows (a reasoning burst grows a thinking
  *  row that sits above the trailing streaming row). It reads only the newest
  *  rows, so loading an older page above them leaves it unchanged. */
 export function transcriptActivityKey(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 'content' | 'ts'>>): string {
-  if (messages.length === 0) return '0::0'
+  if (messages.length === 0) return EMPTY_ACTIVITY_KEY
   // shortcut: only the newest three rows are read, so growth further up is not
   // seen; widen if a turn ever grows a row more than two rows from the end.
   return messages.slice(-3).map(m => `${m.role}:${m.content.length}:${m.ts ?? ''}`).join('|')
@@ -305,7 +307,7 @@ export function turnSentHere(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 
  *  when the view opened on its session (a reload, a switch, a split pane) is
  *  read from a saved page, which cannot tell a quiet tool call from a stall,
  *  so it is watched only once its transcript moves after the first loaded
- *  (three-row) key. A turn this view sent, or one that starts after the view
+ *  key. A turn this view sent, or one that starts after the view
  *  read an authoritative idle page (`activityKey` set while not running), is
  *  watched at once. The store's running flag during a switch is provisional,
  *  so a session change always starts as restored.
@@ -316,9 +318,11 @@ function useStallArmed(session: string, running: boolean, activityKey: string | 
   if (seen.current.session !== session) seen.current = { session, restored: true, base: undefined, moved: false }
   if (sentHere || (!running && activityKey !== undefined)) seen.current.restored = false
   const s = seen.current
-  // A baseline needs a full three-row key: a pane's cached rows before its page
-  // hydrates are fewer, and the page landing above them is not movement.
-  if (s.restored && running && activityKey !== undefined && activityKey.split('|').length >= 3) {
+  // The first key is the baseline, however few rows it has: a host passes no
+  // key until its authoritative page lands, so that page is not movement. A
+  // running turn always has its opener, so an empty transcript (a switch that
+  // failed and cleared it) is never that page.
+  if (s.restored && running && activityKey !== undefined && activityKey !== EMPTY_ACTIVITY_KEY) {
     if (s.base === undefined) s.base = activityKey
     else if (activityKey !== s.base) s.moved = true
   }
