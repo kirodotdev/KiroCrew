@@ -198,10 +198,12 @@ def _record_fingerprint(self: CronService) -> None:
 
 
 def _keep_store_document(self: CronService, document: StoreDocument) -> None:
-    """Hold what a newer build added to the store just loaded, for :meth:`_save`."""
+    """Hold what a newer build added to the store just loaded, and the records no job
+    could be built from, for :meth:`_save` to write back."""
     self._store_version = document.version
     self._store_extra = MappingProxyType(dict(document.extra))
     self._unknown_fields = MappingProxyType(dict(document.unknown_fields))
+    self._skipped_records = document.skipped
 
 
 def _forget_store_document(self: CronService) -> None:
@@ -209,6 +211,7 @@ def _forget_store_document(self: CronService) -> None:
     self._store_version = _STORE_VERSION
     self._store_extra = MappingProxyType({})
     self._unknown_fields = MappingProxyType({})
+    self._skipped_records = ()
 
 
 def _reset_fingerprint(self: CronService) -> None:
@@ -246,11 +249,13 @@ def _sync(self: CronService) -> None:
         # "move the unreadable file aside" never unblocks a live gateway.
         # Not a call to _load(): it empties _jobs, losing a reaper update made
         # in memory but not yet saved (test_reaper_persists_state). Empty the
-        # list only when the latch was set: those jobs came from a failed load
-        # and writing them back could resurrect an external removal. The
-        # fingerprint was already reset by that failed load.
+        # list and forget the store document (its kept records and newer-build
+        # keys) only when the latch was set: they came from the store that was
+        # moved aside, and writing them back could resurrect an external removal.
+        # The fingerprint was already reset by that failed load.
         if self._load_failed:
             self._jobs = []
+            self._forget_store_document()
         self._load_failed = False
         return
     try:
@@ -269,8 +274,13 @@ def _sync(self: CronService) -> None:
         self._load(_preread=raw)
 
 
-def _keep_unzoned_jobs_on_utc(jobs: list[CronJob], extra: Mapping[str, Any]) -> bool:
+def _keep_unzoned_jobs_on_utc(
+    jobs: list[CronJob], extra: Mapping[str, Any], skipped: tuple[Any, ...]
+) -> bool:
     """Stamp UTC on an older store's unzoned jobs that fired in UTC (``zone_default_migration``).
+
+    The *skipped* records the save keeps get the same stamp: they are written under
+    the new version too, so a record fixed by hand later keeps its wall clock.
 
     ``False`` when the config cannot be read: the zone those jobs inherited is
     unknown, so nothing is stamped, they run in UTC in memory meanwhile, and the
@@ -283,6 +293,7 @@ def _keep_unzoned_jobs_on_utc(jobs: list[CronJob], extra: Mapping[str, Any]) -> 
         follows_default_ids,
         hold_jobs_on_utc_in_memory,
         pin_jobs_read_in_utc,
+        pin_records_read_in_utc,
     )
 
     follows_default = follows_default_ids(extra)
@@ -298,6 +309,7 @@ def _keep_unzoned_jobs_on_utc(jobs: list[CronJob], extra: Mapping[str, Any]) -> 
         hold_jobs_on_utc_in_memory(jobs, follows_default)
         return False
     pin_jobs_read_in_utc(jobs, zone, follows_default)
+    pin_records_read_in_utc(skipped, zone, follows_default)
     return True
 
 
@@ -333,9 +345,10 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._load_failed = True
             return
         settled = not document.predates_local_default or _keep_unzoned_jobs_on_utc(
-            document.jobs, document.extra
+            document.jobs, document.extra, document.skipped
         )
-        # decode_jobs skips a malformed record with a warning; only a file
+        # decode_store skips a malformed record with a warning and keeps an
+        # object a snapshot restore accepts for _save to write back; only a file
         # with nothing parseable resets the whole store.
         # Fingerprint from the stat taken BEFORE the read: a writer racing in
         # between costs one redundant reload, never a lost update. The digest
@@ -473,9 +486,13 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
         written,
         version=self._store_version,
         extra=store_extra_for_save(
-            self._store_extra, written, deferred=self._store_version == DEFERRED_STORE_VERSION
+            self._store_extra,
+            written,
+            deferred=self._store_version == DEFERRED_STORE_VERSION,
+            skipped=self._skipped_records,
         ),
         unknown_fields=self._unknown_fields,
+        skipped=self._skipped_records,
     )
     # Atomic write: unique tmp → fsync → rename, then sync the directory so
     # the rename itself survives a sudden host restart. Without both syncs a
