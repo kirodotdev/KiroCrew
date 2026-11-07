@@ -671,8 +671,10 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
 # Matches the "Agent: ...\nTimeout: ...\n\n<prompt>" preamble that decompose_yaml
 # packs into Task.description on import, so export can round-trip it back out into
 # the dedicated `agent`/`timeout`/`prompt` YAML keys instead of double-wrapping.
+# The prompt part is optional: an agent with no prompt or shell is stripped down
+# to the bare "Agent: ...\nTimeout: ..." pair on import.
 _YAML_PREAMBLE_RE = re.compile(
-    r"^Agent:\s*(?P<agent>[^\n]*)\nTimeout:\s*(?P<timeout>[^\n]*)\n\n(?P<prompt>.*)$",
+    r"^Agent:\s*(?P<agent>[^\n]*)\nTimeout:\s*(?P<timeout>[^\n]*)(?:\n\n(?P<prompt>.*))?$",
     re.DOTALL,
 )
 
@@ -726,7 +728,7 @@ def plan_to_yaml(tasks: list[Task]) -> str:
                 spec["agent"] = agent_val
             if timeout_val:
                 spec["timeout"] = timeout_val
-            prompt = m.group("prompt")
+            prompt = m.group("prompt") or ""
         else:
             prompt = t.description or ""
         spec["prompt"] = prompt
