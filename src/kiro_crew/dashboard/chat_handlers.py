@@ -364,9 +364,11 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
+    _cancel_cron_run,
     _cancel_target,
     _compaction_in_flight,
     _make_stop_resolver,
+    _may_cancel_cron_run,
     _open_stop_event_card,
     _rearm_stop_event,
     _reject_pending_approvals,

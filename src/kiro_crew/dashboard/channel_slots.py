@@ -1100,7 +1100,7 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
     return surfaced
 
 
-#: Per-state memo of each channel tab's last-seen ``linked_turn_running``. Keyed
+#: Per-state memo of each tab's last-seen ``linked_turn_running``. Keyed
 #: weakly for the same reason as ``_RECONCILE_LOCKS``.
 _LINKED_RUNNING_SEEN: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = (
     weakref.WeakKeyDictionary()
@@ -1108,15 +1108,13 @@ _LINKED_RUNNING_SEEN: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = (
 
 
 def _linked_running_flipped(state: "DashboardState") -> bool:
-    """Whether any channel tab's channel-path turn started or ended since last pass.
+    """Whether any tab's linked-session turn started or ended since last pass.
 
     A turn the channel path runs holds the linked session's lease and no task
-    on the tab, so its end raises no slots push of its own: the reconciler's
-    push fires only when transcript rows changed, and the lease is often
-    released after the reply row was already pulled in -- or with no row at all
-    (an in-channel stop, a failure posted only to the channel). Without this the
-    sidebar kept showing the finished turn as running until some unrelated push.
-    Bounds that lag to one reconcile interval.
+    on the tab, so its start raises no slots push of its own, and its end only
+    the release observer's (``wire_session_release_listener``), which a release
+    absorbed after a reset never reaches: the reconciler's push fires only when
+    transcript rows changed. Bounds both lags to one reconcile interval.
     """
     seen = _LINKED_RUNNING_SEEN.get(state)
     if seen is None:
@@ -1124,8 +1122,6 @@ def _linked_running_flipped(state: "DashboardState") -> bool:
         _LINKED_RUNNING_SEEN[state] = seen
     now: dict[str, bool] = {}
     for name, slot in list(getattr(state, "_slots", {}).items()):
-        if not is_channel_session_key(getattr(slot, "linked_session_key", "") or ""):
-            continue
         try:
             now[name] = bool(slot.linked_turn_running)
         except Exception:

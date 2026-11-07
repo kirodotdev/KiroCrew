@@ -475,12 +475,114 @@ def test_a_linked_turns_row_names_no_turn_so_the_open_pane_runs(state: Any) -> N
     assert "turn" not in running and "turn_gen" not in running
 
 
-def test_a_non_channel_binding_does_not_read_the_lease(state: Any) -> None:
-    """A cron or resumed slot's linked session holds the same lease for its own
-    runs and for compaction; only a channel binding's turns run elsewhere."""
-    state._test_busy.add("cron:nightly")
-    slot = state.get_or_create_slot("cron-nightly", linked_session_key="cron:nightly")
+def test_a_workflow_binding_does_not_read_the_lease(state: Any) -> None:
+    """A workflow or resumed slot's linked session holds the same lease for its
+    own runs and for compaction; only a channel or cron binding's turns run
+    elsewhere."""
+    state._test_busy.add("dashboard:origin-chat")
+    slot = state.get_or_create_slot("workflow-run1", linked_session_key="dashboard:origin-chat")
     slot.messages.append({"role": "user", "content": "run", "ts": "t1"})
 
     assert slot.linked_turn_running is False
     assert slot.to_dict()["running"] is False
+
+
+def test_a_scheduled_cron_run_reads_running_on_its_tab_and_stops_there(
+    state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scheduler runs a persistent job on its tab's ``cron:<id>`` session with
+    no task on the tab, so the tab read idle, with no Stop, for the whole run. It
+    reads the lease as a channel tab does, Stop cancels the run as the Schedule
+    page's Cancel does (it posts nothing and counts nothing), and the reconcile
+    pass pushes the row when the run starts and when it ends."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
+    state.sessions.stop_turn = AsyncMock(return_value="soft")
+    state.crons = MagicMock()
+    state.crons.cancel = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("cron-nightly", linked_session_key="cron:nightly")
+    state.conversation_log = None  # the pass itself has nothing to surface
+    state.push_slots_update = MagicMock()
+
+    state._test_busy.add("cron:nightly")
+    assert slot.to_dict()["running"] is True
+    asyncio.run(channel_slots.reconcile_channel_slots(state, 30))
+    assert state.push_slots_update.call_count == 1, "run start pushed"
+    assert asyncio.run(stop_slot_turn(state, slot, cron_cancel=True))["ok"] is True
+    state.crons.cancel.assert_awaited_once_with("nightly")
+    state.sessions.stop_turn.assert_not_awaited()
+    # A one-shot whose pause did not reach the store is reported, as the Schedule
+    # page reports it, and the run is not cancelled a second way.
+    from kiro_crew.cron import CronPauseNotSaved
+
+    state.crons.cancel = AsyncMock(side_effect=CronPauseNotSaved("pause not saved"))
+    refused = asyncio.run(stop_slot_turn(state, slot, cron_cancel=True))
+    assert refused["ok"] is False and refused["code"] == "cron_pause_not_saved"
+    state.sessions.stop_turn.assert_not_awaited()
+    # A caller the cron cancel route refuses leaves the run alone, as on main.
+    state.crons.cancel = AsyncMock(return_value=False)
+    assert asyncio.run(stop_slot_turn(state, slot))["info"] == "not running"
+    state.crons.cancel.assert_not_awaited()
+    state.sessions.stop_turn.assert_not_awaited()
+    # An admitted caller with no run of the job going (another path holds the
+    # session): the turn on it is cancelled.
+    assert asyncio.run(stop_slot_turn(state, slot, cron_cancel=True))["already_stopping"] is True
+    state.sessions.stop_turn.assert_awaited_once_with(
+        "cron:nightly", force=False, preserve_queue=True
+    )
+
+    state._test_busy.discard("cron:nightly")
+    assert slot.to_dict()["running"] is False
+    asyncio.run(channel_slots.reconcile_channel_slots(state, 30))
+    assert state.push_slots_update.call_count == 2, "run end pushed"
+
+
+@pytest.mark.asyncio
+async def test_a_released_linked_lease_pushes_the_tab_without_the_reconciler(state: Any) -> None:
+    """With ``surface_channel_sessions`` off no reconcile pass runs, and an
+    injected completion or a pick landing that held ``cron:<id>`` pushes no row
+    of its own when it ends, so the release observer pushes it."""
+    from unittest.mock import MagicMock
+
+    state.sessions._fold_key = lambda key: key
+    state.wire_session_release_listener()
+    state.get_or_create_slot("cron-nightly", linked_session_key="cron:nightly")
+    state.push_slots_update = MagicMock()
+
+    state.sessions.on_session_released("cron:other")
+    await asyncio.sleep(0)
+    state.push_slots_update.assert_not_called()
+
+    state.sessions.on_session_released("cron:nightly")
+    await asyncio.sleep(0)
+    state.push_slots_update.assert_called_once_with()
+
+
+@pytest.mark.parametrize("owner", [True, False], ids=["owner", "non-owner"])
+def test_only_a_caller_the_cron_cancel_route_admits_cancels_the_run_from_its_tab(
+    state: Any, monkeypatch: pytest.MonkeyPatch, owner: bool
+) -> None:
+    """A tab Stop ends the cron run through the cron service only for a caller
+    ``POST /api/crons/{id}/cancel`` admits; a non-owner dashboard user's Stop
+    leaves the run alone (``stop_slot_turn`` answers "not running")."""
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+
+    from kiro_crew.dashboard.chat_handlers import _may_cancel_cron_run
+    from kiro_crew.dashboard.handlers import _shared
+
+    async def _gate(request: Any, operation: str) -> Any:
+        assert operation == "crons.cancel"
+        return None if owner else web.json_response({"code": "owner_only"}, status=403)
+
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", _gate)
+    request = MagicMock()
+    request.get = lambda key, default=None: "" if key == "app" else default
+
+    assert asyncio.run(_may_cancel_cron_run(request, state, "cron:nightly")) is owner
+    # Never for a session that is no cron job's own, whoever asks.
+    assert asyncio.run(_may_cancel_cron_run(request, state, "cron:nightly:agentA")) is False

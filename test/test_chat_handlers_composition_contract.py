@@ -75,7 +75,7 @@ _BASE_NAMES = frozenset("""
         _autocompact_txn_lock _autocompact_txn_locks _await_guarded_history_write
         _bounded_slot_page _broadcast_context_reset _broadcast_expired_oauth_banners
         _build_pending_context_entry _build_stream_chunk _bump_slot_tags_revision
-        _cancel_target _close_slot _coerce_requested_mode _collapse_wire_rows
+        _cancel_cron_run _cancel_target _close_slot _coerce_requested_mode _collapse_wire_rows
         _compaction_in_flight _configured_backend_for_slot _context_reading
         _context_snapshot_fields _context_snapshot_fields_inner _context_usage_payload
         _default_template_stamp _deny_app_session_settings _deny_app_yolo
@@ -90,6 +90,7 @@ _BASE_NAMES = frozenset("""
         _live_slot_for_resume _live_slot_resume_payload _load_favorite_projects
         _load_redacted _load_restore_cfg _local_turn_generation _local_turn_prompt
         _make_stop_resolver _mark_permission_resolved _materialise_slot_from_history
+        _may_cancel_cron_run
         _maybe_auto_title _model_rejected_reason _normalise_structured_content
         _normalize_model _normalize_slot_key _normalize_source _note_already_durable
         _note_delivered_live _note_owner_focus _open_stop_event_card
@@ -838,8 +839,10 @@ turn_stop | _rearm_stop_event | function | (slot: '_ChatSlot', stop_data: 'dict[
 turn_stop | _open_stop_event_card | function | (slot: '_ChatSlot', state_label: 'str') -> 'str'
 turn_stop | _make_stop_resolver | function | (state: 'DashboardState', slot: '_ChatSlot', outcome: 'str', card_id: 'str | None') -> 'Callable[[], Awaitable[None]]'
 turn_stop | _cancel_target | function | (slot: '_ChatSlot') -> 'str'
+turn_stop | _cancel_cron_run | async function | (state: "'DashboardState'", cancel_key: 'str') -> 'bool'
 turn_stop | _settle_discarded_stage_deliveries | async function | (state: "'DashboardState'", slot: "'_ChatSlot'", contents: 'list[str]') -> 'None'
-turn_stop | stop_slot_turn | async function | (state: "'DashboardState'", slot: "'_ChatSlot'", *, force: 'bool' = False, source: 'str' = 'dashboard', cancel_key: 'str' = '', escalate: 'bool' = True) -> 'dict[str, Any]'
+turn_stop | stop_slot_turn | async function | (state: "'DashboardState'", slot: "'_ChatSlot'", *, force: 'bool' = False, source: 'str' = 'dashboard', cancel_key: 'str' = '', escalate: 'bool' = True, cron_cancel: 'bool' = False) -> 'dict[str, Any]'
+turn_stop | _may_cancel_cron_run | async function | (request: 'web.Request', state: "'DashboardState'", cancel_key: 'str') -> 'bool'
 turn_stop | _compaction_in_flight | function | (state: 'DashboardState', cancel_key: 'str') -> 'bool'
 turn_stop | api_chat_slot_stop | async function | (request: 'web.Request') -> 'web.Response'
 turn_stop | api_chat_slot_interrupt | async function | (request: 'web.Request') -> 'web.Response'
