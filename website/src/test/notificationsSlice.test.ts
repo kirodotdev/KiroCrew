@@ -84,6 +84,21 @@ describe('notificationsSlice', () => {
       expect(state.items[1].ts).toBe('2')
     })
 
+    it('a repeated arrival is ignored, also in a full ring', () => {
+      let state = reducer(undefined, addNotification(n1))
+      const once = state
+      state = reducer(state, addNotification({ ...n1, title: 'again' }))
+      expect(state).toBe(once)
+      for (let i = 0; i < NOTIFICATIONS_RING_CAP; i++) {
+        state = reducer(state, addNotification({ kind: 'cron', title: `n${i}`, body: '', ts: `x${i}` }))
+      }
+      const full = state
+      state = reducer(state, addNotification({ kind: 'cron', title: 'again', body: '', ts: 'x5' }))
+      expect(state).toBe(full)
+      expect(state.items).toHaveLength(NOTIFICATIONS_RING_CAP)
+      expect(state.items[0].ts).toBe('x0')
+    })
+
     it('ackNotificationByTs marks as acked', () => {
       const state = reducer({ items: [n1, n2] }, ackNotificationByTs('1'))
       expect(state.items[0].acked).toBe(true)
