@@ -237,6 +237,13 @@ pages from closed chats are not reopened; cookies and logins are kept. The
 user's own Chrome or Edge is never touched. `browser.choice` (`auto|user_chrome|kiro_chromium|headless`)
 overrides the order by hand.
 
+A Kiro's Chromium that exits before the daemon answers fails the start at once
+with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
+to a pipe of the gateway's own, drained for the browser's whole life (only the
+newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a
+missing shared library is named by the loader's own report rather than by a
+60 s `the Harness daemon did not start in time`. On Windows stderr is discarded.
+
 Chrome 144+ asks "Allow remote debugging?" once per connection. The supervisor's
 `waiting_allow` state never times out that prompt; the live card shows the one
 step ("click Allow in Chrome") until it is answered.
