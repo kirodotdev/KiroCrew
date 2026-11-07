@@ -1,4 +1,4 @@
-"""Helpers for tests that assert on a spawn's argv, or on a real child's death.
+"""Helpers for tests that assert on a spawn's argv, or on a real child's death or interrupt.
 
 Resource limits are applied AFTER ``exec`` by ``kiro_crew._spawn_exec_shim``, so
 every spawn routed through ``sandbox.create_subprocess_limited`` carries an argv
@@ -10,8 +10,9 @@ rather than hard-coding the prefix, which varies with the resource profile.
 from __future__ import annotations
 
 import contextlib
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from kiro_crew.platform_compat import SIGKILL, kill_pid, pid_exists, pid_is_zombie
@@ -85,3 +86,19 @@ def kill_leftovers(pids: Sequence[int]) -> None:
         with contextlib.suppress(OSError, ValueError):
             if pid_exists(pid) and not pid_is_zombie(pid):
                 kill_pid(pid, SIGKILL)
+
+
+@contextlib.contextmanager
+def unblocked_signals() -> Iterator[None]:
+    """Spawn inside this with no signal blocked, as a terminal starts a command.
+
+    A child inherits the spawning thread's signal mask and keeps it across
+    exec, so a signal blocked in this thread never reaches a child the test
+    means to interrupt (POSIX only).
+    """
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, [])
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)

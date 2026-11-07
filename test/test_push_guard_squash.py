@@ -39,6 +39,7 @@ from push_guard_helpers import (
     _spy_popen,
     _write_message,
 )
+from spawn_test_helpers import unblocked_signals
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout, wait_until
@@ -484,13 +485,14 @@ class TestPushGuardSquash:
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
         _write_message(clone_dir)
 
-        proc = subprocess.Popen(
-            [sys.executable, PUSH_GUARD, "--base", "main", "--squash"],
-            cwd=clone_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        with unblocked_signals():
+            proc = subprocess.Popen(
+                [sys.executable, PUSH_GUARD, "--base", "main", "--squash"],
+                cwd=clone_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         try:
             wait_until(
                 lambda: mark.exists() or proc.poll() is not None,
