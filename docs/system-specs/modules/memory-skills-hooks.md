@@ -6548,6 +6548,12 @@ gate on it. The gate list is the same either way. It is for a bulk read on a wor
 whose per-file pool submissions would queue ahead of the loop's own checks; its one caller
 is the materialized-agent snapshot scan (`config/loader_snapshots._scan_materialized_index`).
 
+`safe_read_file_bytes_nolink(..., canonical_gate=True)` takes the same keyword. It passes it to
+`validate_file_path` / `screen_file_path` for the `realpath` they compute, and judges the opened
+descriptor's kernel path (the identity check and the within-root checks) the same way. The
+identity comparison itself is unchanged. Its caller is `agent_capabilities._read_spec`, the
+spec read behind the member start and the Capabilities pane.
+
 ### `safe_read_file_internal(read_id: str) -> bytes | None` (audited carve-out)
 
 A narrow, hardcoded allowlist (`_INTERNAL_READ_ALLOWLIST`) lets specific **system-internal**
