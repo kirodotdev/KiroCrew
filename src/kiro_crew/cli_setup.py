@@ -28,6 +28,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     EnvFileWideEncodingError,
     _default_workspace_base,
+    _env_name_key,
     _read_saved_workspace_dir,
     _workspace_dir_file,
     coerce_config_field,
@@ -749,8 +750,29 @@ def _prompt_verified_slack_value(
     return None, ""
 
 
+def _fold_env_spellings(pairs: dict[str, str], name: str) -> None:
+    """Leave *name* as the one spelling of its ``os.environ`` entry in *pairs*.
+
+    Windows ``os.environ`` is case-insensitive, so ``slack_bot_token`` and
+    ``SLACK_BOT_TOKEN`` are one entry, and boot keeps the first non-empty
+    spelling in file order. *name* takes that value and the other spellings go.
+    On POSIX the only spelling is *name*, which is left as it is.
+    """
+    canon = _env_name_key(name)
+    spellings = [k for k in pairs if _env_name_key(k) == canon]
+    live = next((pairs[k] for k in spellings if pairs[k]), "")
+    for k in spellings:
+        if k != name:
+            del pairs[k]
+    if spellings:
+        pairs[name] = live
+
+
 def _read_env_pairs(cred_path: Path) -> dict[str, str]:
     """Parse ``KEY=VALUE`` lines of *cred_path*; ``{}`` when it does not exist.
+
+    Each Slack name this step writes is folded to one spelling holding the value
+    in force, so the prompts show it and the save replaces it.
 
     Raises :class:`EnvFileWideEncodingError` for a UTF-16 or UTF-32 file,
     which the caller reports instead of rewriting.
@@ -761,6 +783,8 @@ def _read_env_pairs(cred_path: Path) -> dict[str, str]:
             if "=" in line and not line.startswith("#"):
                 k, _, v = line.partition("=")
                 pairs[k.strip()] = v.strip()
+    for name in (CRED_SLACK_APP_TOKEN, CRED_SLACK_BOT_TOKEN, CRED_OWNER_ID):
+        _fold_env_spellings(pairs, name)
     return pairs
 
 
