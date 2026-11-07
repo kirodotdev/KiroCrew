@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
 import os
 import zipfile
 from pathlib import Path
@@ -277,6 +278,45 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
         assert resp.status == 400, await resp.text()
         body = await resp.json()
         assert "does not match its type" in body["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "content_type"),
+    [
+        (".dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template"),
+        (".xltx", "application/vnd.openxmlformats-officedocument.spreadsheetml.template"),
+        (".potx", "application/vnd.openxmlformats-officedocument.presentationml.template"),
+    ],
+)
+async def test_upload_ooxml_template_is_accepted_and_zip_checked(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+    extension: str,
+    content_type: str,
+) -> None:
+    """An OOXML template uploads like its base format, under the same ZIP check."""
+    async with TestClient(TestServer(_make_app())) as client:
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", _minimal_docx_bytes(), filename=f"brand{extension}", content_type=content_type
+        )
+        with caplog.at_level(logging.INFO, logger="kiro_crew.dashboard.handlers.files"):
+            resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        saved = Path((await resp.json())["paths"][0])
+        assert mimetypes.guess_type(saved.name)[0] == content_type
+        diagnostic = [m for r in caplog.records if "upload.file diagnostic" in (m := r.getMessage())]
+        assert diagnostic and "is_zipfile=True" in diagnostic[0], diagnostic
+
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", b"<html>not a zip</html>", filename=f"fake{extension}", content_type=content_type
+        )
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        assert "does not match its type" in (await resp.json())["error"]
 
 
 @pytest.mark.asyncio
