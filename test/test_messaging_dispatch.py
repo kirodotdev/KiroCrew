@@ -17,10 +17,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
 from kiro_crew.session_allocation import SessionClosingError
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 
 class _Sessions:

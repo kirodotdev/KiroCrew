@@ -13,6 +13,10 @@ from kiro_crew.messaging import auto_title
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack.handler import handle_message, set_allowed_users, set_owner_id
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 #: These tests exercise the SLACK side (thread renaming), not the record
 #: pin, so they pass the value production supplies when there is nothing to
 #: pin. ``maybe_auto_title`` requires it, which is what stops a call site

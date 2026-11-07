@@ -1397,6 +1397,17 @@ owner of its responsibility:
 | `turn_stream` | `stream_and_collect` and `stream_and_collect_json` |
 | `background_turns` | `run_bg_oneliner` and `background_turn` |
 
+While the memory posture is critical, `background_turns` skips helper work:
+`run_bg_oneliner` at `BACKGROUND` start priority and every `background_turn` raise
+before acquiring a session, on the same `resource_status.admission_check` verdict that
+defers cron firings and task-runner steps (fail-open, off with
+`agent.admission_gate: false`), and the gate logs one INFO line per skip. The raise
+lands where a failed acquisition already does, so the skipped call sends and bills
+nothing and each caller's own failure path runs (history consolidation backs off and
+retries). A one-liner its caller starts at `FOREGROUND` is never skipped, and neither
+is the `nudge.wake` judge (`memory_gate=False`), whose refusal would fire the full wake
+turn it exists to suppress.
+
 The owners read the ACP layer's names (the `EVENT_*` kinds, `LLMEvent`, `LLMProvider`,
 `AcpError`, `TurnUsage` and the rest) from `agent_sdk/drivers/acp_turn_vocab.py`, so no
 owner imports `kiro_crew.acp` or `kiro_crew.providers` itself
