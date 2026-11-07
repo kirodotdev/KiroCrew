@@ -1984,7 +1984,7 @@ function ChatInput({
           <div className="flex items-center gap-2 min-w-0">
           {presence}
           {contextPct != null && (
-            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
+            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} cacheSlot={sessionOnPeer ? null : activeSlot} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (
             <ModelChip modelName={modelName} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />

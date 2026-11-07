@@ -575,6 +575,8 @@ describe('CrewChatWindow', () => {
     expect(screen.queryByRole('slider')).toBeNull()
     // The threshold read would ask THIS machine about a session it does not have.
     expect((mocks as Record<string, { mock?: { calls: unknown[] } }>).chatSlotAutocompact?.mock?.calls ?? []).toHaveLength(0)
+    // Nor would the cache hit rate's crew-log read, which only the peer holds.
+    expect((mocks as Record<string, { mock?: { calls: unknown[] } }>).sessionCrewLogProjections?.mock?.calls ?? []).toHaveLength(0)
   })
 
   it('names the PEER\'s folder as a label, with no picker and nothing rooted here', async () => {
