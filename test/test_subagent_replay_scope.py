@@ -484,6 +484,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         expect_ids: set[str] | None = None,
         app: str = "",
         manager=None,
+        restore_pending: bool = False,
     ):
         replayed: list[list[str]] = []
         active = {"now": 0, "peak": 0}
@@ -529,7 +530,14 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         state._folders = []
         state.folders_generation.return_value = 1
         state.tags_generation.return_value = 1
-        state._slots = {name: MagicMock() for name in slots}
+        restored = {name: MagicMock() for name in slots}
+        # A tab reconnecting into the boot window: the restore has rebuilt no slot
+        # yet, and finishes once the socket's frames are in.
+        state._slots = {} if restore_pending else restored
+        if restore_pending:
+            state.ready = False
+            state.slot_list_rebuilding = True
+            state.startup_tabs_rebuilt = asyncio.Event()
         state.native_subagent_snapshots.return_value = []
         state.subagents = manager
         state._ws_client_allowed.return_value = True
@@ -577,6 +585,12 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
             async def __anext__(self):
                 if self._queue:
                     return Msg(self._queue.pop(0))
+                if restore_pending and not state._slots:
+                    # The subscribe's replay task runs first, so the restore
+                    # ends while it is waiting.
+                    await asyncio.sleep(0)
+                    state._slots.update(restored)
+                    state.startup_tabs_rebuilt.set()
                 # The socket stays open until the replays the frames asked for
                 # have run, as a real client's would.
                 wake["event"] = asyncio.Event()
@@ -616,6 +630,16 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         assert _drawn(fake.sent) == {
             f"{u}-child-{n}" for u in ("acp-1-0", "acp-2-3", "acp-5-1") for n in range(2)
         }
+
+    def test_a_subscribe_before_the_boot_restore_replays_the_slots_it_rebuilds(
+        self, monkeypatch, folds
+    ):
+        slots = _home(3, 1, {(1, 0)})
+        frames = [{"type": "subscribe_subagents", "slots": [slots[1]]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch, frames, slots, expect_units={"acp-1-0"}, restore_pending=True
+        )
+        assert _drawn(fake.sent) == {f"acp-1-0-child-{n}" for n in range(2)}
 
     def test_a_subscribe_naming_no_slots_folds_nothing_until_a_focus(self, monkeypatch, folds):
         slots = _home(6, 3, {(0, 0), (3, 1)})
