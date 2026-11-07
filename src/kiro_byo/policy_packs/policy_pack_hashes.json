@@ -1,0 +1,5 @@
+{
+  "_comment": "Immutability manifest for policy packs. Each value is the sha256 of the sibling .json file. A deliberate pack change is a reviewable one-line update here; an accidental change fails the release-audit test. Regenerate with: python scripts/update_policy_pack_hashes.py",
+  "dyna.json": "e6585e14438692e92f69dc58c6a4fa3378171f40836da67bf7d7b283f6366d33",
+  "tiga.json": "ddd44fb9f5109a20ab619fd0ed6f84d0ff948d922a79be56ac3bb8d3a0580d16"
+}
