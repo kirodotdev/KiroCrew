@@ -2133,10 +2133,15 @@ name of the agent spec has reported initialized, failed or awaiting
 authorization, or the bound passes. The names come from the spec snapshot the
 unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
 skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
-kiro-cli (and, on the runtime, with `expect_mcp_reports`): kiro-cli launches
-the spec's own servers via `--agent` and reports each one. On another host a
-spec server may be held back or never report, and every run would pay the
-whole bound. `declared_not_ready()` decides the outcome: a webhook run records
+kiro-cli and KAS (and, on the runtime, with `expect_mcp_reports`): kiro-cli
+launches the spec's own servers via `--agent` and reports each one. KAS on the
+runtime declares only the spec's enabled servers that the session's wire array
+carries or the active custom agent's projected `mcpServers` keeps (a
+third-party server is not hoisted on `session/new`): it starts those and
+reports each in `_kiro/mcp/status`, while a spec server Crew held back from
+both would never report. On another host a spec server may be
+held back or never report, and every run would pay the whole bound.
+`declared_not_ready()` decides the outcome: a webhook run records
 `degraded` instead of `completed`. `declared_never_reported()` is what its
 notice names, because `problem_summary()` already names a failed or
 awaiting-authorization server with its reason. A cron run, which prints no
