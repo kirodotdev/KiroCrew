@@ -21,7 +21,6 @@ from kiro_crew.autonudge_service.model import (
     CONSECUTIVE_FAILURE_REASON,
     SESSION_START_FAILURE_REASON,
 )
-from kiro_crew.safety_override import safety_override
 
 from . import crew_model, crew_store, provider, store
 from .crew_runtime_prompt import compose_turn_prompt_async
@@ -34,11 +33,12 @@ from .crew_runtime_session import (
     _rehydrate,
     _slot_key,
     _turn_model_items,
-    autoapprove_scope,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
     launch_crew,
+    release_grant,
+    release_slot_grant,
     sync_trust,
 )
 
@@ -98,18 +98,12 @@ async def revoke_crew_execution(state: Any, crew: dict[str, Any], reason: str = 
     """
     _note_revocation(str(crew.get("id") or ""))
     slot_key = _slot_key(crew)
-    scope = autoapprove_scope(str(crew.get("id") or ""))
-    revoked = False
     slot = state.get_slot(slot_key) if hasattr(state, "get_slot") else None
-    # ``scope_remaining_secs`` and not ``is_scope_active``: the latter EXPIRES a
-    # lapsed grant and emits a ``scope_expired`` SEL event, so probing with it here
-    # would forge an expiry record for a grant this call is about to revoke anyway.
-    if safety_override().scope_remaining_secs(scope) > 0:
-        revoked = True
-    safety_override().deactivate_scope(scope)
+    # The seam probes the grant without expiring it, so no ``scope_expired`` SEL
+    # event is forged for a grant this call is about to revoke anyway.
+    revoked = release_grant(str(crew.get("id") or ""), slot)
     if slot is not None:
-        if getattr(slot, "_trust_scope", ""):
-            slot._trust_scope = ""
+        if release_slot_grant(slot):
             revoked = True
         # Also clear an interactive grant a human may have clicked onto this slot.
         # "Stop this crew" has to mean stopped, and unlike :func:`sync_trust` — which
@@ -907,12 +901,9 @@ def revoke_crew_grants(state: Any) -> int:
         # record may be gone.
         _note_revocation(str(key)[len(_CREW_SLOT_PREFIX) :])
         touched = False
-        # The scope key is read off the SLOT rather than rebuilt from the record:
-        # this walk exists precisely to catch a crew session whose record is gone.
-        scope = str(getattr(slot, "_trust_scope", "") or "")
-        if scope:
-            safety_override().deactivate_scope(scope)
-            slot._trust_scope = ""
+        # The grant is read off the SLOT rather than rebuilt from the record: this
+        # walk exists precisely to catch a crew session whose record is gone.
+        if release_slot_grant(slot):
             touched = True
         if getattr(slot, "_trust", False):
             from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust

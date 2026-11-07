@@ -37,6 +37,7 @@ from kiro_crew.apps.manager_tree import (
     _is_generated_deps_artifact_name,
     _remove_any_shape,
 )
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served by the apps.manager facade
     ConfigReadError,
     config_local_path,
@@ -124,6 +125,8 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # behind would authorize a pod for a different app later installed under this
         # name. Best-effort and no-op unless this app runs code outside the sandbox.
         revoke_host_exec(name)
+        # And its worker auto-approve grants, so none outlives the app.
+        revoke_worker_auto_approve(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
         logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
         return AppResult(

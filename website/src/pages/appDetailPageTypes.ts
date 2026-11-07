@@ -76,6 +76,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   linkOpenGrant?: LinkOpenGrantRow
   composerActionGrant?: ComposerActionGrantRow
   selectionActionGrant?: SelectionActionGrantRow
+  /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
+  workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   managed?: string
   source?: string
   installedAt?: string
@@ -114,6 +116,7 @@ interface AppPermissions {
   memory?: boolean | string
   sessionApproval?: boolean
   memberThreads?: boolean
+  workerAutoApprove?: boolean
   [key: string]: unknown
 }
 

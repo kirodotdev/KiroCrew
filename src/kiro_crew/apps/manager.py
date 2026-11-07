@@ -330,6 +330,15 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.selection_action_grants import (  # noqa: F401
         selection_action_grant_row,
     )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        WORKER_AUTO_APPROVE_GRANT_FAMILIES,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        revoke_app as revoke_worker_auto_approve,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        worker_auto_approve_grant_row,
+    )
     from kiro_crew.atomic_write import atomic_write  # noqa: F401
     from kiro_crew.config.loader import (  # noqa: F401
         ConfigReadError,

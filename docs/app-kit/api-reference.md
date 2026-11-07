@@ -1441,6 +1441,37 @@ is not lowercase letters, digits and `_` (at most 64) is recorded as
 `<app>_unnamed`. Withhold a flagged field yourself, then put a short line such as
 `[withheld: failed content screening]` in its place.
 
+### Worker auto-approve (`ctx.auto_approve`)
+
+A bounded auto-approve grant on a worker slot your app owns, so an agent session you
+run with nobody watching does not stall on a tool-approval prompt. Present only when the
+manifest declares `permissions.workerAutoApprove: true`; `None` otherwise and on an older
+host, so feature-detect it:
+
+```python
+grants = getattr(ctx, "auto_approve", None)
+if grants is None:
+    ctx.health.mark_degraded("unattended runs need permissions.workerAutoApprove")
+else:
+    ok = grants.hold(slot, "job-42", ttl_secs=900)   # mint, or slide a live grant
+    ...
+    grants.release("job-42", slot)                   # end it when the job stops
+```
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `hold(slot, name, *, ttl_secs)` | `bool` | Keep grant *name* live on *slot* for `ttl_secs` more (`0 < ttl_secs <= 86400`). Slides a live grant, mints an absent one. `False`, with nothing granted, when the slot is not your app's own, carries another holder's grant, the owner has not approved the permission, the app is off, the approval-mode policy denies auto-approve, or the audit could not be written. |
+| `release(name, slot=None)` | `bool` | End grant *name* and clear it from *slot*. Whether anything was live. |
+| `release_slot(slot)` | `bool` | Clear whatever grant your own *slot* carries. |
+| `scope(name)` | `str` | The grant's key, always inside your app's own namespace. |
+
+*name* is 1-128 letters, digits, `_`, `.` or `-` (first a letter or digit); a malformed
+name or TTL raises `ValueError`. The grant only skips the approval prompt: governance
+still checks every tool call, and every grant is audited. It ends when your app is
+disabled, uninstalled or loses trust, and the owner sees the permission at the trust
+prompt. An update that adds it keeps running without it until the owner approves it on
+the app's page.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,

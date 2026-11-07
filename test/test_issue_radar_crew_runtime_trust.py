@@ -109,12 +109,14 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
         self.assertIn("_reconcile_trust", dumped, "the exit guard does not reconcile the grant")
         self.assertIn("revoke_crew_execution", dumped, "the exit guard does not revoke")
 
-    def test_only_sync_trust_ever_writes_the_trust_scope(self):
+    def test_only_sync_trust_ever_holds_the_grant(self):
         """The scope attribute is the grant's carrier, so a second writer is a second
-        policy. Pinned across the module: ``revoke_crew_execution`` clears it on the
-        stop path, and nothing else may assign it."""
+        policy. The app writes it nowhere: the worker auto-approve seam does. And the
+        seam's ``hold`` is reached only from ``sync_trust``, through ``_hold_grant``;
+        the stop paths only release."""
         tree = ast.parse("\n".join(map(inspect.getsource, _runtime_modules())))
         writers = set()
+        holders = set()
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -125,7 +127,14 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
                 for target in targets:
                     if isinstance(target, ast.Attribute) and target.attr == "_trust_scope":
                         writers.add(node.name)
-        self.assertEqual(writers, {"sync_trust", "revoke_crew_execution", "revoke_crew_grants"})
+                if isinstance(inner, ast.Call):
+                    func = inner.func
+                    if isinstance(func, ast.Name) and func.id == "_hold_grant":
+                        holders.add(node.name)
+                    if isinstance(func, ast.Attribute) and func.attr == "hold":
+                        holders.add(node.name)
+        self.assertEqual(writers, set())
+        self.assertEqual(holders, {"sync_trust", "_hold_grant"})
 
     def test_every_async_grant_goes_through_the_generation_check(self):
         """A bare ``to_thread(sync_trust, ...)`` on an async path is the resurrection
@@ -789,7 +798,7 @@ class TestSharedApprovalPathIsUnchangedWithoutAScope(unittest.TestCase):
         """A human's grant needs no scope and must not depend on one being live."""
         slot = _FakeSlot("chat-1")
         slot._trust = True
-        slot._trust_scope = "crew:c_x:autoapprove"  # not active
+        slot._trust_scope = "app:issue-radar:grant:crew-c_x:autoapprove"  # not active
         self.assertTrue(_effectively_trusted(slot))
 
 
@@ -799,12 +808,12 @@ class TestAutoApproveProvenance(unittest.TestCase):
 
     def test_yolo_outranks_everything(self):
         slot = _FakeSlot("chat-1")
-        slot._trust_scope = "crew:c_x:autoapprove"
+        slot._trust_scope = "app:issue-radar:grant:crew-c_x:autoapprove"
         self.assertEqual(chat_runner._auto_approve_reason(slot, True), "yolo")
 
     def test_a_scoped_grant_is_named_as_such(self):
         slot = _FakeSlot("crew-c_x")
-        slot._trust_scope = "crew:c_x:autoapprove"
+        slot._trust_scope = "app:issue-radar:grant:crew-c_x:autoapprove"
         self.assertEqual(chat_runner._auto_approve_reason(slot, False), "trust_scope")
 
     def test_session_trust_is_still_reported_as_trust(self):

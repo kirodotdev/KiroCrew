@@ -28,6 +28,8 @@ from typing import Any, Callable, Iterator, NamedTuple, Sequence
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.apps.point_grants import point_grant_families
+from kiro_crew.apps.worker_auto_approve import WORKER_AUTO_APPROVE_GRANT_FAMILIES
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import ensure_directory
@@ -555,6 +557,9 @@ def _write_installed(
         # No-op when no grant exists. See ``apps.host_exec_grants``.
         if not credential_free_meta.enabled:
             revoke_host_exec(name)
+            # Same revoke-only rule for the app's worker auto-approve grants: one
+            # minted while a disable was in flight ends once the record says so.
+            revoke_worker_auto_approve(name)
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
@@ -910,7 +915,10 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
     manifest = app_info.get("manifest") or {}
     permissions = dict(manifest.get("permissions") or {})
     for family in STAGED_GRANT_FAMILIES:
-        if family not in permissions:
+        if family not in permissions or family in WORKER_AUTO_APPROVE_GRANT_FAMILIES:
+            # ``permissions.workerAutoApprove`` is a flag, not an entry list: it stays
+            # as declared, because every grant re-reads the owner's approval itself
+            # (``worker_auto_approve.app_holds_worker_auto_approve``).
             continue
 
         def _read(family: str = family) -> list[str] | None:

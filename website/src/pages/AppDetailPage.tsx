@@ -154,7 +154,9 @@ export default function AppDetailPage() {
   // Selection actions an update added or changed (a new source, more text, a new effect).
   const stagedSelection = app?.selectionActionGrant?.staged || []
   const declaredSelectionActions = (app?.manifest as { contributes?: { selectionActions?: unknown } } | undefined)?.contributes?.selectionActions
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length > 0 || stagedFullUrl || stagedOpenFullUrl
+  // An update that added `permissions.workerAutoApprove` waits the same way.
+  const stagedWorkerAutoApprove = app?.workerAutoApproveGrant?.staged === true
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -373,6 +375,7 @@ export default function AppDetailPage() {
             linkOpenGrant: installed.linkOpenGrant,
             composerActionGrant: installed.composerActionGrant,
             selectionActionGrant: installed.selectionActionGrant,
+            workerAutoApproveGrant: installed.workerAutoApproveGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -507,6 +510,7 @@ export default function AppDetailPage() {
             linkOpenGrant: installed.linkOpenGrant,
             composerActionGrant: installed.composerActionGrant,
             selectionActionGrant: installed.selectionActionGrant,
+            workerAutoApproveGrant: installed.workerAutoApproveGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -741,6 +745,7 @@ export default function AppDetailPage() {
         origin: app.origin,
         sessionApproval: app.manifest?.permissions?.sessionApproval === true,
         memberThreads: app.manifest?.permissions?.memberThreads === true,
+        workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
         replacesInstalled: app.installed === true,
@@ -877,6 +882,7 @@ export default function AppDetailPage() {
           origin: app.origin,
           sessionApproval: app.manifest?.permissions?.sessionApproval === true,
           memberThreads: app.manifest?.permissions?.memberThreads === true,
+          workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
         })
       } else if (action === 'enable' && isSessionApprovalConsentRequiredError(e)) {
         // The grant changed under the dialog (an update added a scope it did not
@@ -1242,6 +1248,9 @@ export default function AppDetailPage() {
               {stagedOpenFullUrl && (
                 <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>
               )}
+              {stagedWorkerAutoApprove && (
+                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_worker_auto_approve')}</div>
+              )}
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1254,7 +1263,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions))].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : [])].join(', ')
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1267,6 +1276,7 @@ export default function AppDetailPage() {
                     linkOpenFullUrl: stagedOpenFullUrl ? ['fullUrl'] : [],
                     composerActions: stagedComposerActions.map(actionGrant),
                     selectionActions: stagedSelection,
+                    workerAutoApprove: stagedWorkerAutoApprove ? ['ownSlots'] : [],
                   })
                   setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
@@ -1807,6 +1817,18 @@ export default function AppDetailPage() {
                     <div className="mt-1.5 text-[11px] text-muted">
                       {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>sessionApproval</code>
                       {app.manifest.permissions.memberThreads && <>, <code>memberThreads</code></>}
+                    </div>
+                  </div>
+                )}
+                {app.manifest.permissions.workerAutoApprove && (
+                  <div className="rounded-md border border-warn/30 bg-warn-subtle px-2.5 py-2">
+                    <div className="flex items-start gap-2 text-text">
+                      <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
+                      <span>{i18nT('pages.appDetailPage.worker_auto_approve_desc')}</span>
+                    </div>
+                    <div className="mt-1.5 text-[11px] text-muted">
+                      {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>workerAutoApprove</code>
+                      {stagedWorkerAutoApprove && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
                     </div>
                   </div>
                 )}

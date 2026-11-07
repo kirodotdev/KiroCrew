@@ -591,6 +591,11 @@ class Permissions:
     #: ``ctx.turns``: tool-gated under this app's identity, admitted as Crew
     #: automation. Declared for the same reason as ``spawn``.
     agentTurns: bool = False  # noqa: N815
+    #: May hold a bounded, audited auto-approve grant on the app's OWN worker
+    #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
+    #: Shown at the trust prompt and held back on a widening update like a new
+    #: API path; never above the approval ceiling.
+    workerAutoApprove: bool = False  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -624,6 +629,8 @@ class Permissions:
             d["proposeCrewmate"] = True
         if self.agentTurns:
             d["agentTurns"] = True
+        if self.workerAutoApprove:
+            d["workerAutoApprove"] = True
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -655,6 +662,7 @@ class Permissions:
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
+            workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 

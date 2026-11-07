@@ -12,9 +12,9 @@ from:
    ``_titled = True`` (the loop's messages never trigger the auto-titler), and
    re-deriving the crew's auto-approve grant from the watchdog every cycle because
    the grant is in-memory only and a gateway restart drops it. The grant itself
-   follows the TASK RUNNER instead: a scoped, expiring, SEL-audited
-   ``SafetyOverride`` grant (:func:`autoapprove_scope`), never the unbounded
-   ``slot._trust`` flag a human clicks.
+   follows the TASK RUNNER instead: a scoped, expiring, SEL-audited grant held
+   through the App Kit's worker auto-approve seam (:func:`autoapprove_scope`), never
+   the unbounded ``slot._trust`` flag a human clicks.
 
 2. **Brief injection by presence check** (:func:`brief_is_present`). Not a
    schedule, not a turn counter — one rule that covers session start,
@@ -1206,6 +1206,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         writable_labels,
     )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_runtime_session import (  # noqa: F401
+        _GRANTS,
         _HAS_SECURITY,
         APP_NAME,
         DEFAULT_IDLE_SECS,
@@ -1217,6 +1218,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _call_if_present,
         _capped_run_chat,
         _current_crew,
+        _grant_name,
         _hold_grant,
         _record_model_hold,
         _rehydrate,
@@ -1227,6 +1229,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         dispatch_crew_turn,
         ensure_crew_session,
         launch_crew,
+        release_grant,
+        release_slot_grant,
         stop_sentinel_path,
         sync_trust,
     )
@@ -1269,6 +1273,9 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
         register_slot_close_hook,
         register_slot_close_undo_hook,
     )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        WorkerAutoApprove,
+    )
     from kiro_crew.autonudge_service.model import (  # noqa: F401
         CONSECUTIVE_FAILURE_REASON,
         SESSION_START_FAILURE_REASON,
@@ -1281,9 +1288,6 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     )
     from kiro_crew.dashboard.chat_utils import (  # noqa: F401
         slot_history_key,
-    )
-    from kiro_crew.safety_override import (  # noqa: F401
-        safety_override,
     )
     from kiro_crew.security import (  # noqa: F401
         redact_credentials,
