@@ -1581,7 +1581,10 @@ operator's spelling, with one exception: `kiro_crew.env.saved_command_casing`
 heals an absolute command whose stem matches the directory entry exactly and
 whose extension differs only in case (`demo-mcp.EXE` -> `demo-mcp.exe`). That is
 the spelling an older build persisted from `PATHEXT`, so it repairs itself on
-the next rebuild; a stem written in different case is kept. Empty or
+the next rebuild; a stem written in different case is kept. An
+edition-contributed absolute command gets the same heal in
+`_extra_mcp_servers`, so every derived agent spec carries the on-disk spelling
+too, not only the main agent's. Empty or
 unresolvable commands remain unwrapped; an `OSError` while reading the parent,
 or an ambiguous case-insensitive match in a case-sensitive directory, keeps the
 `which` result. POSIX paths are unchanged. The normal cache-hit and
