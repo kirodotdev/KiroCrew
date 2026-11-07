@@ -326,7 +326,7 @@ export const CHUNK_BUDGETS = {
   // first-party code in this already-lazy chunk, no new dependency) built it at
   // 543,975 B, 231 B over. The same ~5% convention over that measurement
   // (543,975 B * 1.05 = 571,174 B), rounded up to whole KB, is 558 KB.
-  ModelEffortDropdown: 558 * KB, // measured 543,975 B on 2026-10-29 (~5% headroom)
+  ModelEffortDropdown: 560 * KB, // measured 558.6 KB; holds the eagerly bundled English catalog (i18n/enCatalog.ts), and this change adds about 3.6 KB of strings that are part of the fix
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`
