@@ -590,7 +590,17 @@ jobs:
           # the same distinction -- so normalising one spelling into the other
           # would be an inference. One extra read is cheaper than a comparison
           # that silently stops matching.
-          PR_AUTHOR="$(gh_retry gh api "repos/$REPO/pulls/$PR" --jq '.user.login')"
+          #
+          # The same read carries the native-stack trunk: REST's `stack` object
+          # is present only on a PR in a GitHub-native stack, and its
+          # `base.ref` is the branch the bottom PR targets. GitHub runs that
+          # branch's `pull_request` workflows on EVERY PR in the stack, so the
+          # trunk, not this PR's own base, decides whether CI / Fast Gate /
+          # Build / Internal Content Scan start. Empty for a PR outside a native
+          # stack.
+          pr_rest="$(gh_retry gh api "repos/$REPO/pulls/$PR")"
+          PR_AUTHOR="$(jq -r '.user.login' <<<"$pr_rest")"
+          STACK_TRUNK="$(jq -r '.stack.base.ref // ""' <<<"$pr_rest")"
           SHA="$(jq -r '.headRefOid' <<<"$pr_json")"
           STATE="$(jq -r '.state' <<<"$pr_json")"
           # The default branch is where CI / Build / CodeQL are gated to run
@@ -613,6 +623,7 @@ jobs:
             echo "draft=$(jq -r '.isDraft' <<<"$pr_json")"
             echo "url=$(jq -r '.url' <<<"$pr_json")"
             echo "base=$(jq -r '.baseRefName' <<<"$pr_json")"
+            echo "stack_trunk=$STACK_TRUNK"
             echo "author=$PR_AUTHOR"
             echo "default_branch=$DEFAULT_BRANCH"
             # (head repository, head branch) is how a monitored workflow run is
@@ -970,6 +981,7 @@ jobs:
           DRAFT: ${{ steps.context.outputs.draft }}
           FORK: ${{ steps.context.outputs.fork }}
           BASE_REF: ${{ steps.context.outputs.base }}
+          STACK_TRUNK: ${{ steps.context.outputs.stack_trunk }}
           DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
@@ -1013,9 +1025,23 @@ jobs:
           # bottom PR of the stack merges, GitHub auto-retargets this PR to the
           # default branch and CI/Build/CodeQL then run over the combined diff
           # before anything can reach the default branch.
+          #
+          # A GitHub-NATIVE stack is the exception for the `branches:`-filtered
+          # lanes: GitHub runs the trunk's `pull_request` workflows on every PR
+          # in the stack, mid-stack ones included, so CI / Fast Gate / Build /
+          # Internal Content Scan DO run there and must count. The
+          # filter is therefore judged against STACK_TRUNK when the PR is in a
+          # native stack, and against its own base otherwise, so a hand-made
+          # stack keeps the carve-out. CodeQL default-setup does not follow the
+          # stack (no mid-stack PR carries a CodeQL run), so it alone is still
+          # judged against the PR's own base.
           stacked=false
-          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+          if [ -n "$DEFAULT_BRANCH" ] && [ "${STACK_TRUNK:-$BASE_REF}" != "$DEFAULT_BRANCH" ]; then
             stacked=true
+          fi
+          codeql_ineligible=false
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            codeql_ineligible=true
           fi
 
           workflow_specs=()
@@ -1097,11 +1123,14 @@ jobs:
               "checkrun:Security Scope Review|Security Scope Review|scope-pr-|fast-gate.yml"
             )
           else
-            if [ "$stacked" = "true" ]; then
+            if [ "$codeql_ineligible" = "true" ]; then
               skipped+=("CodeQL (only runs on PRs to $DEFAULT_BRANCH)")
-              skipped+=("Internal Content Scan (only runs on PRs to $DEFAULT_BRANCH)")
             else
               workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
+            fi
+            if [ "$stacked" = "true" ]; then
+              skipped+=("Internal Content Scan (only runs on PRs to $DEFAULT_BRANCH)")
+            else
               # Blocking lane: an added line carrying an Amazon-internal marker
               # fails this and therefore fails readiness. Resolved by workflow
               # FILE, so the awkward reusable-workflow check name

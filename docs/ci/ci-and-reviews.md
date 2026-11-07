@@ -4263,9 +4263,15 @@ status plus one `readiness:` label**.
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
-  `branches: [main]` filter, so it sits in the same stacked-PR carve-out: on a PR
-  whose base is not the default branch it never starts, and a monitored lane that
-  reads `(not started)` would freeze the verdict at pending forever.
+  `branches: [main]` filter, so it sits in the same stacked-PR carve-out. The
+  aggregator judges that filter against the native-stack trunk (REST
+  `stack.base.ref`) when the PR is in a GitHub-native stack, and against the PR's
+  own base otherwise. GitHub runs the trunk's `pull_request` workflows on every PR
+  in a native stack, so a native stack on the default branch counts CI, Fast Gate,
+  Build and Internal Content Scan. A hand-made stack (base set to a feature branch,
+  no native stack) never starts them, so the aggregator skips them: a monitored
+  lane that reads `(not started)` would freeze the verdict at pending forever.
+  CodeQL does not follow the stack and stays judged against the PR's own base.
 - **Additionally required on a same-repo PR:** CodeQL, Opus 5.5 Review, GPT 6.1
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
