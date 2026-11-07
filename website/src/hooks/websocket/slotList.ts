@@ -13,6 +13,7 @@ import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
 import { autoBatched } from '../../lib/streamBatch'
 import { noteAppSlotRows } from '../../utils/appSlotPush'
+import { createSlotStorageSweep } from '../../utils/slotStorageSweep'
 
 export interface SlotListSync {
   /** A new connection: forget the last-seen generations and raw frame. */
@@ -39,6 +40,9 @@ export function useSlotListSync(
   const lastGovernanceGenRef = useRef<number | null>(null)
   const lastSlotsRawRef = useRef<string | null>(null)
   const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
+
+  // One orphan sweep for this hook's lifetime: it keeps the last complete key set.
+  const sweepSlotStorageRef = useRef(createSlotStorageSweep())
 
   return useMemo<SlotListSync>(() => ({
     resetForConnection() {
@@ -124,8 +128,27 @@ export function useSlotListSync(
       // reducer reads the slot list, nor does `sseSlots` read either flag.
       if (msg.yolo !== undefined) dispatch(autoBatched(sseYolo(msg.yolo)))
       if (msg.channelTrusted !== undefined) dispatch(autoBatched(setChannelTrusted(msg.channelTrusted)))
+      const snapshotSeenBefore = beforeSettle.slotsSnapshotSeen === true
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      // localStorage is a side effect, so the orphan sweep runs here, after the
+      // reducers have applied this frame's hold fields and rows.
+      if (Array.isArray(data)) {
+        const { chat: applied, dashboard: list } = store.getState()
+        try {
+          sweepSlotStorageRef.current({
+            rows: data,
+            keptKeys: list.slots.map(slot => slot.key),
+            activeSlot: applied.activeSlot,
+            hold: {
+              partial: applied.slotListPartial,
+              heldKeys: applied.slotListHeldKeys ?? [],
+              holdChannels: applied.slotListHoldChannels,
+            },
+            snapshotSeenBefore,
+          })
+        } catch { /* best-effort: storage may be unavailable */ }
+      }
       // The frame may predate a create or fork this tab just made; if the
       // reducer kept that session, one list read settles it.
       dispatch(readUnlistedMembers())
