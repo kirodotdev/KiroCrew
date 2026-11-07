@@ -42,9 +42,18 @@ def _discord(owners: list[str]) -> tuple[Any, AsyncMock]:
     return DiscordTransport(client, allowed_user_ids=owners), client.send_message
 
 
+def _telegram(owners: list[str]) -> tuple[Any, AsyncMock]:
+    from kiro_crew.telegram.transport import TelegramTransport
+
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=7)
+    return TelegramTransport(client, allowed_user_ids=[int(o) for o in owners]), client.send_message
+
+
 #: transport id -> (build the real transport with these owners, one owner id).
 _TRANSPORTS: dict[str, tuple[Callable[[list[str]], tuple[Any, AsyncMock]], str]] = {
     "discord": (_discord, "424242424242424242"),
+    "telegram": (_telegram, "123"),
 }
 
 
