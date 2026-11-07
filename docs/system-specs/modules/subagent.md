@@ -3965,9 +3965,9 @@ when the parent's own call already returned every member it carries:
   run, a missing or unknown outcome, and a caller with no resolvable session
   answer plain text and mark nothing. The live done response includes
   `outcome` and `stopped`, matching the disk fallback. The
-  gateway applies every rule below to that mark too, so for a parent that
-  settles at release a read in a later turn than the one that spawned the run
-  flags nothing and its completion is still delivered.
+  gateway applies every rule below to that mark too, so a read in a later turn
+  than the one that spawned the run flags nothing and its completion is still
+  delivered.
 - **Only the caller's own children are marked.** `mark-collected` sets
   `SubagentInfo._collected_inline` on each named record whose
   `parent_session_key` is the authorised claim; an unknown id, another parent's
@@ -3975,20 +3975,21 @@ when the parent's own call already returned every member it carries:
   `written: true` changes anything: a `kirocrew-core` that marks without it
   (one from before the mark moved behind the write) flags no record and touches
   no tab slot, so its members keep their completion events, a queued one
-  included. A dashboard-born parent's slot takes only the ids a written mark
-  flagged: they go on `_subagents_inline_collected`, the synthesis turn's
+  included. A mark touches no tab slot itself: a tab that shows the parent
+  takes the flagged ids only at the landed release of the turn that received
+  them, where they go on `_subagents_inline_collected`, the synthesis turn's
   bookkeeping, and a completion of theirs already queued there is settled
-  (`_settle_collected_on_slot`). A tab that shows any other parent is settled
-  the same way, but only by the landed release of the turn that received them.
-- **A mark is pending until its turn releases, for every parent that is not
-  dashboard-born.** `written` means the reply's bytes reached kiro-cli's pipe,
-  not that the parent's model finished with them: a cron deadline, a stop, a
-  reap or a failure can still end the turn first. So for every parent but a
-  dashboard-born one (`parent_turns.settles_at_release`), whether or not a tab
-  shows it, `mark-collected` holds the mark, pending (`_inline_state`,
-  `_inline_token`), under an attempt of the parent's permit: the token
-  `(key, task, epoch)`, the canonical key, the task holding the permit and the
-  attempt's epoch (`SessionManager.turn_token`, `kiro_crew.parent_turns`). An
+  (`_settle_collected_on_slot`).
+- **A mark is pending until its turn releases, for every parent.** `written`
+  means the reply's bytes reached kiro-cli's pipe, not that the parent's model
+  finished with them: a cron deadline, a stop, a reap or a failure can still
+  end the turn first. So for every parent, a dashboard tab's own turn included
+  (a user who presses Stop after the reply reached kiro-cli still gets the
+  result), whether or not a tab shows it, `mark-collected` holds the mark,
+  pending (`_inline_state`, `_inline_token`), under an attempt of the parent's
+  permit: the token `(key, task, epoch)`, the canonical key, the task holding the
+  permit and the attempt's epoch (`SessionManager.turn_token`,
+  `kiro_crew.parent_turns`). An
   attempt opens at the parent tool's spawn (`POST /api/spawn`), its done read
   (`GET /api/spawn/{id}`) or a landing note, and ends at `settle_turn` or
   `release`. A mark is held only under the attempt that spawned the child, and
@@ -4057,8 +4058,7 @@ when the parent's own call already returned every member it carries:
   `finally` decides its reset, on the cron route and the tab route alike (the
   tab's turn runs on the cron session); the tab route holds the count until the
   tab's turn has delivered it, then runs the deferred reset
-  (`_reset_cron_parent_when_idle`). A dashboard-born tab keeps its own skip:
-  `_delivered_inline`, asked at the same two points.
+  (`_reset_cron_parent_when_idle`).
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
   `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines
@@ -4111,11 +4111,10 @@ when the parent's own call already returned every member it carries:
   the open pipe while the same turn goes on to end on `end_turn`, so that
   turn's landing confirms a result it never read. How kiro-cli ends an
   abandoned call is not documented upstream and no test pins it; #25261
-  tracks getting it confirmed. A dashboard-born tab parent
-  still acknowledges a returned result while its own turn can be stopped, as on
-  main (#23495). Members are judged against Kiro Crew's own `MAX_RESPONSE_LEN`
-  cut; a harness with a smaller cap of its own (Claude Code saves an oversized
-  MCP result to a file) can drop a member a whole frame carried.
+  tracks getting it confirmed. Members are judged against Kiro Crew's own
+  `MAX_RESPONSE_LEN` cut; a harness with a smaller cap of its own (Claude Code
+  saves an oversized MCP result to a file) can drop a member a whole frame
+  carried.
 
 Each sub-agent runs as its own Kiro Crew-owned ACP session (via
 `SubagentManager`), so its text and tool calls stream live to the Activity
@@ -4583,11 +4582,11 @@ is registered for (`_live_run_ids`). `SubagentManager.queued_run_async(id)` /
   `No subagents running.` only when nothing runs AND nothing is queued.
 - A blocking `spawn_sub_agents` that collects a member inline whose announce had
   already queued on the slot (its delivery timed out waiting on the tool's turn)
-  has that queued announce removed and its delivery marks settled at
-  `mark-collected`, and keeps its id out of `_subagents_inline_collected`. That
-  set takes only ids the gateway knows, each at most `_COLLECTED_ID_MAX_LEN`
-  long, and at most `_COLLECTED_IDS_CAP` in total, since only a matching
-  completion evicts one.
+  has that queued announce removed and its delivery marks settled at the landed
+  release of the turn that received it (`_settle_inline`), and keeps its id out
+  of `_subagents_inline_collected`. That set takes only ids the gateway knows,
+  each at most `_COLLECTED_ID_MAX_LEN` long, and at most `_COLLECTED_IDS_CAP` in
+  total, since only a matching completion evicts one.
 
 The full transcript stays in `~/.kiro/crew/subagents/<id>/result.txt` for a
 **retention grace window** after delivery — on success the folder is *not*
