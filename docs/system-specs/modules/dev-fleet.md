@@ -1760,6 +1760,11 @@ choose the gateway's next image. Instead:
   (`backend_confined`: a replacement spawned inside the sandbox would inherit its
   confinement). In the gateway there is no confinement, so the last-resort
   foreground restart is *attempted* there — the same detached `kirocrew restart` the CLI's own restart uses.
+  It is never attempted for a gateway a generated service definition launched
+  (`_foreground_eligible` reads `launched_as_managed_service()` in the gateway):
+  the detached restart would run in the unit's cgroup and be stopped with the
+  gateway it stops, so Restart Gateway answers with the service reason and the
+  manual command, and Make Live is staged only.
 
 ### Live-worktree resolution
 
@@ -1865,7 +1870,10 @@ Fleet can also bounce the gateway:
   systemd > launchd > foreground, POSIX-only, and requires: an UNCONFINED
   backend (no `KIROCREW_SANDBOX_ACTIVE` marker, not inside
   `kirocrew-agents.slice` — a replacement spawned from inside the sandbox or
-  cgroup scope would inherit that confinement for the gateway's whole life);
+  cgroup scope would inherit that confinement for the gateway's whole life); a
+  gateway no generated service definition launched (see *Foreground restart*; a
+  definition old enough to lack the launch marker is not detected, and
+  `kirocrew doctor` asks for its re-install);
   exactly ONE run-marker whose recorded pid is alive; and the marker's own
   recorded `kirocrew` launcher (keystone-fenced `run/` dir — there is
   deliberately NO `PATH` fallback, which an agent-planted `~/.local/bin/kirocrew`
