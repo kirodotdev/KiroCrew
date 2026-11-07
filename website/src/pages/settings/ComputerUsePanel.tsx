@@ -63,8 +63,8 @@ function permLabel(state: string): string {
 const TERMINAL_PERM_STATES = new Set([GRANTED, 'unsupported', 'unknown'])
 
 /** Permission poll cadence, and the cap on how long it runs.
- *  Bounded because the poll shells out to a `kirocrew computer doctor --json`
- *  child on every tick: an unbounded poll on a host that never reports `granted`
+ *  Bounded because the poll spawns a permission-probe child process on every
+ *  tick: an unbounded poll on a host that never reports `granted`
  *  (the documented-normal case) spawns a subprocess every 5s forever, for as long
  *  as the Settings page stays open. 3 minutes is far longer than the round trip
  *  through System Settings, and the row still updates on any manual refetch. */
@@ -190,7 +190,7 @@ export function ComputerUsePanel() {
     // Poll ONLY while a grant is genuinely outstanding, so flipping the switch in
     // System Settings updates the row without a reload — and stop for the states
     // that a retry cannot change (see TERMINAL_PERM_STATES) or once the bound
-    // elapses. Each tick spawns a `kirocrew computer doctor --json` child, so an
+    // elapses. Each tick spawns a permission-probe child process, so an
     // unbounded poll on a host that legitimately never reports `granted` would
     // spawn one every 5s for as long as the page stays open.
     refetchInterval: q =>

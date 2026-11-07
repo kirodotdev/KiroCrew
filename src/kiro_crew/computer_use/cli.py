@@ -140,7 +140,7 @@ _USAGE = """kirocrew computer — desktop automation (computer use) diagnostics
 Commands:
   doctor           Show platform support, whether computer use is enabled, and
                    the macOS Accessibility / Screen Recording permission hints
-  doctor --json    The same report as JSON (used by the dashboard)
+  doctor --json    The same report as JSON
   apps             List applications with an on-screen window
   call <tool> [key=value ...]
                    Run one computer-use tool and print its reply
@@ -193,9 +193,9 @@ def _cmd_doctor(*, as_json: bool) -> None:
     """Print the support/enable/permission report."""
     report = build_doctor_report()
     if as_json:
-        # Exit 0 regardless: the dashboard reads the body, and a non-zero exit
-        # would make it treat a legitimately-unsupported platform as a probe
-        # failure and render "unknown" instead of the real reason.
+        # Exit 0 regardless: a caller reads the body, and a non-zero exit would
+        # make it treat a legitimately-unsupported platform as a probe failure
+        # and report "unknown" instead of the real reason.
         print(json.dumps(report, indent=2))
         return
 
@@ -249,8 +249,8 @@ def build_doctor_report() -> dict:
     """Assemble the doctor report. Never raises.
 
     Every probe is individually guarded and its failure recorded in ``errors``:
-    this function is what the dashboard shells out to, and it must produce a
-    usable payload on a machine where the accessibility framework will not load
+    this function backs ``kirocrew computer doctor``, and it must produce a
+    usable report on a machine where the accessibility framework will not load
     at all. A missing probe degrades to ``unknown``, never to ``granted``.
     """
     errors: list[str] = []
@@ -318,9 +318,7 @@ def _backend_withholding_tools() -> str | None:
 
     Runs only in the short-lived ``kirocrew computer`` process: the projection
     logs each withheld server as a session's would, into the data home's gateway
-    log, so every WARNING is silenced for the call. No session runs here, and the
-    Settings panel repeats this probe every few seconds while a permission is
-    missing.
+    log, so every WARNING is silenced for the call. No session runs here.
     """
     previous = logging.root.manager.disable
     logging.disable(logging.WARNING)

@@ -769,12 +769,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # in `cloud/ssm.py` above.
         "cloud/login_target.py::discover_local_identity",
         "dashboard/chat_voice.py::api_voice_voices",
-        # Computer-use permission probe: `<our own kirocrew binary> computer
-        # doctor --json`, a fixed argv (module constants) with no shell and no
-        # agent-reachable input — the handler passes nothing from the request
-        # body. The binary is resolved by `agent._kirocrew_mcp_invocation`, i.e.
-        # the SAME install as the running gateway (or `sys.executable -m
-        # kiro_crew`), never a PATH shim the agent could plant. It exists as a
+        # Computer-use permission probe: `<this interpreter> -P -m
+        # kiro_crew.computer_use.permission_probe`, a fixed argv (a module
+        # constant) with no shell and no agent-reachable input; the handler
+        # passes nothing from the request body. The interpreter is the gateway's
+        # own `sys.executable`, i.e. the SAME install as the running gateway,
+        # never a PATH shim the agent could plant. It exists as a
         # subprocess precisely to keep the native ctypes probe OUT of the
         # gateway: a missing ctypes argtypes is a SIGSEGV, not an exception, and
         # in-process it would take the chat sessions, cron scheduler and Slack
