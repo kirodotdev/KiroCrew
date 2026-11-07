@@ -1206,7 +1206,10 @@ jobs:
           # evaluation has checkrun: specs, and all seven read the same
           # collection. Paginated because a head carries one check-run per
           # JOB (89 on a typical same-repo head), and the second page is the
-          # one that would otherwise drop the lane posted last.
+          # one that would otherwise drop the lane posted last. `filter=all`:
+          # the default can omit an older completed row of a name, so a sibling
+          # PR's newer verdict on this SHA can hide the row the external_id
+          # binding below looks for.
           sha_check_runs=""
 
           # The three whole-design lanes' comment slots, read ONCE here beside
@@ -1315,7 +1318,7 @@ jobs:
               fi
               if [ -z "$sha_check_runs" ]; then
                 sha_check_runs="$(gh_retry gh api --method GET --paginate \
-                  "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                  "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" \
                   | jq -cs '{check_runs: [.[].check_runs[]]}')" || {
                   rc=$?
                   # 22 = permanent HTTP error (misconfiguration): fail loud so it
@@ -2332,8 +2335,9 @@ jobs:
             # The seven Stage-2 fork review lanes run from the default branch,
             # so the runs page above never shows them on a fork head; the
             # verdict step reads them from the head SHA's check-runs, and so
-            # does this re-check, bound the same way: each lane stamps its row
-            # with `<prefix><PR>-<Fast Gate run id>-<attempt>`, and only a row
+            # does this re-check, with the same `filter=all` and bound the same
+            # way: each lane stamps its row with
+            # `<prefix><PR>-<Fast Gate run id>-<attempt>`, and only a row
             # naming THIS pull request AND the newest Fast Gate run + attempt
             # for this head is current. The attempt is what makes a Fast Gate
             # re-run visible: the previous attempt's seven rows still sit on
@@ -2364,7 +2368,7 @@ jobs:
                 TARGET_LABEL="readiness: checking"
                 DESCRIPTION="readiness check(s) changed since evaluation; re-checking Fast Gate"
               elif fork_state="$(gh_retry gh api --method GET --paginate \
-                "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" \
                 | jq -rs --arg pr "$PR" --arg fg "$fast_gate" \
                   --argjson legacy "$LEGACY_LANE_NAMES" '
                   ($legacy | with_entries({key: .value, value: .key})) as $old_name

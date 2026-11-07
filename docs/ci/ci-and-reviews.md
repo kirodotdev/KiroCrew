@@ -4802,7 +4802,10 @@ rerun on an unchanged head leaves the previous attempt's row in place, so a
 name-only read could let a sibling PR's clean verdict — or a stale previous-attempt
 row — answer for this PR. Readiness derives the expected id from the newest run of
 the triggering workflow (`Fast Gate`); when no matching row exists yet the lane
-reads as pending, which holds the merge rather than borrowing an answer. A
+reads as pending, which holds the merge rather than borrowing an answer. The read
+passes `filter=all`: the endpoint's default can omit an older completed row of a
+name (measured in #10116), so a sibling PR's newer verdict on the shared SHA can
+hide this PR's own row and hold the lane pending. A
 human-override rerun (`gh api .../runs/<id>/rerun`) re-executes a lane's run
 directly without Fast Gate re-running, so the trigger-bound id stays identical
 between the stale failed attempt and the fresh rerun -- readiness resolves that by

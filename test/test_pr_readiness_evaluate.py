@@ -72,7 +72,14 @@ if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   fi
 fi
 case "$url" in
-  *"/commits/"*"/check-runs"*)             cat "$FIXTURES/check_runs.json"; exit 0 ;;
+  *"/commits/"*"/check-runs"*)
+    # A test may supply what the endpoint's default filter (latest) returns,
+    # which can omit an older completed row of a name. It answers a read
+    # without filter=all.
+    if [ -f "$FIXTURES/check_runs_latest.json" ] && [[ "$url" != *"filter=all"* ]]; then
+      cat "$FIXTURES/check_runs_latest.json"; exit 0
+    fi
+    cat "$FIXTURES/check_runs.json"; exit 0 ;;
   *"/commits/"*"/status"*)
     # The truncated-fallback's defer guard: the CURRENT "PR Readiness"
     # commit-status state (gh applies --jq itself, so the stub emits the
@@ -1258,6 +1265,34 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
         assert proc.returncode == 0, proc.stderr
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert "Internal Content Scan (not started)" not in summary
+
+    def test_a_siblings_newer_row_does_not_hide_this_prs_own(self, runner: Runner):
+        # Two PRs share the head SHA and the sibling's red row completed last.
+        # The default listing can omit an older completed row of the name, so a
+        # read that does not ask for every row never sees this PR's own green
+        # verdict.
+        own = {
+            "id": 1,
+            "name": "Internal Content Scan",
+            "status": "completed",
+            "conclusion": "success",
+            "external_id": self._id_for(runner, pr=runner.env["PR"], attempt=1),
+        }
+        sibling = {
+            **own,
+            "id": 2,
+            "conclusion": "failure",
+            "external_id": self._id_for(runner, pr="9999", attempt=1),
+        }
+        (runner.fixtures / "check_runs.json").write_text(json.dumps({"check_runs": [own, sibling]}))
+        (runner.fixtures / "check_runs_latest.json").write_text(
+            json.dumps({"check_runs": [sibling]})
+        )
+
+        proc, outputs = runner.evaluate(fork=True)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "Internal Content Scan" in _bucket(_lane_log(proc), "passed")
 
 
 class _ForkLaneVerdictBinding:
