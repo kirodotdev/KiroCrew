@@ -1,10 +1,14 @@
 import { createElement } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useMemo } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
+import { defaultAgentQuery } from '../../../api/defaultAgentQuery'
 import { i18nT } from '../../../i18n/t'
+import { unwrapSkills, type SkillsPayload } from '../../../lib/skillsPayload'
+import { useAppSelector } from '../../../store'
+import { slotRowByKey } from '../../../store/slotIndex'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { resolveInvokableEnter, usePaletteActions } from '../paletteActions'
 import type { Result, ResourceProvider } from '../types'
@@ -30,9 +34,11 @@ import type { Result, ResourceProvider } from '../types'
  * allowlisted resolution. No filesystem path is built from user input here and
  * no second resolution path is introduced (see `paletteActions.ts`).
  *
- * Matching is a client-side {@link fuzzyMatch} over the skill **name**. The
- * list is cached under the React-Query key `['skills']` (shared
- * with `SkillsTab` / the inline `$`-picker) so reopening the palette is free.
+ * Matching is a client-side {@link fuzzyMatch} over the skill **name**. With a
+ * chat open the list is asked for the way that chat's inline `$`-picker asks
+ * (its session key and agent), because a `$token` only expands for a skill in
+ * the chat agent's own mapping; with no chat it is the unscoped catalog under
+ * `['skills']`, shared with `SkillsTab`. Reopening the palette is free.
  * Highlight `indices` index into the rendered `title` and are emitted as React
  * nodes by the palette, never as HTML strings (`frontend-security` lint rule).
  */
@@ -46,7 +52,7 @@ const PROVIDER_ID = 'skills'
  */
 const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.skillsProvider.skills'
 
-/** Cache the skill list briefly; reuses the `['skills']` React-Query entry. */
+/** Cache the skill list briefly; reuses the picker's or `SkillsTab`'s entry. */
 const SKILLS_STALE_MS = 30_000
 
 /** Where ⌥Enter ("open SKILL.md") navigates — the skills/prompts catalog. */
@@ -64,6 +70,9 @@ export interface SkillItem {
   path?: string
   category?: string
   always?: boolean
+  /** `kiro-workspace` rows carry `trusted`; an untrusted one's token is sent as literal text. */
+  source?: string
+  trusted?: boolean
 }
 
 /** A skill reference passed to the preview callback. */
@@ -88,6 +97,8 @@ export interface SkillsProviderDeps {
   newSessionWithToken: (token: string) => void
   /** Open the skill's SKILL.md / preview (⌥Enter). */
   openSkillDoc: (ref: SkillRef) => void
+  /** {@link ResourceProvider.scope}: the chat the list is asked for. */
+  scope?: string
 }
 
 /** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
@@ -119,6 +130,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
     // tab strip reads it. Satisfies `ResourceProvider.label: string`.
     get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: skillIcon(),
+    scope: deps.scope,
     async search(query: string): Promise<Result[]> {
       const skills = (await fetchSkills()) ?? []
 
@@ -128,6 +140,9 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
       // (e.g. source "kirocrew" + "aim"). Keep the first occurrence.
       const seen = new Set<string>()
       for (const s of skills) {
+        // The $-picker asks for consent on this row; the palette cannot, so it
+        // does not offer a token that would be sent as literal text.
+        if (s.source === 'kiro-workspace' && s.trusted === false) continue
         if (seen.has(s.name)) continue
         seen.add(s.name)
         const title = s.name
@@ -179,8 +194,8 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
  * chat store via {@link usePaletteActions}.
  *
  * Per the `use-react-query` lint rule the skill list is fetched through
- * React-Query under the key `['skills']` (identical to `SkillsTab` and the
- * inline `$`-picker, so the cache is shared). `queryClient.fetchQuery` is used
+ * React-Query, keyed the way the active chat's `$`-picker keys it (or
+ * `['skills']`, as `SkillsTab` does, with no chat). `queryClient.fetchQuery` is used
  * rather than `useQuery` because a {@link ResourceProvider}'s `search` is an
  * imperative call from the palette, not a render-time subscription.
  *
@@ -195,19 +210,30 @@ export function useSkillsProvider(opts?: {
   const openSkillDocOverride = opts?.openSkillDoc
 
   const { hasActiveChat, insertToken, newSessionWithToken, navigate } = actions
+  const activeSlot = useAppSelector((s) => s.chat.activeSlot)
+  const slotAgent = useAppSelector((s) => slotRowByKey(s.dashboard.slots, activeSlot)?.agent || '')
+  const project = useAppSelector((s) => slotRowByKey(s.dashboard.slots, activeSlot)?.project || '')
+  const slotKey = activeSlot === null ? undefined : `dashboard:${activeSlot}`
+  // An agent-less chat runs the default template; ChatPage hands its picker the same fallback.
+  const { data: defaultTemplate } = useQuery({
+    ...defaultAgentQuery, select: (d) => d.default_template, enabled: !!slotKey && !slotAgent,
+  })
+  const agent = slotKey ? slotAgent || defaultTemplate || 'default' : undefined
+  const skillsKey = useMemo(() => (slotKey ? ['skills', slotKey, project, agent] : ['skills']), [slotKey, project, agent])
 
   return useMemo(
     () =>
       createSkillsProvider({
-        fetchSkills: () =>
-          queryClient.fetchQuery<SkillItem[]>({
-            queryKey: ['skills'],
-            queryFn: ({ signal }) => api.skills(undefined, undefined, signal) as Promise<SkillItem[]>,
+        fetchSkills: async () =>
+          unwrapSkills(await queryClient.fetchQuery<SkillsPayload<SkillItem>>({
+            queryKey: skillsKey,
+            queryFn: ({ signal }) => api.skills(slotKey, agent, signal) as Promise<SkillsPayload<SkillItem>>,
             staleTime: SKILLS_STALE_MS,
-          }),
+          })).items,
         hasActiveChat,
         insertToken,
         newSessionWithToken,
+        scope: JSON.stringify(skillsKey),
         openSkillDoc:
           openSkillDocOverride ??
           (() => {
@@ -217,6 +243,9 @@ export function useSkillsProvider(opts?: {
       }),
     [
       queryClient,
+      skillsKey,
+      slotKey,
+      agent,
       hasActiveChat,
       insertToken,
       newSessionWithToken,
