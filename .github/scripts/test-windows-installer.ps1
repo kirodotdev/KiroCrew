@@ -605,6 +605,236 @@ try {
 }
 }
 
+# Running-app detection, proved on the real artifact. Every step above installs
+# where nothing of Kiro Crew is running, so it passes whether the installer's
+# running-app check works or not. This section closes that gap for the check
+# itself: the PowerShell program build/installer.nsh's KiroFindAppProcess hands
+# nsExec is read out of the shipped source and run under Windows PowerShell 5.1
+# (the interpreter the installer uses) against live processes. It must report
+# this install's executable running as a single process, and must NOT report
+# copies running from the sibling "<install dir> Nightly" directory.
+# electron-builder's own FIND_PROCESS program, read the same way from the pinned
+# template, must report those sibling copies -- the false match this installer
+# replaces -- so the check is shown to discriminate on this runner. No installer
+# runs here; the install, the gateway boot above and the uninstall below are the
+# installer's end-to-end coverage.
+#
+# The held process is the installed KiroCrew.exe itself, run with
+# ELECTRON_RUN_AS_NODE=1 and a timer as its whole program. Its image path is the
+# real executable's, which is all the detection reads, while it opens no window,
+# boots no gateway and writes nothing into the install tree or a data home, so it
+# cannot leave residue for the uninstall assertion below. The timer ends it after
+# ten minutes even if every cleanup step here were skipped.
+$heldProgram = "setTimeout(function(){},600000)"
+$windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+
+function Start-HeldAppProcess {
+  param([string]$Executable)
+
+  $savedRunAsNode = $env:ELECTRON_RUN_AS_NODE
+  try {
+    $env:ELECTRON_RUN_AS_NODE = "1"
+    $held = Start-Process -FilePath $Executable -ArgumentList @("-e", $heldProgram) `
+      -WorkingDirectory (Split-Path -Parent $Executable) -WindowStyle Hidden -PassThru
+  } finally {
+    if ($null -eq $savedRunAsNode) {
+      Remove-Item -Path "Env:ELECTRON_RUN_AS_NODE" -ErrorAction SilentlyContinue
+    } else {
+      $env:ELECTRON_RUN_AS_NODE = $savedRunAsNode
+    }
+  }
+
+  # Prove the precondition rather than assume it: the process is alive and the
+  # OS reports the very image path the detection matches on. A process that is
+  # gone, or that re-launched itself elsewhere, would make every check vacuous.
+  $observedPath = $null
+  $heldDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 250
+    $held.Refresh()
+    $instance = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($held.Id)" -ErrorAction SilentlyContinue
+    if ($instance) {
+      $observedPath = $instance.ExecutablePath
+    }
+  } while (-not $held.HasExited -and -not $observedPath -and [DateTime]::UtcNow -lt $heldDeadline)
+  if ($held.HasExited) {
+    throw "The held process from $Executable exited with code $($held.ExitCode) before the check started."
+  }
+  if (-not $observedPath -or $observedPath -ine $Executable) {
+    Stop-Process -Id $held.Id -Force -ErrorAction SilentlyContinue
+    throw "The held process reports image path '$observedPath'; expected '$Executable'."
+  }
+  # Still alive a moment later: the program is a timer, so an early exit here is
+  # a launch failure, not the installer's doing.
+  if ($held.WaitForExit(2000)) {
+    throw "The held process from $Executable exited with code $($held.ExitCode) before the check started."
+  }
+  return $held
+}
+
+# End the held process and anything else running that same image (a runtime
+# helper it may have started), so neither the sibling copy's removal nor the
+# final uninstall is blocked by a file still in use.
+function Stop-HeldAppProcess {
+  param($Held, [string]$Executable)
+
+  foreach ($leftover in @(
+    Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $Executable }
+  )) {
+    Stop-Process -Id $leftover.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  if ($null -ne $Held) {
+    $Held.WaitForExit(10000) | Out-Null
+  }
+}
+
+# The PowerShell program an NSIS macro passes to nsExec, as the installer would
+# run it for $installLocationFull. Read from the macro's own source line so the
+# check exercises the shipped text rather than a copy of it: the install-dir
+# token is substituted (apostrophes doubled, as KiroPsSingleQuote does), the app
+# executable define is expanded, and NSIS's `$$` escape becomes `$`.
+function Get-RunningAppPredicate {
+  param([string]$SourcePath, [string]$MacroName, [string]$InstallDirToken)
+
+  $source = Get-Content -LiteralPath $SourcePath -Raw
+  $macro = [regex]::Match($source, "(?ms)^!macro $MacroName\b.*?^!macroend")
+  if (-not $macro.Success) {
+    throw "No !macro $MacroName in $SourcePath."
+  }
+  $line = [regex]::Match($macro.Value, '"\$PowerShellPath" -C "(?<program>[^\r\n]*)"`')
+  if (-not $line.Success) {
+    throw "!macro $MacroName in $SourcePath has no PowerShell probe line."
+  }
+  $program = $line.Groups["program"].Value
+  $program = $program.Replace($InstallDirToken, $installLocationFull.Replace("'", "''"))
+  $program = $program.Replace('${APP_EXECUTABLE_FILENAME}', "$productFilename.exe")
+  return $program.Replace('$$', '$')
+}
+
+# Exit code of a predicate program under Windows PowerShell 5.1: 0 = "a matching
+# process is running", 1 = "none is". Passed encoded so no quoting layer between
+# here and the interpreter can alter the program text.
+function Invoke-RunningAppPredicate {
+  param([string]$Program)
+
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Program))
+  & $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand $encoded | Out-Null
+  $verdict = $LASTEXITCODE
+  # A "not running" verdict is exit 1 by design. Clear it so it is not taken for
+  # this script's own exit code, which the runner reads from $LASTEXITCODE when
+  # the script ends.
+  $global:LASTEXITCODE = 0
+  return $verdict
+}
+
+# What a predicate saw, for a verdict that came out wrong: the programs as run,
+# and the held process as Windows PowerShell 5.1 reports it, including whether
+# its `Path` property (the one both predicates read) is populated.
+function Write-PredicateDiagnostics {
+  param($Held, [string[]]$Programs)
+
+  foreach ($program in $Programs) {
+    Write-Host "  predicate program: $program"
+  }
+  $probe = "Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = $($Held.Id)' | " +
+    "ForEach-Object { 'Path=[' + `$_.Path + '] ExecutablePath=[' + `$_.ExecutablePath + ']' }; " +
+    "'PSVersion=' + `$PSVersionTable.PSVersion; 'ExecutionPolicy=' + (Get-ExecutionPolicy -Scope Process)"
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+  foreach ($line in @(& $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1)) {
+    Write-Host "  as PowerShell 5.1 sees pid $($Held.Id): $line"
+  }
+}
+
+function Get-InstallTreeProcesses {
+  @(
+    Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith("$installLocationFull\", [StringComparison]::OrdinalIgnoreCase)
+      }
+  )
+}
+
+$ownPredicate = Get-RunningAppPredicate (Join-Path (Get-Location) "build\installer.nsh") "KiroFindAppProcess" '$0'
+$upstreamPredicate = Get-RunningAppPredicate (
+  Join-Path (Get-Location) "node_modules\app-builder-lib\templates\nsis\include\allowOnlyOneInstallerInstance.nsh"
+) "FIND_PROCESS" '$INSTDIR'
+$siblingDir = "$installLocationFull Nightly"
+$siblingExecutable = Join-Path $siblingDir "$productFilename.exe"
+
+# This install's app running: the installer's check must see it.
+$heldOwn = $null
+try {
+  $heldOwn = Start-HeldAppProcess $installedExecutable
+  $ownVerdict = Invoke-RunningAppPredicate $ownPredicate
+  $upstreamOwnVerdict = Invoke-RunningAppPredicate $upstreamPredicate
+  if ($ownVerdict -ne 0) {
+    Write-PredicateDiagnostics $heldOwn @($ownPredicate, $upstreamPredicate)
+    throw ("With $installedExecutable running as one process, the installer's running-app check exited " +
+      "$ownVerdict; it must see it (exit 0).")
+  }
+  # Reported, not asserted: electron-builder's own check reads `.Count` off a
+  # bare single match, which Windows PowerShell 5.1 does not populate, so it
+  # misses an app running as exactly one process.
+  Write-Host ("With this install's app running as one process, the installer's running-app check exited " +
+    "$ownVerdict and electron-builder's exited $upstreamOwnVerdict (0 = sees it).")
+} finally {
+  Stop-HeldAppProcess $heldOwn $installedExecutable
+}
+
+# The sibling running. Only the top-level runtime files are copied: the held
+# program needs the Electron runtime beside the executable, not the app's
+# resources or the uninstaller.
+$heldSibling = $null
+try {
+  New-Item -ItemType Directory -Path $siblingDir -Force | Out-Null
+  Get-ChildItem -LiteralPath $installLocation -File |
+    Where-Object { $_.Name -notlike "Uninstall*" } |
+    Copy-Item -Destination $siblingDir
+  # Two processes, as a real running app has (window, renderer, helpers): a
+  # single match is the case electron-builder's check misses (see above), so
+  # one held sibling would not reproduce the false match it raises in the field.
+  $heldSibling = Start-HeldAppProcess $siblingExecutable
+  $null = Start-HeldAppProcess $siblingExecutable
+
+  # Nothing runs from the install tree now, so a match by either check can only
+  # be the sibling.
+  $inTree = @(Get-InstallTreeProcesses)
+  if ($inTree.Count -ne 0) {
+    throw "Expected nothing running from $installLocationFull; found pid(s) $(($inTree | ForEach-Object { $_.ProcessId }) -join ', ')."
+  }
+  $upstreamVerdict = Invoke-RunningAppPredicate $upstreamPredicate
+  if ($upstreamVerdict -ne 0) {
+    Write-PredicateDiagnostics $heldSibling @($upstreamPredicate)
+    throw ("electron-builder's own running-app check (exit $upstreamVerdict) did not match the sibling " +
+      "$siblingExecutable, so this runner does not reproduce the false match the installer's check replaces.")
+  }
+  $ownVerdict = Invoke-RunningAppPredicate $ownPredicate
+  if ($ownVerdict -ne 1) {
+    Write-PredicateDiagnostics $heldSibling @($ownPredicate)
+    throw "The installer's running-app check (exit $ownVerdict) matched the sibling $siblingExecutable."
+  }
+  Write-Host "electron-builder's own check matches the running sibling; the installer's check does not."
+} finally {
+  Stop-HeldAppProcess $heldSibling $siblingExecutable
+  # The held process is gone, but Windows can release its image a beat later.
+  $siblingDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  while ((Test-Path -LiteralPath $siblingDir) -and [DateTime]::UtcNow -lt $siblingDeadline) {
+    Remove-Item -LiteralPath $siblingDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $siblingDir) {
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
+if (Test-Path -LiteralPath $siblingDir) {
+  throw "Could not remove the sibling copy at $siblingDir."
+}
+if ($env:GITHUB_STEP_SUMMARY) {
+  Add-Content -Path $env:GITHUB_STEP_SUMMARY `
+    -Value "Windows running-app check: sees this install's running app, ignores a running sibling install."
+}
+
 $uninstaller = Get-ChildItem -LiteralPath $installLocation -File -Filter "Uninstall*.exe" |
   Select-Object -First 1
 if (-not $uninstaller) {
