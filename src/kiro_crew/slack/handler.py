@@ -317,6 +317,7 @@ from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
 )
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _append_footer_actions,
+    _backfill_late_link,
     _maybe_auto_title_slack,
     _mirror_to_dashboard,
     _post_review_draft,
@@ -487,6 +488,9 @@ _TRUNCATION_MARKER = "\n… [truncated]"
 # Slack UX strings
 _THINKING = "_Thinking…_"
 _THINKING_PLACEHOLDER = "💭 _Thinking…_"
+_WORKING = "Working…"
+#: Row meta key naming the Slack message a thread import read the row from.
+_SLACK_TS_META = "slack_ts"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
