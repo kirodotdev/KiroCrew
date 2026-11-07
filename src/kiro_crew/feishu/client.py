@@ -426,20 +426,26 @@ class LarkClient:
 
     def _sync_create(self, receive_id_type: str, receive_id: str, text: str) -> None:
         """Blocking REST create; call only from a worker thread."""
+        # ensure_ascii=False for the payload-size reason given in ``_sync_reply``.
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        self._sync_post_create(receive_id_type, receive_id, "text", content)
+
+    def _sync_post_create(
+        self, receive_id_type: str, receive_id: str, msg_type: str, content: str
+    ) -> None:
+        """Blocking REST create of one *msg_type* message; call only from a worker thread."""
         from lark_oapi.api.im.v1 import (  # noqa: PLC0415
             CreateMessageRequest,
             CreateMessageRequestBody,
         )
 
-        # ensure_ascii=False for the payload-size reason given in ``_sync_reply``.
-        content = json.dumps({"text": text}, ensure_ascii=False)
         req = (
             CreateMessageRequest.builder()
             .receive_id_type(receive_id_type)
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(receive_id)
-                .msg_type("text")
+                .msg_type(msg_type)
                 .content(content)
                 .build()
             )
@@ -530,8 +536,38 @@ class LarkClient:
             return False
         return True
 
+    async def send_new_image(self, receive_id_type: str, receive_id: str, data: bytes) -> bool:
+        """Send *data* as a NEW image message to *receive_id*.  True on success.
+
+        The unprompted counterpart of :meth:`send_image_reply`, as
+        :meth:`send_new` is of :meth:`send_reply`: the same upload, then
+        ``im.v1.message.create`` with ``msg_type=image``. A refusal at either step
+        is logged and returned as False, never raised.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._executor, self._sync_image_create, receive_id_type, receive_id, data
+            )
+        except Exception as exc:
+            logger.error("Feishu image send failed (%s): %s", receive_id_type, exc)
+            return False
+        return True
+
+    def _sync_image_create(self, receive_id_type: str, receive_id: str, data: bytes) -> None:
+        """Blocking upload + new image message; call only from a worker thread."""
+        image_key = self._sync_upload_image(data)
+        self._sync_post_create(
+            receive_id_type, receive_id, "image", json.dumps({"image_key": image_key})
+        )
+
     def _sync_image_reply(self, message_id: str, data: bytes) -> None:
         """Blocking upload + image reply; call only from a worker thread."""
+        image_key = self._sync_upload_image(data)
+        self._sync_post_reply(message_id, "image", json.dumps({"image_key": image_key}))
+
+    def _sync_upload_image(self, data: bytes) -> str:
+        """Blocking ``im.v1.image.create``; returns the image_key or raises."""
         from lark_oapi.api.im.v1 import (  # noqa: PLC0415
             CreateImageRequest,
             CreateImageRequestBody,
@@ -551,7 +587,7 @@ class LarkClient:
         image_key = getattr(resp.data, "image_key", "") if resp.success() else ""
         if not image_key:
             raise RuntimeError(f"Feishu image upload error: code={resp.code} msg={resp.msg}")
-        self._sync_post_reply(message_id, "image", json.dumps({"image_key": image_key}))
+        return str(image_key)
 
     # -- Bot identity --------------------------------------------------------
 

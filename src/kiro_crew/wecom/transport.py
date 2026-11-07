@@ -49,7 +49,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_OFF
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -456,6 +456,20 @@ class WeComTransport(MessagingTransport):
         # empty string, which would be misread as "delivery_reported_no_message_id"
         # even though the file already reached the user.
         return media_id or "sent"
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets; its pictures go to a userid, as these do."""
+        from kiro_crew.wecom.renderer import _UPLOAD_LIMITS
+
+        return _UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image through :meth:`send_document`, as the renderer does."""
+        return bool(await self.send_document(conversation_id, file))
 
     async def resolve_conversation(self, user_id: str) -> str:
         # No addressable DM channel id; the userid is the logical conversation.

@@ -33,6 +33,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Iterable
 
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -236,6 +237,43 @@ class TeamsTransport(MessagingTransport):
                 await self._store.flush()
             raise
         return mid or ""
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets; every learned route is a personal chat."""
+        from kiro_crew.teams.attachments import TEAMS_UPLOAD_LIMITS
+
+        return TEAMS_UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image as an inline attachment, as the renderer does.
+
+        Only the raster types Teams renders inline; anything else answers False.
+        """
+        from kiro_crew.teams.attachments import (
+            TEAMS_INLINE_IMAGE_MIMES,
+            inline_image_attachment,
+            inline_image_name,
+        )
+
+        if file.mime not in TEAMS_INLINE_IMAGE_MIMES:
+            return False
+        await self._store.ensure_loaded()
+        service_url = self._store.get(conversation_id)
+        if not service_url:
+            return False
+        attachment = await asyncio.to_thread(
+            inline_image_attachment, file, inline_image_name("", file)
+        )
+        try:
+            await self._client.send_inline_image(conversation_id, attachment, service_url)
+        except TeamsSendError:
+            logger.warning("Teams: mirrored inline image delivery failed", exc_info=True)
+            return False
+        return True
 
     async def resolve_conversation(self, user_id: str) -> str:
         # DM sessions are keyed on the Teams conversation id, which the inbound

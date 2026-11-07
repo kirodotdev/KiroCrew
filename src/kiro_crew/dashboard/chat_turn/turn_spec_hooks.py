@@ -76,8 +76,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
     from kiro_crew.dashboard.chat_turn.recipient import (
+        _cross_surface_images,
         _cross_surface_reply_text,
         _deliver_cross_surface_reply,
+        _local_file_name,
         _retire_mirror_thinking,
         cross_surface_withheld,
         slack_publication_withheld,
@@ -1193,8 +1195,26 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
             turn._mirror_thinking_ts = await _retire_mirror_thinking(
                 state.slack_client, _mirror_chan, turn._mirror_thinking_ts
             )
-            for _part in render_for_slack(_mirror_body):
-                await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
+            # Local images, before any split, through the gates every mirror leg
+            # shares (``_cross_surface_images``) and Slack's own renderer budgets
+            # and upload step. A picture that is not sent is named, never pathed.
+            from kiro_crew.slack.files import UPLOAD_LIMITS as _slack_upload_limits
+            from kiro_crew.slack.files import upload_outbound_files as _slack_upload
+
+            _mirror_body, _mirror_files, _mirror_notes = await _cross_surface_images(
+                state, session_key, "slack", _mirror_body, _slack_upload_limits
+            )
+            if _mirror_body or not _mirror_files:
+                for _part in render_for_slack(_mirror_body):
+                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
+            if _mirror_files:
+                for _failed in await _slack_upload(
+                    state.slack_client, _mirror_chan, _mirror_post_ts or "", _mirror_files
+                ):
+                    _mirror_notes.append(f"⚠ Couldn't upload: {_local_file_name(_failed.dest)}")
+            if _mirror_notes:
+                for _part in render_for_slack("\n".join(_mirror_notes)):
+                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
             if _mirror_options:
                 # Keep the ts this posts: the control has to be spendable
                 # later, and discarding the ts is what leaves a superseded
