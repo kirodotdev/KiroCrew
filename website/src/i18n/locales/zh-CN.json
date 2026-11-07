@@ -7828,6 +7828,7 @@
       "tooltip": "此代理在这里无法启动。它用 Markdown 定义，而 {{current}} 只运行 JSON 代理。改用 {{backends}}，或为它添加一个 JSON 文件。"
     },
     "markdownPanel": {
+      "open_in_remote_editor": "在 {{editor}} 中打开",
       "partial_copy_cannot_save": "此文件只加载了一部分（{{reason}}），因此无法保存覆盖磁盘上的文件。",
       "add_to_artifact_library": "添加到产物库",
       "add_to_artifacts": "添加到产物",
@@ -18604,7 +18605,18 @@
         "intensity_clear": "清晰",
         "intensity_vivid": "鲜艳",
         "intensity_bold": "浓郁",
-        "intensity_intense": "强烈"
+        "intensity_intense": "强烈",
+        "remote_editor": "远程编辑器",
+        "remote_editor_editor": "编辑器",
+        "remote_editor_editor_desc": "在侧边面板中打开的文件的 ⋯ 菜单中添加“在 VS Code 中打开”。你正在使用的电脑上需要装有带 Remote-SSH 的 VS Code。文件会在那里打开，并连接到下方的 SSH 主机。",
+        "remote_editor_off": "关闭",
+        "remote_editor_host": "SSH 主机",
+        "remote_editor_host_desc": "你正在使用的电脑上 ~/.ssh/config 中 Host 后面的名称，例如 dev-box。你用来打开此仪表板的每台电脑都需要这个名称。",
+        "remote_editor_host_placeholder": "例如 dev-box",
+        "remote_editor_host_saved": "已保存",
+        "remote_editor_save_failed": "无法保存编辑器选择。请重试。",
+        "remote_editor_host_save_failed": "无法保存 SSH 主机。请使用 dev-box 或 dev.example.com 这样的主机名，不带端口或路径。",
+        "remote_editor_host_save_error": "无法保存 SSH 主机。"
       },
       "importPanel": {
         "agent_data": "代理数据",

@@ -1474,6 +1474,14 @@
       "hint": "How the session color is applied to the row."
     },
     {
+      "id": "display.editor",
+      "label": "Editor",
+      "tab": "display",
+      "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.editor",
+      "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+      "configKey": "dashboard.remote_editor.editor"
+    },
+    {
       "id": "display.enable-ligatures",
       "label": "Enable ligatures",
       "tab": "display",
@@ -1605,6 +1613,14 @@
       "label": "Sounds",
       "tab": "display",
       "route": "/settings/display/theme?highlight=display.sounds"
+    },
+    {
+      "id": "display.ssh-host",
+      "label": "SSH host",
+      "tab": "display",
+      "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.host",
+      "description": "The name after Host in ~/.ssh/config on the computer you’re using, like dev-box. Every computer you open this dashboard from needs that name.",
+      "configKey": "dashboard.remote_editor.host"
     },
     {
       "id": "display.theme",

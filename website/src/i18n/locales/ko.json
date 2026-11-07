@@ -7828,6 +7828,7 @@
       "tooltip": "이 에이전트는 여기서 시작되지 않습니다. Markdown으로 정의되어 있고 {{current}}은(는) JSON 에이전트만 실행합니다. {{backends}}을(를) 사용하거나 JSON 파일을 추가하세요."
     },
     "markdownPanel": {
+      "open_in_remote_editor": "{{editor}}에서 열기",
       "partial_copy_cannot_save": "이 파일은 일부만 불러왔습니다({{reason}}). 따라서 디스크의 파일에 덮어써 저장할 수 없습니다.",
       "add_to_artifact_library": "아티팩트 라이브러리에 추가",
       "add_to_artifacts": "아티팩트에 추가",
@@ -18604,7 +18605,18 @@
         "intensity_clear": "선명함",
         "intensity_vivid": "생생함",
         "intensity_bold": "진함",
-        "intensity_intense": "강렬함"
+        "intensity_intense": "강렬함",
+        "remote_editor": "원격 편집기",
+        "remote_editor_editor": "편집기",
+        "remote_editor_editor_desc": "사이드 패널에서 연 파일의 ⋯ 메뉴에 'VS Code에서 열기'를 추가합니다. 지금 사용하는 컴퓨터에 Remote-SSH가 설치된 VS Code가 필요합니다. 파일은 그 컴퓨터에서 열리고 아래 SSH 호스트에 연결됩니다.",
+        "remote_editor_off": "끄기",
+        "remote_editor_host": "SSH 호스트",
+        "remote_editor_host_desc": "지금 사용하는 컴퓨터의 ~/.ssh/config에서 Host 뒤에 오는 이름입니다(예: dev-box). 이 대시보드를 여는 모든 컴퓨터에 그 이름이 있어야 합니다.",
+        "remote_editor_host_placeholder": "예: dev-box",
+        "remote_editor_host_saved": "저장됨",
+        "remote_editor_save_failed": "편집기 선택을 저장하지 못했습니다. 다시 시도하세요.",
+        "remote_editor_host_save_failed": "SSH 호스트를 저장하지 못했습니다. dev-box나 dev.example.com 같은 호스트 이름을 포트나 경로 없이 입력하세요.",
+        "remote_editor_host_save_error": "SSH 호스트를 저장하지 못했습니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

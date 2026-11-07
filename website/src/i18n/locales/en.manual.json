@@ -3025,6 +3025,7 @@
       "copy_url_of": "Copy URL of {{name}}"
     },
     "markdownPanel": {
+      "open_in_remote_editor": "Open in {{editor}}",
       "partial_copy_cannot_save": "Only part of this file was loaded ({{reason}}), so it can't be saved over the file on disk.",
       "add_to_artifact_library": "Add to artifact library",
       "adding": "Adding…",
@@ -9060,7 +9061,18 @@
         "recent_tint_save_failed": "Could not save the recent-session highlight count.",
         "milestones": "Explore",
         "milestones_hint": "Show Explore in the top bar and a Try today card on a new chat.",
-        "milestones_save_failed": "Could not save the Explore setting. Try again."
+        "milestones_save_failed": "Could not save the Explore setting. Try again.",
+        "remote_editor": "Remote editor",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+        "remote_editor_off": "Off",
+        "remote_editor_host": "SSH host",
+        "remote_editor_host_desc": "The name after Host in ~/.ssh/config on the computer you’re using, like dev-box. Every computer you open this dashboard from needs that name.",
+        "remote_editor_host_placeholder": "e.g. dev-box",
+        "remote_editor_host_saved": "Saved",
+        "remote_editor_save_failed": "Couldn’t save the editor choice. Try again.",
+        "remote_editor_host_save_failed": "Couldn’t save the SSH host. Use a hostname like dev-box or dev.example.com, with no port or path.",
+        "remote_editor_host_save_error": "Couldn’t save the SSH host."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

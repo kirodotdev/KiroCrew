@@ -27,6 +27,24 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The local editors the Markdown panel's "Open in <editor>" row can target
+# (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
+# that keeps the ``vscode-remote`` authority, so the row's link is
+# ``<id>://vscode-remote/ssh-remote+<host><absolute path>``. The dashboard's own list,
+# with each editor's name, is ``REMOTE_EDITORS`` in
+# ``website/src/utils/remoteEditorUrl.ts``; keep the two equal.
+REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode",)
+# ``dashboard.remote_editor.host``: a DNS name or ``~/.ssh/config`` alias, the
+# grammar the desktop app's editor-link check takes (``HOSTNAME_RE`` in
+# ``website/electron/validation.js``). Nothing that adds URL structure after
+# ``ssh-remote+``, and no leading ``-`` the editor's ssh could read as an option.
+# One DNS label, then any number of `.label`; written out so the module defines
+# no private helper name the `sections` facade would have to re-export.
+REMOTE_EDITOR_HOST_PATTERN = (
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)?$"
+)
+
 # The dashboard's feature-preview switches (Settings > Developer > Feature
 # previews) stored under ``dashboard.feature_previews``, by name. Each name is a
 # ``mc-preview-<name>`` key in ``website/src/utils/previewFlags.ts`` with its
@@ -841,6 +859,42 @@ class DashboardConfig:
                                 ),
                             },
                         },
+                    },
+                },
+            },
+        ),
+    )
+    remote_editor: dict = field(
+        default_factory=lambda: {"editor": "", "host": ""},
+        metadata=_meta(
+            "Remote editor",
+            "Open a file shown in the side panel in your local editor over your "
+            "own SSH session, for a gateway on another machine. Off by default.",
+            # Declared like dashboard.terminal.*, so Settings controls reference
+            # these by configKey and `kirocrew config set` accepts them. Both
+            # values reach a clickable link, so the branding endpoint drops any
+            # value outside this enum and pattern before the browser sees it.
+            properties={
+                "editor": {
+                    "type": "string",
+                    "default": "",
+                    "enum": ["", *REMOTE_EDITOR_IDS],
+                    "x-meta": {
+                        "label": "Editor",
+                        "help": "The local editor to open remote files in. Empty = off.",
+                    },
+                },
+                "host": {
+                    "type": "string",
+                    "default": "",
+                    "maxLength": 253,
+                    "pattern": REMOTE_EDITOR_HOST_PATTERN,
+                    "x-meta": {
+                        "label": "SSH host",
+                        "help": (
+                            "How your machine reaches the gateway over SSH: a hostname "
+                            "or a ~/.ssh/config alias, with no port or path."
+                        ),
                     },
                 },
             },

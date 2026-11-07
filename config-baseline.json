@@ -9124,6 +9124,10 @@
         "terminal": {
           "enabled": true
         },
+        "remote_editor": {
+          "editor": "",
+          "host": ""
+        },
         "default_project": "",
         "session_folder_root": "",
         "default_session_folder": "",
@@ -10383,6 +10387,54 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
+    },
+    {
+      "path": "dashboard.remote_editor",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote editor",
+      "help": "Open a file shown in the side panel in your local editor over your own SSH session, for a gateway on another machine. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "editor": "",
+        "host": ""
+      }
+    },
+    {
+      "path": "dashboard.remote_editor.editor",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Editor",
+      "help": "The local editor to open remote files in. Empty = off.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "vscode"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.remote_editor.host",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SSH host",
+      "help": "How your machine reaches the gateway over SSH: a hostname or a ~/.ssh/config alias, with no port or path.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "dashboard.default_project",
