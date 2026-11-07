@@ -865,8 +865,11 @@ export default function BottomTerminalPanel() {
   const motionKey = isRight ? 'right-terminal' : 'bottom-terminal'
   // A bottom-docked terminal being typed into rises above the on-screen
   // keyboard instead of relying on Safari's focus pan (see useKeyboardLift).
+  // Measured on the wrapper that takes the lift as padding, so the lift does
+  // not move the measured edge.
+  const liftRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
-  const keyboardLift = useKeyboardLift(panelRef, open && !isRight)
+  const keyboardLift = useKeyboardLift(liftRef, open && !isRight)
   // A terminal opened for the first time waits until the slide is over before
   // xterm builds itself (see CliPanel's `deferOpen`), so the slide, and a
   // drawer the same tap closes (it settles before the slide does), run without
@@ -897,6 +900,7 @@ export default function BottomTerminalPanel() {
           of over it. When the band leaves less room than the panel's height,
           the panel shrinks (min-h-0) instead of running under the keyboard. */}
       <div
+        ref={liftRef}
         className={isRight ? 'shrink-0 flex' : 'flex flex-col min-h-0'}
         style={keyboardLift > 0 ? { paddingBottom: keyboardLift } : undefined}
       >
