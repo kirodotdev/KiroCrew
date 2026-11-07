@@ -747,7 +747,9 @@ export interface ChatState {
   // rest of the session (see FOLDER_SUGGESTION_MAX_TURNS). Ignoring a suggestion
   // IS an answer — the user who keeps typing has declined by conduct — and the
   // backend needs no telling because it never re-offers this slot anyway.
-  folderSuggestions: Record<string, { folderId: string; folderName: string; breadcrumb: string; ts: number; turns: number }>
+  // `applied`: the backend already filed the session (auto-apply), so the card
+  // reports the move and offers an undo instead of asking.
+  folderSuggestions: Record<string, { folderId: string; folderName: string; breadcrumb: string; ts: number; turns: number; applied?: boolean }>
   // Slot with a locally-started turn awaiting server confirmation. While set,
   // the slots-sync ignores a server running=false for it (the snapshot may
   // predate the send). Cleared on server confirmation or turn end.

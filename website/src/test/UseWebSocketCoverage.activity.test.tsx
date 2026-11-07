@@ -179,6 +179,18 @@ describe('useWebSocket frame router', () => {
     expect(chat().folderSuggestions[BACKGROUND]).toBeUndefined()
   })
 
+  it('marks a folder suggestion the backend already applied, and only on an explicit true', () => {
+    const { ws } = mount()
+    const frame = (slot: string, applied: unknown) => ({
+      type: 'slot_folder_suggestion',
+      data: { slot, folder_id: 'f1', folder_name: 'Reviews', ts: 12, applied },
+    })
+    act(() => { ws.simulateMessage(frame(ACTIVE, true)) })
+    act(() => { ws.simulateMessage(frame(BACKGROUND, 'yes')) })
+    expect(chat().folderSuggestions[ACTIVE]).toMatchObject({ folderId: 'f1', applied: true })
+    expect(chat().folderSuggestions[BACKGROUND]).not.toHaveProperty('applied')
+  })
+
   it('records a plain activity event without disturbing the model catalog', () => {
     const { ws } = mount()
     act(() => {

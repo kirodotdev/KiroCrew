@@ -7466,9 +7466,12 @@
       "use_folder_project": "{{folder}}-এ যাও"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "{{folder}}-এ রাখা হয়েছে",
       "folder_suggestion": "ফোল্ডার প্রস্তাব",
+      "keep_it_here": "রেখে দাও",
       "move_to_folder_prompt": "এই সেশনটি কি এই ফোল্ডারে সরাবেন?",
       "no_thanks": "এখন নয়",
+      "undo_filing": "আনডু",
       "yes_move_it": "সরান"
     },
     "followUpBar": {
@@ -18399,6 +18402,8 @@
         "feature_tips": "ফিচার টিপস",
         "file_change_chips": "ফাইল পরিবর্তনের চিপ",
         "folder_suggestions": "ফোল্ডার প্রস্তাব",
+        "folder_suggestions_auto_apply": "ফোল্ডার প্রস্তাব নিজে থেকে প্রয়োগ করো",
+        "folder_suggestions_auto_apply_desc": "জিজ্ঞেস না করে নতুন সেশনটি মিলে যাওয়া ফোল্ডারে রাখো। একটি কার্ড জানায় সেটি কোথায় গেল, আনডু করার সুযোগসহ।",
         "follow_up_bar_layout": "ফলো-আপ বারের লেআউট",
         "fork_keeps_only_the_messages_after_the_chosen_po": "ফর্ক নির্বাচিত বিন্দু পর্যন্তের বার্তাগুলির বদলে শুধু তার পরের বার্তাগুলি রাখে।",
         "full": "পূর্ণ",

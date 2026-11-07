@@ -7264,9 +7264,12 @@
       "use_folder_project": "{{folder}}(으)로 전환"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "{{folder}}에 정리됨",
       "folder_suggestion": "폴더 제안",
+      "keep_it_here": "유지",
       "move_to_folder_prompt": "이 세션을 이 폴더로 이동할까요?",
       "no_thanks": "나중에",
+      "undo_filing": "실행 취소",
       "yes_move_it": "이동"
     },
     "followUpBar": {
@@ -17931,6 +17934,8 @@
         "feature_tips": "기능 팁",
         "file_change_chips": "파일 변경 칩",
         "folder_suggestions": "폴더 추천",
+        "folder_suggestions_auto_apply": "폴더 추천 자동 적용",
+        "folder_suggestions_auto_apply_desc": "묻지 않고 새 세션을 일치하는 폴더로 정리합니다. 카드에 이동한 위치가 표시되며 실행 취소할 수 있습니다.",
         "follow_up_bar_layout": "후속 제안 바 레이아웃",
         "fork_keeps_only_the_messages_after_the_chosen_po": "포크는 선택한 지점 이전이 아니라 이후의 메시지만 유지합니다.",
         "full": "전체",

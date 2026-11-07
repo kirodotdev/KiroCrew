@@ -8,6 +8,8 @@ import { orderFoldersWithPaths, type FolderSortMode } from '../../utils/folderTr
 import { isMateManaged } from '../../utils/mateFolders'
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select'
 import { Glass } from '../../components/Glass'
+import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
 
 export interface FolderSuggestionCardProps {
   /** The folder the backend suggested — preselected in the dropdown. */
@@ -27,8 +29,15 @@ export interface FolderSuggestionCardProps {
   folders: readonly ChatFolder[]
   /** File the session into the folder the dropdown currently shows. */
   onAccept: (folderId: string) => void
+  /** An applied card's Undo: move the session back to the top. It resolves once
+   *  the server acknowledged the move (the caller then clears the card) and
+   *  rejects when it failed, so the card stays and shows the failure. */
+  onUndo: () => Promise<void>
   /** Leave the session where it is. The card is not re-offered either way. */
   onDecline: () => void
+  /** The backend already filed the session here (auto-apply on): say where it
+   *  went and offer Undo / Keep instead of asking. */
+  applied?: boolean
   /** The sidebar's folder sort mode, so the option list reads in the order the
    *  sidebar draws the same tree. A prop, passed by ChatPage from
    *  `useFolderSortMode`, so this card stays a pure function of its props. */
@@ -54,6 +63,10 @@ export interface FolderSuggestionCardProps {
  * undo from the sidebar. There is deliberately no "No folder (root)" entry in
  * the dropdown: staying at root IS the decline button.
  *
+ * With auto-apply on (`applied`), the backend has already filed the session, so
+ * the same card reports "Filed in <folder>" with Keep and Undo: the move stays
+ * visible after the fact, and a wrong one is one click to reverse.
+ *
  * Answering is not the only way out: an untouched card ages out after
  * FOLDER_SUGGESTION_MAX_TURNS of the user's own confirmed sends made while this
  * card was on screen (chatSlice's `ageFolderSuggestion`, dispatched by the
@@ -65,11 +78,20 @@ export interface FolderSuggestionCardProps {
  * against the previous card can never leak onto the new one.
  */
 export default function FolderSuggestionCard({
-  suggestedFolderId, suggestedFolderName, suggestedFolderBreadcrumb, folders, onAccept, onDecline,
-  folderSortMode = 'custom',
+  suggestedFolderId, suggestedFolderName, suggestedFolderBreadcrumb, folders, onAccept, onUndo, onDecline,
+  folderSortMode = 'custom', applied = false,
 }: FolderSuggestionCardProps) {
   const selectId = useId()
   const [selectedId, setSelectedId] = useState(suggestedFolderId)
+  const [undoing, setUndoing] = useState(false)
+  const [undoError, setUndoError] = useState<string | null>(null)
+  const undo = () => {
+    setUndoError(null)
+    setUndoing(true)
+    onUndo()
+      .catch(e => setUndoError(errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')))
+      .finally(() => setUndoing(false))
+  }
 
   // Pre-order tree sequence, the same normalization every folder picker uses.
   // Options are labeled with the full ancestry path for nested folders (root
@@ -96,6 +118,7 @@ export default function FolderSuggestionCard({
   // follow the visible choice, never a stale id the user can no longer see.
   const effectiveId = options.some(o => o.id === selectedId) ? selectedId : options[0].id
   const selectedLabel = options.find(o => o.id === effectiveId)?.label ?? suggestedFolderName
+  const suggestionLabel = options.find(o => o.id === suggestedFolderId)?.label ?? suggestedFolderName
 
   return (
     <motion.div
@@ -126,6 +149,16 @@ export default function FolderSuggestionCard({
           icon would stop tracking the theme. */}
       <FolderInput size={14} className="shrink-0" aria-hidden="true" style={{ color: 'var(--accent)' }} />
 
+      {applied ? (
+        <span
+          className="text-[12px] leading-tight truncate"
+          style={{ color: 'var(--text)', flex: '1 1 auto', minWidth: 0 }}
+          title={suggestionLabel}
+          data-testid="folder-suggestion-applied"
+        >
+          {i18nT('components.folderSuggestionCard.filed_in_folder', { folder: suggestionLabel })}
+        </span>
+      ) : (<>
       {/* A real <label htmlFor>, not aria-label: the visible sentence IS the
           select's accessible name, and clicking it focuses the control. */}
       <label
@@ -157,11 +190,15 @@ export default function FolderSuggestionCard({
           <NativeSelectOption key={o.id} value={o.id}>{o.label}</NativeSelectOption>
         ))}
       </NativeSelect>
+      </>)}
 
+      {/* Applied: the accent button keeps the filing, the quiet one undoes it
+          (back to the top level, where the session was). */}
       <div className="flex items-center gap-1.5 shrink-0 ml-auto">
         <button
-          onClick={() => onAccept(effectiveId)}
-          data-testid="folder-suggestion-accept"
+          onClick={applied ? onDecline : () => onAccept(effectiveId)}
+          disabled={applied && undoing}
+          data-testid={applied ? 'folder-suggestion-keep' : 'folder-suggestion-accept'}
           className="px-2.5 py-1 rounded text-[11px] font-medium hover:brightness-110 transition"
           style={{
             color: 'var(--accent)',
@@ -169,17 +206,22 @@ export default function FolderSuggestionCard({
             border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
           }}
         >
-          {i18nT('components.folderSuggestionCard.yes_move_it')}
+          {applied ? i18nT('components.folderSuggestionCard.keep_it_here') : i18nT('components.folderSuggestionCard.yes_move_it')}
         </button>
         <button
-          onClick={onDecline}
-          data-testid="folder-suggestion-decline"
+          onClick={applied ? undo : onDecline}
+          disabled={applied && undoing}
+          data-testid={applied ? 'folder-suggestion-undo' : 'folder-suggestion-decline'}
           className="px-2.5 py-1 rounded text-[11px] transition-colors hover:bg-[var(--bg-hover)]"
           style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
         >
-          {i18nT('components.folderSuggestionCard.no_thanks')}
+          {applied ? i18nT('components.folderSuggestionCard.undo_filing') : i18nT('components.folderSuggestionCard.no_thanks')}
         </button>
       </div>
+      {/* `askAgent` is on, as for the composer's session-controls notice: the
+          applied card holds no unsaved pick (it has no dropdown), and a failed
+          folder move is something the agent can investigate. */}
+      <ErrorNotice className="w-full" message={undoError} askAgent testId="folder-suggestion-undo-error" />
     </Glass>
     </motion.div>
   )

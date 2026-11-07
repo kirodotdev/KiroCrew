@@ -7466,9 +7466,12 @@
       "use_folder_project": "{{folder}} पर स्विच करो"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "{{folder}} में रखा गया",
       "folder_suggestion": "फ़ोल्डर सुझाव",
+      "keep_it_here": "रहने दो",
       "move_to_folder_prompt": "क्या इस सत्र को इस फ़ोल्डर में ले जाएँ?",
       "no_thanks": "अभी नहीं",
+      "undo_filing": "पूर्ववत करो",
       "yes_move_it": "ले जाएँ"
     },
     "followUpBar": {
@@ -18399,6 +18402,8 @@
         "feature_tips": "फ़ीचर टिप्स",
         "file_change_chips": "फ़ाइल बदलाव चिप्स",
         "folder_suggestions": "फ़ोल्डर सुझाव",
+        "folder_suggestions_auto_apply": "फ़ोल्डर सुझाव अपने आप लागू करो",
+        "folder_suggestions_auto_apply_desc": "बिना पूछे नए सत्र को मिलते-जुलते फ़ोल्डर में रखो। एक कार्ड बताता है कि वह कहाँ गया, और उसे पूर्ववत किया जा सकता है।",
         "follow_up_bar_layout": "फ़ॉलो-अप बार का लेआउट",
         "fork_keeps_only_the_messages_after_the_chosen_po": "फ़ॉर्क चुने गए बिंदु तक के संदेशों के बजाय उसके बाद के ही संदेश रखता है।",
         "full": "पूरा",

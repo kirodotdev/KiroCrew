@@ -1,5 +1,5 @@
 import { useRef, useCallback, type MutableRefObject } from 'react'
-import type { MoveSlotOptions } from '../../../hooks/useMoveSlotToFolder'
+import { useMoveSlotToFolderAsync, type MoveSlotOptions } from '../../../hooks/useMoveSlotToFolder'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import { type FollowupItem, setPendingInput, dismissFollowupItem, clearFolderSuggestion } from '../../../store/chatSlice'
@@ -63,6 +63,18 @@ export function useFollowupCardActions({
     dispatch(clearFolderSuggestion({ slot: activeSlot, ts: folderSuggestion.ts }))
   }, [activeSlot, folderSuggestion, moveSlotToFolder, dispatch])
 
+  // Undo of an auto-applied filing waits for the server: the card is cleared
+  // only once the move back to the top level is acknowledged, and a rejection
+  // reaches the card, which keeps itself and shows the failure.
+  const moveSlotToFolderAsync = useMoveSlotToFolderAsync()
+  const folderSuggestionUndo = useCallback(async () => {
+    if (!activeSlot || !folderSuggestion) return
+    const slot = activeSlot
+    const ts = folderSuggestion.ts
+    await moveSlotToFolderAsync(slot, '')
+    dispatch(clearFolderSuggestion({ slot, ts }))
+  }, [activeSlot, folderSuggestion, moveSlotToFolderAsync, dispatch])
+
   const folderSuggestionDecline = useCallback(() => {
     if (!activeSlot || !folderSuggestion) return
     // Nothing to tell the backend: it already spent its one offer for this slot,
@@ -83,7 +95,7 @@ export function useFollowupCardActions({
     return `followup/${slug || 'suggestion'}`
   }, [])
   return {
-    followupTsRef, followupAddToSession, folderSuggestionAccept, folderSuggestionDecline, followupBranchFor,
+    followupTsRef, followupAddToSession, folderSuggestionAccept, folderSuggestionUndo, folderSuggestionDecline, followupBranchFor,
   }
 }
 

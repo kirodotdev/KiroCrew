@@ -4964,8 +4964,11 @@
       "use_folder_project": "Switch to {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Filed in {{folder}}",
       "folder_suggestion": "Folder suggestion",
+      "keep_it_here": "Keep it",
       "no_thanks": "Not now",
+      "undo_filing": "Undo",
       "yes_move_it": "Move it"
     },
     "followUpBar": {
@@ -10386,6 +10389,8 @@
         "feature_tips": "Feature Tips",
         "file_change_chips": "File Change Chips",
         "folder_suggestions": "Folder suggestions",
+        "folder_suggestions_auto_apply": "Apply folder suggestions automatically",
+        "folder_suggestions_auto_apply_desc": "File a new session into the matching folder without asking. A card says where it went, with an undo.",
         "follow_up_bar_layout": "Follow-Up Bar Layout",
         "fork_keeps_only_the_messages_after_the_chosen_po": "Fork keeps only the messages after the chosen point instead of those up to it.",
         "history_expanded": "History Expanded",

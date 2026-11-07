@@ -7264,9 +7264,12 @@
       "use_folder_project": "切换到 {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "已归入 {{folder}}",
       "folder_suggestion": "文件夹建议",
+      "keep_it_here": "保留",
       "move_to_folder_prompt": "要将此会话移动到此文件夹吗？",
       "no_thanks": "暂不",
+      "undo_filing": "撤销",
       "yes_move_it": "移动"
     },
     "followUpBar": {
@@ -17931,6 +17934,8 @@
         "feature_tips": "功能提示",
         "file_change_chips": "文件变更标签",
         "folder_suggestions": "文件夹建议",
+        "folder_suggestions_auto_apply": "自动应用文件夹建议",
+        "folder_suggestions_auto_apply_desc": "不再询问，直接将新会话归入匹配的文件夹。会有卡片显示它去了哪里，并可撤销。",
         "follow_up_bar_layout": "后续建议栏布局",
         "fork_keeps_only_the_messages_after_the_chosen_po": "分叉仅保留所选位置之后的消息，而不是之前的消息。",
         "full": "完整",

@@ -7466,9 +7466,12 @@
       "use_folder_project": "Zu {{folder}} wechseln"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Abgelegt in {{folder}}",
       "folder_suggestion": "Ordnervorschlag",
+      "keep_it_here": "Behalten",
       "move_to_folder_prompt": "Diese Sitzung in diesen Ordner verschieben?",
       "no_thanks": "Nicht jetzt",
+      "undo_filing": "Rückgängig",
       "yes_move_it": "Verschieben"
     },
     "followUpBar": {
@@ -18399,6 +18402,8 @@
         "feature_tips": "Funktionstipps",
         "file_change_chips": "Chips für Dateiänderungen",
         "folder_suggestions": "Ordnervorschläge",
+        "folder_suggestions_auto_apply": "Ordnervorschläge automatisch anwenden",
+        "folder_suggestions_auto_apply_desc": "Ordnet eine neue Sitzung ohne Nachfrage in den passenden Ordner ein. Eine Karte zeigt, wohin sie kam, mit Rückgängig.",
         "follow_up_bar_layout": "Layout der Folgeleiste",
         "fork_keeps_only_the_messages_after_the_chosen_po": "Beim Verzweigen werden nur die Nachrichten nach dem gewählten Punkt behalten, nicht die davor.",
         "full": "Voll",

@@ -7870,9 +7870,12 @@
       "use_folder_project": "Перейти на {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Помещено в {{folder}}",
       "folder_suggestion": "Предложение папки",
+      "keep_it_here": "Оставить",
       "move_to_folder_prompt": "Переместить эту сессию в эту папку?",
       "no_thanks": "Не сейчас",
+      "undo_filing": "Отменить",
       "yes_move_it": "Переместить"
     },
     "followUpBar": {
@@ -19335,6 +19338,8 @@
         "feature_tips": "Подсказки о возможностях",
         "file_change_chips": "Чипы изменений файлов",
         "folder_suggestions": "Предложения папок",
+        "folder_suggestions_auto_apply": "Применять предложения папок автоматически",
+        "folder_suggestions_auto_apply_desc": "Помещать новую сессию в подходящую папку без вопроса. Карточка покажет, куда она попала, с возможностью отмены.",
         "follow_up_bar_layout": "Компоновка панели подсказок",
         "fork_keeps_only_the_messages_after_the_chosen_po": "Ответвление сохраняет только сообщения после выбранной точки, а не до неё.",
         "full": "Полностью",

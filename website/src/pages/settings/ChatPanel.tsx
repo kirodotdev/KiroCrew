@@ -1168,6 +1168,11 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} hint={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} hint={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
+          {/* A refinement of the toggle above, shown only while it is on (the
+              Restore window pattern), so the two can never disagree. */}
+          {dashCfg.folder_suggestions_enabled && (
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions_auto_apply')} description={i18nT('pages.settings.chatPanel.folder_suggestions_auto_apply_desc')} configKey="dashboard.folder_suggestions_auto_apply" checked={dashCfg.folder_suggestions_auto_apply ?? false} onChange={v => setDash({ folder_suggestions_auto_apply: v })} disabled={dashDisabled} />
+          )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>
           )

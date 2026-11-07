@@ -7668,9 +7668,12 @@
       "use_folder_project": "Cambiar a {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Archivada en {{folder}}",
       "folder_suggestion": "Sugerencia de carpeta",
+      "keep_it_here": "Conservar",
       "move_to_folder_prompt": "¿Mover esta sesión a esta carpeta?",
       "no_thanks": "Ahora no",
+      "undo_filing": "Deshacer",
       "yes_move_it": "Mover"
     },
     "followUpBar": {
@@ -18867,6 +18870,8 @@
         "feature_tips": "Consejos de funciones",
         "file_change_chips": "Chips de cambios de archivos",
         "folder_suggestions": "Sugerencias de carpeta",
+        "folder_suggestions_auto_apply": "Aplicar las sugerencias de carpeta automáticamente",
+        "folder_suggestions_auto_apply_desc": "Archiva una sesión nueva en la carpeta adecuada sin preguntar. Una tarjeta indica dónde quedó, con opción de deshacer.",
         "follow_up_bar_layout": "Diseño de la barra de seguimiento",
         "fork_keeps_only_the_messages_after_the_chosen_po": "La bifurcación conserva solo los mensajes posteriores al punto elegido en lugar de los anteriores.",
         "full": "Completa",
