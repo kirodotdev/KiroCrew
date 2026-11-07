@@ -182,7 +182,6 @@ def test_the_sdk_facade_answers_both_callers_without_the_projection_type(monkeyp
 @pytest.fixture
 def published_view(tmp_path, monkeypatch):
     """``(agents, view)``: a released view of AGENT whose pre-ledger tree has no ledger."""
-    import gc
     from types import SimpleNamespace
 
     from kiro_crew.acp import skill_projection as projection
@@ -235,7 +234,9 @@ def published_view(tmp_path, monkeypatch):
     prepared = projection.prepare_native_skill_projection(project)
     view = prepared.agent(AGENT)
     del prepared
-    gc.collect()  # the lease goes and no projection in this process holds the view
+    # The dropped projection's end releases the view's lease on the reaper thread,
+    # which may still be busy with an earlier test's end; the drain skips a leased view.
+    native_skill_projection_helpers._wait_for_dropped_projection_ends()
     metadata = projection._projection_metadata_dir()
     # A build that predates the ledger never wrote it; the sidecar is the
     # only record of which agent the view was built from.
