@@ -42,6 +42,7 @@ from kiro_crew.dashboard.state_parts.slots_frame import _SLOTS_BROADCAST_INTERVA
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
+from kiro_crew.notifications.bridge import BridgeDispatcher, composite_sink
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
@@ -110,6 +111,7 @@ class DashboardState:
 
     # Typed here for the owner functions that read them through ``self``.
     notification_bus: NotificationBus
+    notification_bridge: BridgeDispatcher
     notification_channel_settings: ChannelSettings
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
@@ -524,7 +526,14 @@ class DashboardState:
         self.push_subscription_store = PushSubscriptionStore()
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
-        self.notification_bus = NotificationBus(sink=self._deliver_note)
+        # The bridge runs after it, so a chat transport never delays the
+        # dashboard (notifications/bridge.py).
+        self.notification_bridge = BridgeDispatcher(
+            settings=lambda: self.notification_channel_settings
+        )
+        self.notification_bus = NotificationBus(
+            sink=composite_sink(self._deliver_note, self._bridge_note)
+        )
         # Future of the most recent delivery-sink persist job (None when the
         # last persist ran inline). The app push handler awaits it to give a
         # durability guarantee; legacy producers ignore it (best-effort).
@@ -1149,6 +1158,7 @@ class DashboardState:
     _fan_out_web_push = _dashboard_services._fan_out_web_push
     _send_web_push_all = _dashboard_services._send_web_push_all
     _deliver_note = _dashboard_services._deliver_note
+    _bridge_note = _dashboard_services._bridge_note
     register_sse = _dashboard_services.register_sse
     unregister_sse = _dashboard_services.unregister_sse
     _rewrite_notifications_async = _dashboard_services._rewrite_notifications_async
