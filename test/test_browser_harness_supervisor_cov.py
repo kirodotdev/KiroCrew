@@ -223,6 +223,61 @@ def test_a_broken_provider_seam_reads_as_no_provider_but_a_composition_error_rai
         sup._provider()
 
 
+# ── status ──
+
+
+@pytest.mark.asyncio
+async def test_status_reads_current_choice_after_a_failed_chromium_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = {"choice": "headless"}
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: cfg, credential_provider=lambda: None)
+    monkeypatch.setattr(
+        supervisor.install, "install_state", lambda home: _installed(home, python=Path("py"))
+    )
+    monkeypatch.setattr(sup, "runtime_dir", lambda: tmp_path / "run")
+    monkeypatch.setattr(supervisor, "CdpRelay", _Relay)
+    facts = discover.HostFacts(chrome=tmp_path / "chrome", chrome_profile=tmp_path / "profile")
+    monkeypatch.setattr(discover, "probe_host", lambda platform: facts)
+    with pytest.raises(supervisor.BrowserUnavailable, match="not downloaded"):
+        await sup.ensure_in_background()
+    assert not sup.holds_browser
+    assert sup.status()["browser"] == {"kind": "kiro_chromium", "headless": True}
+
+    cfg["choice"] = "user_chrome"
+    status = sup.status()
+    assert status["browser"] == {"kind": "user_chrome", "headless": False}
+    assert status["installed"] is True and status["chromium"]["present"] is False
+    assert status["connection"] == supervisor.ERROR and "not downloaded" in status["detail"]
+
+
+@pytest.mark.parametrize("lifecycle", ["connected", "dead_daemon", "starting"])
+@pytest.mark.asyncio
+async def test_status_keeps_the_held_browser_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lifecycle: str
+) -> None:
+    sup = HarnessSupervisor(
+        tmp_path, config_reader=lambda: {"choice": "headless"}, credential_provider=lambda: None
+    )
+    monkeypatch.setattr(discover, "probe_host", lambda platform: discover.HostFacts())
+    sup._choice = discover.BrowserChoice("user_chrome", None, False, None)
+    task = None
+    if lifecycle == "starting":
+        task = asyncio.create_task(asyncio.Event().wait())
+        monkeypatch.setattr(sup, "_ensure_task", task)
+    else:
+        sup._handle = _handle(daemon=_Proc(None if lifecycle == "connected" else 1))
+        sup._handle.choice = sup._choice
+    try:
+        assert sup.holds_browser
+        assert sup.status()["browser"] == {"kind": "user_chrome", "headless": False}
+    finally:
+        if task is not None:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
 # ── ensure / stop / test ──
 
 

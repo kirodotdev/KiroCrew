@@ -1205,10 +1205,11 @@ One card and two controls; everything else is under a collapsed More group.
   Chrome" re-posts the attach, which brings Chrome's prompt back), `error` (red;
   the gateway's `detail`, or the last attach's, verbatim in an `ErrorNotice`;
   Retry re-posts the attach), `disconnected`
-  (Connect) and `connected` (Disconnect). A failed job while the engine IS
-  installed (a Redownload) does not take over the card; it is an `ErrorNotice`
-  on the Engine row. A button whose request is in flight is disabled and
-  `aria-busy`.
+  (Connect) and `connected` (Disconnect). "Not installed" is `needsInstall`:
+  the engine is missing, or `browser.kind` is `kiro_chromium` and
+  `chromium.downloaded` is false. A failed job or install request while no
+  install is needed (a Redownload) is an `ErrorNotice` on the Engine row, not
+  the card. A button whose request is in flight is disabled and `aria-busy`.
 - **Which browser** (`browser.choice`) offers `auto`, `user_chrome`,
   `kiro_chromium`. **Show the live view in chat** (`browser.live.enabled`).
 - **Use \<provider\> sign-in** (`browser.credentials.enabled`), under Show the
