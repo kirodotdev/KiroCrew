@@ -981,6 +981,7 @@ def _update_file_blocking(target: Path, content: str) -> str | None:
             newline="",
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,
+            preserve_windows_dacl=True,
         )
     except OSError as exc:
         logger.warning("steering update failed: %s", type(exc).__name__)

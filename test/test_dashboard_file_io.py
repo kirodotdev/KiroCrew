@@ -710,6 +710,7 @@ class TestFileWrite:
             assert captured["source_bytes"] == b"hello world"
         else:  # pragma: no cover - exercised on Windows CI only
             assert kwargs["preserve_access_control_from"] is None
+        assert kwargs["preserve_windows_dacl"] is True
         assert kwargs["mode"] == stat.S_IMODE(tmp_file.stat().st_mode)
         assert tmp_file.read_text(encoding="utf-8") == "updated"
         # Off the event loop (no-blocking-call-on-event-loop): every call in the
