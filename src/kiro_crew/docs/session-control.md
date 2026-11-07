@@ -322,7 +322,10 @@ metadata proves the creator but cannot prove why the live slot is absent.
 
 The ownership fence applies to all three sources. A history row is shown only
 when its persisted `created_by` exactly names you and its workspace matches
-yours, so another caller's archived session and title do not appear.
+yours, so another caller's archived session and title do not appear. A fenced
+session (see `not_creator` below) also needs the crew log to record that it
+created that session. With the crew log off, or once it no longer holds that
+record, the row is left out and `history` reads `incomplete`.
 
 A LIVE row passes the same target containment `session_broadcast` resolves names
 against — one shared predicate, not a second copy of its clauses. So a session you
