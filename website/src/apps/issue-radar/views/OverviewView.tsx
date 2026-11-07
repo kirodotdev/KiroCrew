@@ -144,13 +144,15 @@ export default function OverviewView() {
           </button>
         ) : <div className="flex-1" />}
         <button
-          onClick={refresh}
-          disabled={refreshing}
-          // Disabled while a refresh runs, so the name carries the reason: a
-          // disabled "Refresh issues" reads as unavailable, not busy.
+          onClick={() => { if (!refreshing) refresh() }}
+          // Inert while a refresh runs, so the name carries the reason: an
+          // inert "Refresh issues" reads as unavailable, not busy.
+          // `aria-disabled` plus the guard above, NOT `disabled`, which leaves
+          // the tab order and drops a keyboard user's focus to the page.
+          aria-disabled={refreshing || undefined}
           aria-label={refreshing ? i18nT('apps.issueRadar.views.overviewView.refreshing_issues') : i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
           title={refreshing ? i18nT('apps.issueRadar.views.overviewView.refreshing_issues') : i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
-          className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
+          className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong aria-disabled:opacity-40 aria-disabled:cursor-default cursor-pointer"
         >
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
         </button>

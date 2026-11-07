@@ -89,7 +89,7 @@ describe('OverviewView', () => {
     const { rerender } = render(<OverviewView />)
 
     const busy = screen.getByRole('button', { name: 'Refreshing issues…' })
-    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
     expect(busy).toHaveAttribute('title', 'Refreshing issues…')
     expect(screen.queryByRole('button', { name: 'Refresh issues' })).toBeNull()
 
@@ -97,8 +97,27 @@ describe('OverviewView', () => {
     rerender(<OverviewView />)
 
     const idle = screen.getByRole('button', { name: 'Refresh issues' })
-    expect(idle).toBeEnabled()
+    expect(idle).not.toHaveAttribute('aria-disabled')
     expect(idle).toHaveAttribute('title', 'Re-fetch issues + labels from GitHub')
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a press then', () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    const { rerender } = render(<OverviewView />)
+    const button = screen.getByRole('button', { name: 'Refresh issues' })
+    button.focus()
+
+    setContext({ refreshing: true })
+    rerender(<OverviewView />)
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+    expect(refresh).not.toHaveBeenCalled()
+
+    setContext({ refreshing: false })
+    rerender(<OverviewView />)
+    expect(button).toHaveFocus()
   })
 
   it('shows no Assigned to you tile when nobody is signed in', () => {
