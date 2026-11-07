@@ -91,14 +91,14 @@ describe('focus mode — macOS window drag strip', () => {
     // no-drag rectangle reaching into the band (a theme's decoration iframes,
     // transcript content scrolled up under the glass header), so the header's
     // gaps get strips painted after all of them.
-    const docked = screen.getAllByTestId('mac-header-drag-strip')
+    const docked = screen.getAllByTestId('header-drag-strip')
     expect(docked.length).toBeGreaterThan(0)
     expect(screen.getByTestId('dashboard-shell').contains(docked[0])).toBe(false)
 
     // Focus on but header hidden: nothing to drag, and a strip left mounted here
     // would be a 42px drag region over the content focus mode just reclaimed.
     await act(async () => { fireEvent.click(toggle) })
-    expect(screen.queryByTestId('mac-header-drag-strip')).toBeNull()
+    expect(screen.queryByTestId('header-drag-strip')).toBeNull()
 
     // Peeked: the strip mounts. The mount is the region toggle — macOS ignores an
     // in-place `-webkit-app-region` flip on the transformed header, so the drag
@@ -108,7 +108,7 @@ describe('focus mode — macOS window drag strip', () => {
       fireEvent.mouseEnter(screen.getByTestId('focus-peek-top'))
       act(() => { vi.advanceTimersByTime(150) })
 
-      const strip = screen.getByTestId('mac-header-drag-strip')
+      const strip = screen.getByTestId('header-drag-strip')
       expect(strip.className).toContain('host-drag-strip')
 
       // OUTSIDE the shell, deliberately: every drag surface rendered inside the
@@ -132,7 +132,7 @@ describe('focus mode — macOS window drag strip', () => {
     } finally {
       vi.useRealTimers()
     }
-    expect(screen.queryByTestId('mac-header-drag-strip')).toBeNull()
+    expect(screen.queryByTestId('header-drag-strip')).toBeNull()
   })
 
   it('re-measures the docked strips when a header control moves', async () => {
@@ -142,11 +142,11 @@ describe('focus mode — macOS window drag strip', () => {
     // jsdom lays nothing out, so every control has a zero box and the whole band
     // is one gap. Give one control a real box AFTER mount: a strip measured once
     // and never again would still span it and turn its clicks into window drags.
-    expect(screen.getAllByTestId('mac-header-drag-strip')).toHaveLength(1)
+    expect(screen.getAllByTestId('header-drag-strip')).toHaveLength(1)
     const control = header.querySelector('button') as HTMLElement
     control.getBoundingClientRect = () => ({ left: 600, right: 700, top: 7, bottom: 35, width: 100, height: 28, x: 600, y: 7, toJSON: () => ({}) })
     await act(async () => { header.setAttribute('class', `${header.className} tb-reflow`) })
-    const strips = screen.getAllByTestId('mac-header-drag-strip')
+    const strips = screen.getAllByTestId('header-drag-strip')
     expect(strips).toHaveLength(2)
     // Neither strip may reach into the control's box (padded by CONTROL_PAD_PX).
     for (const s of strips) {
@@ -167,7 +167,7 @@ describe('focus mode — macOS window drag strip', () => {
       (el as HTMLElement).getBoundingClientRect = () => ({ left, right, top, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON: () => ({}) })
     }
     const expectStripsClear = (left: number, right: number) => {
-      const strips = screen.getAllByTestId('mac-header-drag-strip')
+      const strips = screen.getAllByTestId('header-drag-strip')
       for (const s of strips) {
         const l = parseFloat(s.style.left)
         const r = l + parseFloat(s.style.width)
@@ -176,7 +176,7 @@ describe('focus mode — macOS window drag strip', () => {
       return strips
     }
     const expectOneFullStrip = () => {
-      const strips = screen.getAllByTestId('mac-header-drag-strip')
+      const strips = screen.getAllByTestId('header-drag-strip')
       expect(strips).toHaveLength(1)
       expect(parseFloat(strips[0].style.width)).toBe(1400)
     }
