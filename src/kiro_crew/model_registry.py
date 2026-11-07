@@ -585,6 +585,16 @@ _ADVERTISED_MODELS: dict[str, list[str]] = {}
 # degrade-silently contract as ``_ADVERTISED_MODELS``.
 _ADVERTISED_META: dict[str, dict[str, dict[str, str]]] = {}
 
+# A ``session/new`` snapshot that DROPS a cached id, waiting for a second read to
+# confirm it, per namespace. The session list is entitlement-filtered,
+# so a session born while an entitlement lookup races a token refresh can
+# advertise a degraded subset; replacing the cache with it would persist the
+# degrade and seed every later session. One shrinking read is held here instead
+# of applied; the same shrunk list read again confirms it (a genuine downgrade
+# still narrows the cache, one session later). In memory only, so a restart
+# never inherits a half-confirmed shrink.
+_PENDING_ADVERTISED_SHRINK: dict[str, list[str]] = {}
+
 # Reserved top-level sidecar key under which the label block is persisted. A
 # namespace can never collide with it: ``model_id_namespace`` values are plain
 # identifiers, and the loader skips this key so an old reader (which treats every
@@ -655,6 +665,8 @@ def refresh_advertised_models(
     provider: str,
     ids: Sequence[str],
     rows: Sequence[object] | None = None,
+    *,
+    confirm_shrink: bool = False,
 ) -> bool:
     """Ingest a provider's advertised model ids into the cache.
 
@@ -682,10 +694,32 @@ def refresh_advertised_models(
     bound is refused (never truncated) and gets no entry anywhere; the overflow
     is counted and logged once per call so a shortened list is not mistaken for
     a backend that never named those ids.
+
+    ``confirm_shrink=True`` is for an entitlement-filtered ``session/new`` list.
+    A list that drops an id the cache holds is not applied on first
+    sight: it is held in ``_PENDING_ADVERTISED_SHRINK`` and the cache keeps its
+    ids, gaining only the new list's additions. The same shrunk list read again
+    confirms it and replaces the cache, so a real entitlement downgrade still
+    narrows it, one session later. The default (``False``) keeps plain replace
+    for an unfiltered catalog such as kiro's ``--list-models``.
     """
     clean = _admit_ids(ids, f"advertised-model cache for {provider}")
     if not clean:
         return False
+    if confirm_shrink:
+        cached = _ADVERTISED_MODELS.get(provider) or []
+        kept = set(clean)
+        dropped = sum(1 for mid in cached if mid not in kept)
+        if dropped and _PENDING_ADVERTISED_SHRINK.get(provider) != clean:
+            _PENDING_ADVERTISED_SHRINK[provider] = clean
+            logger.info(
+                "advertised-model cache for %s: holding a list that drops %d cached id(s) "
+                "until a second session confirms it",
+                provider,
+                dropped,
+            )
+            return _merge_advertised_additions(provider, cached, clean, rows)
+        _PENDING_ADVERTISED_SHRINK.pop(provider, None)
     changed = False
     if _ADVERTISED_MODELS.get(provider) != clean:
         _ADVERTISED_MODELS[provider] = clean
@@ -694,6 +728,54 @@ def refresh_advertised_models(
         # Labels are admitted against the ids that survived above.
         labels = _admit_label_rows(_payload_labels(rows), clean)
         if (_ADVERTISED_META.get(provider) or {}) != labels:
+            if labels:
+                _ADVERTISED_META[provider] = labels
+            else:
+                _ADVERTISED_META.pop(provider, None)
+            changed = True
+    return changed
+
+
+def _merge_advertised_additions(
+    provider: str,
+    cached: list[str],
+    clean: list[str],
+    rows: Sequence[object] | None,
+) -> bool:
+    """Add ``clean``'s new ids to a held cache without dropping any; ``True`` if it moved.
+
+    A held shrink must not cost the ids the same read added. Cached ids keep
+    their order and labels; new ids are appended, bounded by the same
+    ``ADVERTISED_MODELS_MAX_IDS`` the refresh applies.
+    """
+    merged = list(cached)
+    refused = 0
+    for mid in clean:
+        if mid in merged:
+            continue
+        if len(merged) < ADVERTISED_MODELS_MAX_IDS:
+            merged.append(mid)
+        else:
+            refused += 1
+    if refused:
+        logger.warning(
+            "advertised-model cache for %s: refused %d model id(s) past the %d-id cap "
+            "while holding a shrinking list",
+            provider,
+            refused,
+            ADVERTISED_MODELS_MAX_IDS,
+        )
+    changed = False
+    if merged != cached:
+        _ADVERTISED_MODELS[provider] = merged
+        changed = True
+    if rows is not None:
+        old = _ADVERTISED_META.get(provider) or {}
+        # Admitted against ``merged``: an id the cap refused gets no label row.
+        fresh = _admit_label_rows(_payload_labels(rows), merged)
+        labels = {mid: lbl for mid, lbl in old.items() if mid in merged}
+        labels.update(fresh)
+        if old != labels:
             if labels:
                 _ADVERTISED_META[provider] = labels
             else:
