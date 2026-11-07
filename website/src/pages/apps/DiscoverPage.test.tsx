@@ -219,6 +219,21 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     )
   })
 
+  it('says so when the refreshed listing is the offline fallback', async () => {
+    // Offline the store POST still resolves ok and the listing still answers
+    // 200, so only the listing's own flag can explain why the store shrank.
+    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    queryClient.setQueryData(['registry'], { apps: [], catalogUnavailable: true })
+    await clickRefresh()
+    expect(await screen.findByText('pages.appsPage.store_catalog_unreachable')).toBeInTheDocument()
+
+    queryClient.setQueryData(['registry'], { apps: [], catalogUnavailable: false })
+    await clickRefresh()
+    await waitFor(() =>
+      expect(screen.queryByText('pages.appsPage.store_catalog_unreachable')).not.toBeInTheDocument(),
+    )
+  })
+
   it('leaves a banner another writer set alone on a successful refresh', async () => {
     renderWithProviders(<DiscoverPage />)
     await screen.findByRole('button', { name: REFRESH_LABEL })

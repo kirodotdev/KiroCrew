@@ -94,6 +94,10 @@ async def handle_registry(request: web.Request) -> web.Response:
     # reachable: its rows replace the seed + per-app manifest fetch. Offline the
     # catalog is empty and the seed listing answers instead.
     apps = await list_catalog_apps()
+    # Said out loud because the fallback listing renders with a 200 like any
+    # other: without it, the store's refresh cannot tell the user that the list
+    # they now see is the offline one, nor why most apps left it.
+    catalog_unavailable = not apps
     if apps:
         await _announce_app_updates(request, apps)
     else:
@@ -123,6 +127,7 @@ async def handle_registry(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "apps": apps,
+            "catalogUnavailable": catalog_unavailable,
             "serverPlatform": get_server_platform(),
             "categoryOrder": category_order,
             "editorialSections": sections,

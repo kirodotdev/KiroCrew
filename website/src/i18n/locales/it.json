@@ -11928,7 +11928,8 @@
       "updated_from_the_registry": "{{name}} aggiornata dal registro.",
       "updated_needs_session_approval_consent": "{{name}} è disattivata perché ora chiede di controllare le tue chat. Controlla l’autorizzazione nei dettagli dell’app, poi attivala.",
       "refresh_store": "Aggiorna lo store",
-      "refreshing_store": "Aggiornamento dello store…"
+      "refreshing_store": "Aggiornamento dello store…",
+      "store_catalog_unreachable": "Impossibile raggiungere il catalogo ufficiale delle app, quindi lo store mostra il suo elenco offline. Verifica che il gateway raggiunga Internet, poi aggiorna di nuovo."
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/mese",

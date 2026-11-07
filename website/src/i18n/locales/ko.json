@@ -11416,7 +11416,8 @@
       "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다.",
       "updated_needs_session_approval_consent": "{{name}}은(는) 새로 채팅 제어 권한을 요청하므로 비활성화되어 있습니다. 앱 세부 정보에서 권한을 확인한 뒤 활성화하세요.",
       "refresh_store": "스토어 새로고침",
-      "refreshing_store": "스토어 새로고침 중…"
+      "refreshing_store": "스토어 새로고침 중…",
+      "store_catalog_unreachable": "공식 앱 카탈로그에 연결할 수 없어 스토어가 오프라인 목록을 표시하고 있습니다. 게이트웨이가 인터넷에 연결되는지 확인한 뒤 다시 새로 고치세요."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/월",

@@ -11928,7 +11928,8 @@
       "updated_from_the_registry": "{{name}} atualizado a partir do registro.",
       "updated_needs_session_approval_consent": "{{name}} está desativado porque passou a pedir para controlar seus chats. Revise a permissão nos detalhes do app e ative-o.",
       "refresh_store": "Atualizar a loja",
-      "refreshing_store": "Atualizando a loja…"
+      "refreshing_store": "Atualizando a loja…",
+      "store_catalog_unreachable": "Não foi possível acessar o catálogo oficial de apps, então a loja está mostrando sua lista offline. Verifique se o gateway consegue acessar a internet e atualize de novo."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mês",

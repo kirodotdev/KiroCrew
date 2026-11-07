@@ -11928,7 +11928,8 @@
       "updated_from_the_registry": "{{name}} mise à jour depuis le registre.",
       "updated_needs_session_approval_consent": "{{name}} est désactivée, car elle demande maintenant à contrôler tes chats. Vérifie l’autorisation dans les détails de l’application, puis active-la.",
       "refresh_store": "Actualiser la boutique",
-      "refreshing_store": "Actualisation de la boutique…"
+      "refreshing_store": "Actualisation de la boutique…",
+      "store_catalog_unreachable": "Impossible de joindre le catalogue officiel des apps : la boutique affiche sa liste hors ligne. Vérifie que la passerelle accède à Internet, puis actualise à nouveau."
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/mois",
