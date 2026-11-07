@@ -229,8 +229,8 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             # What Inherited gives, pinned or not, so the picker can always say it.
             "inherited_harness": inherited.harness,
             # Where Inherited comes from: the legacy agent.member_acp_backend, the
-            # Settings harness, KAS because crewmates cannot run on that one, or
-            # KAS because it cannot apply this crewmate's worker tool limits.
+            # Settings harness, KAS because Crew bots cannot run on that one, or
+            # KAS because it cannot apply this Crew bot's worker tool limits.
             "inherited_source": inherited.source,
             "settings_harness": inherited.settings_harness,
             # The picker's choices, from the one server-side list a save accepts.

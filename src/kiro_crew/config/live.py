@@ -135,7 +135,7 @@ def watch_document(cfg: Any) -> dict[str, Any]:
     ``agent.member_acp_backend`` also says whether it was stored or inherited from
     ``agent.acp_backend`` (``config.loader_builders.mark_member_backend_inherited``).
     Removing a stored value equal to the Settings harness leaves ``to_dict()``
-    unchanged, yet it can move a crewmate onto KAS
+    unchanged, yet it can move a Crew bot onto KAS
     (``crewmate_harness.worker_spec_forces_kas``), so it must reach that key's
     subscribers like any other change.
     """

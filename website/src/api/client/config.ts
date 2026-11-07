@@ -16,10 +16,10 @@ import type { ClientTransport } from './transport'
 export type AcpBackendInstalled = 'installed' | 'missing' | 'unknown'
 
 /**
- * What a crewmate with no pin of its own runs on (`GET /api/acp-backends`
+ * What a Crew bot with no pin of its own runs on (`GET /api/acp-backends`
  * `crewmate_harness`), in the config spelling, and which setting decided it:
  * `legacy` is a stored `agent.member_acp_backend`, `settings` is
- * `agent.acp_backend`, and `fallback` is KAS because crewmates cannot run on
+ * `agent.acp_backend`, and `fallback` is KAS because Crew bots cannot run on
  * `settings_harness`.
  */
 export interface CrewmateHarnessReadout {

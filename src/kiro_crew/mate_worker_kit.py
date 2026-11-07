@@ -482,7 +482,7 @@ def _carry_policy(member: str, new_spec: dict[str, Any], source: dict[str, Any])
 
 
 def _crewmate_backend(member: str, held: dict[str, Any]) -> str:
-    """The backend crewmate *member*'s worker runs on once its file holds *held*.
+    """The backend Crew bot *member*'s worker runs on once its file holds *held*.
 
     Judged on the spec being written: a Bot that follows the Settings harness
     and gains policy runs on KAS (``crewmate_harness.worker_backend_for_spec``).

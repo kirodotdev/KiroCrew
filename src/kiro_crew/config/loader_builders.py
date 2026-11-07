@@ -490,10 +490,10 @@ def _read_backend_choice(
 
     *inherit* is the already resolved ``agent.acp_backend``. With it, an
     ``agent.member_acp_backend`` that holds no choice (absent or ``""``) does not
-    read the field default: crewmates follow the Settings harness through
+    read the field default: Crew bots follow the Settings harness through
     :func:`~kiro_crew.agent_sdk.backends.crewmate_inherited_backend` (Kiro CLI
-    reads as KAS; a harness crewmates cannot run on runs them on KAS, logged).
-    So the loaded field is the one answer every reader of the crewmate backend
+    reads as KAS; a harness Crew bots cannot run on runs them on KAS, logged).
+    So the loaded field is the one answer every reader of the Crew bot backend
     gets, and a stored value, the legacy setting, still wins over inheritance.
     """
     from kiro_crew.acp_backends import (
@@ -554,19 +554,19 @@ def _note_member_remap(stored: object, used: str) -> None:
     )
 
 
-#: The inherited harnesses whose crewmate fallback was logged in this process.
+#: The inherited harnesses whose Crew bot fallback was logged in this process.
 _member_fallback_logged: set[str] = set()
 
 
 def _note_member_fallback(inherited: str, used: str) -> None:
-    """Say once per process per harness that crewmates cannot follow ``agent.acp_backend``."""
+    """Say once per process per harness that Crew bots cannot follow ``agent.acp_backend``."""
     if inherited in _member_fallback_logged:
         return
     _member_fallback_logged.add(inherited)
     logger.warning(
-        "agent.acp_backend is %r, which crewmates cannot run on (no saved spec, dispatch "
-        "tools or worker kit there); crewmate chats and their workers run on %r instead. "
-        "Pin a harness per crewmate or set agent.member_acp_backend to choose another.",
+        "agent.acp_backend is %r, which Crew bots cannot run on (no saved spec, dispatch "
+        "tools or worker kit there); Crew bot chats and their workers run on %r instead. "
+        "Pin a harness per Crew bot or set agent.member_acp_backend to choose another.",
         inherited,
         used,
     )
@@ -710,7 +710,7 @@ def member_backend_inherited(agent_data: dict) -> bool:
     """Whether *agent_data* holds no ``agent.member_acp_backend`` choice of its own.
 
     Then the loaded field follows ``agent.acp_backend`` (:func:`_read_backend_choice`)
-    and a crewmate with no pin may still fall back to KAS on its own
+    and a Crew bot with no pin may still fall back to KAS on its own
     (``crewmate_harness.inherited_falls_back``). A stored value, the legacy setting,
     or the floor for a malformed one is a choice and never falls back that way.
     """

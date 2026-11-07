@@ -183,8 +183,8 @@ def chat_backend_honors_preregistered_oauth() -> bool:
     from kiro_crew.config import KiroCrewConfig
 
     try:
-        # Ordinary chats only. ``member_acp_backend`` is what crewmates run on
-        # (often KAS) whether or not crewmates exist, so reading it would put the
+        # Ordinary chats only. ``member_acp_backend`` is what Crew bots run on
+        # (often KAS) whether or not Crew bots exist, so reading it would put the
         # caveat on rows that say nothing about the operator's own chats.
         backend = KiroCrewConfig.load().agent.acp_backend
     except Exception:  # noqa: BLE001 -- see the docstring: no proof, no claim

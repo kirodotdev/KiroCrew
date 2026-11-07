@@ -58,7 +58,7 @@ type TFn = ReturnType<typeof useTranslation>['t']
 /**
  * The Inherited option's hint: what it resolves to, then where that comes from
  * (`inherited_source` on the crew readout). A fallback names the Settings harness
- * crewmates cannot run on, so the person sees why Inherited is not that harness.
+ * Crew bots cannot run on, so the person sees why Inherited is not that harness.
  */
 function inheritedHarnessHint(
   t: TFn,

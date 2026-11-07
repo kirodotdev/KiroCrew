@@ -693,7 +693,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         from kiro_crew import kiro_on_kas_notice
 
         kiro_on_kas_notice.schedule(self.dashboard_state, _KAS_CLI_FLOOR_TASK)
-        # Told when crewmates cannot follow the Settings harness and run on KAS.
+        # Told when Crew bots cannot follow the Settings harness and run on KAS.
         from kiro_crew import crewmate_harness_notice
 
         crewmate_harness_notice.schedule(self.dashboard_state)

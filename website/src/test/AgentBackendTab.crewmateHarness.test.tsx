@@ -1,7 +1,7 @@
 /**
- * The Agent Harness panel says what crewmates with no pin of their own run on,
+ * The Agent Harness panel says what Crew bots with no pin of their own run on,
  * and which setting decided it (`GET /api/acp-backends` `crewmate_harness`). A
- * fallback (crewmates cannot run on the picked harness) is shown as an alert.
+ * fallback (Crew bots cannot run on the picked harness) is shown as an alert.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
@@ -41,8 +41,8 @@ beforeEach(() => {
   schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas']))
 })
 
-describe('the crewmate harness line', () => {
-  it('names the harness crewmates follow from this panel', async () => {
+describe('the Crew bot harness line', () => {
+  it('names the harness Crew bots follow from this panel', async () => {
     acpBackendsMock.mockResolvedValue({
       backends: rows,
       crewmate_harness: { harness: 'claude', source: 'settings', settings_harness: 'claude' },
@@ -51,7 +51,7 @@ describe('the crewmate harness line', () => {
     const line = await screen.findByTestId('crewmate-harness')
     expect(line.dataset.source).toBe('settings')
     expect(line.textContent).toBe(
-      'Bots run on Claude Code, the harness picked here. A Bot can pin its own in its settings.',
+      'Bots run on Claude Code, the harness picked here. A bot can pin its own in its settings.',
     )
     expect(line.getAttribute('role')).toBeNull()
   })
@@ -76,7 +76,7 @@ describe('the crewmate harness line', () => {
     const line = await screen.findByTestId('crewmate-harness')
     expect(line.getAttribute('role')).toBe('alert')
     expect(line.textContent).toBe(
-      "Bots can't run on Claude Code, so they run on Kiro Agent instead. A Bot can pin its own harness in its settings.",
+      "Bots can't run on Claude Code, so they run on Kiro Agent instead. A bot can pin its own harness in its settings.",
     )
   })
 

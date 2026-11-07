@@ -920,7 +920,7 @@ def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None)
     before ``members.select_provider_backend`` runs.
     Without a pin it is ``agent.member_acp_backend`` as the loader reads it (a
     stored ``kiro`` already reads as KAS; with none stored it follows
-    ``agent.acp_backend``, or KAS when crewmates cannot run there) crossed through
+    ``agent.acp_backend``, or KAS when Crew bots cannot run there) crossed through
     ``resolve_selected_backend``, the same gate the member route applies.
 
     *config* is the whole loaded config, never its ``agent`` section: the pin
@@ -985,7 +985,7 @@ def crewmate_tool_limited_servers(
 
 
 def kas_only_worker_fields(member_id: str, backend: str) -> tuple[str, ...]:
-    """What crewmate *member_id*'s own file sets that *backend* cannot carry for its worker.
+    """What Crew bot *member_id*'s own file sets that *backend* cannot carry for its worker.
 
     The fields :func:`resolve_worker_spec` refuses on *backend*: ``tool limits``
     (:func:`tool_limits_of`, outside ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``) and

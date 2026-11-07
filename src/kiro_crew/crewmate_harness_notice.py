@@ -1,13 +1,13 @@
-"""The dashboard alarm that says crewmates cannot follow the Settings harness.
+"""The dashboard alarm that says Crew bots cannot follow the Settings harness.
 
-A crewmate with no pin of its own and no stored ``agent.member_acp_backend`` runs on
-``agent.acp_backend`` (Settings -> Agent Harness). When that harness is one crewmates
+A Crew bot with no pin of its own and no stored ``agent.member_acp_backend`` runs on
+``agent.acp_backend`` (Settings -> Agent Harness). When that harness is one Crew bots
 cannot run on, the loader runs them on KAS instead and logs why
 (``config.loader_builders._note_member_fallback``, harness-parity H3). The log is for
 the operator; this note is for the person, in the bell, and it opens the Agent
 Harness panel, which shows the same fact beside the picker.
 
-One crewmate can also run on KAS on its own: its file sets something for its
+One Crew bot can also run on KAS on its own: its file sets something for its
 workers the harness it inherits cannot carry (worker tool limits, ``hooks``,
 ``permissions``, ``toolsSettings``; ``crewmate_harness.worker_spec_forces_kas``). It gets its own note, which opens its
 page on the Bots page.
@@ -42,7 +42,7 @@ NOTE_URL = "/settings/agent"
 ROUTE = "Agent harness in its Profile → Settings on the Bots page."
 
 #: The facts already announced in this process: ``settings:<harness>`` for every
-#: crewmate, ``mate:<crew>:<harness>`` for one.
+#: Crew bot, ``mate:<crew>:<harness>`` for one.
 _announced: set[str] = set()
 _lock = threading.Lock()
 
@@ -62,7 +62,7 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
         worker_spec_kas_fields,
     )
 
-    # Off the loop: what each crewmate's file needs is read into memory here, so the
+    # Off the loop: what each Crew bot's file needs is read into memory here, so the
     # event loop's readers find it from the first session on.
     refresh_worker_spec_verdicts(config)
 
@@ -80,9 +80,9 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
                 {
                     "title": f"Bots run on {used}, not {chosen}",
                     "body": (
-                        f"Your Agent Harness is {chosen}, which Bots cannot run on. Bot "
+                        f"Your Agent Harness is {chosen}, which bots cannot run on. Bot "
                         f"chats and the workers they open run on {used} instead. To choose "
-                        "another harness for a Bot, set " + ROUTE
+                        "another harness for a bot, set " + ROUTE
                     ),
                     "url": NOTE_URL,
                 },
@@ -154,7 +154,7 @@ def _pin_fallback_notes(config: Any, holding: set[str]) -> list[tuple[str, dict[
                 {
                     "title": f"{crew} runs on {used}, not {chosen}",
                     "body": (
-                        f"{crew} is pinned to {chosen}, which Bots cannot run on, so its "
+                        f"{crew} is pinned to {chosen}, which bots cannot run on, so its "
                         f"chat and workers run on {used}. Pick another harness: set " + ROUTE
                     ),
                     "url": f"/members?member={quote(crew)}",
@@ -191,7 +191,7 @@ async def deliver(state: Any, config: Any | None = None) -> int:
             config = await asyncio.to_thread(KiroCrewConfig.load)
         notes = await asyncio.to_thread(fallback_notes, config)
     except Exception:  # noqa: BLE001 - the alarm must not take a config apply down
-        logger.warning("could not work out the crewmate harness fallback notice", exc_info=True)
+        logger.warning("could not work out the Crew bot harness fallback notice", exc_info=True)
         return 0
     sent = 0
     for note in notes:
@@ -206,7 +206,7 @@ async def deliver(state: Any, config: Any | None = None) -> int:
         except Exception:  # noqa: BLE001 - the alarm must not take a config apply down
             # Not delivered, so not announced: the next config change or start tries again.
             _forget(note["key"])
-            logger.warning("could not deliver the crewmate harness fallback notice", exc_info=True)
+            logger.warning("could not deliver the Crew bot harness fallback notice", exc_info=True)
             continue
         sent += 1
     return sent
@@ -249,7 +249,7 @@ def _claim_moved() -> bool:
     except FileExistsError:
         return False
     except OSError:
-        logger.warning("could not claim the moved Bots notice", exc_info=True)
+        logger.warning("could not claim the moved bots notice", exc_info=True)
         return False
     os.close(fd)
     return True
@@ -267,15 +267,15 @@ def moved_note(config: Any, crew: str) -> dict[str, str] | None:
             return None
         chosen = harness_label(crewmate_inherited_source(config, crew).harness)
     except Exception:  # noqa: BLE001 - no note is the safe direction
-        logger.warning("could not work out the moved Bots notice", exc_info=True)
+        logger.warning("could not work out the moved bots notice", exc_info=True)
         return None
     kas = harness_label("kas")
     return {
         "title": f"Bots now run on {chosen}",
         "body": (
-            f"A Bot with no harness of its own now follows Settings → Agent Harness "
+            f"A bot with no harness of its own now follows Settings → Agent Harness "
             f"({chosen}), not {kas}. Its next turn starts a new conversation there. To "
-            f"keep a Bot on {kas}, set it as " + ROUTE
+            f"keep a bot on {kas}, set it as " + ROUTE
         ),
         "url": f"/members?member={quote(crew)}",
     }
@@ -289,7 +289,7 @@ async def deliver_moved(state: Any, config: Any, crew: str) -> bool:
     try:
         state.notify(NOTE_KIND, note["title"], note["body"], url=note["url"], channel=NOTE_CHANNEL)
     except Exception:  # noqa: BLE001 - the claim is spent; the Settings line still says it
-        logger.warning("could not deliver the moved Bots notice", exc_info=True)
+        logger.warning("could not deliver the moved bots notice", exc_info=True)
         return False
     return True
 

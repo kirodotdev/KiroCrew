@@ -271,7 +271,7 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
     # ``kiro_selection_runs_on_kas``: the stored pick is Kiro CLI and sessions run it
     # on KAS (``agent_sdk.backends.KIRO_SELECTION_BACKEND``). The panel offers the
     # one-click save of KAS on it, so the setting says what runs.
-    # ``crewmate_harness``: what a crewmate with no pin of its own runs on, and which
+    # ``crewmate_harness``: what a Crew bot with no pin of its own runs on, and which
     # setting decided it (``crewmate_harness.inherited_harness_source``).
     body: Dict[str, Any] = {"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas}
     if crewmates is not None:
@@ -287,7 +287,7 @@ def _crewmate_harness() -> Dict[str, str] | None:
 
         return inherited_harness_source(KiroCrewConfig.load()).as_dict()
     except Exception:
-        logger.debug("could not read the crewmate harness", exc_info=True)
+        logger.debug("could not read the Crew bot harness", exc_info=True)
         return None
 
 

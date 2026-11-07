@@ -783,8 +783,8 @@ describe('CrewProfileSettings harness', () => {
   it.each([
     ['settings', 'Set in Settings → Agent Harness.'],
     ['legacy', 'Set by agent.member_acp_backend in config.json.'],
-    ['fallback', "Settings → Agent Harness is Claude Code, which Bots can't run on, so this is Kiro Agent."],
-    ['worker_spec', "This Bot's workers use settings Claude Code can't carry, so this is Kiro Agent."],
+    ['fallback', "Settings → Agent Harness is Claude Code, which bots can't run on, so this is Kiro Agent."],
+    ['worker_spec', "This bot's workers use settings Claude Code can't carry, so this is Kiro Agent."],
   ])('says where Inherited comes from (%s)', async (source, text) => {
     readout({ inherited_source: source, settings_harness: 'claude' })
     setup(member())

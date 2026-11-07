@@ -1518,7 +1518,7 @@ class TestCrewmateHarnesses:
 
     @pytest.mark.parametrize("harness", ["pi", "deepseek"])
     def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch, harness):
-        """RFC O6: pi and deepseek run a chat but not a crewmate's workers, so no pick."""
+        """RFC O6: pi and deepseek run a chat but not a Crew bot's workers, so no pick."""
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
 

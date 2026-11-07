@@ -4775,21 +4775,21 @@ call regardless.
 `agents.<name>.acp_backend` pins the agent harness one Bot's sessions run on,
 spelled as `agent.acp_backend` is (`kiro`, `kas`, `claude`, ...). Empty, the
 default, inherits the loaded `agent.member_acp_backend`: a stored (legacy) value,
-else `agent.acp_backend` (Kiro CLI as KAS), else KAS when crewmates cannot run on
-that harness, logged and rung in the bell (`crewmate_harness_notice`). One crewmate
+else `agent.acp_backend` (Kiro CLI as KAS), else KAS when Crew bots cannot run on
+that harness, logged and rung in the bell (`crewmate_harness_notice`). One Crew bot
 also runs on KAS on its own when it follows the Settings harness and its own file
 sets something for its workers that harness cannot carry: worker tool limits
 (outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`) or `hooks` / `permissions` /
 `toolsSettings` (`mate_spec_policy.applies_spec_policy`), read by
 `mate_worker.kas_only_worker_fields` (`crewmate_harness.worker_spec_forces_kas`). Its
 workers would each be refused. The answer is held in memory, read off the loop at
-gateway start and on each harness or crewmate config change
+gateway start and on each harness or Crew bot config change
 (`refresh_worker_spec_verdicts`); a reader on the event loop only reads it and
 refreshes an outdated entry in a background thread. `crewmate_backend_pin` hands the
 gate a KAS `StartableCrewPin` (`worker_spec_fallback`) and `pinned_backend` answers KAS, so
 its chat and workers agree; it is logged once and rung in the bell, and a pin or the
 legacy setting is never moved. The Agent Harness panel (`GET /api/acp-backends`
-`crewmate_harness`) and the crewmate's Inherited option (`inherited_source`, which
+`crewmate_harness`) and the Crew bot's Inherited option (`inherited_source`, which
 reads `worker_spec` for that case) say which of those decided it. A model pin's
 kiro-cli spelling check is judged on the harness the pin runs on
 (`kiro_spelling_applies(backend)`), pinned or inherited. A pin to a harness Bots cannot run on (outside the saved-spec,

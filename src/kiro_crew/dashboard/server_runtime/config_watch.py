@@ -272,8 +272,8 @@ def _register_config_watch(
         state.push_refresh("config")
 
     async def _alarm_crewmate_harness_fallback(change: ConfigChange) -> None:
-        # A new Settings harness crewmates cannot run on moves them onto KAS, and so
-        # does a cleared pin on a crewmate whose worker tool limits that harness
+        # A new Settings harness Crew bots cannot run on moves them onto KAS, and so
+        # does a cleared pin on a Crew bot whose worker tool limits that harness
         # cannot apply; the bell says so, from whichever writer changed it
         # (dashboard, CLI, $EDITOR).
         from kiro_crew import crewmate_harness_notice

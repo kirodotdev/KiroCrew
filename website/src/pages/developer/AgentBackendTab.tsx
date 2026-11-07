@@ -1462,9 +1462,9 @@ export function AgentBackendTab() {
           </div>
         </SettingsCard>
       )}
-      {/* What a crewmate with no pin of its own runs on, and which setting decided
+      {/* What a Crew bot with no pin of its own runs on, and which setting decided
           it (`crewmate_harness.inherited_harness_source`). A fallback is the alarm:
-          the harness picked here is one crewmates cannot run on, so they run on KAS. */}
+          the harness picked here is one Crew bots cannot run on, so they run on KAS. */}
       {probeQ.data?.crewmate_harness && (
         <CrewmateHarnessLine readout={probeQ.data.crewmate_harness} nameOf={nameOf} />
       )}
@@ -1699,9 +1699,9 @@ function SignInDeepLink({ onSignIn }: { onSignIn: () => void }) {
 }
 
 /**
- * One line under the Agent Harness picker: what crewmates run on and where it
- * comes from. A fallback (the picked harness cannot run crewmates) is shown as a
- * warning so the person sees that crewmates are not on the harness they chose.
+ * One line under the Agent Harness picker: what Crew bots run on and where it
+ * comes from. A fallback (the picked harness cannot run Crew bots) is shown as a
+ * warning so the person sees that Crew bots are not on the harness they chose.
  */
 function CrewmateHarnessLine({
   readout,

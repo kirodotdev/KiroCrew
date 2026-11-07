@@ -1,14 +1,14 @@
-"""What a crewmate with no pin of its own runs on, and where that comes from.
+"""What a Crew bot with no pin of its own runs on, and where that comes from.
 
-Resolution, for a crewmate's own chat and the workers it opens:
+Resolution, for a Crew bot's own chat and the workers it opens:
 
-1. the crewmate's pin ``agents.<name>.acp_backend`` (refuses when it cannot start, H17);
+1. the Crew bot's pin ``agents.<name>.acp_backend`` (refuses when it cannot start, H17);
 2. an explicitly stored ``agent.member_acp_backend`` (legacy, keeps working);
 3. ``agent.acp_backend`` (Settings -> Agent Harness), Kiro CLI reading as KAS;
-4. KAS, with a logged reason (H3) and a bell note, when crewmates cannot run on 3.
+4. KAS, with a logged reason (H3) and a bell note, when Crew bots cannot run on 3.
 
 The answer is the loaded ``agent.member_acp_backend`` (``_read_backend_choice``), so
-every reader of the crewmate backend gets the same one; the governance gate and the
+every reader of the Crew bot backend gets the same one; the governance gate and the
 enterprise KAS floor still decide what is selectable.
 """
 
@@ -65,9 +65,9 @@ class TestResolver:
             "opencode",
             "strands",
             "copilot",
-            # A crewmate chat could run here, but its workers could not carry their
+            # A Crew bot chat could run here, but its workers could not carry their
             # kit (``worker_kit_backend_refusal``), so inheriting it would refuse
-            # every worker the crewmate opens.
+            # every worker the Crew bot opens.
             "pi",
             "deepseek",
         ],
@@ -124,14 +124,14 @@ class TestLoadedField:
             assert _member({"acp_backend": "goose"}) == "kas"
             assert _member({"acp_backend": "goose"}) == "kas"
         lines = [
-            r.getMessage() for r in caplog.records if "crewmates cannot run on" in r.getMessage()
+            r.getMessage() for r in caplog.records if "Crew bots cannot run on" in r.getMessage()
         ]
         assert len(lines) == 1
         assert "'goose'" in lines[0] and "'kas'" in lines[0]
 
     def test_a_policy_denied_settings_harness_lands_crewmates_on_kas(self, _floor_monkeypatch):
         # Governance narrows the registry: claude is gone, so the Settings harness
-        # takes the floor (Kiro CLI) and crewmates read that as KAS.
+        # takes the floor (Kiro CLI) and Crew bots read that as KAS.
         _floor_monkeypatch.setattr(registry, "_selectable", {"", "kas"})
         cfg = _build_agent_config({"acp_backend": "claude"})
         assert cfg.acp_backend == acp_backends.ACP_BACKEND_KIRO
@@ -382,7 +382,7 @@ DM_KEY = "dashboard:member-atlas-0123456789ab"
 
 @pytest.fixture
 def limits(_floor_monkeypatch):
-    """What crewmate atlas's file sets that the inherited harness cannot carry."""
+    """What Crew bot atlas's file sets that the inherited harness cannot carry."""
     state: dict = {"value": (), "reads": 0}
 
     def _fields(member_id, backend):
@@ -436,7 +436,7 @@ class TestLoaderMark:
 
 
 class TestWorkerSpecFallback:
-    """One crewmate whose worker spec its inherited harness cannot carry."""
+    """One Crew bot whose worker spec its inherited harness cannot carry."""
 
     def test_a_mate_that_narrows_worker_tools_runs_on_kas(self, limits):
         from kiro_crew.crewmate_harness import crewmate_backend_pin, pinned_backend
@@ -569,7 +569,7 @@ class TestWorkerSpecFallback:
         assert crewmate_harness.inherited_falls_back(cfg, "atlas")
         assert crewmate_harness.inherited_falls_back(cfg, "atlas")
         assert limits["reads"] == 1
-        # The crewmate's file changed: read again.
+        # The Crew bot's file changed: read again.
         limits["revision"] = ("r", 2)
         limits["value"] = ()
         assert not crewmate_harness.inherited_falls_back(cfg, "atlas")
