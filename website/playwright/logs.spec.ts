@@ -50,11 +50,12 @@ test.describe('Logs Page', () => {
   })
 
   test('displays log level buttons with current level highlighted', async ({ page }) => {
-    // The four level buttons: Debug, Info, Warning, Error
-    await expect(page.getByRole('button', { name: 'Debug' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Info' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Warning' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Error' })).toBeVisible()
+    // The four level buttons: Debug, Info, Warning, Error, one radio group
+    const levels = page.getByRole('radiogroup', { name: 'Log Level:' })
+    await expect(levels.getByRole('radio', { name: 'Debug' })).toBeVisible()
+    await expect(levels.getByRole('radio', { name: 'Info' })).toBeVisible()
+    await expect(levels.getByRole('radio', { name: 'Warning' })).toBeVisible()
+    await expect(levels.getByRole('radio', { name: 'Error' })).toBeVisible()
   })
 
   test('renders the filter input and control buttons', async ({ page }) => {
@@ -74,7 +75,7 @@ test.describe('Logs Page', () => {
     await waitForLogLines(page)
 
     // Switch to ERROR level via the UI button -- this should filter display
-    await page.getByRole('button', { name: 'Error' }).click()
+    await page.getByRole('radio', { name: 'Error' }).click()
 
     // Verify the level changed on the server (round-trip)
     await expect.poll(async () => {
