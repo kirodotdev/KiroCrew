@@ -1125,6 +1125,45 @@ the log directly, so treat `app:<name>` as "which app said this", not as proof.
 `"publish"`. No permission gates it: an app cannot obtain anything with it, only
 state what it did.
 
+### Background agents (`ctx.spawn`)
+
+Present when the manifest declares `permissions.spawn`, and `None` otherwise.
+Every call names one of the app's own agents (`<app>--*`), runs auto-approved,
+and is checked against the app's governance profile and its
+`capabilities.spawn` scopes.
+
+```python
+from kiro_crew.apps.spawn_sdk import CONVERSATION_BUSY, CONVERSATION_GONE, SpawnError
+
+run_id = await ctx.spawn.run("implement the plan", "coder", silent=True, keep=True)
+...
+try:
+    follow_up = await ctx.spawn.continue_(run_id, "fix these review findings: ...")
+except SpawnError as exc:
+    if exc.code not in (CONVERSATION_GONE, CONVERSATION_BUSY):
+        raise
+    follow_up = await ctx.spawn.run("fix these findings; earlier result: ...", "coder")
+```
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `run(task, agent, *, silent=False, model="", keep=False)` | run id | Start a background agent. With no `model`, the user's `apps.<name>.model` setting applies unless the agent pins one. `keep=True` gives the run its own process and keeps its conversation for hours instead of about one |
+| `continue_(spawn_id, task, *, model="", silent=False)` | new run id | Send a follow-up task to a finished run's conversation, so the agent keeps the context of the earlier run |
+| `is_done(run_id)` | bool | True once the run has finished, whatever the outcome |
+
+`continue_` takes the id `run` returned. That id stays the conversation's id, so
+pass it again for every later follow-up; the new id is only for `is_done`. The
+conversation must be one this app started with one of its own agents, and that
+agent must still exist. The follow-up keeps the run's model unless you name
+another. A conversation is kept about an hour after its run finishes; a
+`keep=True` run, or one you have continued, is kept for hours.
+
+Both calls raise `SpawnError` instead of returning an empty id. `declined` is
+`True` when the host had no room to start the run, so back off before you try
+again. `code` is `CONVERSATION_GONE` when the conversation can no longer be
+resumed, and `CONVERSATION_BUSY` when a run is still in flight on it. Answer
+either one with a fresh `run` that carries a summary of the earlier result.
+
 ### Durable Jobs (`ctx.job`)
 
 Present when the manifest declares `permissions.jobs`, and `None` otherwise.
