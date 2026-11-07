@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -254,6 +255,7 @@ async def install_from_registry(
     *,
     resolved_entry: dict[str, Any] | None = None,
     start_disabled: bool = False,
+    before_replace: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Clone an app from its git repo and install it.
 
@@ -284,6 +286,9 @@ async def install_from_registry(
         start_disabled: Create new self-managed records disabled for a caller
             that performs the guarded enable separately. Managed installs already
             start disabled. Existing records keep their enabled state.
+        before_replace: Awaited right before a managed app's files are copied in,
+            once every gate, the build and ``onInstall`` have passed. An update takes
+            the app down here; a self-managed app replaces no installed file.
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
@@ -1483,6 +1488,8 @@ async def install_from_registry(
         # the whole transaction (clone/build → copy → register → backend
         # start); asyncio.Lock is not reentrant, so no acquisition here.
         existing = get_app(name)
+        if before_replace is not None:
+            await before_replace()
         # Off-loop: install_app/update_app do a blocking filesystem copy
         # that can take minutes on large source trees — on the loop it
         # would trip the loop-stall watchdog and kill the gateway.
