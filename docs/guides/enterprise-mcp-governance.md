@@ -294,6 +294,34 @@ that `uvx` uses:
 
 Set `version` to the Kiro Crew version your fleet runs.
 
+> **Without a mirror this example does not launch.** kiro-cli accepts the
+> entries (`kiro-cli mcp list` shows them), then starts each one as
+> `uvx kirocrew@<version> <subcommand>`. `uvx` looks for `kirocrew` in its
+> configured index, finds nothing on public PyPI, and fails with
+> `kirocrew was not found in the package registry`. The session then has none
+> of Kiro Crew's tools. Setting `version` to the installed version does not
+> help, because the launch still goes through `uvx`, not your local install.
+
+To make the example work, publish the `kirocrew` wheel for your fleet's version
+to a private Python index, then point `uvx` on every client machine at that
+index through uv's own configuration, for example in the user's `uv.toml`
+(`~/.config/uv/uv.toml` on macOS and Linux, `%APPDATA%\uv\uv.toml` on Windows):
+
+```toml
+[[index]]
+url = "https://pypi.example.internal/simple"
+```
+
+Replace the URL with your index. uv checks an index listed this way before
+public PyPI and falls back to PyPI for any package it does not host, so
+`kirocrew`'s dependencies still resolve when the index carries only the
+`kirocrew` wheel. Do not add `default = true` unless the index also proxies
+PyPI or hosts every dependency: that setting removes PyPI as the fallback for
+every `uv` and `uvx` call that reads this file. This guide has not verified that kiro-cli
+passes a package's `registryBaseUrl` field on to `uvx`, so configure the index
+in uv rather than relying on that field. Whether a route other than a mirrored
+wheel should be the supported one is tracked in #13390.
+
 ## Known limitation: the registry launches the server, not your install
 
 Kiro Crew's MCP servers are not standalone tools — they are the gateway's own
