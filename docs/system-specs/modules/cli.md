@@ -797,6 +797,15 @@ in order to decide costs a service-manager query and a port probe that can each
 fail in ways the wizard then has to degrade around — all to save one command the
 line already names.
 
+The step reads each name it writes as one `os.environ` entry
+(`cli_setup._fold_env_spellings`, matched with `_env_name_key` in
+`config/loader_credentials.py`): every spelling folds into the canonical name,
+carrying the value in force, so the prompt shows that value and the save
+replaces it. On Windows `os.environ` is case-insensitive and boot keeps the
+first non-empty spelling in file order, so an older `slack_bot_token` line would
+otherwise stay ahead of the new `SLACK_BOT_TOKEN` and keep the old token in
+force. On POSIX the spellings are separate variables and are left alone.
+
 ### First-run Kiro CLI prerequisite onboarding
 
 KiroCrew exposes the same two-step readiness contract on every supported
