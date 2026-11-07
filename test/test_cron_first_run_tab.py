@@ -261,6 +261,38 @@ class TestEnsureCronSlot:
         assert slot.messages == []
 
 
+@pytest.mark.asyncio
+async def test_a_turn_in_the_cron_tab_keeps_its_title(monkeypatch):
+    """A turn in the tab (here a child's result) runs the auto-titler. With a backend
+    that returns no title, its fallback would be the first user row, the run's header
+    with its hidden marker; the tab keeps ``Cron: <name>`` instead."""
+    from kiro_crew.dashboard import chat_title
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    state = _make_state()
+
+    def get_or_create_slot(name=None, agent="", origin=""):
+        if name not in state._slots:
+            state._slots[name] = _ChatSlot(name)
+        return state._slots[name]
+
+    state.get_or_create_slot = get_or_create_slot
+
+    async def _no_title(*_args, **_kwargs):
+        return ""
+
+    monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _no_title)
+    job = _make_job(name="c111")
+
+    await ensure_cron_slot(state, job)
+    inject_cron_result_to_dashboard(state, _inject_shaped(job), "swept", history=[])
+    slot = state.get_slot("cron-job42")
+    assert slot.messages[0]["content"].startswith("# Cron Run: c111")
+    await chat_title._maybe_auto_title(state, slot)
+
+    assert slot.title == "Cron: c111"
+
+
 def _inject_shaped(job):
     """Extend the pre-create fake job with the fields the injector reads.
 
