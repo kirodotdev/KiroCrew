@@ -3,13 +3,17 @@
 ``_read_ledger_unlocked`` already treats malformed JSON and an unreadable file
 as an empty ledger. A file with non-UTF-8 bytes, or valid JSON of another shape
 (``[]``, a string, a number, ``null``), must degrade the same way rather than
-failing every app install, uninstall and uninstall preview that reads it.
+failing every app install, uninstall and uninstall preview that reads it. A
+ledger that exists but cannot be read is never rewritten: the install records
+nothing and the uninstall removes nothing, so every app's entries stay.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+from pathlib import Path
 from typing import Any, Callable
 
 import pytest
@@ -90,3 +94,21 @@ def test_install_rewrites_bad_ledger_as_an_object(raw: bytes) -> None:
     }
     _call(record_uninstall, KEY, "app-a")
     assert get_entry(KEY) is None
+
+
+def test_an_unreadable_ledger_is_left_as_it_was_and_removes_nothing(monkeypatch) -> None:
+    record_install("capability/mcp/other", "app-c", "capability.mcp")
+    record_install(KEY, "app-a", "capability.mcp")
+    path = _ledger_path()
+    before = path.read_bytes()
+    real_read_text = Path.read_text
+
+    def read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    record_install(KEY, "app-b", "capability.mcp")
+    assert classify_and_clean_for_uninstall("app-a", [KEY])["removable"] == []
+    assert path.read_bytes() == before

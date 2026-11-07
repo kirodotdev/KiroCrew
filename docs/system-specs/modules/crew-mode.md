@@ -4866,7 +4866,7 @@ no other card wears them). The call answers that card with `opt_in: true`, and
 preview on, so it does not ask again. The request is held in the Bot's
 record, written BEFORE the card is raised (`mate_tool_access.reserve_offer`,
 which also claims the one ask, so a second call at the same time gets
-`409 opt_in_pending`): a record that cannot be written raises no card
+`409 opt_in_pending`): a record that cannot be read or written raises no card
 (`503 opt_in_unrecorded`), a card that is then not raised takes the record back
 (`release_offer`), and the card's id is filled in after (`bind_card`; while it is
 missing the offer counts as waiting for `RESERVATION_GRACE_SECS`, then as a card
