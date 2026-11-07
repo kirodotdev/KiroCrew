@@ -14573,7 +14573,8 @@
       "restart_pod": "ポッドを再起動",
       "restarted_name": "{{name}} を再起動しました",
       "restarting_reconnecting": "再起動中 — 再接続中…",
-      "rows": "行",
+      "rows_count_other": "{{n}} 行",
+      "rows_filtered_count_other": "{{shown}} / {{n}} 行",
       "running_pods": "実行中のポッド",
       "safely_removes_worktrees_whose_pr_has_already_me": "PR がすでにマージ済みのワークツリーを安全に削除します。",
       "scanning_merged": "マージ済みをスキャン中…",
@@ -15554,15 +15555,14 @@
       "filter_keys": "キーをフィルタ…",
       "filter_keys_2": "キーをフィルタ",
       "full_app_may_crash_on_next_write": "% 満杯 — 次の書き込みでアプリがクラッシュする可能性があります",
-      "keys": "キー",
+      "keys_count_other": "{{n}} 個のキー",
       "keys_2": "キー",
       "prefix": "プレフィックス",
       "refresh": "更新",
-      "showing_200_of": "200 件を表示 :",
+      "showing_200_of_count_other": "{{n}} 件中 200 件を表示 — フィルタで絞り込み",
       "size": "サイズ",
       "storage_is": "ストレージ:",
-      "usage": "使用状況",
-      "use_filter_to_narrow": "— フィルタで絞り込み"
+      "usage": "使用状況"
     },
     "libraryPage": {
       "pin": "ピン留め",

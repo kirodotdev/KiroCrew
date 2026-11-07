@@ -14573,7 +14573,8 @@
       "restart_pod": "重启 pod",
       "restarted_name": "已重启 {{name}}",
       "restarting_reconnecting": "正在重启 — 正在重连…",
-      "rows": "行",
+      "rows_count_other": "{{n}} 行",
+      "rows_filtered_count_other": "{{shown}} / {{n}} 行",
       "running_pods": "运行中的 pod",
       "safely_removes_worktrees_whose_pr_has_already_me": "可安全移除 PR 已合并的工作树。",
       "scanning_merged": "正在扫描已合并…",
@@ -15554,15 +15555,14 @@
       "filter_keys": "筛选键…",
       "filter_keys_2": "筛选键",
       "full_app_may_crash_on_next_write": "% 已满 — 下次写入时应用可能崩溃",
-      "keys": "个键",
+      "keys_count_other": "{{n}} 个键",
       "keys_2": "键",
       "prefix": "前缀",
       "refresh": "刷新",
-      "showing_200_of": "显示 200 项，共",
+      "showing_200_of_count_other": "显示 200 项，共 {{n}} 项 — 使用筛选缩小范围",
       "size": "大小",
       "storage_is": "存储已用",
-      "usage": "使用量",
-      "use_filter_to_narrow": "— 使用筛选缩小范围"
+      "usage": "使用量"
     },
     "libraryPage": {
       "pin": "置顶",
