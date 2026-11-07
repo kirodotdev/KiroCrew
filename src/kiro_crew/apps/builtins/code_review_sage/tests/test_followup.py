@@ -520,10 +520,8 @@ class PoolHandoffTests(unittest.IsolatedAsyncioTestCase):
             async def create_session(self, cwd=None, agent=None):
                 return handle
 
-        runtime = FakeRuntime()
-        if backend is not None:
-            runtime.acp_backend = backend  # type: ignore[attr-defined]
-        pool._holder.acquire = lambda: _done(runtime)  # type: ignore
+        served = RP.ACP_BACKEND_KIRO if backend is None else backend
+        pool._holder.acquire = lambda: _done((FakeRuntime(), served))  # type: ignore
         handle.scripts = [[_ev("text_chunk", text="report"),
                            _ev("complete", stop_reason=stop)]]
         return await pool.send("task", timeout=5, keep_session_key=keep)
