@@ -52,12 +52,22 @@ def record_close_interruption(slot: _ChatSlot) -> bool:
     """
     if is_turn_interrupted(slot.messages) or _latest_turn_was_deliberately_stopped(slot.messages):
         return False
+    # Lazy import: the persistence facade's owner-import contract forbids a
+    # module-level import this facade does not already carry.
+    from kiro_crew.dashboard.gateway_notice import (
+        GATEWAY_NOTICE_TURN_INTERRUPTED_CLOSE,
+        gateway_notice_meta,
+    )
+
     slot.append(
         "error",
         _CLOSE_INTERRUPTION_MSG,
         "msg msg-err",
         broadcast=False,
-        meta={"kind": _CLOSE_INTERRUPTION_KIND},
+        meta={
+            "kind": _CLOSE_INTERRUPTION_KIND,
+            **gateway_notice_meta(GATEWAY_NOTICE_TURN_INTERRUPTED_CLOSE),
+        },
     )
     return True
 
@@ -266,12 +276,22 @@ def _reconcile_local_turn_marker(
     if not is_turn_interrupted(slot.messages) and not _latest_turn_was_deliberately_stopped(
         slot.messages
     ):
+        # Lazy import: the persistence facade's owner-import contract forbids a
+        # module-level import this facade does not already carry.
+        from kiro_crew.dashboard.gateway_notice import (
+            GATEWAY_NOTICE_TURN_INTERRUPTED_RESTART,
+            gateway_notice_meta,
+        )
+
         slot.append(
             "error",
             _RESTART_INTERRUPTION_MSG,
             "msg msg-err",
             broadcast=False,
-            meta={"kind": _RESTART_INTERRUPTION_KIND},
+            meta={
+                "kind": _RESTART_INTERRUPTION_KIND,
+                **gateway_notice_meta(GATEWAY_NOTICE_TURN_INTERRUPTED_RESTART),
+            },
         )
     slot._turn_in_flight_generation = 0
     slot._turn_in_flight_prompt = None

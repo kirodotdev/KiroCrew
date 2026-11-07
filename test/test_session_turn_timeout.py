@@ -168,9 +168,19 @@ class TestDispatch:
         await asyncio.sleep(0)
         errors = [c for c in slot.append.call_args_list if c.args[0] == "error"]
         assert len(errors) == 1
+        # This slot wires no native-cancel callback, so the outcome is None and
+        # the token is the plain-stop one; the 0.01 s session limit rounds up to
+        # a 1-minute frame. Pin the whole meta so a wrong token, unit, value, or
+        # an unreviewed extra key fails here.
         assert errors[0].kwargs["meta"] == {
             "kind": td.TURN_TIMEOUT_KIND,
             "limit_scope": td.TURN_LIMIT_SESSION,
+            "notice": "turn_timeout",
+            "notice_args": {
+                "limit_value": 1,
+                "limit_unit": "minute",
+                "limit_scope": td.TURN_LIMIT_SESSION,
+            },
         }
         assert td.SESSION_TURN_LIMIT_MENU in errors[0].args[1]
 

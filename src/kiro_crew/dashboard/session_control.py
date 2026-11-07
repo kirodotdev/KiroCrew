@@ -144,6 +144,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _AUDIENCE_CONSTRAINTS,
         _CONTAINMENT_CHANGE_LABELS,
         _NON_CONSTRAINT_KEYS,
+        _SEND_DISCARD_FRAMED_REASONS,
         _SEND_DISCARD_REASONS,
         AUDIENCE_ADMISSION_KEY_PREFIX,
         CHANNEL_RECIPIENT_META_KEY,
