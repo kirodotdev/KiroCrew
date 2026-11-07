@@ -695,6 +695,11 @@ and loses the desk through the surface reason, while the spawn gate's
 `spawn_run(agent=…)` child of such a member is a plain template run on the
 parent's store with no member section.
 
+A **temporary** turn (`blocks_reads`) withholds layer 4 on every legacy delivery
+path: at the desk the section carries the `withheld by this turn's memory/privacy
+scope` placeholder instead of the briefing. An incognito turn blocks memory writes
+only and still reads it.
+
 Two failure behaviours are deliberate and opposite. A **missing** rules file reads
 as `""` (the normal unbounded-by-choice state). An **existing but unreadable** one
 raises `MemberRulesUnreadable` and **aborts the turn** — a member the user bounded
