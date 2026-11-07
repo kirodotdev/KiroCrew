@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Any
 
@@ -298,6 +299,13 @@ def _gateway_spawned_app_backend(pid: int) -> str | None:
     return spawned_backend_owner(pid)
 
 
+# (pid, start id) per live loopback TCP connection: the transport key dies with the
+# connection, and a pid whose start id changed (recycled) is resolved again.
+_TCP_PEER_BY_TRANSPORT: weakref.WeakKeyDictionary[Any, tuple[int, str]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
 def _request_peer_pid(request: Any) -> int | None:
     from kiro_crew.dashboard.token_auth import _unix_request_socket
     from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
@@ -327,5 +335,12 @@ def _request_peer_pid(request: Any) -> int | None:
         resolve_tcp = getattr(platform_compat, "get_tcp_peer_pid", None)
         if resolve_tcp is None:
             return None
+        cached = _TCP_PEER_BY_TRANSPORT.get(transport)
+        if cached is not None and platform_compat.get_process_start_id(cached[0]) == cached[1]:
+            return cached[0]
         pid = resolve_tcp(server[:2], client[:2])
+        if isinstance(pid, int) and not isinstance(pid, bool):
+            start_id = platform_compat.get_process_start_id(pid)
+            if start_id:
+                _TCP_PEER_BY_TRANSPORT[transport] = (pid, start_id)
     return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
