@@ -67,6 +67,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_CRON_BODY_BYTES,
         _T,
         _ChatFolderGone,
+        _invalid_new_chat_per_run,
         _member_store,
         _persist_holding_folder,
         _refuse_mate_home_chat_folder,

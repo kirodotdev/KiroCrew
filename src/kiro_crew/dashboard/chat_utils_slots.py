@@ -37,7 +37,11 @@ from kiro_crew.hooks import safe_read_file
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.sel import sel
-from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
+from kiro_crew.session_surface import (
+    dashboard_tab_name,
+    has_dashboard_surface,
+    set_dashboard_surfaced,
+)
 from kiro_crew.validation import THEME_CONSENT_SHA_RE
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
@@ -126,6 +130,12 @@ def _history_key_for(slot_key: str) -> str:
     return f"dashboard:{slot_key}"
 
 
+def cron_tab_name(session_key: str) -> str:
+    """The tab that shows a cron session: ``cron:<id>`` is ``cron-<id>``, the
+    job's one tab, and a per-run ``cron:<id>:<run>`` is ``cron-<id>-<run>``."""
+    return "cron-" + session_key.removeprefix("cron:").replace(":", "-")
+
+
 def dashboard_slot_key(session_key: str) -> str:
     """The dashboard slot name displaying *session_key*, or ``""`` if none.
 
@@ -151,8 +161,15 @@ def dashboard_slot_key(session_key: str) -> str:
         # for stateless jobs, ``cron:<job_id>:<agent>`` for agent sequences —
         # while the surface registry only ever holds the slot's linked key
         # (``cron:<job_id>``), so the surface gate is checked against both
-        # spellings. Whichever matched, the displaying tab is the job's own.
+        # spellings. Whichever matched, the displaying tab is the job's own --
+        # unless a ``new_chat_per_run`` run has a tab of its own, linked to its
+        # exact key: minted as :func:`cron_tab_name`, or named by its transcript
+        # stem once reopened from history, so the published live name wins.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
+        if session_key != f"cron:{job_id}" and has_dashboard_surface(session_key):
+            return _normalize_slot_key(
+                dashboard_tab_name(session_key) or cron_tab_name(session_key)
+            )
         if not (has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")):
             return ""
         return _normalize_slot_key(f"cron-{job_id}")
@@ -702,13 +719,14 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
     channel key, which is what both consumers must match against.
     """
     with _PUBLISHED_SLOT_KEYS_LOCK:
-        keys = {effective_session_key(s) for s in state._slots.values()}
+        tabs = {effective_session_key(s): name for name, s in state._slots.items()}
+        keys = set(tabs)
         previous = _published_keys_of(state)
         gained = not keys <= previous
         lost = not previous <= keys
         state._published_slot_keys = frozenset(keys)
     state.sessions.set_active_dashboard_slots(keys)
-    set_dashboard_surfaced(keys)
+    set_dashboard_surfaced(keys, tabs)
     # A newly open session leaves Older Sessions, and a session whose slot leaves ``_slots``
     # returns to it; tabs re-read only on a ``history`` frame. A shrink owes one, paid by a
     # close or delete's direct ``history`` push.

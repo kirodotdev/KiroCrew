@@ -186,9 +186,11 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         # (`cron:<job>:<run>` for a per-run session, `cron:<job>:<agent>` for a
         # multi-agent one), and folding the whole tail asks for a `cron-<job>:<run>`
         # slot that never exists — so every suffixed turn missed its own open tab
-        # and fell through to origin resolution or suppression.
+        # and fell through to origin resolution or suppression. A
+        # ``new_chat_per_run`` run's own tab, which ``dashboard_slot_key`` names,
+        # comes first.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
-        active = state.get_slot(f"cron-{job_id}")
+        active = state.get_slot(dashboard_slot_key(session_key) or f"cron-{job_id}")
         if active is None:
             # A headless script cron has no live "cron-<id>" slot. Rather than
             # leak the card into whichever tab happens to be focused, route it to

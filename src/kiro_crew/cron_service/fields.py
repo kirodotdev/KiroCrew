@@ -20,6 +20,7 @@ from typing import Any
 
 from kiro_crew import cron_script
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
+from kiro_crew.cron_service.identity import agent_sequence_dispatches
 from kiro_crew.cron_service.model import (
     _ALERT_AFTER_DEFAULT,
     _AUTO_PAUSE_THRESHOLD,
@@ -33,6 +34,7 @@ from kiro_crew.cron_service.schedule import (
     is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    runs_more_than_once_a_day,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
@@ -112,6 +114,24 @@ def cron_session_cwd(job: CronJob, resolved_cwd: str | None) -> str | None:
 _CHAT_FOLDER_NEEDS_PERSISTENT = (
     "Filing runs into a chat folder needs a persistent session: a stateless job "
     "has no job-wide tab to file. Clear the chat folder, or keep the session."
+)
+
+_NEW_CHAT_PER_RUN_NEEDS_STATELESS = (
+    "A new chat per run needs a fresh session per run: set persistent_session "
+    "to false, or turn new_chat_per_run off."
+)
+
+# Each run keeps a tab, and every tab counts against the dashboard's live-tab
+# ceiling, so the switch is held to jobs that run at most once a day.
+_NEW_CHAT_PER_RUN_TOO_OFTEN = (
+    "A new chat per run is for jobs that run at most once a day: every run "
+    "keeps a chat tab. Use a schedule with at least 24 hours between runs, "
+    "or turn new_chat_per_run off."
+)
+
+_NEW_CHAT_PER_RUN_AGENT_ONLY = (
+    "A new chat per run applies to a single-agent (message) job: a script, "
+    "command or multi-agent job never opens a chat tab."
 )
 
 # Table-driven string-field caps for the persistence chokepoint. Every
@@ -282,6 +302,7 @@ def build_job(
     skip_dates: list[str] | None = None,
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
+    new_chat_per_run: bool = False,
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -363,6 +384,10 @@ def build_job(
     )
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    if new_chat_per_run and persistent_session:
+        raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    if new_chat_per_run and (command or script or agent_sequence_dispatches(agent_sequence or [])):
+        raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if project_path and (command or script):
         raise ValueError(_PROJECT_PATH_AGENT_ONLY)
     project_path = resolve_project_path(project_path)
@@ -394,6 +419,8 @@ def build_job(
         schedule = CronSchedule(kind="at", at_ts=at_ts)
     else:
         raise ValueError("Must provide every_secs, at_ts, or cron_expr")
+    if new_chat_per_run and runs_more_than_once_a_day(schedule):
+        raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
 
     return CronJob(
         id=uuid.uuid4().hex[:8],
@@ -416,6 +443,7 @@ def build_job(
         skip_dates=skip_dates,
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
+        new_chat_per_run=bool(new_chat_per_run),
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,
@@ -469,6 +497,16 @@ def apply_job_update(
         kwargs.get("persistent_session", job.persistent_session)
     ):
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    # A per-run tab needs a per-run session. Refused only when this request
+    # names the switch on; re-persisting a per-run job turns it off below.
+    if bool(kwargs.get("new_chat_per_run")) and bool(
+        kwargs.get("persistent_session", job.persistent_session)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    if bool(kwargs.get("new_chat_per_run")) and (
+        job.command or job.script or agent_sequence_dispatches(job.agent_sequence)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if (
         "cron_expr" in kwargs
         and kwargs["cron_expr"]
@@ -494,6 +532,25 @@ def apply_job_update(
             raise ValueError(f"Invalid interval: {kwargs['every_secs']}")
         if val < _MIN_INTERVAL_SECS:
             raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
+    # The once-a-day floor, judged on the schedule and switch this update
+    # leaves; only a request that names either one is checked.
+    _schedule = job.schedule
+    if kwargs.get("cron_expr"):
+        _schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+    elif kwargs.get("every_secs"):
+        _schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+    _per_run = (
+        bool(kwargs["new_chat_per_run"])
+        if "new_chat_per_run" in kwargs
+        else job.new_chat_per_run
+        and not bool(kwargs.get("persistent_session", job.persistent_session))
+    )
+    if (
+        _per_run
+        and ("new_chat_per_run" in kwargs or _schedule is not job.schedule)
+        and runs_more_than_once_a_day(_schedule)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
     # Calendar-validity of timezone / skip_dates, validated at the
     # persistence owner so EVERY caller (MCP cron_add/cron_update,
     # dashboard, CLI) is covered by one check rather than each
@@ -647,6 +704,11 @@ def apply_job_update(
         job.minimal_context = bool(kwargs["minimal_context"])
     if "hide_in_chat" in kwargs:
         job.hide_in_chat = bool(kwargs["hide_in_chat"])
+    if "new_chat_per_run" in kwargs:
+        job.new_chat_per_run = bool(kwargs["new_chat_per_run"])
+    elif job.persistent_session:
+        # One shared session again: every run lands in the job's one tab.
+        job.new_chat_per_run = False
     if "folder_id" in kwargs:
         job.folder_id = kwargs["folder_id"] or ""
     if "chat_folder_id" in kwargs:

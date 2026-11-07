@@ -187,7 +187,7 @@ async def test_a_landed_import_refreshes_the_older_sessions_listing(monkeypatch)
     from kiro_crew.dashboard import chat_utils_slots
     from kiro_crew.dashboard import session_transfer as st
 
-    monkeypatch.setattr(chat_utils_slots, "set_dashboard_surfaced", lambda _keys: None)
+    monkeypatch.setattr(chat_utils_slots, "set_dashboard_surfaced", lambda _keys, _tabs=None: None)
 
     def _really_synced(save):
         state = _stub_state(st, monkeypatch, save=save)
