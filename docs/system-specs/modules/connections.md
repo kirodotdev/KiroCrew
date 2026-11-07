@@ -317,6 +317,21 @@ moment a Connect or Reconnect click asks the mint to decide whether a URL is
 needed — the one place the cost is bounded by a real user action and the one
 place the answer changes what the click actually does.
 
+**A failed check keeps a `needs_auth` card off Connected for the page visit.**
+When the check fails and the fresh mint then gets no challenge, the mint ends
+`failed` with `reason=mint_grant_unproven`. The poll still reports
+`grantPresent` from the artifact stat, and beside the tokenless probe's
+`needs_auth` that would fold to Connected. So the Connections page remembers
+the slug for the visit and treats that grant as unconfirmed: the card shows
+`not-verified` with its Connect button and the `grant_unproven_help` fact (the
+saved sign-in no longer works) in place of the indeterminate hedge, under the
+`mint_failure_grant_unproven` reason line. The attempt's chat-banner fence stays
+too: a banner from before the attempt cannot say Connected or Waiting, unless it
+completes only after the failure (a new consent in chat). A later mint for that
+card that reports `granted` clears it. A
+reload or a remount forgets it, and the card is back on the artifact verdict:
+the known limit above.
+
 ### Boot path
 
 Both handlers import the mint engine and the status module **function-locally**.
