@@ -802,7 +802,7 @@ export default function ChannelPage() {
   // Keyed by thread id: a draft belongs to one thread, so switching threads or
   // channels neither discards it nor hands it to a different conversation.
   const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({})
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
   const channel = channels.find(c => c.id === activeId) || channels[0] || null
   // Mirrored into a ref because the clear-result callbacks are `[]`-dep and would otherwise
@@ -914,8 +914,11 @@ export default function ChannelPage() {
     return () => window.removeEventListener('kirocrew-channel', handler)
   }, [reload])
 
+  // Scroll the list itself: `scrollIntoView` would also scroll every scrollable
+  // ancestor, dragging the page past the composer.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesRef.current
+    el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [channel?.messages.length, activeId])
 
   // Resolves true only when the post was accepted; callers keep the composer
@@ -1096,7 +1099,7 @@ export default function ChannelPage() {
   return (
     <>
       <PageHeader title={i18nT('pages.channelPage.channels')} subtitle={i18nT('pages.channelPage.multi_agent_collaboration_spaces')} />
-      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0 flex flex-col">
     {/* Failed create / add-agent / clear-context / load requests. Every input
         behind these was already submitted (or never existed), so the hand-off
         risks nothing; the composer's own failure renders beside it instead.
@@ -1122,7 +1125,7 @@ export default function ChannelPage() {
         />
       </div>
     </div>
-    <div className={`flex h-full relative ${isMobile ? '-mx-4 -mb-8' : ''}`}>
+    <div className={`flex flex-1 min-h-0 relative ${isMobile ? '-mx-4 -mb-8' : ''}`}>
       {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel}
         onClosedError={message => failWithMessage('pages.channelPage.failed_to_create_channel', message)} />}
 
@@ -1219,7 +1222,7 @@ export default function ChannelPage() {
           </div>
 
           <div className="flex flex-1 min-h-0">
-            <div className={`flex-1 overflow-y-auto py-3 space-y-1 ${isMobile ? 'px-0' : 'px-2'} ${isMobile && (showAgents || threadId) ? 'hidden' : ''}`}>
+            <div ref={messagesRef} className={`flex-1 overflow-y-auto py-3 space-y-1 ${isMobile ? 'px-0' : 'px-2'} ${isMobile && (showAgents || threadId) ? 'hidden' : ''}`}>
               {topLevelMessages.length === 0 && (
                 <EmptyState icon={<Zap className="lucide-inline" />} title={i18nT('pages.channelPage.setting_up_channel')} subtitle={i18nT('pages.channelPage.agent_joining', { count: channel.agents.length })} />
               )}
@@ -1234,7 +1237,6 @@ export default function ChannelPage() {
                   <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
                 </div>
               ))}
-              <div ref={messagesEndRef} />
             </div>
 
             {/* Thread panel */}
