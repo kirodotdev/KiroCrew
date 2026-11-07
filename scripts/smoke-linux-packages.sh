@@ -110,6 +110,12 @@ docker run --rm -v "${ABS_DIST}:/dist:ro" -w /dist ubuntu:24.04 bash -euxc "
   apt-get install -y --no-install-recommends './${DEB_NAME}'
 $(common_asserts 'dpkg -L "$pkg"')
   grep -q 'DISTRIBUTION = \"deb\"' \"\$stamp\"
+  # Installing is not linking: a dependency apt satisfies with a stand-in
+  # library (OSS4's liboss4-salsa-asound2 for libasound2) installs cleanly and
+  # then leaves the app unable to start. Every ALSA symbol must resolve.
+  bin=\$(printf '%s\\n' \"\$files\" | grep -E \"^/opt/.+/\${exe}\\\$\" | head -1)
+  test -n \"\$bin\"
+  test -z \"\$(ldd -r \"\$bin\" 2>&1 | grep 'undefined symbol: snd_')\"
   # \`dpkg -r\` rather than \`apt-get remove\`: assert OUR package's removal and
   # its maintainer script, not the package manager's dependency bookkeeping.
   dpkg -r \"\$pkg\"
