@@ -1121,16 +1121,19 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
-**On macOS the band alone cannot keep the bar draggable.** Because the band is
-prepended, every later `no-drag` rectangle that reaches into it wins, including
-ones nobody can see there: a theme pack's decoration iframes (the exemption list
-covers every `iframe`, and a pack's top-bar strip and full-window overlays sit
-at `top: 0`) and transcript content scrolled up under the glass header (inside
-the `tabIndex={-1}` scroller, and taken from layout without clipping to it).
-Either one leaves the bar unable to move or zoom the window. So whenever the
-local header is on screen, docked or peeked in focus mode, `App.tsx` also
-renders `.host-drag-strip` divs over the band's control-free gaps, painted
-after everything else. Being last, a strip would also turn any other surface's
+**On macOS and Windows the band alone cannot keep the bar draggable.** Because
+the band is prepended, every later `no-drag` rectangle that reaches into it
+wins, including ones nobody can see there: a theme pack's decoration iframes
+(the exemption list covers every `iframe`, and a pack's top-bar strip and
+full-window overlays sit at `top: 0`) and transcript content scrolled up under
+the glass header (inside the `tabIndex={-1}` scroller, and taken from layout
+without clipping to it). On Windows the header's own `drag` rule loses to the
+same rectangles, since they come after it. Either one leaves the bar unable to
+move or zoom the window. So whenever the local header is on screen, docked or
+peeked in focus mode, `App.tsx` also renders `.host-drag-strip` divs over the
+band's control-free gaps, painted after everything else. On Windows the band
+they cover stops at the zoom-aware `--mc-win-drag-reserve` (falling back to
+`WIN_CAPTION_OVERLAY_WIDTH`), so no strip reaches the caption buttons. Being last, a strip would also turn any other surface's
 control in the band into a window drag (the phone nav drawer, the image
 viewer's toolbar, an in-place notice), so the gaps come from
 `computeTitleBandDragGaps` in
