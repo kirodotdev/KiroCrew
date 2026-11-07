@@ -9651,7 +9651,7 @@
         "skill_md": "SKILL.md",
         "skills": "Skills",
         "auto_create_hint": "{{productName}} can also draft skills from completed sessions automatically — off by default, controlled by <settingRef/>.",
-        "approval_required_hint": "Candidates wait here for your approval. Prose-only skills can go live automatically when <settingRef/> is off — skills that bundle scripts always require review."
+        "approval_required_hint": "Candidates wait here for your approval. New prose-only skills can go live automatically when <settingRef/> is off — skills that bundle scripts, and any update to an existing skill, always require review, unless skills.auto_refine_on_deviation is on."
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -10882,8 +10882,8 @@
         "extra_skill_paths_description_summary": "One folder path per line.",
         "extra_skill_paths_placeholder": "One folder per line",
         "failed_to_save_extra_skill_paths": "Failed to save the extra skill paths. Your text is still in the field.",
-        "keep_every_auto_generated_candidate_in_the_pendi": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
-        "keep_every_auto_generated_candidate_in_the_pendi_summary": "Off lets skills without scripts go live without your approval.",
+        "keep_every_auto_generated_candidate_in_the_pendi": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets new prose-only skills publish automatically; skills that bundle scripts, and any update to an existing skill, always require approval, unless skills.auto_refine_on_deviation is on.",
+        "keep_every_auto_generated_candidate_in_the_pendi_summary": "Off lets new skills without scripts go live without your approval.",
         "require_approval_before_generated_skills_go_live": "Require approval before generated skills go live",
         "review_pending_candidates_on_agent_capabilities": "Review pending candidates on Customize → Skills",
         "skills": "Skills"
