@@ -506,7 +506,11 @@ merely counted (`RuntimeReconciler._why_not_yet`, `_reconcile_unowned`):
    instance belongs to a live recorded runtime"). The stamp is inherited, so a
    `kiro-cli` an agent's shell tool starts carries its parent runtime's instance
    while appearing in no record of its own, and would otherwise be killed while the
-   session that started it waits on it. Only a holder this pass found recorded and
+   session that started it waits on it. An agent an MCP server starts is the same
+   case: the session's `kiro-cli` starts each server with its own environment, so a
+   workflow runner the server detaches, and each agent that runner starts, carry the
+   runtime's instance even after the server exits and the runner reparents to the
+   user manager (`test_runtime_reconcile_mcp_descendants.py`). Only a holder this pass found recorded and
    alive, leased or claimed can shelter a candidate, so a leaked tree cannot shelter
    itself and a tree whose recorded runtime died is still reclaimed. The anchor set
    is rebuilt each pass; until it is, the condition withholds. An unreadable instance
