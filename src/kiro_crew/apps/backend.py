@@ -801,18 +801,6 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     for _k, _v in os.environ.items():
         if (_k in _grant_env_names and _v) or (_grant_env_prefixes and _k.startswith(_grant_env_prefixes)):
             _platform_extra[_k] = _v
-    # The port the gateway ACTUALLY bound (``dashboard.server._export_bound_port``),
-    # handed only to a backend whose host grants ask for it (``bound_port``): one that
-    # calls back into the gateway. Scoped by app because no other backend has a
-    # consumer, and ``pod/runtime.py`` deliberately scrubs this variable from spawns
-    # that must not aim at the live gateway. Not a secret: it is the port every
-    # dashboard client already connects to, and the gateway's own auth governs what a
-    # caller may do there. Absent (a foreground gateway before its site is up, or a
-    # test) it is not passed and the backend degrades as documented.
-    if app_name in _host_grants.bound_port_apps():
-        _bound = os.environ.get("KIROCREW_BOUND_PORT", "")
-        if _bound.isdigit():
-            _platform_extra["KIROCREW_BOUND_PORT"] = _bound
     env = minimal_env(
         PORT=str(port),
         KIROCREW_APP_NAME=app_name,

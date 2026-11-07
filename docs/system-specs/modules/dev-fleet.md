@@ -117,7 +117,6 @@ own `/api/apps/<app>/` or `/apps/<app>/` namespace):
 | Grant | Value | Applied by |
 |---|---|---|
 | `build_rlimit` | yes | `apps/backend.py` spawns the backend with `RLIMIT_PROFILE_BUILD` |
-| `bound_port` | yes | `apps/backend.py` hands it `KIROCREW_BOUND_PORT`; it spawns in the one boot wave, after the port is reserved and exported |
 | `backend_env_names` | `KIROCREW_DEVFLEET_REPO` | forwarded to every app backend by `apps/backend.py` |
 | `backend_env_prefixes` | `KIROCREW_DEVFLEET_BIN_` | as above, by prefix |
 | `config_top_keys` | `dev_fleet` | `config/validation.py`'s unrecognized-key warning skips it |
@@ -1612,14 +1611,15 @@ choose the gateway's next image. Instead:
   a `GatewayPointerBroker` (`pointer_broker.py`) as `live`'s pointer provider: it
   exchanges the app secret at `POST /api/apps/dev-fleet/token` and reads
   `GET /api/apps/dev-fleet/live-target` (30 s display cache; `fresh=1` for the
-  removal guards). The broker aims at `KIROCREW_BOUND_PORT`, which
-  `apps/backend.py` hands to this one backend at spawn from the gateway's own
-  environment — the port is exported the moment it is reserved
+  removal guards). The broker aims at `KIROCREW_GATEWAY_ORIGIN`, which
+  `apps/backend.py` builds for every backend at spawn from the gateway's own
+  `KIROCREW_BOUND_PORT` — the port is exported the moment it is reserved
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;
   `_export_bound_port` republishes it once the site serves), so
   `dashboard.server.start_dashboard` spawns this backend in the one boot wave
-  with every other app, before `runner.setup()` (the app's `bound_port` host
-  grant, `apps.builtin_host_grants.bound_port_apps()`, only scopes the variable).
+  with every other app, before `runner.setup()`. A gateway bound to a specific
+  non-loopback interface gets no origin, so the broker is unconfigured there and
+  live state reads as unavailable.
   A broker call made while the gateway is still booting waits in the reserved
   socket's backlog until the listener accepts; one that outlasts the broker's 5 s
   timeout is a broker outage, handled as below.

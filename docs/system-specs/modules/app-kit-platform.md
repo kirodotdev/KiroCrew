@@ -5183,7 +5183,7 @@ change lands in its owner.
 | `backend_runtime/registration.py` | Health-gated MCP registration: `_set_backend_health`, `_gate_mcp_registration`, promote, demote and retry, tri-state enablement, and the disabled-app undo |
 | `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), the thread-waitable shutdown signal, and the level-triggered backstop sweep (`revive_lost_app_backends`) |
 | `backend_runtime/supervision.py` | The per-record supervisor thread: the startup poll, the standing watch, the ceiling revocation, and the adopted-owner rebind |
-| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred spawn of every backend whose host grants ask for the bound port |
+| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, and the concurrent spawn wave with its fixed-port preclaim |
 
 Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
 `provisioning`, `termination`, `stale_reap`, `registration`, `restart`, `supervision`,
@@ -6366,10 +6366,7 @@ through one seam that is empty by default:
 
 - **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
   a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
-  backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
-  `KIROCREW_BOUND_PORT` at spawn; it starts in the one boot wave, which runs after
-  `start_dashboard` has reserved the port and exported that value),
-  `backend_env_names` / `backend_env_prefixes`
+  backend spawns with `RLIMIT_PROFILE_BUILD`), `backend_env_names` / `backend_env_prefixes`
   (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
   `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
   (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`
