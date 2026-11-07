@@ -112,6 +112,38 @@ def _read_enabled(data: dict[str, Any]) -> bool:
     return False
 
 
+def _read_schema_version(data: dict[str, Any]) -> int:
+    """The one reading of ``schemaVersion`` that every app reader shares.
+
+    A missing key reads as 1 so the legacy-migration branch runs. Every host
+    writer stores a JSON integer; only a hand-made or corrupted record carries
+    another shape. ``int()`` raises on a non-numeric string, a list or ``null``
+    (TypeError/ValueError) and on a non-finite float (OverflowError, from a
+    ``1e400`` or ``Infinity`` that ``json.loads`` parses to ``inf``), and that
+    is the one field in ``from_dict`` whose coercion could escape -- unlike the
+    string and boolean fields, which never raise -- so a damaged
+    ``schemaVersion`` would crash a reader that another malformed field would
+    not. Read an unusable value as 1 (forcing the migration pass), matching how
+    ``enabled`` and the origin/lifecycle/resources fields degrade rather than
+    raise.
+    """
+    if "schemaVersion" not in data:
+        return 1
+    value = data["schemaVersion"]
+    if isinstance(value, bool):
+        # A JSON bool is an int subclass; it is not a real schema version.
+        value = None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "InstalledApp %s has a non-integer schemaVersion %r: reading it as 1",
+            data.get("name", ""),
+            value,
+        )
+        return 1
+
+
 @dataclass
 class InstalledApp:
     """Metadata persisted in ``installed.json`` for each installed app.
@@ -211,7 +243,7 @@ class InstalledApp:
             origin=str(data.get("origin", "registry")),
             resources=str(data.get("resources", "gateway")),
             lifecycle=str(data.get("lifecycle", "gateway")),
-            schemaVersion=int(data.get("schemaVersion", 1)),
+            schemaVersion=_read_schema_version(data),
             migratedTo=str(data.get("migratedTo", "")),
             dev=bool(data.get("dev", False)),
             defaultOnBackfilled=bool(data.get("defaultOnBackfilled", False)),
