@@ -341,8 +341,7 @@ class SubagentInfo:
     # write). A completion route skips the injection for an announce whose every
     # member is marked: the parent already holds the result.
     _collected_inline: bool = False
-    # A mark on a parent that is not dashboard-born (``settles_at_release``):
-    # "pending" until the attempt holding the parent's permit when it arrived
+    # A mark on any parent: "pending" until the attempt holding the parent's permit when it arrived
     # (``_inline_token``) ends, then "confirmed" if that turn landed. A revoked
     # mark clears all three, so the completion is delivered
     # (``kiro_crew.parent_turns``).

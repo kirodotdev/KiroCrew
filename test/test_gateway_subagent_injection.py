@@ -55,6 +55,15 @@ def _known(done: _Done, *infos: Any) -> None:
     done.mgr.get = MagicMock(side_effect=records.get)
 
 
+def _returned_in_a_landed_turn(info: Any) -> None:
+    """Mark *info* returned inline by a ``spawn_sub_agents`` reply whose turn has
+    since landed, as the release of that turn leaves it (``_settle_inline``). A
+    mark whose turn has not landed is parked or delivered instead, which
+    ``test_spawn_sub_agents_settle_at_release`` pins."""
+    info._collected_inline = True
+    info._inline_state = "confirmed"
+
+
 # ── the tab: blocking-tool collection ────────────────────────────────────────
 
 
@@ -68,7 +77,7 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
     slot._synthesis_armers = {"a1"}
     slot._subagents_inline_collected = {"a1"}
     info = make_info()
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     _known(done, info)
 
     # Skipped before the tab's running turn is waited on, and never counted in flight.
@@ -94,7 +103,7 @@ async def test_a_returned_completion_never_arms_the_synthesis_turn(done: _Done) 
     slot._pending_synthesis = False
     slot._subagents_inline_collected = {"a1", "a2"}
     info = make_info()
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     _known(done, info)
 
     await done.done(info)
@@ -110,7 +119,7 @@ async def test_a_partial_inline_collection_keeps_synthesis_armed(done: _Done) ->
     slot._pending_synthesis = True
     slot._subagents_inline_collected = {"a1", "a2"}
     info = make_info()
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     _known(done, info)
 
     await done.done(info)
@@ -126,7 +135,7 @@ async def test_an_inline_skip_keeps_a_synthesis_another_child_armed(done: _Done)
     slot._synthesis_armers = {"b1"}
     slot._subagents_inline_collected = {"a1"}
     info = make_info()
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     _known(done, info)
 
     await done.done(info)
@@ -160,7 +169,7 @@ async def test_a_background_completion_keeps_its_arm_when_an_inline_sibling_also
             f"{child} waiting behind the turn",
         )
     assert slot._synthesis_armers == {"a1", "b1"}
-    infos["a1"]._collected_inline = True
+    _returned_in_a_landed_turn(infos["a1"])
     slot._subagents_inline_collected.add("a1")
     current.set_result(None)
     await asyncio.wait_for(asyncio.gather(*deliveries), _LOST_RUN_SECS)
@@ -183,7 +192,7 @@ async def test_a_result_collected_inline_while_waiting_is_not_queued(done: _Done
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
     slot._subagents_inline_collected.add("a1")
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     current.set_result(None)
     await asyncio.wait_for(delivery, _LOST_RUN_SECS)
 
@@ -207,7 +216,7 @@ async def test_a_result_collected_inline_during_the_wait_is_skipped_on_an_idle_t
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
     slot._subagents_inline_collected.add("a1")
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     slot.running = False
     current.set_result(None)
     await asyncio.wait_for(delivery, _LOST_RUN_SECS)
@@ -430,7 +439,7 @@ async def test_a_delivery_that_starts_no_turn_drains_what_it_held(
     _known(done, info)
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
-    info._collected_inline = True
+    _returned_in_a_landed_turn(info)
     slot._subagents_inline_collected.add("a1")
     slot.running = False
     current.set_result(None)

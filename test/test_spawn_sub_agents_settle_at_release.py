@@ -1,10 +1,11 @@
 """A returned sub-agent result settles at its turn's release on every route.
 
 The mark-and-settle rule of ``kiro_crew.parent_turns``, driven through each route
-a completion can take for a parent that is not dashboard-born:
+a completion can take, a dashboard tab's own turn included:
 
-* a cron job whose tab is bound and a channel conversation with an open tab are
-  routed to the tab, and still settle at their turn's release;
+* a cron job whose tab is bound, a channel conversation with an open tab and a
+  dashboard tab's own turn are routed to the tab, and settle at their turn's
+  release;
 * a completion's own injected turn confirms only when it landed, and its in-claim
   retry never hands the failed attempt's marks to the retry;
 * a mark is held only under the holding that read its child done, so a mark
@@ -89,6 +90,7 @@ def _surfaced(*keys: str):
 #: (parent key, the key its tab publishes) for each tab-routed parent.
 _CRON_TAB = ("cron:j1", "cron:j1")  # a persistent_session job shown in chat
 _SLACK_TAB = ("slack:C1:1700000000.1", "slack:C1:1700000000.1")  # a channel-born tab
+_DASHBOARD_TAB = ("dashboard:chat-7-1785396512", "dashboard:chat-7-1785396512")  # dashboard-born
 
 
 async def _drive_tab_parent(
@@ -197,7 +199,31 @@ async def test_a_channel_parent_with_an_open_tab_whose_turn_is_stopped_still_get
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("parent", [_CRON_TAB, _SLACK_TAB], ids=["cron-tab", "slack-tab"])
+async def test_a_dashboard_born_tab_whose_turn_is_stopped_still_gets_its_result(
+    done: Any,
+) -> None:
+    """A dashboard tab's own turn called ``spawn_sub_agents``, the reply
+    carrying the child reached kiro-cli, and the user pressed Stop before the turn
+    landed. The completion is parked under the live turn, not acknowledged, and the
+    release with no landing noted delivers it once."""
+    seen = await _drive_tab_parent(done, _DASHBOARD_TAB, lands=False)
+
+    assert seen["marked"] == {"child-1"}
+    assert seen["acked_while_live"] is False, (
+        "the tab route acknowledged a dashboard tab's returned result while the turn "
+        "that received the reply could still be stopped"
+    )
+    assert seen["gate_open_while_live"] is False
+    assert len(seen["chats"]) == 1, f"delivered {seen['chats']!r} after the stopped turn"
+    assert done.orch._inline_parked == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parent",
+    [_CRON_TAB, _SLACK_TAB, _DASHBOARD_TAB],
+    ids=["cron-tab", "slack-tab", "dashboard-tab"],
+)
 async def test_a_tab_parents_landed_turn_plays_no_duplicate_and_settles_at_its_release(
     done: Any, parent: tuple[str, str]
 ) -> None:
@@ -642,13 +668,18 @@ async def test_only_the_parent_tools_done_read_under_the_spawning_turn_names_a_h
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lands", [True, False], ids=["landed", "revoked"])
+@pytest.mark.parametrize(
+    ("key", "slot_name"),
+    [("cron:j1", "cron-j1"), ("dashboard:chat-1", "chat-1")],
+    ids=["cron-tab", "dashboard-tab"],
+)
 async def test_a_queued_tab_completion_is_settled_only_by_its_turns_landed_release(
-    tmp_path, lands: bool
+    tmp_path, lands: bool, key: str, slot_name: str
 ) -> None:
-    """A completion already QUEUED on a cron job's tab when the mark arrives stays
-    queued under the live turn. A landed release removes it and pays its owed
-    delivery, as the mark does for a dashboard-born parent, so no second turn
-    plays. A revoked release leaves it queued, to play once."""
+    """A completion already QUEUED on a cron job's tab, or on a dashboard tab, when
+    the mark arrives stays queued under the live turn. A landed release removes it
+    and pays its owed delivery, so no second turn plays. A revoked release leaves
+    it queued, to play once."""
     from chat_test_helpers import _make_state
 
     from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY
@@ -656,7 +687,6 @@ async def test_a_queued_tab_completion_is_settled_only_by_its_turns_landed_relea
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.subagent_completion_meta import single_completion_meta
 
-    key = "cron:j1"
     state = _make_state(tmp_path)
     sessions = _new_sessions()
     state.sessions = sessions
@@ -664,7 +694,7 @@ async def test_a_queued_tab_completion_is_settled_only_by_its_turns_landed_relea
     orch = _cron_orchestrator(sessions, [child])
     orch.dashboard_state = state
     state.subagents = orch.subagent_mgr
-    slot = state.get_or_create_slot("cron-j1")
+    slot = state.get_or_create_slot(slot_name)
     slot.linked_session_key = key
     owed = [SubagentDelivery("a1", 1.0, 0.0)]
     with _surfaced(key):

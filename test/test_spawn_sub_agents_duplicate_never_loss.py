@@ -1294,8 +1294,8 @@ async def test_a_turn_bracket_notes_a_landed_verdict_on_its_session() -> None:
 def test_every_engine_that_settles_a_turn_notes_its_landing() -> None:
     """Each turn engine settles its landed verdict (``rollback_skill_bodies``); each
     also notes it, so its release can confirm the results it received inline. The
-    dashboard tab's own turns (``chat_turn/prompt_assembly``) note nothing: a
-    dashboard-born parent's tab route acknowledges on the mark."""
+    dashboard tab's own turns settle in ``chat_turn/prompt_assembly`` and note
+    their landing in ``chat_turn/turn_stats``."""
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
