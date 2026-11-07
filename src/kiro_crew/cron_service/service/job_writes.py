@@ -529,6 +529,10 @@ async def ack_job_async(self: CronService, job_id: str, summary: str, ack_id: st
     return ok
 
 
+#: How many acknowledged summaries a job keeps, newest last.
+_ACKS_KEPT = 20
+
+
 def _acked_items_digest(items: list[str]) -> str:
     """A fingerprint of *items*, saved beside the ids written against them."""
     # ASCII-escaped, so a lone surrogate (an emoji cut in half by a client's
@@ -544,6 +548,8 @@ def _aligned_ack_ids(job: CronJob) -> list[str]:
     against (same length and the saved digest). A writer that changed the
     items and kept the ids, as an older build does, leaves them naming no
     entry at all, so an unack by id finds nothing rather than the wrong entry.
+    A full list of one repeated summary never counts: an older build's
+    append and trim leaves it unchanged, so the digest cannot see the shift.
     """
     ids = job.acked_item_ids
     items = job.acked_items
@@ -551,6 +557,7 @@ def _aligned_ack_ids(job: CronJob) -> list[str]:
         not isinstance(ids, list)
         or len(ids) != len(items)
         or job.acked_item_ids_digest != _acked_items_digest(items)
+        or (len(items) == _ACKS_KEPT and items.count(items[0]) == _ACKS_KEPT)
     ):
         return [""] * len(items)
     return [i if isinstance(i, str) else "" for i in ids]
@@ -566,9 +573,9 @@ def _ack_job_locked(self: CronService, job_id: str, summary: str, ack_id: str = 
                 before_ids = job.acked_item_ids
                 before_digest = job.acked_item_ids_digest
                 # Built before any of it is assigned, so a failure here leaves
-                # the job as it was. Keep only last 20 acks.
-                items = [*job.acked_items, summary[:500]][-20:]
-                ids = [*_aligned_ack_ids(job), ack_id][-20:]
+                # the job as it was.
+                items = [*job.acked_items, summary[:500]][-_ACKS_KEPT:]
+                ids = [*_aligned_ack_ids(job), ack_id][-_ACKS_KEPT:]
                 digest = _acked_items_digest(items)
                 job.acked_items, job.acked_item_ids, job.acked_item_ids_digest = items, ids, digest
                 # Restore the list a failed save never persisted: the mutated

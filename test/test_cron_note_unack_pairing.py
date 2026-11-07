@@ -188,7 +188,6 @@ def test_a_summary_ending_in_half_an_emoji_acks_and_unacks(tmp_path) -> None:
     assert _items(CronService(base_dir=tmp_path), job.id) == []
 
 
-@pytest.mark.xfail(strict=True, reason="#29223: equal summaries keep the digest matching")
 def test_an_older_rewrite_of_identical_summaries_invalidates_the_ids(tmp_path) -> None:
     svc = CronService(base_dir=tmp_path)
     job = svc.add_job(name="digest", message="m", every_secs=3600)
@@ -201,6 +200,18 @@ def test_an_older_rewrite_of_identical_summaries_invalidates_the_ids(tmp_path) -
     reloaded = CronService(base_dir=tmp_path)
     reloaded.unack_job(job.id, "r0")
     assert len(_items(reloaded, job.id)) == 20
+
+
+def test_a_full_list_that_only_repeats_a_summary_keeps_its_ids(tmp_path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="digest", message="m", every_secs=3600)
+    for n in range(19):
+        svc.ack_job(job.id, "no new items", f"r{n}")
+    svc.ack_job(job.id, "one new item", "x")
+
+    assert svc.unack_job(job.id, "r0") is True
+    left = _items(CronService(base_dir=tmp_path), job.id)
+    assert left == ["no new items"] * 18 + ["one new item"]
 
 
 @pytest.mark.parametrize("stored", [None, "a1", [1, 2], {"a": 1}, ["a1", None]])
