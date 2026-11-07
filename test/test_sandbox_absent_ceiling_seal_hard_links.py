@@ -798,6 +798,7 @@ class TestTheDoctorReadOfMaskedCredentialAliases:
             source.index("_materialize_md_notebook_mask_targets("),
             source.index("_materialize_live_target_mask_target("),
             source.index("_materialize_env_mask_target("),
+            source.index("_materialize_refresh_chains_mask_target("),
             source.index("_refuse_aliased_masked_leaves("),
         ]
         assert order == sorted(order), "the alias pass must run last"
