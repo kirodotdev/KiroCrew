@@ -2774,6 +2774,16 @@ self-contained file with no WAL to pair.
   framework exists.
 - **Fail soft per store**: one unreadable store must not prevent another eligible
   store's backup, so the loop counts failures instead of propagating them.
+  Inside the agent sandbox `memory_stores` is read-only, so a member backup run there
+  (`kirocrew memory backup`, the pre-update copy) is refused on its first write, and
+  the seal stays. The loop logs that refusal as one warning line,
+  `_sandboxed_backup_hint` (back up from the dashboard or your own terminal) plus the
+  errno, decided from the refused write's path like `kirocrew config set`'s hint. The
+  store-use lock does not tighten `.member-backups/<store>/` on a Linux read-only
+  mount, so no errno traceback comes first there; macOS Seatbelt answers `EPERM`
+  without one, and its tightening warning still precedes the hint. A named V1
+  store's `backups/` sits in the same read-only leaf and still fails there with a
+  traceback.
 
 **V1 restore is staged and recoverable.** `restore_from_backup` requires the
 source's structural V1 lineage for Global. Named V1 also accepts the established
