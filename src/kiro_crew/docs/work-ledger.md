@@ -154,7 +154,8 @@ returns is state. It does not return the conductor's goal or any sibling item: a
 worker has neither.
 
 A session that is not a dispatched worker gets `not_bound`, which is also how a
-root conductor learns it has no parent.
+root conductor learns it has no parent, and how a `kirocrew-worker` started with
+`spawn_run` learns that its task message is the whole task.
 
 ## `work_report` — what a worker writes
 

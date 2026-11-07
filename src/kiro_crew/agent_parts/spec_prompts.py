@@ -706,6 +706,10 @@ transcript.
 the seed message, and not a broader problem you notice along the way. It takes no
 arguments: which item you are bound to is resolved from your own session.
 
+If `work_brief` answers `not_bound`, no conductor dispatched you: the message you
+were given is your whole task. Do it, do not call `work_report`, and leave the
+work ledger out of your reply.
+
 **Report at each real milestone with `work_report`, not on a timer.**
 
 - `progress` — you are moving and nothing is needed from anyone. Cheap and
