@@ -396,6 +396,40 @@ jobs:
           fork_trigger=""
           fork_trigger_error=""
           fork_trigger_read=""
+          # The head_sha listing is a filtered search that can answer no runs
+          # for a head whose runs exist, so an empty answer is read through the
+          # head's check-runs: an Actions job's check-run names its run as
+          # `details_url` = .../<repo>/actions/runs/<run id>/job/<job id>.
+          # Prints the pull_request runs those name for $HEAD as one
+          # `{"workflow_runs": [...]}` object; a failed read returns non-zero
+          # with the reason in $ERR_FILE, so a named run that cannot be read
+          # is reported as a read failure, never as an absent run.
+          head_runs_from_check_runs() {
+            local ids id run found=""
+            # filter=all: the default (latest) keeps one check-run per name, so
+            # a sibling pull request's newer job on a shared head would hide
+            # this one's.
+            if ! ids="$(gh api --method GET --paginate \
+              "repos/$REPO/commits/$HEAD/check-runs?per_page=100&filter=all" 2>"$ERR_FILE" \
+              | jq -rs --arg repo "$REPO" '
+                [.[].check_runs[] | (.details_url // "")
+                 | select(contains("/" + $repo + "/actions/runs/"))
+                 | split("/actions/runs/")[1] | split("/")[0]
+                 | select(test("^[0-9]+$"))]
+                | unique | .[]' 2>>"$ERR_FILE")"; then
+              return 1
+            fi
+            for id in $ids; do
+              run="$(gh api "repos/$REPO/actions/runs/$id" 2>"$ERR_FILE")" || return 1
+              found="$found$run"$'\n'
+            done
+            # Newest first, the order the listing itself answers in: a caller
+            # that takes the first match then reads the newest run.
+            jq -cs --arg sha "$HEAD" '
+              {workflow_runs: ([.[] | select(.event == "pull_request" and .head_sha == $sha)]
+                               | sort_by(.id) | reverse)}
+            ' <<<"$found" 2>"$ERR_FILE"
+          }
           bind_fork_trigger() {
             local runs
             [ -n "$fork_trigger_read" ] && return 0
@@ -412,6 +446,12 @@ jobs:
               2>"$ERR_FILE")"; then
               fork_trigger_error="reading the workflow runs for $HEAD failed ($(read_error))"
               return 0
+            fi
+            if [ "$(printf '%s' "$runs" | jq -s '[.[].workflow_runs[]?] | length' 2>"$ERR_FILE")" = "0" ]; then
+              if ! runs="$(head_runs_from_check_runs)"; then
+                fork_trigger_error="the runs named by the check-runs for $HEAD could not be read ($(read_error))"
+                return 0
+              fi
             fi
             if ! fork_trigger="$(printf '%s' "$runs" | jq -rs \
               --arg path ".github/workflows/fast-gate.yml" \
@@ -534,6 +574,16 @@ jobs:
               2>"$ERR_FILE")"; then
               fail_lane "$label" "reading the $workflow runs for $HEAD failed ($(read_error))"
               return 0
+            fi
+            # An empty listing is read through the head's check-runs, as in
+            # bind_fork_trigger; only this workflow's runs are kept.
+            if [ "$(printf '%s' "$run_data" | jq '[.workflow_runs[]?] | length' 2>"$ERR_FILE")" = "0" ]; then
+              if ! run_data="$(head_runs_from_check_runs \
+                | jq -c --arg path ".github/workflows/$workflow" \
+                  '{workflow_runs: [.workflow_runs[] | select(.path == $path)]}' 2>>"$ERR_FILE")"; then
+                fail_lane "$label" "the runs named by the check-runs for $HEAD could not be read ($(read_error))"
+                return 0
+              fi
             fi
             run_id="$(printf '%s' "$run_data" | jq -r --argjson pr "$PR" --arg head "$HEAD" \
               '[.workflow_runs[]

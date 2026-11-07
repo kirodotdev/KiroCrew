@@ -4735,6 +4735,16 @@ Two subtleties:
   the event payload, and `pr_status.py --disposition-gate` reads the PR's comment pages
   once for both the disposition records and the reviewer markers (it walked them twice),
   and `pr_findings.py` uses the same shared read.
+- **An empty runs listing is not "no runs".** The `actions/runs?head_sha=` listing is
+  a filtered search and has answered `total_count: 0` for a head whose own
+  check-runs named its runs. `gh_head_runs` (in the shared `gh-retry.sh` helper)
+  reads an empty answer through the head's check-runs (every row, `filter=all`),
+  fetches each run their Actions job links name, and keeps it only when it ran for
+  that event on that exact head. A named run that cannot be fetched makes the
+  evaluation `could not be evaluated`, never `(not started)`. The evaluation and the
+  publish step's success re-check read runs through it, and
+  `ai-review-human-override.yml` and `republish_withheld_verdict.py` apply the same
+  rule to their run lookups.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
   attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
