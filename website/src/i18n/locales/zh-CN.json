@@ -13798,6 +13798,7 @@
       "broadcast_delivery_hint": "不会打断正在进行的工作：运行中的会话在当前工具调用结束后读到；空闲的会话开始新一轮。",
       "broadcast_retry": "重试 {{n}} 个失败的",
       "folder_renamed_to": "文件夹已重命名为 {{name}}",
+      "folder_name_label": "文件夹名称",
       "filter_crew": "Ultra Mode 对话",
       "filter_crew_hint": "Ultra Mode 对话的 crew 成员不会出现在这个列表里；对话本身会出现。",
       "group_by_kind": "按类型分组",

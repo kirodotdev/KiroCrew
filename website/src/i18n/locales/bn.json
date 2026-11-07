@@ -14141,6 +14141,7 @@
       "broadcast_delivery_hint": "চলমান কাজ থামে না: চালু টার্ন বর্তমান টুল কলের পরে এটি পড়ে; অলস সেশন নতুন টার্ন শুরু করে।",
       "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও",
       "folder_renamed_to": "ফোল্ডারের নাম পরিবর্তন করে {{name}} করা হয়েছে",
+      "folder_name_label": "ফোল্ডারের নাম",
       "filter_crew": "Ultra Mode",
       "filter_crew_hint": "Ultra Mode চ্যাটের crew সদস্যরা এই তালিকায় থাকে না; চ্যাটটি থাকে।",
       "group_by_kind": "ধরন অনুযায়ী গোষ্ঠী করো",

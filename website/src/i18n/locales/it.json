@@ -14484,6 +14484,7 @@
       "broadcast_delivery_hint": "Nessun lavoro in corso viene interrotto: un turno attivo lo legge dopo la chiamata allo strumento in corso; una sessione inattiva avvia un nuovo turno.",
       "broadcast_retry": "Riprova {{n}} non riusciti",
       "folder_renamed_to": "Cartella rinominata in {{name}}",
+      "folder_name_label": "Nome della cartella",
       "filter_crew": "Ultra Mode",
       "filter_crew_hint": "I membri della crew di una chat in Ultra Mode non compaiono in questo elenco; la chat sì.",
       "group_by_kind": "Raggruppa per tipo",
