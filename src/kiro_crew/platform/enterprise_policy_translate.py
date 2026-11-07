@@ -16,7 +16,9 @@ governed: as the policy language reads it, what no ``allow`` grants is denied.
 * ``allow`` with ``match L`` and no such ``exclude``: ``L`` is allowed;
 * ``allow`` with no ``match`` and no such ``exclude``: everything is allowed, so the
   rules become a deny-list of the ``deny match`` entries (empty when there are none);
-* ``deny``/``ask`` with ``match L``: ``L`` is taken out of the allowed set;
+* ``deny``/``ask`` with ``match L``: ``L`` is taken out of the allowed set. For a
+  capability whose baseline allows something (``permission_mode``) and that no
+  ``allow`` names, that baseline is the allowed set it is taken out of;
 * a capability rules name but nothing grants: nothing is allowed.
 
 An ``allow`` with ``when`` or with ``exclude`` grants nothing here: the reply is already
@@ -37,9 +39,8 @@ fetch fails. Entries compare as the row's Crew matcher compares them. ``ask`` re
 enterprise baseline holds (off, or Crew's default for an open control).
 
 A ruleset row may carry a floor: entries its Crew scope never forbids
-(``approval_modes`` keeps ``normal``, ``trust`` and ``trust_reads``). They are added to
-an allowed set and taken out of a denied one, because the scope refuses a policy that
-forbids one.
+(``approval_modes`` keeps ``normal``). It is added to an allowed set and taken
+out of a denied one, because the scope refuses a policy that forbids it.
 
 An on/off capability (one with no resource) reduces to ``{"enabled": bool}``
 instead, by :func:`switch`:
@@ -74,11 +75,12 @@ import json
 import logging
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 
 import yaml  # type: ignore[import-untyped]
 
 from kiro_crew.platform.governance import _ORDINAL_SCALES, MODE_ALLOW, MODE_DENY
+from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
 from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
 from kiro_crew.platform.governance_parts.matching import _MATCHERS, _expand
 
@@ -329,6 +331,9 @@ class Managed:
     inner: str = ""
     #: Every value of a closed list, so a deny-list can be written as an allow-list.
     values: Tuple[str, ...] = ()
+    #: The scope's enterprise baseline when it allows something. With no grant of its
+    #: own, a ``deny match`` then takes entries out of this list instead of leaving none.
+    baseline: Tuple[str, ...] = ()
 
 
 #: Each capability Kiro Crew governs from enterprise management, and where it lands.
@@ -344,8 +349,10 @@ MANAGED: Mapping[str, Managed] = MappingProxyType(
         "permission_mode": Managed(
             ("approval_modes",),
             floor=SCOPE_CATALOG["approval_modes"].always_permitted,
-            # The policy language's closed ``approvalMode`` list.
-            values=SCOPE_CATALOG["approval_modes"].always_permitted + ("yolo",),
+            # The policy language's closed ``approvalMode`` list; only ``normal``
+            # is the floor, so a rule may take out ``trust`` or ``trust_reads``.
+            values=("normal", "trust_reads", "trust", "yolo"),
+            baseline=tuple(cast(List[str], BASELINE_CONTROLS["approval_modes"]["allow"])),
         ),
         "shell": Managed(("commands",), matcher=SCOPE_CATALOG["commands"].matcher),
         "fs_read": Managed(
@@ -615,7 +622,7 @@ def ruleset(
 ) -> Optional[Dict[str, Any]]:
     """The Crew ruleset for *capability*'s rules, or ``None`` if no rule names it."""
     row = row or MANAGED.get(capability) or _DEFAULT_ROW
-    named = deny_all = allow_all = False
+    named = deny_all = allow_all = allow_named = False
     denied: List[str] = []
     excludes: List[List[str]] = []
     granted: List[str] = []
@@ -630,6 +637,9 @@ def ruleset(
         match = _patterns(rule, "match", capability) if _present(rule, "match") else None
         exclude = _patterns(rule, "exclude", capability) if _present(rule, "exclude") else None
         if effect == "allow":
+            # Named even when skipped below: a dropped grant must still keep the
+            # baseline out, so it only narrows.
+            allow_named = True
             if rule.get("when") is not None or exclude is not None:
                 continue
             if match is None or _covers_everything(match, row):
@@ -657,6 +667,9 @@ def ruleset(
         allowed = _intersect(excludes, capability, row)
     elif allow_all:
         return {"mode": MODE_DENY, "deny": _sorted_unique(denied, row)}
+    elif row.baseline and not allow_named:
+        # Only denies name it (``permission_mode``): they narrow the baseline it keeps.
+        allowed = list(row.baseline)
     else:
         allowed = granted
     allowed = _without_denied(allowed, denied, capability, row)

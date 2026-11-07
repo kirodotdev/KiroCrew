@@ -154,6 +154,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
     clear_trusted_sessions,
     is_session_trusted,
+    trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import note_turn_landed, settle_turn

@@ -30,6 +30,7 @@ import sys as _sys
 from typing import TYPE_CHECKING
 
 from kiro_crew import _facade_mirror
+from kiro_crew import approval_mode_policy as _approval_mode_policy
 from kiro_crew.platform.context import (
     register_ceiling_install_hook,
     register_ceiling_invalidate_hook,
@@ -89,14 +90,15 @@ def _on_ceiling_installed(ctx: object) -> None:
 # that path. ``yolo_policy_permits`` covers the late-registration ordering instead.
 register_ceiling_invalidate_hook(_on_ceiling_invalidating)
 register_ceiling_install_hook(_on_ceiling_installed)
+# The trust / trust_reads verdict's pair goes after this one (see its docstring).
+_approval_mode_policy.register_hooks()
 
 
 # ── The status field, derived from the SAME verdict the enforcement path reads ──
 #
-# ``approval_modes`` governs exactly one mode today: ``yolo``. ``normal`` is the
-# interactive floor, and ``trust`` / ``trust_reads`` are non-deniable because their
-# live consumption predicates are not gated -- a policy naming any of the three is
-# refused at parse time (see the ``SCOPE_CATALOG`` entry).
+# ``approval_modes`` governs ``yolo`` (process-wide, verdict pushed in
+# ``safety_override_grant``) and ``trust`` / ``trust_reads`` (per session, verdict
+# pushed in ``approval_mode_policy``). ``normal`` is the floor.
 #
 # This helper exists so the dashboard's status field and the per-tool-call
 # enforcement predicate cannot disagree. A second TTL cache of the same question
@@ -111,7 +113,10 @@ def cached_disabled_approval_modes() -> list[str]:
     ``/api/status``. Presentation only -- enforcement is ``api_chat_mode``, the
     slot-approve gate, and arming in ``safety_override_grant``.
     """
-    return [] if yolo_policy_permits() else [_YOLO_MODE]
+    from kiro_crew.approval_mode_policy import disabled_session_modes
+
+    disabled = disabled_session_modes()
+    return disabled if yolo_policy_permits() else [*disabled, _YOLO_MODE]
 
 
 def resolve_configured_duration() -> tuple[int, bool]:

@@ -130,6 +130,33 @@ class TestDispatchTransportToolApproval:
         assert orch.slack.update_message.await_args.kwargs["text"].startswith("🔓 Trusted")
 
     @pytest.mark.asyncio
+    async def test_trust_denied_during_the_channels_check_approves_once(
+        self, orch: MagicMock, _decider: MagicMock, audit: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``permission_mode`` deny of ``trust`` that lands during the channels await
+        approves the one tool, and the label and audit do not claim a grant."""
+        from kiro_crew.messaging import session_trust
+        from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
+
+        allowed = {"trust": True}
+        monkeypatch.setattr(ix, "trust_permitted", lambda: allowed["trust"])
+        monkeypatch.setattr(session_trust, "trust_permitted", lambda: allowed["trust"])
+
+        async def _deny_during_check(_channel: str) -> bool:
+            allowed["trust"] = False
+            return True
+
+        monkeypatch.setattr(ix, "channel_inbound_permitted", _deny_during_check)
+        _, nonce, waiter = _prompt("sess1", "rid7")
+        await ix.dispatch(_action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid7", f"sess1:rid7|{nonce}"))
+        assert is_session_trusted("sess1") is False
+        assert await await_until(waiter) is True
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+        assert _audit_ops(audit, "slack.transport_tool_approval") == [
+            ("approved", "approval_key=sess1:rid7")
+        ]
+
+    @pytest.mark.asyncio
     async def test_expired_approval_reports_expiry(
         self, orch: MagicMock, _decider: MagicMock, audit: Any
     ) -> None:

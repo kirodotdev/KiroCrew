@@ -46,8 +46,15 @@ _trusted_sessions: dict[str, Any] = {}
 
 
 def is_session_trusted(session_key: str) -> bool:
-    """Whether *session_key* has been granted per-session Trust."""
-    return bool(session_key) and session_key in _trusted_sessions
+    """Whether *session_key* holds per-session Trust the policy still permits."""
+    return bool(session_key) and session_key in _trusted_sessions and trust_permitted()
+
+
+def trust_permitted() -> bool:
+    """Whether the ``permission_mode`` policy lets a session hold ``trust``. From memory."""
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    return session_mode_permitted("trust")
 
 
 def add_trusted_session(
@@ -75,6 +82,13 @@ def add_trusted_session(
     it got than with none.
     """
     if not session_key:
+        return
+    if not trust_permitted():
+        # Refused, not recorded: a policy deny of ``trust`` covers this button too.
+        # A ``strict`` caller reports the refusal to the person who pressed it.
+        logger.info("session Trust refused by policy on %s", telemetry_channel_of(session_key))
+        if strict:
+            raise PermissionError("trust is disabled by your organization's policy")
         return
     _trusted_sessions[session_key] = sessions
     if sessions is None:
@@ -140,3 +154,18 @@ def clear_trusted_sessions(keep_policy: "set[str] | None" = None) -> None:
                 telemetry_channel_of(session_key),
                 exc_info=True,
             )
+
+
+def _on_trust_denied(denied: frozenset[str]) -> None:
+    """A ``permission_mode`` deny of ``trust`` drops every session Trust grant."""
+    if "trust" in denied:
+        clear_trusted_sessions()
+
+
+def _register() -> None:
+    from kiro_crew.approval_mode_policy import register_deny_hook
+
+    register_deny_hook("messaging", _on_trust_denied)
+
+
+_register()

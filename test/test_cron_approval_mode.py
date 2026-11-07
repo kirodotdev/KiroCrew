@@ -109,10 +109,13 @@ class TestCronApprovalModeGateway:
 
         return captured
 
-    def test_auto_mode_passes_auto_approve_and_no_callback(self) -> None:
+    def test_auto_mode_passes_auto_approve_and_a_live_auto_check(self) -> None:
         captured = self._run_cron_callback("auto")
         assert captured["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
-        assert captured["on_tool_approval"] is None
+        # The callback approves while ``auto`` holds; a mid-turn policy deny asks
+        # instead (RFC enterprise edition D9).
+        approve = captured["on_tool_approval"]
+        assert asyncio.run(approve(MagicMock())) is True
 
     def test_empty_mode_passes_hook_based_and_callback(self) -> None:
         captured = self._run_cron_callback("")

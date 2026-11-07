@@ -769,7 +769,8 @@ class TestTranslation:
             t.ruleset(rules, "messaging_channel")
 
 
-_FLOOR = ["normal", "trust", "trust_reads"]
+# ``normal`` is the only mode a rule cannot remove (RFC enterprise edition, D9).
+_FLOOR = ["normal"]
 
 
 def _translate(*rules: str) -> dict:
@@ -872,6 +873,60 @@ class TestPermissionModeRow:
     def test_ask_reads_as_deny(self):
         doc = _translate("{capability: permission_mode, effect: ask}")
         assert doc["approval_modes"] == {"mode": "allow", "allow": _FLOOR}
+
+    # The owner's rule as the control plane sends it: the grant, and the ``deny
+    # exclude`` it sends beside every grant (see the translator's module docstring).
+    _OWNER_RULE = (
+        "{id: permission-mode-allow-normal, capability: permission_mode, effect: allow, "
+        'match: ["normal", "trust_reads"]}',
+        '{capability: permission_mode, effect: deny, exclude: ["normal", "trust_reads"]}',
+    )
+
+    def test_an_allow_of_normal_and_trust_reads_leaves_trust_out(self):
+        doc = _translate(*self._OWNER_RULE)
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal", "trust_reads"]}
+
+    def test_the_owner_rule_resolves_trust_denied(self, enterprise):
+        ceiling = governance.parse_policy(_translate(*self._OWNER_RULE))
+        allowed = {
+            m: governance.resolve(ceiling, None, "approval_modes", m).permitted
+            for m in ("normal", "trust_reads", "trust", "yolo")
+        }
+        assert allowed == {"normal": True, "trust_reads": True, "trust": False, "yolo": False}
+
+    def test_a_rule_allowing_all_three_keeps_them(self, enterprise):
+        ceiling = governance.parse_policy(
+            _translate(
+                "{capability: permission_mode, effect: allow, match: [normal, trust_reads, trust]}",
+                "{capability: permission_mode, effect: deny, exclude: [normal, trust_reads, trust]}",
+            )
+        )
+        for m in ("normal", "trust_reads", "trust"):
+            assert governance.resolve(ceiling, None, "approval_modes", m).permitted
+
+    def test_a_deny_match_alone_takes_the_mode_out_of_the_baseline(self, enterprise):
+        doc = _translate("{capability: permission_mode, effect: deny, match: [trust]}")
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal", "trust_reads"]}
+        ceiling = governance.parse_policy(doc)
+        assert not governance.resolve(ceiling, None, "approval_modes", "trust").permitted
+        assert not governance.resolve(ceiling, None, "approval_modes", "yolo").permitted
+
+    def test_a_deny_match_of_normal_alone_keeps_the_floor(self):
+        doc = _translate("{capability: permission_mode, effect: deny, match: [normal, trust]}")
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal", "trust_reads"]}
+
+    def test_a_conditional_allow_does_not_bring_the_baseline_back(self):
+        """A dropped (``when``) grant still names the capability, so it only narrows."""
+        doc = _translate(
+            "{capability: permission_mode, effect: allow, match: [normal], when: {a: b}}"
+        )
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal"]}
+
+    def test_no_rule_keeps_all_three(self, enterprise):
+        ceiling = governance.parse_policy(_translate())
+        for m in ("normal", "trust_reads", "trust"):
+            assert governance.resolve(ceiling, None, "approval_modes", m).permitted
+        assert not governance.resolve(ceiling, None, "approval_modes", "yolo").permitted
 
 
 class TestTranslatedRowsResolve:

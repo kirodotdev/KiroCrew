@@ -48,11 +48,13 @@ if TYPE_CHECKING:
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
         acp_error_is_transient,
+        auto_job_approver,
         configured_fallback_chain,
         consume_reinjection,
         context_meter_reading,
         dataclass,
         declared_mcp_not_ready_note,
+        effective_job_approval_mode,
         engine_attributed_model,
         logger,
         note_turn_landed,
@@ -281,15 +283,21 @@ async def _cron_run_sequence(
                     unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
-                        if job.approval_mode == "auto"
+                        if effective_job_approval_mode(job.approval_mode) == "auto"
                         else ToolApprovalPolicy.HOOK_BASED
                     ),
                     hooks=self.ctx_builder.hooks,
                     # The card's requester line ends with the user-authored job
                     # name, so it cannot forge the id or agent before it.
                     on_tool_approval=(
-                        None
-                        if job.approval_mode == "auto"
+                        # ``auto`` is re-checked per request: a mid-turn deny asks instead.
+                        auto_job_approver(
+                            self._interactive_approval(
+                                "cron",
+                                requester=f"cron job {job.id}, agent {step.alias}: {job.name}",
+                            )
+                        )
+                        if effective_job_approval_mode(job.approval_mode) == "auto"
                         else self._interactive_approval(
                             "cron", requester=f"cron job {job.id}, agent {step.alias}: {job.name}"
                         )
@@ -726,14 +734,22 @@ async def _cron_run_single(
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
-                if job.approval_mode == "auto"
+                if effective_job_approval_mode(job.approval_mode) == "auto"
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
             # The job name ends the requester line, as on the sequence site.
             on_tool_approval=(
-                None
-                if job.approval_mode == "auto"
+                # ``auto`` is re-checked per request: a mid-turn deny asks instead.
+                auto_job_approver(
+                    self._interactive_approval(
+                        "cron",
+                        requester=f"cron job {job.id}"
+                        + (f", agent {cap.gate_agent}" if cap.gate_agent else "")
+                        + f": {job.name}",
+                    )
+                )
+                if effective_job_approval_mode(job.approval_mode) == "auto"
                 else self._interactive_approval(
                     "cron",
                     requester=f"cron job {job.id}"
