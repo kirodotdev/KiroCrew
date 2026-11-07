@@ -553,6 +553,25 @@ async def test_a_checkout_spec_session_still_records_the_list(
 
 
 @pytest.mark.asyncio
+async def test_kas_names_an_unreadable_global_mcp_json_in_the_session_notice(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A UTF-16 global mcp.json gets the same reason kiro-cli's refusal gives."""
+    from kiro_crew.acp.session_mcp import _named_path
+
+    settings = tmp_path / "mcp.json"
+    settings.write_bytes(b"\xff\xfe" + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le"))
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", settings)
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    assert extras.withheld_credentials_notice == (
+        f"⚠ Kiro Crew could not read the global MCP settings ({_named_path(settings)})"
+        " because it is saved as UTF-16; re-save it as UTF-8. Its MCP server settings"
+        " may not apply to this session."
+    )
+
+
+@pytest.mark.asyncio
 async def test_kas_projects_nothing_without_an_agent(tmp_path):
     """No agent means nothing to register, not an empty registration."""
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("", work_dir=str(tmp_path))

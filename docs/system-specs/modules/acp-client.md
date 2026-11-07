@@ -1901,6 +1901,10 @@ The details below describe the Kiro and Claude paths implemented directly here:
     at the next turn boundary), which is why the dashboard's MCP sync skips its
     session reset on that harness — gate and semantics in
     [mcp.md](../../architecture/mcp.md#live-reconcile-when-no-restart-is-needed-at-all).
+  - **KAS**: reads the same global and project settings files through
+    `session_mcp.native_settings_sources`, called from `acp/kas_settings_mcp.py`.
+    Each file it cannot read adds one line naming the file and that fixed reason
+    to the session-start notice, and the session still starts.
   - **claude-agent-acp**: does NOT read any config file or `--agent` flag, so
     `session/new` (and `session/load`) must carry the servers in the
     `mcpServers` param. `_session_mcp_servers()` — gated on

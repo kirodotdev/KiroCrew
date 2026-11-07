@@ -1130,6 +1130,7 @@ class KasHarness(MembershipHarness):
                 # same name is not the file that was recorded.
                 legacy_mcp_json=legacy_mcp_json(agent, agents_dir, spec)
                 and prompt_dir == agents_dir,
+                notices=spec_notices,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
