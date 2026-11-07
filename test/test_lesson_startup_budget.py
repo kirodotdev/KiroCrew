@@ -1,18 +1,11 @@
 """Startup lesson admission: bounded, tiered, and loud about what it withheld.
 
-The behaviour under test replaces one that deliberately kept EVERY eligible rule
-until a window-scaled ceiling. These cases pin the four properties that made the
-replacement safe rather than just smaller:
+Pinned: more past findings do not grow a greeting's cost; an AUTHORED rule is never
+displaced by recency, relevance or an unstated row; an overflow reports exact counts
+and a way to read the rest; a caller naming no budget gets the unbudgeted bytes.
 
-- a growing pile of past findings does not grow what a bare greeting costs;
-- an AUTHORED standing rule is never displaced by recency or relevance, and in
-  particular not by an unstated legacy row;
-- an overflow is reported with exact counts and a way to read the rest, never
-  silently dropped;
-- a caller that names no budget is byte-identical to the previous behaviour.
-
-Both lesson tiers are covered: the SQLite/vector store and the JSONL fallback,
-which have separate renderers and separate ordering signals.
+Both stores are covered (SQLite/vector and the JSONL fallback): they have separate
+renderers and separate ordering signals.
 """
 
 from __future__ import annotations
@@ -44,14 +37,8 @@ EXPERIENCE_BUDGET = 1_500
 def _lexical_embedding(text: str) -> list[float]:
     """A deterministic stand-in for the embedding model, keyed on shared words.
 
-    Two texts that share significant words score close together, which is all the
-    contradiction window's similarity band needs. Fixed 32 dimensions so a store
-    never sees a dimension change, and no network or model call.
-
-    ``crc32``, not ``hash()``: string hashing is salted per interpreter process,
-    so a bucket assignment from ``hash()`` differs between runs and between xdist
-    workers -- the same input would score differently depending on which worker
-    picked it up.
+    ``crc32``, not ``hash()``: string hashing is salted per process, so buckets
+    from ``hash()`` would differ between runs and xdist workers.
     """
     vector = [0.0] * 32
     for token in text.lower().split():
@@ -70,11 +57,8 @@ def _jsonl(tmp_path, rows: list[Lesson]) -> LessonStore:
 def _rule(marker: str, size: int = 200) -> str:
     """A rule whose text is LEXICALLY DISTINCT from every other marker's.
 
-    Padding every fixture rule with the same filler word makes them collide in
-    ``write_lesson``'s topic-overlap dedup (shared keywords >= 50% of the larger
-    set), so each write replaces the previous one and the store ends up holding
-    exactly one lesson. The marker is repeated into the filler so each rule's
-    keyword set is its own.
+    A shared filler word would collide in ``write_lesson``'s topic-overlap dedup,
+    so each write would replace the last; the marker goes into the filler instead.
     """
     filler = f"{marker.lower()}pad "
     # Stripped, because ``write_lesson`` stores the stripped rule: an assertion
@@ -173,11 +157,7 @@ class TestJsonlStartupAdmission:
         assert _rule("KEEP") in large_ctx
 
     def test_an_authored_rule_outranks_newer_unstated_rows(self, tmp_path):
-        """Acceptance B: authored rules are not displaced by recency.
-
-        Measured regression: six authored rules all fell out of the budget behind
-        forty NEWER unstated rows, because the tier was ranked on recency alone.
-        """
+        """Acceptance B: authored rules are not displaced by newer unstated rows."""
         rows = [
             Lesson(
                 ts=f"2026-01-{i + 1:02d}",
@@ -230,7 +210,7 @@ class TestJsonlStartupAdmission:
         assert "not a judgement" in out
 
     def test_a_caller_naming_no_budget_is_unchanged(self, tmp_path):
-        """Every caller predating the budgets keeps its exact bytes."""
+        """A caller that names no budget gets the unbudgeted bytes."""
         rows = [Lesson(ts=str(i), rule=_rule(f"R{i}"), category="preference") for i in range(4)]
         store = _jsonl(tmp_path, rows)
         assert store.get_context() == store.get_context(directive_budget=0, experience_budget=0)
@@ -243,11 +223,8 @@ class TestJsonlStartupAdmission:
 class TestFindingsAreOrderedByRelevance:
     """A budget is only safe if the finding the task needs still arrives.
 
-    The JSONL tier has no relevance score, so newest-first alone drops an OLD
-    finding the request is actually about while newer irrelevant ones fit. Measured
-    on a 199-lesson store before this ordering existed: the relevant finding was
-    injected when everything was injected, and fell outside the findings budget once
-    the budget bound.
+    The JSONL tier has no relevance score, so newest-first alone would drop an OLD
+    finding the request is about while newer irrelevant ones fit.
     """
 
     def test_an_old_relevant_finding_survives_a_crowd_of_newer_ones(self, tmp_path):
@@ -284,13 +261,10 @@ class TestFindingsAreOrderedByRelevance:
         assert _rule("RULE") in out, "the standing rule must still arrive"
 
     def test_a_rule_is_never_withheld_or_outranked_by_an_untagged_row(self, tmp_path):
-        """Rules ARE relevance-ordered now, matching the vector store. Two invariants
-        survive that and are what this pins: a rule is never withheld for being
-        unrelated to the message, and an untagged row never outranks an authored one
-        however well it matches. The previous claim -- that the rule tier is untouched
-        by the request -- was never true of the vector path, which ranks its whole
-        eligible set, so stating it here left the two stores describing opposite
-        policies.
+        """Rules are relevance-ordered, as in the vector store, within two limits.
+
+        A rule is never withheld for being unrelated to the message, and an untagged
+        row never outranks an authored one however well it matches.
         """
         rows = [
             Lesson(
@@ -393,8 +367,8 @@ class TestVectorStartupAdmission:
         try:
             store.write_lesson("Prefer dark mode", category="preference")
             decoded = json.loads(store.get_lessons()[0]["value_json"])
-            # Absent, not a stored sentinel: the row is byte-identical to what this
-            # writer produced before the field existed.
+            # Absent, not a stored sentinel, so the row matches rows written without
+            # the field.
             assert "applies" not in decoded
         finally:
             store.close()
@@ -468,12 +442,10 @@ class TestRetentionProtectsAuthoredRules:
         assert kept == [row for row in rows if row in kept]
 
     def test_saving_past_the_cap_through_the_store_keeps_authored_rules(self, tmp_path):
-        """The same guarantee through the REAL route, not the helper.
+        """The same guarantee through ``save``, not the helper.
 
-        The cases above call ``_prune_to_total`` directly, which leaves the
-        store's own choice of pruner unpinned: restoring the tier-blind
-        ``updated[-MAX:]`` in ``save`` passes every one of them. This case is the
-        one that fails when that happens, so it is what actually guards the fix.
+        The cases above call ``_prune_to_total`` directly, so they would still pass
+        if ``save`` used a tier-blind ``updated[-MAX:]``.
         """
         store = LessonStore(base_dir=tmp_path)
         for i in range(6):
@@ -636,14 +608,10 @@ class TestAFindingNeverRetiresAStandingRule:
             store.close()
 
     def test_a_standing_write_is_not_declined_as_covered_by_a_finding(self, tmp_path):
-        """The mirror of the decline, and the direction tiering makes conditional.
+        """A STANDING write contained in an ``on_topic`` row is not declined as covered.
 
-        "Already covered" holds only while the covering row arrives at least as
-        often as the submission would. A covering ``on_topic`` row arrives only when
-        the request is about it, so declining a STANDING submission contained in one
-        drops the rule from every unrelated turn while reporting `substring_covered`
-        for a row that does not cover it there -- and a re-submit is declined
-        identically, so nothing recovers it.
+        The ``on_topic`` row arrives only on related requests, so declining would drop
+        the rule from every other turn, and a re-submit would be declined the same way.
         """
         store = self._store(tmp_path)
         try:
@@ -661,9 +629,8 @@ class TestAFindingNeverRetiresAStandingRule:
     def test_an_unstated_submission_is_also_not_declined_by_a_finding(self, tmp_path):
         """An unstated submission is served AS a standing rule, so it needs the same.
 
-        Every write predating this field, and every surface that states no tier,
-        lands here -- so a guard keyed on ``always`` alone would leave the ordinary
-        case unprotected.
+        Every surface that states no tier lands here, so a guard keyed on ``always``
+        alone would leave the ordinary case unprotected.
         """
         store = self._store(tmp_path)
         try:
@@ -681,12 +648,8 @@ class TestAFindingNeverRetiresAStandingRule:
     def test_migration_carries_the_authored_tier(self, tmp_path, monkeypatch):
         """Dropping ``applies`` on migration promotes a finding into a standing rule.
 
-        Same direction the scope gate already refuses to move: an omitted tier reads
-        as unstated, which every read path serves as a standing rule, so a row the
-        user filed as a past finding would start arriving in every session --
-        silently widening exactly what the tier exists to bound. A malformed value
-        migrates the row as unstated instead of aborting the migration, because this
-        loop reads the file directly.
+        An omitted tier is served as a standing rule, so a past finding would arrive in
+        every session. A malformed value migrates as unstated rather than aborting.
         """
         from kiro_crew import vector_memory as vm
 
@@ -728,9 +691,8 @@ class TestAFindingNeverRetiresAStandingRule:
                 stored["flush the widget cache after a rebuild"] == "on_topic"
             ), "the finding was promoted to a standing rule"
             assert stored["never force push to a protected branch"] == "always"
-            # Absent stays absent: an unstated row is byte-identical to what a
-            # pre-field writer produced, and a junk value migrates the same way
-            # rather than failing the whole migration.
+            # Absent stays absent, and a junk value migrates the same way rather
+            # than failing the whole migration.
             assert stored["prefer ripgrep over ack when searching"] is None
             assert stored["deployments need a manual smoke check"] is None
         finally:
@@ -740,20 +702,14 @@ class TestAFindingNeverRetiresAStandingRule:
 class TestContradictionCandidatesCarryTheirTier:
     """A sweep that cannot read a row's tier narrows to nothing, not to a guard.
 
-    The caller refuses to let a past finding delete a standing or untiered rule,
-    and it applies that refusal per candidate. A candidate row without its tier
-    reads as untiered for EVERY row, so the refusal matched all of them and the
-    model-judged contradiction sweep became a permanent no-op for findings --
-    over-protective, so nothing was wrongly deleted, but the feature was off
-    rather than narrowed. These cases pin the tier onto the row the sweep sees.
+    The caller refuses to let a finding delete a standing or untiered rule, per
+    candidate. A row without its tier reads as untiered, so the sweep would refuse
+    every candidate and never judge a finding.
     """
 
     def _store(self, tmp_path):
         store = VectorMemoryStore(db_path=tmp_path / "lessons.db")
         store.init()
-        # A deterministic stand-in for the embedding model: two texts sharing a
-        # significant word land near each other, which is all the similarity
-        # window needs. Keeps the case off the real model and off the network.
         store.embed_fn = lambda text: _lexical_embedding(text)
         return store
 
@@ -773,9 +729,8 @@ class TestContradictionCandidatesCarryTheirTier:
             assert all(
                 "applies" in c for c in candidates
             ), "a candidate row reached the sweep with no tier, so the sweep cannot narrow"
-            # Read back through the handler's own reader, not by comparing the
-            # raw value: the handler is what decides whether the sweep may
-            # delete the row, so THAT answer is the one worth pinning.
+            # Read through the handler's reader: it decides whether the sweep may
+            # delete the row.
             assert (
                 _candidate_applies(by_rule["prefer squash merges on release branches"])
                 == LESSON_APPLIES_ON_TOPIC
@@ -794,9 +749,8 @@ class TestContradictionCandidatesCarryTheirTier:
     def test_a_finding_submission_still_finds_a_finding_to_judge(self, tmp_path):
         """The sweep's whole purpose: an on_topic write must retain SOME candidate.
 
-        This is the case the missing tier broke. The filter the handler applies
-        keeps only same-tier candidates, so with the tier absent this list was
-        empty on every finding submission and no contradiction was ever judged.
+        The handler keeps only same-tier candidates, so without the tier this list
+        would be empty on every finding submission.
         """
         store = self._store(tmp_path)
         try:
@@ -816,17 +770,12 @@ class TestContradictionCandidatesCarryTheirTier:
             store.close()
 
     def test_an_old_exact_match_survives_a_store_that_predates_the_tier(self, tmp_path):
-        """The legacy case: every row is untagged, so the RULE tier holds the match.
+        """When every row is untagged, the RULE tier holds the match and ranks it.
 
-        Leaving that tier newest-first lost an exact-topic match the vector store
-        kept, because the vector path ranks its whole eligible set. Both tiers are
-        now ordered per tier, so authored precedence survives and relevance decides
-        inside each sub-list.
+        Newest-first alone would drop an exact-topic match the vector store keeps.
         """
-        # Sized like the filler rows on purpose. A SHORT relevant row would be
-        # rescued by the skip-and-continue fill alone, which makes the fixture
-        # unable to tell ordering from fitting; at filler size only being sorted
-        # first can save it.
+        # Sized like the filler rows: a SHORT row would be rescued by the
+        # skip-and-continue fill alone, so only sorting can save one this size.
         target = "raise the SQLite WAL busy_timeout when writes contend " + " ".join(
             f"wal{i}" for i in range(28)
         )
@@ -901,11 +850,8 @@ class TestContradictionCandidatesCarryTheirTier:
 class TestAFindingIsWithheldWhenNothingMatches:
     """A tier of findings is not filler: an unrelated request gets none of it.
 
-    `on_topic` means "worth having when the task touches it". Ordering alone left
-    a greeting spending the whole findings allowance on the NEWEST rows, which are
-    unrelated by construction -- and that filler never rescued a near-miss either,
-    because it surfaces the newest rows rather than the closest ones. The frame is
-    still rendered, so the next turn can see that findings exist and how to reach
+    Ordering alone would spend a greeting's findings allowance on the newest rows.
+    The frame is still rendered, so the reader sees findings exist and how to reach
     them; a silently absent block reads as "this user has no findings".
     """
 
@@ -1033,14 +979,9 @@ class TestTheTierIsVisibleWhereOverflowSendsTheReader:
     def test_a_malformed_stored_tier_does_not_fail_the_page(self):
         """Opposite of the write path on purpose: a listing serves stored rows.
 
-        ``normalize_lesson_applies`` RAISES on a value that is present but not one
-        of the two literals, because a write surface that misspells the tier has a
-        bug and must hear about it. A listing has no such latitude -- it renders
-        rows an older path or a hand-edit already put in the file, and failing the
-        whole page over one of them hides every other row on it.
-
-        Both sides agree on surrounding whitespace and case, which is
-        canonicalization rather than a malformed value.
+        ``normalize_lesson_applies`` RAISES so a misspelling writer hears about it.
+        A listing renders rows already in the file, and failing on one would hide
+        every other row. Both sides accept surrounding whitespace and case.
         """
         with pytest.raises(ValueError):
             normalize_lesson_applies("directive")
@@ -1068,11 +1009,8 @@ class TestTheTierIsVisibleWhereOverflowSendsTheReader:
     def test_the_findings_header_does_not_claim_an_order_the_sort_overrides(self, tmp_path):
         """The block says "relevant ones first" because that is what it renders.
 
-        ``order_findings_by_relevance`` runs before this block is built and
-        deliberately lets an OLDER relevant finding outrank newer irrelevant ones,
-        so a header reading "newest first" describes the pre-sort order and is
-        false for exactly the store this change exists to serve. The vector tier
-        already said "relevant ones first"; the two renderers now agree.
+        ``order_findings_by_relevance`` lets an OLDER relevant finding outrank newer
+        ones, so "newest first" would be false. Both renderers use the same header.
         """
         store = _jsonl(
             tmp_path,
