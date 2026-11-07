@@ -6357,6 +6357,7 @@
       "trusted_channel_all": "বিশ্বস্ত — এই চ্যানেলের সব টুল স্বয়ংক্রিয়ভাবে অনুমোদিত হবে, রিস্টার্টের পরেও বজায় থাকে",
       "trusted_channel_base": "বিশ্বস্ত — {{base}} কমান্ড @{{role}}-এর জন্য {{productName}} রিস্টার্ট পর্যন্ত স্বয়ংক্রিয়ভাবে অনুমোদিত হবে",
       "trusted_channel_command": "বিশ্বস্ত — <mono/> @{{role}}-এর জন্য {{productName}} রিস্টার্ট পর্যন্ত স্বয়ংক্রিয়ভাবে অনুমোদিত হবে",
+      "trusted_channel_still_asks": "এবার অনুমোদিত — এই হোস্টের shell সেটআপের কারণে @{{role}} প্রতিবারই জিজ্ঞাসা করবে",
       "title_wants_to_run": "<title/> চালাতে চায়"
     },
     "approvalModePicker": {

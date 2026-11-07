@@ -6357,6 +6357,7 @@
       "trusted_channel_all": "Vertrauenswürdig — alle Werkzeuge in diesem Kanal werden automatisch genehmigt, bleibt nach Neustarts bestehen",
       "trusted_channel_base": "Vertrauenswürdig — {{base}}-Befehle werden für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
       "trusted_channel_command": "Vertrauenswürdig — <mono/> wird für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
+      "trusted_channel_still_asks": "Diesmal genehmigt — wegen der Shell-Einrichtung dieses Hosts fragt @{{role}} trotzdem jedes Mal nach",
       "title_wants_to_run": "<title/> möchte ausgeführt werden"
     },
     "approvalModePicker": {

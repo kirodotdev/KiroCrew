@@ -6185,6 +6185,7 @@
       "trusted_channel_all": "已信任 — 此频道中的所有工具将自动批准，重启后仍然有效",
       "trusted_channel_base": "已信任 — {{base}} 命令将对 @{{role}} 自动批准，{{productName}} 重启前有效",
       "trusted_channel_command": "已信任 — <mono/>将对 @{{role}} 自动批准，{{productName}} 重启前有效",
+      "trusted_channel_still_asks": "本次已批准 — 由于此主机的 shell 设置，@{{role}} 每次仍会请求批准",
       "title_wants_to_run": "<title/> 请求运行"
     },
     "approvalModePicker": {

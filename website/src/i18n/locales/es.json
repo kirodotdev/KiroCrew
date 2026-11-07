@@ -6529,6 +6529,7 @@
       "trusted_channel_all": "De confianza — todas las herramientas de este canal se aprobarán automáticamente, persiste tras reiniciar",
       "trusted_channel_base": "De confianza — los comandos {{base}} se aprobarán automáticamente para @{{role}} hasta que {{productName}} se reinicie",
       "trusted_channel_command": "De confianza — <mono/> se aprobará automáticamente para @{{role}} hasta que {{productName}} se reinicie",
+      "trusted_channel_still_asks": "Aprobado esta vez — por la configuración del shell de este host, @{{role}} seguirá preguntando cada vez",
       "title_wants_to_run": "<title/> quiere ejecutarse"
     },
     "approvalModePicker": {
