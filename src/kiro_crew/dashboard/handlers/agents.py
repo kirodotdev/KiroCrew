@@ -299,6 +299,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     run_config_write,
 )
 from kiro_crew.dashboard.conditional_get import conditional_response, strong_content_etag
+from kiro_crew.dashboard.handlers import models_cold_probe
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     MAX_AGENT_SKILLS,
     SkillCatalogSnapshot,
@@ -876,6 +877,7 @@ def _advertised_backend_models(
     """
     namespace = model_registry_namespace(backend)
     advertised = _advertised_cc_models(request, namespace)
+    models_cold_probe.probe_if_cold(request, backend, advertised)  # answers now regardless
 
     rows: list[dict] = [
         {"model_name": "auto", "display_name": "Auto", "description": "Backend default"}

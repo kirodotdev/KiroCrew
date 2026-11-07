@@ -145,7 +145,8 @@ rows in the `chat --list-models` shape — `model_id` / `model_name` / `display_
 select alone, no structured context-window field on any option). The recording is
 process-wide and in memory, like the catalog's prices; a response with no select
 clears nothing. A select is what ONE account is served, so the next account must
-see `auto` alone until its own first session: every `session/new` and
+see `auto` alone until its own first session (a cold read starts one in the
+background; see the cold-read bullet below): every `session/new` and
 `session/load` notes the vault identity fingerprint it WENT OUT under
 (`kas_model_catalog.vault_identity`, `auth/bridge.vault_identity_fingerprint`, read
 off the loop by the KAS harness as it builds the session payload --
@@ -496,6 +497,20 @@ its own once the cache refreshes with a list that carries it.
   backends preserve exact wire ids (including Pi provider/model ids) without
   substituting the Kiro CLI catalog. A cold cache offers `auto` and a scoped
   configured default until that backend advertises its choices.
+- A cold read does not wait for a chat. When `/api/models` answers cold for the
+  configured harness (an advertised-selection backend with nothing cached, or the
+  KAS bundle route with no recording for the signed-in account),
+  `dashboard/handlers/models_cold_probe.start_cold_model_probe` opens one
+  throwaway background session on the shared runtime (`get_bg_session`, then
+  `destroy`) in a background task, and the request answers at once. Its
+  `session/new` fills the list through the same capture a chat session uses, and
+  a `models_changed` frame (tier 0, empty payload) makes every dashboard re-read
+  `['available-models']`. Nothing persistent is registered, so a later harness
+  switch finds no leftover background entry. One probe runs at a time, at most
+  one per backend per `COLD_PROBE_COOLDOWN_SECS` (300 s), and no frame is sent
+  when the session did not open, so a harness that advertises nothing cannot
+  loop. Only the configured harness on a shared-runtime backend is probed; a Bot
+  picker asking about another harness (`?backend=`) is not.
 - Whether a canonical registry key is a display-only spelling is the backend's
   `model_id_namespace` question, the same field `_wire_model_id` translates
   through: a provider namespace whose registry row carries an id for the key
