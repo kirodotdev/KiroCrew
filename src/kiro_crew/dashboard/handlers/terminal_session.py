@@ -199,10 +199,15 @@ def _is_enabled(request: web.Request) -> bool:
     now = time.monotonic()
     if now - _enabled_cache[1] < 30:
         return _enabled_cache[0]
-    result = bool(_get_config(request).get("enabled", True))
+    result = _terminal_enabled(_get_config(request))
     _enabled_cache[0] = result
     _enabled_cache[1] = now
     return result
+
+
+def _terminal_enabled(cfg: dict) -> bool:
+    """Whether a ``dashboard.terminal`` object leaves the panel on (the default)."""
+    return bool(cfg.get("enabled", True))
 
 
 _enabled_cache: list = [True, 0.0]  # [value, timestamp]
