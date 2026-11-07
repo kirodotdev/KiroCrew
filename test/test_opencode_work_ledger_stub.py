@@ -1,7 +1,7 @@
-"""opencode admits the gateway's work-ledger broker stub, and only that stub.
+"""Single-binary harnesses admit the gateway's work-ledger broker stub, and only that stub.
 
-The work ledger is one of Crew's identity-bound servers, so the opencode projection
-withholds it. The gateway's broker stub for it is the one form that works on this
+The work ledger is one of Crew's identity-bound servers, so the projection that
+opencode, goose, copilot, deepseek and strands share withholds it. The gateway's broker stub for it is the one form that works on this
 transport: the rewriter authored its launch and the stub token names this session.
 These tests pin both sides. The exact stub shape bound to this session's token is
 mounted; every look-alike, an unbound or foreign stub, and every other
@@ -25,9 +25,12 @@ from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
+from kiro_crew.providers.mirrors.copilot import copilot_projection
+from kiro_crew.providers.mirrors.deepseek import deepseek_projection
 from kiro_crew.providers.mirrors.goose import goose_projection
 from kiro_crew.providers.mirrors.identity import identity_bound_crew_servers
 from kiro_crew.providers.mirrors.opencode import opencode_projection, opencode_tool_id
+from kiro_crew.providers.mirrors.strands import strands_projection
 
 _TOKEN = "session-token-a"
 _WORK = mcp_work.SERVER_NAME
@@ -207,8 +210,41 @@ def test_every_other_identity_bound_stub_stays_withheld(agents_dir):
     assert not set(others) & set(mounted)
 
 
-def test_the_admission_is_opencode_only(agents_dir):
-    """The placement function is shared; goose does not opt in, so it still withholds."""
+# The harnesses that share opencode's placement but withhold a narrowed server whole.
+_WHOLE_SERVER_HARNESSES = {
+    "goose": goose_projection,
+    "copilot": copilot_projection,
+    "deepseek": deepseek_projection,
+    "strands": strands_projection,
+}
+_HARNESS_IDS = list(_WHOLE_SERVER_HARNESSES)
+_HARNESSES = list(_WHOLE_SERVER_HARNESSES.values())
+
+
+@pytest.mark.parametrize("project", _HARNESSES, ids=_HARNESS_IDS)
+def test_every_single_binary_harness_mounts_the_session_bound_stub(agents_dir, project):
     _grant(agents_dir, _WORK)
-    assert _WORK in _mounted([_stub()])
-    assert _WORK not in _mounted([_stub()], project=goose_projection)
+    stub = _stub()
+    assert _mounted([stub], project=project).get(_WORK) == stub
+    assert _WORK not in _mounted([_stub(token="session-token-b")], project=project)
+    assert _WORK not in _mounted([], project=project)
+
+
+@pytest.mark.parametrize("project", _HARNESSES, ids=_HARNESS_IDS)
+def test_a_harness_without_a_deny_channel_withholds_a_narrowed_stub_whole(agents_dir, project):
+    _grant(agents_dir, _WORK)
+    assert _WORK in _mounted([_stub()], project=project)
+    entry = {"command": "/opt/kirocrew", "disabledTools": ["work_report"]}
+    _write_spec(agents_dir, servers={_WORK: entry}, tools=[f"@{_WORK}"])
+    projection = _project([_stub()], project=project)
+    assert _WORK not in {e["name"] for e in projection.params["mcpServers"]}
+    assert _WORK in projection.unhonoured_servers
+
+
+@pytest.mark.parametrize("project", _HARNESSES, ids=_HARNESS_IDS)
+def test_no_harness_admits_another_identity_bound_stub(agents_dir, project):
+    others = sorted(identity_bound_crew_servers() - {_WORK})
+    _grant(agents_dir, _WORK, *others)
+    mounted = _mounted([_stub(_WORK), *(_stub(name) for name in others)], project=project)
+    assert _WORK in mounted
+    assert not set(others) & set(mounted)
