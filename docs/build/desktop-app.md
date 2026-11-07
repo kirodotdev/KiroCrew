@@ -834,6 +834,24 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+A window whose gateway the shell already knows is not on this machine (a
+configured Remote Crew on its port, as in the client-only launch with the local
+gateway off, or a non-loopback URL) does not ask in the first place.
+`setupWindowContents` passes the preload `--kc-remote-gateway`, decided by the
+same `isGatewayLocalForWindow` the gate reads, and the preload then withholds
+every bridge whose channels that gate refuses: `remoteCrewSetupAPI`,
+`crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
+`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
+a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
+the native folder and terminal controls and first-run's link to a crew on
+another machine are absent there, a failed pane reloads without a cache purge,
+and that window's gateway never governs this install's updates. The argument is
+fixed when the view is created: a crew configured for the port afterwards leaves
+the bridges in place and the gate keeps refusing them, and a crew cleared
+afterwards leaves them withheld until the window is next created. The gate stays
+the authority; the preload only stops the asking.
+
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
 ([`bundle-integrity.js`](../../website/electron/bundle-integrity.js)). The
