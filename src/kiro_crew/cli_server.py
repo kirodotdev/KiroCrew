@@ -175,6 +175,8 @@ def _status(args: argparse.Namespace) -> None:
     print(f"Kiro Crew v{__version__} 👻\n")
     print(f"  Uptime:      {data.get('uptime', '—')}")
     print(f"  Sessions:    {data.get('sessions', 0)}")
+    if data.get("session_map_writes_refused"):
+        print(f"  Session map: {data.get('session_map_remedy', '')}")
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")

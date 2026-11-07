@@ -3025,7 +3025,10 @@ and a memory line: the gateway's own resident set (`gateway_rss_mb`) and the
 per-session tree ceiling the cleanup watchdog recycles at
 (`watchdog_rss_max_mb`, spelled out as disabled when `0`). Both fields are
 published by `/api/status` for this line; `kirocrew doctor` prints the same two
-readings at the top of its Memory Pressure section, on every platform.
+readings at the top of its Memory Pressure section, on every platform. While the
+session map refuses writes after an unreadable startup read
+(`session_map_writes_refused`), a `Session map:` line after `Sessions:` prints the
+remedy `/api/status` carries in `session_map_remedy`.
 
 `/api/status` takes only a dashboard token, so a token-auth gateway refuses the
 first, credential-less read with `401`/`403`. `kirocrew status` then signs in the

@@ -261,6 +261,7 @@ async def api_status(request: web.Request) -> web.Response:
     from kiro_crew.data_home_owner import check_data_home
 
     data_home_access = (await asyncio.to_thread(check_data_home, data_home())).to_json()
+    map_writes_refused = bool(state.sessions._session_map.writes_refused())
     data.update(
         {
             "uptime_secs": int(uptime),
@@ -278,6 +279,15 @@ async def api_status(request: web.Request) -> web.Response:
             "gateway_rss_mb": gateway_rss_mb,
             "watchdog_rss_max_mb": watchdog_rss_max_mb,
             "data_home_access": data_home_access,
+            # Why session-map writes fail after an unreadable startup read, and the fix.
+            "session_map_writes_refused": map_writes_refused,
+            "session_map_remedy": (
+                "session_map.json could not be read at startup, so its chat and channel"
+                " bindings are not loaded and no change to the map is saved; restart the"
+                " gateway once the file is readable"
+                if map_writes_refused
+                else ""
+            ),
             **yolo_grant_fields(),
             # The configured ad-hoc duration, and whether policy allows the
             # no-timed-expiry option — the Settings card lock-badges it when not.

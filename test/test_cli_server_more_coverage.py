@@ -1500,6 +1500,31 @@ class TestStatusMemoryLine:
         assert "Memory:      412 MiB rss, session ceiling 1536 MiB" in out
 
 
+def test_status_prints_the_session_map_remedy_only_while_writes_are_refused(
+    monkeypatch, capsys
+) -> None:
+    import io
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    payloads = [
+        {"session_map_writes_refused": True, "session_map_remedy": "restart it"},
+        {"session_map_writes_refused": False, "session_map_remedy": ""},
+    ]
+
+    @contextmanager
+    def _urlopen(url, timeout):
+        yield io.BytesIO(json.dumps(payloads.pop(0)).encode())
+
+    monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+    monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+    cli_server._status(SimpleNamespace(port=None))
+    assert "  Session map: restart it\n" in capsys.readouterr().out
+    cli_server._status(SimpleNamespace(port=None))
+    assert "Session map:" not in capsys.readouterr().out
+
+
 class TestApproveBusyVsDown:
     """The update-approve CLI path reports a slow gateway as busy, and a
     refused connection as not running. It carries a single-use nonce, so the
