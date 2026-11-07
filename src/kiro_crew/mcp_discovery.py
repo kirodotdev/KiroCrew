@@ -26,6 +26,7 @@ from kiro_crew import _facade_mirror, mcp_quarantine, platform_compat
 from kiro_crew.env import denied_spec_env_keys, emit_env, spec_env_path
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_discovery_config import (
+    _declared_type,
     _load_agent_config,
     _load_mcp_json,
     _load_mcp_json_by_source,
@@ -494,6 +495,7 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
             args=spec.get("args"),
             env=spec.get("env") or {},
             url=spec.get("url", ""),
+            declared_type=_declared_type(spec),
             headers=spec.get("headers") or {},
             scopes=_spec_scopes(spec),
             client_id=_spec_client_id(spec),

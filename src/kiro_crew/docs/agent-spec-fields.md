@@ -586,7 +586,11 @@ never holds the value. A remote streamable-HTTP entry's `headers` reach the
 server the same way: the snapshot holds its `url` and `headers`, and KAS starts
 the launcher as a local stdio server that relays each message to that url with
 the headers added and follows no redirect. An `sse` entry's `headers` stay
-withheld. KAS connects only to an `https://` url or `http://` on this machine
+withheld. KAS starts any entry that carries a `command` as a local process, so a
+remote entry (a `url` with a `type` of `http` or `sse`, or with a blank
+`command`) is sent without its `command`; the placeholder the agent schema
+requires, such as `"http"`, would otherwise start a program by that name, and
+its `headers` would not reach the bridge. KAS connects only to an `https://` url or `http://` on this machine
 (`localhost`, `127.0.0.1`, `::1`), so a plain `http://` url to another host with no
 `headers` does not run, and the session notice names it. One with `headers` still
 connects through Crew's bridge, which sends the headers in cleartext, unless
