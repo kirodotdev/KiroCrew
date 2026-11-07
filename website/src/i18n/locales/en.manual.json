@@ -5042,6 +5042,12 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "performanceTab": {
+      "hostname_row": "Hostname: <value/>",
+      "os_row": "OS: <value/>",
+      "python_row": "Python: <value/>",
+      "working_directory_row": "Working directory: <value/>"
+    },
     "aidlc": {
       "taskDetailPanel": {
         "depend_on_task": "Depend on Task {{n}}: {{title}}",

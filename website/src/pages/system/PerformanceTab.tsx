@@ -8,6 +8,7 @@
 import { type CSSProperties, type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
+import { Trans } from 'react-i18next'
 import { ChevronRight } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card } from '../../components/ui'
@@ -241,10 +242,14 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
 
           {/* Machine identity strip */}
           <div className="border-t border-border pt-3 mt-auto flex flex-wrap gap-x-6 gap-y-1 text-[11.5px] text-muted">
-            <span>{i18nT('pages.performanceTab.hostname')}: <strong className="text-text font-mono">{d?.hostname ?? '—'}</strong></span>
-            <span>{i18nT('pages.performanceTab.os')}: <strong className="text-text font-mono">{d?.os ?? '—'}</strong></span>
-            <span>{i18nT('pages.performanceTab.python')}: <strong className="text-text font-mono">{d?.python ?? '—'}</strong></span>
-            <span>{i18nT('pages.performanceTab.working_directory')}: <strong className="text-text font-mono text-[11px] break-all">{d?.cwd ?? '—'}</strong></span>
+            {/* Each row is one message, so the catalog places the colon (CJK writes a
+                full-width one with no space, French a narrow space before it). */}
+            {/* The value is the tag's own child, never a Trans value, so a host string
+                such as a directory named `a<br>b` is shown exactly as written. */}
+            <span><Trans i18nKey="pages.performanceTab.hostname_row" components={{ value: <strong className="text-text font-mono">{d?.hostname ?? '—'}</strong> }} /></span>
+            <span><Trans i18nKey="pages.performanceTab.os_row" components={{ value: <strong className="text-text font-mono">{d?.os ?? '—'}</strong> }} /></span>
+            <span><Trans i18nKey="pages.performanceTab.python_row" components={{ value: <strong className="text-text font-mono">{d?.python ?? '—'}</strong> }} /></span>
+            <span><Trans i18nKey="pages.performanceTab.working_directory_row" components={{ value: <strong className="text-text font-mono text-[11px] break-all">{d?.cwd ?? '—'}</strong> }} /></span>
           </div>
         </div>
       </div>
