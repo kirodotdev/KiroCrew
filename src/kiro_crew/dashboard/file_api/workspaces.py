@@ -140,8 +140,16 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # Resolved once each; both checks below judge these same objects.
         src_resolved = src_path.resolve()
         dst_resolved = dst_path.resolve()
+        # Windows' ``\\?\`` prefix folded off all three (lexically), so one resolve
+        # keeping it is not read as an escape. A name only the prefixed spelling
+        # reaches is refused: its plain spelling names another directory.
+        dst_verbatim_only = platform_compat.names_a_verbatim_only_file(dst_resolved)
+        src_resolved = platform_compat.strip_extended_length_prefix(src_resolved)
+        dst_resolved = platform_compat.strip_extended_length_prefix(dst_resolved)
+        root = await asyncio.to_thread(data_home().resolve)
+        cfg_root = platform_compat.strip_extended_length_prefix(root)
         # Guard against path traversal
-        if not dst_resolved.is_relative_to(data_home().resolve()):
+        if dst_verbatim_only or not dst_resolved.is_relative_to(cfg_root):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -150,7 +158,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 resources=name,
             )
             return web.json_response({"error": "Invalid directory path"}, status=400)
-        if not src_resolved.is_relative_to(data_home().resolve()):
+        if not src_resolved.is_relative_to(cfg_root):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -160,7 +168,6 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             )
             return web.json_response({"error": "Invalid source directory path"}, status=400)
         # Reject config root itself to avoid copying .env / config.json
-        cfg_root = data_home().resolve()
         if src_resolved == cfg_root or dst_resolved == cfg_root:
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
