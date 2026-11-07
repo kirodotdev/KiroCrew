@@ -953,7 +953,9 @@ class CancellationCoordinator(ManagerComponent):
         a spawn-approval prompt remain pending because that prompt has its own
         explicit reject action. The running sweep also takes this parent's rows
         whose start is in flight (``starting_claim_ids_for``) and stops each
-        through ``cancel``, which joins the start before it stops the run.
+        through ``cancel``, which joins the start before it stops the run, and a
+        running nested run whose ``root_session_key`` is this key, which this
+        chat's Subagents panel draws.
         """
         if not parent_session_key:
             return (0, 0)
@@ -1016,7 +1018,10 @@ class CancellationCoordinator(ManagerComponent):
         running_ids = [
             info.id
             for info in self._manager._agents.values()
-            if info.parent_session_key == parent_session_key
+            if (
+                info.parent_session_key == parent_session_key
+                or info.root_session_key == parent_session_key
+            )
             and not info.done
             and not info.queued
             and not _parked_at_spawn_approval(info)

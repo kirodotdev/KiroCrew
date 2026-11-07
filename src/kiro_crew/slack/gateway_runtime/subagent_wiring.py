@@ -429,6 +429,17 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             return
         slot_name = _event_slot(info.parent_session_key)
         base = {"id": info.id, "slot": slot_name}
+        # A nested run's cards draw in the tab its spawn tree started from. Its
+        # parent's queued depth and wave start stay on the parent's own slot, the
+        # one the slot list sums and ``batch_finished`` names. (Type guard: test
+        # doubles pass MagicMock infos.)
+        _root = getattr(info, "root_session_key", "")
+        if (
+            isinstance(_root, str)
+            and _root
+            and etype not in ("subagent_queued", "spawn_batch_started")
+        ):
+            base["slot"] = _event_slot(_root)
         # Batch identity rides every frame when present so the UI can
         # group/aggregate a wave without a lookup table. (Type guard:
         # test doubles pass MagicMock infos.)
