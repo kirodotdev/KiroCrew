@@ -603,7 +603,14 @@ and then saves until the CURRENT draft is acknowledged, so a screenshot pasted j
 before Back, or an edit typed while the exit save was on the wire, is on disk before
 the view navigates; a refusal keeps the user in the view, except one no retry can
 clear (403 `dashboard_owner_required` for a caller who is not the owner, or a 404
-for a meeting that is gone), which lets them leave. Every failure the user can act on — a refused
+for a meeting that is gone), which lets them leave. Once the note is saved, every
+exit of the view (Back, Settings, the transcription notice's Voice settings action,
+opening the meeting a refused Start names) asks before it drops what the view
+cannot keep: an unsaved minutes draft, or text typed into an agent's chat line, the
+broadcast bar or quick add and never sent. Unsent text gets a "Leave with unsent
+text?" dialog that names what is lost (and an open minutes draft too); a minutes
+draft alone gets "Leave with unsaved edits?". Both confirm with "Discard and leave",
+so the dialog says that confirming leaves the meeting. Every failure the user can act on — a refused
 save, a refused load (`note_unreadable`, mapped to a catalog string by code), a
 refused paste — renders in the panel through `ErrorNotice`, not only in the
 notification feed.
@@ -1078,6 +1085,7 @@ refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
 `MeetingsExport.test.tsx` (the menu's Markdown and HTML exports and their file names),
+`MeetingsExitUnsent.test.tsx` (every exit asks before dropping unsent text),
 `MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
 split-to-primary layout transition), `UseMeetingSessionCoverage.test.tsx` and the two
