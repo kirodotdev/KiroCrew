@@ -4330,7 +4330,11 @@ still serves (a superseded generation is dropped on the next store), at most 16 
 them and `_VISIBLE_MEMO_MAX_ROWS` (32,768) catalog rows in total; a larger catalog is
 filtered per read, uncached and never truncated. An out-of-band edit of a
 flat skill's `app:` frontmatter line is therefore seen at the next catalog
-revalidation (a new list object), not on the very next read.
+revalidation (a new list object), not on the very next read. The owner roots are
+resolved once per catalog TTL (`_owner_roots`), and until a walk vets the stored rows a
+flat row's saved metadata answers its `app:` line while its stat fingerprint matches,
+as `list_skills` already caches it (`_prime_gate_frontmatter`): a restarted process
+reads and vets only the files the index holds no current row for (#29801).
 
 **Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
 `/api/skills/{name}` catch-all. All three require the configured dashboard owner: the
