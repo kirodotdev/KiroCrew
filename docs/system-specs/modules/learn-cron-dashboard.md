@@ -2201,11 +2201,9 @@ specified compatibility change.
   state and close it during runner cleanup; explicit offline test gateways use
   the service's `assume_ready` mode.
   **Module layout.** `kiro_prerequisite.py` is a `_facade_mirror` facade over ten
-  sibling top-level owners, not a package, for two reasons: the process owner
-  resolves `_PROCESS_GROUP_SUPERVISOR` beside `_process_group_supervisor.py` from
-  its own `__file__`, and the `Cross-Platform Portability` step of `pr-policy.yml` scans package files but not
-  top-level ones, so the POSIX-only spawn lines keep the exposure they had in one
-  file. Callers and tests import and patch `kiro_crew.kiro_prerequisite.<name>`;
+  sibling top-level owners, not a package, because the process owner resolves
+  `_PROCESS_GROUP_SUPERVISOR` beside `_process_group_supervisor.py` from its own
+  `__file__`. Callers and tests import and patch `kiro_crew.kiro_prerequisite.<name>`;
   a write reaches every owner that binds the name, and no owner imports the
   facade. New work goes to the owner of its responsibility:
   `kiro_prerequisite_status` (the payload and the commands it serves), `_process`
