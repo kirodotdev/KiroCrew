@@ -558,6 +558,7 @@ def list_servers() -> list[McpServerInfo]:
         if cached is not None and cached.identity == identity:
             s.auth_challenge = cached.auth_challenge
             s.auth_grant_present = cached.auth_grant_present
+            s.auth_crew_held = cached.auth_crew_held
             s.temp_refusals = [dict(r) for r in cached.temp_refusals]
         # A registry pointer never has a probe result of its own, so without this
         # it reads "unknown" until the first probe pass -- the same row the probe

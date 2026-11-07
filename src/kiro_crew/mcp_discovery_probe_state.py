@@ -282,6 +282,7 @@ class _ProbeResult:
     # all of its life showing the vaguer wording.
     auth_challenge: bool = False
     auth_grant_present: bool | None = None
+    auth_crew_held: bool = False
     # The probe's declared-temp refusals (see ``McpServerInfo.temp_refusals``),
     # cached so the panel keeps showing them for the whole TTL.
     temp_refusals: list[dict[str, str]] = field(default_factory=list)
@@ -521,6 +522,7 @@ def _cache_probe(server: McpServerInfo) -> None:
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,
         auth_grant_present=server.auth_grant_present,
+        auth_crew_held=server.auth_crew_held,
         temp_refusals=[dict(r) for r in server.temp_refusals],
         identity=identity,
     )
