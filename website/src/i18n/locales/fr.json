@@ -19465,6 +19465,7 @@
         "default_priority": "Priorité par défaut : {{priority}}",
         "failed_to_load_channels": "Échec du chargement des canaux",
         "mute_notification_sources_or_override_their_prio": "Mettez en sourdine des sources de notification ou remplacez leur priorité. Les notifications en sourdine restent dans l'historique mais n'affichent jamais de badge, de son ni de bannière.",
+        "mute_notification_sources_or_override_their_prio_summary": "Les notifications en sourdine restent dans l'historique mais n'affichent jamais de badge, de son ni de bannière.",
         "notifications_for": "Notifications de {{name}}",
         "per_category_sounds": "Sons par catégorie",
         "play_sound_on_new_notifications": "Jouer un son pour les nouvelles notifications",
