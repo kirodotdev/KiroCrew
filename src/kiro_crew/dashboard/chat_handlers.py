@@ -559,6 +559,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     transcript_acquisition_reason,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: F401
+    autocompact_commits,
     tighten_line_for_appends,
 )
 from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: F401
