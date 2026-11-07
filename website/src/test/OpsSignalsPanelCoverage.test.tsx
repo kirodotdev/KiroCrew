@@ -402,7 +402,7 @@ describe('SignalsPanel', () => {
     fireEvent.click(button)
 
     const polling = await screen.findByRole('button', { name: /Polling…/ })
-    expect(polling).toBeDisabled()
+    expect(polling).toHaveAttribute('aria-disabled', 'true')
 
     await act(async () => {
       reject(new Error('the /signals route refused the poll'))
@@ -414,7 +414,37 @@ describe('SignalsPanel', () => {
         timeout: 5_000,
       }),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Poll now/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /Poll now/ })).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('keeps keyboard focus on Poll now while polling, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole poll.
+    await renderPanel()
+    let resolve: (v: SignalsResult) => void = () => {}
+    vi.mocked(opsApi.signals).mockReturnValue(
+      new Promise<SignalsResult>(res => {
+        resolve = res
+      }),
+    )
+    const calls = vi.mocked(opsApi.signals).mock.calls.length
+
+    const button = screen.getByRole('button', { name: /Poll now/ })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: /Polling…/ })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(vi.mocked(opsApi.signals).mock.calls.length).toBe(calls + 1)
+
+    await act(async () => {
+      resolve(mkSignalsResult())
+      await Promise.resolve()
+    })
+    await screen.findByRole('button', { name: /Poll now/ })
+    expect(button).toHaveFocus()
   })
 
   it('reports an exact ledger match and a cleared fast path on the claim receipt', async () => {
