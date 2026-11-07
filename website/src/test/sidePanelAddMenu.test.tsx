@@ -7,7 +7,7 @@
  * view as a tab. Escape covers the dismissal path Radix now owns instead of the
  * document-level mousedown listener this replaced.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { unregisteredMarkers } from './guideTargets'
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
@@ -51,6 +51,8 @@ import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/Si
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
 import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { api } from '../api/client'
+import { sseWorkflowEvent } from '../store/chatSlice'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
@@ -67,11 +69,12 @@ function Harness() {
   )
 }
 
-function renderPanel() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+
+function renderPanel(queryClient = newClient(), store = createTestStore()) {
   return render(
     <QueryClientProvider client={queryClient}>
-      <Provider store={createTestStore()}>
+      <Provider store={store}>
         <Harness />
       </Provider>
     </QueryClientProvider>,
@@ -112,6 +115,29 @@ describe('side panel + menu (shadcn dropdown)', () => {
     openMenu()
     act(() => { fireEvent.click(screen.getByRole('menuitem', { name: 'Workflows' })) })
     expect(screen.getByRole('tab', { name: /Workflows/ })).toBeTruthy()
+  })
+
+  it('offers Workflows once this chat has a run, listed or live', async () => {
+    // With no run the panel can only say there are none. The list is the
+    // command center's entry, cached up front; its refetch never settles.
+    const read = vi.spyOn(api, 'workflowRuns').mockReturnValue(new Promise(() => {}))
+    onTestFinished(() => { read.mockRestore() })
+    const queryClient = newClient()
+    const listRun = (session_key: string) => queryClient.setQueryData(
+      ['command-center', 'workflows'], { runs: [{ run_id: 'r1', status: 'finished', session_key }] })
+    listRun('dashboard:slot-b')
+    const store = createTestStore()
+    renderPanel(queryClient, store)
+    openMenu()
+    expect(screen.getByRole('menuitem', { name: 'Subagents' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Workflows' })).toBeNull()
+    // A cache write reaches observers on React Query's next tick, so wait for it.
+    act(() => { listRun('dashboard:slot-a') })
+    expect(await screen.findByRole('menuitem', { name: 'Workflows' })).toBeTruthy()
+    act(() => { listRun('dashboard:slot-b') })
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Workflows' })).toBeNull())
+    act(() => { store.dispatch(sseWorkflowEvent({ run_id: 'live-1', session_key: 'dashboard:slot-a', type: 'run_started' })) })
+    expect(screen.getByRole('menuitem', { name: 'Workflows' })).toBeTruthy()
   })
 
   it('dismisses on Escape', () => {
@@ -219,7 +245,7 @@ describe('side panel Crew tab with the Crew Mode preview off', () => {
 describe('newMenuSections', () => {
   const DIAGNOSTICS = new Set(['logs', 'context', 'crewlog'] as const)
   const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean }) =>
-    newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
+    newMenuSections({ summaryEnabled: true, hasWorkflowRuns: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
@@ -256,7 +282,7 @@ describe('newMenuSections', () => {
     // request lands, i.e. potentially mid-click. So the id a group reports must
     // depend only on its declaration, never on which rows survived.
     const idsFor = (o: { terminalEnabled: boolean; summaryEnabled: boolean }) =>
-      newMenuSections(o).map(g => g.id)
+      newMenuSections({ ...o, hasWorkflowRuns: true }).map(g => g.id)
 
     // Gating a row must not touch its group's id.
     expect(idsFor({ terminalEnabled: true, summaryEnabled: false }))
@@ -267,7 +293,7 @@ describe('newMenuSections', () => {
     // keep the ids they had.
     expect(idsFor({ terminalEnabled: true, summaryEnabled: true }))
       .toEqual(['session-output', 'workspaces', 'diagnostics'])
-    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
+    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
       .toEqual(['session-output', 'workspaces'])
 
     // And ids stay unique, or two groups would collide on one key.
@@ -293,14 +319,14 @@ describe('newMenuSections', () => {
     // under any gate combination.
     for (const hiddenViews of [undefined, DIAGNOSTICS]) {
       for (const terminalEnabled of [false, true]) {
-        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hiddenViews })) {
+        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews })) {
           expect(group.items.length).toBeGreaterThan(0)
         }
       }
     }
     // Terminal off and diagnostics withheld: diagnostics gone outright,
     // Terminal dropped from Workspaces — two groups, not three with a hole.
-    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
+    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
@@ -467,7 +493,7 @@ describe('workspace tab close menu', () => {
     fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
     renderPanel()
     act(() => {
-      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: true })
+      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: 'truncated' })
       panelController.openView('browser')
     })
     fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))

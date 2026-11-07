@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
-import { apiErrorCode, isSlotCapError } from '../api/apiError'
+import { apiErrorCode, isSlotCapError, slotAttachedDetail } from '../api/apiError'
 import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { captureForkOrigin, deleteSlot, forkMayOpen, forkOpenSettled, forkOpenStarted, listForkedSlot, requestSlotFolderOpen, switchSlot } from '../store/chatSlice'
@@ -429,14 +429,15 @@ export function useSessionActions(mode?: string, opts?: {
   // feature exists to fix. alert() is the always-available surface (the
   // dashboard has no global toast); the copy branches on the backend's
   // machine-readable code, because "try again when the session is idle" is a
-  // dead end for a slot that LOOKS idle but has sub-agents still working.
+  // dead end for a slot that LOOKS idle but has sub-agents still working, and the
+  // sub-agent copy names the runs and queued spawns keeping it attached.
   const reloadMutation = useMutation({
     mutationFn: (slot: string) => api.chatSlotReload(slot),
     onError: (err) => {
       const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
-        ? 'hooks.useSessionActions.reload_failed_subagents'
-        : 'hooks.useSessionActions.reload_failed'))
+      alert(body.includes('slot_subagents_running')
+        ? [i18nT('hooks.useSessionActions.reload_failed_subagents'), slotAttachedDetail(body)].filter(Boolean).join('\n')
+        : i18nT('hooks.useSessionActions.reload_failed'))
     },
   })
 

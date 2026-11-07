@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.wakatime.heartbeats import is_coding_event
@@ -480,7 +481,12 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # the permission request is where the hooks run; firing here too
     # would run each twice.
     if not capabilities_of(client).crew_fires_spec_hooks:
-        await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
+        await fire_tool_hooks(
+            state._hook_store,
+            event.title,
+            event.tool_input,
+            session_model=hook_session_model(client, in_prompt=True),
+        )
     # Mirror tool call to linked Slack stream. Fenced like the reply
     # legs: a tool's purpose line is the peer's steer showing through in
     # what the model chose to do next, published to a thread whose owner

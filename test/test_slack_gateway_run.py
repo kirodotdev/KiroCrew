@@ -55,6 +55,7 @@ class TestInitDashboard:
         orch.consolidator = MagicMock()
         orch.task_runner = MagicMock()
         orch.slack = None
+        orch._approval_mode = "yolo"
         ds = _mock_dashboard_state()
         runner = MagicMock()
         with patch(
@@ -66,6 +67,7 @@ class TestInitDashboard:
         assert orch.dashboard_state is ds
         assert orch._dashboard_runner is runner
         assert start.await_args.kwargs["assume_kiro_ready"] is True
+        assert start.await_args.kwargs["approval_mode"] == "yolo"
 
     @pytest.mark.parametrize(
         "servers, expected",

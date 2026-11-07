@@ -46,14 +46,9 @@ async def test_onInstall_rewriting_the_manifest_loses_the_desktop_requirements_w
 ):
     """The bundled-interpreter waiver is re-derived from the FINAL manifest.
 
-    The build judges a requirements-only app on the manifest that entered
-    ``setup.onInstall``; the script then runs with write access to the checkout.
-    One that adds ``backend.hooks`` turns the app into one whose Python imports
-    INTO the gateway (which the runtime-provisioned deps tree never reaches), and
-    one that drops the entry point leaves nothing that would ever provision the
-    file. Either way the waiver's premise is gone, so the install must fail with
-    the gate's own sentence, roll the pre-existing checkout back exactly like a
-    post-script admission denial, and register nothing.
+    ``setup.onInstall`` can add ``backend.hooks`` (code imported into the gateway) or
+    drop the entry point; either voids the waiver, so the install fails, rolls back
+    and registers nothing.
     """
     src = tmp_path / "app-sources" / "demoapp"
     src.mkdir(parents=True)
@@ -235,13 +230,10 @@ async def test_a_script_that_leaves_the_waiver_intact_still_installs(monkeypatch
 async def test_an_entry_file_the_script_generates_is_judged_at_the_final_pass(
     monkeypatch, tmp_path, script_creates_entry
 ):
-    """The build pass runs before ``setup.onInstall``, whose window is where an app
-    may generate its entry file, so a declared ``server.py`` that is absent at
-    build time is let through -- and the final pass, on the post-script checkout,
-    is the one that decides: it reaches registration when the script created the
-    file, and refuses with the gate's own code when nothing did (the spawn would
-    return "entry point not found" before provisioning, so the backend
-    provisioner never runs for that app).
+    """A ``server.py`` missing at build time is judged by the final, post-script pass.
+
+    The script may generate the entry file. If it does not, the final pass refuses,
+    since the spawn would fail before the backend provisioner ever runs.
     """
     src = tmp_path / "app-sources" / "demoapp"
     src.mkdir(parents=True)
@@ -330,14 +322,8 @@ async def test_a_self_managed_entry_keeps_the_desktop_refusal(monkeypatch, tmp_p
     """The waiver is for apps the runtime provisions, and it never provisions a
     self-managed one.
 
-    A registry entry with ``resources: "app"`` takes the metadata-only branch:
-    no source is copied into the app directory, the bridges skip every
-    registration for it, and the app launches itself -- so the file-style entry
-    point that waives a gateway-managed app's requirements.txt names a consumer
-    the runtime will never spawn. Ownership is a registry fact, not a manifest
-    one: it reaches the build verdict as its own input and the final pass judges
-    it again, so the install fails with the gate's own sentence and
-    ``register_external_app`` is never reached.
+    ``resources: "app"`` is a registry fact, not a manifest one, so it reaches both
+    passes as its own input; the install fails before ``register_external_app``.
     """
     src = tmp_path / "app-sources" / "demoapp"
     src.mkdir(parents=True)
@@ -408,16 +394,9 @@ async def test_a_final_desktop_refusal_removes_the_layout_files_that_appeared(
     """The rollback leaves the build gate's inputs as they were before the script,
     by removing what the script created.
 
-    ``setup.onInstall`` runs with write access to a PRE-EXISTING checkout. A
-    ``pyproject.toml`` it creates fails the final desktop pass -- and it is
-    untracked, so the post-refusal ``git reset --keep`` leaves it in place, where
-    every retry would refuse at the BUILD gate before the script a fixed remote
-    corrected could run again. Every layout input that appeared in the window
-    (``setup.py`` too, written here by the script's stand-in) is set aside in ONE
-    ``.stale-*`` sibling of the checkout -- the name the retention sweep already
-    retires -- and the install log names each one and where it went. The checkout
-    is left as it was before the script, and the files that predate the script --
-    the user's own ``NOTES.md`` included -- stay where they are.
+    An untracked ``pyproject.toml`` survives ``git reset --keep`` and would wedge every
+    retry at the build gate. New layout files go to ONE ``.stale-*`` sibling, named in
+    the log; files that predate the script (``NOTES.md``) stay.
     """
     sources = tmp_path / "app-sources"
     src = sources / "demoapp"
@@ -554,15 +533,11 @@ async def test_a_final_desktop_refusal_removes_the_layout_files_that_appeared(
 async def test_every_post_script_refusal_removes_the_layout_files_that_appeared(
     monkeypatch, tmp_path, refused_by
 ):
-    """The harm is the script's, not the gate's. ``setup.onInstall`` runs with
-    write access before THREE gates re-judge the checkout -- identity, admission,
-    the desktop pass -- and a ``setup.py`` it created is untracked, so whichever
-    gate refuses, the rollback's ``git reset --keep`` leaves it to wedge every
-    retry at the build gate. The identity re-check (the script renamed the
-    manifest) and the admission re-check (the script rewrote what the policy
-    judges) take the same rollback the desktop refusal takes: the appeared layout
-    file removed first and named in the log, the checkout rolled back after, no
-    desktop code, and the files that predate the script untouched."""
+    """The identity and admission refusals take the same layout cleanup as the desktop one.
+
+    Whichever post-script gate refuses, an untracked ``setup.py`` would survive
+    ``git reset --keep``; it is removed first and named, with no desktop code.
+    """
     sources = tmp_path / "app-sources"
     src = sources / "demoapp"
     src.mkdir(parents=True)
@@ -667,17 +642,10 @@ async def test_every_post_script_refusal_removes_the_layout_files_that_appeared(
 
 @pytest.mark.asyncio
 async def test_the_removal_runs_before_the_rollback_restores_tracked_files(monkeypatch, tmp_path):
-    """Order matters: ``git reset --keep`` can RESTORE a tracked layout file the
-    pull had removed -- absent in the pre-script snapshot, present after the
-    reset. A scan run after the reset would mistake that restored file for one
-    that appeared during the script and remove the freshly restored checkout's
-    own file. So the scan and the removals run first, on exactly the window
-    between snapshot and refusal, and the rollback runs after.
+    """The layout scan and removals run before ``git reset --keep``.
 
-    Here the pre-pull checkout carried ``pyproject.toml`` (a source install's
-    layout), the update removed it, the script created ``setup.py``, and the
-    final pass refuses ``setup.py``. The rollback puts ``pyproject.toml`` back;
-    it must still be there afterwards, with only ``setup.py`` gone.
+    The reset can restore a tracked ``pyproject.toml`` the pull removed; a scan after
+    it would take that file for a new one. Only the script's ``setup.py`` goes.
     """
     sources = tmp_path / "app-sources"
     src = sources / "demoapp"
@@ -885,15 +853,11 @@ async def test_a_root_data_file_is_refused_before_any_record_is_written(monkeypa
 async def test_a_preview_copy_failure_after_the_script_rolls_the_fresh_checkout_back(
     monkeypatch, tmp_path
 ):
-    """FIRST install: the script ran with write access, and what it left made the
-    final pass's preview COPY fail (an unreadable leaf, a FIFO, a symlink loop --
-    here the copy raises the `OSError` directly). That is not a verdict, so
-    without its own handler it escapes the post-script rollback through the
-    generic handler: the poisoned fresh clone stays in the live slot, and every
-    retry fails at the build pass before any script runs again. The failure takes
-    the same rollback every post-script gate takes -- a fresh clone is deleted
-    whole, the slot is empty -- it is reported as the ordinary error it is,
-    without the desktop code, and a clean re-clone installs."""
+    """A first install whose preview copy raises `OSError` still takes the rollback.
+
+    It is not a verdict, so a generic handler would leave the poisoned fresh clone in
+    the slot. The clone is deleted whole, with no desktop code, and a re-clone installs.
+    """
     from kiro_crew.apps.manager import _read_installed
 
     home = tmp_path / "home"
@@ -967,17 +931,11 @@ async def test_a_preview_copy_failure_after_the_script_rolls_the_fresh_checkout_
 async def test_a_subdirectory_swapped_for_a_symlink_loop_still_rolls_the_fresh_checkout_back(
     monkeypatch, tmp_path
 ):
-    """FIRST install of a monorepo entry: ``setup.onInstall`` replaces the declared
-    ``subdirectory`` with a symlink LOOP (``rm -rf pkg && ln -s pkg pkg``). The
-    first gate after the script -- the identity re-read of ``app.json`` -- meets
-    the loop and refuses, which takes the post-script rollback (the preview copy
-    would have met the same loop one gate later; both refusals make the same
-    call). The rollback's containment re-check resolves the package directory
-    at the write, and ``Path.resolve`` reports a loop as ``RuntimeError``, not
-    ``OSError``: a catch of ``OSError`` alone lets it escape the rollback, so the
-    un-poison step never runs and the poisoned fresh clone sits in the live slot
-    for every retry. The re-check must return its skip line for a loop exactly as
-    for an escape, so the rollback completes and the fresh clone is deleted whole."""
+    """A ``subdirectory`` replaced by a symlink loop still lets the rollback finish.
+
+    ``Path.resolve`` raises ``RuntimeError`` on a loop, not ``OSError``, so the
+    containment re-check must skip it like an escape and the fresh clone is deleted.
+    """
     from kiro_crew.apps.manager import _read_installed
 
     home = tmp_path / "home"

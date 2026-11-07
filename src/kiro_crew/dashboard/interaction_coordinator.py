@@ -335,6 +335,21 @@ _AGENT_ASK_RETENTION_LIMIT = 500
 #: The coordinator's own clock, so a test can freeze it without patching ``time``.
 _monotonic = time.monotonic
 
+#: An app embed is sent no ``question_card`` frame; it polls instead, at its slowest
+#: every ``EMBED_QUESTION_POLL_IDLE_MS`` (10 s, ``app-sdk/EmbedQuestionCard.tsx``).
+#: A poll this recent counts as a receiver; the margin covers one missed poll.
+_EMBED_POLL_LIVE_SECS = 20.0
+
+
+def note_embed_poll(slot: Any) -> None:
+    """Record that *slot*'s cards were just read through its poll route (``slot_question.py``)."""
+    slot._embed_question_polled_at = _monotonic()
+
+
+def _embed_is_polling(state: Any, slot_key: str) -> bool:
+    polled = getattr(state._slots.get(slot_key), "_embed_question_polled_at", None)
+    return polled is not None and _monotonic() - polled <= _EMBED_POLL_LIVE_SECS
+
 
 class QuestionCoordinator:
     """Own stateless cards and legacy blocking question futures."""
@@ -731,7 +746,8 @@ class QuestionCoordinator:
         The window is the fixed ``state._AGENT_ASK_WINDOW_DEFAULT``; no caller sets it.
         Zero clients means nobody can answer. The ask is then torn down at once so
         the caller can fall back instead of blocking on a card no one sees, unless it
-        was already settled during the send, whose outcome is kept for collection.
+        was already settled during the send, whose outcome is kept for collection, or
+        an app embed is polling the slot's cards (counted as one client).
         An ask withdrawn while the send was still awaiting its sockets also yields 0.
         ``None``
         means only live asks occupy the retention cap, so this ask was not registered.
@@ -773,7 +789,7 @@ class QuestionCoordinator:
             # The tool gave up while this send was awaiting a slow socket, and its
             # withdrawal already retired the card: nothing is left to watch.
             return 0
-        if clients == 0 and not future.done():
+        if clients == 0 and not future.done() and not _embed_is_polling(state, slot_key):
             QuestionCoordinator.resolve(state, ask_id, None, reason="no_client")
             state._agent_asks.pop(ask_id, None)
             return 0

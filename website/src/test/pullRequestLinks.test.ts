@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage, ChatSlot } from '../types'
 import {
   adoptSourceSelections,
+  commitDismissedSource,
   commitSourceSelection,
   extractPullRequestLinks,
   isSourceSelectionKey,
   commitRevealedSource,
+  loadDismissedSources,
   loadRevealedSources,
   loadSeenPullRequestLinks,
   loadSourceSelections,
@@ -1211,6 +1213,46 @@ describe('Gerrit hosts', () => {
     expect(extractPullRequestLinks(messages(`Pushed ${CHANGE}.`), [], [], [], [], [GERRIT])).toEqual([LINK])
     expect(parseSourceLinkUrl(`https://${GERRIT}/c/HAL/+/7`, [], [], [], [], [GERRIT]))
       .toEqual({ url: `https://${GERRIT}/c/HAL/+/7`, provider: 'gerrit', number: 7, repo: 'HAL', kind: 'change' })
+  })
+
+  it('keeps a change closed from the Changes strip closed at a later patchset', () => {
+    commitDismissedSource('slot-g', `${CHANGE}/1`, true)
+    const later = parseSourceLinkUrl(`${CHANGE}/2`, [], [], [], [], [GERRIT])!
+    expect(loadDismissedSources('slot-g').has(sourceLinkKey(later))).toBe(true)
+    expect(loadDismissedSources('slot-other').size).toBe(0)
+  })
+
+  it('keeps a close whose write storage refused when the next one is made', () => {
+    const other = `https://${GERRIT}/c/platform/other/+/1`
+    const denied = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage denied') })
+    try {
+      commitDismissedSource('slot-q', `${CHANGE}/1`, true)
+      const second = commitDismissedSource('slot-q', other, true)
+      expect([...second.values()].sort()).toEqual([`${CHANGE}/1`, other].sort())
+      // A fresh read, as a remounted chat page makes, still has both closed.
+      expect([...loadDismissedSources('slot-q').values()].sort()).toEqual([`${CHANGE}/1`, other].sort())
+    } finally {
+      denied.mockRestore()
+    }
+    // Once a write lands, storage holds both and nothing is replayed.
+    commitDismissedSource('slot-q', other, false)
+    expect([...loadDismissedSources('slot-q').values()]).toEqual([`${CHANGE}/1`])
+  })
+
+  it('keeps every close a session can make, past the per-role tab cap', () => {
+    // Agent links and user links are capped separately, so more than one cap's
+    // worth of tabs can be closed in one session.
+    const urls = Array.from({ length: MAX_PULL_REQUEST_SOURCES + 1 }, (_, n) => `https://github.com/acme/widgets/pull/${n + 1}`)
+    for (const url of urls) commitDismissedSource('slot-cap', url, true)
+    expect(loadDismissedSources('slot-cap').size).toBe(urls.length)
+  })
+
+  it('keeps a reopen another window stored when this window closes something else', () => {
+    const other = `https://${GERRIT}/c/platform/other/+/1`
+    commitDismissedSource('slot-r', `${CHANGE}/1`, true)
+    localStorage.setItem('mc-pr-source-dismissed:slot-r', '[]')
+    commitDismissedSource('slot-r', other, true)
+    expect([...loadDismissedSources('slot-r').values()]).toEqual([other])
   })
 
   it('does not recognize lookalike, unlisted or malformed links', () => {

@@ -859,10 +859,13 @@ handshake, so it re-enters `startGateway()` exactly once by the ordinary path
 and introduces no second respawn owner beside `recoverWedgedGateway` or the
 liveness monitor. A click always wins over the probe, and the probe stands down
 when an update install is dispatched (the updater stops the gateway on purpose)
-or the app is quitting. Only the pre-spawn refusal arms it; the reclassified
-crash below keeps the manual **Retry**, because there the probe cannot see what
-is missing and a permanently truncated bundle would otherwise respawn and crash
-on every tick.
+or the app is quitting. If the probe result has not changed for five minutes,
+the moment the dialog's own text tells the user to quit and reopen, the dialog
+switches to the "app files missing" copy with the accent on **Quit**, keeps it
+until the tree is complete, and keeps probing. Only the pre-spawn refusal arms
+it; the reclassified crash below keeps the manual **Retry**, because there the
+probe cannot see what is missing and a permanently truncated bundle would
+otherwise respawn and crash on every tick.
 
 That pre-spawn check cannot be complete, and does not pretend to be: extraction
 order *within* a package is not the app's to control, so `import zoneinfo` can
@@ -1124,6 +1127,31 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
+**On macOS the band alone cannot keep the bar draggable.** Because the band is
+prepended, every later `no-drag` rectangle that reaches into it wins, including
+ones nobody can see there: a theme pack's decoration iframes (the exemption list
+covers every `iframe`, and a pack's top-bar strip and full-window overlays sit
+at `top: 0`) and transcript content scrolled up under the glass header (inside
+the `tabIndex={-1}` scroller, and taken from layout without clipping to it).
+Either one leaves the bar unable to move or zoom the window. So whenever the
+local header is on screen, docked or peeked in focus mode, `App.tsx` also
+renders `.host-drag-strip` divs over the band's control-free gaps, painted
+after everything else. Being last, a strip would also turn any other surface's
+control in the band into a window drag (the phone nav drawer, the image
+viewer's toolbar, an in-place notice), so the gaps come from
+`computeTitleBandDragGaps` in
+[`dragGaps.ts`](../../website/src/lib/dragGaps.ts): it pads every visible
+control whose box reaches into the band, anywhere in the document, and leaves
+out only transcript content scrolled up past the top of `#main-content`, the
+clipped content the strips exist to cover. A container that `[tabindex]`
+matches is not a control: an ancestor of the header or of `#main-content`, and
+a `tabindex="-1"` focus container with no `role` that holds controls (the main
+landmark, which starts inside the band in focus mode, and the scroller) are
+skipped, while the controls inside them still count. `observeHeaderLayout` re-measures on
+every header reflow and `observeDocumentLayout` once per frame after any other
+document change, so a control that appears later is never left under a stale
+strip.
+
 #### Focus mode: verify these seams after an Electron or Radix bump
 
 Focus mode (hide the shell chrome behind hover) rests on five mechanisms that
@@ -1288,7 +1316,10 @@ it).
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close, or quits through the same path as the Quit
   menu item when the user chose that (`closeAction` in the app's own config,
-  decided by [`close-action.js`](../../website/electron/close-action.js)); the composition root delegates quit-time
+  decided by [`close-action.js`](../../website/electron/close-action.js)), and
+  creates or removes the tray icon to match `showTrayIcon` (decided by
+  [`tray-icon.js`](../../website/electron/tray-icon.js), which keeps the icon on
+  Windows and Linux while the close button hides the window); the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
   signal escalation contract. On POSIX,
   [`gateway-stop.js`](../../website/electron/gateway-stop.js) lists the child's

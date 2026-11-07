@@ -23,6 +23,7 @@ import { computePairPatch } from './diffOffThread'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { PierreFarmHoldContext, WarmSwapHeldContext } from '../components/pierreStaging'
 import { usePlainDiff } from '../hooks/usePlainDiff'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
 const PatchImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierrePatchImpl })))
@@ -71,6 +72,8 @@ export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
   diffExpandUnchanged?: boolean
   className?: string
 }>(function PierreEditor(props, ref) {
+  // The lazy views below render translated notices; repaint them on a language switch.
+  useLanguageGeneration()
   // The caller's `className` is the editor's sizing contract (a chat block
   // caps it at 480px), so it must bound every render path: the plain
   // fallback shown while the chunk loads as much as the Virtualizer after.
@@ -319,6 +322,7 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
    *  `renderAnnotation`. */
   renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
 }) {
+  useLanguageGeneration()
   // Whole-file surfaces own their scroll container and cannot be wrapped in
   // an invisible measurement box, so they retain a direct Suspense fallback.
   if (scrollClassName) {
@@ -352,6 +356,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
    *  plain-diff mode, which has no swap. */
   onVisible?: () => void
 }) {
+  useLanguageGeneration()
   // Plain-diff preference (Settings → Display): render the raw patch text and
   // never request the Pierre chunk at all. This is the seam for EVERY unified-
   // patch surface — chat fences, tool-call cards, tool input, PR file diffs —
@@ -408,6 +413,7 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
    *  its opted-in state) cannot, so they take it from here. */
   titleClickable?: boolean
 }) {
+  useLanguageGeneration()
   const withinBudget = isPierreFilePairWithinBudget(oldFile, newFile)
   const [plain] = usePlainDiff()
   // Opt-in state machine for the oversized path: idle → computing → ready

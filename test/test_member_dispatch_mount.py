@@ -854,6 +854,8 @@ class TestRuntimeMemberThreading:
             session_key="",
             skill_scope_rules=(),
             withheld_out=None,
+            prompt_unread_out=None,
+            engine_features=frozenset(),
         ):
             seen.append(member_dispatch)
             return [{"id": agent}]
@@ -933,6 +935,8 @@ class TestMemberServerJoinsSubtraction:
             session_key="",
             skill_scope_rules=(),
             withheld_out=None,
+            prompt_unread_out=None,
+            engine_features=frozenset(),
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
@@ -973,6 +977,8 @@ class TestMemberServerJoinsSubtraction:
             session_key="",
             skill_scope_rules=(),
             withheld_out=None,
+            prompt_unread_out=None,
+            engine_features=frozenset(),
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]

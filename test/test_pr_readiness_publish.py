@@ -134,6 +134,11 @@ if [ "$1" = "api" ]; then
       # in calls.txt like every other request, so a same-repo publish can be
       # shown never to make it.
       [ -f "$FIXTURES/fail_fork_checks" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      # What the endpoint's default filter (latest) returns, when a test
+      # supplies it, answers a read that does not ask for filter=all.
+      if [ -f "$FIXTURES/fork_checks_latest.json" ] && [[ "$*" != *"filter=all"* ]]; then
+        cat "$FIXTURES/fork_checks_latest.json"; exit 0
+      fi
       cat "$FIXTURES/fork_checks.json"; exit 0 ;;
     *"/actions/runs/"[0-9]*)
       # The triggering lane's run, read by the hold step. `--jq .status` is
@@ -728,6 +733,30 @@ def test_a_sibling_pull_requests_fork_row_never_answers_for_this_one(runner: Run
     the same head SHA. It is not this pull request's lane and must not hold it:
     the external_id binding is the whole reason the row can be trusted."""
     result = _recheck_runner(runner, "completed", fork=True).run()
+    assert result.published is not None
+    assert result.published["state"] == "success"
+
+
+def test_a_siblings_newer_row_does_not_hide_this_pull_requests_own(runner: Runner) -> None:
+    """Two PRs share the fork head and the sibling's red UX Review row
+    completed last. The endpoint's default listing can omit an older completed
+    row of a name, so a re-check that does not ask for every row never sees this
+    PR's own green verdict and holds the publish at pending."""
+    _recheck_runner(runner, "completed", fork=True)
+    rows = json.loads((runner.fixtures / "fork_checks.json").read_text())["check_runs"]
+    sibling = {
+        "id": 99,
+        "name": "UX Review",
+        "external_id": "ux-pr-9-77-1",
+        "status": "completed",
+        "conclusion": "failure",
+    }
+    latest = [r for r in rows if r["name"] != "UX Review"] + [sibling]
+    (runner.fixtures / "fork_checks.json").write_text(json.dumps({"check_runs": rows + [sibling]}))
+    (runner.fixtures / "fork_checks_latest.json").write_text(json.dumps({"check_runs": latest}))
+
+    result = runner.run()
+
     assert result.published is not None
     assert result.published["state"] == "success"
 

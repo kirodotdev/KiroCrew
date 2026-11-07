@@ -43,13 +43,16 @@ def _take_prior_dropped_grant() -> Any:
         return None
 
 
-def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
+def _apply_startup_yolo(state: DashboardState, cfg: Any, approval_mode: str | None = None) -> None:
     """Enable the safety override at startup if the operator declared it.
 
     ``agent.dangerouslySkipPermissions`` is a STANDING operator instruction, so the grant it creates
     does not expire — a lapse after 24h would silently drop the user back to
     prompt-for-everything, which breaks flows driven from Slack/Discord and from
     cron where nobody is watching the dashboard to re-enable it.
+    ``gateway --approval yolo`` declares the same grant for one launch (source ``cli``),
+    so dashboard chats auto-approve like the gateway's background turns do. Slack and
+    channel-linked dashboard turns ignore it (``SafetyOverride.is_cli_launch``).
 
     State is in-memory, so the grant is re-established and re-audited on every
     startup rather than persisted. An enterprise policy can forbid a
@@ -67,18 +70,20 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     except Exception:
         logger.warning("Could not apply the configured YOLO duration", exc_info=True)
 
-    if not cfg.agent.dangerously_skip_permissions:
+    declared = cfg.agent.dangerously_skip_permissions
+    if not declared and approval_mode != "yolo":
         return
     try:
-        result = grant_declared_yolo()
+        result = grant_declared_yolo() if declared else grant_declared_yolo("cli")
     except Exception:
-        logger.error("Failed to activate safety override from config", exc_info=True)
+        logger.error("Failed to activate safety override at startup", exc_info=True)
         return
     if not result.active:
-        logger.error("Safety override activation refused (SEL audit failure?)")
+        logger.error("Safety override activation refused (policy or SEL audit failure)")
         return
     logger.info(
-        "Safety override enabled at startup (dangerouslySkipPermissions=true, %s)",
+        "Safety override enabled at startup (%s, %s)",
+        "dangerouslySkipPermissions=true" if declared else "--approval yolo",
         "no expiry" if result.ttl == 0 else f"expires in {result.ttl}s per policy",
     )
 

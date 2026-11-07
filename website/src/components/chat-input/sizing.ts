@@ -4,6 +4,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { useMeasuredHeight } from '../../hooks/useMeasuredHeight'
+import { useKeyboardLift } from '../../hooks/useKeyboardLift'
 import { afterSlide, forgetAfterSlide, slideHeld } from '../../utils/panelSlide'
 
 /* The composer's height: the content-driven autosize (measured on an
@@ -343,6 +344,20 @@ export function useManualHeight({ wrapperRef, pendingFilesCount, pendingSessions
   }, [manualHeight, pendingFilesCount, pendingSessionsCount, wrapperRef])
 
   return { manualHeight, setManualHeight, isTouch, dragging, dragMinHRef, inputResize, resizeHandleLifecycleRef, resetHeight }
+}
+
+/** The composer root sits at the bottom of the height-locked shell, so an
+ *  on-screen keyboard covers it on iPadOS, where Safari's focus pan does not
+ *  clear it. While the composer holds focus it grows by whatever part of the
+ *  keyboard the pan has not covered (0 on desktop), as bottom padding: the
+ *  controls rise and the dock's measured height grows, so the transcript
+ *  keeps its newest lines above the composer -- see useKeyboardLift. The
+ *  shelf's fade (`.glass-shelf::before`) is anchored to the dock wrapper's
+ *  bottom, so ChatInput also hands it the lift as `--glass-shelf-lift`. */
+export function useInputAreaKeyboardLift() {
+  const inputAreaRef = useRef<HTMLDivElement>(null)
+  const keyboardLift = useKeyboardLift(inputAreaRef, true)
+  return { inputAreaRef, keyboardLift }
 }
 
 /** The strips stacked above the textarea (staged files and folders, session

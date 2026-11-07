@@ -136,23 +136,15 @@ class TestApplyToolSearchOverlay:
 
 
 class TestInitWiring:
-    @pytest.mark.parametrize(
-        ("backend", "applied"),
-        [
-            pytest.param("", 1, id="kiro_enabled_applies_on_init"),
-            pytest.param(ACP_BACKEND_CLAUDE, 0, id="claude_backend_does_not_apply_on_init"),
-        ],
-    )
-    def test_overlay_on_init(self, backend, applied, tmp_path):
+    @pytest.mark.parametrize("backend", ["", ACP_BACKEND_CLAUDE])
+    def test_construction_writes_no_overlay(self, backend, tmp_path):
+        # The constructor runs on the event loop, where a cli.json lock acquire
+        # never waits; start() writes the overlay off the loop before each spawn.
         with patch("kiro_crew.providers.acp.AcpClient") as mock_client:
             mock_client.return_value.backend = backend
             mock_client.return_value._work_dir = tmp_path
             AcpProvider(acp_backend=backend, tool_search=True)
-        if applied:
-            data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-            assert data["toolSearch.enabled"] is True
-        else:
-            assert not _cli_json(tmp_path).exists()
+        assert not _cli_json(tmp_path).exists()
 
 
 # ── Config plumbing ──────────────────────────────────────────────────────────
@@ -284,10 +276,7 @@ class TestConfigurableThresholds:
         assert data["toolSearch.minTokens"] == 4444
 
     def test_constructor_defaults_to_kiro_thresholds(self):
-        with (
-            patch("kiro_crew.providers.acp.AcpClient") as mock_client,
-            patch.object(AcpProvider, "_apply_tool_search_overlay"),
-        ):
+        with patch("kiro_crew.providers.acp.AcpClient") as mock_client:
             mock_client.return_value.backend = ""
             provider = AcpProvider(acp_backend="", tool_search=True)
         assert provider._tool_search_min_pct == TOOL_SEARCH_DEFAULT_MIN_PCT

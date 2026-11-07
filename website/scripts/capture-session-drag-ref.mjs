@@ -121,11 +121,12 @@ async function main() {
     if (page) await page.close()
     page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra, folders })
-    await page.addInitScript(s => localStorage.setItem('mc-active-slot', s), ACTIVE)
-    // Flat view is a persisted sidebar preference, so seed it before boot
-    // rather than clicking the toggle (which is only rendered once folders load).
-    if (flat) await page.addInitScript(() => localStorage.setItem('mc-sidebar-flat-view', '1'))
+    await stubDashboardApi(page, {
+      slots, theme, extra, folders,
+      // Flat view is a persisted sidebar preference, so seed it before boot
+      // rather than clicking the toggle (which is only rendered once folders load).
+      localStorageEntries: { 'mc-active-slot': ACTIVE, ...(flat ? { 'mc-sidebar-flat-view': '1' } : {}) },
+    })
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
   }

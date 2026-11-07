@@ -220,7 +220,7 @@ cannot shrink.
 | Tier | Surface |
 |---|---|
 | **L0 Color** | the 60 CSS vars (dark + light) |
-| **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, scoped `overrides.css` |
+| **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, code scheme, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
 Out of contract: app structure/routing, functional-control behavior, security
@@ -267,7 +267,8 @@ branding/wordmark.svg   # reserved brand artwork for supporting surfaces
 
 `logo` accepts `.svg` or `.png`; `favicon` accepts `.ico`, `.png`, or `.svg`;
 `welcome` accepts `.svg`, `.png`, `.webp`, or `.gif` (256 KB), and an animated
-WebP/GIF/SVG plays in place. The welcome screen shows `welcome`, else `logo`,
+WebP/GIF/SVG plays in place; under `prefers-reduced-motion: reduce` it holds its
+first frame, like the loader art. The welcome screen shows `welcome`, else `logo`,
 else the stock ghost, in the 48px hero slot.
 The backend serves only validated files from the installed pack, and the label is
 trimmed to 48 printable characters. When an asset or label is absent, the shell
@@ -323,6 +324,22 @@ loads and keeps its colours. Its font pin is dropped when the stylesheet is scop
 so the typeface falls back to the built-in stack until the face moves into the
 `fonts` list. Re-installing the pack surfaces the rejection message that explains
 what to change.
+
+## Code scheme
+
+A Level-1 or Level-2 pack may name the Shiki scheme that code blocks, diffs and
+the file viewer use in each mode:
+
+```json
+"codeTheme": { "dark": "one-dark-pro", "light": "one-light" }
+```
+
+A name must be one the dashboard build bundles (Shiki's bundled schemes, plus
+the Pierre schemes such as `pierre-dark` and `pierre-light-soft`); a pack ships
+no scheme file. A Level-0 pack's `codeTheme` is ignored. A mode left out, or
+a name the build does not bundle, keeps the stock `pierre-dark` / `pierre-light`
+scheme for that mode, and nothing is refused at install. Switching packs
+re-renders the open code views in the new pair.
 
 ## Stable hooks
 

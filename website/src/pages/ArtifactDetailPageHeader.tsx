@@ -295,7 +295,7 @@ export function ArtifactDetailPageHeader({
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
-    refocusAddTagRef,
+    refocusAddTagRef, addTagButtonRef,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
@@ -422,7 +422,9 @@ export function ArtifactDetailPageHeader({
             <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
               <button
                 type="button"
-                onClick={() => removeTag(t)}
+                // The chip, and this focused button with it, leaves the page
+                // once the write lands, so focus moves to + Tag first.
+                onClick={() => { removeTag(t); addTagButtonRef.current?.focus() }}
                 className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
                 aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
               >
@@ -471,6 +473,7 @@ export function ArtifactDetailPageHeader({
           <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
             <button
               ref={el => {
+                addTagButtonRef.current = el
                 if (!el || !refocusAddTagRef.current) return
                 refocusAddTagRef.current = false
                 el.focus()

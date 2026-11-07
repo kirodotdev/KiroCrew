@@ -22,8 +22,8 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.chat_utils_completion import SYNTHESIS_CLEAR, chat_done_payload
 from kiro_crew.dashboard.chat_utils_injected_rows import (
+    COMPOSER_SEND_META,
     CRON_NOTIFICATION_KIND,
-    STEER_INTENT_META,
 )
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -969,15 +969,15 @@ class TestDrainChokePoint:
         """The sub-agent hold's selector releases steers on purpose; the teardown hold must not."""
         state, slot = fresh
         slot._pending_discard_conversation_key = "s1"
-        slot.queue_append("steer that fell back to the queue", "", {STEER_INTENT_META: True})
+        slot.queue_append("steer that fell back to the queue", "", {COMPOSER_SEND_META: True})
         assert await self._drain(state, slot, monkeypatch) == []
         assert [e.get("content") for e in slot._queue] == ["steer that fell back to the queue"]
 
     async def test_a_queued_steer_still_drains_past_the_subagent_hold(self, fresh, monkeypatch):
-        """Positive control: with no discard armed, the steer exemption still releases the entry."""
+        """Positive control: with no discard armed, the composer-send exemption still releases the entry."""
         state, slot = fresh
         state.subagents = _children("a1")
-        slot.queue_append("steer that fell back to the queue", "", {STEER_INTENT_META: True})
+        slot.queue_append("steer that fell back to the queue", "", {COMPOSER_SEND_META: True})
         assert await self._drain(state, slot, monkeypatch) == ["steer that fell back to the queue"]
 
     async def test_a_deferred_discard_holds_the_queued_user_entry(self, fresh, monkeypatch):

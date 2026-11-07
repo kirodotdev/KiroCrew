@@ -333,9 +333,9 @@ class AcpSessionProvider(LLMProvider):
     async def new_conversation(self) -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
 
-        The cheap clean-slate reuse primitive a warm worker pool relies on, and
-        the only one: ``AcpClient`` has none, so a backend on its own client is
-        reset by kill and respawn. Create a brand-new ``session/new``
+        The cheap clean-slate reuse primitive a warm worker pool relies on for a
+        backend on the shared runtime; a backend on its own ``AcpClient`` has
+        ``AcpClient.new_conversation`` instead. Create a brand-new ``session/new``
         on the *already-running* kiro-cli process (paying only session/new + the
         MCP-init drain), then destroy the old session so its context/transcript
         and MCP children are freed on the shared process. This SKIPS the expensive
@@ -859,6 +859,14 @@ class AcpSessionProvider(LLMProvider):
         if discard is None:
             return False
         return await self._guarded(discard()) is True
+
+    async def kas_command_call(self, command: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """Forward to the session handle: one of KAS's ``/context``, ``/knowledge``
+        or ``/code`` verbs for this session, or None when it cannot be sent."""
+        call = getattr(self._handle, "kas_command_call", None)
+        if call is None:
+            return None
+        return await self._guarded(call(command, params))
 
     async def steer(self, message: str) -> bool:
         """Forward a mid-turn steer to the session handle (kiro _session/steer).

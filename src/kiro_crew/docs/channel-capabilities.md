@@ -37,9 +37,11 @@ An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
 **Sends a file back to you** is what you receive from `file_send`. On WeCom the
-file arrives as a document (`send_document`), but an inline image reference in a
-reply is not uploaded: it keeps printing its path, so WeCom's `files_outbound`
-declaration stays off.
+file arrives as native media (`send_document`), and an inline image reference in a
+reply follows the reply's text the same way: a JPG or PNG up to 2 MB as a picture,
+any other image as a file. On Feishu an inline image reference in a direct-message
+reply arrives as an image message (a group reply keeps the path), but `file_send`
+has no Feishu leg.
 
 **Tappable choices** is the total number of interactive options one prompt may
 present. Above the cap, the remainder degrades to a numbered list in the message

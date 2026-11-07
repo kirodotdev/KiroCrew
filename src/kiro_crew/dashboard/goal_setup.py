@@ -65,6 +65,7 @@ def kickoff_prompt(
     *,
     has_mate_tools: bool = True,
     dashboard_line: str = "",
+    ledger: bool = False,
 ) -> str | None:
     """The hidden turn's text, built from the goal record as stored.
 
@@ -73,7 +74,9 @@ def kickoff_prompt(
     ``kirocrew-mate`` tools (*has_mate_tools*) the milestones are written in
     the chat for the user to add on the Goals tab. *dashboard_line* is
     ``goal_reminder.dashboard_line`` (the build line on an empty tab, or the one-time
-    page offer on a template page), added last.
+    page offer on a template page), added last. *ledger*
+    (:func:`kiro_crew.member_mate_tools.member_has_ledger_tools`) tracks the
+    research worker as an item in the crewmate's work ledger.
     """
     numbers = member_goals.goal_numbers(rec)
     if goal_id not in numbers:
@@ -114,7 +117,9 @@ def kickoff_prompt(
             listing="\n".join(listing),
         )
         + step1_tail,
-        crewmate_prompts.fill("goal_setup.kickoff_step2", n=n),
+        crewmate_prompts.fill(
+            "goal_setup.kickoff_step2_ledger" if ledger else "goal_setup.kickoff_step2", n=n
+        ),
         step3 + T("goal_setup.kickoff_unmeasured"),
         T(
             "goal_setup.kickoff_step4_tools"
@@ -173,15 +178,17 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
         await asyncio.sleep(POLL_SECS)
 
 
-def _goal_prompt(goal_id: str, slug: str = "") -> Build:
+def _goal_prompt(goal_id: str, slug: str = "", member: str = "") -> Build:
     def build(rec: dict[str, Any], tools: bool) -> str | None:
         from kiro_crew.dashboard.goal_reminder import dashboard_line
+        from kiro_crew.member_mate_tools import member_has_ledger_tools
 
         return kickoff_prompt(
             rec,
             goal_id,
             has_mate_tools=tools,
             dashboard_line=dashboard_line(slug, rec, has_mate_tools=tools),
+            ledger=bool(member) and member_has_ledger_tools(member),
         )
 
     return build
@@ -281,7 +288,7 @@ def schedule_nudge(state: Any, slug: str, member: str, goal_id: str) -> None:
     One waiting nudge per crewmate: a newer save, of this goal or another,
     replaces it.
     """
-    _schedule(state, slug, slug, member, _goal_prompt(goal_id, slug), "goal setup")
+    _schedule(state, slug, slug, member, _goal_prompt(goal_id, slug, member), "goal setup")
 
 
 def schedule_milestones_nudge(state: Any, slug: str, member: str) -> None:

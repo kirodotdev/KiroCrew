@@ -429,12 +429,18 @@ class TestDoctorSkillViewCensus:
         return tmp_path / "crew-home"
 
     @classmethod
+    def _side_dir(cls, tmp_path: Path, name: str) -> Path:
+        """This home's side-file directory *name* (``metadata`` or ``leases``)."""
+        path = cls._home(tmp_path) / "skill-projection" / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @classmethod
     def _alias(cls, directory: Path, index: int, *, home: str | None) -> str:
         stem = f"{cls.PREFIX}{index:024x}"
         (directory / f"{stem}.json").write_text('{"name": "%s"}' % stem)
         if home is not None:
-            metadata_dir = directory / ".kirocrew-skill-projection-metadata"
-            metadata_dir.mkdir(exist_ok=True)
+            metadata_dir = cls._side_dir(directory, "metadata")
             (metadata_dir / f"{stem}.json").write_text(
                 json.dumps({"x-kirocrew-managed": "skill-view", "x-kirocrew-home": home})
             )
@@ -443,10 +449,9 @@ class TestDoctorSkillViewCensus:
     def _own(self, tmp_path: Path, index: int) -> str:
         return self._alias(tmp_path, index, home=self._home(tmp_path).absolute().as_posix())
 
-    @staticmethod
-    def _lease(directory: Path, stems: list[str], name: str = "1-abc") -> None:
-        lease_dir = directory / ".kirocrew-skill-projection-leases"
-        lease_dir.mkdir(exist_ok=True)
+    @classmethod
+    def _lease(cls, directory: Path, stems: list[str], name: str = "1-abc") -> None:
+        lease_dir = cls._side_dir(directory, "leases")
         (lease_dir / f"{name}.json").write_text(json.dumps({"aliases": stems}))
         (lease_dir / f"{name}.hold").write_text("")
 
@@ -575,8 +580,7 @@ class TestDoctorSkillViewCensus:
         # backlog threshold -- and, below it, say nothing about startup cost.
         self._own(tmp_path, 1)
         self._own(tmp_path, 2)
-        lease_dir = tmp_path / ".kirocrew-skill-projection-leases"
-        lease_dir.mkdir()
+        lease_dir = self._side_dir(tmp_path, "leases")
         (lease_dir / "1-bad.json").write_text("{not json")
         (lease_dir / "1-big.json").write_text(json.dumps({"aliases": ["x" * 70000]}))
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
@@ -592,8 +596,7 @@ class TestDoctorSkillViewCensus:
         monkeypatch.setattr(cli_doctor, "_SKILL_VIEW_BACKLOG_WARN", 1)
         for i in range(3):
             self._own(tmp_path, i)
-        lease_dir = tmp_path / ".kirocrew-skill-projection-leases"
-        lease_dir.mkdir()
+        lease_dir = self._side_dir(tmp_path, "leases")
         (lease_dir / "1-bad.json").write_text("?")
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
         assert "Nothing is reclaimed until the unreadable lease record(s) above are gone." in line
@@ -623,14 +626,13 @@ class TestDoctorSkillViewCensus:
         self, tmp_path, monkeypatch, capsys
     ):
         # json.loads raises RecursionError (a RuntimeError) on nesting past the
-        # interpreter limit; a hand-authored file in Kiro Crew's own hidden
+        # interpreter limit; a hand-authored file in Kiro Crew's own side-file
         # directories must read as unreadable, never take the diagnostic down.
         deep = "[" * 100000 + "]" * 100000
         self._own(tmp_path, 1)
         stem = self._own(tmp_path, 2)
-        (tmp_path / ".kirocrew-skill-projection-metadata" / f"{stem}.json").write_text(deep)
-        lease_dir = tmp_path / ".kirocrew-skill-projection-leases"
-        lease_dir.mkdir()
+        (self._side_dir(tmp_path, "metadata") / f"{stem}.json").write_text(deep)
+        lease_dir = self._side_dir(tmp_path, "leases")
         (lease_dir / "1-deep.json").write_text(deep)
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
         assert "2 kirocrew-skill-view-*.json alias(es)" in line
@@ -648,7 +650,7 @@ class TestDoctorSkillViewCensus:
         monkeypatch.setattr(cli_doctor, "_SKILL_VIEW_BACKLOG_WARN", 1)
         stems = [self._own(tmp_path, i) for i in range(4)]
         self._lease(tmp_path, stems[:1])
-        (tmp_path / ".kirocrew-skill-projection-leases" / "2-bad.json").write_text("?")
+        (self._side_dir(tmp_path, "leases") / "2-bad.json").write_text("?")
         before = sorted(p.name for p in tmp_path.rglob("*"))
         self._run(tmp_path, monkeypatch, capsys)
         assert sorted(p.name for p in tmp_path.rglob("*")) == before
@@ -661,17 +663,14 @@ class TestDoctorSkillViewCensus:
         monkeypatch.setattr(cli_doctor, "_SKILL_VIEW_BACKLOG_WARN", 1)
         for i in range(2):
             self._own(tmp_path, i)
-        (tmp_path / ".kirocrew-skill-projection-leases").mkdir()
-        (tmp_path / ".kirocrew-skill-projection-leases" / "1-bad.json").write_text("?")
+        (self._side_dir(tmp_path, "leases") / "1-bad.json").write_text("?")
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
         # The side files live under the Kiro Crew data home; the remedy names
-        # those directories by their real path, and the legacy one an older
-        # build left beside the aliases, which the reclaim still reads.
+        # those directories by their real path.
         metadata_dir = str(skill_projection._projection_metadata_dir())
         lease_dir = str(skill_projection._projection_lease_dir())
         assert f"{metadata_dir}/ directory out of the way" in line
-        assert f"in {lease_dir}/ (or in the legacy" in line
-        assert f"{skill_projection._PROJECTION_LEASE_DIR_NAME}/ beside the aliases" in line
+        assert f"in {lease_dir}/ cannot be read" in line
 
     @staticmethod
     def _residue(out: str) -> str:
@@ -691,8 +690,7 @@ class TestDoctorSkillViewCensus:
         from kiro_crew.doctor_checks import resources
 
         monkeypatch.setattr(resources, "_SKILL_VIEW_RESIDUE_WARN", 1)
-        metadata_dir = tmp_path / ".kirocrew-skill-projection-metadata"
-        metadata_dir.mkdir()
+        metadata_dir = self._side_dir(tmp_path, "metadata")
         for i in range(2):
             (metadata_dir / f"{self.PREFIX}{i:024x}.json").write_text("{}")
         out = self._run(tmp_path, monkeypatch, capsys)
@@ -715,8 +713,7 @@ class TestDoctorSkillViewCensus:
         the setting that makes it volatile; volatile keys are never named."""
         monkeypatch.delenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", raising=False)
         home = self._home(tmp_path).absolute().as_posix()
-        metadata_dir = tmp_path / ".kirocrew-skill-projection-metadata"
-        metadata_dir.mkdir()
+        metadata_dir = self._side_dir(tmp_path, "metadata")
         for i, launch in enumerate(("a", "b")):
             stem = f"{self.PREFIX}{i:024x}"
             view = {

@@ -1050,6 +1050,7 @@ export default function WebhooksPage() {
           <Btn
             danger
             data-testid="webhook-delete-context"
+            onKeyDown={ignoreHeldActivation}
             onClick={() => (confirmDelete === selectedContext.hook_id
               ? deleteContext.mutate(selectedContext.hook_id)
               : setConfirmDelete(selectedContext.hook_id))}
@@ -1493,6 +1494,14 @@ function SigningBadge({ required, tokenId }: { required: boolean; tokenId: strin
   )
 }
 
+/** A two-step destructive button arms in place, so the key that armed it is
+ *  still on it. A held Enter or Space repeats, and each repeat clicks a
+ *  focused button, which would confirm with no second press. Ignore repeats;
+ *  a fresh press still works. */
+function ignoreHeldActivation(e: React.KeyboardEvent) {
+  if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault()
+}
+
 /** Picks which form the shared request example is shown in. Static labels, no
  *  motion — the snippet below it is what changes. */
 function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
@@ -1502,6 +1511,14 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
   onConfirm: () => void
   onCancel: () => void
 }) {
+  // Keep unmounts itself, which would drop focus to the page: hand it back to
+  // Revoke, only after a Keep press so nothing is stolen on render.
+  const revokeRef = useRef<HTMLButtonElement>(null)
+  const keptRef = useRef(false)
+  useEffect(() => {
+    if (!confirming && keptRef.current) revokeRef.current?.focus()
+    keptRef.current = false
+  }, [confirming])
   if (token.legacy) {
     return (
       <span className="text-[12px] text-muted">
@@ -1515,13 +1532,15 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
         <span className="w-full text-right text-[12px] text-muted">{i18nT('pages.webhooksPage.calls_using_it_start_failing_with_401')}</span>
       )}
       <Btn
+        ref={revokeRef}
         danger
         data-testid={`webhook-revoke-${token.id}`}
         onClick={() => (confirming ? onConfirm() : onArm())}
+        onKeyDown={ignoreHeldActivation}
       >
         <Trash2 size={13} /> {confirming ? i18nT('pages.webhooksPage.confirm_revoke') : i18nT('pages.webhooksPage.revoke')}
       </Btn>
-      {confirming && <Btn onClick={onCancel}>{i18nT('pages.webhooksPage.keep')}</Btn>}
+      {confirming && <Btn onClick={() => { keptRef.current = true; onCancel() }}>{i18nT('pages.webhooksPage.keep')}</Btn>}
     </span>
   )
 }

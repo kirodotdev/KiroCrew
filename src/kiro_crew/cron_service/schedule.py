@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.cron")
 
 _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
+_DAY_SECS = 24 * 3600
 
 # Bound skip_date advancement by a WALL-CLOCK horizon rather than an iteration
 # count. An iteration cap couples the bound to schedule granularity: sized for a
@@ -122,6 +123,32 @@ def never_fires_warning(schedule: CronSchedule) -> str:
     except Exception:
         return ""
     return ""
+
+
+def runs_more_than_once_a_day(schedule: CronSchedule) -> bool:
+    """Whether two runs of *schedule* can start less than 24 hours apart.
+
+    An ``every`` job does when its interval is under a day; a one-shot never.
+    A cron expression's minute and hour fields are the same on every day it
+    matches, so it does exactly when they name two or more times of day: one
+    time a day puts any two runs a whole number of days apart on a naive
+    clock. The first two fires from the minute before a midnight are then
+    those times on the first matching day, however rare that day is. An
+    expression that matches no date never runs.
+    """
+    if schedule.kind == "every":
+        return (schedule.every_secs or 0) < _DAY_SECS
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    if schedule.kind != "cron" or not schedule.cron_expr:
+        return False
+    try:
+        it = croniter(schedule.cron_expr, seams.datetime(1999, 12, 31, 23, 59))
+        first = it.get_next(seams.datetime)
+        second = it.get_next(seams.datetime)
+    except CroniterBadDateError:
+        return False
+    return (second - first).total_seconds() < _DAY_SECS
 
 
 def _humanize_cron(expr: str, tz_name: str = "") -> str:

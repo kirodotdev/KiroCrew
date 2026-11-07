@@ -88,6 +88,17 @@ describe('TrustDropdown', () => {
     expect(text.endsWith(cmd)).toBe(true)
   })
 
+  it('shows tag- and placeholder-shaped command text verbatim in its chips (#22834)', () => {
+    const cmd = 'echo <i>x</i> <mono>y</mono> {{cmd}}'
+    render(<TrustDropdown fullCommand={cmd} baseCommand="<i>echo</i>" isShell className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    const [commandItem, baseItem] = screen.getAllByRole('menuitem')
+    expect(commandItem.querySelector('i')).toBeNull()
+    expect(commandItem.querySelector('.font-mono')!.textContent).toBe(cmd)
+    expect(baseItem.querySelector('i')).toBeNull()
+    expect(baseItem.querySelector('.font-mono')!.textContent).toBe('<i>echo</i>')
+  })
+
   // Each locale orders the sentence around the operand differently — Japanese
   // puts it first, German suffixes the base with a hyphen. A fragment pair can
   // only express the English order, so what these pin is that the operand is

@@ -159,7 +159,7 @@ class TestCheck:
         result, code = pb.check(interval, cycles, runtime)
         assert code == 21 and not result["ok"]
         assert result["suggest"] is None
-        assert any("ask the user for a longer runtime" in p for p in result["problems"])
+        assert any("re-run check with the 3000 s minimum" in p for p in result["problems"])
 
     def test_a_too_short_runtime_exits_21_from_the_command_line(self, pb, capsys):
         code = pb.main(

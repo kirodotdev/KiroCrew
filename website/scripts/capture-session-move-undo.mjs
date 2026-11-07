@@ -73,12 +73,10 @@ async function open(theme, sidebarWidth = 0) {
       if (/\/api\/chat\/slots\/.+\/folder$/.test(path)) { await json(route, {}); return true }
       return false
     },
+    // The sidebar reads its own width from localStorage on mount, so seeding it
+    // before navigation is how a narrow sidebar is reproduced without dragging.
+    localStorageEntries: sidebarWidth ? { 'mc-sidebar-width': String(sidebarWidth) } : null,
   })
-  // The sidebar reads its own width from localStorage on mount, so seeding it
-  // before navigation is how a narrow sidebar is reproduced without dragging.
-  if (sidebarWidth) {
-    await page.addInitScript(w => localStorage.setItem('mc-sidebar-width', String(w)), sidebarWidth)
-  }
   await page.goto(`${base}/chat`, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(3000)
   return { context, page }

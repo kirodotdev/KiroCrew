@@ -96,8 +96,12 @@ Files the agent sends you go out as native WeCom media. An explicit `file_send`
 (or a dashboard upload to a WeCom user) arrives as an image, voice note, video
 or file, with any caption sent as a separate text message right after it.
 WeCom's outbound ceilings apply: 2 MB per image or voice note, 20 MB per file or
-video. An image the agent only mentions inline in a reply is not uploaded, so
-for that you still get its path rather than the picture.
+video. An image the agent puts inline in a reply (`![chart](/abs/path.png)`) is
+sent too, right after the reply's text, when the file sits in the session's working
+directory, its scratch directory or the browser tool's screenshot folder: a JPG or
+PNG up to 2 MB arrives as a picture, any other image as a file. Its alt text is not
+sent, because a WeCom image message has no caption. A reference that cannot be sent
+keeps showing its path.
 
 ## Commands
 

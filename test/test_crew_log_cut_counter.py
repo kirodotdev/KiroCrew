@@ -1123,6 +1123,9 @@ def test_a_rollback_that_cannot_account_for_its_cut_is_retryable_not_a_refusal(m
     assert (
         b"UNACCOUNTED" in _log(UNIT).read_bytes()
     ), "the refused rollback left the bytes in place, which is why the outcome is unknown"
+    # `raised` holds a traceback through this handle's append, and the test frame holds
+    # `raised`: a cycle only the collector frees. Release the lease now, not at a GC.
+    handle.release_ownership()
 
 
 def test_a_counter_that_cannot_be_read_is_not_evidence_that_it_was_retired(_cheap_writes):
@@ -1270,6 +1273,8 @@ def test_a_torn_tail_repair_that_cannot_account_for_its_cut_keeps_the_event(_che
         b'{"type":"activity/tick","seq":9,"ti' not in _log(UNIT).read_bytes()
     ), "the torn bytes were cut by the repair this append DID complete"
     assert crew_log_store.read_cuts(directory) == held + 2, "one completed cut, two phases"
+    # See the rollback test above: `raised` keeps this handle in a cycle.
+    handle.release_ownership()
     crew_log_emit.reset_caches()
     crew_log.forget_slot_folds()
     warm = json.loads(_warm((UNIT,)))

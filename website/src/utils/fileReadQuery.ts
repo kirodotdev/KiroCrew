@@ -10,11 +10,13 @@
  * the text, because the verdict decides whether the panel offers an editor at
  * all. It is read from the `X-File-Binary` header, not from the body: a `.json`
  * TEXT file is served as `application/json` too, so the content type cannot
- * tell the two apart. The same goes for the two PARTIAL verdicts -- the body
- * was cut at the gateway's cap (`X-Truncated`) or had credentials redacted
- * (`X-Redacted`): a body cannot tell either about itself (a whole file may
- * quote the redaction tag verbatim), so they ride in headers, and the panel
- * that keeps the last copy of a deleted file names a partial one as partial.
+ * tell the two apart. The same goes for the PARTIAL verdicts -- the body was
+ * cut at the gateway's cap (`X-Truncated`), had credentials redacted
+ * (`X-Redacted`) or was decoded with replacement (`X-Lossy-Decode`): a body
+ * cannot tell any of them about itself (a whole file may quote the redaction
+ * tag verbatim), so they ride in headers, and the panel
+ * that keeps the last copy of a deleted file names a partial one as partial,
+ * and why.
  */
 import { fileReadUrl } from './fileReadUrl'
 
@@ -36,12 +38,18 @@ export interface FileReadResult {
   lossy: boolean
 }
 
-/** Whether a read handed over less than the file as written -- the verdict a
- *  tab carries as `partial`, so a copy of a deleted file is never offered under
- *  the file's own name as if whole. One predicate for every caller that stamps
- *  a tab, so no site can forget a header the gateway adds. */
-export function isPartialRead(r: Pick<FileReadResult, 'truncated' | 'redacted' | 'lossy'>): boolean {
-  return r.truncated || r.redacted || r.lossy
+/** Why a read handed over less than the file as written. */
+export type PartialCause = 'truncated' | 'redacted' | 'lossy'
+
+/** The verdict a tab carries as `partial`: the cause when a read handed over
+ *  less than the file as written, `false` when it is whole -- so a copy of a
+ *  deleted file is never offered under the file's own name as if whole, and
+ *  the panel can say which cause it was. One function for every caller that
+ *  stamps a tab, so no site can forget a header the gateway adds. When more
+ *  than one applies, the cut is named: a redaction tag or a replacement
+ *  character shows in the text, a cut does not. */
+export function partialReadCause(r: Pick<FileReadResult, 'truncated' | 'redacted' | 'lossy'>): PartialCause | false {
+  return r.truncated ? 'truncated' : r.redacted ? 'redacted' : r.lossy ? 'lossy' : false
 }
 
 /** How long a read of one path stays fresh. Shared by every caller of the key

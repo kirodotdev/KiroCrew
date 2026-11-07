@@ -63,8 +63,9 @@ describe('terminal surface parity', () => {
   it('passes the session id and visibility through to the completion menu', () => {
     // `sessionId` keys the completion request and `active` is what stops a hidden
     // pane from polling; a surface that dropped either would render a menu that
-    // completes against the wrong shell or one that never closes.
+    // completes against the wrong shell or one that never closes. A displaced
+    // pane is inactive too, so the menu cannot claim the Enter that takes it back.
     const src = read('components/CliPanel.tsx')
-    expect(src).toMatch(/<TerminalCompletion\s+term=\{term\}\s+sessionId=\{sessionId\}\s+active=\{visible\}/)
+    expect(src).toMatch(/<TerminalCompletion\s+term=\{term\}\s+sessionId=\{sessionId\}\s+active=\{visible && !displaced\}/)
   })
 })

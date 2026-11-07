@@ -259,6 +259,9 @@ and parametrized per module: a facade test file names the ones it needs in a mod
 particular to its facade. The same holds for a composed class's contract file
 (`test_*composition*.py`) and a parts package's file (`test_*_parts*.py`): the
 owner-layering, bound-member, class-body and package-shape checks they share are opt-ins too.
+The family-import scan the facade tests share (`test_only_the_family_imports_an_owner`)
+reads imports through `test/owner_import_scan.py`: a facade test passes it a predicate on
+an owner's dotted name instead of copying the scan.
 
 **A large class keeps one class body**, in the facade or in one home module that sets
 `__module__` to the facade when a pickle, repr or test reads it. Members move to owners as

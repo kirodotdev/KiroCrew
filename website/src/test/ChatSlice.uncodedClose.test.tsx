@@ -364,6 +364,24 @@ describe('an uncoded close failure', () => {
     expect(selectCloseNotice(root(store))).toBeNull()
   })
 
+  it('the session reopened elsewhere after a timed-out close is not reported, the same session put back is (#31537)', async () => {
+    for (const [listed, expected] of [
+      ['inc-reopened', null],
+      ['inc-closed', { key: 'doomed', title: null, reason: 'failed' }],
+    ] as const) {
+      apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+      apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+      const store = makeStore()
+      store.dispatch(sseSlots([slotRow('doomed', { incarnation: 'inc-closed' }), slotRow('peer')]))
+      await store.dispatch(deleteSlot('doomed'))
+      await vi.waitFor(() => expect(root(store).dashboard.closeWatch?.doomed).toBeDefined())
+
+      store.dispatch(sseSlots([slotRow('doomed', { incarnation: listed }), slotRow('peer')]))
+      expect(selectCloseNotice(root(store))).toEqual(expected)
+      expect(root(store).dashboard.closeWatch?.doomed).toBeUndefined()
+    }
+  })
+
   it('a listing after the watch window is not tied to the timed-out close (#31168)', async () => {
     apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
     apiMock.chatSlots.mockResolvedValue([slotRow('peer')])

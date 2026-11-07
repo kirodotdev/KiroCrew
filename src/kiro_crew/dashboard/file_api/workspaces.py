@@ -140,8 +140,16 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # Resolved once each; both checks below judge these same objects.
         src_resolved = src_path.resolve()
         dst_resolved = dst_path.resolve()
+        # Windows' ``\\?\`` prefix folded off all three (lexically), so one resolve
+        # keeping it is not read as an escape. A name only the prefixed spelling
+        # reaches is refused: its plain spelling names another directory.
+        dst_verbatim_only = platform_compat.names_a_verbatim_only_file(dst_resolved)
+        src_resolved = platform_compat.strip_extended_length_prefix(src_resolved)
+        dst_resolved = platform_compat.strip_extended_length_prefix(dst_resolved)
+        root = await asyncio.to_thread(data_home().resolve)
+        cfg_root = platform_compat.strip_extended_length_prefix(root)
         # Guard against path traversal
-        if not dst_resolved.is_relative_to(data_home().resolve()):
+        if dst_verbatim_only or not dst_resolved.is_relative_to(cfg_root):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -150,7 +158,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 resources=name,
             )
             return web.json_response({"error": "Invalid directory path"}, status=400)
-        if not src_resolved.is_relative_to(data_home().resolve()):
+        if not src_resolved.is_relative_to(cfg_root):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -160,7 +168,6 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             )
             return web.json_response({"error": "Invalid source directory path"}, status=400)
         # Reject config root itself to avoid copying .env / config.json
-        cfg_root = data_home().resolve()
         if src_resolved == cfg_root or dst_resolved == cfg_root:
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
@@ -324,7 +331,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 )
             try:
                 platform_compat.publish_dir_noreplace(staged_path, install_dst)
-            except (FileExistsError, OSError) as exc:
+            except FileExistsError as exc:
                 # A filesystem racer created the destination between the check
                 # and the rename; refuse rather than replace anything.
                 raise _WorkspaceConflict(
@@ -332,6 +339,16 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                     f"Destination directory '{ws_dir}' already exists; choose "
                     "another dir or remove it first",
                     "workspace_dir_occupied",
+                ) from exc
+            except OSError as exc:
+                # Any other rename failure (a Windows sharing violation on a held
+                # file) is not an occupied destination; name the real cause.
+                raise _WorkspaceConflict(
+                    409,
+                    f"Could not move the copied workspace into '{ws_dir}': "
+                    f"{exc.strerror or type(exc).__name__}. Nothing was registered; "
+                    "retry the create",
+                    "workspace_publish_failed",
                 ) from exc
             install_state["installed"] = True
         # A create with no copy source still needs its directory to EXIST: the

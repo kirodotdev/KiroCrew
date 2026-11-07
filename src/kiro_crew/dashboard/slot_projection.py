@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from kiro_crew.dashboard.slot_preparing import is_preparing
+from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
@@ -551,6 +551,11 @@ class SlotProjection:
             # reason as `compacting`: it must not make the slot look busy to
             # sends or queueing, only show the chat's working indicator.
             "preparing": is_preparing(slot),
+            # What is being prepared, built by the gateway, and the language
+            # it is written in. A client whose UI language differs, or a ""
+            # caption, shows its own generic caption.
+            "preparing_text": preparing_caption(slot)[0],
+            "preparing_lang": preparing_caption(slot)[1],
             # A cooperative Stop was declined moments ago (the session was
             # compacting) and the next press escalates to a force stop. Read
             # with the same window the stop route uses, so the button's hint and
@@ -568,6 +573,9 @@ class SlotProjection:
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,
             "created": slot.created_at,
+            # The slot object's never-persisted id: a failed close's restore keeps
+            # it, a reopen under the same key builds a new object with a new one.
+            "incarnation": slot._dashboard_card_identity,
             "last_ts": last_ts,
             "last_turn_ts": last_turn_ts,
             "last_message": last_msg,

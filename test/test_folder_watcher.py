@@ -445,6 +445,115 @@ class TestFolderWatcherScan:
         assert tracked == {"doc1.md", "doc2.md"}
 
 
+class TestEditedIgnorePatterns:
+    """A pattern added after indexing keeps what is indexed and stops new ingests."""
+
+    @staticmethod
+    def _source(store, vault, ingested: list[str], pipeline):
+        source_id = store.add_source("test", "local_folder", str(vault))
+
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            ingested.append(Path(path).name)
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
+            return "job1"
+
+        pipeline.ingest_file = fake_ingest
+        return source_id
+
+    @staticmethod
+    def _tracked(store, source_id) -> dict[str, list[str]]:
+        rows = store.db.execute(
+            "SELECT file_path, item_ids FROM folder_file_state WHERE source_id = ?",
+            (source_id,)).fetchall()
+        return {Path(r["file_path"]).name: json.loads(r["item_ids"]) for r in rows}
+
+    @pytest.mark.asyncio
+    # 'failed': a failed re-read keeps the previous version's items on the row.
+    @pytest.mark.parametrize("status", ["done", "failed"])
+    async def test_an_indexed_file_a_new_pattern_matches_is_kept_and_frozen(
+            self, store, pipeline, vault, status):
+        ingested: list[str] = []
+        source_id = self._source(store, vault, ingested, pipeline)
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        await FolderWatcher(store, pipeline).scan_source(source)
+        deep_items = self._tracked(store, source_id)["deep.md"]
+        assert deep_items
+        store.db.execute(
+            "UPDATE folder_file_state SET status = ? WHERE source_id = ? AND file_path = ?",
+            (status, source_id, str(vault / "sub" / "deep.md")))
+        store.db.commit()
+
+        (vault / "sub" / "deep.md").write_text("# Deep\nEdited after the pattern")
+        os.utime(vault / "sub" / "deep.md", (9999999999, 9999999999))
+        (vault / "sub" / "new.md").write_text("# New\nAdded after the pattern")
+        ingested.clear()
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/*"]})
+        stats = await FolderWatcher(store, pipeline).scan_source(source)
+
+        assert stats["deleted"] == 0
+        assert ingested == []
+        assert self._tracked(store, source_id)["deep.md"] == deep_items
+        assert "new.md" not in self._tracked(store, source_id)
+        assert all(store.get_item(i) for i in deep_items)
+
+    @pytest.mark.asyncio
+    # 'pending': the user pressed Retry. 'scanning': a re-ingest was interrupted.
+    @pytest.mark.parametrize("status", ["pending", "scanning"])
+    async def test_a_kept_ignored_file_in_flight_settles_after_one_scan(
+            self, store, pipeline, vault, status):
+        ingested: list[str] = []
+        source_id = self._source(store, vault, ingested, pipeline)
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        await FolderWatcher(store, pipeline).scan_source(source)
+        deep_path = str(vault / "sub" / "deep.md")
+        deep_items = self._tracked(store, source_id)["deep.md"]
+        store.db.execute(
+            "UPDATE folder_file_state SET status = ? WHERE source_id = ? AND file_path = ?",
+            (status, source_id, deep_path))
+        store.db.commit()
+
+        ingested.clear()
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/*"]})
+        stats = await FolderWatcher(store, pipeline).scan_source(source)
+
+        row = store.db.execute(
+            "SELECT status, content_hash FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, deep_path)).fetchone()
+        assert stats["deleted"] == 0
+        assert ingested == []
+        assert row["status"] == "done"
+        # Emptied so the file is re-read if it ever leaves the patterns.
+        assert row["content_hash"] == ""
+        assert self._tracked(store, source_id)["deep.md"] == deep_items
+
+        # Dropping the pattern re-reads the file rather than trusting the row.
+        source["properties"] = "{}"
+        await FolderWatcher(store, pipeline).scan_source(source)
+        assert ingested == ["deep.md"]
+
+    @pytest.mark.asyncio
+    async def test_a_newly_ignored_file_another_rule_excludes_is_still_archived(
+            self, store, pipeline, vault):
+        ingested: list[str] = []
+        source_id = self._source(store, vault, ingested, pipeline)
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        await FolderWatcher(store, pipeline).scan_source(source)
+
+        # A file rule, not a directory one: the walk still reaches deep.md, and
+        # .kiroignore must drop it before the ignore patterns are tested.
+        (vault / ".kiroignore").write_text("deep.md\n")
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/*"]})
+        stats = await FolderWatcher(store, pipeline).scan_source(source)
+
+        assert stats["deleted"] == 1
+        assert "deep.md" not in self._tracked(store, source_id)
+
+
 class TestFolderFileStateTable:
     def test_table_exists(self, store):
         tables = {r[0] for r in store.db.execute(

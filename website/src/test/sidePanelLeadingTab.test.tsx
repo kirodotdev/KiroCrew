@@ -467,6 +467,22 @@ describe('SidePanel leading tabs — three host tabs', () => {
     expect(fixed.contains(close)).toBe(false)
   })
 
+  it('the dynamic wrapper out-shrinks the fixed one, which keeps the default factor', () => {
+    // Flex shrinks each item by factor × base size, so at equal factors the
+    // fixed chips pay a share of a dozen tabs' overflow in proportion to their
+    // width, which is most of that width. The dynamic wrapper's far larger
+    // factor makes it give up its width first; the fixed wrapper keeps the
+    // default, so it still yields after that ("the fixed-chip group scrolls
+    // instead of pushing ...").
+    renderPanel({ closable: true, leading: THREE_LEADING })
+    const dynamicWrap = screen.getByRole('tablist').parentElement!
+    expect(dynamicWrap.className).toContain('shrink-[10000]')
+    // Squeezed to nothing, the scroller is clipped here instead of spilling
+    // its padding, and a chip fragment, under the + button.
+    expect(dynamicWrap.className).toContain('overflow-x-clip')
+    expect(screen.getByTestId('side-panel-fixed-tabs').parentElement!.className).not.toMatch(/\bshrink-/)
+  })
+
   it('closing the focused tab returns to the leading tab viewed before it, not to the first', () => {
     renderPanel({ closable: false, leading: THREE_LEADING })
     fireEvent.click(chipFor('crew-work-log'))

@@ -575,6 +575,51 @@ class TestReaperRecordsAFailedSigkill:
         sweep.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a_gone_root_s_unrecorded_grandchild_is_named_in_the_record_and_audit_not_signalled(
+        self, tmp_path: object
+    ) -> None:
+        """The root exited; its recorded child 6161 leads 8181, which no record names.
+
+        The walk runs from 6161, since the dead root lists nothing. The sweep ends 6161, and
+        8181 is still running afterwards: it is named in ``last_error`` and in the audit's
+        ``kill_failed``, and it is never handed to the sweep.
+        """
+        svc, job, claim = _overdue_reap_fixture(tmp_path, "escaped1")
+        client = _session_with_pid(svc, "cron:escaped1", 5151)
+        client._child_pids = {6161: ("111", b"node")}
+        swept: list[dict[int, Any]] = []
+
+        def _start_ids(pid: int) -> str | None:
+            # The root is gone; 6161 reads back until the sweep ends it; 8181 runs on.
+            return {6161: None if swept else "111", 8181: "888"}.get(pid)
+
+        with (
+            patch("kiro_crew.sel.sel") as mock_sel,
+            patch.object(svc, "_save"),
+            patch(
+                "kiro_crew.acp.client._get_child_pids",
+                side_effect=lambda pid, *_: [8181] if pid == 6161 else [],
+            ) as walk,
+            patch(
+                "kiro_crew.acp.client._kill_escaped_children",
+                side_effect=lambda pids: swept.append(dict(pids)),
+            ),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=_start_ids),
+            patch("kiro_crew.platform_compat.pid_exists", side_effect=lambda pid: pid != 5151),
+            patch("kiro_crew.platform_compat.pid_is_zombie", return_value=False),
+            _group_gone(),
+        ):
+            await svc._force_reap("escaped1", _JOB_TIMEOUT_SECS + 60, claim=claim)
+
+        walk.assert_called_once_with(6161)
+        assert swept == [{6161: ("111", b"node")}], "the unrecorded grandchild was signalled"
+        named = "unrecorded descendant pid 8181 of a recorded child still running"
+        assert named in (job.last_error or ""), job.last_error
+        audit = mock_sel().log_tool_invocation.call_args.kwargs
+        assert audit["outcome"] == "failed"
+        assert named in audit["metadata"]["kill_failed"]
+
+    @pytest.mark.asyncio
     async def test_a_root_that_exits_during_the_child_walk_is_not_signalled_and_its_fresh_child_is_named(
         self,
     ) -> None:

@@ -1,7 +1,9 @@
 /** The sidebar header: the Sessions title, the list menu (dashboards, board
- *  toggle, cleanup, model switch, tags) and the split New button with its create
- *  menu (folders, private chats, import, chat in a folder or on a crew). */
-import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone } from 'lucide-react'
+ *  toggle, cleanup, model switch, tags, PR status refresh) and the split New
+ *  button with its create menu (folders, private chats, import, chat in a folder
+ *  or on a crew). */
+import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone, RefreshCw } from 'lucide-react'
+import { api } from '../../api/client'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { LIST_HEADER_CLS, LIST_TITLE_CLS } from '../../components/listShell'
@@ -16,6 +18,7 @@ import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
 import { isMateManaged } from '../../utils/mateFolders'
+import { errMessage } from '../../utils/thunkError'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
@@ -24,7 +27,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
     restorePreBoardWidth, seedStateLanesMutation, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
-    setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setRemoteCrewError, setSeedError, setToggleSaveFailed,
+    setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setPrStatusRefreshError, setRemoteCrewError, setSeedError, setToggleSaveFailed,
     tagColumnsEnabled, warmCrews } = shell
   const { setCleanupError, setCleanupExpanded } = shell.sessionCleanup
   const { setBulkModel, setBulkModelError, setBulkModelOpen, setBulkSkipRunning } = shell.bulkModel
@@ -114,6 +117,17 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
               <DropdownMenuItem onClick={() => setManageTagsOpen(o => !o)} {...uiLocation('sessions.list-menu.manage-tags')}>
                 <TagIcon size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.manage_tags')}
+              </DropdownMenuItem>
+              {/* Re-reads the session cards' PR chips now instead of at the next
+               *  background read; the new states arrive over the websocket. A
+               *  repeat click needs no pending guard: the gateway floors forced
+               *  reads per chip. */}
+              <DropdownMenuItem data-testid="refresh-pr-status" onClick={() => {
+                setPrStatusRefreshError('')
+                api.refreshPullRequestStatuses().catch((err: unknown) => setPrStatusRefreshError(errMessage(err) || i18nT('pages.chatSidebar.refresh_pr_status_failed')))
+              }}>
+                <RefreshCw size={14} className="text-muted" />
+                {i18nT('pages.chatSidebar.refresh_pr_status')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

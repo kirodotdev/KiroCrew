@@ -354,11 +354,6 @@ def main() -> None:
             )
             sys.exit(1)
 
-    if not os.environ.get("KIROCREW_PROJECT_DIR"):
-        detected = _detect_project_dir()
-        if detected:
-            os.environ["KIROCREW_PROJECT_DIR"] = detected
-
     parser = argparse.ArgumentParser(
         prog="kirocrew",
         description="Kiro Crew — personal AI agent",
@@ -621,6 +616,22 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Before anything can write into the data home, project detection included
+    # (its saved-path lookup creates the home): a root run aimed at a person's
+    # own home would leave files that person cannot read.
+    from kiro_crew.config import paths as _config_paths
+    from kiro_crew.data_home_owner import root_run_refusal
+
+    _refusal = root_run_refusal(_config_paths.peek_data_home(), args.command, sys.argv[1:])
+    if _refusal:
+        print(_refusal, file=sys.stderr)
+        sys.exit(1)
+
+    if not os.environ.get("KIROCREW_PROJECT_DIR"):
+        detected = _detect_project_dir()
+        if detected:
+            os.environ["KIROCREW_PROJECT_DIR"] = detected
+
     # Cap glibc malloc arenas before the gateway starts any thread pool: an
     # uncapped glibc gives a busy thread its own 64 MiB arena heaps, and on a
     # many-core host those idle heaps were most of the gateway's RSS. In-process
@@ -670,12 +681,14 @@ def main() -> None:
     # The live target (Dev Fleet "Make live") is a pointer file, not an edit to
     # this process's service definition — so it is resolved HERE, by the process
     # itself. This must stay the FIRST thing the gateway does after argv is
-    # known: the gateway lock is not held yet and no socket is bound, so exec'ing
+    # known, bar the persistence preflight, which holds no lock and binds nothing:
+    # the gateway lock is not held yet and no socket is bound, so exec'ing
     # away leaves nothing half-done. It returns (and we boot the installed build)
     # whenever there is no usable target, so a bad pointer can never leave the
     # host with no gateway. Gateway only: a plain CLI invocation must keep running
     # the install the user typed, not a worktree someone made live.
     if args.command == "gateway":
+        _refuse_unpersistable_data_home()
         maybe_reexec(sys.argv[1:])
 
     # ``gateway --seed <fixture>`` runs BEFORE ``KiroCrewConfig.load()`` and the
@@ -1159,6 +1172,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
     _diagnostic_bind_address,
     _diagnostic_port,
     _install_child_watcher,
+    _refuse_unpersistable_data_home,
     _resolve_gateway_args,
 )
 from kiro_crew.cli_jail import _JAILED_COMMANDS, _jail_reexec_gate  # noqa: E402
@@ -1223,4 +1237,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
     )
+    from kiro_crew.config.paths import peek_data_home  # noqa: F401
     from kiro_crew.messaging.tables import display_width  # noqa: F401

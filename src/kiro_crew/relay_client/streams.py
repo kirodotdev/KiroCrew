@@ -168,11 +168,14 @@ class HttpStream:
         monotonic: Callable[[], float] = time.monotonic,
         request_credit: bool = False,
         send_unless: Optional[SendUnless] = None,
+        on_error: Optional[StreamDone] = None,
     ) -> None:
         self.id: int = head["id"]
         self._head = head
         self._send = send
         self._send_unless = send_unless
+        #: Told the stream's id before its own error frame is queued.
+        self._on_error = on_error
         self._ingress = ingress
         self._on_done = on_done
         self.credit = credit
@@ -358,6 +361,8 @@ class HttpStream:
         """End this stream with an ``error`` frame; marked first, so it goes out once."""
         self._error_sent = True
         self._ended = True
+        if self._on_error is not None:
+            self._on_error(self.id)
         await self._send(build_error(code, message, stream_id=self.id))
 
     async def _open(self) -> Optional[IngressResponse]:

@@ -14,7 +14,7 @@ from aiohttp import web
 
 from kiro_crew.connections import get_provider
 from kiro_crew.connections.ownership import remove_provider_entry
-from kiro_crew.connections.registry import Provider
+from kiro_crew.connections.registry import Provider, is_visible
 from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 from kiro_crew.dashboard.handlers.mcp import (
     _get_mcp_lock,
@@ -209,7 +209,7 @@ def _log_relay_outcome(server: str, outcome: str, status: int | None = None) -> 
     if outcome == "delivered":
         logger.info(
             "MCP OAuth relay for %s: code delivered to the local callback%s; "
-            "the MCP client finishes the token exchange",
+            "the listener finishes the token exchange",
             server,
             suffix,
         )
@@ -411,7 +411,9 @@ async def _mint_request(
     a mint starts a kiro-cli process and a disconnect deletes stored grant
     artifacts, so the slug has to resolve to a provider we ship rather than to
     arbitrary caller-supplied text. Shared by every provider-scoped endpoint so
-    that bound is enforced in one place.
+    that bound is enforced in one place. Visibility is checked by the callers that
+    start work (Mint, Test), not here, so Cancel and Disconnect still reach a
+    hidden provider.
     """
     try:
         body = await request.json()
@@ -521,6 +523,8 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     _body, provider = parsed
+    if not is_visible(provider):
+        return _bad_request("unknown provider", "unknown_provider")
     slug = str(provider["slug"])
 
     # A pre-registered provider (registry ``auth.mode``) has nothing to mint
@@ -703,6 +707,8 @@ async def api_connections_test(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     _body, provider = parsed
+    if not is_visible(provider):
+        return _bad_request("unknown provider", "unknown_provider")
     slug = str(provider["slug"])
     if await asyncio.to_thread(_routed_through_crew_oauth, slug):
         # Test enumerates through kiro-cli's own grant, which a Crew-held sign-in

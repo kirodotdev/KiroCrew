@@ -12,6 +12,10 @@ These tests monkeypatch ``os.listxattr``/``getxattr``/``setxattr`` exactly as
 test/test_artifacts_source_root.py does for the ``safe_write_file_nolink`` twin, so they run
 offline without any real xattr support. Each asserts a distinct branch of the
 policy and fails if the ACL-carry code is reverted, so none can pass by accident.
+The macOS extended ACL is not an xattr; its tests set a real entry with
+``chmod +a`` and run only on macOS, except the refusal, which fakes the copy.
+The macOS temp-cleanup tests guard what a refused save leaves behind once the
+carry has run, so they do not fail on a reverted carry.
 
 Run offline via:
 
@@ -23,10 +27,20 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write, open_access_control_source
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+_MACOS_ONLY = pytest.mark.skipif(
+    not platform_compat.IS_MACOS, reason="the extended ACL is the macOS store"
+)
 
 
 def _needs_xattr() -> None:
@@ -427,3 +441,214 @@ def test_no_source_fd_leaves_the_write_untouched(tmp_path, monkeypatch):
 
         atomic_write(target, "new body")
     assert target.read_text(encoding="utf-8") == "new body"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows DACL exists only on Windows")
+def test_a_narrowed_windows_dacl_survives_the_replace(tmp_path):
+    """A file narrowed below its folder keeps that narrowing after an overwrite."""
+    from kiro_crew import windows_acl
+
+    # The real lockdown under restrict_to_owner, which conftest stubs on Windows.
+    from kiro_crew.platform_owner_compat import (
+        _OWNER_RIGHTS_SID,
+        _apply_owner_only_dacl,
+        current_user_sid,
+    )
+
+    target = tmp_path / "narrow.txt"
+    target.write_text("old", encoding="utf-8")
+    _apply_owner_only_dacl(target, inherit=False)
+    user_sid = current_user_sid()
+    assert user_sid is not None
+    sids = (_OWNER_RIGHTS_SID,) if user_sid == _OWNER_RIGHTS_SID else (_OWNER_RIGHTS_SID, user_sid)
+    assert windows_acl.owner_only_dacl_matches(target, inherit=False, sids=sids)
+
+    atomic_write(target, "new", preserve_windows_dacl=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert windows_acl.owner_only_dacl_matches(target, inherit=False, sids=sids)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows DACL exists only on Windows")
+def test_a_file_moved_from_a_narrower_folder_keeps_its_inherited_dacl(tmp_path):
+    """A move keeps the old folder's inherited entries; a save must not swap in the new folder's."""
+    from kiro_crew import windows_acl
+    from kiro_crew.platform_owner_compat import _apply_owner_only_dacl
+
+    narrow, wide = tmp_path / "narrow", tmp_path / "wide"
+    narrow.mkdir()
+    wide.mkdir()
+    _apply_owner_only_dacl(narrow, inherit=True)
+    (narrow / "doc.txt").write_text("old", encoding="utf-8")
+    target = wide / "doc.txt"
+    os.rename(narrow / "doc.txt", target)
+    before = windows_acl.read_carried_dacl(target)
+    assert before is not None
+    (wide / "fresh.txt").write_text("x", encoding="utf-8")
+    assert before != windows_acl.read_carried_dacl(wide / "fresh.txt")
+
+    atomic_write(target, "new", preserve_windows_dacl=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert windows_acl.read_carried_dacl(target) == before
+
+
+def _run(*argv: str) -> str:
+    return subprocess.run(
+        list(argv),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+    ).stdout
+
+
+#: ``nobody``'s fixed UUID. ``ls -len`` prints a qualifier as its UUID, so a check
+#: does not depend on a name lookup, which a busy host can fail.
+_NOBODY = "FFFFEEEE-DDDD-CCCC-BBBB-AAAAFFFFFFFE"
+
+
+def _acl_entries(path: Path) -> list[str]:
+    return [line.strip() for line in _run("/bin/ls", "-len", str(path)).splitlines()[1:]]
+
+
+def _pinned_write(target: Path, content: str, *, mode: int | None = None) -> None:
+    dir_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    src_fd = None
+    try:
+        src_fd = open_access_control_source(target, dir_fd=dir_fd)
+        atomic_write(
+            target,
+            content,
+            mode=mode,
+            preserve_access_control_from=src_fd,
+            parent_dir_fd=dir_fd,
+        )
+    finally:
+        for fd in (src_fd, dir_fd):
+            if fd is not None:
+                os.close(fd)
+
+
+@_MACOS_ONLY
+def test_macos_extended_acl_survives_a_pinned_replace(tmp_path):
+    """The replacement keeps the file's own ACL entry, not only the folder's.
+
+    ``user:nobody deny read`` narrows the file below its folder, so losing it
+    would hand the saved file back readable by that account.
+    """
+    target = Path(os.path.realpath(tmp_path)) / "narrow.txt"
+    target.write_text("old", encoding="utf-8")
+    _run("/bin/chmod", "+a", "user:nobody deny read", str(target))
+    assert _acl_entries(target) == [f"0: {_NOBODY} deny read"]
+
+    _pinned_write(target, "new")
+
+    assert _acl_entries(target) == [f"0: {_NOBODY} deny read"]
+    assert target.read_text(encoding="utf-8") == "new"
+
+
+@_MACOS_ONLY
+def test_a_refused_macos_save_removes_a_temp_that_carries_a_deny_delete_entry(tmp_path):
+    """A deny-delete entry refuses the rename, and the carried copy refuses a plain unlink.
+
+    The save fails as it always has; what must not change is that the temp is
+    gone afterwards, rather than left in the user's folder with an entry that
+    stops them deleting it.
+    """
+    folder = Path(os.path.realpath(tmp_path))
+    target = folder / "locked.txt"
+    target.write_text("old", encoding="utf-8")
+    _run("/bin/chmod", "+a", "everyone deny delete", str(target))
+    try:
+        with pytest.raises(PermissionError):
+            _pinned_write(target, "new")
+        assert os.listdir(folder) == ["locked.txt"]
+        assert target.read_text(encoding="utf-8") == "old"
+    finally:
+        # Lets tmp_path's cleanup remove whatever is left.
+        _run("/bin/chmod", "-N", *(str(p) for p in folder.iterdir()))
+
+
+@_MACOS_ONLY
+def test_a_temp_is_owner_only_before_its_acl_is_emptied_for_removal(tmp_path, monkeypatch):
+    """The temp holds the new content, so emptying its ACL must not open it to a denied account.
+
+    On a 0644 file, ``user:nobody deny read`` is the only thing keeping that
+    account out, so the temp loses its group and other bits before the ACL goes.
+    """
+    folder = Path(os.path.realpath(tmp_path))
+    target = folder / "locked.txt"
+    target.write_text("old", encoding="utf-8")
+    os.chmod(target, 0o644)
+    _run("/bin/chmod", "+a", "user:nobody deny read", str(target))
+    _run("/bin/chmod", "+a", "everyone deny delete", str(target))
+    seen: list[tuple[int, list[str]]] = []
+    real_unlink = os.unlink
+
+    def unlink(name, *, dir_fd=None):
+        if os.path.basename(name) != target.name:
+            leaf = folder / os.path.basename(name)
+            seen.append((stat.S_IMODE(leaf.lstat().st_mode), _acl_entries(leaf)))
+        real_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    try:
+        with pytest.raises(PermissionError):
+            _pinned_write(target, "new", mode=0o644)
+        assert os.listdir(folder) == ["locked.txt"]
+    finally:
+        # Lets tmp_path's cleanup remove whatever is left.
+        _run("/bin/chmod", "-N", *(str(p) for p in folder.iterdir()))
+    assert [mode for mode, entries in seen if not entries] == [0o600]
+
+
+@_MACOS_ONLY
+def test_a_temp_whose_removal_stays_refused_keeps_the_acl_it_carried(tmp_path):
+    """Emptying the temp's ACL to remove it is undone when the folder refuses the removal.
+
+    The temp holds the new content, so one left behind must stay as restricted
+    as the file it was meant to replace.
+    """
+    folder = Path(os.path.realpath(tmp_path)) / "shut"
+    folder.mkdir()
+    _run("/bin/chmod", "+a", "user:nobody deny read,file_inherit", str(folder))
+    target = folder / "narrow.txt"
+    target.write_text("old", encoding="utf-8")
+    _run("/bin/chmod", "+a", "everyone deny delete_child", str(folder))
+    try:
+        with pytest.raises(PermissionError):
+            _pinned_write(target, "new")
+        (leftover,) = [p for p in folder.iterdir() if p.name != target.name]
+        assert _acl_entries(leftover) == [f"0: {_NOBODY} inherited deny read"]
+        assert target.read_text(encoding="utf-8") == "old"
+    finally:
+        # Lets tmp_path's cleanup remove whatever is left.
+        _run("/bin/chmod", "-N", str(folder))
+        _run("/bin/chmod", "-N", *(str(p) for p in folder.iterdir()))
+
+
+def test_a_macos_acl_that_cannot_be_carried_refuses_the_write(tmp_path, monkeypatch):
+    """Like a lost POSIX ACL: the write raises, the original stays, no temp is left."""
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    sources: list[int] = []
+
+    def refuse(src_fd: int, dst_fd: int) -> None:
+        sources.append(src_fd)
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(platform_compat, "IS_MACOS", True)
+    monkeypatch.setattr(aw.macos_acl, "copy_extended_acl", refuse)
+    src_fd = _open_source(target)
+    try:
+        with pytest.raises(PermissionError):
+            atomic_write(target, "new body", preserve_access_control_from=src_fd)
+    finally:
+        os.close(src_fd)
+
+    assert sources == [src_fd]
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"
+    assert list(tmp_path.glob("*.tmp")) == []

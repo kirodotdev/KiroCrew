@@ -65,6 +65,18 @@ interface NotificationsState {
    *  notice, its Approve/Reject are withdrawn, and its close X (always
    *  shown) tries again. */
   dismissFailed?: Record<string, 'decided'>
+  /** Monotonic counter of publisher-driven membership changes: a keyed note
+   *  arriving (it replaces any note held under its key) and `notification_dismiss`.
+   *  A fetch snapshots it at request start, as it does `ackSeq`. Optional for the
+   *  same rehydration reason. */
+  membershipSeq?: number
+  /** ts → the `membershipSeq` at which a keyed note arrived. The fetch merge keeps
+   *  a note that arrived after its request began: the response predates it. */
+  keyedAtByTs?: Record<string, number>
+  /** ts → the `membershipSeq` at which a note was replaced or dismissed. The fetch
+   *  merge drops a row withdrawn after its request began, so a stale snapshot
+   *  cannot bring it back. Bounded to the newest `NOTIFICATIONS_RING_CAP` entries. */
+  withdrawnAtByTs?: Record<string, number>
 }
 
 /** Why a listed approval row can no longer be decided (`retiredApprovals`). */
@@ -102,6 +114,7 @@ export const rowPhase = (notifications: ApprovalMarks, ts: string): ApprovalRowP
 
 const initialState: NotificationsState = {
   items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {}, retiredApprovals: {}, approvalDecisions: {}, dismissFailed: {},
+  membershipSeq: 0, keyedAtByTs: {}, withdrawnAtByTs: {},
 }
 
 /** Ring-buffer cap on the notifications list. Without it, `items` grows
@@ -215,6 +228,53 @@ const replaceRows = (state: NotificationsState, incoming: Notification[], { endD
   pruneAckStamps(state)
 }
 
+/** The same bound for keyed-arrival stamps: one per held item at most. */
+const pruneKeyedStamps = (state: NotificationsState) => {
+  const stamps = state.keyedAtByTs
+  if (!stamps) return
+  const live = new Set(state.items.map(n => n.ts))
+  for (const ts of Object.keys(stamps)) {
+    if (!live.has(ts)) delete stamps[ts]
+  }
+}
+
+const nextMembershipSeq = (state: NotificationsState): number => {
+  state.membershipSeq = (state.membershipSeq ?? 0) + 1
+  return state.membershipSeq
+}
+
+const markWithdrawn = (state: NotificationsState, ts: string, seq: number) => {
+  const withdrawn = (state.withdrawnAtByTs ??= {})
+  withdrawn[ts] = seq
+  const entries = Object.entries(withdrawn)
+  if (entries.length > NOTIFICATIONS_RING_CAP) {
+    entries.sort((a, b) => a[1] - b[1])
+    for (const [old] of entries.slice(0, entries.length - NOTIFICATIONS_RING_CAP)) delete withdrawn[old]
+  }
+}
+
+/** A fetch response's membership with the publisher-driven changes this view saw
+ *  after the request began laid over it: rows replaced or dismissed since are
+ *  dropped, and keyed notes that arrived since are kept, each replacing whatever
+ *  the response holds under its key. `since` is undefined only for a response
+ *  built without the stamp, which is applied as the server sent it. */
+function withMembershipSince(
+  state: NotificationsState,
+  items: Notification[],
+  since: number | undefined,
+): Notification[] {
+  if (since === undefined) return items
+  const withdrawn = state.withdrawnAtByTs ?? {}
+  const keyedAt = state.keyedAtByTs ?? {}
+  let merged = items.filter(item => !((withdrawn[item.ts] ?? -1) > since))
+  for (const local of state.items) {
+    if (!((keyedAt[local.ts] ?? -1) > since) || merged.some(item => item.ts === local.ts)) continue
+    merged = merged.filter(item => !(item.key === local.key && item.source === local.source))
+    merged.push(local)
+  }
+  return merged
+}
+
 /**
  * Boot-time notifications dedupe (#765). App's mount effect and the
  * WebSocket's FIRST-connect handler used to each dispatch `fetchNotifications`
@@ -278,8 +338,9 @@ export const fetchNotifications = createAsyncThunk(
     const notif = (getState() as { notifications: NotificationsState }).notifications
     const seq = notif.clearSeq
     const ackSeq = notif.ackSeq ?? 0
+    const membershipSeq = notif.membershipSeq ?? 0
     const d = await api.notifications()
-    return { items: (d.notifications || []) as Notification[], seq, ackSeq }
+    return { items: (d.notifications || []) as Notification[], seq, ackSeq, membershipSeq }
   },
 )
 
@@ -369,10 +430,22 @@ const notificationsSlice = createSlice({
   initialState,
   reducers: {
     addNotification(state, action: PayloadAction<Notification>) {
-      if (!state.items.some(n => n.ts === action.payload.ts)) {
-        state.items.push(action.payload)
+      const note = action.payload
+      if (!state.items.some(n => n.ts === note.ts)) {
+        // The bell holds one note per (source, key), as the backend does: a
+        // keyed note replaces the one this view already shows for that key.
+        if (note.key) {
+          const seq = nextMembershipSeq(state)
+          for (const n of state.items) {
+            if (n.key === note.key && n.source === note.source) markWithdrawn(state, n.ts, seq)
+          }
+          state.items = state.items.filter(n => !(n.key === note.key && n.source === note.source))
+          ;(state.keyedAtByTs ??= {})[note.ts] = seq
+        }
+        state.items.push(note)
         state.items = capRows(state, state.items)
         pruneAckStamps(state)
+        pruneKeyedStamps(state)
       }
     },
     ackNotificationByTs(state, action: PayloadAction<string>) {
@@ -475,12 +548,20 @@ const notificationsSlice = createSlice({
       // a retryable failure leaves it pending, so the row goes, as asked.
       else if (d?.dismissed && !Object.hasOwn(map, ts) && !claimed) removeRow(state, ts)
     },
+    /** WS `notification_dismiss`: the publisher withdrew the note, so every view
+     *  drops it, and a fetch already in flight must not bring it back. */
+    dismissNotificationByTs(state, action: PayloadAction<string>) {
+      markWithdrawn(state, action.payload, nextMembershipSeq(state))
+      removeRow(state, action.payload)
+      pruneKeyedStamps(state)
+    },
     /** WS `notifications_clear` sync: another view cleared the inbox, so this
      *  view drops its copy too (the bell badge derives from `items`).
      *  Idempotent — clearing an already-empty list is a no-op. */
     clearAllNotifications(state) {
       state.clearSeq += 1
       replaceRows(state, [], { endDeciding: true })
+      state.keyedAtByTs = {}
     },
   },
   extraReducers: (builder) => {
@@ -495,14 +576,17 @@ const notificationsSlice = createSlice({
         // the payload's copy of that item and must survive — otherwise an item
         // the user already acked reappears as unread, and two overlapping
         // fetches resolving out of order make it flip back and forth.
-        // Membership, ordering, and every other field still come from the
-        // server, so this narrows to ack state only.
+        // Membership, ordering, and every other field come from the server,
+        // except for the publisher-driven changes this view saw after the
+        // request began (`withMembershipSince`): a keyed replacement or a
+        // dismissal the response predates.
         const requestAckSeq = action.payload.ackSeq ?? 0
         const stamps = state.ackSeqByTs ?? {}
         const prev = original(state.items) ?? []
         const prevByTs = new Map<string, Notification>()
         for (const n of prev) if (!prevByTs.has(n.ts)) prevByTs.set(n.ts, n)
-        replaceRows(state, action.payload.items.map(item => {
+        const membership = withMembershipSince(state, action.payload.items, action.payload.membershipSeq)
+        replaceRows(state, membership.map(item => {
           const stamped = stamps[item.ts]
           const local = prevByTs.get(item.ts)
           // A settled approval row (retired, or decided with a failed DELETE)
@@ -516,6 +600,7 @@ const notificationsSlice = createSlice({
           // row keyed on it, and every memo over the list, from re-rendering.
           return local && jsonEqual(local, merged) ? local : merged
         }), { endDeciding: false })
+        pruneKeyedStamps(state)
       })
       .addCase(clearNotifications.fulfilled, (state, action) => {
         // The generation moved while the request was in flight, so the
@@ -527,6 +612,7 @@ const notificationsSlice = createSlice({
         if (action.payload.seq !== state.clearSeq) return
         state.clearSeq += 1
         replaceRows(state, [], { endDeciding: true })
+        state.keyedAtByTs = {}
       })
       .addCase(deleteNotification.fulfilled, (state, action) => {
         removeRow(state, action.payload)
@@ -605,7 +691,7 @@ const notificationsSlice = createSlice({
   },
 })
 
-export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, endApprovalRow, dismissApprovalRow, clearAllNotifications, approvalDecisionBegan, approvalDecisionSettled } = notificationsSlice.actions
+export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, dismissNotificationByTs, endApprovalRow, dismissApprovalRow, clearAllNotifications, approvalDecisionBegan, approvalDecisionSettled } = notificationsSlice.actions
 export default notificationsSlice.reducer
 
 /** True for an approval row this tab raised itself, from an `approval` frame

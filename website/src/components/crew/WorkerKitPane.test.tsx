@@ -181,7 +181,12 @@ describe('WorkerKitPane', () => {
     const done = await screen.findByTestId('worker-kit-done')
     expect(done).toHaveTextContent('Added 2 to Pixel.')
     expect(done).toHaveTextContent('Tools under Auto-approvals now run without asking.')
-    fireEvent.click(within(done).getByTestId('worker-kit-open-approvals'))
+    const openApprovals = within(done).getByTestId('worker-kit-open-approvals')
+    // At rest it must not be the stock transparent Btn, which disappears on the ok tint.
+    expect(openApprovals).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(openApprovals).not.toHaveClass('bg-transparent')
+    expect(openApprovals).toHaveClass('hover:bg-bg-hover')
+    fireEvent.click(openApprovals)
     expect(onOpenApprovals).toHaveBeenCalledTimes(1)
   })
 

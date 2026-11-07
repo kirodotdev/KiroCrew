@@ -636,9 +636,10 @@ Two details are load-bearing rather than incidental:
 - **`KILL_ON_JOB_CLOSE` is deliberately not set.** It would terminate the agent
   tree as soon as the last job handle closed, turning a resource ceiling into a
   process-lifecycle change (a gateway exit would kill running agents). Leaving it
-  off also means the handle need not be held: a job stays alive while processes
-  are assigned to it, so the limits persist after `CloseHandle` and there is no
-  handle registry or teardown to get wrong.
+  off also means the limits do not depend on a held handle: a job stays alive
+  while processes are assigned to it. The agent tree's cleanup state keeps the
+  handle, and ending that runtime ends the job after the exact-handle drain, so a
+  member whose parent exited first goes too; a gateway exit just closes it.
 
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and

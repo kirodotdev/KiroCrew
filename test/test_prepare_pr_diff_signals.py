@@ -548,3 +548,47 @@ def test_end_to_end_base_without_the_template_check_skips_it(repo: Path) -> None
     assert rc == 0
     assert "TEMPLATE" not in out
     assert "PR template" not in out
+
+
+@pytest.mark.parametrize("git_bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+def test_windows_template_check_never_runs_the_wsl_launcher(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], git_bash: str | None
+) -> None:
+    """On Windows, ``bash`` in System32 is the WSL launcher: it never writes the
+    output file, so running it skipped the check. Git bash is used instead, and
+    with only the launcher the skip line names WSL."""
+    launcher = r"C:\Windows\System32\bash.exe"
+    monkeypatch.setattr(ds, "IS_WINDOWS", True, raising=False)
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\u\AppData\Local")
+    monkeypatch.setenv(
+        "PATH",
+        r"C:\WINDOWS\system32;C:\Users\u\AppData\Local\Microsoft\WindowsApps;C:\Program Files\Git\bin",
+    )
+
+    def which(name: str, path: str | None = None) -> str | None:
+        if path is None or "system32" in path.lower() or "windowsapps" in path.lower():
+            return launcher
+        return git_bash
+
+    ran: list[str] = []
+
+    def fake_run(argv: list[str], env: dict[str, str], **_: object) -> None:
+        ran.append(argv[0])
+        if argv[0] != launcher:
+            Path(env["GITHUB_OUTPUT"]).write_text(
+                "conclusion=failure\ntitle=missing\n", encoding="utf-8"
+            )
+
+    monkeypatch.setattr(ds.shutil, "which", which)
+    monkeypatch.setattr(ds.subprocess, "run", fake_run)
+    monkeypatch.setattr(ds, "run", lambda argv: (0, "#!/bin/bash\n", ""))
+    rc = ds.template_check("body", "main")
+    out = capsys.readouterr().out
+    assert launcher not in ran
+    if git_bash:
+        assert (rc, ran) == (22, [git_bash])
+        assert "TEMPLATE: missing" in out
+    else:
+        assert (rc, ran) == (0, [])
+        assert "only the WSL bash launcher is on PATH - template check skipped" in out

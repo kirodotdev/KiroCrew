@@ -394,7 +394,10 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
  *  `pausedIn` (the paused root) marks a member Pause all stopped: its card shows
  *  "Paused" and its own Continue instead of the status dot. */
 function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: {
-  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void; onOpen: () => void; current: boolean; pausedIn?: string
+  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void
+  /** Absent on a remote crew's row: its key names no session here to open. */
+  onOpen?: () => void
+  current: boolean; pausedIn?: string
 }) {
   const { w, depth } = node
   const title = w.title || i18nT('commandCenter.worker_untitled')
@@ -412,8 +415,8 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
           <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
         </button>
       ) : gutter && <span aria-hidden="true" className="mt-2.5 w-4 h-4 shrink-0" />}
-      <button type="button" onClick={onOpen} aria-current={current ? 'true' : undefined}
-        className={`flex-1 min-w-0 text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : 'border-border bg-bg-elevated/40 hover:bg-bg-hover'}`}>
+      <button type="button" onClick={onOpen} disabled={!onOpen} aria-current={current ? 'true' : undefined}
+        className={`flex-1 min-w-0 text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : onOpen ? 'border-border bg-bg-elevated/40 hover:bg-bg-hover' : 'border-border bg-bg-elevated/40 cursor-default'}`}>
         <span className="flex items-center gap-2 min-w-0">
           <span className={`font-medium truncate ${done ? 'text-muted' : 'text-text'}`} data-testid="ultra-member-title">{title}</span>
           <span className="ml-auto flex items-center gap-1.5 shrink-0 text-[11px]">
@@ -440,7 +443,10 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
           </span>
         </span>
         {w.summary && <span className="block text-[12px] text-text/80 truncate mt-0.5">{w.summary}</span>}
-        {w.last_activity && <span className="block text-[11px] text-muted truncate mt-0.5">{fmtRelativeTime(w.last_activity)}</span>}
+        <span className="block text-[11px] text-muted truncate mt-0.5">
+          <span data-testid="ultra-member-location">{w.remote_crew || i18nT('sessionEnvironments.picker.thisMachine')}</span>
+          {w.last_activity && <> &middot; {fmtRelativeTime(w.last_activity)}</>}
+        </span>
       </button>
       {pausedIn && <span className="pt-2 pl-1 shrink-0"><CrewMemberContinue root={pausedIn} worker={w.key} /></span>}
     </li>
@@ -543,6 +549,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const listed = useCrewWorkers(root, active)
   const live = useLiveCrewWorkers(root)
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data, live])
+  // Pause all stops this gateway's turns only, so its counts leave remote rows out.
+  const localWorkers = workers.filter(w => !w.remote_crew)
   // Pause all ships behind the Ultra Mode preview, like the rest of this panel's crew surfaces.
   const crewModeOn = useCrewMode()
   const pause = crewModeOn ? listed.data?.paused : undefined
@@ -609,7 +617,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const finished = visibleCrewRows(finishedTops, isOpen)
   const memberRow = (n: CrewTreeNode) => (
     <MemberRow key={n.w.key} node={n} open={isOpen(n)} gutter={gutter} current={n.w.key === viewing}
-      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={() => open(n.w)}
+      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={n.w.remote_crew ? undefined : () => open(n.w)}
       pausedIn={pause?.stopped.includes(n.w.key) ? root : undefined} />
   )
   const [view, setView] = useState<'status' | 'list'>('status')
@@ -666,7 +674,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const moving = openMs.some(m => m.state === 'running')
   const openItem = (item: WorkBoardItem) => {
     const w = workers.find(x => x.ledger_item === item.item_id)
-    return w ? () => open(w) : undefined
+    return w && !w.remote_crew ? () => open(w) : undefined
   }
   const recap = summaryRecap(summary.data, items.map(i => i.title))
     || (items.length
@@ -767,7 +775,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
         <div className="relative flex-1 min-h-0 flex flex-col">
         {showSearch && <CrewWorkerSearch query={query} onChange={setQuery} />}
         {/* A paused crew can always be resumed, its root's tab closed or not; only Pause all needs a live root. */}
-        {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={c.running} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={workers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
+        {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={localWorkers.filter(w => crewWorkerGroup(w) === 'working').length} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={localWorkers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5" data-testid="ultra-list">
           {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
           {searching && shown.length === 0 && <p role="status" className="text-sm text-muted" data-testid="crew-search-empty">{i18nT('commandCenter.workers_search_empty', { query: query.trim() })}</p>}

@@ -172,6 +172,16 @@ class TestYoloCommand:
         await _slash("!yolo renew", slack, sessions)
         assert "renewed" in _texts(slack)
 
+    @pytest.mark.asyncio
+    async def test_the_cli_grant_is_not_slacks_to_renew(self, slack, sessions, owner):
+        """``gateway --approval yolo``'s grant reads as off in Slack, so renew refuses it."""
+        from kiro_crew import safety_override as so
+
+        assert so.safety_override().activate_declared("cli").active is True
+        await _slash("!yolo renew", slack, sessions)
+        assert "not active" in _texts(slack)
+        assert so.safety_override().is_cli_launch is True
+
 
 # ──────────────────────────────────────────────────────────────────────
 # !stop

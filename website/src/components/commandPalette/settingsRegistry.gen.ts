@@ -1220,6 +1220,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.include-subfolder-contents-in-folder-counts",
+    "label": "Include Subfolder Contents in Folder Counts",
+    "labelKey": "pages.settings.chatPanel.folder_count_includes_subfolders",
+    "hint": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.jump-to-the-bottom-when-you-send",
     "label": "Jump to the bottom when you send",
     "labelKey": "pages.settings.chatPanel.scroll_on_send",
@@ -1420,6 +1432,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.quick-send",
     "label": "Quick Send",
     "labelKey": "pages.settings.chatPanel.quick_send",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.recall-sent-messages-with-arrow-keys",
+    "label": "Recall Sent Messages with Arrow Keys",
+    "labelKey": "pages.settings.chatPanel.arrow_key_prompt_history",
+    "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.require-a-second-escape-to-stop-the-turn",
+    "label": "Require a second Escape to stop the turn",
+    "labelKey": "pages.settings.chatPanel.double_escape_to_stop",
+    "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -2542,6 +2578,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "terminal"
     },
     "configKey": "dashboard.terminal.reuse_current"
+  },
+  {
+    "id": "display.show-tray-icon",
+    "label": "Show tray icon",
+    "labelKey": "pages.settings.displayPanel.show_tray_icon",
+    "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.show-tray-icon"
   },
   {
     "id": "display.show-unread-dot-on-session-cards",

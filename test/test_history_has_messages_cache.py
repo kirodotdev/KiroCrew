@@ -209,3 +209,9 @@ def test_only_the_listing_calls_the_memoized_reader():
         if ".listing_has_messages(" in path.read_text(encoding="utf-8")
     }
     assert callers == {"dashboard/handlers/sessions_parts/history_reads.py"}
+    indexed_callers = {
+        path.relative_to(_SRC).as_posix()
+        for path in _SRC.rglob("*.py")
+        if ".indexed_has_messages(" in path.read_text(encoding="utf-8")
+    }
+    assert indexed_callers == {"dashboard/handlers/sessions_parts/history_reads.py"}

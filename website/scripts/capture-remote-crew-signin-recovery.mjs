@@ -234,7 +234,7 @@ const openPage = async theme => {
 /** Open the Set-up tab, where the launch progress card lives. */
 const openSetup = async page => {
   await page.goto(`${base}/settings?tab=instances`, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('button', { name: /Set up a new one/i }).click()
+  await page.getByRole('radio', { name: /Set up a new one/i }).click()
   await page.locator('[data-testid="signin-prompt"]').waitFor({ timeout: 20000 })
   await page.waitForTimeout(400)
 }
@@ -528,7 +528,7 @@ world.instances = []
 for (const theme of ['dark', 'light']) {
   const page = await openPage(theme)
   await page.goto(`${base}/settings?tab=instances`, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('button', { name: /Set up a new one/i }).click()
+  await page.getByRole('radio', { name: /Set up a new one/i }).click()
   // No instance exists yet, so this Cancel says it removes the one being created
   // -- the destructive half of the split, never shown in frames 2-5.
   const cancel = page.getByRole('button', { name: /Cancel setup of kc-5e10bb and remove the crew/i })

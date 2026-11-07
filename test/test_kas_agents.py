@@ -32,6 +32,7 @@ from kiro_crew.acp.kas_agents import (
     resolve_prompt,
     to_client_custom_agent,
 )
+from kiro_crew.acp.kas_permissions import CREW_ANSWERED_BUILTINS_KEY
 from kiro_crew.agent_discovery import (
     WELCOME_MESSAGE_MAX_CHARS,
     spec_welcome_message,
@@ -266,6 +267,69 @@ class TestTheSpecIsSpelledInKasToolIds:
         assert {"capability": "subagent", "effect": "allow"} in alias["permissions"]["rules"]
         out = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=["subagent"]), "p")
         assert out["excludedTools"] == ["use_subagent", "invoke_sub_agent"]
+
+    @pytest.mark.parametrize(
+        ("alias", "crew"),
+        [
+            ("fsRead", "fs_read"),
+            ("fsWrite", "fs_write"),
+            ("executeCmd", "execute_bash"),
+            ("execute_cmd", "execute_bash"),
+            ("agent_crew", "use_subagent"),
+            ("@builtin/fs_read", "fs_read"),
+            ("@builtin/execute_cmd", "execute_bash"),
+            ("@builtin/write", "fs_write"),
+            ("@builtin/shell", "execute_bash"),
+        ],
+    )
+    def test_kiro_cli_tool_aliases_mount_and_grant_like_the_crew_name(self, alias, crew):
+        """kiro-cli parses each alias as the same built-in (P1-11): on KAS it must
+        mount, exclude and grant exactly what the Crew name does."""
+        a = to_client_custom_agent("a", _spec(tools=[alias], allowedTools=[alias]), "p")
+        c = to_client_custom_agent("a", _spec(tools=[crew], allowedTools=[crew]), "p")
+        assert a["tools"] == c["tools"]
+        assert a.get("permissions") == c.get("permissions")
+        assert a.get(CREW_ANSWERED_BUILTINS_KEY) == c.get(CREW_ANSWERED_BUILTINS_KEY)
+        x = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=[alias]), "p")
+        y = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=[crew]), "p")
+        assert x["excludedTools"] == y["excludedTools"]
+
+    def test_an_unknown_builtin_ref_is_left_as_written(self):
+        """Only names kiro-cli trusts after ``@builtin/`` are folded."""
+        out = to_client_custom_agent("a", _spec(tools=["@builtin/read_file"]), "p")
+        assert out["tools"] == ["@builtin/read_file"]
+
+    @pytest.mark.parametrize("entry", ["@builtin", "@builtin/", "@builtin/*"])
+    def test_allowed_tools_builtin_grants_every_builtin(self, entry):
+        """kiro-cli's ``@builtin`` auto-approves every built-in (P1-12). It is no
+        MCP server: no ``builtin/*`` rule, and each built-in is granted by name."""
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=[entry], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        rules = out["permissions"]["rules"]
+        assert not [r for r in rules if r["capability"] == "mcp"]
+        assert {"capability": "web_fetch", "effect": "allow"} in rules
+        assert {"capability": "subagent", "effect": "allow"} in rules
+        assert {"execute_bash", "fs_read", "fs_write"} <= set(out[CREW_ANSWERED_BUILTINS_KEY])
+
+    def test_allowed_tools_star_grants_builtins_and_the_spec_s_servers(self):
+        """kiro-cli's ``*`` auto-approves every tool (P1-12): the built-ins and
+        every server the spec mounts."""
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=["*"], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        rules = out["permissions"]["rules"]
+        assert {"capability": "mcp", "match": ["srv/*"], "effect": "allow"} in rules
+        assert {"capability": "web_search", "effect": "allow"} in rules
+        assert "execute_bash" in out[CREW_ANSWERED_BUILTINS_KEY]
+
+    def test_the_ceiling_judges_each_name_star_expands_to(self, monkeypatch):
+        """``*`` is no way past the ceiling: each name it spells out is asked."""
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: ref != "@srv")
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=["*"], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        assert not [r for r in out["permissions"]["rules"] if r["capability"] == "mcp"]
 
     def test_the_ceiling_judges_the_subagent_alias_under_the_crew_name(self, monkeypatch):
         """Folded before the ceiling is asked: a ceiling that withholds

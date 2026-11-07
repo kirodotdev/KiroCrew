@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
+from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
@@ -36,6 +37,7 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
+from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -46,7 +48,13 @@ from kiro_crew.dashboard.state import (
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_STOP, pre_tool_match_names
+from kiro_crew.hooks import (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_STOP,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
+    pre_tool_match_names,
+)
 from kiro_crew.slack.outbound import PostedOptions
 
 if TYPE_CHECKING:
@@ -208,8 +216,9 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=on_kas,
-                # Only KAS drops a remote MCP server's `oauth` block.
-                discards_mcp_oauth=on_kas,
+                # Only KAS drops a remote MCP server's `oauth` block, and only an
+                # engine that does not announce `mcpServerOAuth`.
+                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(client),
                 **by_session,
             )
         )
@@ -770,6 +779,11 @@ async def _fire(
         # at fire time: a reset gives the session a new one. Empty before
         # session/new, and then the spec hooks get none.
         _acp_sid = getattr(turn.client, "session_id", "") if turn._spec_hooks else ""
+        # Read at fire time too: a model pick or a fallback swap changes it.
+        _model = hook_session_model(
+            turn.client,
+            in_prompt=event not in (HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT),
+        )
         results = await state._hook_store.fire(
             event,
             context,
@@ -787,6 +801,7 @@ async def _fire(
             extra_hooks_tool_names=_spec_tool_names,
             tool_match_names=_match_names,
             acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
+            session_model=_model,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the

@@ -1171,6 +1171,62 @@ export function commitRevealedSource(
   return safeSetItem(revealedStorageKey(slot, kind), JSON.stringify({ u: url, t: at }))
 }
 
+/** `mc-pr-source-dismissed:<slot>` holds the urls of the pull requests the user
+ *  closed in that session's Changes strip. One key per session, like the stores
+ *  above, so a write never touches another session's list. */
+const DISMISSED_SOURCE_PREFIX = 'mc-pr-source-dismissed:'
+
+/** How many closes a session keeps. Agent links and user links are each capped
+ *  at `MAX_PULL_REQUEST_SOURCES` (see `extractPullRequestLinks`), so up to twice
+ *  that many tabs can be closed; a smaller bound would drop the oldest close. */
+const MAX_DISMISSED_SOURCES = 2 * MAX_PULL_REQUEST_SOURCES
+
+/** Closes and reopens whose write storage refused, per session, replayed over
+ *  every later read so the next change does not undo them. A write that lands
+ *  drops them. Kept in memory only, so they last as long as the page. */
+const unsavedDismissals = new Map<string, Map<string, string | null>>()
+
+/** A session's closed pull requests, `sourceLinkKey` -> url, so a later revision
+ *  of a closed review stays closed. Each stored url is re-parsed like every
+ *  persisted url; anything else reads as not closed. */
+export function loadDismissedSources(slot: string): Map<string, string> {
+  const dismissed = new Map<string, string>()
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(DISMISSED_SOURCE_PREFIX + slot) || '[]')
+    for (const url of Array.isArray(stored) ? stored.slice(-MAX_DISMISSED_SOURCES) : []) {
+      const link = typeof url === 'string' ? parseStoredCanonicalLink(url) : null
+      if (link && link.url === url) dismissed.set(sourceLinkKey(link), url)
+    }
+  } catch {
+    // Unreadable storage closes nothing.
+  }
+  for (const [key, kept] of unsavedDismissals.get(slot) ?? []) {
+    if (kept === null) dismissed.delete(key)
+    else dismissed.set(key, kept)
+  }
+  return dismissed
+}
+
+/** Close (`dismissed`) or reopen one pull request in a session and return what
+ *  is now closed. Applied to a fresh read, so a second window's closes and
+ *  reopens on the same session are kept. */
+export function commitDismissedSource(slot: string, url: string, dismissed: boolean): Map<string, string> {
+  const current = loadDismissedSources(slot)
+  const unsaved = unsavedDismissals.get(slot)
+  const link = parseStoredCanonicalLink(url)
+  if (!link || link.url !== url) return current
+  const key = sourceLinkKey(link)
+  if (current.has(key) === dismissed) return current
+  if (dismissed) current.set(key, url)
+  else current.delete(key)
+  if (safeSetItem(DISMISSED_SOURCE_PREFIX + slot, JSON.stringify([...current.values()].slice(-MAX_DISMISSED_SOURCES)))) {
+    unsavedDismissals.delete(slot)
+  } else {
+    unsavedDismissals.set(slot, new Map(unsaved).set(key, dismissed ? url : null))
+  }
+  return current
+}
+
 /**
  * Restore the bounded seen-source index used to distinguish live discovery
  * from historical transcript hydration after ChatPage remounts or reloads.

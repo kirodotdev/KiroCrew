@@ -1100,6 +1100,7 @@ class DashboardState:
     source_link_urls_for_slot = _source_links.source_link_urls_for_slot
     push_source_status = _source_links.push_source_status
     refresh_slot_source_status = _source_links.refresh_slot_source_status
+    refresh_source_status_now = _source_links.refresh_source_status_now
 
     # state_parts/dashboard_services.py
     approval_timeout_for = _dashboard_services.approval_timeout_for
@@ -1110,6 +1111,7 @@ class DashboardState:
     enable_yolo = _dashboard_services.enable_yolo
     disable_yolo = _dashboard_services.disable_yolo
     is_yolo_active = _dashboard_services.is_yolo_active
+    yolo_reaches = _dashboard_services.yolo_reaches
     request_approval = _dashboard_services.request_approval
     pending_coordinator_approvals = _dashboard_services.pending_coordinator_approvals
     linked_session_busy = _dashboard_services.linked_session_busy
@@ -1144,6 +1146,7 @@ class DashboardState:
     unregister_sse = _dashboard_services.unregister_sse
     _rewrite_notifications_async = _dashboard_services._rewrite_notifications_async
     delete_notification = _dashboard_services.delete_notification
+    dismiss_notification = _dashboard_services.dismiss_notification
     ack_notification = _dashboard_services.ack_notification
     unack_notification = _dashboard_services.unack_notification
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications

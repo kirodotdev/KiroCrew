@@ -80,13 +80,6 @@ def core_named_apps() -> frozenset[str]:
         from kiro_crew.mcp_tools.apps import TOOL_APPS
 
         names.update(TOOL_APPS.values())
-        from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS
-
-        names.update(
-            TOOL_APPS[tool]
-            for tool in CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS
-            if tool in TOOL_APPS
-        )
         from kiro_crew import webhook_sources
 
         names.update(

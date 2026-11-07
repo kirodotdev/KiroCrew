@@ -830,6 +830,7 @@ class TelegramClient:
         reply_to_message_id: int | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool = False,
+        err_out: dict[str, Any] | None = None,
     ) -> int | None:
         """Send a new message. Returns the message_id on success.
 
@@ -845,6 +846,10 @@ class TelegramClient:
         already notified about by an earlier one in the same turn (a reasoning
         blockquote posted after its answer, an image posted after its bubble), so
         one reply does not buzz twice.
+
+        ``err_out``, when supplied, receives the first attempt's ``error_code``
+        and ``description``, so a caller can tell a rejection (400: nothing was
+        posted) from a failure after which the message may already be in the chat.
         """
         params: dict[str, Any] = {
             "chat_id": chat_id,
@@ -860,7 +865,7 @@ class TelegramClient:
         if disable_notification:
             params["disable_notification"] = True
         _apply_reply_target(params, reply_to_message_id)
-        err: dict[str, Any] = {}
+        err: dict[str, Any] = {} if err_out is None else err_out
         result = await self._api("sendMessage", params, err_out=err)
         if result:
             return result.get("message_id")

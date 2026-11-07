@@ -16,7 +16,7 @@
     "'Prune merged' refuses to delete a worktree with uncommitted or untracked work rather than discarding it",
     "Stream pod logs and mint pod access tokens from the UI",
     "Built for people developing Kiro Crew itself — not needed for everyday use",
-    "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live stages its pointer on every platform, and automatic restart needs a systemd --user unit or a macOS LaunchAgent; the fleet view, PR status, sync, rebase and prune work on any platform"
+    "Pods run on Linux (systemd --user), macOS (launchd) and Windows (Task Scheduler) — but the macOS pod has no enforced memory/CPU ceiling; Make Live stages its pointer on every platform, and automatic restart needs a systemd --user unit or a macOS LaunchAgent; the fleet view, PR status, sync, rebase and prune work on any platform"
   ],
   "defaultEnabled": false,
   "platform": {
@@ -61,7 +61,7 @@
     "Operate Kiro Crew feature worktrees and isolated preview pods while keeping the live gateway untouched."
   ],
   "configuration": [
-    "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux or launchd on macOS and must be provisioned first."
+    "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux, launchd on macOS or Task Scheduler on Windows and must be provisioned first."
   ],
   "screenshots": [
     "/app-assets/dev-fleet/screenshot-main.png"

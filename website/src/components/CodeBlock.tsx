@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useMemo, useState, useRef } from 'react'
+import { memo, useCallback, useContext, useEffect, useMemo, useState, useRef, type CSSProperties } from 'react'
 import { Copy, Check, MessageSquare, MessageSquarePlus, WrapText } from 'lucide-react'
 import type { LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 import { copyCode } from '../utils/clipboard'
@@ -9,6 +9,7 @@ import { useNearViewport } from '../hooks/useNearViewport'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { CodeCommentContext, holdCodeBlock, holdCodeChip, type CodeLineAnnotationMeta } from './codeComments'
+import { ProseFencesContext } from './codeBlockProse'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -42,6 +43,12 @@ const isProseLang = (lang?: string) => !!lang && PROSE_LANGS.has(lang.toLowerCas
  *  diffs options/files by reference first (same pattern as CMD_CODE_OPTIONS in
  *  ToolDetails.tsx; the `file` object below is memoized for the same reason). */
 const PROSE_CODE_OPTIONS = { overflow: 'wrap' } as const
+
+/** A wrapped block never scrolls sideways, but Pierre still reserves its
+ *  scrollbar height (6 px) under the last line, an empty strip. Pierre's sheet
+ *  is in a shadow root, and this custom property is the one input that crosses
+ *  the boundary: it sets that reserved height. */
+const WRAPPED_SURFACE_STYLE = { '--diffs-scrollbar-gutter-override': '0px' } as CSSProperties
 
 /** The element that scrolls the code sideways: Pierre's `[data-code]` box once
  *  the highlighter has drawn, else the plain `<pre>` standing in for it (this
@@ -287,7 +294,10 @@ export const CodeBlock = memo(function CodeBlock(
   }
   const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>()
   const isTall = contentHeight > TALL_CODE_BLOCK_PX
-  const prose = isProseLang(lang)
+  // A host can add its own prose tags (`ChatEmbed`'s `proseFences`): an app
+  // that defines a fence for a record or a reply, not for source code.
+  const hostProse = useContext(ProseFencesContext)
+  const prose = isProseLang(lang) || (!!lang && hostProse.has(lang.toLowerCase()))
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null)
   const isWrapped = wrapOverride !== null ? wrapOverride : prose
   const toggleWrap = () => setWrapOverride(!isWrapped)
@@ -425,7 +435,7 @@ export const CodeBlock = memo(function CodeBlock(
           conditioning tabIndex on the tag would move keyboard behavior with content
           type, and a focusable non-scrolling region is harmless. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={contentRef} className="pierre-surface" tabIndex={0} role="region" aria-label={lang ? i18nT('components.codeBlock.code_region', { lang }) : i18nT('components.codeBlock.code_label')}>
+      <div ref={contentRef} className="pierre-surface" style={isWrapped ? WRAPPED_SURFACE_STYLE : undefined} tabIndex={0} role="region" aria-label={lang ? i18nT('components.codeBlock.code_region', { lang }) : i18nT('components.codeBlock.code_label')}>
         {/* The fade sits on this inner box, not on the focusable region: a
             mask hides everything outside its box, the focus ring included. */}
         <div data-fade-right={fadeRight ? 'true' : undefined} className="edge-fade-x">

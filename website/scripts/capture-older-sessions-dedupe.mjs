@@ -102,12 +102,14 @@ async function main() {
   for (const shot of shots) {
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme: 'dark', extra: sessionsRoute(shot.mode, shot.everythingOpen) })
-    await page.addInitScript(slot => {
-      localStorage.setItem('mc-active-slot', slot)
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      localStorage.setItem('mc-sidebar-pinned', 'true')
-    }, ACTIVE)
+    await stubDashboardApi(page, {
+      slots, theme: 'dark', extra: sessionsRoute(shot.mode, shot.everythingOpen),
+      localStorageEntries: {
+        'mc-active-slot': ACTIVE,
+        'mc-privacy-notice-v1': '1',
+        'mc-sidebar-pinned': 'true',
+      },
+    })
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
 

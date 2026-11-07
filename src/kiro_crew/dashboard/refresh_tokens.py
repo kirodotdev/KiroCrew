@@ -838,6 +838,7 @@ def generate_refresh_token(
     boot: str = "",
     require_peer: bool = False,
     peer_key: str = "",
+    owner_mint: bool = False,
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -893,6 +894,10 @@ def generate_refresh_token(
             # mirror and cannot safely be re-created by whichever allowed node
             # presents a stolen cookie first after restart.
             payload_dict["peer_key"] = peer_key
+    if owner_mint:
+        # Carried across rotation like ``boot`` so the access token a refresh
+        # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
+        payload_dict["owner_mint"] = "1"
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -997,6 +1002,20 @@ def refresh_token_boot(token: str) -> str:
         return ""
     value = payload.get("boot", "")
     return value if isinstance(value, str) else ""
+
+
+def refresh_token_owner_minted(token: str) -> bool:
+    """Whether a refresh chain was opened by an owner-identity mint.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`. A
+    decode failure answers False: the claim only relabels a denial, so losing it
+    falls back to the generic 403.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return False
+    return isinstance(payload, dict) and str(payload.get("owner_mint", "")) == "1"
 
 
 def refresh_token_requires_peer(token: str) -> bool:

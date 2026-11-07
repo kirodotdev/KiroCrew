@@ -607,6 +607,23 @@ href resolves to the current page — matching `md-notebook/Preview.tsx`'s
 `href ? <a …> : <span>` trade. A test that pins an anchor existing for a
 destination the transform rejects is pinning a defect.
 
+The inert label is not silent in the chat renderers (`MdAnchor` and Mochi's
+`ChatPanelMarkdown`): it wears a muted dotted underline built from existing
+tokens, and the generic reason `components.markdownRenderer.refused_link_destination`
+as its hover `title` and as visually-hidden text, so touch, keyboard and
+screen-reader users get it too. In `MdAnchor` that text is a `::after`
+pseudo-element fed from `data-refused-reason`, never a text node, so the
+label's DOM text stays what the source renders (inline commenting's
+`resolveSourcePos` aligns text nodes against the source span) and a copied
+message carries no reason; Mochi, which has no stylesheet for it, uses an
+unselectable visually-hidden span. The reason never names the destination. The
+cue covers every input that reaches the guard: the `''` sentinel, an href the
+sanitizer deleted (`javascript:`, `data:`), and a raw `<a>` with no href, which
+arrives in the same absent shape. A named in-page anchor (`name` or `id`) and
+an anchor with no content are targets, not links, and keep the plain span
+(`components/markdown/refusedLinkCue.ts`). `md-notebook/Preview.tsx` is not a chat
+renderer and keeps the plain span.
+
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — a drive-letter path) is passed through **for image
 `src` only**, because `defaultUrlTransform` parses `C:` as an unknown scheme and
@@ -1095,6 +1112,13 @@ against `location.pathname` only, so a multi-segment, query, or hash route would
 register and then never resolve. The same constraint and the reasoning behind it
 are in [extension-seams](extension-seams.md), which covers registering routes and
 icons from a downstream edition instead of editing the seed maps.
+
+A builtin page still renders while its app is off, and the app's proxied API
+(`/apps/<name>/api/*`) then refuses every call with `code: "app_not_enabled"`.
+Throw `toApiError` from the page's fetch helpers so the code survives, test it
+with `isAppNotEnabledError` (`src/api/apiError.ts`), and show the disabled-app
+copy (`components.appHost.this_app_is_disabled`) with a way to Apps instead of
+the call's error. File Explorer and Workflows do this.
 
 ## Crew capability drafts
 

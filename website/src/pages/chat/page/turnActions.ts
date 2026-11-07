@@ -33,6 +33,7 @@ export const REFUSED_PRESS_TITLE_KEYS = {
   side_open: 'pages.chatPage.could_not_open_side_chat',
   side_turn: 'pages.chatPage.could_not_send_to_side_chat',
   agent_switch: 'pages.chatPage.could_not_switch_agent',
+  fork: 'pages.chatPage.could_not_fork_session',
   fresh_session: 'pages.chatPage.could_not_start_fresh_session',
   repair_images: 'pages.chatPage.could_not_repair_images',
 } as const
@@ -42,9 +43,12 @@ export type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
 /** The refused-press notice for an intercepted slash command that failed. The
  *  title names the command that was refused; the message is the gateway's
  *  reason, or a fallback saying the draft is still in the composer. */
-export function slashRefusal(res: { stage?: 'open' | 'turn' | 'agent'; error?: string }): { action: RefusedPressAction; message: string } {
+export function slashRefusal(res: { stage?: 'open' | 'turn' | 'agent' | 'fork'; error?: string }): { action: RefusedPressAction; message: string } {
   if (res.stage === 'agent') {
     return { action: 'agent_switch', message: res.error || i18nT('pages.chatPage.agent_command_not_run') }
+  }
+  if (res.stage === 'fork') {
+    return { action: 'fork', message: res.error ?? '' }
   }
   return {
     action: res.stage === 'turn' ? 'side_turn' : 'side_open',

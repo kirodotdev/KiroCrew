@@ -166,6 +166,7 @@ class _ChatSlot:
         "_has_reader_flag",
         "_compacting",
         "_preparing_count",
+        "_preparing_texts",
         "_stop_declined_at",
         "_stop_state_raw",
         "_stop_generation",
@@ -354,6 +355,7 @@ class _ChatSlot:
         "_wait_steer_baseline",
         "_wait_contested",
         "_question_pending",
+        "_embed_question_polled_at",
         "_welcomed_agent",
     )
 
@@ -519,6 +521,7 @@ class _ChatSlot:
     _has_reader_flag: bool
     _compacting: bool
     _preparing_count: int
+    _preparing_texts: list[tuple[str, str]]
     _stop_declined_at: float
     _stop_state_raw: str
     _stop_generation: int
@@ -569,6 +572,7 @@ class _ChatSlot:
     #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
     _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
+    _embed_question_polled_at: float | None
 
     # Initialised by state_parts/slot_ladder.py.
     _pending_subagent_failures: list[str]

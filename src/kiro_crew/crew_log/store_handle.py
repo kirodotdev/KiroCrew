@@ -83,7 +83,12 @@ from kiro_crew.crew_log.store_segment_reads import (
     _scan_tail,
     _Tail,
 )
-from kiro_crew.crew_log.store_segment_writes import _append_line, _append_lines, _truncate
+from kiro_crew.crew_log.store_segment_writes import (
+    _append_line,
+    _append_lines,
+    _settle_residue,
+    _truncate,
+)
 from kiro_crew.crew_log.store_tail_repair import _close_interrupted_tail
 from kiro_crew.jsonl_util import bounded_raw_records
 
@@ -562,6 +567,7 @@ class CrewLog:
         # settled before any byte is at stake.
         self._claim()
         with _open_lock(_lock_path(self._kind, self._id)):
+            _settle_residue(self._path)
             tail = _scan_tail(self._path)
             if tail.empty:
                 raise CrewLogError(
@@ -652,6 +658,7 @@ class CrewLog:
             validate_data(self._kind, str(item.get("type") or ""), item.get("data"))
         self._claim()
         with _open_lock(_lock_path(self._kind, self._id)):
+            _settle_residue(self._path)
             tail = _scan_tail(self._path)
             if tail.empty:
                 raise CrewLogError(

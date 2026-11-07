@@ -297,6 +297,10 @@ class IMessageDispatcher:
                 notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                 audit_caller=f"imessage:{redact_handle(handle)}",
                 after_persist=_surface_new_session,
+                # The live roster ``authorize`` admitted this handle against.
+                still_admitted=lambda: (
+                    self.transport is not None and self.transport.may_send_to(handle)
+                ),
             ),
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,

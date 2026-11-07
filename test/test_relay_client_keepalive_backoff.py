@@ -7,6 +7,7 @@ change to either side of the contract fails here.
 
 from __future__ import annotations
 
+import asyncio
 import random
 
 import pytest
@@ -22,7 +23,7 @@ from relay_client_helpers import (
 )
 
 from kiro_crew.relay_client.backoff import Backoff, CloseAction, ConnectionEnd, classify
-from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR
+from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, STATE_RECONNECTING
 from kiro_crew.relay_client.connection import RelayTimings
 from kiro_crew.relay_client.protocol import (
     BACKOFF_RESET_AFTER_SECONDS,
@@ -30,17 +31,19 @@ from kiro_crew.relay_client.protocol import (
     PING_INTERVAL_SECONDS,
     SILENCE_REPLACE_SECONDS,
 )
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.relay_client.token_source import HostTokenRetryLater
+from kiro_crew.testing.wait import async_wait_until, await_until
 
-#: What the client does when the relay closes a connection that had reached ready.
+#: What the client does when the relay closes a connection that had reached ready,
+#: by member name, so a missing member fails its own case instead of the import.
 EXPECTED_ACTION = {
-    4401: CloseAction.RENEW_ONCE,
-    4403: CloseAction.RENEW_THEN_BACKOFF,
-    4408: CloseAction.BACKOFF,
-    4409: CloseAction.STOP_REPLACED,
-    4429: CloseAction.BACKOFF,
-    1012: CloseAction.RECONNECT_NOW,
-    1013: CloseAction.BACKOFF,
+    4401: "RENEW_ONCE",
+    4403: "RENEW_THEN_BACKOFF",
+    4408: "BACKOFF",
+    4409: "WAIT_REPLACED",
+    4429: "BACKOFF",
+    1012: "RECONNECT_NOW",
+    1013: "BACKOFF",
 }
 
 
@@ -64,7 +67,7 @@ class TestTheContractNumbers:
 
     @pytest.mark.parametrize("code", sorted(EXPECTED_ACTION))
     def test_classify_each_relay_code(self, code: int) -> None:
-        assert classify(ConnectionEnd(code=code, reached_ready=True)) is EXPECTED_ACTION[code]
+        assert classify(ConnectionEnd(code=code, reached_ready=True)).name == EXPECTED_ACTION[code]
 
     def test_hello_refusals_stop_rather_than_retry(self) -> None:
         assert (
@@ -317,7 +320,9 @@ async def test_a_source_that_cannot_renew_yet_does_not_spend_the_one_renewal() -
 
 
 @asyncio_test
-async def test_another_instance_holding_the_crew_stops_the_client() -> None:
+async def test_another_instance_holding_the_crew_waits_for_a_renewal_for_this_one() -> None:
+    # host-leg.json, 4409: stop connecting, report that another instance holds the
+    # Crew, and connect again only after a lease renewal succeeds for this instance.
     lost: list[bool] = []
 
     async def on_disconnect() -> None:
@@ -326,16 +331,42 @@ async def test_another_instance_holding_the_crew_stops_the_client() -> None:
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, source, ingress = make_client(relay, crew, sleep=RecordingSleep())
         client.register_callbacks(on_connect=None, on_disconnect=on_disconnect)
+        real_renew = source.renew
+        closed: list[str] = []
+        asked = asyncio.Event()
+        release = asyncio.Event()
+        calls: list[bool] = []
+
+        async def renew(*, host_token_requested: bool):
+            calls.append(host_token_requested)
+            if len(calls) == 1:
+                raise HostTokenRetryLater("the lease service asked the Crew to wait")
+            asked.set()
+            await release.wait()
+            return await real_renew(host_token_requested=host_token_requested)
+
+        async def aclose() -> None:
+            closed.append(client.state)
+
+        source.renew = renew  # type: ignore[method-assign]
+        source.aclose = aclose  # type: ignore[method-assign]
         await client.start()
         try:
             leg = await _connected(relay, client)
             await leg.close(4409)
-            await async_wait_until(lambda: client.state == STATE_ERROR)
-            assert "another instance" in client.snapshot()["error"]
-            assert lost == [True]
-            assert client.public_url == ""
-            assert relay.dials == 1 and source.renewals == []
+            await await_until(asked, what="the second lease renewal after 4409")
+            snapshot = client.snapshot()
+            assert snapshot["state"] == STATE_RECONNECTING
+            assert "another instance" in snapshot["error"]
+            assert lost == [True] and client.public_url == ""
+            assert relay.dials == 1 and closed == [] and calls == [True, True]
+            assert client.delays == [2.0, 5.0]
+            release.set()
+            await (await relay.next_leg()).handshake()
+            await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            assert relay.dials == 2 and closed == []
         finally:
+            release.set()
             await stop(client, ingress)
 
 
@@ -372,10 +403,24 @@ async def test_a_malformed_ready_drops_the_socket_and_backs_off() -> None:
             await stop(client, ingress)
 
 
+async def _refuse_the_hello(relay: FakeRelay, client) -> None:
+    leg = await relay.next_leg()
+    await leg.recv_type("hello")
+    await leg.close(4401, "invalid_message")
+
+
+async def _refuse_the_host_token_twice(relay: FakeRelay, client) -> None:
+    await (await _connected(relay, client)).close(4401)
+    leg = await relay.next_leg()
+    await leg.recv_type("hello")
+    await leg.close(4401)
+
+
 @asyncio_test
-async def test_a_client_that_stops_itself_closes_its_token_source() -> None:
+@pytest.mark.parametrize("refuse", [_refuse_the_hello, _refuse_the_host_token_twice])
+async def test_a_client_that_stops_itself_closes_its_token_source(refuse) -> None:
     # Nothing calls stop() after the client gives up on its own, so the client ends
-    # the lease renewals itself: in the replaced case both instances would keep it.
+    # the lease renewals itself, or the lease stays held until the gateway exits.
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, source, ingress = make_client(relay, crew, sleep=RecordingSleep())
         closed: list[str] = []
@@ -386,8 +431,7 @@ async def test_a_client_that_stops_itself_closes_its_token_source() -> None:
         source.aclose = aclose  # type: ignore[method-assign]
         await client.start()
         try:
-            leg = await _connected(relay, client)
-            await leg.close(4409)
+            await refuse(relay, client)
             await async_wait_until(lambda: closed == [STATE_ERROR])
         finally:
             await stop(client, ingress)

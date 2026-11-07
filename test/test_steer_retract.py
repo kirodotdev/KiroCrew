@@ -474,6 +474,27 @@ class TestDropped:
         assert "read the other crew's chat" not in harness.slot._steer_owner_origin
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("act_now", [True, False])
+    async def test_queue_instead_keeps_the_steers_composer_mark(self, harness, act_now):
+        # The person's own steer taken back to the queue is still their send: it
+        # keeps the mark that lets it pass the sub-agent hold, and only then.
+        from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
+
+        async with TestClient(TestServer(harness.app)) as http:
+            await _steer(http, "check the other branch")
+            if act_now:
+                harness.slot._steer_act_now.add("check the other branch")
+            else:
+                harness.slot._steer_act_now.discard("check the other branch")
+            await _retract(http, _mid_of(harness.slot, "check the other branch"), "queue")
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        (entry,) = harness.slot._queue
+        assert ((entry.get("meta") or {}).get(COMPOSER_SEND_META) is True) is act_now
+        assert "check the other branch" not in harness.slot._steer_act_now
+
+    @pytest.mark.asyncio
     async def test_queue_instead_keeps_the_request_time_admission(self, harness):
         from kiro_crew.dashboard import chat_runner
         from kiro_crew.dashboard import session_control as sc

@@ -4,6 +4,7 @@
  *  composer (`TypingLockBanner`). */
 import { useEffect } from 'react'
 import { capabilityUsable } from '../../../api/sharedCrewUi'
+import { isPermissionRefusal } from '../../../api/apiError'
 import ErrorNotice from '../../../components/ErrorNotice'
 import {
   useSessionDecisions,
@@ -49,7 +50,10 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   useEffect(() => typing?.subscribe(noteTyping), [typing, noteTyping])
   useEffect(() => typing?.subscribeSent?.(noteSent), [typing, noteSent])
 
-  const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease].find(query => query.isError)
+  // A read refused to this caller (403 `owner_only` to a relay teammate, say) is
+  // not a failure to report: the feature is simply not theirs (#32031).
+  const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease]
+    .find(query => query.isError && !isPermissionRefusal(query.error))
   if (!sessionKey || !failed) return null
   return <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />
 }

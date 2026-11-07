@@ -91,6 +91,7 @@ import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/da
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
+import { wearsRefusedLinkCue } from './markdown/refusedLinkCue'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
@@ -98,6 +99,8 @@ import { ImgWithFallback } from './markdown/ImgWithFallback'
 import { DeferredMedia, MdSourceEl } from './markdown/remoteMedia'
 import { MermaidBlock } from './markdown/MermaidBlock'
 import { PlantUmlBlock } from './markdown/PlantUmlBlock'
+import { APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
+import { FormattedPayloadCard } from '../pages/chat/ToolDetails'
 import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
 import { holdsSessionRef, rehypeMarkFencedCode, rehypeSessionRefPunctuation, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks, SESSION_REF_TRAILING } from './markdown/treeTransforms'
@@ -356,6 +359,33 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // session link is the sentence's own; whatever this anchor renders as, it
   // goes back right after it, so no branch can swallow a full stop.
   const keep = (el: React.ReactElement) => (trailing ? <>{el}{trailing}</> : el)
+  // The inert label carries the refused-link cue: a muted dotted underline and
+  // a generic reason, as the hover title and as visually-hidden generated
+  // content for touch, keyboard and screen-reader users. The reason lives in a
+  // `::after` pseudo-element rather than a text node, so the label's DOM text
+  // stays exactly what the source renders: inline commenting's sourcePos
+  // alignment walks text nodes against the source span, and copying a message
+  // must not paste the reason into the sentence. Both forms of a refusal reach
+  // here: urlTransform's '' sentinel (a custom scheme, an empty destination)
+  // and an href the sanitizer deleted outright (`javascript:`, `data:`), which
+  // arrives absent exactly like a raw `<a>` that never had one, so the absent
+  // case wears the cue too, except a named in-page anchor or an empty one
+  // (`wearsRefusedLinkCue`), which stay plain prose. The reason never names
+  // the destination: it is already gone by the time this component runs.
+  if (!href && wearsRefusedLinkCue(node)) {
+    const reason = i18nT('components.markdownRenderer.refused_link_destination')
+    return keep(
+      <span
+        {...sp(node)}
+        data-refused-link=""
+        data-refused-reason={` (${reason})`}
+        title={reason}
+        className="text-muted underline decoration-dotted decoration-muted underline-offset-2 after:sr-only after:content-[attr(data-refused-reason)]"
+      >
+        {children}
+      </span>,
+    )
+  }
   if (!href) return keep(<span {...sp(node)}>{children}</span>)
   if (claimed) return keep(<>{claimed}</>)
   if (source?.provider === 'jira') {
@@ -1168,9 +1198,12 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
         ? <CodeBlock code={block.content} lang={block.language} complete={block.complete} />
         : <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} sourceStartLine={sourcePos ? block.startLine : undefined} runYourselfCard={runYourselfCards} info={block.info} unclosed={block.unclosed} />
       // A closed ```plantuml fence becomes the host's PlantUML picture when it
-      // can be drawn, and stays this code block when it cannot.
-      const shown = block.complete && block.language === 'plantuml'
-        ? <PlantUmlBlock code={block.content}>{node}</PlantUmlBlock>
+      // can be drawn, and stays this code block when it cannot. A closed
+      // approval command opens on the chat approval card's Formatted view when
+      // it is JSON, with this code block as its Raw view.
+      const shown = !block.complete ? node
+        : block.language === 'plantuml' ? <PlantUmlBlock code={block.content}>{node}</PlantUmlBlock>
+        : block.language === APPROVAL_COMMAND_TAG ? <FormattedPayloadCard text={block.content}>{node}</FormattedPayloadCard>
         : node
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.

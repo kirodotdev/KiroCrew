@@ -135,11 +135,13 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
             rec,
             has_session_tools=fx.get("has_session_tools", True),
             milestones_waiting=fx.get("milestones_card_waiting", False),
+            ledger=ledger,
         ),
         "daily": goal_reminder.reminder_prompt(rec, "daily"),
         "weekly": goal_reminder.reminder_prompt(rec, "weekly", finished=fx.get("finished") or []),
         "monthly": goal_reminder.reminder_prompt(rec, "monthly", finished=fx.get("finished") or []),
-        "goal_setup": goal_setup.kickoff_prompt(rec, gid, has_mate_tools=tools) or "",
+        "goal_setup": goal_setup.kickoff_prompt(rec, gid, has_mate_tools=tools, ledger=ledger)
+        or "",
         "milestones_confirmed": goal_setup.milestones_prompt(rec, has_mate_tools=tools) or "",
         "goal_removed": "",
         "worker_report": (

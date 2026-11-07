@@ -350,11 +350,8 @@ class TestBackfillChannelFolder:
     def test_a_folder_deleted_mid_pass_strands_nothing(self, dashboard_state: Any) -> None:
         """A dead ``folder_id`` beside the filing marker has NO recovery.
 
-        The marker is what :func:`needs_backfill_filing` refuses on, so a
-        conversation stamped with a folder that is gone ends up in no folder AND
-        permanently ineligible for a later click. Empty tags cannot carry the
-        difference between "this folder has no tags" and "this folder is gone",
-        which is why the read reports absence explicitly.
+        :func:`needs_backfill_filing` refuses on the marker, so a dead folder id strands the
+        conversation for good; empty tags cannot tell "no tags" from "gone".
         """
         self._folder(dashboard_state)
         keys = [f"discord:kirocrew:direct:U{i}" for i in range(3)]
@@ -456,16 +453,9 @@ class TestBackfillChannelFolder:
     ) -> None:
         """One config read, so the reported name and the written id cannot disagree.
 
-        ``report["folder_name"]`` is what the panel shows and ``folder_id`` is what
-        every write stamps. Both are derived from a SINGLE config read. With two
-        independent reads -- one here and one inside ``lookup_channel_folder`` -- a
-        settings save moving this channel from folder A to folder B and committing
-        between them yields A's name beside B's id, so the user is told A while
-        every session lands in B.
-
-        Asserted by COUNTING the config reads rather than by comparing the strings.
-        The property is that a second read does not happen; a comparison alone also
-        passes whenever the race does not fire, which is almost always.
+        Two reads would let a settings save land between them, pairing A's name with B's id.
+        Asserted by counting config reads, since a string comparison passes whenever the
+        race does not fire.
         """
         self._folder(dashboard_state, name="Alpha")
         key = "discord:kirocrew:direct:U1"
@@ -504,15 +494,8 @@ class TestBackfillChannelFolder:
     ) -> None:
         """The two situations are named by the SERVER, not inferred by the panel.
 
-        ``lookup_channel_folder`` answering nothing means no folder ever existed,
-        and saving the settings creates it. The per-write re-read finding the
-        folder gone means it existed a moment ago, and anything already filed into
-        it is stranded on a dead id -- recreating mints a fresh one. Opposite
-        remedies, so opposite values.
-
-        An earlier revision reported both as ``folder_missing`` and left the panel
-        proving "the folder existed" from ``failed > 0``, a claim about this
-        function's control flow made a layer away from it.
+        Never created: saving the settings creates it. Deleted mid-pass: sessions already
+        filed are stranded on a dead id. Opposite remedies, so opposite values.
         """
         # Deleted WHILE the pass runs, with a write failing on the way.
         self._folder(dashboard_state)
@@ -550,12 +533,8 @@ class TestBackfillChannelFolder:
     ) -> None:
         """The user's tags are unioned with the folder's, never replaced.
 
-        The store merges with ``metadata.update(fields)``, so a bare list under
-        ``tags`` overwrites the whole key. This path reaches records the automatic
-        one never does: a conversation surfaced while filing was off, tagged by the
-        user and never filed, with its tab CLOSED. It passes the guard (which reads
-        placement, not tags) and has no live slot to union the tags back through,
-        so replacing would destroy them with nothing recording what they were.
+        ``metadata.update(fields)`` overwrites ``tags`` whole, and a tagged conversation with
+        its tab closed has no live slot to union the tags back through.
         """
         fid = self._folder(dashboard_state)
         asyncio.run(
@@ -644,20 +623,9 @@ class TestBackfillChannelFolder:
 class TestBackfillYieldsToADeletion:
     """A conversation deleted while the pass runs must stay deleted.
 
-    The pass reads its candidate list, then takes one lock per write. That gap is
-    the widest in the feature -- up to ``BACKFILL_MOVE_LIMIT`` lock acquisitions
-    and awaits -- and the store's metadata read reports an ABSENT session as an
-    empty-but-readable record, which is the same value a session with no metadata
-    line has. So the placement guard cannot refuse the deletion:
-    ``needs_backfill_filing({})`` is True by design, because at SCAN time an
-    empty record means "nothing has placed this". Existence is asked separately,
-    inside the write's own lock.
-
-    What that prevents is specific and unrecoverable: the merge upserts, so the
-    deleted conversation comes back as a metadata line carrying the folder id and
-    the filing marker, with no transcript behind it -- a sidebar row that opens
-    onto nothing, stamped ineligible for any later pass, and this button has no
-    undo to walk it back.
+    The store reads an absent session as an empty record, and
+    ``needs_backfill_filing({})`` is True by design, so existence is asked inside each
+    write's lock. Otherwise the upsert revives the deleted row with no transcript.
     """
 
     @pytest.fixture(autouse=True)

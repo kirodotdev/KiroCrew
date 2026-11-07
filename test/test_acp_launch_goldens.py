@@ -527,6 +527,7 @@ class _FakeHost:
         self._sandbox_cleanup: str | None = None
         self._sandbox_wrapped_by_crew = False
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
+        self._child_env_names: frozenset[str] = frozenset()
         self._spawn_work_dir = str(work_dir)
         self._bound_workspace_fd: int | None = None
         self.guarded: list[str] = []
@@ -782,6 +783,7 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in after_scratch
     child = rec.factory_kwargs["env"]
     assert child["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "2"
+    assert host._child_env_names == frozenset(child), "the names the child got, no more"
     assert rec.calls.index("scrub_agent_subprocess_env") < rec.calls.index(
         "apply_pod_home_remap:True"
     )

@@ -329,9 +329,19 @@ def test_an_authored_ask_or_deny_keeps_its_built_ins_at_the_prompt(
             },
             ["fs_read"],
         ),
-        ({"toolsSettings": {"execute_bash": {"allowedCommands": ["git status"]}}}, ["fs_read"]),
+        (
+            {
+                "toolsSettings": {
+                    "execute_bash": {"allowedCommands": ["git status"], "denyByDefault": True}
+                }
+            },
+            ["fs_read"],
+        ),
         ({"toolsSettings": {"shell": {"deniedCommands": ["rm .*"]}}}, ["fs_read"]),
-        ({"toolsSettings": {"fs_read": {"allowedPaths": ["docs/**"]}}}, ["execute_bash"]),
+        (
+            {"toolsSettings": {"fs_read": {"allowedPaths": ["docs/**"], "deniedPaths": ["x/**"]}}},
+            ["execute_bash"],
+        ),
         ({"toolsSettings": {"@srv": {"anything": True}}}, ["execute_bash", "fs_read"]),
         ({"toolsSettings": "nonsense"}, []),
     ],
@@ -416,6 +426,62 @@ def test_an_unscoped_permissions_allow_is_answered_like_an_allowed_tools_grant()
     assert not [r for r in wire if r["capability"] in ("shell", "fs_write")]
     assert _judge(_shell("make build"), set(granted)).tier == "spec-builtin-grant"
     assert _judge(_shell(_DESTRUCTIVE), set(granted)).action == TOOL_DENY
+
+
+def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
+    """An unattended agent lists ``write`` in ``allowedTools`` and scopes it with
+    ``write.allowedPaths``. On kiro-cli the write runs unasked; the projection must
+    record the grant and the gate must answer the KAS request for it."""
+    report = str(_HOME / "autopilot" / "runs" / "run-report.md")
+    spec = _spec(
+        tools=["*"],
+        allowedTools=["read", "write"],
+        toolsSettings={"write": {"allowedPaths": ["~/autopilot/**"]}},
+    )
+    out = kas_agents.to_client_custom_agent("a", spec, "p")
+    assert out[CREW_ANSWERED_BUILTINS_KEY] == ["fs_read", "fs_write"]
+    event = _kas_builtin_flow(
+        "fs_write",
+        title="Write",
+        kind="edit",
+        raw_input={"path": report, "content": "done"},
+    )
+    verdict = _judge(event, set(out[CREW_ANSWERED_BUILTINS_KEY]))
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+@pytest.mark.parametrize(
+    ("settings", "kept"),
+    [
+        ({"write": {"allowedPaths": ["~/a/**"]}}, ["execute_bash", "fs_write"]),
+        ({"fs_write": {"allowedPaths": ["~/a/**"]}}, ["execute_bash", "fs_write"]),
+        ({"shell": {"allowedCommands": ["git status"]}}, ["execute_bash", "fs_write"]),
+        ({"write": {"allowedPaths": ["~/a/**"], "deniedPaths": ["~/a/x"]}}, ["execute_bash"]),
+        ({"write": {"allowedPaths": ["~/a/**"], "fallbackAction": "deny"}}, ["execute_bash"]),
+        ({"write": {"allowedPaths": "not-a-list", "x": 1}}, ["execute_bash"]),
+        ({"write": "not-an-object"}, ["execute_bash"]),
+        ({"shell": {"allowedPaths": ["~/a/**"]}}, ["fs_write"]),
+    ],
+    ids=[
+        "write-allowed-paths",
+        "fs-write-allowed-paths",
+        "shell-allowed-commands",
+        "denied-paths-beside",
+        "fallback-deny-beside",
+        "other-key-beside",
+        "malformed-entry",
+        "allowed-paths-on-shell",
+    ],
+)
+def test_only_the_grant_keys_are_not_a_restriction(
+    settings: dict[str, Any], kept: list[str]
+) -> None:
+    """``allowedPaths`` on a read or write entry and ``allowedCommands`` on a shell
+    entry only add unprompted work on kiro-cli. Any other key keeps the grant at the
+    prompt, as before (fail toward ask)."""
+    spec = _spec(allowedTools=["shell", "write"], toolsSettings=settings)
+    out = kas_agents.to_client_custom_agent("a", spec, "p")
+    assert out.get(CREW_ANSWERED_BUILTINS_KEY, []) == kept
 
 
 def test_withhold_answered_reads_every_withheld_name() -> None:

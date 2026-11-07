@@ -9,11 +9,6 @@ HOST_GRANTS = {
     "app": "dev-fleet",
     # The backend is the ANCESTOR of the vite/pip builds a sync or pod-up runs.
     "build_rlimit": True,
-    # The backend reads live-target pointer state through an in-gateway route
-    # (``gateway_routes.py``), because the pointer itself is masked from its namespace.
-    # ``pod/runtime.py`` scrubs this variable from spawns that must not aim at the live
-    # gateway.
-    "bound_port": True,
     # Operator-declared main-checkout override: the highest-priority repo discovery hint
     # in ``repository.py``, ahead of ``KIROCREW_PROJECT_DIR`` — which packaged installs
     # point at the app bundle (no .git). A path, not a secret.

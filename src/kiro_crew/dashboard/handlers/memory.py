@@ -579,7 +579,7 @@ class _MemorySectionNotObject(Exception):
 
 async def api_memory_settings(request: web.Request) -> web.Response:
     """GET/PUT /api/memory/settings — memory consolidation config."""
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if request.method == "PUT":
         # The body may carry `migrated`, which is the same install-wide flag
         # /api/memory/migrate flips, so this PUT is a durable memory write and takes
@@ -1114,7 +1114,7 @@ async def api_memory_stats(request: web.Request) -> web.Response:
     # source module.
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     stats["embedding_provider"] = cfg.memory.embedding_provider
     stats["migrated"] = cfg.memory.migrated
     # Legacy markdown presence (diagnostics; migration is automatic at boot).
@@ -1252,7 +1252,7 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
     # SEL-recorded: the request passed identity and the write gate, so the
     # refusal is a config-state decision an audit trail has to show rather than
     # an unauthenticated caller being turned away upstream.
-    writes_off = memory_writes_off_key(KiroCrewConfig.load().memory)
+    writes_off = memory_writes_off_key((await asyncio.to_thread(KiroCrewConfig.load)).memory)
     if writes_off is not None:
         code = (
             "persistence_disabled"

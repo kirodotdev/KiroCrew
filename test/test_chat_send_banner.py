@@ -189,6 +189,21 @@ def test_emit_keeps_only_a_bounded_user_label(role, banner, kept):
     assert ("banner" in out) is kept
 
 
+def test_stored_user_label_with_a_credential_is_masked_on_emit():
+    out = _redact_meta_for_role("user", {"banner": f"deploy with {_AWS_KEY}"})
+
+    assert _AWS_KEY not in out.get("banner", "")
+
+
+def test_emit_serves_a_stored_label_as_the_queue_view_does():
+    padded = f"  {_LABEL}  "
+    entry = {"id": "q", "content": "order", "meta": {"banner": padded}}
+
+    emitted = _redact_meta_for_role("user", {"banner": padded})["banner"]
+
+    assert emitted == queue_entry_view(entry)["meta"]["banner"] == _LABEL
+
+
 def test_queue_view_carries_only_a_bounded_label():
     entry = {"id": "q", "content": "order", "meta": {"banner": _LABEL}}
 

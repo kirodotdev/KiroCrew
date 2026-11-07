@@ -78,6 +78,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
         # display battery in.
         "crew_timeline.py",
+        # Pure helper: `redact` returns the redacted string and emits nothing. Its
+        # only caller is `dashboard/warm_task_brief.py`, the registered sink that
+        # posts the result.
+        "dashboard/warm_task_brief_inputs.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).
@@ -94,6 +98,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # redacted text (the response is a fixed withheld constant), so it is a
         # refusal gate, not an egress sink.
         "secrets_mediation/dispatch.py",
+        # Gate-side: the agent notification push and dismiss routes run the note
+        # redactor on a caller's `key` only to REFUSE it (`400 key_would_be_redacted`)
+        # when redaction would change it, so a stored key is exactly what was sent.
+        # Nothing they return is redacted by this module, so it is a gate, not an
+        # egress sink.
+        "dashboard/messaging_api/agent_push.py",
         # Validator only: a dashboard package's model field NAME is run through the
         # redactor and the package is REFUSED when the output differs, because a
         # field name is served in the package's `fields` list and written into the
@@ -133,6 +143,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # from an engine fallback notice and DROPS the id when either would change
         # it. Only the unchanged id is ever returned, never redacted text.
         "acp/engine_fallback.py",
+        # Inbound, like the `@prompt` mention read in the runner's prompt
+        # assembly: a saved prompt that opted in as a slash command is redacted
+        # as it is read, before its body joins the turn or its description joins
+        # the command list. The turn and the dashboard route carry it out.
+        "quick_prompts.py",
         # Gate-side the same way: a change card's reason and parameters are refused
         # when the redactor WOULD change them, and nothing it returns is redacted.
         "dashboard/change_cards_records.py",

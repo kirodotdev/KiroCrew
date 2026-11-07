@@ -95,7 +95,12 @@ keyword query can score below the match threshold while the exact id hits. So:
    started before the server was registered (a new session or an Apply & restart
    fixes it), the session runs an app agent whose policy neutralizes ungranted
    ambient servers, or the server is in `mcpServers` but never referenced from
-   the agent's `tools` array.
+   the agent's `tools` array. For the default agent, send the user to
+   **Customize → Connections → MCP Servers** to check the server is listed and
+   on; a server whose program is not found on this computer is dropped from the
+   agent's spec.
+   `~/.kiro/agents/kirocrew.json` is rebuilt on every gateway start, so never
+   tell the user to hand-edit it or run `jq`/`sed` on it.
 
 **Never invent a reason.** Claiming that a server "is only injected into CLI
 sessions" or "is not part of this product's MCP set" is the failure mode this

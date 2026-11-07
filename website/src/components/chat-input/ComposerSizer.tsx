@@ -4,6 +4,9 @@ import { motion } from 'framer-motion'
 // wrapped or removed line (`inlineToolbarWhileFits`). Short and barely bouncy:
 // it fires mid-typing, so anything longer trails the caret.
 export const COMPOSER_ROW_SPRING = { type: 'spring', stiffness: 520, damping: 38, mass: 0.8 } as const
+// How long after a shape flip the text column still slides rather than jumps:
+// the spring above is settled well inside this.
+export const SHAPE_FLIP_WINDOW_MS = 450
 
 /**
  * The box's height animator for `inlineToolbarWhileFits`. Enabled, it is a

@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 // --- Mocks -----------------------------------------------------------------
@@ -149,14 +151,16 @@ const THIRD_PARTY = {
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps/library']}>
-        <Routes>
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/library']}>
+          <Routes>
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

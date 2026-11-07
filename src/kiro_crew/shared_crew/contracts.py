@@ -90,6 +90,10 @@ class Provenance(str, enum.Enum):
     SSM_INVITE = "ssm_invite"
     #: The single local operator: a loopback or owner-minted dashboard token.
     LOCAL_OPERATOR = "local_operator"
+    #: Named by the Kiro relay in its own message and handed over by this Crew's
+    #: relay client (``dashboard/kiro_relay``). Never the local operator, so a
+    #: gate that requires that provenance still refuses a relayed caller.
+    KIRO_RELAY = "kiro_relay"
     #: Server-internal automation with a named owner component.
     INTERNAL = "internal"
     NONE = "none"

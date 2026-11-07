@@ -120,6 +120,21 @@ def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
     return (server.command, *args)
 
 
+def _timed_out_locally(server: McpServerInfo) -> bool:
+    """Whether a stdio probe of *server* just failed on its handshake timeout.
+
+    ``probe_server`` sets the error to exactly ``"timeout"`` on that path and may
+    append the child's stderr on a following line, so only the first line is
+    compared. A remote server's timeout is a network answer, not a cold start.
+    """
+    return (
+        server.status == "error"
+        and not server.is_remote
+        and isinstance(server.error, str)
+        and server.error.partition("\n")[0] == "timeout"
+    )
+
+
 async def probe_all() -> list[McpServerInfo]:
     """Discover and probe all configured MCP servers (bounded concurrency).
 
@@ -216,6 +231,25 @@ async def probe_all() -> list[McpServerInfo]:
             out.append(servers[i])
         else:
             out.append(r)  # type: ignore[arg-type]
+    # A local probe that timed out gets one more try, alone. Right after a gateway
+    # start the first pass starts up to PROBE_MAX_CONCURRENCY interpreters at once
+    # on a host that is busy starting, so a server that answers in a few seconds
+    # alone can miss the timeout -- every Kiro Crew server timing out in the same
+    # second is that burst, not five slow servers. Run one at a time, the retry
+    # starts each server without that contention, and its verdict replaces the
+    # first one, so the burst adds no quarantine strike. A server that really
+    # hangs costs one more probe duration per pass until it is quarantined.
+    for i, s in enumerate(out):
+        if not _timed_out_locally(s):
+            continue
+        first_error = s.error
+        s.error = ""
+        try:
+            out[i] = await probe_server(s)
+        except Exception as exc:
+            # Same contract as the gather above: one server never aborts the pass.
+            s.status, s.error = "error", first_error
+            logger.warning("MCP probe retry failed [%s]: %s", s.name, _sanitize_probe_error(exc))
     for s in out:
         _note_denied_env(s)
     # Same order as ``list_servers`` reported, so the probe response and

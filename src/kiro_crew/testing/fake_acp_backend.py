@@ -426,17 +426,10 @@ def _report_mcp_ready(session_id: str, mode_id: str | None = None) -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Mid-turn inbox
-#
-# main() reads stdin on a background thread and pushes into this queue, so a
-# handler can poll for cancels / permission answers while a session/prompt is
-# still streaming. A strict read -> handle loop cannot observe a session/cancel
-# arriving DURING a session/prompt until the turn has already finished.
-#
-# Direct _handle() callers (the unit tests) leave the queue empty: every wait
-# below then simply times out and the default behaviour is unchanged.
-# --------------------------------------------------------------------------- #
+# Mid-turn inbox: main() reads stdin on a background thread into this queue, so a
+# handler can see a session/cancel or permission answer while a session/prompt is
+# still streaming. Direct _handle() callers (the unit tests) leave it empty, so
+# every wait below times out and behaviour is unchanged.
 _INBOX: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
 
@@ -712,15 +705,12 @@ def _stream_slowly(
     cancel_aware=False models an agent stuck in a long tool call that cannot
     acknowledge a stop, so the host's soft-stop budget expires.
 
-    ack_after_chunks>0 models an agent that notices the cancel but takes a
-    bounded moment to wind down: it emits that many more chunks, then acks. The
-    host stays in `soft_pending` for the whole wind-down, which is what makes
-    that state observable to a UI assertion instead of a ~250ms race, while
-    still ending the turn cooperatively so nothing leaks into the next turn.
+    ack_after_chunks>0 emits that many more chunks after the cancel, then acks:
+    the host stays in `soft_pending` long enough for a UI assertion (not a
+    ~250ms race) and the turn still ends cooperatively.
 
-    The cancel observation is LATCHED because `_cancel_requested` consumes the
-    message from the inbox: a second call after the wind-down starts would
-    return False and the ack would never fire.
+    The cancel is LATCHED because `_cancel_requested` consumes the inbox
+    message: a second call would return False and the ack would never fire.
 
     *hold*, when given, is asked before chunk ``SLOW_HOLD_AFTER_CHUNKS``: the
     stream waits there until it answers True (:func:`_hold_until_released`),

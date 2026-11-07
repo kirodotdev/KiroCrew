@@ -203,12 +203,12 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
 
     The cost is that a frame the BROWSER reloads on its own (rather than a page
     reload, which remounts the app and mints again) finds its document spent and
-    gets this 404 inside the frame. Nothing in the frontend observes the GET —
-    the document is served with an opaque origin, so the parent cannot read
-    whether it loaded — and the retry control appears only when the MINT itself
-    fails. Recovering a spent URL therefore needs a page reload. Detecting it
-    would take a beacon injected into the document plus a deadline, which is
-    not built; do not describe one here until it is.
+    gets this 404 inside the frame. The parent cannot read the GET: the
+    document is served with an opaque origin. The crewmate Dashboard tab
+    detects it anyway: its document carries a host script that answers a ping
+    the parent sends on every frame ``load``, and a load with no answer before
+    a deadline makes the tab mint a new URL (``useFrameAliveRecovery``). Other
+    surfaces do not, so a spent URL there still needs a page reload.
     """
     doc_id = request.match_info.get("doc_id", "")
     token = request.match_info.get("token", "")

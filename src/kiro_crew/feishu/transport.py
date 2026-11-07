@@ -51,12 +51,14 @@ DispatchFn = Callable[["LarkInbound"], Awaitable[None]]
 # new message to an allow-listed open_id or group chat_id (``send_message``).
 # Inbound files are read (transport_dispatch.py downloads them after every gate).
 # max_message_chars reflects the safe 4 000-char cap defined in client.py.
+# files_outbound: the renderer uploads a local image the answer references and
+# replies with it as an image message (renderer.py::on_done).
 FEISHU_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
     files_inbound=True,
-    files_outbound=False,
+    files_outbound=True,
     rich_blocks=False,
     threads=False,
     max_message_chars=4000,

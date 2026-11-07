@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import gc
 import hashlib
 import json
+import logging
 import os
 import stat
 import zipfile
@@ -22,7 +24,7 @@ from member_memory_helpers import (
 )
 
 from kiro_crew import member_memory_backup as member_backup
-from kiro_crew import memory_backup, memory_stores
+from kiro_crew import memory_backup, memory_stores, platform_compat, platform_owner_compat
 from kiro_crew.config import loader
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
@@ -781,3 +783,33 @@ def test_member_store_directory_without_a_database_is_still_a_backup_failure(tmp
 
     with pytest.raises(memory_backup.MemoryBackupFailed):
         memory_backup.backup_store(database)
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the store-use lock is POSIX-only")
+def test_a_read_only_member_backups_view_reports_the_sandbox_hint(env, monkeypatch, caplog):
+    """Inside the agent sandbox ``memory_stores`` is read-only, so say so, not a bare errno."""
+
+    def sealed(path) -> bool:
+        return memory_stores.MEMBER_BACKUPS_DIR_NAME in Path(path).parts
+
+    def refuse_writes_under_sealed(real):
+        def call(path, *args, **kwargs):
+            if sealed(path):
+                raise OSError(errno.EROFS, os.strerror(errno.EROFS), str(path))
+            return real(path, *args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(platform_compat, "is_readonly_filesystem", sealed)
+    for module, name in (
+        (platform_compat, "open_create_or_existing"),
+        (platform_owner_compat, "restrict_dir_to_owner"),
+    ):
+        monkeypatch.setattr(module, name, refuse_writes_under_sealed(getattr(module, name)))
+    with caplog.at_level(logging.WARNING):
+        result = memory_backup.back_up_all_stores(force=True)
+
+    assert result["failed"] == len(MEMBERS)
+    hints = [r for r in caplog.records if "read-only inside the agent sandbox" in r.getMessage()]
+    assert len(hints) == len(MEMBERS)
+    assert not [r for r in caplog.records if r.exc_info]

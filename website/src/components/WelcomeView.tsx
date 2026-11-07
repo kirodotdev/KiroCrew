@@ -11,6 +11,7 @@ import { api, type SuggestionItem, type SuggestionKind } from '../api/client'
 import { reportForError } from '../utils/errorReport'
 import { openMilestonesPanel, useTryTodayCount } from './milestones/useMilestones'
 import { useExplorePreview } from '../hooks/usePreviewFlag'
+import { PackLoaderImage } from '../pages/chat/PackLoaderImage'
 
 import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
@@ -179,11 +180,12 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
   // Per-theme brand mark, resolved in the shell's order: compiled edition
   // branding (the themeBranding seam) first, then the installed pack's own
   // welcome image, then its left-rail logo, then the stock KiroGhost (what the
-  // standalone build shows on its built-in themes).
+  // standalone build shows on its built-in themes). An animated image holds its
+  // first frame under reduced motion, like the pack's loader art.
   const { colorTheme, brandWelcome, brandLogo } = useTheme()
   const heroImage = getThemeBranding(colorTheme)?.logo ?? brandWelcome ?? brandLogo
   const brandMark = heroImage
-    ? <img src={heroImage} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
+    ? <PackLoaderImage src={heroImage} className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
     : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
   // Explore's "Try today" (RFC 4.5): while any feature is untried, the last

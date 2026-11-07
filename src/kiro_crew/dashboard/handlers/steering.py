@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import stat
+import string
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
+from kiro_crew.slugs import slug_hash_fallback
 
 from ._shared import (
     _is_restricted_session,
@@ -132,8 +134,16 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {os.unlink, os.stat}.is
 )
 
 # Filenames are user-visible document names: word chars, dash, dot, space and
-# nested folders.  Anything else is rewritten on create (see _safe_rel_name).
+# nested folders.  Anything else is rewritten on create, and a segment the
+# rewrite leaves with no ASCII letter or digit becomes a stable hash of what was
+# typed (see _safe_rel_name).
 _NAME_ALLOWED = re.compile(r"[^A-Za-z0-9._/ -]")
+#: A segment keeping one of these after the rewrite stays readable; one keeping
+#: none falls back to a hash of what was typed (see _hashed_segment).
+_ASCII_ALNUM = frozenset(string.ascii_letters + string.digits)
+#: Separator of the parts of a steering name (``team/style.md``): the API takes
+#: "/" on every OS, and the name is resolved under its root with ``Path`` later.
+_STEERING_NAME_SEP = "/"
 
 #: Byte budget for the relative name ``<...>.md`` a create writes, mirroring
 #: prompts/skills (``MAX_PROMPT_NAME_BYTES``). ``_safe_rel_name`` screens the
@@ -638,16 +648,41 @@ def resolve_steering_file(
     return resolved
 
 
+def _hashed_segment(clean: str, original: str) -> str:
+    """Return *clean*, or a stable hash of *original* when the rewrite erased it.
+
+    A segment written wholly outside :data:`_NAME_ALLOWED` (``编码规范``) rewrites
+    to dashes only, so every such name of one length would derive the same file.
+    A segment that keeps an ASCII letter or digit, or that the rewrite left
+    untouched, stays as it is.
+    """
+    if clean == original or any(c in _ASCII_ALNUM for c in clean):
+        return clean
+    return slug_hash_fallback(original, "steering")
+
+
 def _safe_rel_name(raw: str) -> str:
     """Normalize a user-supplied steering filename to a safe relative path."""
-    name = _NAME_ALLOWED.sub("-", raw.strip()).strip("/").strip()
-    name = re.sub(r"/+", "/", name)
-    name = "/".join(seg for seg in name.split("/") if seg not in ("", ".", ".."))
-    if not name:
+    original = raw.strip()
+    clean = _NAME_ALLOWED.sub("-", original)
+    # The rewrite is one character for one and never yields "/", so *clean* and
+    # *original* share their length and slash positions: slicing and splitting
+    # both the same way pairs each written segment with the text it came from.
+    start = len(clean) - len(clean.lstrip(_STEERING_NAME_SEP).lstrip())
+    end = len(clean.rstrip(_STEERING_NAME_SEP).rstrip())
+    clean_segs = clean[start:end].split(_STEERING_NAME_SEP)
+    original_segs = original[start:end].split(_STEERING_NAME_SEP)
+    pairs = [(seg, orig) for seg, orig in zip(clean_segs, original_segs) if seg not in ("", ".", "..")]
+    if not pairs:
         return ""
-    if not name.endswith(".md"):
-        name = f"{name}.md"
-    return name
+    segments = [_hashed_segment(seg, orig) for seg, orig in pairs[:-1]]
+    # The last segment is judged by its stem, so ``编码规范`` and ``编码规范.md``
+    # name the same file; its ``.md`` is always written back.
+    last, last_orig = pairs[-1]
+    if last.endswith(".md"):
+        last, last_orig = last[:-3], last_orig[:-3]
+    segments.append(f"{_hashed_segment(last, last_orig) if last else ''}.md")
+    return _STEERING_NAME_SEP.join(segments)
 
 
 def _blocked(request: web.Request, operation: str) -> web.Response | None:
@@ -947,6 +982,7 @@ def _update_file_blocking(target: Path, content: str) -> str | None:
             newline="",
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,
+            preserve_windows_dacl=True,
         )
     except OSError as exc:
         logger.warning("steering update failed: %s", type(exc).__name__)

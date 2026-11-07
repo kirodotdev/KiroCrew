@@ -11,6 +11,7 @@
  * `client.ts` re-exports `ApiError` and `friendlyErrText`, so every existing
  * import path — and every test that mocks `../api/client` — keeps working.
  */
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { looksLikeHtmlDocument, edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
 
@@ -71,6 +72,43 @@ export const apiErrorCode = (e: unknown): string =>
   e instanceof ApiError ? errorBodyCode(e.body) : ''
 
 /**
+ * True for the gateway's refusal of a call to an app that is switched off: the
+ * `app_not_enabled` code the app reverse proxy answers with. Keyed on the code,
+ * not the 403, because the same routes answer 403 to other refusals too.
+ */
+export const isAppNotEnabledError = (e: unknown): boolean => apiErrorCode(e) === 'app_not_enabled'
+
+/**
+ * Refusal codes that mean "this caller is not permitted", not "the call failed":
+ * the relay's refusal of the app surface to a teammate (`relay_apps_teammate`,
+ * `kiro_relay/limits.py`) and an owner-only route's 403 (`owner_only`,
+ * `handlers/_shared_access.py`). Asking again cannot change either answer.
+ */
+const PERMISSION_REFUSAL_CODES: ReadonlySet<string> = new Set(['owner_only', 'relay_apps_teammate'])
+
+/**
+ * True for a 403 whose `code` is one of {@link PERMISSION_REFUSAL_CODES}: a
+ * deliberate "not for you" that a reader shows neutrally or answers by hiding
+ * its control, never as a red failure with a retry.
+ *
+ * Narrow on purpose. A session-expiry 403 (`authRequired`) is excluded, since a
+ * refreshed cookie does recover it; so is any 403 with another code, a 5xx and a
+ * network rejection, all of which stay errors. Duck-typed on `status`, `body`
+ * and `authRequired` like {@link isNotFoundError}, so a suite that rejects with
+ * `Object.assign(new Error(), { status, body })` is read the same way.
+ */
+export const isPermissionRefusal = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) return false
+  const { status, body, authRequired } = e as { status?: unknown; body?: unknown; authRequired?: unknown }
+  if (status !== 403 || authRequired === true || typeof body !== 'string') return false
+  return PERMISSION_REFUSAL_CODES.has(errorBodyCode(body))
+}
+
+/** {@link isPermissionRefusal} for the relay's teammate refusal of the app surface alone. */
+export const isRelayAppsRefusal = (e: unknown): boolean =>
+  isPermissionRefusal(e) && errorBodyCode((e as { body: string }).body) === 'relay_apps_teammate'
+
+/**
  * The `code` a raw refusal body names, or `''`. The body-level half of
  * {@link apiErrorCode}, for readers that run before an ApiError exists --
  * `friendlyErrText` builds the ApiError's message from the raw body.
@@ -84,6 +122,26 @@ const errorBodyCode = (body: string): string => {
   } catch {
     return ''
   }
+}
+
+type AttachedRow = { id: string; state: string }
+
+/**
+ * What a `slot_subagents_running` refusal body says keeps the slot attached, as
+ * lines to show under the refusal: each unfinished run and queued spawn as
+ * `id (state)`, then a could-not-check line when the run probe could not answer
+ * (`runs: null`) or the queued listing is incomplete (`queued_partial`). `''` for
+ * any other body.
+ */
+export const slotAttachedDetail = (body: string): string => {
+  if (errorBodyCode(body) !== 'slot_subagents_running') return ''
+  const { runs, queued, queued_partial } = JSON.parse(body) as {
+    runs?: AttachedRow[] | null, queued?: AttachedRow[], queued_partial?: boolean
+  }
+  const rows = [...(runs ?? []), ...(queued ?? [])].map(row => `${row.id} (${row.state})`)
+  const lines = rows.length ? [i18nT('api.client.subagents_still_running_or_queued', { list: fmtList(rows) })] : []
+  if (runs === null || queued_partial) lines.push(i18nT('api.client.subagents_could_not_be_checked'))
+  return lines.join('\n')
 }
 
 /** True when an approval refusal is terminal — the approval itself is gone (404,
@@ -174,9 +232,10 @@ export const friendlyErrText = (status: number, body: string): string => {
   }
   // Backends return errors as {"error": "…"} (or detail/message). Unwrap the
   // field so the UI shows the human message with its real newlines, not the
-  // raw JSON envelope with escaped \n and \".
+  // raw JSON envelope with escaped \n and \". A sub-agent refusal also names what
+  // keeps the slot attached, so every surface showing it says what to stop.
   const msg = jsonMessage(trimmed, ['error', 'detail', 'message'])
-  if (msg) return msg
+  if (msg) return [msg, slotAttachedDetail(trimmed)].filter(Boolean).join('\n')
   // An error PAGE has no message field to unwrap, so returning it verbatim put
   // `<!DOCTYPE html><html><head><meta charset="utf…` in the dashboard's topbar.
   if (looksLikeHtmlDocument(trimmed)) return ''

@@ -93,11 +93,13 @@ async function main() {
     })
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme })
-    await page.addInitScript(() => {
-      localStorage.setItem('mc-active-slot', 'chat-a')
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      localStorage.setItem('mc-onboarded', '1')
+    await stubDashboardApi(page, {
+      slots, theme,
+      localStorageEntries: {
+        'mc-active-slot': 'chat-a',
+        'mc-privacy-notice-v1': '1',
+        'mc-onboarded': '1',
+      },
     })
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)

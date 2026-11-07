@@ -308,7 +308,9 @@ from kiro_crew.apps.builtins.dev_fleet import live, pointer_broker
 
 
 async def main(port, path, secret):
-    broker = pointer_broker.GatewayPointerBroker(port=port, app_secret=secret)
+    broker = pointer_broker.GatewayPointerBroker(
+        origin=f"http://127.0.0.1:{port}", app_secret=secret
+    )
     live.install_removal_lease_client(
         (broker.acquire_removal_lease, broker.renew_removal_lease, broker.release_removal_lease)
     )

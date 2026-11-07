@@ -234,14 +234,9 @@ def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
     when the setting is on, so a process composing the defaults with the relay off,
     a short-lived hook among them, never loads it.
     """
-    tunnel_cfg = getattr(cfg, "tunnel", None)
-    # ``is True``: a stand-in config object answers any attribute truthily.
-    if getattr(tunnel_cfg, "relay_enabled", False) is not True:
-        return DefaultTunnelProvider()
-    from kiro_crew.edition_locks import local_enable_locked
+    from kiro_crew.edition_locks import relay_selected
 
-    # An enterprise build ignores local enables for the tunnel (RFC D3), this one too.
-    if local_enable_locked("tunnel"):
+    if not relay_selected(cfg):
         return DefaultTunnelProvider()
     from kiro_crew.relay_client.provider import public_tunnel_provider
 

@@ -85,7 +85,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     effort_config_option_id,
     effort_config_option_value,
 )
-from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND  # noqa: F401
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
@@ -323,11 +323,6 @@ class AcpProvider(LLMProvider):
                     self._effort_per_model.setdefault(m, lvl)
             except Exception:
                 logger.debug("ACP effort overlay recovery failed", exc_info=True)
-        if self._client.backend in ACP_BACKENDS_KIRO_FAMILY:
-            # Write the overlay BEFORE the first spawn so kiro-cli reads it on
-            # session/new. Each writer is scoped to the harnesses that read its keys.
-            self._apply_effort_overlay()
-            self._apply_tool_search_overlay()
 
     @property
     def client(self) -> AcpClient:
@@ -1083,29 +1078,46 @@ class AcpProvider(LLMProvider):
             return False
         return await discard() is True
 
+    async def kas_command_call(self, command: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """The inner client's KAS ``/context``, ``/knowledge`` or ``/code`` verb, or None.
+
+        Only the session provider (KAS through the shared runtime) carries one.
+        """
+        call = getattr(self._client, "kas_command_call", None)
+        if call is None:
+            return None
+        return await call(command, params)
+
     async def new_conversation(self) -> None:
         """Clean-slate reset on the SAME warm process (no cold start).
 
-        Delegates to the backing client. Only ``AcpSessionProvider`` has one: a
-        member of ``ACP_BACKENDS_ACP_RUNTIME`` gets it as ``self._client`` from
-        ``start()``, and it issues a fresh ``session/new`` on the already-running
-        process, skipping subprocess spawn + the ``initialize`` handshake. This is
-        the primitive a warm session pool uses to reuse one worker across
-        independent tasks without leaking context between them.
+        Delegates to the backing client, which issues a fresh ``session/new`` on the
+        already-running process, skipping subprocess spawn + the ``initialize``
+        handshake. This is the primitive a warm session pool uses to reuse one worker
+        across independent tasks without leaking context between them. A member of
+        ``ACP_BACKENDS_ACP_RUNTIME`` gets ``AcpSessionProvider`` as ``self._client``
+        from ``start()``; any other backend keeps its own ``AcpClient``, whose reset
+        runs only for a member of ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` (claude).
+        On that arm the steps ``start()`` runs after the client is ready follow: the
+        resolved effort, and, for a session that keeps no transcript, the deletion of
+        the replaced session's files, as ``shutdown`` deletes them.
 
-        A backend on its own ``AcpClient`` (claude and every other per-session
-        adapter) has no such reset, so this raises ``NotImplementedError`` naming
-        the backend, and the caller falls back to killing and respawning the
-        process (``WorkerPool.reset``, ``_start_fresh_conversation``).
+        Every other backend on its own ``AcpClient`` raises ``NotImplementedError``
+        naming it, and the caller falls back to killing and respawning the process
+        (``WorkerPool.reset``, ``_start_fresh_conversation``).
         """
-        new_conversation = getattr(self._client, "new_conversation", None)
-        if new_conversation is None:
-            backend = POLICY_ID_BY_BACKEND.get(self._client.backend, self._client.backend)
-            raise NotImplementedError(
-                f"the {backend!r} backend has no fresh-conversation reset on its live "
-                "process; it is reset by kill and respawn"
-            )
-        await new_conversation()
+        if isinstance(self._client, AcpClient):
+            replaced = self.session_id
+            try:
+                await self._client.new_conversation()
+            finally:
+                # Once the client has left the old session, by a reset or by a failure
+                # that ended its process, no other id names it for ``shutdown``.
+                if self.session_id != replaced and self.memory_mode != "persistent":
+                    await self.cleanup_session(replaced)
+            await self._apply_initial_effort()
+            return
+        await self._client.new_conversation()
 
     def set_delete_delay(self, seconds: float) -> None:
         """Keep the session's record for ``seconds`` after it ends, then delete it.

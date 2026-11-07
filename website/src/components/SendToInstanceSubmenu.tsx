@@ -15,7 +15,7 @@ import ErrorNotice, {
   ErrorNoticeMenuItem,
   type ErrorNoticeMenuItemComponent,
 } from './ErrorNotice'
-import { OfflineReasonRow } from './OfflineMenuReason'
+import { OfflineReasonRow, REASON_ROW_WIDTH } from './OfflineMenuReason'
 import { i18nT } from '../i18n/t'
 import { resolveDefaultDestination, withDefaultFirst } from '../utils/defaultDestinationCrew'
 import { offlineProps } from '../utils/offline'
@@ -266,7 +266,7 @@ export default function SendToInstanceSubmenu({ slotKey, variant, folderDefault 
           Separator={Separator}
         />
         {/* LAST, as the top-level menu does: a reconnect unmounts this row, and above the peers it would shift them under a mid-aim pointer. */}
-        {!connected && <OfflineReasonRow testId="send-instance-offline-reason" className="px-2 py-1" message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.send_to_instances') })} />}
+        {!connected && <OfflineReasonRow testId="send-instance-offline-reason" className={`${REASON_ROW_WIDTH} px-2 py-1`} message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.send_to_instances') })} />}
       </SubContent>
     </Sub>
   )

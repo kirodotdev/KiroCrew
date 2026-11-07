@@ -18,7 +18,7 @@ import { Input } from '../../components/ui'
 import FolderMoveSubmenu from '../../components/FolderMoveSubmenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { DndDroppable } from '../../components/dnd'
-import { collectFolderSubtreeIds, folderNameText } from '../../utils/folderTree'
+import { collectFolderSubtreeIds, countWithSubfolders, folderNameText } from '../../utils/folderTree'
 import type { ChatFolder } from '../../types'
 import { i18nT } from '../../i18n/t'
 import { PrivateChatRow } from './PrivateChatRow'
@@ -40,7 +40,7 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
     disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
-    folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
+    folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersWithActiveSubtree, heldLane,
     hiddenByContainer, hideEmptyFolderBody, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
@@ -407,7 +407,12 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // colliding with a local one cannot count a session this machine does not own
     // toward the folder it does.
     const childSlots = sidebarRows.folderTree.rowsIn(folder.id)
-    const count = childSlots.length + childFolders.length
+    // With "Include Subfolder Contents in Folder Counts" on, each drawable
+    // subfolder's total is added in, by the same two predicates, so the number
+    // is the sum of the numbers on the rows under it.
+    const count = countSubfolderContents
+      ? countWithSubfolders(folder, drawableChildFolders, f => sidebarRows.folderTree.rowsIn(f.id).length)
+      : childSlots.length + childFolders.length
     const collapsed = !!folder.collapsed
     // One derivation, not two: `renderFolderBlock` decides the body from the nodes
     // it renders, and this row follows that decision. With the count now built
@@ -528,7 +533,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
+            <Input ref={folderEditInputRef} aria-label={i18nT('pages.chatSidebar.folder_name_label')} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (

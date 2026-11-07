@@ -842,23 +842,13 @@ async def test_double_cancel_waits_for_fetch_cleanup_before_restoring_checkout(
     assert (dest / "local-edit.txt").is_file(), "late cleanup deleted restored checkout"
 
 
-# ---------------------------------------------------------------------------
 # A failed FRESH clone must actually remove the partial checkout on Windows.
 #
-# git writes `.git/objects/pack/*.{pack,idx,rev}` read-only. On Windows that is
-# FILE_ATTRIBUTE_READONLY, so `shutil.rmtree(..., ignore_errors=True)` cannot
-# unlink them and silently reports success over a tree that is still on disk.
-# The update path already copes with a surviving tree -- its `finally` moves the
-# leftover aside so the restore rename cannot collide -- but the fresh-install
-# path had no such guard, so the leftover became permanent: the next install
-# sees `dest/.git` with a matching origin, takes the fast-forward branch, and
-# `git pull` in a never-finished clone fails on every retry.
-#
-# POSIX cannot express this: the read-only bit there does not govern unlink (the
-# parent directory's write permission does), so `rmtree` succeeds either way and
-# the test would be green before the fix. Hence a platform gate rather than a
-# simulated failure -- the real file attribute is the entire mechanism.
-# ---------------------------------------------------------------------------
+# git writes `.git/objects/pack/*` read-only; on Windows `shutil.rmtree(...,
+# ignore_errors=True)` cannot unlink them and reports success. A leftover `dest/.git`
+# sends every retry down the fast-forward branch, where `git pull` fails.
+# POSIX unlink ignores the file's read-only bit, so this needs a platform gate, not a
+# simulated failure.
 
 
 def _partial_clone(dest):

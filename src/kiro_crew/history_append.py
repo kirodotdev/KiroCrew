@@ -17,12 +17,18 @@ from __future__ import annotations
 import itertools
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.atomic_write import append_line, atomic_write
-from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
+from kiro_crew.chat_attachments import (
+    ImageBudget,
+    persist_inline_images,
+    same_text_modulo_images,
+    store_image_file,
+)
 from kiro_crew.history_schema import (
     _parse_transcript_ts,
     metadata_now_iso,
@@ -92,6 +98,30 @@ def _persist_inline_attachments(self: ConversationLog, key: str, role: str, cont
     return persist_inline_images(content, sessions_dir=path.parent, stem=path.stem)
 
 
+def _store_ingested_images(path: Path, content: str, images: Sequence[str]) -> str:
+    """*content* naming a stored copy of each picture a channel downloaded for it.
+
+    The one user row whose pictures are stored, because *images* are files the
+    gateway itself fetched (``IngestResult.image_paths``), never a path the user
+    typed. ``append_attachment_context`` put each on a line of its own and
+    followed it with a note that the file lasts until the turn ends; a stored
+    picture's line becomes markup naming the copy and its note is dropped, while
+    one that cannot be kept leaves both as written. Same lock rule as
+    :func:`_persist_inline_attachments`.
+    """
+    # Deferred: this module pulls transcription in, which history does not need.
+    from kiro_crew.messaging.attachments import image_location_note
+
+    budget = ImageBudget()
+    for image in images:
+        markup = store_image_file(image, sessions_dir=path.parent, stem=path.stem, budget=budget)
+        if markup is None:
+            continue
+        content = "\n".join(markup if line == image else line for line in content.split("\n"))
+        content = content.replace(f"\n\n{image_location_note(image)}", "", 1)
+    return content
+
+
 def append(
     self: ConversationLog,
     key: str,
@@ -106,11 +136,16 @@ def append(
     mid: str | None = None,
     extra_meta: dict[str, Any] | None = None,
     entry: dict | None = None,
+    ingested_images: Sequence[str] = (),
 ) -> None:
     """Append a message with optional provenance to the session log.
 
     *extra_meta* adds display fields (e.g. ``turn_stats``) to the row's
     ``meta``; it never overrides ``mid``.
+
+    *ingested_images* are the pictures a channel downloaded for this message;
+    each is copied into session storage and the row names the copy
+    (:func:`_store_ingested_images`).
 
     *cls* persists the message's presentation class, so it survives a replay
     from disk after a restart.
@@ -147,6 +182,8 @@ def append(
         # attachments against the owning session.
         if entry is None:
             content = self._persist_inline_attachments(key, role, content)
+            if ingested_images:
+                content = _store_ingested_images(self._path(key), content, ingested_images)
         path = self._path(key)
         created_with_tab_id = False
         created_now = False

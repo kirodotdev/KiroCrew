@@ -1725,10 +1725,12 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
   )
 }
 
-/** Pre-built actions for common use cases */
+/** Pre-built actions for common use cases. `copy` is what Copy writes, so a
+ *  host can add a rich-text flavour; plain text by default. */
 export function useSelectionActions(
   onQuote?: (text: string, rect: DOMRect) => void,
   onAsk?: (text: string, rect: DOMRect) => void,
+  copy: (text: string) => Promise<boolean> = copyToClipboard,
 ): SelectionAction[] {
   const actions: SelectionAction[] = []
 
@@ -1766,7 +1768,7 @@ export function useSelectionActions(
     label: i18nT('components.selectionToolbar.copy'),
     // Returns the clipboard result so the toolbar's checkmark is truthful
     // (and a refusal is reported rather than flashed as success).
-    onClick: (text) => copyToClipboard(text),
+    onClick: (text) => copy(text),
   })
 
   return actions

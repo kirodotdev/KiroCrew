@@ -66,7 +66,7 @@ SLOT_KEY = "chat-golden-1"
 
 #: Random ids. Each distinct value becomes ``<key:n>``, numbered in order of first
 #: appearance, so the file still shows which frames carry the same id.
-ID_KEYS = frozenset({"gen", "mid", "tab_id", "turn_gen"})
+ID_KEYS = frozenset({"gen", "incarnation", "mid", "tab_id", "turn_gen"})
 
 #: Wall-clock stamps, durations and process-wide counters (``governanceGeneration``,
 #: ``gitlabHostsGeneration`` and ``tags_revision`` count events of the whole worker,

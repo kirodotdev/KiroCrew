@@ -15,6 +15,21 @@ function queuedRowPastes(meta: Record<string, unknown> | undefined): { pastes?: 
   return Array.isArray(pastes) && pastes.length ? { pastes: pastes as PasteBlock[] } : {}
 }
 
+/** Whether the text a drain rebuilds is a requeued steer that now runs as its
+ *  own message: the nearest `user` row before `end` with exactly this text is a
+ *  steer the turn ended before reading (`requeued`, or `superseded` once the
+ *  drain retired it). Only the nearest one, so a later send of the same words,
+ *  after that steer already got its own row, is not tied to it again. */
+function landsFromRequeuedSteer(msgs: ChatMessage[], end: number, content: string): boolean {
+  for (let i = end - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role !== 'user' || m.content !== content) continue
+    const state = m.meta?.steerState
+    return m.meta?.steer === true && (state === 'requeued' || state === 'superseded')
+  }
+  return false
+}
+
 /** Replace only this send's provisional row; a queue acceptance is not execution.
  *
  *  A crewmate chat's own send (`responsiveSend`) is replaced IN PLACE: the
@@ -140,7 +155,11 @@ export const queueReducers = {
       // (no chat_message echo follows for a user row).
       if (drain_writes_row) return
       if (sendId) {
-        const existing = msgs.find(m => m.role === 'user' && m.meta?.sendId === sendId)
+        // A persisted steer row is not this drain's row: a requeued steer runs as
+        // its own new row. Matching it here would skip the rebuild, and with it
+        // the landed mark below. An optimistic steer bubble is still this send's
+        // placeholder, so it is matched and replaced as before.
+        const existing = msgs.find(m => m.role === 'user' && m.meta?.sendId === sendId && !(m.meta?.steer && !m.meta?.optimistic))
         if (existing && !existing.meta?.optimistic) return
         if (existing) {
           const ei = msgs.indexOf(existing)
@@ -165,6 +184,17 @@ export const queueReducers = {
       delete rowMeta.optimistic
       delete rowMeta.deliveryUnconfirmed
       delete rowMeta.responsiveSend
+      // Client-only mark, minted here like `clientTs`: the row is a requeued
+      // steer's text running as its own message, and UserMessage flashes it
+      // once so it reads as the steer above it moving, not as a new send. The
+      // frame reaches `rowMeta` only through the `queueEntry*` readers, so no
+      // frame can set it, and the server never writes it, so a reload drops it.
+      // Only the drain of the card the requeue pushed (`meta.requeuedSteer`, kept
+      // on the card this pop matched by `queue_id`). A cancel removes that card,
+      // so a later send of the same words drains its own card and is not marked.
+      // The mark is the card's own `queue_id`: unique per card, so two steers
+      // requeued in the same clock tick (one shared card `ts`) still flash once each.
+      if (queued?.meta?.requeuedSteer === true && landsFromRequeuedSteer(msgs, at >= 0 ? at : msgs.length, content)) rowMeta.landedFromSteer = queue_id || (queued.meta.queueId as string | undefined) || true
       const row: ChatMessage = { role: 'user', content, cls: 'msg msg-u', ts, ...(Object.keys(rowMeta).length ? { meta: rowMeta } : {}) }
       if (at >= 0) msgs.splice(at, 0, row)
       else msgs.push(row)
@@ -271,7 +301,7 @@ export const queueReducers = {
       // `kind` and `appLabel` too, as hydration keeps them: a cron or app card
       // classifies by them (not editable, not restored into the composer).
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryPastes(content) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryPastes(content) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

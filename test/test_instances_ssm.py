@@ -103,11 +103,8 @@ _ECS_OK = f"ecs:mycluster_{_ECS_TASK_ID}_{_ECS_RUNTIME_ID}"
 class TestEcsTargetValidation:
     """The Fargate lane's ECS task target, at the same guard as the EC2 id.
 
-    The ECS shape has to be widened into ``validate_ssm_target`` for a Fargate
-    crew to be reachable at all, and that validator is a shell-injection and
-    argv-smuggling boundary. So the accept set is pinned narrowly and the reject
-    set is pinned vector by vector: a future widening that loosens the charset
-    fails these tests rather than quietly enlarging the boundary.
+    ``validate_ssm_target`` is a shell-injection and argv-smuggling boundary, so the
+    accept set is pinned narrowly and the reject set vector by vector.
     """
 
     @pytest.mark.parametrize(
@@ -149,10 +146,7 @@ class TestEcsTargetValidation:
         """``[0-9]`` not ``\\d`` for the runtime suffix.
 
         Python's ``\\d`` matches any Unicode decimal digit, so a ``\\d{1,20}``
-        suffix ACCEPTS Arabic-Indic digits. This exact vector was accepted by the
-        first proposed pattern and is the reason the shipped one spells the class
-        out. Pinned as its own named test so a future edit back to ``\\d`` fails
-        here with an explanation rather than in a security review.
+        suffix would accept Arabic-Indic digits.
         """
         from kiro_crew.instances.validation import SsmValidationError, validate_ssm_target
 
@@ -190,15 +184,8 @@ class TestEcsTargetValidation:
     def test_the_length_bound_never_rejects_what_the_pattern_accepts(self, suffix_digits):
         """The bound must be derived from the pattern, not stated beside it.
 
-        It was stated, as 336, computed from a 10-digit runtime suffix while the
-        pattern accepts 20 -- so every legal target with an 11-to-20 digit suffix
-        was refused by the length check before the pattern could accept it. Failing
-        closed made that a false reject rather than a hole, but the check silently
-        overrode the shape it was supposed to be guarding.
-
-        Parametrised across the suffix lengths that straddle the old boundary, so a
-        future hardcoded number fails here instead of quietly shrinking the accept
-        set.
+        The pattern accepts a 1-to-20 digit runtime suffix; a bound computed from a
+        10-digit suffix would false-reject the 11-to-20 digit ones.
         """
         from kiro_crew.instances.validation import (
             _ECS_TARGET_RE,
@@ -231,9 +218,7 @@ class TestEcsTargetValidation:
         """A fullwidth cluster char must stay rejected, NOT be folded to ASCII.
 
         NFKC-normalising first would fold fullwidth ``ｃ`` to ``c`` and turn a
-        rejected value into an accepted one, so the validator deliberately does
-        no normalisation. Asserted because "normalise before validating" is a
-        plausible-sounding change that would silently open the charset.
+        rejected value into an accepted one, so the validator does no normalisation.
         """
         from kiro_crew.instances.validation import SsmValidationError, validate_ssm_target
 
@@ -289,17 +274,11 @@ class TestEcsTargetValidation:
     def test_rejects_injection_and_malformed_ecs_targets(self, vector):
         """Every vector differs from a valid target in exactly one way.
 
-        A naive widening -- ``^ecs:.+_.+_.+$`` -- accepts most of these, including
-        command substitution, argv smuggling and a NUL byte (pinned vector by
-        vector in :meth:`test_naive_widening_accepts_the_dangerous_classes`).
-        That is what this corpus exists to prevent, so do not relax the pattern to
+        A naive ``^ecs:.+_.+_.+$`` accepts most of these. Do not relax the pattern to
         make a new case pass: add the case and keep the pattern anchored.
 
-        Vectors differing from a valid target ONLY by surrounding whitespace are
-        deliberately absent here -- the validator strips before matching and
-        returns the stripped value, so it accepts them by design. The anchor that
-        makes that safe is asserted in
-        :meth:`test_pattern_rejects_surrounding_whitespace` instead.
+        Surrounding-whitespace variants are absent: the validator strips them by
+        design (see :meth:`test_pattern_rejects_surrounding_whitespace`).
         """
         from kiro_crew.instances.validation import SsmValidationError, validate_ssm_target
 
@@ -313,12 +292,8 @@ class TestEcsTargetValidation:
     def test_pattern_rejects_surrounding_whitespace(self, whitespace_variant):
         """The PATTERN refuses whitespace; the validator strips it first.
 
-        Both halves matter and they are different claims. ``validate_ssm_target``
-        accepts these because it strips and then returns the stripped value, which
-        is safe. The pattern must still refuse them, because that anchoring is
-        what makes the strip sufficient -- under a ``$`` anchor a trailing newline
-        would match, and any caller reaching the pattern without the validator's
-        strip would pass a newline through.
+        The anchoring is what makes the strip sufficient: under ``$`` a trailing
+        newline would match for any caller reaching the pattern without the strip.
         """
         from kiro_crew.instances.validation import ssm_target_matches, validate_ssm_target
 
@@ -328,10 +303,7 @@ class TestEcsTargetValidation:
     def test_naive_widening_accepts_the_dangerous_classes(self):
         """What a loose widening would let through, pinned by class not by count.
 
-        Measured against THIS corpus, the naive pattern accepts 24 of its 27
-        vectors. The count is incidental -- it moves whenever a vector is added --
-        so the assertions that carry the meaning are the per-class ones below:
-        each is a value the naive pattern accepts and the shipped one refuses.
+        Each value below is accepted by the naive pattern and refused by the shipped one.
         """
         import re
 
@@ -366,18 +338,8 @@ class TestSsmTargetShapeHasOneDefinition:
     def test_registry_does_not_redefine_the_target_pattern(self):
         """Source-level ratchet: assert the duplicated CHARSET is absent.
 
-        This asserted the identifier -- ``"_SSM_TARGET_RE = re.compile" not in
-        source`` -- and that was a ratchet that could not fail. Measured against
-        four realistic ways of reintroducing the duplication, it caught only one:
-        restoring the exact deleted line. A renamed constant, the same line without
-        spaces around ``=``, and an inline ``re.compile`` with no constant at all
-        each sailed through while putting the second copy of the charset back. A
-        check that passes for three of four evasions is worse than none, because it
-        manufactures confidence.
-
-        So it asserts the CHARSETS instead. Those are what the seam protects, and
-        unlike an identifier they cannot be renamed around: any re-spelling of
-        either shape has to contain them to match the same values.
+        Checks the charsets, not an identifier: a renamed constant or inline
+        ``re.compile`` evades a name check, but any re-spelling must contain them.
         """
         from pathlib import Path
 
@@ -549,15 +511,9 @@ class TestSsmRegistry:
     def test_aws_profile_regex_is_single_sourced(self):
         """The registry's early record check aliases validation.py's pattern.
 
-        There is exactly one AWS-profile charset: registry._AWS_PROFILE_RE is
-        the SAME compiled object as validation._AWS_PROFILE_RE, so the two
-        check sites cannot drift. If someone re-introduces a second copy this
-        identity check fails even when the copies happen to be textually
-        equal. Note the pattern accepts a leading '-' by design: option
-        injection is blocked by the separate startswith('-') guard in
-        validation.validate_aws_profile, not by the character class, and the
-        empty "default chain" value is handled by the `if self.aws_profile`
-        guard at the registry check site.
+        An identity check, so a second copy fails even when textually equal. The
+        pattern accepts a leading '-' by design: option injection is blocked by the
+        startswith('-') guard in validation.validate_aws_profile.
         """
         from kiro_crew.instances import registry, validation
 
@@ -745,12 +701,9 @@ class TestSsmTunnelArgv:
 class TestSsmTunnelProcessGroup:
     """Cross-platform teardown of the aws wrapper + session-manager-plugin.
 
-    The plugin grandchild is what holds the forwarded port, so a teardown that
-    signals only the ``aws`` wrapper wedges the port. GPT/design review found the
-    original code used bare ``start_new_session=True`` and raw
-    ``os.killpg``/``os.getpgid`` — both POSIX-only — so on native Windows (a
-    supported platform) the plugin orphaned. Everything must route through
-    ``platform_compat``.
+    The plugin grandchild holds the forwarded port, so signalling only the ``aws``
+    wrapper wedges it. ``os.killpg`` is POSIX-only, so everything routes through
+    ``platform_compat`` to reap the tree on Windows too.
     """
 
     def _tunnel(self, transport):
@@ -814,12 +767,9 @@ class TestSsmTunnelProcessGroup:
     ):
         """Both tunnel children need a PATH that can find session-manager-plugin.
 
-        The argv head is resolved absolutely, but the aws CLI then looks the
-        plugin up BY NAME on this child's own PATH — under a GUI-launched gateway
-        the minimal launchd one — so the tunnel died inside a correctly resolved
-        ``aws``. The ssh child has the same gap through the user's
-        ``ProxyCommand`` (an SSM connect helper looks the plugin up by name), so
-        it gets the same appended dirs — once its own head resolves absolutely.
+        The aws CLI looks the plugin up BY NAME on the child's PATH (the minimal
+        launchd one under a GUI gateway). The ssh child has the same gap through a
+        ``ProxyCommand`` SSM helper, so it gets the same appended dirs.
         """
         import kiro_crew.instances.ssh_tunnel_manager as mod
         from kiro_crew.deploy import engine
@@ -1111,12 +1061,8 @@ class TestSsmTransportSelection:
     async def test_plugin_probe_runs_off_the_event_loop(self, tmp_path, monkeypatch):
         """The prerequisite probe must not block the gateway event loop.
 
-        The probe resolves the plugin through the deploy engine's shared resolver
-        — PATH scan, then the well-known install dirs, then executable-provenance
-        validation — so a stalled network mount on any of those would freeze every
-        request and heartbeat. Pinned by the THREAD it actually runs on rather
-        than by source inspection, so an edit that drops the offload fails here
-        even if it keeps the wording.
+        The resolver scans PATH and install dirs, so a stalled network mount would
+        freeze every request. Pinned by the THREAD it runs on, not by source text.
         """
         import threading
 
@@ -1223,13 +1169,9 @@ class TestSsmTransportSelection:
 class TestSsmMintOutputRedaction:
     """The SSM mint's error tail must be no weaker than the SSH mint's.
 
-    Both transports raise ``TokenMintError`` from a partially-successful mint --
-    the remote printed its success URL and then exited non-zero -- so both build
-    an error message out of a stream that can be holding a live token. The SSH
-    transport routes that through ``_redacted_output_tail``, which adds a
-    ``?token=`` URL-param pass and a token-shape pass on top of the generic
-    ``redact()``. A second, weaker copy of that helper on the SSM side leaks the
-    shapes those two extra passes exist to catch, which is what these tests pin.
+    A partially-successful mint builds its error from a stream that can hold a live
+    token. ``_redacted_output_tail`` adds a ``?token=`` pass and a token-shape pass on
+    top of ``redact()``; a weaker SSM copy would leak those shapes.
     """
 
     # SYNTHETIC, never a real token: the two-segment `payload.signature` shape

@@ -450,6 +450,12 @@ pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
 
+Create the venv and run either form under `umask 022`. Under umask `002`,
+`python -m venv` and pip leave the venv group-writable, and `kirocrew service
+install` then refuses to attach the
+[AppArmor profile](#linux-the-agent-sandbox-and-unprivileged-user-namespaces);
+`chmod -R g-w <venv>` repairs an existing install.
+
 Swap `stable` for `insider` or `nightly` in either URL. The two names split by
 class as a convention — `updates.crew.kiro.dev` for mutable pointers and indexes,
 `download.crew.kiro.dev` for the bytes — and today both alias the same
@@ -1420,6 +1426,27 @@ docker rmi ghcr.io/kirodotdev/kirocrew:stable # remove the image (match the tag 
 flush; `docker rm -f` sends SIGKILL immediately, which can drop up to one
 5-second flush interval of recent session state.
 
+### Folders beside the data home
+
+Besides `~/.kiro/crew`, a host install can leave these folders under `~/.kiro`.
+The commands above remove none of them:
+
+| Folder | What it is | After uninstalling |
+| --- | --- | --- |
+| `~/.kiro/crew-python` | The Python runtime `cli.sh` downloads when the host has no suitable Python (moved by `KIROCREW_PYTHON_DIR`; it sits beside a custom `KIROCREW_HOME` as `<home>-python`). | Kiro Crew's. Safe to delete once the venv or pipx install that used it is gone. |
+| `~/.kiro/crew-auth-staging` | The staged copy of your Kiro sign-in that agent sessions read. The gateway rebuilds it at start. | Kiro Crew's. Safe to delete; it holds sign-in material, so deleting it is the tidy choice. |
+| `~/.kiro/mates` | Your crewmates' agent files (under `$KIRO_HOME` when you set it). | Kiro Crew's user data. Keep it if you plan to reinstall; remove it with the data home (see [Removing user data](#removing-user-data)). |
+| `~/.kiro/agents`, `~/.kiro/settings` | Agent and MCP settings shared with Kiro CLI and other Kiro tools. | Not Kiro Crew's alone. Leave them unless you are removing every Kiro tool. |
+
+To remove the two folders that are safe to delete after any uninstall:
+
+```bash
+rm -rf ~/.kiro/crew-python ~/.kiro/crew-auth-staging
+```
+
+If you set `KIROCREW_PYTHON_DIR` or `KIROCREW_HOME`, remove the matching
+`-python` folder at that location instead.
+
 ## Removing user data
 
 Uninstalling via any method above leaves your data home intact. To also remove
@@ -1444,6 +1471,15 @@ once the reinstall is confirmed good.
 This deletes configuration, credentials (`.env`), session history, memory
 databases, installed apps, and the embedding model cache.
 
+Your crewmates' agent files live outside the data home, in `~/.kiro/mates`
+(under `$KIRO_HOME` when you set it). To remove them too, back the folder up
+first (see [Folders beside the data home](#folders-beside-the-data-home)):
+
+```bash
+cp -a "${KIRO_HOME:-$HOME/.kiro}/mates" ~/kirocrew-backup-mates \
+  && rm -rf "${KIRO_HOME:-$HOME/.kiro}/mates"
+```
+
 > **Docker:** the commands above target a host data home. A Docker install keeps
 > everything in the `kirocrew-home` named volume instead, so remove that rather
 > than `~/.kiro/crew`: `docker volume rm kirocrew-home` (or `docker compose down -v`).
@@ -1463,12 +1499,21 @@ or when you want a completely fresh start.
 kirocrew stop                        # stop a foreground gateway (service uninstall won't)
 kirocrew service uninstall 2>/dev/null
 
-# 2. Uninstall the binary (use the matching command from above)
-pipx uninstall kirocrew          # or: pip uninstall kirocrew, rm the AppImage, etc.
+# 2. Uninstall the binary: run the block for your install method from
+#    "Uninstalling" above. A one-line install on a host without pipx (the usual
+#    fresh machine) is the "managed venv" block; with pipx it is
+#    `pipx uninstall kirocrew`; otherwise `pip uninstall kirocrew`, delete the
+#    AppImage, and so on.
 
 # 3. Back up and remove the data home (chained so a failed copy blocks the delete)
 cp -a "${KIROCREW_HOME:-$HOME/.kiro/crew}" ~/kirocrew-backup \
   && rm -rf "${KIROCREW_HOME:-$HOME/.kiro/crew}"
+
+# 3b. Remove the folders Kiro Crew keeps beside the data home (see "Folders
+#     beside the data home"); crewmate files are backed up first, chained the same way
+rm -rf ~/.kiro/crew-python ~/.kiro/crew-auth-staging
+cp -a "${KIRO_HOME:-$HOME/.kiro}/mates" ~/kirocrew-backup-mates \
+  && rm -rf "${KIRO_HOME:-$HOME/.kiro}/mates"
 
 # 4. Reinstall
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
@@ -1490,6 +1535,9 @@ For reference, the data home structure and what each uninstall path touches:
   scope it touched — (plus the AppArmor profile it installed) or the launchd plist.
 - Python and npm package removal has no `preuninstall` or `postuninstall`
   cleanup hook.
+- No uninstall path removes `~/.kiro/crew-python` (the runtime `cli.sh` may
+  download), `~/.kiro/crew-auth-staging` or `~/.kiro/mates`; see
+  [Folders beside the data home](#folders-beside-the-data-home).
 - The macOS DMG/zip and the Linux AppImage have no cleanup hook, so removing the
   application bundle or image leaves the data home intact.
 - A Linux `.deb` / `.rpm` removal DOES run the package's own post-remove step,

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { Artifact } from '../types'
+import type { PartialCause } from '../utils/fileReadQuery'
 import { i18nT } from '../i18n/t'
 import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
@@ -134,15 +135,15 @@ export interface PanelTab {
    *  `content` whose absence it explains, and re-established by the same
    *  hydration read that refills the buffer. */
   binary?: boolean
-  /** The read that filled this buffer did not hand over the whole file: the
-   *  gateway cut it at its cap (`X-Truncated`) or rewrote credentials in it
-   *  (`X-Redacted`). Owned HERE, not derived from the body, so it survives a
-   *  panel remount and a file deleted meanwhile is offered for download as
-   *  the partial copy it is, never under the file's own name as if whole.
+  /** Why the read that filled this buffer did not hand over the whole file
+   *  (`partialReadCause`), `false` or absent when it did. Owned HERE, not
+   *  derived from the body, so it survives a panel remount and a file deleted
+   *  meanwhile is offered for download as the partial copy it is, never under
+   *  the file's own name as if whole.
    *  TRANSIENT like `binary`: stripped in `serializeBucket`, re-established by
    *  the hydration read that refills the buffer, and moved by every
    *  disk-originated refresh alongside `content`. */
-  partial?: boolean
+  partial?: PartialCause | false
   /** The buffer is the host's "file not found" sentence, seeded because the
    *  read answered 404, not a copy of the file. Carried as a flag because the
    *  sentence is localized: a language switch repaints the tab without
@@ -1119,7 +1120,7 @@ export function usePanelTabs(
     })
   }, [update, leadingIds])
 
-  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: boolean; placeholder?: boolean }) => {
+  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean }) => {
     // `revealLine` is always present in the object, `undefined` when absent:
     // `upsert` merges onto an existing tab with a spread, which only overwrites
     // keys the incoming object HAS. Omitting it would leave a previous chip's
@@ -1186,7 +1187,7 @@ export function usePanelTabs(
    *  no in-tab flip to an editable view), so it is never dirty. The `file:` tab
    *  is the one editable buffer per path. A re-open FOCUSES the existing tab and
    *  refreshes its disk content, since there are no unsaved edits to preserve. */
-  const openWorkingTreeDiff = useCallback((path: string, content: string, slot: string | null = null, opts?: { binary?: boolean; partial?: boolean; placeholder?: boolean }) => {
+  const openWorkingTreeDiff = useCallback((path: string, content: string, slot: string | null = null, opts?: { binary?: boolean; partial?: PartialCause | false; placeholder?: boolean }) => {
     // Same slot/bucket routing as openFile (see its note): the stamp and the
     // bucket must name the same slot, and a `null` slot keeps the bound key.
     const target = slot !== null ? bucketKey(slot) : key

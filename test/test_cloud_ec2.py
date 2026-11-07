@@ -457,6 +457,12 @@ class TestTemplate:
         text = ec2.load_template()
         assert text.count("bash install.sh --voice") == 2
 
+    def test_gateway_unit_turns_core_dumps_off(self):
+        text = ec2.load_template()
+        unit = text.split("cat > /etc/systemd/system/kirocrew.service <<UNIT", 1)[1]
+        service = unit.split("[Service]", 1)[1].split("[Install]", 1)[0]
+        assert "LimitCORE=0" in [line.strip() for line in service.splitlines()]
+
     def test_instance_enforces_imdsv2(self):
         text = ec2.load_template()
         assert "MetadataOptions" in text

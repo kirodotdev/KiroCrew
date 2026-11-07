@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { OverlayPortal } from './overlayRoot'
 import { animate, motion, useMotionValue } from 'framer-motion'
 import { Glass } from './Glass'
-import { sliceCodePoints } from './CommentOverlay'
+import { sliceCodePoints } from '../utils/codePoints'
 
 interface FlyingQuoteProps {
   /** Bounding rect of the selected text (source) */

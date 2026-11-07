@@ -257,9 +257,9 @@ def test_the_gateway_builds_its_ingress_from_the_relay_switch() -> None:
     ]
     assert len(calls) == 1
     (enabled,) = [kw.value for kw in calls[0].keywords if kw.arg == "enabled"]
-    assert ast.unparse(enabled) == (
-        "_cfg.tunnel.relay_enabled is True and (not local_enable_locked('tunnel'))"
-    )
+    # The switch's rule, the JSON boolean ``true`` and the enterprise lock, is
+    # ``edition_locks.relay_selected``; test_relay_client_selection pins it.
+    assert ast.unparse(enabled) == "relay_selected(_cfg)"
 
 
 # ---------------------------------------------------------------------------
@@ -416,9 +416,10 @@ async def test_a_relayed_request_carries_relay_provenance_and_never_reads_as_loc
     # no-Origin CSRF branch that trusts local processes.
     assert body["direct_local"] is False
     assert body["no_origin_csrf_ok"] is False
-    # Token auth returns before publishing a shared-crew actor, so the request is
-    # attributed Unknown there, never as the local operator.
-    assert body["actor_kind"] == PrincipalKind.UNKNOWN.value
+    # Token auth publishes a shared-crew actor for the person the relay named, with
+    # relay provenance, never as the local operator.
+    assert body["actor_kind"] == PrincipalKind.HUMAN.value
+    assert body["actor_provenance"] == ContractProvenance.KIRO_RELAY.value
     assert body["actor_provenance"] != ContractProvenance.LOCAL_OPERATOR.value
 
 

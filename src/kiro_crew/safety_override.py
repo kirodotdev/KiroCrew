@@ -170,22 +170,25 @@ def apply_config_duration() -> int:
     return 0 if until_shutdown else ttl
 
 
-def grant_declared_yolo() -> ActivationResult:
-    """Install the operator's declared ``dangerouslySkipPermissions`` grant.
+def grant_declared_yolo(source: str = SafetyOverride._DECLARED_SOURCE) -> ActivationResult:
+    """Install an operator-declared grant: ``dangerouslySkipPermissions`` or ``--approval yolo``.
 
     Permanent when policy permits, otherwise clamped to the ad-hoc duration so
     the admin ceiling wins. Shared by the dashboard and Slack startup paths so a
     headless ``--slack-only`` gateway behaves identically to a full one.
+    ``source`` names who declared it: ``cli`` for ``gateway --approval yolo``, which only
+    the dashboard arms. Slack and channel-linked dashboard turns ignore a ``cli`` grant
+    (``SafetyOverride.is_cli_launch``); every other channel reads the flag itself.
     """
     apply_config_duration()
     so = safety_override()
     if declared_grant_permitted():
-        return so.activate_declared()
+        return so.activate_declared(source)
     logger.info(
         "Enterprise policy forbids a never-expiring auto-approve grant; "
         "the declared grant falls back to the ad-hoc duration"
     )
-    return so.activate(SafetyOverride._DECLARED_SOURCE)
+    return so.activate(source)
 
 
 # ── User-facing grant-lifetime text (channel-neutral) ──

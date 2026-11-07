@@ -1,7 +1,9 @@
 import { useCallback, useRef } from 'react'
 import { applyListEdit, listLineBreakEdit, listMarkerBackspaceEdit } from '../composerListContinuation'
 import { findTokenRanges, type PasteBlock } from '../../utils/pasteTokens'
-import type { useImeGuard } from '../../hooks/useImeGuard'
+
+/** Set once the user dismisses the visible list-indent hint under the composer. */
+export const LIST_HINT_DISMISSED_KEY = 'kirocrew:list-indent-hint-dismissed'
 
 /* Markdown list continuation for the textarea composer.
 
@@ -110,7 +112,9 @@ const NEW_LINE_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph'])
  *  229) that the guard still reports as composing is the WebKit commit. */
 export function useTextareaListContinuation(
   blocksRef: React.RefObject<readonly PasteBlock[]>,
-  ime: Pick<ReturnType<typeof useImeGuard>, 'isComposing'>,
+  // Only the textarea's own keydowns reach it, so any guard that reads those
+  // will do: the main composer's `useImeGuard` and the app embed's draft guard.
+  ime: { isComposing: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean },
   endUndoBurst: () => void,
 ) {
   const detachRef = useRef<(() => void) | null>(null)

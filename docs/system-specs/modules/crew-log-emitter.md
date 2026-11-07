@@ -185,15 +185,24 @@ new sid is mapped -- and stamps it on the registered session, exposed as
 `SessionManager.allocation_predecessor(key)` for the caller to consume after the claim. A
 read taken before `get_or_create` could be staled by a concurrent turn on the same key that
 allocates an intermediate session and has it recycled while the reader waits inside the
-allocation for the turn permit; the boundary's own capture cannot be. That capture is a read of
-the mapping, so it carries the same two limits as this fallback -- the replay-pending generation
-gap, and no store tier above it. It also DETERMINES nothing: it hands over whichever id the
-capture holds, and that id is empty whenever the mapping entry is gone while the slot's units
-remain. So those creates pass no determination and their units carry no predecessor key of any
-kind, which reads as the legacy silence it is. The alternative -- reading the empty id as a
-finding -- would have the entry declare a slot with units to be its own first store, in an
-append-only record, and a later fold would pass over it: the defect this section closes, written
-from the other side. `mapped_sid` rather
+allocation for the turn permit; the boundary's own capture cannot be. The capture stands where
+the dashboard's slot record does, AHEAD of the store, because it too names a store whose create
+is still queued to the writer. It is still a read of the mapping, so the two limits of this
+fallback apply to it, and the store tier answers them for a key with no registered session
+(`messaging.dispatch.predecessor_edge`). The store is read BEFORE the claim, off the loop, and
+only when no session is registered for the key (`store_predecessor`): the opener must not
+suspend between the claim and the create, and a warm turn must not pay a store listing. After
+the claim a non-empty capture is cited unless the live session owes a history replay -- asked
+there, where the session exists -- and otherwise the store's answer becomes the edge with the
+same three determinations the latch carries: a named unit is cited, a store with no unit of the
+slot states there is none, an undecided read or a mapped id inside the replay window records a
+break, and units the store cannot rank state nothing. So a restart whose mapping entry is gone
+cites the unit the slot was on instead of writing the legacy silence, and a channel slot's
+first store says so. What the store tier does not reach: a successor started behind a
+registered session (a recycle, a dead provider), which reads no store and hands over the
+capture alone as before, and a successor a concurrent claim registers between the store read
+and this claim, which that answer predates.
+`mapped_sid` rather
 than `resumable_sid`: the latter asks "can this id still be resumed", so it stats the ACP
 transcript on the calling thread (a sync store read the turn coroutine must not make) and
 PRUNES the entry when that file is gone or empty, which erases the id exactly when the two
@@ -214,7 +223,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key; the channel dispatchers hand over one captured id and determine nothing, so their units carry no predecessor key either. Both read as the legacy silence they are, rather than declaring a slot with units to be its own first store; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment. A slot restored from transcript metadata, with no in-process mint witness, writes a `parent` only when the seeded session tree's fold names the same creator as the restored `_created_by` (`_crew_log_inherited_parent`); transcript metadata alone is never promoted to lineage |
+| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key, which reads as the legacy silence it is rather than declaring a slot with units to be its own first store; the channel dispatchers' opener takes the same determinations from the store behind its capture (`messaging.dispatch.predecessor_edge`); latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment. A slot restored from transcript metadata, with no in-process mint witness, writes a `parent` only when the seeded session tree's fold names the same creator as the restored `_created_by` (`_crew_log_inherited_parent`); transcript metadata alone is never promoted to lineage |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts (only when some count is above zero, then all four), credits (only when positive and finite), `duration_ms`, `stop_reason`, model, provider, and `context {used, window}` (the provider's context occupancy, only when either is above zero) -- or `stop_reason: "failed"` with `error` and no usage |
@@ -1560,6 +1569,33 @@ not spent a retry attempt until it returns.
 One worker drains it in batches. It pauses `WriterLimits.batch_deadline_seconds` before each pass, so a
 turn's burst of entries becomes one pass rather than a wake per entry; the deadline is fixed
 rather than adaptive so the worst case a producer can impose on the file is a constant.
+A `flush()` waiter, a shutdown drain, and a bucket that already holds
+`WriterLimits.group_max_entries` jobs skip it.
+
+**Group commit.** The pause is also the group-commit window. A longer one buys nothing
+under load (a busy writer's next pass already finds a full bucket) and costs latency when
+idle: in the #31502 bench a 100 ms window raised the idle append p50 from 21 ms to 94 ms
+and left the loaded numbers unchanged, so it stays 20 ms. Every plain `_write` entry
+carries a `GroupPart`, and a pass writes a session's consecutive run of them with ONE
+`CrewLog.append_many`: one lock, one tail read, one `write()` and one `fsync` for up to
+`group_max_entries` entries, each with its own seq in order (they share one `time`). It
+exists because on a loaded host every syscall of an append re-takes the GIL, so the writer
+thread paid the whole lock/stat/open/fsync sequence per entry (#31502). The contract an
+acknowledgement gives does not change: a member's post-append step (`on_settled`'s "wrote",
+the eager wake, the board relay) and its `after` run only once the whole run's `append_many`
+returned, so nothing is reported recorded before it is durable. A run fails, is retained
+and is dropped as a whole, with the usual `write/dropped` marker. A run that is REFUSED
+(decided before any byte, e.g. one oversize or malformed entry) is retried one job at a
+time, so the bad entry stays the only casualty. A job without a part (a lifecycle record
+with its own post-append logic, a loss marker, a follow-on) is a barrier: the run before it
+is durable before it runs. The inline path writes one entry at a time, as before. A crash
+between the write and the fsync can leave part of an unacknowledged run on disk; the
+torn-tail repair drops a partial last line, and no caller was told any of it was recorded.
+
+A synchronous caller (no event loop) whose writer thread is already in a pass or its pause
+hands its job to the writer at once instead of waiting up to
+`WriterLimits.inline_order_seconds` for it to go idle: under steady load the writer never
+goes idle, and a bounded waiter such as `on_work_recorded` spent its whole timeout there.
 
 With no event loop running the write happens inline on the calling thread. That is not the
 fallback described above: there is no loop to protect, the caller is a thread that asked for

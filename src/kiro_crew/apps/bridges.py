@@ -168,6 +168,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         logger,
         reconcile_enabled_app_resources,
         refresh_app_agents,
+        refresh_app_agents_if_enabled,
         register_app,
     )
     from kiro_crew.apps.bridges_skills import (  # noqa: F401
@@ -175,6 +176,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APP_SKILL_LINKS_LOCK,
         _RESERVED_SKILL_DIRS,
         _deregister_skills,
+        _holds_exactly,
         _register_skills,
         _write_app_skill_links,
         reconcile_app_skills,
@@ -234,6 +236,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         pinned_fs,
         platform_compat,
+        skill_live_loaders,
     )
     from kiro_crew.apps import deps_boot as _deps_boot_module  # noqa: F401
     from kiro_crew.apps.agent_template_values import (  # noqa: F401
@@ -257,6 +260,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         INSTALLED_META_FILENAME,
         app_data_dir,
         app_dir,
+        app_enabled_state,
         get_app,
         get_app_manifest,
         list_apps,

@@ -395,10 +395,11 @@ def run_script_sandboxed(
         # says so and names the sandbox as the runtime control), so the two
         # cron spawn paths are aligned on ``cc`` here. ``cc`` hides ``~/.aws``
         # on both Linux and macOS and keeps only ``~/.aws/config`` readable,
-        # so ``credential_process`` auth still resolves. A script that needs a host credential takes
-        # the existing route an operator already approves per job: a vault
-        # secret_env grant, which runs ``strict`` and injects the one approved
-        # secret instead of exposing a store.
+        # so ``credential_process`` auth still resolves. A vault secret_env
+        # grant runs ``strict`` and injects each approved secret as an env
+        # string, so it restores no credential FILE these tiers hide (an SSO
+        # cookie jar, say). Nor does ``ctx.call_tool``: the MCP server it
+        # starts runs inside this same sandbox.
         sandbox_mode = "strict" if stdin_payload is not None else "cc"
         # ``seal_hidden_dirs=hidden``: a granted script has no business WRITING into
         # the crons dir or its own parent -- they are hidden so it cannot read a mutable
@@ -1089,7 +1090,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew import agent_scratch  # noqa: F401
     from kiro_crew.agent_discovery import _read_agent_spec  # noqa: F401
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
-    from kiro_crew.config.loader import read_local_secret  # noqa: F401
+    from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_agents_dir  # noqa: F401
     from kiro_crew.cron_script_child_env import (  # noqa: F401
         _CRON_ENV_DENY,
@@ -1150,6 +1151,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,
+        _data_home_spec,
         _split_script_spec,
         _trusted_script_bundle_roots,
     )

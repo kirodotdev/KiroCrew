@@ -17,13 +17,9 @@ from kiro_crew.testing.wait import async_wait_until
 def _forwarder_listener_gone(port: int) -> bool:
     """Whether nothing accepts connections on ``127.0.0.1:<port>`` any more.
 
-    The reclaim question is "did OUR forwarder let go of the port it held", and
-    the stand-in forwarder listens on ``127.0.0.1`` alone, the way an ``ssh -L``
-    child does. ``_is_port_free`` answers a different one, whether a new forward
-    could bind the port on every loopback address, so another xdist worker that
-    holds the same number on ``::1``, or as the ephemeral source port of an
-    unrelated loopback connection, would fail it after a correct reclaim. A
-    refused connect is the listener's own absence and nothing else's.
+    Not ``_is_port_free``: that also checks ``::1`` and ephemeral source ports, so
+    another xdist worker holding the same number would fail it after a correct
+    reclaim. A refused connect means only that the listener is gone.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5)
@@ -44,28 +40,17 @@ def _route_pinned_kill_to_kill_pid(monkeypatch):
 class TestOrphanForwarderReclaim:
     """End-to-end reclaim behavior against REAL processes holding REAL ports.
 
-    The reclaim path (``_reclaim_orphan_forwarder``) is keyed on the recorded
-    pid behind a strict exact-argv identity check. These tests spawn a real
-    child bound to a real loopback port and drive a real ``connect()``:
-
-    * the leaked-forwarder case proves the child is terminated and its port
-      released (identity confirmed via the real /proc//ps argv read);
-    * the reclaim-guard cases prove a process this manager did not spawn is
-      NEVER signalled — whether its pid is recorded (pid recycled), unrecorded,
-      or its port is not even occupied.
-
-    ``_is_port_free`` stays REAL here (unlike the fake-port manager tests):
-    occupancy of the holder's port is the trigger under test.
+    ``_reclaim_orphan_forwarder`` is keyed on the recorded pid behind an exact-argv
+    identity check; a process this manager did not spawn is NEVER signalled.
+    ``_is_port_free`` stays REAL: occupancy of the holder's port is the trigger.
     """
 
     @staticmethod
     def _os_assigned_base_port():
         """A base port the OS just handed out, so no two cases share one.
 
-        These tests keep the probe REAL, and the probe is a bind. A fixed base
-        port shared by the parametrized cases of one test lets xdist workers
-        probe the same port at the same moment; on Windows the exclusive bind
-        makes one of them see the port as taken and ``connect()`` fail.
+        The probe is a real bind; on Windows a shared fixed port makes concurrent
+        xdist cases see it as taken and ``connect()`` fail.
         """
         # flake-ok: bind-close OS port only seeds the allocator probe scan, which skips a taken port; moved verbatim
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -97,18 +82,12 @@ class TestOrphanForwarderReclaim:
     def _spawn_port_holder(self):
         """Spawn a real child LISTENing on a free loopback port.
 
-        Returns ``(proc, port, argv)``. Readiness is signalled over stdout so
-        the bind (and /proc argv population) cannot be raced. A daemon reaper
-        thread ``wait()``s the child so that, once signalled, it disappears
-        immediately instead of lingering as a zombie — mirroring production,
-        where the leaked forwarder's parent is dead and init reaps it.
+        Returns ``(proc, port, argv)``. Readiness comes over stdout so the bind
+        cannot be raced; a reaper thread ``wait()``s the child so it leaves no zombie.
 
-        The child's parent is the TEST process, i.e. a LIVE parent: the
-        reclaim's orphan gate refuses it as-is (which the live-parent test
-        pins with the real ``get_ppid``). Tests that exercise the gates
-        BEHIND the orphan gate monkeypatch ``get_ppid`` to 1 for their own
-        scope — a real double-fork orphan would leave an unsupervised process
-        behind on a test crash and is exactly the residue the suite forbids.
+        The parent is the live test process, so the orphan gate refuses it as-is.
+        Tests of the gates behind it patch ``get_ppid`` to 1: a real double-fork
+        orphan would outlive a crashed test.
         """
         code = (
             "import socket, sys, time\n"
@@ -249,13 +228,8 @@ class TestOrphanForwarderReclaim:
     ):
         """The ssh tunnel spawns an ABSOLUTE head, so the reclaim must compare one.
 
-        The builder returns the bare ``"ssh"`` and ``ssh_spawn_argv_env``
-        resolves it at spawn, so the kernel records the resolved path. A reclaim
-        that rebuilt the bare head compared ``ssh`` with ``/usr/bin/ssh``
-        element-exactly and leaked every genuine orphan. Runs on every platform:
-        the port is held by a real listener, every gate before the identity
-        check is real, and the argv handed to the identity check is compared
-        with the one ``_SshTunnel`` spawns for the same instance.
+        ``ssh_spawn_argv_env`` resolves the bare ``"ssh"`` at spawn, so a reclaim
+        comparing ``ssh`` with ``/usr/bin/ssh`` element-exactly would leak every orphan.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew.instances import token_mint
@@ -567,11 +541,8 @@ class TestOrphanForwarderReclaim:
         """A forwarder whose rebuilt command line differs from its live argv
         is still reclaimed when its spawn-time fingerprint matches.
 
-        The child runs through a shebang, so its kernel argv carries the
-        interpreter the rebuilt argv lacks; with ``flip_compression`` the
-        compression setting changes between spawn and reclaim as well. The
-        rebuild is pointed at the script alone (what a v1 ``aws`` rebuild looks
-        like), so only the recorded fingerprint can confirm the identity.
+        Through a shebang the kernel argv carries an interpreter the rebuild lacks,
+        so only the recorded fingerprint can confirm the identity.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
@@ -811,15 +782,10 @@ class TestOrphanForwarderReclaim:
     def _windows_orphan_gate(self, monkeypatch, *, parent):
         """Run the REAL orphan test on its Windows branch, for that call only.
 
-        *parent* is the state of the forwarder's recorded parent pid:
-        ``"gone"`` (nothing there), ``"older"`` (alive, started before the
-        forwarder) or ``"later"`` (pid reused by a process started after it).
-        Only the parent's facts are faked, as Windows creation FILETIMEs ordered
-        around a fixed forwarder token, so the order is settled the same way on
-        every host whatever its native start-token format. The recorded identity
-        and argv stay real, so every gate behind this one runs for real.
-        ``IS_WINDOWS`` is flipped only inside the wrapped call, so nothing else
-        in ``connect`` takes a Windows code path on a POSIX host.
+        *parent* is ``"gone"``, ``"older"`` (started before the forwarder) or
+        ``"later"`` (pid reused). Only the parent's facts are faked, as FILETIMEs, so
+        the order is host-independent. ``IS_WINDOWS`` is flipped only inside the
+        wrapped call, so nothing else in ``connect`` takes a Windows path.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
@@ -868,14 +834,10 @@ class TestOrphanForwarderReclaim:
     async def test_windows_orphan_with_dead_or_reused_parent_is_reclaimed(
         self, tmp_path, monkeypatch, parent
     ):
-        """Windows never re-parents to pid 1. A forwarder whose recorded parent
-        is gone, or whose parent pid now names a LATER process, is a leak: the
-        reclaim gets past the orphan test and hands the verify-and-kill worker
-        the recorded pid, start time and the forward argv.
+        """A Windows forwarder with a gone or reused parent is reclaimed.
 
-        The worker itself is replaced by a recorder, so this runs on every
-        platform: the kill and the exact-argv read are pinned by their own tests
-        (``_verify_and_reclaim_forwarder`` and ``TestProcessArgvMatchesExact``)."""
+        Windows never re-parents to pid 1. The verify-and-kill worker is a recorder
+        here; the kill is pinned by ``TestProcessArgvMatchesExact`` and others."""
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
@@ -1073,10 +1035,8 @@ class TestOrphanForwarderReclaim:
         """A reclaim asks whether OUR forwarder released ITS port, not whether the
         port is free for a new one.
 
-        An ``ssh -L`` child binds 127.0.0.1 alone, so an unrelated listener on
-        ``::1`` says nothing about whether the orphan let go. Probing both
-        families here would report a fully reclaimed forwarder as ``not_gone``
-        and record that wrong outcome in the SEL audit.
+        An ``ssh -L`` child binds 127.0.0.1 alone; probing ``::1`` too would record a
+        reclaimed forwarder as ``not_gone`` in the SEL audit.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc

@@ -84,8 +84,13 @@ function StableChatInput(props: React.ComponentProps<typeof ChatInput>) {
   return <ChatInput {...useStableCallbackProps(props)} value={value} />
 }
 
+/** The `/` menu of a composer that refuses `/fork` leaves it out. */
+const FORK_HIDDEN: readonly string[] = ['/fork']
+
 interface ComposerDockViewProps {
   embedded?: boolean
+  /** An embedded page (not a popout): `/fork` is refused, so its menu row goes. */
+  forkUnavailable?: boolean
   mode?: string
   activeSlot: string
   connected: boolean
@@ -315,7 +320,7 @@ interface ComposerDockViewProps {
  * Its body is not re-indented: `ChatPage.statusStackLayering.test.tsx` finds the status stack's end by its closing tag's depth (14 spaces).
  */
 export default function ComposerDockView({
-  embedded, mode, activeSlot, connected, dispatch, isMobile, isTouch, navigate, provider, activityOpen, composerBusy, contextPct, contextTokens, knowledgeFetch, messages, pendingFollowup,
+  embedded, forkUnavailable = false, mode, activeSlot, connected, dispatch, isMobile, isTouch, navigate, provider, activityOpen, composerBusy, contextPct, contextTokens, knowledgeFetch, messages, pendingFollowup,
   pendingQuestion, projectLocked, restoredQuestionNotice, sentMessages, slotRunning, slotStopping, composerDraft, historySuggestions, showHistorySuggestions, chatConfig, agentDropdown,
   agentDropdownRef, agentFilter, agentInputRef, defaultAgent, defaultAgentFailed, effectiveAgents, filteredAgents, installedAgents, setAgentDropdown, setAgentFilter, toggleDefaultAgent,
   codexPairModels, filteredModels, hiddenModelsQ, ownModelsFailed, ownModelsFetching, retryOwnModels, modelsBackend, jevRouteOn, modelDropdown, modelDropdownRef, modelFilter, modelInputRef, modelPickerConfigured, modelPickerReturnsFocusRef, setModelDropdown,
@@ -591,6 +596,7 @@ export default function ComposerDockView({
               >
               <StableChatInput
               aboveComposer={composerAbove}
+              hiddenCommands={forkUnavailable ? FORK_HIDDEN : undefined}
               // StableChatInput carries the root's draft snapshot to the memoized editor.
               // `composerUserEdit` is what ChatInput calls for the user's own edits
               // (typing, paste, undo, picker inserts), never for a parent-driven
@@ -764,6 +770,7 @@ export default function ComposerDockView({
                  button; typing still works. */
               continuable={continuable && interrupted && !cardOwnsRecovery}
               continueIsRecovery={interrupted}
+              restoredQueueCount={queuedMessages.filter(m => m.meta?.restored === true).length}
               onContinue={handleContinue}
               continuing={continuing}
               onStop={stopTurn}

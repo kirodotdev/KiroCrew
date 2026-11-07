@@ -1,6 +1,8 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { anotherEscapeOwnerIsOpen } from './escapeOwners'
 import { escapeStoppedSpeech } from '../../utils/speechStopKey'
+import { isEscalationState } from '../../utils/stopDebounce'
+import { loadChatConfig } from '../../pages/chat/ChatSettings'
 
 /* Escape-to-stop for the composer (issue #22315). The CLI binds Esc to cancel
    the streaming turn; the dashboard had only the Stop button. This hook is the
@@ -12,7 +14,16 @@ import { escapeStoppedSpeech } from '../../utils/speechStopKey'
    dialog, the command bar, a terminal or the transcript holding focus never
    reaches it. The one page-level caller is the composer's Escape-stack layer
    (hooks/useEscapeLayer), registered only while an optimize runs, where the
-   locked rich-text editor drops keys; there it can only cancel the optimize. */
+   locked rich-text editor drops keys; there it can only cancel the optimize.
+
+   "Require a second Escape to stop the turn" (Settings, Chat, issue #23462) is
+   off by default. When on, the first Escape only arms: the composer shows
+   "Esc again to stop", and a second Escape inside ESCAPE_STOP_ARM_MS stops.
+   A lapsed window disarms and sends nothing. */
+
+/** How long a first Escape stays armed: the hint's lifetime, and the only
+ *  window in which a second Escape stops the turn. */
+export const ESCAPE_STOP_ARM_MS = 2000
 
 /** The part of an Escape keydown the gate reads. Both React's synthetic event
  *  (textarea) and the native event Lexical hands its Escape command fit it. */
@@ -30,9 +41,15 @@ export interface StopKeyContext {
 /** Run on a bare Escape. Returns true when the gate claimed the key. */
 export type StopTurnOnEscape = (e: StopKeyEvent, key: StopKeyContext) => boolean
 
-export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize }: {
+export function useComposerStopKey({ slotKey, isRunning, stopState, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize }: {
+  /** The session this composer is showing. One composer instance serves
+   *  every session, so a switch must drop the armed press. */
+  slotKey?: string | null
   /** A turn is running on THIS composer's slot. */
   isRunning: boolean
+  /** The slot's stop state. Once a stop is under way, Escape runs the Stop
+   *  button's press protocol directly, with no second-Escape arm. */
+  stopState?: string
   /** The Stop protocol the button runs (soft cancel, then force kill on a
    *  second press after the arm window). Absent on a surface with no stop. */
   onStop?: () => void
@@ -48,8 +65,23 @@ export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceR
   /** A prompt optimize is in flight: Escape cancels it, as its Cancel button does. */
   optimizingRef?: React.RefObject<boolean>
   onCancelOptimize?: () => void
-}): StopTurnOnEscape {
-  return useCallback((e: StopKeyEvent, { native, composing }: StopKeyContext): boolean => {
+}): { stopTurnOnEscape: StopTurnOnEscape; escapeArmed: boolean } {
+  // The pending timer IS the armed state; `escapeArmed` mirrors it for the hint.
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [escapeArmed, setEscapeArmed] = useState(false)
+  const disarm = useCallback(() => {
+    if (armTimerRef.current) clearTimeout(armTimerRef.current)
+    armTimerRef.current = null
+    setEscapeArmed(false)
+  }, [])
+  const stopping = isEscalationState(stopState)
+  // A stop that got under way (the Stop button), or a turn that ended, takes
+  // the armed press with it, so neither a stale hint nor a stale arm survives.
+  useEffect(() => { if (!isRunning || stopping) disarm() }, [isRunning, stopping, disarm])
+  // An Escape armed in one session never stops a turn in the next one.
+  useEffect(() => { disarm() }, [slotKey, disarm])
+  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current) }, [])
+  const stopTurnOnEscape = useCallback((e: StopKeyEvent, { native, composing }: StopKeyContext): boolean => {
     // Leave Escape alone when an IME composition owns the key (Escape cancels
     // the candidate window, never the turn). The caller computes `composing`
     // from its own latch, which also catches the post-`compositionend` WebKit
@@ -100,7 +132,15 @@ export function useComposerStopKey({ isRunning, onStop, anyPickerOpenRef, voiceR
     // that this Escape is spent. A SECOND deliberate Escape after the arm
     // window force-kills, because onStop carries the press protocol.
     e.preventDefault()
+    // Second Escape opted in: a first press with no stop under way only arms.
+    if (!stopping && !armTimerRef.current && loadChatConfig().doubleEscapeToStop) {
+      armTimerRef.current = setTimeout(disarm, ESCAPE_STOP_ARM_MS)
+      setEscapeArmed(true)
+      return true
+    }
+    disarm()
     onStop()
     return true
-  }, [isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize])
+  }, [isRunning, stopping, disarm, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive, optimizingRef, onCancelOptimize])
+  return { stopTurnOnEscape, escapeArmed }
 }

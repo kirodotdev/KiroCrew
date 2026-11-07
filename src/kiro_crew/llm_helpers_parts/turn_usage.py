@@ -1,9 +1,5 @@
 """What a turn cost, which backend served it, and the per-interaction telemetry event.
 
-The billing-stats walk along a provider's wrapper chain, a turn's ``TurnUsage`` summed
-across its attempts, the backend label a usage row carries, and the one
-``interaction`` telemetry event every surface records per successful turn.
-
 Served through :mod:`kiro_crew.llm_helpers`, which callers and tests import and
 patch; this module never imports it.
 """
@@ -18,54 +14,38 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import LLMProvider, TurnUsage, r
 logger = logging.getLogger("kiro_crew.llm_helpers")
 
 
-# Runaway guard for the wrapper chain walked to find a turn's billing stats,
-# NOT a depth limit. The walk is depth-first along the documented holders and
-# identity-deduped, so a real provider stack is exhausted long before this;
-# the bound exists for a source that synthesizes attributes (a ``MagicMock``
-# answers every ``getattr`` with a fresh child). Sized so no plausible wrapper
-# depth reaches it: session sharing, a channel link, a subagent companion and
-# a fallback wrapper each add a layer, and the same object graph is the one
-# ``wrapper_chain.wrapper_chain`` walks for the model with the
-# same guard.
+# Runaway guard for the billing-stats wrapper walk, NOT a depth limit: a real
+# provider stack ends long before it. It stops a source that synthesizes
+# attributes (a ``MagicMock`` answers every ``getattr``). ``wrapper_chain``
+# walks the same graph with the same guard.
 _WRAPPER_WALK_MAX_NODES = 64
 
 # Holder attributes the billing-stats walk follows, in order.
 _BILLING_STAT_HOLDERS: tuple[str, ...] = ("_client", "_handle", "_sess", "provider")
 
-# Sentinel for "no prior stats object was observed", distinct from a provider that
-# legitimately exposes None. Used by provider_last_turn_usage's identity guard.
+# "No prior stats object was observed", distinct from a provider that exposes None.
 _NO_PRIOR_STATS = object()
 
-# Where stream_and_collect hands its caller the billing it observed across ALL
-# attempts of one logical turn. A retry installs fresh per-turn stats, so a
-# post-hoc read of last_prompt_stats sees only the final attempt and silently
-# drops an attempt that was billed before a transient error. This carries the sum
-# instead, and provider_last_turn_usage consumes it. The value is a
-# (stats object, TurnUsage) pair: the provider outlives the turn, so the identity
-# of the stats the sum was computed from is what tells a later turn that the sum
-# is not its own.
+# Where stream_and_collect publishes the billing summed over ALL attempts of one
+# turn. A retry installs fresh stats, so reading last_prompt_stats afterwards
+# would drop an attempt billed before a transient error. The value is a
+# (stats object, TurnUsage) pair: the provider outlives the turn, and the stats
+# identity tells a later turn the sum is not its own.
 _TURN_BILLED_ATTR = "_kc_turn_billed"
 
 
 def record_interaction_event(client: LLMProvider, session_key: str, surface: str) -> None:
     """Record one per-interaction telemetry event via the PlatformContext seam.
 
-    The Default ``TelemetryProvider.record_event`` is a no-op, so standalone is
-    unchanged; a companion records one event per successful turn. Payload is
-    strictly metadata (session key, surface, model) — never prompt/response text
-    or file contents. Best-effort: a telemetry failure never affects the turn.
-
-    Shared by every surface (dashboard, Slack) so the payload shape and the
-    model-extraction reflection cannot drift between call sites.
+    The payload is metadata only (session key, surface, model), never prompt,
+    response or file text. Best-effort: a telemetry failure never affects the
+    turn. Shared by every surface so the payload shape cannot drift.
     """
     from kiro_crew.platform import current_context
 
     try:
-        # Resolve the active model across backend shapes. After Kiro startup the
-        # provider's ``_client`` is an ``AcpSessionProvider`` that exposes the
-        # model via a ``model`` property (backed by ``_handle.model``); before
-        # startup / for the raw client it is the ``_model`` attribute. Try the
-        # property first, then the raw attr, on the inner client then the outer.
+        # After Kiro startup the model is the inner client's ``model`` property;
+        # before startup it is ``_model``. Try both, inner client first.
         inner = getattr(client, "_client", client)
         model = ""
         for obj in (inner, client):
@@ -83,17 +63,10 @@ def record_interaction_event(client: LLMProvider, session_key: str, surface: str
 def _billing_stats(provider: Any) -> Any:
     """The per-turn stats object behind *provider*, or ``None``.
 
-    Returned as the object rather than a value so callers can compare identity:
-    the runner installs a FRESH stats object as it begins a turn, which is what
-    tells a completed turn apart from one that never started.
-
-    Each holder is read through :func:`resolve_billing_stats`, the one spelling
-    the wrappers use too: a provider's declared
-    :meth:`LLMProvider.billing_stats` wins, and the ``last_prompt_stats``
-    fallback keeps every holder that was found before the capability existed --
-    the raw ``AcpClient``, and the doubles that stand in for a runner. One
-    holder's broken read is skipped rather than abandoning the walk, so a faulty
-    wrapper cannot lose a turn whose billing a later node still carries.
+    Returned as the object so callers can compare identity: the runner installs
+    a FRESH stats object as a turn begins. Each holder is read through
+    :func:`resolve_billing_stats`. A holder whose read fails is skipped, so a
+    faulty wrapper cannot lose billing a later node still carries.
     """
     try:
         holders = _billing_stat_holders(provider)
@@ -114,12 +87,9 @@ def _billing_stats(provider: Any) -> Any:
 def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
     """Billing accrued on ONE attempt, read from the provider's live stats.
 
-    ``since`` is the stats object observed before the attempt. The runner installs
-    a fresh stats object as it begins a turn, with the credit counters at zero; a
-    dispatch that fails BEFORE that point -- a busy session, a dead runtime --
-    leaves the PREVIOUS turn's object in place, still carrying credits that were
-    already recorded. Comparing identity reports nothing in that case instead of
-    billing the earlier turn a second time.
+    ``since`` is the stats object seen before the attempt. A dispatch that fails
+    before the runner installs fresh stats leaves the PREVIOUS turn's object in
+    place; the identity check then reports nothing instead of billing it twice.
     """
     stats = _billing_stats(provider)
     if stats is None:
@@ -127,14 +97,9 @@ def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
     if since is not _NO_PRIOR_STATS and stats is since:
         return TurnUsage()
     try:
-        # Prefer the stats object's own converter: it is the single source of
-        # truth for stats -> TurnUsage and carries every billing dimension the
-        # turn filled (claude seam: token counts + cache fields + cost_usd; kiro:
-        # credits). Duck-typed so the doubles in tests (and any stats holder
-        # predating the converter) fall through to the credits-only constructor,
-        # which is byte-identical for the kiro seam. The converter's failure is
-        # contained so a faulty to_turn_usage degrades to the credits read
-        # rather than silently zeroing a turn that did bill.
+        # Prefer the stats object's own converter: it carries every billing
+        # dimension (claude: tokens, cache, cost_usd; kiro: credits). Without one,
+        # or if it fails, fall back to credits so a billed turn is not zeroed.
         to_usage = getattr(stats, "to_turn_usage", None)
         if callable(to_usage):
             try:
@@ -153,11 +118,8 @@ def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
 def usage_has_billing(usage: TurnUsage) -> bool:
     """True when *usage* carries any billing dimension worth a row.
 
-    The single predicate behind every persist gate. Three hand-maintained
-    copies of ``credits or input_tokens or output_tokens`` is how the claude
-    seam's ``cost_usd`` (and a cost-free cache-only turn) get dropped; a gate
-    that reads this cannot drift from its siblings when the next billing
-    dimension is added.
+    The one predicate behind every persist gate, so a new billing dimension
+    (like claude's ``cost_usd``) is not dropped by a stale copy.
     """
     return bool(
         usage.credits
@@ -199,49 +161,27 @@ def provider_last_turn_usage(
 ) -> TurnUsage:
     """Best-effort read of the just-completed turn's billing usage.
 
-    ``stream_and_collect`` breaks on ``EVENT_COMPLETE`` and returns only text,
-    discarding the event's ``usage``. Background surfaces that dispatch through
-    it (cron, heartbeat, autonudge, workflow, task-runner self-review) therefore
-    have no event to hand :func:`persist_token_record_async`. This recovers the
-    turn's billing and wraps it in a ``TurnUsage`` so it can be passed straight
-    through as the ``event`` argument.
+    ``stream_and_collect`` returns only text, so background surfaces (cron,
+    heartbeat, autonudge, workflow, task-runner self-review) have no event for
+    :func:`persist_token_record_async`. This rebuilds the turn's ``TurnUsage``.
 
-    A turn can span several attempts: ``stream_and_collect`` retries a busy
-    session and a transient backend error, and each retry installs fresh per-turn
-    stats. Reading the provider's live stats afterwards therefore sees only the
-    LAST attempt and loses any earlier attempt that was already billed. So the
-    total ``stream_and_collect`` accumulated is preferred when present, and
-    consumed here -- one turn's billing is reported once. Callers that drive
-    ``provider.stream`` themselves publish no total and fall back to the live
-    read, which is what ``since`` guards (see :func:`_attempt_usage`).
-    ``consume=False`` reads the total without clearing it, for a caller that
-    inspects a turn whose recording reader comes after it.
+    A turn can span several attempts, each with fresh stats, so the total
+    ``stream_and_collect`` published is preferred and consumed here (reported
+    once). ``consume=False`` reads it without clearing. Callers that drive
+    ``provider.stream`` themselves publish no total and get the live read,
+    guarded by ``since`` (see :func:`_attempt_usage`).
 
-    The total is published WITH the stats object it was computed from, and is
-    accepted only while that object is still the provider's current one. The
-    provider outlives the turn -- the shared background session is reused by every
-    background caller, and a Slack session by every turn in its thread -- so a
-    total left unread by one turn would otherwise be consumed by the next one,
-    billing that turn's spend to the wrong surface and losing its own. Today every
-    reader happens to be paired with a publish in the same turn, which makes the
-    residue unreachable; the guard is here so that safety does not depend on the
-    next caller preserving that pairing. A fresh turn installs fresh stats, so a
-    stale total simply fails the identity check and the live read takes over.
-
-    On the kiro (acp) seam the only non-zero per-turn billing signal is
-    ``credits``; on the claude seam the token counts, cache fields, and
-    ``cost_usd`` are filled instead. Whichever dimensions the turn's stats
-    carried come through :meth:`to_turn_usage` intact. Providers that expose
-    no stats (non-ACP backends, test doubles) yield an empty ``TurnUsage``
-    (credits=0). Never raises.
+    The total is accepted only while its stats object is still the provider's
+    current one. The provider outlives the turn, so a total left unread would
+    otherwise bill one turn's spend to the next. Never raises; a provider with
+    no stats yields an empty ``TurnUsage``.
     """
     try:
         accumulated = getattr(provider, _TURN_BILLED_ATTR, None)
         if isinstance(accumulated, tuple) and len(accumulated) == 2:
             published_stats, total = accumulated
-            # Clear on every consuming read, match or not: a total that failed the
-            # identity check belongs to a turn that is already over and must not be
-            # seen again by a third one.
+            # Clear on every consuming read, match or not, so a stale total is
+            # never seen by a third turn.
             if consume:
                 try:
                     delattr(provider, _TURN_BILLED_ATTR)
@@ -257,28 +197,18 @@ def provider_last_turn_usage(
 def _billing_stat_holders(provider: Any) -> "list[Any]":
     """Objects that may carry ``last_prompt_stats``, nearest wrapper first.
 
-    The compatibility path behind :func:`_billing_stats`, and the lookup
-    :func:`_provider_label` still needs: the turn-runner sits behind a different
-    attribute per seam: the acp provider keeps it on ``_client``, the session
-    provider on ``_handle``, and the shared background session hands non-kiro
-    callers a thin adapter whose only link to the runner is ``_sess.provider``.
-    Walking all of them keeps a background turn on the claude_code / bedrock seam
-    from reporting 0 credits for a turn that was billed. Depth-first along
-    :data:`_BILLING_STAT_HOLDERS` and identity-deduped, so a self-referential
-    wrapper chain cannot loop and a stack of wrapper layers cannot exhaust the
-    node budget on holder-less siblings before the runner is reached — the
-    stats sit at the bottom of the chain, and a breadth-first walk with a node
-    budget stops short of them a few layers down. :data:`_WRAPPER_WALK_MAX_NODES`
-    is a runaway guard for attribute-synthesizing sources, not a depth limit.
+    Each seam keeps the turn-runner behind a different attribute (``_client``,
+    ``_handle``, ``_sess.provider``), so all are walked; otherwise a claude_code
+    or bedrock background turn reports 0 credits. The walk is depth-first and
+    identity-deduped: a self-referential chain cannot loop, and the stats at the
+    bottom of a deep stack are reached before the node budget runs out.
 
-    A name absent from this tuple is exactly how a new seam's spend went
-    unreported, which is why the billing read prefers the provider's declared
-    :meth:`LLMProvider.billing_stats` and only falls back here.
+    A seam missing from :data:`_BILLING_STAT_HOLDERS` goes unbilled, which is why
+    the billing read prefers :meth:`LLMProvider.billing_stats`.
     """
     out: list[Any] = []
     seen: set[int] = set()
-    # A stack: the LAST entry is visited next, so children are pushed in
-    # reverse holder order to come off in holder order.
+    # A stack: push children in reverse so they come off in holder order.
     frontier: list[Any] = [provider]
     while frontier and len(out) < _WRAPPER_WALK_MAX_NODES:
         node = frontier.pop()
@@ -294,23 +224,11 @@ def _billing_stat_holders(provider: Any) -> "list[Any]":
 def _provider_label(provider: Any) -> str:
     """Backend label for the usage row's ``provider`` dimension. Never raises.
 
-    Left unset the row lands with ``provider=""`` and drops out of the usage
-    page's provider and provider-model breakdowns, so a background turn's spend
-    would be recorded yet unattributable to a backend.
-
-    ``provider_label`` is the shared resolver for this vocabulary -- the same
-    ``acp`` / ``claude_code`` / ``kas`` keys the session map and resume-compat
-    check use -- and it answers from the backend that actually served the turn,
-    which is the precedence ``kiro_crew.llm_helpers`` already applies to the model and the
-    agent. Reading ``config.agent.provider`` instead would report a declaration:
-    that field's enum admits only ``acp``, so a claude_code-backed session would
-    be labelled ``acp``.
-
-    The resolver only recognises a provider it is handed directly, and the shared
-    background session wraps one behind ``_sess.provider``, so the wrapper chain
-    is walked and the first node that names a non-default backend wins. Falling
-    back to the default label rather than to ``""`` matches every other writer of
-    this field.
+    An empty label drops the row out of the usage page's provider breakdowns.
+    ``provider_label`` answers from the backend that served the turn; reading
+    ``config.agent.provider`` would always say ``acp``. The wrapper chain is
+    walked because a wrapped provider is not recognised directly; the first
+    non-default label wins, else the default.
     """
     try:
         from kiro_crew.agent_sdk.drivers.acp import provider_label

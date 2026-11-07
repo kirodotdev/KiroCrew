@@ -49,7 +49,7 @@ def _make_request(
 ) -> web.Request:
     """Build a minimal ``web.Request`` with a fake ``conversation_log`` + ``_slots``."""
     conv_log = MagicMock()
-    conv_log.list_sessions.return_value = sessions
+    conv_log.list_sessions_indexed.return_value = sessions
     # The handler folds stacked ``dashboard_`` prefixes through this; wire the
     # real implementation so the fold is actually exercised, not mocked away.
     conv_log._canonical_key = ConversationLog._canonical_key

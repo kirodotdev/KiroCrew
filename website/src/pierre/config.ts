@@ -26,8 +26,23 @@ export type PierreDiffOptions = Omit<BaseDiffOptions, 'hunkSeparators'> & {
 
 /** The Shiki theme pair every Pierre surface renders with. One knob for the
  *  whole dashboard: swap the pair here to restyle all code and diff surfaces
- *  at once. Accepts any Shiki bundled theme name or a registered custom one. */
+ *  at once. Accepts any Shiki bundled theme name or a registered custom one.
+ *  An installed theme pack may name its own pair: see `pierreThemesFor`. */
 export const PIERRE_THEMES: ThemesType = { dark: 'pierre-dark', light: 'pierre-light' }
+
+/** The pair a theme pack's `codeTheme` asks for, mode by mode: a mode it leaves
+ *  out, or a name `isBundled` rejects, keeps the `PIERRE_THEMES` scheme. The check
+ *  is passed in so this eagerly loaded module never imports the theme collection. */
+export function pierreThemesFor(
+  codeTheme: { dark?: string; light?: string },
+  isBundled: (name: string) => boolean,
+): ThemesType {
+  const pick = (mode: 'dark' | 'light') => {
+    const name = codeTheme[mode]
+    return name !== undefined && isBundled(name) ? name : PIERRE_THEMES[mode]
+  }
+  return { dark: pick('dark'), light: pick('light') }
+}
 
 /** Dashboard themes are user-selected (not OS-derived), so Pierre is always
  *  driven with an explicit light/dark — never 'system'. */

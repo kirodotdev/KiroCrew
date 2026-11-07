@@ -182,7 +182,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, slots_data: 'list[dict]', *, include_check_status: 'bool' = "
         "False, dashboard_user: 'bool' = False) -> 'list[dict]'",
     ),
-    "_rewrite_notifications_async": ("function", True, False, "(self) -> 'None'"),
+    "_rewrite_notifications_async": ("function", True, False, "(self) -> 'bool'"),
     "_running_loop": ("staticmethod", False, False, "() -> 'asyncio.AbstractEventLoop | None'"),
     "_schedule_trailing_flush": ("function", False, False, "(self, delay: 'float') -> 'None'"),
     "_send_slot_patch": ("function", False, False, "(self, data: 'dict[str, Any]') -> 'None'"),
@@ -351,6 +351,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, payload: 'bytes') -> 'int'",
     ),
     "disable_yolo": ("function", False, False, "(self) -> 'None'"),
+    "dismiss_notification": (
+        "function",
+        True,
+        False,
+        "(self, *, source: 'str', key: 'str') -> 'tuple[bool, bool]'",
+    ),
     "effective_max_background_turns": ("function", False, False, "(self) -> 'int'"),
     "enable_yolo": ("function", False, False, "(self, *, from_config: 'bool' = False) -> 'None'"),
     "end_slot_construction": ("function", False, False, "(self, key: 'str') -> 'None'"),
@@ -553,6 +559,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "recent_question_resolutions": ("function", False, False, "(self) -> 'dict[str, str]'"),
     "refresh_slot_source_status": ("function", False, False, "(self, key: 'str') -> 'None'"),
+    "refresh_source_status_now": (
+        "function",
+        False,
+        False,
+        "(self, urls: 'list[str]') -> 'list[str]'",
+    ),
     "register_channel_transport": (
         "function",
         False,
@@ -794,6 +806,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, ask_id: 'str', session_key: 'str') -> 'bool'",
     ),
     "ws_client_count": ("function", False, False, "(self) -> 'int'"),
+    "yolo_reaches": (
+        "function",
+        False,
+        False,
+        "(self, slot: 'Any', *, channel_origin: 'bool' = False) -> 'bool'",
+    ),
 }
 
 #: ``typing.get_type_hints`` raised on these members of the one-module class too.

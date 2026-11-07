@@ -11,6 +11,7 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from typing import Mapping, Optional, Tuple
 
@@ -35,7 +36,57 @@ from kiro_crew.platform.governance_parts.tool_calls import (
     classify_tool_args,
     classify_tool_title,
 )
-from kiro_crew.platform.guest_paths import guest_also_local, guest_root
+from kiro_crew.platform.guest_paths import (
+    GuestPath,
+    guest_also_local,
+    guest_root,
+    guest_unverifiable,
+)
+from kiro_crew.platform.tool_paths import TARGET_PATH_KEYS, _is_anchored
+
+
+def _anchored_read_target(item: str) -> bool:
+    """Whether a read target names one file wherever it is judged.
+
+    A guest path is anchored in its guest workdir unless it cannot be; a local
+    one as :func:`~kiro_crew.platform.tool_paths._is_anchored` reads it, drive
+    required (a relative path, or a Windows ``\\x`` on the current drive, would
+    be anchored at this process's working directory), and spelled so that
+    ``~`` / variable expansion leaves it unchanged. A marker (it carries a
+    NUL) names no file.
+    """
+    if isinstance(item, GuestPath):
+        return not guest_unverifiable(item)
+    # A spelling that ``~`` / ``$VAR`` / ``%VAR%`` expansion changes is
+    # anchored only after an expansion the matcher applies but the reading tool
+    # may not, so the two could name different files; it keeps the title's pair.
+    if "\x00" in item or os.path.expandvars(os.path.expanduser(item)) != item:
+        return False
+    return _is_anchored(item, require_drive=True)
+
+
+def _every_operation_names_a_path(raw_params: object) -> bool:
+    """Whether the argument scan lists every target of a read's entries.
+
+    Each entry (each of a batch's ``operations``, or the params themselves)
+    must name a ``TARGET_PATH_KEYS`` path and carry no Image target: an Image
+    read's ``image_paths`` is not scanned, decoy ``path`` or not, so its title's
+    read pair cannot be replaced.
+    shortcut: knows the Image shape only; widen it when another read shape
+    carries its target under a key ``TARGET_PATH_KEYS`` lacks.
+    """
+    if not isinstance(raw_params, Mapping):
+        return True
+    ops = raw_params.get("operations")
+    entries = ops if isinstance(ops, list) else [raw_params]
+    return all(
+        isinstance(op, Mapping)
+        and "image_paths" not in op
+        and op.get("mode") != "Image"
+        and any(isinstance(op.get(key), str) and op.get(key) for key in TARGET_PATH_KEYS)
+        for op in entries
+    )
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Evaluator (Phase 4) — pure functions, no I/O
@@ -310,9 +361,9 @@ def gate_decision(
     for extra in extra_titles:
         if extra:
             pairs.extend(_own(classify_tool_title(extra), identity=True))
-    # A remote-workspace call's title-derived path (``Reading <path>``) names the
-    # same guest file its arguments do, so it is read the way they are; a plain
-    # twin judged as this gateway's path would refuse a permitted guest read.
+    # A remote-workspace call's title-derived path (``Reading <path>``) names a
+    # guest file, so it is read the way the call's arguments are; a plain twin
+    # judged as this gateway's path would refuse a permitted guest read.
     root = guest_root(raw_params)
     if root is not None:
         also_local = guest_also_local(raw_params)
@@ -335,6 +386,22 @@ def gate_decision(
             for scope in own_scopes
             if scope not in ("tools", "mcp") and scope not in named
         )
+    # A read whose arguments name its path is judged on that path: the
+    # ``Reading`` title is display text, and a label there (``Reading listing
+    # workspace``) would be anchored at the gateway's working directory. Only
+    # when EVERY argument read target is anchored, though: a relative local
+    # path is anchored at the gateway's working directory too, not where the
+    # session reads it, and a marker (no target, truncated scan) names no file,
+    # so in those cases the title's pair is kept beside them. A batch entry
+    # that names no path (an Image read's ``image_paths``) has a target the
+    # scan does not list, so the title's pair is kept for it too.
+    arg_reads = [item for scope, item in arg_pairs if scope == "filesystem.read"]
+    if (
+        arg_reads
+        and all(_anchored_read_target(item) for item in arg_reads)
+        and _every_operation_names_a_path(raw_params)
+    ):
+        pairs = [pair for pair in pairs if pair[0] != "filesystem.read"]
     pairs.extend(arg_pairs)
     if mcp_ref:
         pairs.append(("mcp", mcp_ref))

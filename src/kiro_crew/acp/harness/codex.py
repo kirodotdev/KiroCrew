@@ -123,7 +123,9 @@ not the instrument that governs it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -157,9 +159,59 @@ logger = logging.getLogger(__name__)
 #: downgrade of whichever harness moved first.
 PROTOCOL_VERSION_CODEX = 1
 
-
 #: Where ``codex`` keeps its SQLite databases; defaults to ``CODEX_HOME``.
 _SQLITE_HOME_ENV = SQLITE_HOME_ENV
+
+#: The whole codex configuration directory; MCP fleet is started from its config.toml.
+_CODEX_HOME_ENV = "CODEX_HOME"
+
+
+#: Inert transport values for a disable entry. codex parses every
+#: ``mcp_servers`` entry with ``TryFrom<RawMcpServerConfig>``, which needs exactly
+#: one of ``command`` (stdio) or ``url`` (streamable HTTP) and fails the whole
+#: ``thread/start`` with ``invalid transport`` otherwise. codex re-reads
+#: ``config.toml`` on every ``thread/start`` while ``CODEX_CONFIG`` is fixed for
+#: the adapter's lifetime, so a server removed or renamed after the spawn leaves
+#: the override standing alone. Carrying the transport key the server had at spawn
+#: keeps that orphan a valid, disabled entry. Over a live entry it only replaces
+#: the command or URL of a server that ``enabled = false`` stops codex starting.
+_DISABLED_STDIO_COMMAND = "true"
+_DISABLED_HTTP_URL = "http://127.0.0.1/"
+
+
+def _read_codex_mcp_disable_overrides(config_file: Path) -> dict[str, dict[str, Any]]:
+    """Return one ``enabled = false`` entry per ``mcp_servers`` server, or ``{}``.
+
+    Each entry also carries a placeholder for the transport key the server
+    uses (``command`` or ``url``), so it still parses if the server is gone
+    from ``config.toml`` by the time codex reads it. A server with neither key
+    is left out: codex already rejects it without this override. Parsed with
+    stdlib ``tomllib``, in config.toml order. A missing, unreadable or
+    malformed file yields ``{}``, so the caller injects no override. Blocking
+    file I/O: call it through ``asyncio.to_thread``.
+    """
+    try:
+        if not config_file.is_file():
+            return {}
+        text = config_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    servers = data.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        return {}
+    overrides: dict[str, dict[str, Any]] = {}
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        if "command" in entry:
+            overrides[name] = {"enabled": False, "command": _DISABLED_STDIO_COMMAND}
+        elif "url" in entry:
+            overrides[name] = {"enabled": False, "url": _DISABLED_HTTP_URL}
+    return overrides
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -220,6 +272,12 @@ async def resolve_spawn_masks(sandbox_mode: str) -> tuple[tuple[str, ...], tuple
 
 class CodexHarness(MembershipHarness):
     """The codex-acp host."""
+
+    #: ``CODEX_CONFIG`` disable-override built for the most recent background-runtime
+    #: spawn, or empty string when no override was computed.  Consumed by
+    #: :meth:`apply_spawn_env` which runs on the spawn worker after the full env
+    #: (including ``agent.env``) is assembled.
+    _bg_codex_config: str = ""
 
     backend = ACP_BACKEND_CODEX
 
@@ -289,12 +347,58 @@ class CodexHarness(MembershipHarness):
         # from a completed SQLite snapshot so a large rollout history does not
         # need rebuilding at every start. Each process still owns its database.
         # An operator-supplied location reaches the child without preparation.
+        #
+        # Background sessions (kirocrew-lite) additionally disable every
+        # configured MCP server via CODEX_CONFIG.  codex starts a per-session
+        # fleet (~44 processes) from config.toml for each session/new; session/close
+        # evicts the session but never terminates those children.  Injecting
+        # CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false, ...}}} makes
+        # codex skip initializing every server (McpServerConfig.enabled, documented
+        # in codex-rs/config/src/mcp_types.rs:234).  CODEX_HOME stays shared and
+        # untouched; only the child's environment gains the override.
+        sqlite_home_set = bool(ctx.environ.get(_SQLITE_HOME_ENV))
+        from kiro_crew.session import BACKGROUND_AGENT as _bg_agent  # circular at module scope
+
+        is_background = ctx.agent == _bg_agent
+
+        # For background sessions: read config.toml once, off the event loop, and
+        # build the CODEX_CONFIG override that disables every configured MCP
+        # server.  Stored in self._bg_codex_config and consumed by apply_spawn_env
+        # after the full env (including agent.env) is assembled, so it can see
+        # whether CODEX_CONFIG is already set and leave an existing value alone.
+        #
+        # Names are read once, at spawn, while codex re-reads config.toml on
+        # every thread/start. Each entry therefore carries its own transport
+        # placeholder (see _DISABLED_STDIO_COMMAND), so a server removed or
+        # renamed later, or one read from a CODEX_HOME that agent.env then
+        # replaces, is an orphan that still parses instead of failing every
+        # background session/new.
+        #
+        # Known residuals: a server renamed after spawn starts its fleet again
+        # under the new name until the runtime recycles, and one that switches
+        # between command and url under the same name conflicts with the
+        # placeholder until then. Project-level .codex/config.toml overrides
+        # are not covered. A session/new that carries mcpServers replaces the
+        # whole mcp_servers table in codex-acp's createSessionConfig, dropping
+        # this override for any session that mounts servers that way.
+        self._bg_codex_config = ""
+        if is_background:
+            _codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))
+            _overrides = await asyncio.to_thread(
+                _read_codex_mcp_disable_overrides, _codex_home / "config.toml"
+            )
+            if _overrides:
+                self._bg_codex_config = json.dumps(
+                    {"mcp_servers": _overrides},
+                    separators=(",", ":"),
+                )
+
         return SpawnPlan(
             argv=list(argv),
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
-            private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
+            private_state_env=None if sqlite_home_set else _SQLITE_HOME_ENV,
             private_state_seed=seed_private_state,
         )
 
@@ -352,6 +456,20 @@ class CodexHarness(MembershipHarness):
         # config. That keeps an unbound global dashboard server in place of the
         # gateway's verified mount, on both session/new and session/load.
         env["DISABLE_MCP_CONFIG_FILTERING"] = "true"
+        # Inject CODEX_CONFIG to disable the per-session MCP fleet for background
+        # sessions.  apply_spawn_env runs after agent.env is merged (launch.py:1014),
+        # so checking env.get here correctly sees operator/agent.env values and will
+        # not overwrite them.  A skipped injection is logged: without it the
+        # background runtime starts the full MCP fleet per session again.
+        if self._bg_codex_config:
+            if env.get("CODEX_CONFIG"):
+                logger.warning(
+                    "codex background runtime: CODEX_CONFIG is already set, so the "
+                    "MCP-server disable override was not applied; configured MCP "
+                    "servers will start for every background session"
+                )
+            else:
+                env["CODEX_CONFIG"] = self._bg_codex_config
 
     @property
     def verifies_agent_activation(self) -> bool:
@@ -384,6 +502,7 @@ class CodexHarness(MembershipHarness):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

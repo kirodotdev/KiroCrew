@@ -7,6 +7,9 @@ Append-only, tamper-evident audit trail for tool invocations, MCP calls, and das
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
 Storage: the live append-only log is `~/.kiro/crew/security_events.jsonl`.
+Each append makes it owner-only (`platform_compat.restrict_to_owner`, a DACL on
+Windows) before writing, under the calling-thread rule `config.json` uses: an
+append on the event loop to a non-local Windows volume skips the DACL with a warning.
 At the size ceiling it rotates into `~/.kiro/crew/security_events.d/`; each
 closed segment is an independent HMAC-SHA256 chain and the new live log starts
 with a `sel_rotation` boundary event.
@@ -203,7 +206,7 @@ Two bounds, and the tighter wins:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/sel/events?limit=N` | Recent security events (max 1000). **Owner only** — the rows name the resources a security decision was about, and a dashboard session is not by itself the owner, so every other caller gets `403 owner_only` from the shared owner gate and the refusal is itself audited. A session signed before an owner was configured keeps its bootstrap subject and is refused too, but that caller IS the owner, so it gets `401 stale_session_reauth` instead: re-signing in is the remedy, and a token refresh preserves the subject. A read that succeeds is audited as well, so the trail distinguishes an untouched log from one the owner has read. |
+| GET | `/api/sel/events?limit=N` | Recent security events (max 1000). **Owner only** — the rows name the resources a security decision was about, and a dashboard session is not by itself the owner, so every other caller gets `403 owner_only` from the shared owner gate and the refusal is itself audited. A session signed before an owner was configured keeps its bootstrap subject and is refused too, and so is a former owner's session (its token carries the signed `owner_mint` claim, and the owner id has since changed or been cleared); such a caller gets `401 stale_session_reauth` instead: re-signing in is the remedy, and a token refresh preserves the subject. A session minted without the claim keeps the generic denial until one fresh sign-in. A read that succeeds is audited as well, so the trail distinguishes an untouched log from one the owner has read. |
 | GET | `/api/sel/verify` | HMAC chain integrity check. Any authenticated dashboard session (no owner gate), because it returns counts and a reason only, never event rows or resource names: `total`, `valid`, `integrity` (`ok` / `compromised` / `unverifiable`), `tampered`, `detail` (the reason text, empty when verifiable), and this process's `dropped_events` |
 
 ## CLI

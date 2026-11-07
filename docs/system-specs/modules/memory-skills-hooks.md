@@ -779,7 +779,7 @@ outlive the incognito or temporary boundary that prohibits derived memory.
 
 ### Lesson Extraction from Chat
 
-The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). V1 lesson writes use `write_lesson()` with substring and topic-overlap dedup (shared keywords ≥ 50% of the LARGER of the two keyword sets → newer replaces older), or `LessonStore.save()` when vector memory is inactive. V2 publishes lessons inside the consolidation transaction and never constructs a JSONL fallback.
+The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). V1 lesson writes use `write_lesson()` with substring and topic-overlap dedup (shared keywords ≥ 50% of the LARGER of the two keyword sets → newer replaces older, unless the stored row outranks the write), or `LessonStore.save()` when vector memory is inactive. V2 publishes lessons inside the consolidation transaction and never constructs a JSONL fallback.
 
 ### Configuration
 
@@ -2794,6 +2794,16 @@ self-contained file with no WAL to pair.
   framework exists.
 - **Fail soft per store**: one unreadable store must not prevent another eligible
   store's backup, so the loop counts failures instead of propagating them.
+  Inside the agent sandbox `memory_stores` is read-only, so a member backup run there
+  (`kirocrew memory backup`, the pre-update copy) is refused on its first write, and
+  the seal stays. The loop logs that refusal as one warning line,
+  `_sandboxed_backup_hint` (back up from the dashboard or your own terminal) plus the
+  errno, decided from the refused write's path like `kirocrew config set`'s hint. The
+  store-use lock does not tighten `.member-backups/<store>/` on a Linux read-only
+  mount, so no errno traceback comes first there; macOS Seatbelt answers `EPERM`
+  without one, and its tightening warning still precedes the hint. A named V1
+  store's `backups/` sits in the same read-only leaf and still fails there with a
+  traceback.
 
 **V1 restore is staged and recoverable.** `restore_from_backup` requires the
 source's structural V1 lineage for Global. Named V1 also accepts the established
@@ -3839,6 +3849,13 @@ whose `repo_scope` is present but unusable counts as neither.
   makes its text longer and its guidance NARROWER, so the row that survives can be the
   one that applies in fewer cases.
 - Topic-overlap dedup: "use light mode" replaces "use dark mode" (shared keywords ≥ 50% of the LARGER keyword set → newer wins)
+- Neither lexical rule deletes a stored row that outranks the write (`user_explicit` over
+  another source, or strictly higher stored confidence): the submission is stored beside it.
+  The cost is that a consolidation correction of a user rule ("use light mode" over a
+  `user_explicit` "use dark mode") leaves both in effect until a `user_explicit` write or a
+  delete retires the old one. The authority pre-pass declines a pure semantic
+  near-duplicate instead: above 0.85 cosine it carries no new text, while a lexical match
+  can carry a new condition the user may want
 - Allowlist validation, injection scanning, audit logging
 
 Substring-delete and topic-overlap are not independent: verbatim containment at word
@@ -3848,7 +3865,7 @@ did. Suppressing either one alone does not keep both lessons — which is why
 `write_lesson` REPORTS its deletions (below) rather than declining to make them, and
 why a caller that must never replace an existing lesson routes to
 `set_semantic_if_absent` instead (see `onboarding_import`, whose comment records that a
-foreign directive could otherwise delete a correction the user taught the agent).
+foreign directive could otherwise delete a lesson already in the store).
 
 **A call that stores nothing deletes nothing.** Every branch above QUEUES its
 supersedes; the queue drains only after the semantic write commits the submission. The
@@ -4046,7 +4063,7 @@ lesson beat a contradicting preference in the same prompt.
 | Lesson contradicts a preference | Lesson wins via the `[Learned corrections]` framing | `context.py` |
 | Two semantic writes to one key in V1 | User-explicit writes win; automated writes cannot replace a user-explicit fact, and otherwise use the existing confidence precedence | `vector_memory._write_semantic()` |
 | Two semantic writes to one key in V2 | Owner correction or verified transcript correction with matching revision replaces the fact; other changed automated assertions remain reviewable proposals | `vector_memory._write_semantic()` |
-| Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins, regardless of source), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older regardless of source), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). A non-mutating authority pre-pass decides semantic-match refusals before the scan; it mirrors the earlier substring/topic branches, which remain source-blind. Every branch's deletions are deferred and execute only after the semantic write commits, so a call that stores nothing deletes nothing: a `deduped` verdict from any branch and a `refused` from the semantic write each preserve every live lesson row and report empty `superseded` (a lazy embedding backfill for a row the call read may still have flushed, which changes a vector and no lesson). `delete_semantic` takes an optional `expect_value_json`, carrying the comparison inside its own UPDATE, so a queued row is tombstoned only while its stored body is still the version the scan read and one a competing writer changed is skipped -- the same compare-and-write contract the lazy embedding backfill applies, atomic against another process, and what covers the write's own key once `set_semantic` has committed under it. A drain that stops partway (raised error, killed process) keeps the submission and leaves the rows it had not reached: the residue is a duplicate, never a lost lesson, and the next write matching those rows retires them. Every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
+| Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). No branch deletes a row that outranks the write by that same rule: the two lexical branches store the submission beside it, so a consolidation rewording never retires the user's own lesson. A non-mutating authority pre-pass decides semantic-match refusals before the scan; it skips the rows the earlier substring/topic branches claim. Every branch's deletions are deferred and execute only after the semantic write commits, so a call that stores nothing deletes nothing: a `deduped` verdict from any branch and a `refused` from the semantic write each preserve every live lesson row and report empty `superseded` (a lazy embedding backfill for a row the call read may still have flushed, which changes a vector and no lesson). `delete_semantic` takes an optional `expect_value_json`, carrying the comparison inside its own UPDATE, so a queued row is tombstoned only while its stored body is still the version the scan read and one a competing writer changed is skipped -- the same compare-and-write contract the lazy embedding backfill applies, atomic against another process, and what covers the write's own key once `set_semantic` has committed under it. A drain that stops partway (raised error, killed process) keeps the submission and leaves the rows it had not reached: the residue is a duplicate, never a lost lesson, and the next write matching those rows retires them. Every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
 | Distinct lessons in V2 | Different rule text coexists without substring, topic or embedding deduplication. Exact-rule enrichment remains; key-targeted corrections use the owner/revision machinery | `vector_memory.write_lesson()` |
 | Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `VectorMemoryStore.search_episodic()` (`vector_memory_runtime/episodic_search.py`) |
 | A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | the publication tail of `vector_memory._write_semantic()` (`vector_memory_runtime/semantic.py`), after the write commits |
@@ -4797,6 +4814,8 @@ rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.
 
+**KAS-refused skills (`kas_skill_scope.refused_skill_copies`).** KAS drops, without a word, a SKILL.md that kiro-cli loads: no front matter, no `name` or `description`, front matter its YAML parser rejects (an unquoted `: ` in a value), and, in its default trees only, a name outside `[a-z0-9-]` (1-64, no edge or double hyphen) or a description over 1024 UTF-16 units (in kiro-agent: `validateSkillMd` and `readSkill`). kiro-cli falls back to the path and "No description available". For each in-scope skill (the scope above, or every default-tree skill when there is no rule) that no path KAS reads loads, Crew writes a copy to `<data home>/kas-skills/<sha256 of the path and the copy name, 16 hex>/SKILL.md` (0600 in a 0700 dir, rewritten at every session start) and appends it to the agent's `resources` as `skill://`. The copy's front matter carries a sanitized name not used by any skill KAS loads (`-2`, `-3` on a clash) and a description: the original's, else the body's first line, else "No description available", cut to 1024. The body is the original's after one line naming the original path, so relative paths still resolve. The name and description are written double-quoted, so a value like `1e3` stays a string. A skill whose own name, folder or path a `deny` or `ask` rule of the spec's `permissions` matches under `skill` gets no copy, since the copy's new name would slip that rule. The copy names join the rule's `exclude`. The original is read through `hooks.safe_read_prefix`; a file over 1 MiB, unreadable, or not writable gets no copy, and a failure here costs the copies, never the session.
+
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded wherever a body reaches the model: the **body-delivery loop** in `context_assembly/turn_message.py` (`ContextBuilder.build_message`; `_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt), `resolve_dollar_skills`, an exact `skill_search` read (below), and direct reads of `SKILL.md` (see **Direct reads**). Since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config, so the other three supply the hits unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading. The load never raises on file content: a row it cannot read (a non-numeric or infinite `hits`) is skipped, and a file that is not UTF-8 or nested past the recursion limit reads as a corrupt file (empty ledger, replaced by the next flush).
 
 **Dollar-load transcript snapshot:** the dashboard chat runner records each
@@ -5295,7 +5314,9 @@ already goes through.
 
 **Refresh is a background re-walk, not a per-file incremental index.** There is no
 filesystem watcher: an app-side mutation (`_invalidate_iter_cache`) is the immediate
-path, and everything else converges within `_ITER_CACHE_TTL_SECS` /
+path, and so is an app's skill links changing (the app bridge calls
+`skill_live_loaders.invalidate_loaders_of`, which invalidates every open loader
+of that skills root; app-kit-platform.md section 5.2). Everything else converges within `_ITER_CACHE_TTL_SECS` /
 `_CATALOG_REVALIDATE_AFTER_SECS` through a full re-walk on the worker. A watcher plus
 per-file updates would buy a smaller refresh, not a faster turn — the whole walk is
 already off the request path — at the cost of a new dependency and a second source of
@@ -5850,19 +5871,22 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
   - **Ownership.** The fresh inode belongs to the gateway's own uid/gid. An
     unprivileged writer cannot give a file away (`chown` to another user needs
     `CAP_CHOWN`), so a *cross-owned* SKILL.md that the gateway can write changes
-    owner on save. Permission bits and the POSIX ACL are carried, so the effective
-    grant does not widen — the previous owner loses access rather than a new
-    principal gaining it — but the change is real and irreversible by this process.
-  - **A Windows DACL.** The carry is POSIX xattrs only
-    (`ACCESS_CONTROL_XATTRS_SUPPORTED` requires `os.listxattr`/`getxattr`/`setxattr`,
-    which Windows lacks), so on Windows the replacement lands on the DACL it
-    inherits from the containing directory rather than the one the replaced file
-    carried. A file the operator had tightened *below* its directory's inheritance
-    is therefore widened back to it. Closing this needs a `platform_compat`
-    primitive to READ a DACL — `restrict_to_owner` only writes one — and it belongs
-    to `atomic_write`, so it must land for all three surfaces at once rather than
-    by reverting one of them to an in-place write that a mid-write failure or a full
-    disk would turn into data loss.
+    owner on save. Permission bits and the POSIX ACL (on macOS, the extended ACL)
+    are carried, so the effective grant does not widen (the previous owner loses
+    access rather than a new principal gaining it), but the change is real and
+    irreversible by this process.
+  - **A Windows DACL is carried, not lost.** The xattr carry is POSIX only
+    (`ACCESS_CONTROL_XATTRS_SUPPORTED` is False on Windows) and the extended ACL
+    carry (`macos_acl.copy_extended_acl`) is macOS only, so all three surfaces
+    also pass `atomic_write(preserve_windows_dacl=True)`. On Windows that reads the
+    replaced file's own DACL by name before staging
+    (`windows_acl.read_carried_dacl`) and copies it exactly onto the temp before any
+    content (`windows_acl.apply_carried_dacl`, `SetFileSecurityW`): every entry,
+    inherited ones included, and the protected bit stay as they were. The copy is
+    exact rather than recomputed from the folder because a file moved in from a
+    narrower folder keeps that folder's inherited entries, and a recompute would
+    widen it. A read or apply failure refuses the save and leaves the original
+    untouched.
     Directory upload (`/api/directory-upload`) is not one of these surfaces: it is
     create-only, so it never replaces a file. It creates the file through
     `pinned_fs.write_new_file_pinned` (an `O_EXCL` create under the pinned
@@ -6057,7 +6081,7 @@ Auto-sync runs at startup and on demand from the dashboard. `mcp_discovery.py` i
 - On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
 - A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
 
-**Probing**: external servers are spawned and must complete both JSON-RPC `initialize` and `tools/list`; managed servers may instead use their in-process declaration. An initialize that answers without a successful tool list is an error, not a usable server. Each result carries `probedAt` (wall-clock) and `probeMode` (`handshake` or `declared`) so the UI can say when and how the status was established. The handshake timeout defaults to 15 seconds and is configurable through `dashboard.mcp_probe_timeout_secs` from 5 to 120 seconds. The stdout buffer is 1 MiB (responses can exceed the default 64 KiB), and subprocess cleanup runs in `finally`. Results are cached in `handlers.py` for 10 minutes; GET `/api/mcp/probe` returns cached results non-blocking, while POST `/api/mcp/probe` forces a fresh probe and updates the cache.
+**Probing**: external servers are spawned and must complete both JSON-RPC `initialize` and `tools/list`; managed servers may instead use their in-process declaration. An initialize that answers without a successful tool list is an error, not a usable server. Each result carries `probedAt` (wall-clock) and `probeMode` (`handshake` or `declared`) so the UI can say when and how the status was established. The handshake timeout defaults to 15 seconds and is configurable through `dashboard.mcp_probe_timeout_secs` from 5 to 120 seconds. A local probe that times out in `probe_all` is retried once, alone, after the parallel pass, and the retry's verdict is the one kept (see `docs/architecture/mcp.md`). The stdout buffer is 1 MiB (responses can exceed the default 64 KiB), and subprocess cleanup runs in `finally`. Results are cached in `handlers.py` for 10 minutes; GET `/api/mcp/probe` returns cached results non-blocking, while POST `/api/mcp/probe` forces a fresh probe and updates the cache.
 
 **MCP temp**: the probe and runtime apply one rule through `sandbox.classify_declared_temp_env`. The probe, `gatewayd._spawn`, and `spawn_backend` run that rule off the event loop before honouring a spec-declared `TMPDIR`/`TMP`/`TEMP` (matched case-insensitively). A cleared declaration is re-emitted under canonical uppercase keys with ambient siblings dropped. A refused declaration is dropped as a whole, the managed temp takes over, and one WARNING names each refused key, its path and the cause; the refusals are also carried as `tempRefusals` on the probe row (cached with the probe, so the dashboard panel shows them for the whole TTL) and are cleared on the row and in the cache when a probe is skipped, such as for a disabled or outdated server. `sealed` means the path lies inside `<data home>/run`; the classifier checks the original `realpath`, the lexical spelling, and `(st_dev, st_ino)` identity against the sealed parent. `unclassifiable` means the canonical form cannot be established, or the declaration is relative. Relative values are refused because the daemon would classify them against its cwd while the backend child resolves them against `work_dir`, so one classification cannot describe both paths. A classifier exception refuses every declared key under `check-failed` and names the exception. If managed allocation fails after a refusal, no refused temp value reaches the child. On `win32`, `classify_declared_temp_path` returns `None` without resolving the path because Kiro Crew has no native Windows sandbox backend and nothing seals `run/` there. The probe's managed directory lives under `<data home>/run/t/probe-<id>/t`, is carved out of the sandbox seal, and is exported on all three canonical keys. This rule prevents the known sealed-parent conflict. It does not certify that every arbitrarily declared temp directory exists or is writable.
 
@@ -6437,6 +6461,21 @@ a hook is therefore **not portable across platforms**. A stored PreToolUse hook'
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+**`KIROCREW_SESSION_MODEL`** is the model the firing session runs on, passed to
+`fire()` as `session_model` and set on every hook that fire runs, stored and
+`extra_hooks` alike; a spec hook kiro-cli runs itself is outside that fire and
+does not get it. A dashboard chat turn passes `engine_fallback.hook_session_model`,
+read at fire time (`turn_spec_hooks._fire`, and the tool-call frame's
+`fire_tool_hooks` in `tool_rows`), so a live pick or a fallback swap reaches the
+next hook. It starts from the provider's public `served_model`. Inside a prompt
+(PreToolUse, PostToolUse, Stop) the engine's turn-scoped hop wins, since a
+pinned `served_model` still names the pin, even on Auto. Before a prompt
+(AgentSpawn, UserPromptSubmit) a hop still standing gives way to the model it
+moved off, as `begin_prompt` restores it. `auto`, and no model reported yet,
+leave the variable unset. Channel
+turns, subagent runs and the other `fire_tool_hooks` callers pass none. The name
+is Kiro Crew's own: kiro-cli defines no model variable, unlike `KIRO_SESSION_ID`.
+
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
 `assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
@@ -6465,7 +6504,8 @@ into every hook command would hand an untrusted shell line those secrets. The
 allowlist (`_HOOK_BASE_ENV_KEYS` in `hooks.py`) preserves only what a hook
 legitimately needs — `PATH`/`PATHEXT`/`COMSPEC`/`SYSTEMROOT`, the home/profile and
 `KIROCREW_HOME` data-home vars, temp-dir and locale vars, and TLS-trust
-(`SSL_CERT_*`, `NO_PROXY`) — plus the two `KIROCREW_HOOK_*` metadata vars set last.
+(`SSL_CERT_*`, `NO_PROXY`) — plus the hook-metadata vars set last (`KIROCREW_HOOK_*`,
+and `KIRO_SESSION_ID` / `KIROCREW_SESSION_MODEL` when known).
 `HTTP(S)_PROXY` is deliberately dropped (it commonly embeds userinfo credentials).
 The consequence for operators: a hook that relied on an ambient var outside that
 set (e.g. `VIRTUAL_ENV`, `PYTHONPATH`, `JAVA_HOME`, `AWS_PROFILE`, nvm/pyenv vars)
@@ -6494,11 +6534,19 @@ undeclared key resolves to allow, so a script hook runs unconfined by default
 `sandbox.min_level` floor is pinned, the hook's `SandboxUnavailableError`
 surfaces as the result's `error`, naming the setting.
 
-### `safe_read_file(path: str) -> str`
+### `safe_read_file(path: str, *, canonical_gate: bool = False) -> str`
 
 Central guarded file read. Resolves the path via `expanduser().resolve()`, checks against
 `is_sensitive_path()`, and raises `PermissionError` if blocked. All file reads outside of
 kiro-cli tool calls must go through this function — never call `is_sensitive_path()` inline.
+
+`canonical_gate=True` judges the path this function resolved with
+`security.canonical_path_refusal()` before the open, and the opened descriptor's kernel
+path with `security.is_sensitive_canonical_path()` after it. Both pick the gate by the
+calling thread: inline off the event loop, with no `mc-pathres` submission, and the bounded
+gate on it. The gate list is the same either way. It is for a bulk read on a worker thread
+whose per-file pool submissions would queue ahead of the loop's own checks; its one caller
+is the materialized-agent snapshot scan (`config/loader_snapshots._scan_materialized_index`).
 
 ### `safe_read_file_internal(read_id: str) -> bytes | None` (audited carve-out)
 

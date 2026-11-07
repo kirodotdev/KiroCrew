@@ -19,6 +19,10 @@ from kiro_crew.dashboard.chat_nav import (
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.testing.wait import async_wait_until, await_until
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 @pytest.fixture(autouse=True)
 def _empty_link_label_inflight_map():

@@ -90,7 +90,10 @@ def backup_directory(db_path: Path) -> Path:
 def _open_store_use_lock(db_path: Path) -> int:
     """Open the stable owner-only lock outside the directory restore swaps."""
     out = backup_directory(db_path)
-    platform_compat.make_owner_only_dir(out)
+    # A read-only mount cannot be tightened: trying only logs an errno traceback
+    # before the open below is refused the same way.
+    if not (out.is_dir() and platform_compat.is_readonly_filesystem(out)):
+        platform_compat.make_owner_only_dir(out)
     lock_path = out / _STORE_USE_LOCK
     if lock_path.resolve() != lock_path.absolute():
         raise ValueError("Member memory use lock is redirected")

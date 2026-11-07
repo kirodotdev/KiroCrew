@@ -21,6 +21,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import crew_mode, crew_pause, platform_compat
 from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
+from kiro_crew.testing.wait import until_parked
 
 
 @pytest.fixture(autouse=True)
@@ -861,6 +862,97 @@ async def test_a_refused_member_continue_keeps_it_paused(tmp_path, monkeypatch):
     # Still owed its hand-back: Resume all continues it later.
     assert crew_pause.record("chat-root")["stopped"] == ["chat-w1"]
     assert crew_pause.holds_turn("chat-w1")
+
+
+@pytest.mark.asyncio
+async def test_a_resume_all_during_a_members_refused_continue_still_hands_it_back(
+    tmp_path, routes, monkeypatch
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-w1")
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    resume: list[Any] = []
+
+    async def _continue(_state: Any, slot: Any, **_k: Any) -> str:
+        if resume:
+            routes.calls["continue"].append(slot.key)
+            return "continued"
+        # Resume all is pressed while the member's own Continue is in flight, and
+        # that Continue is then refused (its stopped turn is still tearing down).
+        resume.append(
+            asyncio.ensure_future(routes.handler.api_crew_resume(_req(state, "chat-root")))
+        )
+        await until_parked(routes.handler._root_lock("chat-root"))
+        raise chat_handlers.SlotContinueRefusal("still stopping", "slot_running", 409)
+
+    monkeypatch.setattr(chat_handlers, "continue_slot_turn", _continue)
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    assert (await chat_handlers.api_chat_slot_continue(req)).status == 409
+    # Resume all ran once the refusal had put the member back, so it continued it.
+    assert json.loads((await resume[0]).text)["resumed"] == {"chat-w1": "continued"}
+    assert routes.calls["continue"] == ["chat-w1"]
+
+
+@pytest.mark.asyncio
+async def test_a_members_continue_that_waited_behind_resume_all_starts_no_second_turn(
+    tmp_path, routes, monkeypatch
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-w1")
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    lock = routes.handler._root_lock("chat-root")
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    async with lock:
+        # Resume all holds the lock when the member's own Continue arrives.
+        pressed = asyncio.ensure_future(chat_handlers.api_chat_slot_continue(req))
+        await until_parked(lock)
+        # Resume all hands the member back: its continuation starts a turn.
+        crew_pause.resume("chat-root")
+        slot._turns_started += 1
+    assert (await pressed).status == 200
+    assert routes.calls["continue"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_members_continue_after_resume_and_a_new_pause_still_continues_it(
+    tmp_path, routes, monkeypatch
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-w1")
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    lock = routes.handler._root_lock("chat-root")
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    async with lock:
+        pressed = asyncio.ensure_future(chat_handlers.api_chat_slot_continue(req))
+        await until_parked(lock)
+        # Resume all hands the member back, then a newer Pause all stops it again.
+        crew_pause.resume("chat-root")
+        slot._turns_started += 1
+        crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    assert (await pressed).status == 200
+    assert routes.calls["continue"] == ["chat-w1"]
+    assert not crew_pause.holds_turn("chat-w1")
 
 
 # ── Ultra Mode runs on the team lead ───────────────────────────────────────────

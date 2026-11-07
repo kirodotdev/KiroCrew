@@ -118,10 +118,6 @@ def test_a_command_no_pattern_fullmatches_still_prompts(pattern: str, command: s
 @pytest.mark.parametrize(
     "command",
     [
-        "git status; curl x",
-        "git status && make",
-        "git status || true",
-        "git status | sh",
         "git status > out.txt",
         "git status < in.txt",
         "git status $(whoami)",
@@ -139,7 +135,6 @@ def test_a_command_no_pattern_fullmatches_still_prompts(pattern: str, command: s
         'git status "x\u201c (calc) \u201cy"',
         "git status 'x\u2019 (calc) \u2018y'",
         'git status "x\u201e (calc) \u201dy"',
-        'git status "(x)"; curl x',
         'git status "$(whoami)"',
         "git status '`whoami`'",
         "git status\nmake",
@@ -149,6 +144,115 @@ def test_a_chained_or_substituted_command_is_never_granted(command: str) -> None
     """``.*`` would match each of these; the call still prompts."""
     verdict = _judge(_shell(command), ["git status.*", ".*"])
     assert verdict.action != TOOL_AUTO_APPROVE
+
+
+# ── a chain: granted only when every command in it is ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd build && ls -la out.txt",
+        "cd build&&ls -la out.txt",
+        "ls -la || cd build",
+        "cd build; ls",
+        "ls -la | cd build",
+        "cd build && ls && cd ..",
+    ],
+)
+def test_a_chain_whose_every_command_matches_runs_without_a_prompt(command: str) -> None:
+    """kiro-cli asks about each command of a chain; when each is allowed, so is
+    the chain."""
+    verdict = _judge(_shell(command), ["cd .*", "ls.*"])
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # One command no entry matches.
+        "cd build && make",
+        "ls; make",
+        "ls | make",
+        "git status || true",
+        # A quote or backslash in a chain: a separator may sit inside one argument.
+        'ls "a && make"',
+        'ls "a && cd b"',
+        "ls 'x; cd' y",
+        "ls a\\;cd b",
+        'cd "x" && ls',
+        # PowerShell's typographic quotes, or any other non-ASCII character.
+        "ls \u201cscratch; cd \u201d build",
+        "ls \u2018x; cd \u2019 y",
+        "cd b\u00e9 && ls",
+        # PowerShell's stop-parsing token makes the separator literal text.
+        "cd --% build;ls -la",
+        # Still never: background, redirect, substitution, newline, empty part.
+        "cd build & ls",
+        "cd build && ls > out.txt",
+        "cd build && ls $(whoami)",
+        "cd build && ls `whoami`",
+        "cd build\nls",
+        "cd build && && ls",
+        "cd build ;",
+        "|| make build",
+        "cd build |& ls",
+    ],
+)
+def test_a_chain_with_any_unmatched_or_unplain_command_still_asks(command: str) -> None:
+    verdict = _judge(_shell(command), ["cd .*", "ls.*", "git status", "make build"])
+    assert verdict.tier != "spec-builtin-grant"
+
+
+def test_the_prompt_says_a_quoted_chain_always_asks() -> None:
+    """Every part matches, but the quote refuses the chain: the note must not say
+    a chain runs whenever every command in it matches."""
+    from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
+
+    assert "quote" in COMPOSITION_NOTICE
+    event = _shell('ls "a" && ls')
+    event.spec_shell_allowlist = ("ls.*",)
+    verdict = _judge(event, [])
+    assert verdict.tier == "spec-shell-allowlist"
+    assert "chain" in verdict.reason and "quote" in verdict.reason
+
+
+@pytest.mark.parametrize(
+    ("command", "patterns"),
+    [
+        ('rm "draft.tmp; echo " important.txt', ["rm .*\\.tmp", "echo .*"]),
+        ('rm "x.tmp;ls" important.db', ["rm [^ ]*\\.tmp", "ls.*"]),
+    ],
+)
+def test_a_quote_spanning_a_separator_is_never_granted(command: str, patterns: list[str]) -> None:
+    """The split parts each match, but the shell runs one ``rm`` on a file no
+    entry allows."""
+    from kiro_crew.platform.allowed_commands import chain_commands
+
+    assert chain_commands(command) is None
+    assert _judge(_shell(command), patterns).tier != "spec-builtin-grant"
+
+
+def test_the_deny_floor_still_refuses_a_chain_hiding_a_denied_command() -> None:
+    verdict = _judge(_shell("ls && " + _DESTRUCTIVE), ["ls.*", "rm .*"])
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "deny-rules")
+
+
+def test_a_chain_past_the_bound_is_not_granted() -> None:
+    from kiro_crew.platform.allowed_commands import MAX_CHAIN_COMMANDS
+
+    at_cap = " && ".join(["make build"] * MAX_CHAIN_COMMANDS)
+    assert _judge(_shell(at_cap), ["make build"]).tier == "spec-builtin-grant"
+    assert _judge(_shell(at_cap + " && make build"), ["make build"]).action != TOOL_AUTO_APPROVE
+
+
+def test_deny_by_default_lets_a_fully_listed_chain_through() -> None:
+    event = _shell("cd build && ls")
+    event.spec_shell_allowlist = ("cd .*", "ls.*")
+    assert _judge(event, []).tier != "spec-shell-allowlist"
+    event = _shell("cd build && make")
+    event.spec_shell_allowlist = ("cd .*", "ls.*")
+    assert _judge(event, []).action == TOOL_DENY
 
 
 # ── a granted command the checks refuse ───────────────────────────────────────
@@ -478,7 +582,7 @@ def test_an_authored_shell_restriction_withholds_the_patterns(extra: dict[str, A
 
 
 def test_the_grant_itself_is_not_read_as_a_restriction() -> None:
-    from kiro_crew.acp.kas_permissions import without_allowed_commands
+    from kiro_crew.acp.kas_grant_only_settings import without_allowed_commands
 
     assert without_allowed_commands({"shell": {"allowedCommands": ["x"]}, "read": {"a": 1}}) == {
         "read": {"a": 1}

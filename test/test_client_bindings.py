@@ -354,6 +354,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "61b23cbd0173",
         "client_native_children",
     ),
+    "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
     "on_agent_turn": ("data", False, "", ""),
     "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "client_mcp_array"),
     "process_instance": ("property", False, "bb418bb7ece8", "client_class"),

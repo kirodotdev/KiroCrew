@@ -85,17 +85,19 @@ async function main() {
   const failures = []
 
   async function openPanel(page, added) {
-    await stubDashboardApi(page, { slots, theme: 'dark', extra: extraFor(added) })
-    await page.addInitScript(([slot, docPath, doc]) => {
-      localStorage.setItem('mc-active-slot', slot)
-      localStorage.setItem('mc-activity-open:' + slot, 'true')
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      localStorage.setItem('mc-lang', 'en')
-      localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({
-        activeId: 'doc',
-        tabs: [{ id: 'doc', kind: 'file', title: 'release-notes.md', path: docPath, content: doc }],
-      }))
-    }, [SLOT, DOC_PATH, DOC])
+    await stubDashboardApi(page, {
+      slots, theme: 'dark', extra: extraFor(added),
+      localStorageEntries: {
+        'mc-active-slot': SLOT,
+        ['mc-activity-open:' + SLOT]: 'true',
+        'mc-privacy-notice-v1': '1',
+        'mc-lang': 'en',
+        ['mc-panel-tabs:' + SLOT]: JSON.stringify({
+          activeId: 'doc',
+          tabs: [{ id: 'doc', kind: 'file', title: 'release-notes.md', path: DOC_PATH, content: DOC }],
+        }),
+      },
+    })
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
     await page.getByText('release-notes.md').first().waitFor({ state: 'visible', timeout: 15000 })

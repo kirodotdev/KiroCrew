@@ -16,7 +16,7 @@ import { Input } from '../../components/ui'
 import { safeSetItem } from '../../utils/safeStorage'
 import TagManagerList from '../../components/TagManagerList'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
-import { collectFolderSubtreeIds } from '../../utils/folderTree'
+import { collectFolderSubtreeIds, countWithSubfolders } from '../../utils/folderTree'
 import { isMateManaged } from '../../utils/mateFolders'
 import type { ChatFolder, ChatTag } from '../../types'
 import { SESSION_LANES } from '../chat/sessionLane'
@@ -39,7 +39,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
   const { activeDrag, addColumnAfterMutation, attachStripEdges, boardError, boardFolderCollapsed,
     boardPeerCount, closeColumnPopover, columnEditId, columnMatches, columnPopoverImeLatch, columnPopoverRef,
     connected, createChatInFolder, deleteColumnWithConfirm, derivedHintCol, dndSensors,
-    dropSlotMutation, editName, editScope, editingId, flatView, folderCompare, folderCreateError, folderSortMode,
+    dropSlotMutation, editName, editScope, editingId, flatView, folderCompare, countSubfolderContents, folderCreateError, folderSortMode,
     folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderReorderable,
     folderSubtrees, folders, handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragStart, heldLane,
     hiddenFolderCount, hideEmptyFolderBody, ime, isActiveRow, isFolderFilteredOut, laneSlots, moveByDrag,
@@ -93,14 +93,16 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     const boardFolderFlash = revealFlash?.kind === 'folder' && revealFlash.key === folder.id
       ? (revealFlash.fading ? 'fade' : 'flash')
       : null
-    const count = childSlots.length + deepChildren.filter(cf => {
-      const cfSlots = sidebarRows.folderTree.rowsIn(cf.id).filter(s => colSlotKeys.has(sessionRowIdentity(s)))
-      return cfSlots.length > 0 || descendantMatch(
-        folders,
-        cf.id,
-        laneSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s))),
-      )
-    }).length
+    // A column copy counts this column's sessions in it and the subfolders (bar the
+    // unchecked ones) holding one of them, directly or deeper. With "Include
+    // Subfolder Contents in Folder Counts" on, each such subfolder's total is added in.
+    const inColumn = (s: Slot) => colSlotKeys.has(sessionRowIdentity(s))
+    const columnSlots = laneSlots.filter(inColumn)
+    const countedChildren = (f: ChatFolder) => folders.filter(cf => cf.parent_id === f.id && !isFolderFilteredOut(cf)
+      && (sidebarRows.folderTree.rowsIn(cf.id).some(inColumn) || descendantMatch(folders, cf.id, columnSlots)))
+    const count = countSubfolderContents
+      ? countWithSubfolders(folder, countedChildren, f => sidebarRows.folderTree.rowsIn(f.id).filter(inColumn).length)
+      : childSlots.length + countedChildren(folder).length
     // Board-view folders become sortable only when a drag handle is supplied
     // (root folders wrapped in SortableColumnFolder). Subfolders render without
     // one, so a board subfolder is not directly draggable at all — neither
@@ -223,7 +225,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
              *  handled the other way round — the row's onKeyDown ignores events
              *  whose target is not the row — so Space types a space here rather
              *  than collapsing the folder. */
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusBoardFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusBoardFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
+            <Input ref={folderEditInputRef} aria-label={i18nT('pages.chatSidebar.folder_name_label')} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusBoardFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusBoardFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
           ) : (
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
@@ -390,9 +392,11 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             * undo. It also UNSHELVES the menu's folder list on the way: that list is the
             * way back and it is gated behind the shelf, so opening the menu over a
             * rolled-up shelf lands the reader on a dense panel with no folders in it and
-            * the word on the button promises something that did not happen. The other
-            * lanes' row peeks the folders open in place; this is the same gesture as far
-            * as a board can carry it.
+            * the word on the button promises something that did not happen. For the same
+            * reason it opens the menu ON that list (`'folders'`): the list sits last, so a
+            * menu taller than the room below the funnel would open with it out of sight.
+            * The other lanes' row peeks the folders open in place; this is the same
+            * gesture as far as a board can carry it.
             *
             * Muted gray, the same tint as the other lanes' reveal row: the hide is
             * something the person chose, so it is not a warning. The funnel keeps the
@@ -403,7 +407,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               onClick={() => {
                 setFoldersShelved(false)
                 safeSetItem(FOLDERS_SHELVED_LS_KEY, '0')
-                setFilterSortOpen(true)
+                setFilterSortOpen('folders')
               }}
               title={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
               aria-label={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
@@ -594,6 +598,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       style={{ top: popoverPos.top, left: popoverPos.left }}
                       onClick={e => e.stopPropagation()}
                       onKeyDown={e => {
+                        // Portaled modal keys belong to that modal, not its React ancestor.
+                        if (!e.currentTarget.contains(e.target as Node)) return
                         if (e.key === 'Escape') { e.stopPropagation(); closeColumnPopover(col.id); return }
                         if (e.key !== 'Tab') return
                         // Trap Tab within the dialog — portal content sits at the end of

@@ -10,9 +10,8 @@ verbatim while the backend redacted them.
 
 Behavioural tests alone do not close that failure mode. Each copy is tested
 against its own samples, so a backend-only change leaves every mirror green
-while the mirrors do not match the pattern they mirror. The planned
-follow-up (decode segment one as a JOSE header, require `alg`/`enc`) lands in
-`security.py` FIRST by design, which is precisely when that would happen.
+while the mirrors do not match the pattern they mirror. The JSON-object header
+check sits outside the pattern on every side, so it leaves this pin alone.
 
 The expectation is derived from `_CREDENTIAL_PATTERNS` at run time, never
 restated here. `security_posture.py` records why: an earlier drift guard "could

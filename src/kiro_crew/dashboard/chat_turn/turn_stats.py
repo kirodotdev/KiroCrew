@@ -341,7 +341,7 @@ def _emit_turn_metric(
 
     ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
 
-    ``harness`` labels the duration sample only (see
+    ``harness`` labels the duration and usage samples (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
     from the turn's live client.
 
@@ -385,6 +385,7 @@ def _emit_turn_metric(
         cost_usd=getattr(usage, "cost_usd", 0.0),
         model=model,
         provider=provider,
+        harness=harness,
     )
 
 
@@ -920,6 +921,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 # effective session key reach the histogram; this call
                 # must not also sample, so it opts out.
                 emit_metric=False,
+                # Final: no text chunk can arrive after the terminal event.
+                delivered=turn._saw_text_chunk,
             )
         )
     # The turn's crew log closers are STASHED, not emitted here. This

@@ -480,17 +480,28 @@ async def test_a_send_into_a_busy_slot_marks_its_queue_entry(
 async def test_a_send_held_behind_sub_agents_marks_its_queue_entry(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
+    # The composer's own sends are never held behind live sub-agents, so a
+    # dashboard send reaches the hold branch only behind a message parked while a
+    # (now stalled) child was live. The drain takes the parked one first.
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", AsyncMock(return_value=None))
+    monkeypatch.setattr(cr, "_run_chat", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(cr, "spawn_guarded_turn", lambda *a, **k: None)
+    load = MagicMock()
+    load.return_value.dashboard.merge_queued_messages = False
+    monkeypatch.setattr(cr.KiroCrewConfig, "load", load)
     subs = MagicMock()
-    subs.running_agents_for = MagicMock(return_value=[{"id": "a1"}])
+    subs.running_agents_for = MagicMock(return_value=[{"id": "dead", "stalled": True}])
     state = _make_state(tmp_path, subagents=subs)
     slot = state.get_or_create_slot("s1")
+    slot.queue_append("first, parked while the child was live")
 
     async with TestClient(TestServer(_app(state, subject))) as client:
         resp = await client.post("/api/chat?ws=1", json={"message": "parked", "slot": "s1"})
         assert resp.status == 200
         assert (await resp.json()).get("queued") is True
     (entry,) = slot._queue
+    assert entry["content"] == "parked"
     assert entry.get("_directive_owner_origin", False) is expected
 
 

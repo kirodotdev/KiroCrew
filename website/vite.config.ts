@@ -35,7 +35,7 @@ import {
 } from './scripts/lib/editionShell.mjs'
 
 /** Shape produced by parseBrandingConfig (editionShell.mjs is untyped .mjs). */
-type EditionBranding = { title?: string; themeColor?: string }
+type EditionBranding = { title?: string; themeColor?: string; issuesUrl?: string }
 
 /**
  * The React Compiler Babel pass, scoped to the listed files. An empty list
@@ -505,15 +505,16 @@ function editionExtensionPlugin(): Plugin {
   return {
     name: 'kirocrew-edition-extension',
     enforce: 'pre',
-    // Patch the pre-boot shell (<title>, <meta name="theme-color">) from the
-    // edition's branding.json. registerThemeBranding() can only retitle the tab
-    // after React mounts; this covers what the browser shows before that (and
-    // what a PWA install dialog samples). order:'pre' runs before Vite's own
-    // HTML transform reprints the tags.
+    // Patch the pre-boot shell (<title>, <meta name="theme-color">, the
+    // boot-failure issues links) from the edition's branding.json.
+    // registerThemeBranding() can only retitle the tab after React mounts; this
+    // covers what the browser shows before that (and what a PWA install dialog
+    // samples). order:'pre' runs before Vite's own HTML transform reprints the
+    // tags.
     transformIndexHtml: {
       order: 'pre',
       handler(html: string, ctx: { path: string }) {
-        if (!branding.title && !branding.themeColor) return html
+        if (Object.keys(branding).length === 0) return html
         // Multi-page build: app panels (src/apps/*/panel.html) come through
         // this hook too. The pre-boot shell is the root index.html only.
         if (ctx.path !== '/index.html') return html

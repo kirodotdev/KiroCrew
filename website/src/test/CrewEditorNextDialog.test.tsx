@@ -975,6 +975,30 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
   })
 
+  it('shows the stored session colour on General and saves a changed one', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, session_color: '#ef4444' }] })
+    const dialog = await openNew()
+    const hex = within(dialog).getByRole('textbox', { name: 'Session color hex value' })
+    await waitFor(() => expect(hex).toHaveValue('#ef4444'))
+    fireEvent.change(hex, { target: { value: '#14b8a6' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', expect.objectContaining({ session_color: '#14b8a6' })),
+    )
+  })
+
+  it('clears the stored session colour and saves the empty value', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, session_color: '#ef4444' }] })
+    const dialog = await openNew()
+    const hex = within(dialog).getByRole('textbox', { name: 'Session color hex value' })
+    await waitFor(() => expect(hex).toHaveValue('#ef4444'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', expect.objectContaining({ session_color: '' })),
+    )
+  })
+
   it('shows the unsaved-changes note when a pane is dirty', async () => {
     const dialog = await openNew()
     fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })

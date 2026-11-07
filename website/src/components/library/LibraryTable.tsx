@@ -17,6 +17,7 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { i18nT } from '../../i18n/t'
 import { publishNoticeKey } from '../PublishHub'
+import { LiveSiteLink } from './LiveSiteLink'
 import ErrorNotice from '../ErrorNotice'
 import { useOpenInEditor } from '../FilePathMenu'
 import { canOpenFileInEditor, editorAcceptsPath } from '../../lib/electron'
@@ -475,6 +476,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
               )}
             </div>
             {a.description && <div className="text-[12px] text-muted truncate max-w-[400px]">{a.description}</div>}
+            <LiveSiteLink slug={a.slug} />
           </td>
           <td className="px-2.5 py-2 border-b border-border">
             <code className="text-[12px] text-muted">{a.slug}</code>
@@ -820,7 +822,7 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
                   {/* The cell spans the whole table, which scrolls sideways on a
                       phone, so `ml-auto` would park the always-visible touch menu
                       past the viewport edge. Touch keeps it inline after the count. */}
-                  <span className="ml-auto [@media(hover:none)]:ml-0 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+                  <span className="ml-auto [@media(hover:none)]:ml-0 opacity-0 group-hover:opacity-100 has-[:focus-visible]:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                     <FolderMenu folder={folder} folders={folders} actions={actions} />
                   </span>
                 </div>

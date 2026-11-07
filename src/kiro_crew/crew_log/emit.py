@@ -124,6 +124,7 @@ from kiro_crew.crew_log.emit_runtime import (  # noqa: F401
     _bound_open,
     _child_gone_probe,
     _closing,
+    _commit_appends,
     _ensure_shutdown_hook,
     _hand_over,
     _handle,

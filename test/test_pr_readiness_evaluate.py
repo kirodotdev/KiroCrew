@@ -72,7 +72,14 @@ if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   fi
 fi
 case "$url" in
-  *"/commits/"*"/check-runs"*)             cat "$FIXTURES/check_runs.json"; exit 0 ;;
+  *"/commits/"*"/check-runs"*)
+    # A test may supply what the endpoint's default filter (latest) returns,
+    # which can omit an older completed row of a name. It answers a read
+    # without filter=all.
+    if [ -f "$FIXTURES/check_runs_latest.json" ] && [[ "$url" != *"filter=all"* ]]; then
+      cat "$FIXTURES/check_runs_latest.json"; exit 0
+    fi
+    cat "$FIXTURES/check_runs.json"; exit 0 ;;
   *"/commits/"*"/status"*)
     # The truncated-fallback's defer guard: the CURRENT "PR Readiness"
     # commit-status state (gh applies --jq itself, so the stub emits the
@@ -348,8 +355,6 @@ class Runner:
         disposition_ok: str = "",
         disposition_violations: str = "",
         advisory_unpublished: str = "",
-        wr_name: str = "",
-        wr_status: str = "",
     ):
         env = dict(self.env)
         if disposition_ok:
@@ -362,10 +367,6 @@ class Runner:
             env["FORK"] = "true"
         if http_error:
             env["HTTP_ERROR"] = http_error
-        if wr_name:
-            env["WR_NAME"] = wr_name
-        if wr_status:
-            env["WR_STATUS"] = wr_status
         state_file = self.fixtures / "existing_status_state.txt"
         state_file.unlink(missing_ok=True)
         if existing_status_state:
@@ -402,8 +403,8 @@ def runner(tmp_path: Path) -> Runner:
 
 class TestPendingLanesAreNamedInTheStatus:
     """A monitored lane can produce ZERO runs for an immutable head when
-    GitHub does not create the run, and no event creates one on an unchanged
-    commit. Such a lane sits `(not started)` and the required "PR Readiness"
+    GitHub does not create the run, and only a new pull request event creates
+    one. Such a lane is not started and the required "PR Readiness"
     status stays `pending`. The status description names the waiting lane(s),
     bounded to the commit-status API's 140-char limit, so the culprit is
     legible at a glance and a human can re-run that lane instead of pushing an
@@ -424,10 +425,10 @@ class TestPendingLanesAreNamedInTheStatus:
         assert outputs["label"] == "readiness: checking"
         # ...but the description now NAMES the lane instead of only counting it.
         assert "1 readiness check(s) still pending" in outputs["description"]
-        assert "CI (not started)" in outputs["description"]
+        assert "CI (not started on this head; push or reopen)" in outputs["description"]
         # The lane-state log line names it; the status a human sees on the PR
         # names it too.
-        assert "CI (not started)" in _lane_log(proc)
+        assert "CI (not started on this head; push or reopen)" in _lane_log(proc)
 
     def test_the_named_description_never_exceeds_the_api_limit(self, runner: Runner):
         # Every lane empty -> the widest possible waiting list. The commit-status
@@ -707,6 +708,47 @@ class TestLaneReadsAreConsolidated:
         assert "ci.yml" in files and "fast-gate.yml" in files
         missing = [f for f in files if not (WORKFLOW.parent / f).exists()]
         assert missing == [], f"monitored workflow file(s) missing: {missing}"
+
+
+class TestAnEditWaitsForTheLanesItRestarts:
+    """An `edited` run waits for the lanes the edit restarts, and only those."""
+
+    @pytest.mark.parametrize(
+        ("action", "updated_at", "state"),
+        [
+            ("edited", "2026-08-11T00:00:05Z", "pending"),
+            ("edited", "2026-08-11T00:00:00Z", "success"),
+            ("ready_for_review", "2026-08-11T00:00:05Z", "success"),
+        ],
+    )
+    def test_only_an_edited_lane_run_from_before_the_edit_is_pending(
+        self, runner: Runner, action: str, updated_at: str, state: str
+    ):
+        # Every fixture run was created at 2026-08-11T00:00:00Z.
+        runner.env.update(
+            TRIGGER_EVENT="pull_request_target",
+            TRIGGER_ACTION=action,
+            PR_UPDATED_AT=updated_at,
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == state
+        log = _lane_log(proc)
+        assert ("Code Review (edit re-run not started)" in log) == (state == "pending")
+        # Build re-runs on no edit, so its pre-edit run is still its verdict.
+        assert "Build (edit re-run not started)" not in log
+
+    def test_the_lane_list_matches_the_edited_triggers(self):
+        listed = re.search(r'edited_lanes=" ([^"]+) "', _evaluate_script())
+        assert listed, "edited_lanes list not found in the evaluate step"
+        triggered = set()
+        for name in _lane_files():
+            spec = yaml.safe_load((WORKFLOW.parent / name).read_text(encoding="utf-8"))
+            on = spec.get("on", spec.get(True)) or {}
+            types = (on.get("pull_request") or {}).get("types") or []
+            if "edited" in types:
+                triggered.add(name)
+        assert set(listed.group(1).split()) == triggered
 
 
 class TestGenuineFailureStaysRed:
@@ -1259,6 +1301,34 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert "Internal Content Scan (not started)" not in summary
 
+    def test_a_siblings_newer_row_does_not_hide_this_prs_own(self, runner: Runner):
+        # Two PRs share the head SHA and the sibling's red row completed last.
+        # The default listing can omit an older completed row of the name, so a
+        # read that does not ask for every row never sees this PR's own green
+        # verdict.
+        own = {
+            "id": 1,
+            "name": "Internal Content Scan",
+            "status": "completed",
+            "conclusion": "success",
+            "external_id": self._id_for(runner, pr=runner.env["PR"], attempt=1),
+        }
+        sibling = {
+            **own,
+            "id": 2,
+            "conclusion": "failure",
+            "external_id": self._id_for(runner, pr="9999", attempt=1),
+        }
+        (runner.fixtures / "check_runs.json").write_text(json.dumps({"check_runs": [own, sibling]}))
+        (runner.fixtures / "check_runs_latest.json").write_text(
+            json.dumps({"check_runs": [sibling]})
+        )
+
+        proc, outputs = runner.evaluate(fork=True)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "Internal Content Scan" in _bucket(_lane_log(proc), "passed")
+
 
 class _ForkLaneVerdictBinding:
     """A fork lane verdict must belong to THIS pull request and THIS attempt.
@@ -1396,47 +1466,6 @@ class _ForkLaneVerdictBinding:
         assert proc.returncode == 0, proc.stderr
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert f"{self.CHECK_NAME} (not started)" not in summary
-
-    def test_a_rerun_starting_reads_pending_not_the_stale_check_run(self, runner: Runner):
-        # This evaluation can BE the `in_progress` event a human-override
-        # rerun of the lane fires the instant it starts (pr-readiness.yml is
-        # wired to the fork workflow at both in_progress and completed), before
-        # that rerun's own "Open check-run" step has posted a fresh row. Only
-        # the OLD, still-completed, still-success check-run exists at that
-        # moment; reading it would publish a stale success. The lane must read
-        # pending instead, keyed off the triggering workflow_run's own name +
-        # status, without ever calling the check-runs API.
-        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
-
-        proc, outputs = runner.evaluate(
-            fork=True,
-            wr_name=f"Fork {self.CHECK_NAME}",
-            wr_status="in_progress",
-        )
-
-        assert proc.returncode == 0, proc.stderr
-        assert outputs["status_state"] == "pending"
-        summary = (runner.temp / "pr-readiness-summary.md").read_text()
-        assert f"{self.CHECK_NAME} (rerun starting)" in summary
-
-    def test_a_different_lanes_rerun_starting_does_not_force_this_lane_pending(
-        self, runner: Runner
-    ):
-        # The guard must be scoped to THIS lane's own fork workflow name --
-        # another lane's rerun starting must not blind this one to its own
-        # genuine, already-posted verdict.
-        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
-
-        proc, outputs = runner.evaluate(
-            fork=True,
-            wr_name="Fork Some Other Review",
-            wr_status="in_progress",
-        )
-
-        assert proc.returncode == 0, proc.stderr
-        summary = (runner.temp / "pr-readiness-summary.md").read_text()
-        assert f"{self.CHECK_NAME} (not started)" not in summary
-        assert f"{self.CHECK_NAME} (rerun starting)" not in summary
 
     def test_a_stale_failure_does_not_outvote_a_human_override_rerun(self, runner: Runner):
         # A human-override rerun (`gh api .../runs/<id>/rerun`) re-executes the

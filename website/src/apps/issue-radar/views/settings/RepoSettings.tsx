@@ -372,7 +372,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <p className="text-[13px] text-muted mb-4">{i18nT('apps.issueRadar.views.settings.repoSettings.loading_this_repo_s_saved_settings')}</p>
       )}
       <p className="text-[13px] text-muted mb-4">
-        {i18nT('apps.issueRadar.views.settings.repoSettings.local_triage_settings_for_this_repo_they_teach_i')} {repo} {i18nT('apps.issueRadar.views.settings.repoSettings.organises_its_issues_and_are_never_written_back')} {terms.providerName}.
+        {i18nT('apps.issueRadar.views.settings.repoSettings.local_triage_settings_intro', { repo, provider: terms.providerName })}
         {saveMutation.isPending
           ? <span className="ml-2 opacity-70">{i18nT('apps.issueRadar.views.settings.repoSettings.saving')}</span>
           : saveMutation.isSuccess ? <span className="ml-2 opacity-70 inline-flex items-center gap-1">{i18nT('apps.issueRadar.views.settings.repoSettings.saved')} <Check size={12} className="lucide-inline" /></span> : null}

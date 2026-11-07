@@ -1,6 +1,6 @@
 # Skills
 
-Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`.
+Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`. For project skills and what kiro-cli shares, see [Where Skills, Steering and Agents Live](#where-skills-steering-and-agents-live).
 
 ## How Skills Work
 
@@ -119,6 +119,19 @@ The startup sync also copies `$KIROCREW_PROJECT_DIR/skills/` and packaged built-
 ### Project-skill trust
 
 The dashboard can grant trust only to the requesting chat's active project. Before recording a grant, Kiro Crew canonicalizes the path, requires an existing readable directory, and verifies that the reviewed canonical key still matches; trusted project skills are then read from `<project>/.kiro/skills/`. Revoking the grant stops those project skills from loading.
+
+## Where Skills, Steering and Agents Live
+
+The default folders for each of these, in user and project scope. Project scope is the chat's project folder. For skills, the table describes the default agent's skill catalog, the one its `skill_search` reads; what a custom agent gets depends on its mapping and the harness ([Mapping Skills to an Agent](agents.md#mapping-skills-to-an-agent)). There is no separate rules folder: steering files are the rules, and they live under `~/.kiro/`, not `~/.kiro/crew/`.
+
+| Asset | User scope | Project scope | Shared with kiro-cli? |
+|---|---|---|---|
+| Skills | `~/.kiro/crew/skills/` (moved by `KIROCREW_HOME`), plus any extra skill paths | `<project>/.kiro/skills/`, once you [trust that project](#project-skill-trust) | The project folder, yes. kiro-cli's `~/.kiro/skills/`, no: it is not in the catalog until you add it under **Settings → Skills → Extra skill paths**. |
+| Steering | `~/.kiro/steering/**/*.md` | `<project>/.kiro/steering/**/*.md` | Yes, the same folders ([Where they live](steering-and-hooks.md#where-they-live)) |
+| `AGENTS.md` | none | `<project>/AGENTS.md` | Yes, the same file |
+| Agents | `~/.kiro/agents/` | `<project>/.kiro/agents/` | Yes, the same folders kiro-cli looks up `--agent` in ([Custom agents](agents.md#custom-agents)) |
+
+MCP servers and your kiro-cli login carry over as [What carries over](coming-from-kiro-cli.md#what-carries-over) describes. This table covers what Kiro Crew and kiro-cli read, not Kiro IDE.
 
 ## Importing Skills from a GitHub Repository
 

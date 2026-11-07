@@ -613,6 +613,23 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     pending_reason = await _revalidate_crew_pin(model, request)
     if pending_reason:
         return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
+    # Local: this owner runs on the agents facade's globals.
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.data_home_owner import DATA_HOME_NOT_OWNED, check_data_home
+
+    access = await asyncio.to_thread(check_data_home, data_home())
+    if not access.ok:
+        # Files another account owns fail this create part way through with a
+        # bare permission error; say the cause and the repair line instead.
+        return web.json_response(
+            {
+                "error": "Some Kiro Crew files belong to another user, so Kiro Crew "
+                f"can't read them: {', '.join(access.foreign)}",
+                "code": DATA_HOME_NOT_OWNED,
+                "fix_command": access.fix_command,
+            },
+            status=409,
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         # The config key is an id and the name the user typed is its label

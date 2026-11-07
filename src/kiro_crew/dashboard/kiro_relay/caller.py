@@ -3,13 +3,10 @@
 Pure values. Nothing here reads a request, a config file or the network, so the
 ingress middleware, token auth and the app proxy all agree on one shape.
 
-Provenance and transport use the shared-crew attribution contract's vocabulary
-(:mod:`kiro_crew.shared_crew.contracts`). :class:`Transport` is that contract's own
-enum, whose ``remote`` member names a relayed request. The contract's
-``Provenance`` has no relay member yet, so :class:`Provenance` here holds the one
-value it needs, ``kiro_relay``; once the contract gains that member this enum becomes
-an import of it, which is the whole switch: every reader here compares members,
-never raw strings.
+Provenance and transport are the shared-crew attribution contract's own enums
+(:mod:`kiro_crew.shared_crew.contracts`): ``Provenance.KIRO_RELAY`` names a caller
+the relay verified, and ``Transport.REMOTE`` a relayed request. Every reader here
+compares members, never raw strings.
 """
 
 from __future__ import annotations
@@ -26,7 +23,7 @@ from urllib.parse import quote, unquote_to_bytes
 # sends, and the client-sent strip drops any that arrive any other way.
 from kiro_crew.dashboard.relay_headers import RELAY_HEADER_PREFIX
 from kiro_crew.relay_client.protocol import is_display_email, is_display_name
-from kiro_crew.shared_crew.contracts import Transport
+from kiro_crew.shared_crew.contracts import Provenance, Transport
 
 #: The verified person's stable Kiro user ID, stamped from the relay's own message.
 RELAY_USER_HEADER = RELAY_HEADER_PREFIX + "user"
@@ -60,13 +57,6 @@ KIRO_PROVIDER = "kiro"
 #: characters (the app proxy's owner id bound). The relay protocol contract owns
 #: the authoritative grammar; this is the Crew's own fail-closed floor under it.
 _KIRO_USER_ID_RE = re.compile(r"\A[A-Za-z0-9._:@+=/-]{1,256}\Z")
-
-
-class Provenance(str, enum.Enum):
-    """How the server established a principal: the relay's member of the contract's set."""
-
-    #: Named by the Kiro relay in its own message, stamped by this Crew's relay client.
-    KIRO_RELAY = "kiro_relay"
 
 
 class CrewKind(str, enum.Enum):

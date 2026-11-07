@@ -53,7 +53,17 @@ plus a same-key reopen); nothing is appended and a retry acts on the current
 session. Release waives the self-target refusal (`allow_self=True`), since a
 session releasing itself reaches no peer, and refuses 409 `already_root` or 403
 `not_parent`. Both wait until the tree append is durable before answering, so a
-takeover that never reached the disk is refused rather than reported. Neither
+takeover that never reached the disk is refused rather than reported. Once it
+lands, each writes one display-only `notice` row in the target's transcript, as
+a handoff does, after the lock and the fence are released: adopt names the
+caller and the parent it replaced (that clause omitted when there was no other
+parent), release names the parent it left. A verb that answered
+`tree_write_pending` still writes the row, in the background, if that append
+lands later. While the target runs a turn the row waits for that turn to end,
+since a row under its open tool or chunk rows would stop the turn's backward
+scans. The row is skipped when the target closed or another session took
+its key first, and when a session releases itself (it is mid-turn on that call,
+and its tool row records it). Neither
 verb is in the conductor or member grant sets (`_CONDUCTOR_DASHBOARD_GRANTS`,
 `_MEMBER_DASHBOARD_GRANTS`), and both are in `CHANNEL_AGENT_BLOCKED_TOOLS`.
 
@@ -233,7 +243,15 @@ quality instead — that blames a read which completed and, since no source omit
 anything, reports nothing cut while rows are missing. The ownership fence applies to all rows and not merely to
 the verb: a history candidate is admitted only when its persisted `created_by`
 exactly equals the caller, and the workspace boundary is re-applied before its
-title is exposed. A session created by another caller is absent.
+title is exposed. A session created by another caller is absent. For an
+ownership-fenced caller the persisted field is only a claim (a sandboxed shell can
+write the line), so the candidate is kept on the creation-record terms
+`session_revive` applies: only when the crew log's creation record
+(`_creation_parent`) names the caller. A record naming another creator drops it;
+no record to check it against (the crew log off or unseeded, or a session it does
+not cover) drops it and makes `history` `incomplete`, because the caller may have
+created it (#14843). The person's own tab is not fenced and lists the claim as
+before.
 
 **Delivery has two authorization moments, and both are enforced.** An idle target
 runs the prompt immediately, under the authorization that admitted it. A busy
@@ -2747,7 +2765,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
-  `session_adopt` and `session_release`, and the tree-mutation lock and append fence.
+  `session_adopt` and `session_release`, the tree-mutation lock and append fence, and
+  the transcript notice adopt, release and handoff write.
 - `src/kiro_crew/dashboard/session_control_parts/session_handoff.py`: `session_handoff`
   and the hand-back when a manager closes.
 - `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and

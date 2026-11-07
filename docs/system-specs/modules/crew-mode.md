@@ -334,7 +334,7 @@ project checkout or the edition can supply a name the directory never declared.
 
 Every binding writer answers the same `409 lineage_unverifiable` when it cannot
 verify whether its target is another crew's private copy: crew create
-(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}`), the
+(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}` and `PUT /api/agents` (name in body)), the
 default-agent write, publish and reset. Its `error` sentence depends on the
 cause, which `_UnverifiableLineage.reason` classifies, because only one cause
 clears by itself:
@@ -684,6 +684,37 @@ delete is refused; **Create and edit** refetches the roster before selecting
 the new row, since the auto-select effect replaces a selection the roster does
 not list; the create dialog is titled **Duplicate <name>** when opened from a
 Duplicate affordance, so the three duplicate entry points read as one flow.
+
+## Crew names a proxy would mangle
+
+A crew name with a character that needs percent-encoding (a space becomes
+`%20`) never rides a URL path from the dashboard. A path-normalising reverse
+proxy decodes `%20` back to a bare space, the request-line delimiter, and
+answers 502 before the gateway sees the request (#19976). The record update
+takes the name in the body instead (`PUT /api/agents`, #19981). Every other
+crew route that names the crew in its path also answers under a base64url
+twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
+`[A-Za-z0-9_-]` (#20083): `DELETE`, `GET`/`POST .../avatar`,
+`GET`/`PUT .../capabilities`, `POST .../capabilities/preview`,
+`POST .../capabilities/detach`, `GET`/`PUT .../worker-kit` and
+`POST .../worker-kit/preview`.
+
+- **Encoding** (`kiro_crew/agent_url_path.py`): unpadded base64url of the
+  UTF-8 bytes. A segment that does not re-encode to itself (padding, spare
+  bits set, not UTF-8) is refused `400 name_segment_invalid`, so one name has
+  one spelling. The dashboard's `website/src/api/agentPath.ts` builds the same
+  spelling and keeps a plain name in path form.
+- **Same handler, same gate.** Each twin is registered to the handler of its
+  path-form route, so the owner check runs first and nothing after it changes
+  (`dashboard/agent_name_segment.py`, `agent_route_name`). No twin shares a
+  method and segment pattern with a path-form route, so a crew named `b64`
+  keeps its own routes; aiohttp tries the longer static prefix first, so
+  registration order alone would not guarantee it.
+- **Change cards.** A card's plan uses the same spelling (`agent_path`,
+  `agent_record_write`). The hook reads a twin as its path-form template
+  (`change_cards.route_key`, `B64_ROUTE_ALIASES`) and decodes the name for the
+  memory line (`route_match_info`), so a step, its memory line and its undo
+  guard see one route whichever spelling arrived.
 
 ## Owner-reviewed capability inheritance
 
@@ -1615,7 +1646,11 @@ re-read keeps its retry), and that open's greeting request starts the hidden goa
 welcome; nothing is sent in the user's name. From
 the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
-Bot's chat and asks for no greeting. The dialog's own success path (cache
+Bot's chat and asks for no greeting. A create refused with 409 `data_home_not_owned` (files in the data home belong
+to another account, see `cli.md` "Data home owned by another account") shows that
+cause in one sentence with the server's `fix_command` to copy; Settings shows the
+same notice on every tab while `/api/status` reports `data_home_access.ok` false.
+The dialog's own success path (cache
 invalidation, the post-failure reconcile, the goal stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from
@@ -4043,19 +4078,24 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   member working protocol (`context_assembly.member._MEMBER_HOW_YOU_WORK_COMMON`)
   hand research and long work to a worker session for the same reason, and
   they, the operating-mode block (`operating_mode_block`) and the heartbeat
-  prompt all dispatch and END the turn rather than waiting or polling: for a
-  quick single task the worker's report wakes the thread, and no monitor loop is
+  prompt all dispatch and END the turn rather than waiting or polling: without
+  the ledger the worker's report wakes the thread, and no monitor loop is
   armed. **Ledger-tracked work is the one exception**, and only where the
   conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
   after the governance ceiling
   (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
   names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
   in place of `conductor.tracking`), and the operating-mode block appends
-  `conductor.patrol`. That piece teaches the dispatch for work with more than one
-  item, or work the user asked to track. It opens by sending the Bot to the
+  `conductor.patrol`. There every task the Bot hands to a worker is tracked, a
+  single task too, as on the Ultra Mode conductor, and so is work the user asked
+  to track; the tracking sentence says the same, and the goal-setup nudge
+  (`goal_setup.kickoff_step2_ledger`) and the heartbeat hand-off
+  (`goal_reminder._HEARTBEAT_WORKERS_LEDGER`) track their worker as an item too
+  (`member_mate_tools.member_has_ledger_tools`). It opens by sending the Bot to the
   `goal-conductor` skill before planning such work, and to follow it for
   dispatch, patrol, verdicts and worker debate, as the conductor's own charter
-  does. Then: record the goal, then per item
+  does. Then: record the goal for work with more than one item (a single task
+  records none), then per item
   `work_ledger_record action=create`, `session_create`, `work_ledger_record
   action=bind`, `session_send`, binding before the seed. It also teaches the
   patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
@@ -4097,7 +4137,9 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   worker lacks" below). It mounts `kirocrew-work` the same way as the
   conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
   `work_brief`, `work_report`), so a worker bound to an item in its
-  Bot's ledger can read its brief and report on it; it is a base server,
+  Bot's ledger can read its brief and report on it (`worker.principles` tells
+  it to call `work_brief` first and to report on the item it names with
+  `work_report`); it is a base server,
   so a Bot's file cannot replace its entry (a switch-off is still a
   restriction, below). Each server an edition contributes
   (`McpToolingProvider.extra_mcp_servers()`) that the worker mounts gets an
@@ -4416,7 +4458,9 @@ or `revision_required` apply makes a fresh preview for the same agent and keeps
 the reason above it, because re-picking the same agent fires no change; a failed
 preview offers **Try again** and **Cancel**. A finished add says so under the
 picker ("Added N to <name>."), and when it granted auto-approvals it says those
-tools now run without asking and offers **Open Approvals**. Its rows name items through
+tools now run without asking and offers **Open Approvals**, a button with an
+opaque `--bg-elevated` fill and a `--border-strong` edge so it reads on the green
+tint before any hover. Its rows name items through
 `components/crew/workerKitLabels.ts`, grouped by kind in a fixed order under a
 counted heading, added before skipped (`components/crew/workerKitGroups.ts`),
 each change word a badge tinted by its hue with a hue-coloured glyph, the word

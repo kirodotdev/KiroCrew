@@ -1,4 +1,4 @@
-"""The relay client in the tunnel provider slot, and the rule that puts it there.
+"""The relay client in the tunnel provider slot.
 
 :class:`RelayTunnelProvider` implements the ``TunnelProvider`` protocol
 (``kiro_crew.platform.interfaces``) over a :class:`~kiro_crew.relay_client.client.RelayClient`.
@@ -7,14 +7,15 @@ the connect and disconnect callbacks, which put the Crew's relay URL into the al
 origins, and it reaches ``start()`` only through ``tunnel/setup.py``, whose gates
 refuse to start any provider under ``--no-tunnel`` or without dashboard token auth.
 
-:func:`public_tunnel_provider` is the selection rule the public composition root
-calls. It returns this provider only when ``tunnel.relay_enabled`` is on (off by
-default) and the build does not lock local enables, and the no-op
-``DefaultTunnelProvider`` otherwise. The provider's host token source is the lease
-client when ``tunnel.relay_lease_url`` names a lease service, and the refusing
-default otherwise. An edition that composes its own context puts
-its own provider in the slot and never reaches this function, so the relay client is
-never chosen over an edition's provider.
+:func:`public_tunnel_provider` builds this provider for the public composition root,
+which calls it only when ``kiro_crew.edition_locks.relay_selected`` says
+``tunnel.relay_enabled`` is on (off by default) and the build does not lock local
+enables, and installs the no-op ``DefaultTunnelProvider`` otherwise. That rule lives
+outside this package so a composition with the relay off never imports it. The
+provider's host token source is the lease client when ``tunnel.relay_lease_url``
+names a lease service, and the refusing default otherwise. An edition that composes
+its own context puts its own provider in the slot and never reaches this function,
+so the relay client is never chosen over an edition's provider.
 """
 
 from __future__ import annotations
@@ -357,16 +358,6 @@ def _crew_version() -> str:
     return __version__
 
 
-def relay_selected(cfg: Any) -> bool:
-    """Whether the public composition puts the relay client in the tunnel slot."""
-    if not RelaySettings.from_config(cfg).enabled:
-        return False
-    from kiro_crew.edition_locks import local_enable_locked
-
-    # An enterprise build ignores local enables for the tunnel (RFC D3), this one too.
-    return not local_enable_locked("tunnel")
-
-
 def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
     """The lease client for *settings*, or ``None`` while no lease service is set.
 
@@ -385,15 +376,12 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
     )
 
 
-def public_tunnel_provider(cfg: Any) -> Any:
-    """The tunnel provider the public composition root installs.
+def public_tunnel_provider(cfg: Any) -> RelayTunnelProvider:
+    """The relay client the public composition root installs once the relay is selected.
 
-    Construction does no I/O and starts nothing, because the composition root also
-    backs the lazy default context of every short-lived subprocess.
+    The composition root calls this only after ``edition_locks.relay_selected`` says
+    yes. Construction does no I/O and starts nothing, because the composition root
+    also backs the lazy default context of every short-lived subprocess.
     """
-    if relay_selected(cfg):
-        settings = RelaySettings.from_config(cfg)
-        return RelayTunnelProvider(settings, token_source=lease_token_source(settings))
-    from kiro_crew.platform.defaults import DefaultTunnelProvider
-
-    return DefaultTunnelProvider()
+    settings = RelaySettings.from_config(cfg)
+    return RelayTunnelProvider(settings, token_source=lease_token_source(settings))

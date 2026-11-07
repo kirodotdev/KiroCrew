@@ -828,6 +828,10 @@ def _match_allowed_root(candidate: str, roots: list[str]) -> str | None:
     ``realpath`` does not reliably canonicalize case there — without it a
     differently-cased but identical path would be refused. The prefix test is
     ``os.sep``-terminated, so ``/repo-evil`` does not pass as inside ``/repo``.
+
+    When several roots contain ``candidate`` the most specific (longest) one
+    wins, whatever the slot order: a session scoped to ``/work`` must not shadow
+    one scoped to the repository ``/work/app``, or git would probe ``/work``.
     """
     # ``normcase`` neither adds nor strips Windows' ``\\?\`` prefix, and a
     # ``realpath``-ed root can carry it while the caller's candidate does not; the
@@ -836,11 +840,14 @@ def _match_allowed_root(candidate: str, roots: list[str]) -> str | None:
     from kiro_crew.platform_compat import strip_extended_length_prefix
 
     probe = os.path.normcase(strip_extended_length_prefix(candidate))
+    best: str | None = None
+    best_len = -1
     for root in roots:
         normalized = os.path.normcase(strip_extended_length_prefix(root))
-        if probe == normalized or probe.startswith(normalized.rstrip(os.sep) + os.sep):
-            return root
-    return None
+        prefix = normalized.rstrip(os.sep)
+        if (probe == normalized or probe.startswith(prefix + os.sep)) and len(prefix) > best_len:
+            best, best_len = root, len(prefix)
+    return best
 
 
 async def api_worktree_create(request: web.Request) -> web.Response:

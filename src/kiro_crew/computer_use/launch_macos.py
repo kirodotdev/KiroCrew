@@ -33,12 +33,11 @@ target rather than trust the lookup. Two conditions here, mirroring what
   **not** one of them — it is writable by the same user the agent runs as, so including
   it would let a planted ``~/Applications/Anything.app`` be launched;
 * the bundle's own parent directory must not be writable by this process
-  (:func:`_directory_is_writable`). On a stock macOS install ``/Applications`` is
-  ``drwxrwxr-x root admin`` — the same mode that allows drag-installs without an
-  authentication prompt — so this probe refuses every third-party bundle under
-  ``/Applications`` for any admin user, and the primary account on a Mac is an admin
-  by default. An unwritable ROOT can still contain a writable child, so the root list
-  alone is not the check.
+  (:func:`_directory_is_writable`). The one exception is a stock ``/Applications``
+  (``drwxrwxr-x root admin``), which every admin user can write: there the bundle's own
+  directories are judged by ownership as well as mode instead
+  (:func:`_is_stock_applications`). An unwritable ROOT can still contain a writable
+  child, so the root list alone is not the check.
 
 The cost is stated rather than hidden: an application a user installed only for
 themselves cannot be launched by name. The refusal names the reason and tells the user
@@ -54,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import subprocess
 from dataclasses import dataclass
 
@@ -86,6 +86,9 @@ logger = logging.getLogger(__name__)
 #:   the constant identical on every platform, which is what makes it assertable.
 _OPEN_BIN = "/".join(("", "usr", "bin", "open"))
 
+#: The machine-wide root, and the one parent :func:`_is_stock_applications` recognises.
+_APPLICATIONS = "/Applications"
+
 #: Where a launchable application bundle lives. Ordered most-trusted first, so a system
 #: install wins a name collision against a machine-wide one.
 #:
@@ -103,9 +106,13 @@ _OPEN_BIN = "/".join(("", "usr", "bin", "open"))
 _APP_ROOTS: tuple[str, ...] = (
     "/System/Applications",
     "/System/Applications/Utilities",
-    "/Applications",
+    _APPLICATIONS,
     "/Applications/Utilities",
 )
+
+#: The macOS ``admin`` group, gid 80 on every release. Hardcoded because ``grp`` does not
+#: exist on Windows, where this module is still imported.
+_ADMIN_GID = 80
 
 _BUNDLE_SUFFIX = ".app"
 
@@ -193,10 +200,9 @@ def _directory_is_writable(directory: str) -> bool:
 
     The macOS twin of ``launch_windows._directory_is_writable``, and needed for the same
     reason: an unwritable ROOT can contain writable children. Excluding
-    ``~/Applications`` from :data:`_APP_ROOTS` removes the obvious case, but on a stock
-    macOS install ``/Applications`` is ``drwxrwxr-x root admin``, so any admin user can
-    create files there, and a bundle dropped there is indistinguishable from an installed
-    one.
+    ``~/Applications`` from :data:`_APP_ROOTS` removes the obvious case. A stock
+    ``/Applications`` is the one parent this probe does not judge, because every admin user
+    can create files there (see :func:`_writable_component`).
 
     A real create-and-delete rather than a permission computation: modelling effective
     access on macOS means group membership plus ACLs plus SIP, and a subtly wrong model
@@ -221,16 +227,15 @@ def _directory_is_writable(directory: str) -> bool:
     **A non-mutating :func:`os.access` check short-circuits the create when it already
     reports the directory writable.** The create-probe mutates the directory it probes —
     the create and its unlink advance the directory's mtime — and that mutation is visible
-    on the common refused case: a stock ``/Applications`` is ``drwxrwxr-x root:admin`` and
-    every admin user is in ``admin``, so a refused launch of a third-party bundle advances
-    ``/Applications``' mtime. ``os.access(directory, os.W_OK)`` answers the same question
-    for the stock case without touching the filesystem, and a POSITIVE answer is safe to
-    trust directly: it can only cause the caller to REFUSE, which is the fail-closed side.
+    on the common refused case, a directory this user can write.
+    ``os.access(directory, os.W_OK)`` answers the same question for that case without
+    touching the filesystem, and a POSITIVE answer is safe to trust directly: it can only
+    cause the caller to REFUSE, which is the fail-closed side.
     A NEGATIVE ``os.access`` answer is NOT trusted — it models permission the way the
     create-probe exists to avoid (group membership, ACLs, SIP), and trusting a false
     "unwritable" would TRUST a planted binary — so the real create-probe still runs and
     remains the only authority for the "unwritable" verdict. The mtime side effect is thus
-    absent from the stock refused case while the refusal set and the fail-closed guarantee
+    absent from that refused case while the refusal set and the fail-closed guarantee
     are both unchanged.
     """
     try:
@@ -270,6 +275,21 @@ def _directory_is_writable(directory: str) -> bool:
     return True
 
 
+def _is_stock_applications(directory: str) -> bool:
+    """Whether *directory* is ``/Applications`` exactly as macOS ships it: root, admin, 0775.
+
+    Any other owner, group or mode, or a ``stat`` that fails, answers ``False`` and keeps
+    the parent probe.
+    """
+    if directory != _APPLICATIONS:
+        return False
+    try:
+        info = os.stat(directory)
+    except OSError:
+        return False
+    return (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (0, _ADMIN_GID, 0o775)
+
+
 def _writable_component(app: InstalledApp) -> bool:
     """Whether this user could change what *app* runs — by CREATE or by REPLACE.
 
@@ -304,10 +324,16 @@ def _writable_component(app: InstalledApp) -> bool:
     None of this is hypothetical or exotic. A bundle installed under ``/Applications``
     by a user-space installer — every drag-install and every Homebrew cask — is owned by
     the installing user, so the agent runs as someone who can replace its executable.
-    On a stock macOS install the parent-directory probe catches these bundles too
-    (``/Applications`` is admin-writable by default), but the two probes are independent:
-    an unwritable parent is not evidence of an unwritable bundle. A parent-only probe
-    passes that bundle and launches whatever was written into it.
+    The parent probe is independent of the bundle probes: an unwritable parent is not
+    evidence of an unwritable bundle. A parent-only probe passes that bundle and launches
+    whatever was written into it.
+
+    **A stock ``/Applications`` is judged by the bundle, not the parent.** Every admin user
+    can create there, so the parent probe would refuse every bundle under it. On that one
+    parent (:func:`_is_stock_applications`) the probe is skipped, and the three bundle
+    directories are judged by OWNERSHIP as well as mode (:func:`_file_is_replaceable`): a
+    directory's owner can ``chmod`` it at will, exactly as with the executables below, so a
+    bundle this user created there is still refused.
 
     **The directories are FIXED, never read from the bundle.** Asking the bundle's own
     ``Info.plist`` where its executable lives is the obvious refinement and it is the wrong
@@ -323,13 +349,12 @@ def _writable_component(app: InstalledApp) -> bool:
     decide whether to START A PROCESS.
     """
     macos_dir = os.path.join(app.path, _MACOS_RELDIR)
-    candidates = (
-        os.path.dirname(app.path),
-        app.path,
-        os.path.join(app.path, _CONTENTS_RELDIR),
-        macos_dir,
-    )
-    if any(_directory_is_writable(directory) for directory in candidates):
+    parent = os.path.dirname(app.path)
+    bundle_dirs = (app.path, os.path.join(app.path, _CONTENTS_RELDIR), macos_dir)
+    if _is_stock_applications(parent):
+        if any(_directory_is_writable(d) or _file_is_replaceable(d) for d in bundle_dirs):
+            return True
+    elif any(_directory_is_writable(directory) for directory in (parent, *bundle_dirs)):
         return True
     if _any_executable_is_writable(macos_dir):
         return True
@@ -465,9 +490,8 @@ def resolve_target(query: str) -> "tuple[str, str]":
     # directories, and the first alone was not enough:
     #
     # * the bundle's PARENT — excluding ``~/Applications`` handles the per-user case; on
-    #   a stock macOS install ``/Applications`` is ``drwxrwxr-x root admin`` so this probe
-    #   fires for every admin user (the default for a Mac's primary account), and a bundle
-    #   dropped there is indistinguishable from an installed one;
+    #   a stock ``/Applications``, which every admin user can write, the bundle's own
+    #   directories are judged by ownership as well as mode;
     # * the bundle ITSELF and the directory holding its main executable. The parent probe
     #   and the bundle probes are independent: an unwritable parent is not evidence of an
     #   unwritable bundle. A bundle installed by a user-space installer (any drag-install,

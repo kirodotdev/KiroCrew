@@ -345,7 +345,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     return bool(
         (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
         or _slot_is_trusted(slot)
-        or state.is_yolo_active()
+        or (state.is_yolo_active() and state.yolo_reaches(slot))
     )
 
 
@@ -1227,7 +1227,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # Trust-reads: auto-approve read-only bash commands
     # Detect bash tools by tool_input content (title is human-readable)
     cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-    yolo_active = state.is_yolo_active()
+    yolo_active = state.is_yolo_active() and state.yolo_reaches(
+        slot, channel_origin=turn._directive_channel_origin
+    )
     # Evaluated ONCE for both branches below. Two separate calls could
     # straddle a scoped grant's expiry and disagree with each other, and
     # a scope check is not a pure read — it retires a lapsed grant and

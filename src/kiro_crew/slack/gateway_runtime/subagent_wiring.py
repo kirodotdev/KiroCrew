@@ -329,7 +329,10 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
     assert self.ctx_builder is not None
 
     def _is_yolo() -> bool:
-        return safety_override().is_active()
+        # ``gateway --approval yolo``'s grant is the dashboard's only: a dashboard
+        # parent passes it on through its stored session policy instead.
+        so = safety_override()
+        return so.is_active() and so.is_cli_launch is not True
 
     def _spawn_slot_resolver(request_id: str) -> str:
         """Resolve slot from spawn request_id (spawn:{agent_id})."""

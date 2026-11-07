@@ -17,8 +17,8 @@ calls. Semantics that make this correct:
   * **Warm reuse** — a *sequential* task reuses an idle worker after a cheap
     clean-slate reset (``provider.new_conversation()`` — fresh ``session/new`` on
     the same live process, skipping spawn + ``initialize``). No cold start on a
-    backend whose provider has one; a backend on its own ``AcpClient`` (claude and
-    the other per-session adapters) has none and is reset by kill and respawn.
+    backend on the shared runtime or in ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``
+    (claude); any other backend on its own ``AcpClient`` is reset by kill and respawn.
   * **Self-healing** — a worker whose process died is retired and replaced.
   * **Bounded** — at most ``max_workers`` live sessions; startup throttled to
     ``max_starting`` concurrent spawns (matches the workflow concurrency cap).
@@ -231,8 +231,8 @@ class _WorkflowSessionWorker:
 
         Uses ``provider.new_conversation()``, which skips the expensive
         spawn+initialize on a backend served through the shared runtime (kiro, KAS,
-        Codex). A backend on its own ``AcpClient`` (claude and the other per-session
-        adapters) has no such reset and raises ``NotImplementedError``. On that, or
+        Codex) and on claude's own ``AcpClient``. Any other backend on its own
+        ``AcpClient`` has no such reset and raises ``NotImplementedError``. On that, or
         any other failure, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path)."""
@@ -296,10 +296,10 @@ class _WorkflowSessionWorker:
     async def _reapply_effort(self) -> None:
         """Push this worker's effort onto the fresh conversation a cheap reset made.
 
-        ``new_conversation`` re-applies the model but not the effort, and a harness
-        that takes effort as a per-session config option (KAS, Codex) pushes it only
-        at cold start, so without this every reuse after the first would run at the
-        backend default. ``change_effort`` answering False means the model takes no
+        ``new_conversation`` re-applies the model but, except on claude, not the
+        effort, and a harness that takes effort as a per-session config option (KAS,
+        Codex) pushes it only at cold start, so without this every reuse after the
+        first would run at the backend default. ``change_effort`` answering False means the model takes no
         effort, which a cold start drops the same way; a raise sends the caller down
         the hard reset, which cold-starts with the override.
         """

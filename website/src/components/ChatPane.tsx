@@ -22,6 +22,7 @@ import { filterCrewmateChatWithBrowser } from './chat/crewmateBrowserLive'
 import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
 import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
+import { preparingCaption as preparingCaptionFor } from './chat/preparingCaption'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import type { PillActivity } from '../pages/members/pillActivity'
 import { useUnreadLanding } from './chat/useUnreadLanding'
@@ -34,7 +35,7 @@ import PaneDim from './PaneDim'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
-import ChatFooter from '../pages/chat/ChatFooter'
+import ChatFooter, { transcriptActivityKey, turnSentHere } from '../pages/chat/ChatFooter'
 import { useChatProjectDir, useEnvironmentStartLabel, useSlotRunsHere } from './sessionEnvironmentHooks'
 import { ChatProjectDirCtx } from './markdown/contexts'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
@@ -56,7 +57,7 @@ import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -67,7 +68,7 @@ import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { api } from '../api/client'
-import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
+import { releaseUnobservedPaneSlot, slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
@@ -339,7 +340,9 @@ export default function ChatPane({
   // The only background message today is the warm catch-up (warm_task_brief.py).
   // Resolved per render, not as a module constant, so the caption follows a
   // language switch; the held caption compares by content, not identity.
-  const preparingActivity: PillActivity = { kind: 'working', text: i18nT('components.chatPane.preparing_catch_up') }
+  // The gateway's own caption, when it sent one, names what is being checked.
+  const preparingCaption = preparingCaptionFor(paneSlot)
+  const preparingActivity: PillActivity = { kind: 'working', text: preparingCaption }
   // The composer agrees with the typing bubble: from the person's Send it is
   // busy (Stop while empty), not idle, though the answering turn's first frame
   // can be seconds away. `busy` alone is the store's word, and the store has
@@ -582,12 +585,38 @@ export default function ChatPane({
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
   })
+  // The hydrate is refused while this pane's slot is the active one, so it runs
+  // again when the slot stops being active: a split pane left on an empty or
+  // still-loading active slot has no page marker for the hold below to read,
+  // and this re-run is what places its page and flags it.
+  const paneIsActive = slotKey === activeSlot
   useEffect(() => {
     if (slotDetail?.messages) {
       dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
       setHydratedSlot(slotKey)
     }
-  }, [slotDetail, slotKey, dispatch, hydrateLimit])
+  }, [slotDetail, slotKey, dispatch, hydrateLimit, paneIsActive])
+  // `slotHydrated` means "a pane shows this slot NOW": set at mount (or by the
+  // hydrate above), cleared once the last pane showing the slot is gone, so
+  // `boundSlotWindow` reaches a monitor pane that was opened and then left in
+  // the background. The release is deferred one microtask so the observer
+  // counts it reads are settled: a pane mounting the same slot in this commit
+  // (a layout change, StrictMode's re-run) still holds it, and the slot stays
+  // flagged. The cleanup releases the slot this effect ran for, not a later one.
+  // The hold is refused for the active slot, so the effect re-runs when this
+  // pane's slot stops being active: a split pane left on screen after the
+  // reader switches to another chat is flagged the moment its slot is parked.
+  // That re-run's cleanup releases nothing, because this pane still observes
+  // the slot.
+  useEffect(() => {
+    const slot = slotKey
+    dispatch(holdHydratedSlotPane(slot))
+    return () => {
+      queueMicrotask(() => {
+        if (releaseUnobservedPaneSlot(queryClient, slot)) dispatch(clearSlotHydrated(slot))
+      })
+    }
+  }, [slotKey, paneIsActive, dispatch, queryClient])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
   // inside ChatMessageList — growth on EARLIER rows (a tool result updating, a
@@ -969,10 +998,15 @@ export default function ChatPane({
                           ? (messages[messages.length - 1]?.content.length ?? 0)
                           : 0
                       }
+                      // Not while only preparing a catch-up: that is no turn to stop.
+                      activityKey={running || paneSlot?.running ? transcriptActivityKey(messages) : undefined}
+                      sentHere={turnSentHere(messages)}
+                      browserSessionKey={slotKey}
+                      waitingOnUser={!!paneSlot?.pending_approval || !!paneSlot?.needs_input}
                     />
                     {preparing && !crewmateLive && (
                       <div className="px-4 text-[12px] text-muted" data-testid="chat-pane-preparing-catch-up" role="status">
-                        {i18nT('components.chatPane.preparing_catch_up')}
+                        {preparingCaption}
                       </div>
                     )}
                     </>
@@ -1207,6 +1241,8 @@ export default function ChatPane({
           // cases the newest error card handles with a remedy of its own.
           continuable={resume.composerResume}
           continueIsRecovery={resume.interrupted}
+          // A crewmate's chat has no queue card to send (`withQueuedAsBubbles`).
+          restoredQueueCount={crewmate ? 0 : queuedMessages.filter(m => m.meta?.restored === true).length}
           onContinue={resume.onContinue}
           continuing={resume.continuing}
           // Steer path on the pane too (it was queue-only before): busy panes

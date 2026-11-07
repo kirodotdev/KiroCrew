@@ -257,13 +257,9 @@ class TeamsRenderer(Renderer):
             return
         self._started = True
         await self._client.send_typing(self._conversation_id, self._service_url)
-        # A Teams typing indicator lasts a few seconds, so ONE activity leaves a
-        # turn that runs for minutes showing dots briefly and then a silent chat --
-        # indistinguishable from a dead bot. Refreshed on a timer for the same reason
-        # the reference middleware does (every 2 s there; the per-thread budget is 7
-        # sends/second, so this costs ~1% of it). The progress bubble only covers a
-        # turn that CALLS a tool; a long pure generation or a /compact has nothing
-        # else to show.
+        # A typing indicator lasts a few seconds, so a minutes-long turn would read as
+        # a dead bot; refresh it on a timer (see _TYPING_REFRESH_S). The progress bubble
+        # only covers a turn that CALLS a tool, not a long generation or a /compact.
         self._typing_task = asyncio.create_task(self._keep_typing())
 
     async def _keep_typing(self) -> None:
@@ -283,16 +279,12 @@ class TeamsRenderer(Renderer):
                 logger.debug("Teams: typing refresh failed", exc_info=True)
 
     async def on_text_chunk(self, text: str) -> None:
-        # Buffered: Teams' native streaming is throttled to 1 request/second and
-        # dies at a hard two-minute ceiling, which an agentic turn routinely
-        # exceeds -- a stream that dies mid-answer is worse than one message.
+        # Buffered: see ``streaming=False`` in TEAMS_CAPABILITIES.
         self._buf.append(text)
 
     async def on_thinking(self, text: str) -> None:
         # Teams does not surface reasoning inline: the edit budget is spent on tool
-        # progress and the answer, which is Webex's reason too. Discord, Telegram and
-        # iMessage also no-op here; WeCom is the one channel that does surface it,
-        # because its native <think> block costs no extra message.
+        # progress and the answer.
         return None
 
     async def on_tool_call(
@@ -323,8 +315,7 @@ class TeamsRenderer(Renderer):
         """Post the Approve / Trust session / Deny card for one tool request.
 
         ``tool_input`` is accepted and not rendered: the card already carries the
-        tool's title and purpose, and adding its arguments is a card-layout change
-        rather than something this signature widening should decide.
+        tool's title and purpose.
 
         The nonce is armed on the decider BEFORE the card is posted: a click can
         arrive as soon as the card renders, and a resolve against an un-armed
@@ -417,18 +408,11 @@ class TeamsRenderer(Renderer):
             try:
                 await self._client.send_message(self._conversation_id, chunk, self._service_url)
             except TeamsSendError:
-                # Stop at the first failed chunk -- skipping ahead would splice a gap
-                # into the middle of the answer, and a conversation that cannot take
-                # the text will not take an attachment either -- and then RAISE.
-                #
-                # Returning here is what made the gateway record an answer the user
-                # never received: `drive_turn` treats a clean return from the renderer
-                # as delivery, so it ran `record_success` and persisted the FULL text
-                # while the Connector had refused part or all of it. Raising skips both
-                # and records a failure, which is the honest outcome and the one the
-                # user can retry. It costs the delivered prefix its transcript entry;
-                # a turn silently recorded as complete costs the ability to notice at
-                # all.
+                # Stop at the first failed chunk (skipping ahead would splice a gap
+                # into the answer) and RAISE: `drive_turn` treats a clean return as
+                # delivery and would run `record_success` and persist the FULL text the
+                # Connector refused. A recorded failure is one the user can retry, at
+                # the cost of the delivered prefix's transcript entry.
                 logger.warning("Teams: answer chunk delivery failed; stopping", exc_info=True)
                 raise
         if files:

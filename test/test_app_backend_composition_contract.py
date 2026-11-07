@@ -487,9 +487,7 @@ def clean_tables() -> Iterator[None]:
             table.update(before)
 
 
-# ---------------------------------------------------------------------------
 # The surface
-# ---------------------------------------------------------------------------
 
 
 class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInventoryIsNotEmpty):
@@ -621,9 +619,7 @@ class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInvent
         assert callers == {provisioning.__name__}
 
 
-# ---------------------------------------------------------------------------
 # One symbol per name, and writes that reach every binding of it
-# ---------------------------------------------------------------------------
 
 #: An exported name several owners import: defined in ``probe``.
 _MULTI_HOLDER = "_health_probe"
@@ -779,9 +775,7 @@ class TestOneNamespaceForWrites:
         assert backend.logger.name == backend.__name__ == "kiro_crew.apps.backend"
 
 
-# ---------------------------------------------------------------------------
 # A patch on the facade reaches the call site in whichever owner makes the call
-# ---------------------------------------------------------------------------
 
 
 class _Sel:
@@ -928,9 +922,7 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
         assert backend.start_app_backend("body-app") is record
 
 
-# ---------------------------------------------------------------------------
 # Every global a backend function reads is one a facade write reaches
-# ---------------------------------------------------------------------------
 
 
 def _function_global_reads(module: ModuleType) -> list[tuple[str, str]]:
@@ -983,9 +975,7 @@ class TestEverySeamReachesItsCallSite:
         assert ("_start_app_backend_body", "_warned_unconfined_cache") in facade_reads
 
 
-# ---------------------------------------------------------------------------
 # Layering and placement
-# ---------------------------------------------------------------------------
 
 
 def _engine_imports(source: str) -> set[str]:
@@ -1127,9 +1117,7 @@ class TestLayering(composition_contract_checks.TheFacadeHelperIsOnlyEverCalledIn
         assert importlib.import_module(backend._PART_MODULES[0]) is tracking
 
 
-# ---------------------------------------------------------------------------
 # The facade's own code, as a type checker and a patched importlib see it
-# ---------------------------------------------------------------------------
 
 
 def _bare_loads(source: str) -> list[tuple[int, str]]:
@@ -1252,9 +1240,7 @@ class TestTheFacadesOwnCode:
         assert started == ["resolve-app"]
 
 
-# ---------------------------------------------------------------------------
 # A reload of the facade re-executes the whole backend
-# ---------------------------------------------------------------------------
 
 _RELOAD_PROBE = """
 import importlib, json, sys

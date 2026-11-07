@@ -11,7 +11,7 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_jobs``, ``_pending_removals``.
+Instance fields written: ``_fired_schedules``, ``_jobs``, ``_pending_removals``.
 
 Instance fields read: ``_load_failed``.
 """
@@ -224,8 +224,21 @@ def _drain_pending_removals_locked(self: CronService) -> list[str]:
     # two steps would be erased without ever being deleted from disk, so
     # the completed one-shot would re-fire and re-notify.
     pending, self._pending_removals = self._pending_removals, set()
+    # A one-shot's queued ``delete_after_run`` consume belongs to the schedule that
+    # fired (``_fired_schedules``, written where the consume is queued), as in the
+    # result merge: a row another writer made recurring since keeps it, enabled as
+    # the store says rather than as ``defer_removal`` left it. A Done() removal
+    # queues no schedule: it is the script's own request.
+    for job in self._jobs:
+        fired = self._fired_schedules.get(job.id) if job.id in pending else None
+        if fired is not None and job.schedule != fired:
+            pending.discard(job.id)
+            del self._fired_schedules[job.id]
+            job.enabled = not (job.user_paused or job.auto_paused)
     present = {j.id for j in self._jobs}
     to_remove = pending & present
+    for jid in pending - to_remove:
+        self._fired_schedules.pop(jid, None)
     if not to_remove:
         return []
     # BACKGROUND tick: a failed epoch bump must not crash the scan, but
@@ -283,6 +296,7 @@ def _drain_pending_removals_locked(self: CronService) -> list[str]:
         # no-op tick after the disk refused the write.
         raise
     for jid in to_remove:
+        self._fired_schedules.pop(jid, None)
         logger.info("Removed deferred one-shot cron job %s", jid)
     # SEL audit is the CALLER's job (post-lock): this method runs inside
     # the caller's ``_file_lock`` transaction, and the first ``sel()`` of a

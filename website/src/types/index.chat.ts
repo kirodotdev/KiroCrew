@@ -283,6 +283,10 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Transcript session key this slot reads and writes, from the backend
    *  `slot_history_key` rule; what the resume endpoint reads. Absent on an older payload. */
   history_key?: string
+  /** Opaque id of the server's slot object, new each time a session is opened
+   *  under this key. A failed close's restore keeps it; a reopen elsewhere does not.
+   *  Absent on an older payload. */
+  incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
@@ -411,6 +415,13 @@ export interface ChatSlot extends TurnIdentityFields {
    * Not a turn: `running` stays false, so sends and queueing are unchanged;
    * only the chat's working indicator reads it. Absent from an older gateway. */
   preparing?: boolean
+  /** What is being prepared, built by the gateway (the warm catch-up names
+   * what it checks and its goal). Empty or absent: the client's own generic
+   * caption. */
+  preparing_text?: string
+  /** The language `preparing_text` is written in (`en`, `zh`, ...). The client
+   * shows the text only when this is its UI language. */
+  preparing_lang?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean
@@ -729,6 +740,12 @@ export interface Notification {
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
   group_key?: string; url?: string
   actions?: { id: string; label: string; url?: string }[]
+  /** Names the note within its source: a later note with the same source and
+   *  key replaces it, and `notification_dismiss` removes it. */
+  key?: string
+  /** Server-stamped on a replacement no more urgent than the note it replaced:
+   *  it lands in the bell, but no sound, banner or OS notification announces it. */
+  quiet?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
@@ -809,6 +826,10 @@ export interface CrewWorker {
   /** Its direct dispatcher by the lineage the server walks (the parent edge,
    *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
   dispatched_by?: string
+  /** Set when remote dispatch placed the worker on another crew: that crew's
+   *  display name (else its instance id). Its `key` names no local session, so
+   *  the row offers no open, steer or approval. Absent on a local worker. */
+  remote_crew?: string
 }
 
 /** One session's recap from records only, no model call

@@ -1,10 +1,11 @@
 import type React from 'react'
 import { Folder, FolderPlus, Check, ChevronRight } from 'lucide-react'
 import type { ChatFolder } from '../types'
+import FolderGlyph from './FolderGlyph'
 import { orderFoldersWithPaths, type FolderSortMode } from '../utils/folderTree'
 import { offlineMenuRow, offlineProps } from '../utils/offline'
 import { useConnected } from '../hooks/useConnected'
-import OfflineMenuReason, { OfflineReasonRow } from './OfflineMenuReason'
+import OfflineMenuReason, { OfflineReasonRow, REASON_ROW_WIDTH } from './OfflineMenuReason'
 import { i18nT } from '../i18n/t'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem, DropdownMenuSeparator,
@@ -116,7 +117,11 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
       </Item>
       {ordered.map(({ folder: f, depth, path }) => (
         <Item key={f.id} title={path} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} {...offlineMenuRow(connected, verb, path, () => onPick(f.id))}>
-          <Folder size={13} className="text-accent shrink-0" />
+          {/* The folder's own mark, as the sidebar row draws it: its emoji icon
+              when it has one, else the lucide folder tinted by its palette
+              color. A plain accent glyph here made every destination look the
+              same and broke the visual match with the sidebar beside it. */}
+          <FolderGlyph color={f.color} icon={f.icon} size={13} className="shrink-0 text-muted" />
           {/* Two nested folders can share a name, and the indent that tells them
               apart is visual only. `title` shows the full path on pointer hover,
               which no browser opens on keyboard focus, so the path rides along
@@ -131,7 +136,7 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
         </Item>
       ))}
       {/* The New folder entry carries its own standing reason below it. */}
-      {!connected && !onNewFolder && <OfflineReasonRow testId="folder-move-offline-reason" className="px-2 py-1" message={i18nT('utils.offline.gateway_offline_reconnect', { action: verb })} />}
+      {!connected && !onNewFolder && <OfflineReasonRow testId="folder-move-offline-reason" className={`${REASON_ROW_WIDTH} px-2 py-1`} message={i18nT('utils.offline.gateway_offline_reconnect', { action: verb })} />}
       {onNewFolder && <NewFolderEntry Item={Item} Separator={Separator} onNewFolder={onNewFolder} label={newFolderLabel ?? ''} />}
     </>
   )

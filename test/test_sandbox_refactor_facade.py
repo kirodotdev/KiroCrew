@@ -214,6 +214,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _LEGACY_AUTH_SWEEP_CLEAN _materialize_env_mask_target
+        _materialize_refresh_chains_mask_target _create_absent_mask_target
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
@@ -238,7 +239,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SEATBELT_PROFILE_SUFFIX _PI_GATE_ARTIFACT_PREFIX _PI_GATE_ARTIFACT_SUFFIXES
         _RUN_DIR_ARTIFACTS _DSH_GATE_ARTIFACT_PREFIX _DSH_PATCH_ARTIFACT_PREFIX
         _DSH_GATE_ARTIFACT_SUFFIXES _PI_GATE_DIR_ARTIFACTS _LEGACY_LAUNCHER_DIR
-        _resolve_agent_executable _ssh_supports_accept_new namespace_launcher_script_dir
+        _resolve_agent_executable _ssh_supports_accept_new _runtime_dir_is_durable
+        namespace_launcher_script_dir
         _ensure_run_dir _LAUNCHER_INTERPRETER_FLAGS _launcher_script_of _log_refusals
         _carveout_probes _plan_cwd _live_plan_host _spawn_plan _build_launcher_script
         _build_seatbelt_profile namespace_argv _pinned_env_bin sandbox_exec_argv

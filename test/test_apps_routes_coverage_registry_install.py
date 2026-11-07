@@ -1,11 +1,7 @@
 """Coverage tests for registry installs, their SSE stream and the registries config.
 
-Pins ``_client_install_manifest``, ``POST /api/apps/registry/install``, the
-``POST /api/apps/registry/install-stream`` event stream and the config-file failure
-modes of ``PUT /api/apps/registries``.
-``test_apps_routes_coverage.py`` holds install, registration and the app views, and
-names the other route modules; the shared helpers live in
-``apps_routes_coverage_helpers.py``.
+Also ``_client_install_manifest`` and the config-file failure modes of
+``PUT /api/apps/registries``. Shared helpers live in ``apps_routes_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -49,9 +45,7 @@ def _sse_events(text: str) -> list[tuple[str, str]]:
     return events
 
 
-# ---------------------------------------------------------------------------
 # _client_install_manifest
-# ---------------------------------------------------------------------------
 
 
 class TestClientInstallManifest:
@@ -75,9 +69,7 @@ class TestClientInstallManifest:
         assert not cfg.supports_platform("linux")
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/registry/install
-# ---------------------------------------------------------------------------
 
 
 class TestRegistryInstall:
@@ -186,9 +178,7 @@ class TestRegistryInstall:
         assert calls == ["stop", "deregister"]
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/registry/install-stream (SSE)
-# ---------------------------------------------------------------------------
 
 
 class TestRegistryInstallStream:
@@ -298,12 +288,8 @@ class TestRegistryInstallStream:
     ) -> None:
         """The reason a refused install failed must travel ON the payload.
 
-        The desktop build-step refusal is logged to ``security_events.jsonl``
-        either way, but the dashboard's consent modal can only show a cause the
-        ``done`` event carries. Pinned as the sentence, not a truthy ``error``
-        key, because the UI renders this string — a generic placeholder
-        substituted here would leave the user with a refusal and no stated
-        reason, the dead end this test exists to prevent.
+        The consent modal can only show a cause the ``done`` event carries. Pinned as
+        the sentence, not a truthy ``error`` key, because the UI renders this string.
         """
         _setup_env(tmp_path, monkeypatch)
         refusal = (
@@ -409,9 +395,7 @@ class TestRegistryInstallStream:
         assert any(b"event: done" in w for w in writes)
 
 
-# ---------------------------------------------------------------------------
 # PUT /api/apps/registries — config-file failure modes
-# ---------------------------------------------------------------------------
 
 
 class TestRegistriesConfigFailures:

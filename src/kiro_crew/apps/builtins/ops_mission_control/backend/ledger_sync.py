@@ -616,10 +616,9 @@ def _credential_bearing_lines() -> list[int]:
     Uses the UNION of two detectors, because neither is a superset of the other and this is
     the last gate before bytes leave the machine:
 
-    - ``security.get_credential_patterns()`` — the core accessor, which exists specifically so
-      a downstream scan cannot be silently turned into a no-op by a rename, and which means a
-      pattern added for any other egress site starts protecting this one too. It carries the
-      AKIA/ASIA shapes.
+    - ``security.iter_credential_matches`` — the core scan, linear on a long line. It is public
+      so a rename cannot silently turn this scan into a no-op, and a pattern added for any other
+      egress site starts protecting this one too. It carries the AKIA/ASIA shapes.
     - ``secrets.redact_tokens`` — this app's own detector, which knows the PROVIDER credential
       shapes the core has no reason to: a `Bearer` header, a prefixed Datadog application key
       (`ddapp_…`), a PagerDuty token.
@@ -638,16 +637,15 @@ def _credential_bearing_lines() -> list[int]:
     would turn a missing file into an unexplained sync failure.
     """
     from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import redact_tokens
-    from kiro_crew.security import get_credential_patterns
+    from kiro_crew.security import iter_credential_matches
 
     try:
         text = ledger.ledger_path().read_text(encoding="utf-8")
     except OSError:
         return []
-    patterns = get_credential_patterns()
 
     def _bearing(line: str) -> bool:
-        if any(p.search(line) for p in patterns):
+        if any(iter_credential_matches(line)):
             return True
         # `redact_tokens` returns the line unchanged when it finds nothing, so inequality IS
         # the detection — and it keeps this in step with the write path automatically: a

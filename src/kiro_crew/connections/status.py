@@ -541,7 +541,7 @@ async def collect_connection_statuses(
             # not established, so the flag rides every pre-registered row,
             # connected or not, and blocks nothing.
             entry["backendLacksOauth"] = True
-        elif kas_chats and status == STATUS_CONNECTED:
+        elif kas_chats and status == STATUS_CONNECTED and slug not in crew_managed:
             entry["signInInChat"] = True
         if (
             slug in client_configured

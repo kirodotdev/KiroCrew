@@ -1755,7 +1755,8 @@ Cost is the app's to bound: an app that spawns on a timer needs its own budget
 the platform does not rate-limit spawns per app today.
 
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
-`SpawnError`.
+`build_continue_impl`, `SpawnError`. The calls are described in
+[api-reference](api-reference.md#background-agents-ctxspawn).
 
 > **Not an in-process sandbox.** Most fields remain advisory for app code loaded
 > inside the gateway. The validator functions in `apps/permissions.py`

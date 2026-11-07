@@ -67,7 +67,12 @@ async def test_handshake_sends_hello_with_the_host_token_and_connects_on_ready()
             assert set(hello) <= set(shape["fields"])
             assert {k for k, v in shape["fields"].items() if v["required"]} <= set(hello)
             assert hello["protocolVersion"] == 1 and hello["mode"] == "http"
-            assert set(hello["features"]) == {"flow-credit", "ws-flow", "request-credit"}
+            assert set(hello["features"]) == {
+                "flow-credit",
+                "ws-flow",
+                "request-credit",
+                "move-done",
+            }
             assert leg.token == TOKEN
             assert leg.user_agent.startswith("kiro-crew/")
 
@@ -144,7 +149,8 @@ async def test_document_navigation_round_trip_does_not_redirect_to_localhost() -
             head = valid_message(
                 "frames/request",
                 method="GET",
-                path="/",
+                # Not the bare root, which the ingress sends to /chat (the next test).
+                path="/chat",
                 query="",
                 headers={"sec-fetch-dest": "document"},
             )
@@ -155,8 +161,49 @@ async def test_document_navigation_round_trip_does_not_redirect_to_localhost() -
             assert "location" not in {name.lower() for name in response["headers"]}
             assert json.loads(body) == {"ok": True, "query": ""}
             (seen,) = crew.seen
-            assert seen["path"] == "/"
+            assert seen["path"] == "/chat"
             assert seen["caller"].kiro_user_id == OWNER
+        finally:
+            await stop(client, ingress)
+
+
+async def test_a_relayed_root_page_load_round_trips_as_a_redirect_to_chat() -> None:
+    """The relay root the control plane hands out lands on /chat; ``/?q`` does not move."""
+    async with FakeRelay() as relay, FakeCrew(canonical_redirect=True) as crew:
+        client, _, ingress = make_client(relay, crew)
+        await client.start()
+        try:
+            leg = await relay.next_leg()
+            await leg.handshake()
+            root = valid_message(
+                "frames/request",
+                method="GET",
+                path="/",
+                query="",
+                headers={"sec-fetch-dest": "document"},
+            )
+            await leg.send(root)
+            await leg.send({"type": "request-end", "id": root["id"]})
+            response, _ = await leg.read_response(root["id"])
+            assert response["status"] == 302
+            headers = {name.lower(): value for name, value in response["headers"].items()}
+            assert headers["location"] == "/chat"
+            assert crew.seen == []
+
+            with_query = valid_message(
+                "frames/request",
+                method="GET",
+                path="/",
+                query="a=b",
+                headers={"sec-fetch-dest": "document"},
+            )
+            await leg.send(with_query)
+            await leg.send({"type": "request-end", "id": with_query["id"]})
+            response, body = await leg.read_response(with_query["id"])
+            assert response["status"] == 200
+            assert json.loads(body) == {"ok": True, "query": "a=b"}
+            (seen,) = crew.seen
+            assert seen["path"] == "/"
         finally:
             await stop(client, ingress)
 

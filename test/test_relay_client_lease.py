@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import stat
+import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ from relay_client_helpers import (
 )
 
 from kiro_crew.platform_compat import IS_POSIX
+from kiro_crew.relay_client import lease as lease_module
 from kiro_crew.relay_client.lease import (
     AWS_JSON_CONTENT_TYPE,
     DEFAULT_DISPLAY_NAME,
@@ -46,6 +48,7 @@ from kiro_crew.relay_client.lease import (
     TAKEOVER_WAIT_MAX_SECONDS,
     LeaseHostTokenSource,
     credential_reference_problem,
+    crew_instance_id,
     crew_name,
     dial_url,
     error_type,
@@ -778,6 +781,259 @@ async def test_a_validation_refusal_with_an_endpoint_renews_once_without_it_then
     assert len(lease.requests) == 5
 
 
+class VersionFencedLeaseService(FakeLeaseService):
+    """A lease service that fences a team lease by version, as the real one does.
+
+    A missing leaseVersion reads as 0. A renewal passes when there is no lease, when
+    the sent version is at least the stored one, or when it replays the version the
+    last renewal came from. A token is minted only when ``mint`` is set, never because
+    the version was left out.
+    """
+
+    def __init__(self, stored: Optional[int] = None, renewed_from: Optional[int] = None) -> None:
+        super().__init__()
+        self.stored, self.renewed_from, self.mint = stored, renewed_from, False
+
+    async def _renew(self, request: web.Request) -> web.Response:
+        sent = json.loads(await request.read()).get("leaseVersion", 0)
+        if self.stored is None or sent >= self.stored or sent == self.renewed_from:
+            self.stored, self.renewed_from = (self.stored or 0) + 1, sent
+            self.queue(200, answer(0 if self.mint else 1, leaseVersion=self.stored))
+        else:
+            self.queue(*refusal("ValidationException"))
+        return await super()._renew(request)
+
+
+#: Where the Crew keeps its last leaseVersion, next to its instance ID.
+LEASE_VERSION_PATH = INSTANCE_ID_FILE.parent / "crew-lease-version"
+
+
+def save_lease_version(home: Path, version: int) -> None:
+    (home / LEASE_VERSION_PATH).write_text(f"{crew_instance_id(home)} {version}\n", "ascii")
+
+
+def saved_version(home: Path) -> Optional[int]:
+    path = home / LEASE_VERSION_PATH
+    if not path.exists():
+        return None
+    saved_for, _, version = path.read_text("ascii").partition(" ")
+    assert saved_for == crew_instance_id(home)
+    return int(version)
+
+
+async def test_a_restart_on_a_version_fenced_service_renews_with_the_saved_version(
+    tmp_path: Path, clock: StepClock
+) -> None:
+    save_lease_version(tmp_path, 7)
+    async with VersionFencedLeaseService(stored=7, renewed_from=6) as lease:
+        source = make_source(lease, tmp_path, clock)
+        try:
+            # The service has no host token due, so the lease is held and none comes yet.
+            await assert_retry_later(source.current())
+            assert "leaseVersion" not in lease.requests[0]["body"]
+            assert lease.requests[1]["body"]["leaseVersion"] == 7
+            assert saved_version(tmp_path) == 8
+            # Waiting for the next due renewal is not a loop of calls.
+            await assert_retry_later(source.current())
+            assert len(lease.requests) == 2
+            lease.mint = True
+            await clock.next_sleep()
+            clock.elapse()
+            await calls(lease, 3)
+            assert lease.requests[2]["body"]["leaseVersion"] == 8
+            await async_wait_until(lambda: source._usable() is not None)
+            # A fresh token does not end the fallback: this service would refuse the
+            # next version-less ask, so a later fresh-token ask still sends the version.
+            await source.renew(host_token_requested=True)
+            assert lease.requests[3]["body"]["leaseVersion"] == 9
+            assert len(lease.requests) == 4
+            assert not source.stopped_reason
+        finally:
+            await source.aclose()
+
+
+async def test_every_versioned_renewal_with_no_token_holds_until_the_next_one(
+    tmp_path: Path, clock: StepClock
+) -> None:
+    save_lease_version(tmp_path, 7)
+    async with VersionFencedLeaseService(stored=7, renewed_from=6) as lease:
+        source = make_source(lease, tmp_path, clock)
+        try:
+            await assert_retry_later(source.current())
+            assert len(lease.requests) == 2
+            # The next renewal sends the version and again gets no token: it holds too.
+            await clock.next_sleep()
+            clock.elapse()
+            await calls(lease, 3)
+            assert lease.requests[2]["body"]["leaseVersion"] == 8
+            await async_wait_until(lambda: saved_version(tmp_path) == 9)
+            await assert_retry_later(source.current())
+            assert len(lease.requests) == 3
+            assert not source.stopped_reason
+        finally:
+            await source.aclose()
+
+
+async def test_a_4401_on_a_version_fenced_service_recovers_without_a_stop(
+    tmp_path: Path, clock: StepClock
+) -> None:
+    async with VersionFencedLeaseService() as lease:
+        lease.mint = True
+        source = make_source(lease, tmp_path, clock)
+        try:
+            await source.current()
+            lease.mint = False
+            await clock.next_sleep()
+            clock.elapse()
+            await calls(lease, 2)
+            # The relay closed the host leg with 4401: the client asks for a new token.
+            await assert_retry_later(source.renew(host_token_requested=True))
+            assert "leaseVersion" not in lease.requests[2]["body"]
+            assert lease.requests[3]["body"]["leaseVersion"] == 2
+            assert not source.stopped_reason
+        finally:
+            await source.aclose()
+
+
+async def test_a_service_that_mints_on_a_missing_version_keeps_todays_requests(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock
+) -> None:
+    save_lease_version(tmp_path, 7)
+    fresh = make_token(iat=1793638900, exp=1793639200)
+    lease.queue(200, answer(0))
+    lease.queue(200, answer(2, hostToken=fresh))
+    source = make_source(lease, tmp_path, clock)
+    try:
+        assert (await source.current()).token == answer(0)["hostToken"]
+        # A 4401 later: it never refused a version-less ask, so this one has none either.
+        assert (await source.renew(host_token_requested=True)).token == fresh
+    finally:
+        await source.aclose()
+    assert len(lease.requests) == 2
+    assert all("leaseVersion" not in r["body"] for r in lease.requests)
+    assert saved_version(tmp_path) == answer(2)["leaseVersion"]
+
+
+async def test_a_replay_of_the_previous_version_after_a_lost_answer_passes(
+    tmp_path: Path, clock: StepClock
+) -> None:
+    async with VersionFencedLeaseService() as lease:
+        lease.mint = True
+        source = make_source(lease, tmp_path, clock)
+        try:
+            await source.current()
+            lease.mint = False
+            await clock.next_sleep()
+            clock.elapse()
+            await calls(lease, 2)
+        finally:
+            await source.aclose()
+        # The answer to the second renewal was lost before it was saved.
+        save_lease_version(tmp_path, 1)
+        try:
+            await assert_retry_later(source.current())
+        finally:
+            await source.aclose()
+        assert lease.requests[3]["body"]["leaseVersion"] == 1
+        assert lease.stored == 3
+        assert not source.stopped_reason
+
+
+def slow_saves(
+    monkeypatch: pytest.MonkeyPatch, slow_version: int
+) -> Tuple[threading.Event, threading.Event]:
+    """Hold the save of *slow_version* in its thread: (started, gate), and set gate to let it go."""
+    started, gate = threading.Event(), threading.Event()
+    real = lease_module.save_lease_version
+
+    def save(home: Path, instance_id: str, version: int) -> None:
+        if version == slow_version:
+            started.set()
+            assert gate.wait(10)
+        real(home, instance_id, version)
+
+    monkeypatch.setattr(lease_module, "save_lease_version", save)
+    return started, gate
+
+
+async def test_a_stop_waits_for_a_slow_save_and_a_restart_reads_the_newest_version(
+    tmp_path: Path, clock: StepClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started, gate = slow_saves(monkeypatch, 2)
+    async with VersionFencedLeaseService() as lease:
+        lease.mint = True
+        source = make_source(lease, tmp_path, clock)
+        try:
+            await source.current()
+            await clock.next_sleep()
+            clock.elapse()
+            await async_wait_until(started.is_set)
+        finally:
+            # The stop cancels the renewal while its save of version 2 is held.
+            closing = asyncio.ensure_future(source.aclose())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not closing.done()
+            gate.set()
+            await closing
+        assert saved_version(tmp_path) == 2
+        try:
+            await source.current()
+        finally:
+            await source.aclose()
+        assert "leaseVersion" not in lease.requests[2]["body"]
+        assert lease.requests[3]["body"]["leaseVersion"] == 2
+        assert not source.stopped_reason
+
+
+async def test_two_saves_land_in_the_order_they_were_made(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started, gate = slow_saves(monkeypatch, 5)
+    source = make_source(lease, tmp_path, clock)
+    instance = crew_instance_id(tmp_path)
+    first = asyncio.ensure_future(source._save_version(tmp_path, instance, 5))
+    await async_wait_until(started.is_set)
+    second = asyncio.ensure_future(source._save_version(tmp_path, instance, 6))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # The newer save waits for the older one instead of landing first.
+    assert not second.done()
+    gate.set()
+    await asyncio.gather(first, second)
+    assert saved_version(tmp_path) == 6
+
+
+async def test_a_refused_version_retry_is_followed_by_todays_endpoint_retry(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock
+) -> None:
+    fresh = make_token(iat=1793638900, exp=1793639200)
+    later = make_token(iat=1793639000, exp=1793639300)
+    lease.queue(200, answer(0))
+    lease.queue(*refusal("ValidationException"))
+    lease.queue(*refusal("ValidationException"))
+    lease.queue(200, answer(2, hostToken=fresh))
+    lease.queue(200, answer(2, hostToken=later, leaseVersion=6))
+    source = make_source(lease, tmp_path, clock)
+    try:
+        await source.current()
+        # A 4401, and the service refuses the stored endpoint whatever the version.
+        assert (await source.renew(host_token_requested=True)).token == fresh
+        bodies = [r["body"] for r in lease.requests[1:4]]
+        assert "leaseVersion" not in bodies[0] and "endpointId" in bodies[0]["relay"]
+        assert bodies[1]["leaseVersion"] == 1 and "endpointId" in bodies[1]["relay"]
+        # The endpoint retry is today's: no endpoint and no version.
+        assert "leaseVersion" not in bodies[2] and "endpointId" not in bodies[2]["relay"]
+        # The version retry was refused, so the fallback is not kept: the next
+        # fresh-token ask has no version either.
+        assert (await source.renew(host_token_requested=True)).token == later
+        assert "leaseVersion" not in lease.requests[4]["body"]
+        assert not source.stopped_reason
+    finally:
+        await source.aclose()
+    assert len(lease.requests) == 5
+
+
 async def test_an_expired_sign_in_rereads_the_credential_and_recovers_on_the_one_retry(
     lease: FakeLeaseService, tmp_path: Path, clock: StepClock
 ) -> None:
@@ -1004,10 +1260,7 @@ def _cfg(**tunnel: Any) -> SimpleNamespace:
     return SimpleNamespace(tunnel=SimpleNamespace(**values))
 
 
-async def test_the_lease_client_is_the_source_only_when_a_lease_service_is_set(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("kiro_crew.edition_locks.local_enable_locked", lambda _section: False)
+async def test_the_lease_client_is_the_source_only_when_a_lease_service_is_set() -> None:
     assert isinstance(public_tunnel_provider(_cfg())._tokens, UnavailableHostTokenSource)
     provider = public_tunnel_provider(
         _cfg(lease_url="http://127.0.0.1:8790", lease_credential="/run/lease-credential")
@@ -1381,10 +1634,7 @@ async def test_the_token_type_setting_names_the_lease_calls_header(
     assert lease.requests[0]["token_type"] == (token_type or None)
 
 
-async def test_an_unknown_token_type_setting_keeps_the_relay_from_starting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("kiro_crew.edition_locks.local_enable_locked", lambda _section: False)
+async def test_an_unknown_token_type_setting_keeps_the_relay_from_starting() -> None:
     # KIRO_MACHINE_TOKEN: the lease service refuses it with a crew key.
     for refused in ("KIRO_MACHINE_TOKEN", "SSO_OIDC", "api_key", "kiro_machine_token", CREDENTIAL):
         cfg = _cfg(

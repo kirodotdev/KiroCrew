@@ -12,17 +12,27 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
 import { partitionBulkSwitch } from '../../lib/bulkModelSwitch'
 import { i18nT } from '../../i18n/t'
-import { fmtNumber } from '../../i18n/format'
+import { fmtList, fmtNumber } from '../../i18n/format'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import type { Slot } from './types'
 import type { SidebarScope } from './scope'
 
 /** The model switch panel's state, roster and write. */
-export function useBulkModelSwitch({ localSlots }: { localSlots: Slot[] }) {
+export function useBulkModelSwitch({ localSlots, slots }: {
+  localSlots: Slot[]
+  /** Every local live slot, including hidden Crew Mode workers and non-chat-page
+   *  member DMs; exclude peer-owned slots. */
+  slots: Slot[]
+}) {
   // Bulk model switch — apply one model to every live session at once.
   const [bulkModelOpen, setBulkModelOpen] = useState(false)
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
-  const [bulkModelError, setBulkModelError] = useState('')
+  // The notice, or the slot keys the last switch failed on and the model it
+  // was for. One state, so every caller that clears the notice also forgets
+  // the failure.
+  const [bulkError, setBulkError] = useState({ message: '', failed: [] as string[], model: '' })
+  const setBulkModelError = (message: string) => setBulkError({ message, failed: [], model: '' })
   // Per-instance id: SessionsSidebarChrome mounts a mobile-drawer sidebar and a desktop one, so
   // a literal id would collide and point one panel's checkbox at the other's label.
   const bulkSkipRunningLabelId = useId()
@@ -54,6 +64,22 @@ export function useBulkModelSwitch({ localSlots }: { localSlots: Slot[] }) {
     [localSlots, bulkModelPick, bulkSkipRunning],
   )
   const bulkAffectedCount = bulkPartition.affected
+  // Whether Switch would send the failed request again: the same model, and
+  // exactly the sessions it failed on, including workers hidden from the list.
+  const bulkRetriesFailed = useMemo(() => {
+    const failed = new Set(bulkError.failed)
+    return failed.size > 0 && bulkError.model === bulkModelPick
+      && partitionBulkSwitch(slots, bulkModelPick, bulkSkipRunning).affected === failed.size
+      && partitionBulkSwitch(slots.filter(s => failed.has(s.key)), bulkModelPick, bulkSkipRunning).affected === failed.size
+  }, [bulkError, slots, bulkModelPick, bulkSkipRunning])
+  // A partial failure names each session as its title reads now, so a rename
+  // or a language switch while the panel is open shows.
+  const bulkModelError = bulkError.failed.length
+    ? i18nT('pages.chatSidebar.session_failed_to_switch', {
+        count: bulkError.failed.length,
+        names: fmtList(bulkError.failed.map(key => sessionDisplayTitle(slots.find(s => s.key === key) ?? { key }))),
+      })
+    : bulkError.message
   // Running sessions the switch could still touch. Before a pick every running
   // session counts; after one, a running session already on the pick is in the
   // "already use this model" line instead, so it is not counted twice.
@@ -67,7 +93,7 @@ export function useBulkModelSwitch({ localSlots }: { localSlots: Slot[] }) {
     // model, so it cannot express an explicit Auto pick.
     mutationFn: ({ model, skipRunning }: { model: string; skipRunning: boolean }) =>
       api.chatSlotsModel(model, skipRunning),
-    onSuccess: (res) => {
+    onSuccess: (res, { model }) => {
       // The switched models refresh on the next authoritative sseSlots push;
       // this handler does not eagerly reflect them. The previous dead-key
       // `invalidateQueries(['chat-slots'])` was a no-op (no query is registered
@@ -81,7 +107,7 @@ export function useBulkModelSwitch({ localSlots }: { localSlots: Slot[] }) {
       // list when some slots' resets raised. Surface it and keep the panel
       // open instead of silently closing on a partial success.
       if (res.failed?.length) {
-        setBulkModelError(i18nT('pages.chatSidebar.session_failed_to_switch', { count: res.failed.length }))
+        setBulkError({ message: '', failed: res.failed, model })
       } else {
         setBulkModelOpen(false)
         setBulkModel('')
@@ -103,13 +129,13 @@ export function useBulkModelSwitch({ localSlots }: { localSlots: Slot[] }) {
     onEnterSingleMatch: () => {},
     closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') },
   })
-  return { bulkModelOpen, setBulkModelOpen, setBulkModel, bulkSkipRunning, setBulkSkipRunning, bulkModelError, setBulkModelError, bulkSkipRunningLabelId, bulkModelsQuery, bulkModelOptions, bulkModelsFailed, bulkModelPick, bulkPartition, bulkAffectedCount, bulkRunningCount, bulkModelMutation, bulkListRef, bulkOnListKeyDown }
+  return { bulkModelOpen, setBulkModelOpen, setBulkModel, bulkSkipRunning, setBulkSkipRunning, bulkModelError, setBulkModelError, bulkSkipRunningLabelId, bulkModelsQuery, bulkModelOptions, bulkModelsFailed, bulkModelPick, bulkPartition, bulkAffectedCount, bulkFailedCount: bulkError.failed.length, bulkRetriesFailed, bulkRunningCount, bulkModelMutation, bulkListRef, bulkOnListKeyDown }
 }
 
 /** The model switch panel. */
 export function renderBulkModelPanel(shell: SidebarScope): React.ReactNode {
-  const { bulkAffectedCount, bulkListRef, bulkModelError, bulkModelMutation, bulkModelOptions, bulkModelPick,
-    bulkModelsFailed, bulkModelsQuery, bulkOnListKeyDown, bulkPartition, bulkRunningCount, bulkSkipRunning,
+  const { bulkAffectedCount, bulkFailedCount, bulkListRef, bulkModelError, bulkModelMutation, bulkModelOptions, bulkModelPick,
+    bulkModelsFailed, bulkModelsQuery, bulkOnListKeyDown, bulkPartition, bulkRetriesFailed, bulkRunningCount, bulkSkipRunning,
     bulkSkipRunningLabelId, setBulkModel, setBulkModelError, setBulkModelOpen, setBulkSkipRunning } = shell.bulkModel
   return (
         <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
@@ -165,10 +191,10 @@ export function renderBulkModelPanel(shell: SidebarScope): React.ReactNode {
               Cancel/Switch pair: a third control in that row would break
               max-two-buttons-per-row, and an inline notice sharing the row
               collapses to one character per line at sidebar width. */}
-          <ErrorNotice message={bulkModelError} className="mb-2" testId="bulk-model-error" />
+          <ErrorNotice message={bulkModelError} className="mb-2 max-h-32" scrollMessage testId="bulk-model-error" />
           <div className="flex items-center gap-2 justify-end">
             <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-            <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModelPick || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModelPick, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
+            <Btn primary className="text-[12px] px-3 py-1" disabled={!bulkModelPick || (bulkAffectedCount === 0 && !bulkRetriesFailed) || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModelPick, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : bulkRetriesFailed ? i18nT('pages.chatSidebar.retry_failed_session', { count: bulkFailedCount }) : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
           </div>
         </div>
   )

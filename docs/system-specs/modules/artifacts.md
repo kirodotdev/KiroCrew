@@ -838,6 +838,20 @@ The detail page does not call `/api/deploy/list`: that listing reads every
 registered profile's account, which is a cost paid when the Publish panel
 opens rather than on every detail view.
 
+The library page does read it, because a static artifact keeps its public-web
+link nowhere else and its entry is where people look for it again.
+`LiveSiteLink` renders the matched site's URL (through `safeHttpUrl`) as a link
+under the name, on the gallery card and the table row. The cost stays bounded:
+every entry shares the Publish panel's `['deploy-web', 'sites']` query, so the
+whole page makes one listing. It is re-read at most every 30 seconds, when an
+entry mounts (opening or scrolling the page), and whenever a deploy or destroy
+refreshes it, but never on window focus. It runs only with the Artifact Deploy
+preview on, and is not gated on cloud deployment being offered: a site an
+earlier deploy left public stays visible, as on the Artifact Deploy page.
+Nothing is stored: a destroyed or reaped site leaves the listing and takes the
+link with it. A recalled site keeps its infrastructure and stays listed, so it
+keeps its link, as on the Publish panel.
+
 ### Withdrawal is NOT best-effort
 
 `publish_sync.unpublish` deletes at the destination and only then clears the local
@@ -1828,6 +1842,10 @@ to this kind would store content no reader can parse.
   re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
   automatic re-mint: a second `load` also happens when a link inside an artifact
   navigates the frame, and silently pulling the reader back would fight them.
+  The crewmate Dashboard tab differs and re-mints by itself
+  (`useFrameAliveRecovery`): its links go through the host's link bridge, so its
+  frame has no navigation of its own to fight, and a document that does not
+  answer the host's ping after a `load` is re-minted, at most three times in a row.
   `/sandbox-doc/` is on the service worker's skip list for the same single-use
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget

@@ -73,6 +73,12 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
         if named is not None and is_preregistered(named):
             return strip_preregistered_oauth_client(entry)
         return entry
+    from kiro_crew.connections import crew_oauth
+
+    if crew_oauth.manages(str(provider["slug"])):
+        # Crew signs in with the vault's copy and KAS discards the oauth block,
+        # so the plaintext secret here would be read by nobody.
+        return strip_preregistered_oauth_client(entry)
     from kiro_crew.secrets import SecretVault
 
     resolved = resolve_oauth_client(

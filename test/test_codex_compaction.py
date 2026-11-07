@@ -1,35 +1,20 @@
 """Codex compaction: the manual ``/compact`` and Crew's own threshold compaction.
 
-The defect these pin: a codex session got NO compaction at all. codex sat outside
-``ACP_BACKENDS_COMPACT``, and that one membership answers both entry points --
-the manual command through ``manual_compact_unsupported_backend``, and Crew's
-threshold-driven compaction through ``session_compaction._compact_unsupported_backend``
--- so the automatic path declined with ``compact_unsupported`` and the context grew
-until the session was recycled. The refusal text a user saw says the backend
-"manages compaction automatically", which was a claim about codex nothing had
-checked.
+Membership in ``ACP_BACKENDS_COMPACT`` answers both entry points
+(``manual_compact_unsupported_backend`` and ``session_compaction._compact_unsupported_backend``);
+outside it a codex session gets no compaction and grows until recycled.
 
-What a capture off codex-acp 1.11.0 (driven over stdio, one adapter, one session)
-establishes, and what each layer below is tested against:
+Facts from a codex-acp 1.11.0 capture that each layer is tested against:
 
-1. ``compact`` IS advertised. The ``available_commands_update`` carries it with the
-   description "Summarize conversation to avoid hitting the context limit".
-2. ``/compact`` completes INSIDE the ``session/prompt`` turn. The adapter answers
-   the prompt only after the compaction is done, so the turn's terminal is the done
-   signal and there is no asynchronous status to await -- codex joins claude in
-   ``ACP_BACKENDS_INLINE_COMPACTION``.
-3. The compaction is reported as a MARKED ``tool_call`` pair rather than as a
-   notification or as prose. ``_meta.contextCompaction`` is the adapter's own
-   marker, which makes the translation a structural match instead of the guess
-   about text the claude path has to make.
-4. There is no ``failed`` status. A compaction that errors emits an
-   ``agent_message_chunk`` and then never resolves, leaving the ``session/prompt``
-   request unanswered -- so nothing here synthesizes a failure.
-5. codex's NATIVE auto-compaction is real but conditional: with
-   ``model_auto_compact_token_limit`` configured it fires on its own and emits the
-   same marked pair, and with the limit absent a session held at 50k tokens across
-   three turns compacted not once. That is why Crew's own threshold compaction is
-   turned on for codex rather than delegated to the harness.
+1. ``compact`` is advertised in ``available_commands_update``.
+2. ``/compact`` completes inside the ``session/prompt`` turn, so the turn's terminal is the
+   done signal: codex is in ``ACP_BACKENDS_INLINE_COMPACTION``.
+3. It is reported as a ``tool_call`` pair marked ``_meta.contextCompaction``, a structural
+   match rather than a guess about text.
+4. There is no ``failed`` status: an error emits an ``agent_message_chunk`` and the prompt
+   never resolves.
+5. Native auto-compaction fires only with ``model_auto_compact_token_limit`` set, so Crew's
+   own threshold compaction is on for codex.
 
 The frame dicts below are the captured shapes, copied from the wire.
 """
@@ -446,12 +431,9 @@ class TestCrewsOwnThresholdCompactionRuns:
 class TestADanglingStartedIsSettled:
     """The failure path, which sends no frame at all.
 
-    The capture's third run is the evidence: a compaction that errors emits the
-    ``started`` frame, then an ``agent_message_chunk`` reading "Error running
-    remote compact task: ...", and then the adapter's ``runCompact`` never
-    resolves -- the ``session/prompt`` request went unanswered for 240s. So there
-    is no terminal to translate, and a consumer that entered a compacting state on
-    the ``started`` would never leave it.
+    An erroring compaction emits ``started``, then an "Error running remote compact task"
+    chunk, and ``runCompact`` never resolves (unanswered for 240s in the capture). With no
+    terminal, a consumer in a compacting state would never leave it.
     """
 
     @pytest.mark.parametrize("impl", ["client", "handle"])
@@ -644,10 +626,8 @@ class TestTheRuntimeTransportTranslatesToo:
     def test_the_gate_is_the_set_so_the_next_inline_harness_inherits_it(self) -> None:
         """Read the gate off the source: a membership test, not a codex identity.
 
-        The sibling work adds opencode, pi and goose to
-        ``ACP_BACKENDS_INLINE_COMPACTION``, and they must inherit this translation
-        by joining the set rather than by editing this method. An
-        ``== ACP_BACKEND_CODEX`` here would also fail the runtime path's own
+        A harness joining ``ACP_BACKENDS_INLINE_COMPACTION`` inherits this translation
+        without editing this method; ``== ACP_BACKEND_CODEX`` would also fail the
         declaration ratchet.
         """
         source = inspect.getsource(AcpSessionHandle._codex_compaction_event)
@@ -764,11 +744,8 @@ async def _managed_manager(factory: Any) -> Any:
 class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
     """Crew's own threshold compaction, at the rung that dispatches ``/compact``.
 
-    A codex session reaches ``_compact_in_place``. Two things had to be true for
-    it to work, and the second is what this class pins: the stream must carry a
-    terminal, and when it does NOT, the path must not spend the whole result
-    budget awaiting an asynchronous status an inline harness never sends -- while
-    holding the session's turn semaphore, so every queued turn waits it out too.
+    With no terminal in the stream, the path must not spend the result budget awaiting a
+    status an inline harness never sends, since it holds the turn semaphore meanwhile.
     """
 
     @pytest.mark.asyncio
@@ -789,14 +766,10 @@ class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
     async def test_a_statusless_turn_is_answered_without_burning_the_budget(self) -> None:
         """No terminal in the stream, and the path still must not wait one out.
 
-        The answer lives on ``wait_for_compaction``, not here: the manual entry
-        points reach a compaction through ``provider.compact()`` and never through
-        this method, so an arm at this one call site leaves every one of those sites
-        stranding. The wait answers an inline member out of the capability, so this
-        call returns at once instead of spending ``COMPACT_WAIT_TIMEOUT_SECS`` while
-        holding the semaphore -- and a harness that did NOT compact is caught one
-        rung later, by the meter reading the coordinator takes once the compaction
-        reports done.
+        The arm lives on ``wait_for_compaction`` because the manual entry points reach
+        ``provider.compact()``, not this method. It returns at once for an inline member
+        rather than wait ``COMPACT_WAIT_TIMEOUT_SECS``; a harness that did not compact is
+        caught by the next meter reading.
         """
         factory = _autocompact_provider_factory(ACP_BACKEND_CODEX, stream_status=None)
         async with _managed_manager(factory) as mgr:
@@ -821,14 +794,10 @@ class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
             provider.wait_for_compaction.assert_awaited()
 
     def test_the_arm_is_chosen_by_capability_not_by_backend_name(self) -> None:
-        """A harness inherits this arm by joining
-        ``ACP_BACKENDS_INLINE_COMPACTION``, which is the property this pins -- at
-        the seam the arm lives on rather than at any one call site.
+        """A harness inherits this arm by joining ``ACP_BACKENDS_INLINE_COMPACTION``.
 
-        Read off the parsed CODE, not the source text: a comment naming the
-        capability would satisfy a substring check while the condition tested
-        something else entirely, which makes the substring version pass on a tree
-        where the gate has been deleted.
+        Read off the parsed code, not the source text: a comment naming the capability
+        would pass a substring check with the gate deleted.
         """
         tree = ast.parse(textwrap.dedent(inspect.getsource(AcpProvider.wait_for_compaction)))
         attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}

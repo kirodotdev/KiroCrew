@@ -722,18 +722,19 @@ def test_the_unprobed_remedy_never_asserts_the_sign_in_state() -> None:
             )
 
 
-def test_the_kiro_signed_out_message_is_unchanged() -> None:
-    """The auth-required path raises exactly the string it always raised.
+def test_the_kiro_signed_out_message_tells_the_user_to_send_again() -> None:
+    """The signed-out message ends at sending again, not at starting a new chat.
 
-    That path reaches the message on the harness's own stderr evidence, so moving
-    it into a declaration must not reword what an operator already reads when
-    kiro-cli's login has lapsed.
+    Signing in again keeps the chat: once ``kiro-cli login`` lands, the next
+    message in the SAME chat succeeds, so a new chat would throw away a
+    conversation the user does not need to lose.
     """
     expected = (
         "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, "
-        "then start a new chat."
+        "then send your message again."
     )
     assert host_auth.signed_out_message("") == expected
+    assert "start a new chat" not in host_auth.sign_in_remedy("")
     # Choosing KAS means Kiro Crew's own sign-in: where kiro-cli cannot run a
     # session the spawn moves onto Crew's own engine, so the KAS sentence names
     # the Kiro sign-in card alone and never sends the user to kiro-cli.
@@ -741,16 +742,18 @@ def test_the_kiro_signed_out_message_is_unchanged() -> None:
     assert kas != expected
     assert "kiro-cli login" not in kas
     assert "Settings → Agent Harness → Kiro sign-in" in kas
-    assert "start a new chat" in kas
+    assert kas.endswith("then send your message again.")
     # The standing (unprobed) remedy names the same path, in plain prose.
     remedy = host_auth.declaration_for("kas").sign_in_remedy
     assert "Settings → Agent Harness → Kiro sign-in" in remedy and "kiro-cli login" not in remedy
+    assert "start a new chat" not in remedy
 
 
 def test_kas_messages_name_the_route_the_last_spawn_took(monkeypatch):
     """Once a spawn chose a route, the KAS messages lead with it, so a person reads
     which engine answered; other harnesses' messages are untouched."""
     from kiro_crew.acp import kas_route
+    from kiro_crew.agent_sdk import kas_bundle
 
     base = host_auth.signed_out_message("kas")
     monkeypatch.setattr(
@@ -762,6 +765,17 @@ def test_kas_messages_name_the_route_the_last_spawn_took(monkeypatch):
     assert led == ("KAS runs on Kiro Crew's own engine because kiro-cli is not installed. " + base)
     assert host_auth.sign_in_remedy("kas").startswith("KAS runs on Kiro Crew's own engine")
     assert "Kiro Crew's own engine" not in host_auth.signed_out_message("")
+    # A relay pinned to kiro-cli's launcher names kiro-cli's sign-in, and still
+    # ends at sending again, as the bundle route's doctor remedy does.
+    monkeypatch.setattr(
+        kas_route,
+        "_LAST_SPAWN_ROUTE",
+        kas_route.KasRoute(bundle=False, reason=kas_route.REASON_KIRO_CLI_LAUNCHER),
+    )
+    assert host_auth.signed_out_message("kas").endswith(
+        "Run `kiro-cli login` in your terminal, then send your message again."
+    )
+    assert "start a new chat" not in kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY
 
 
 # The kiro-cli command named is the one this host's spawn runs

@@ -203,11 +203,19 @@ brief is one fixed line ("Nothing new since HH:MM.", with the date when it is
 not today), posted as a plain message without a card or status chip, and no
 model call is made. The line claims nothing about what waits:
 a question asked in prose before the owner left is the message right above it.
-Otherwise the slot's `preparing` flag shows "Preparing your catch-up…" in the
-chat's working indicator while the gateway reads its inputs and writes the
-brief (the wake turn below, else one tool-free background model call); the
-finished message posts while the flag is
-still up, so it replaces the indicator in place. The claim and every staleness
+Otherwise the slot's `preparing` flag shows in the chat's working indicator
+while the gateway reads its inputs and writes the brief (the wake turn below,
+else one tool-free background model call); the finished message posts while the
+flag is still up, so it replaces the indicator in place. The flag carries a
+caption the gateway builds (`warm_task_brief_checking.py`) from the inputs the
+brief already holds: the non-zero counts of pull requests it read on GitHub (a
+failed read is not counted), the brief's work items (open ones, plus any that closed
+while the owner was away) and running worker chats, then the goal, redacted and
+cut to 60 characters ("Checking 2 PRs on GitHub, 3 tasks for “…”."), or the goal
+alone when every count is zero. The slots frame sends it as `preparing_text`
+with the language it is written in, `preparing_lang`; a client shows it only
+when that is its UI language, and its own translated "Preparing your catch-up…"
+otherwise. The claim and every staleness
 check use the first read's fingerprint; what the brief says comes from the
 re-read made once the claim is on disk, so a worker report that lands in
 between is not missed. Just before posting, the gateway re-reads the "Waiting on
@@ -2861,6 +2869,14 @@ answer); `queued`, the accepted spawns with no run yet (`queued_runs_async`) as
 unavailable; and `deliveries_inflight`, the results still being delivered to the
 slot. Ids and states only: no task text, agent name or result. The fields are read
 after the verdict, and a read that fails costs its own field, never the refusal.
+Two readers show them. The dashboard (`api/apiError.slotAttachedDetail`) puts one
+line naming each run and queued spawn as `id (state)` under the refusal's message,
+through `friendlyErrText` for every surface that shows it and beside the Reload
+alert's own copy, plus a could-not-check line when `runs` is `null` or
+`queued_partial` is true.
+Session-control's `target_busy` refusals (`session_reload`, `session_set_model`) and
+its `session_retry` / `session_continue` refusal append the same list to their
+message (`turn_control._name_attached`), so a driving agent sees what to stop.
 
 Eight properties are load-bearing on this boundary, and each fails toward the
 permissive answer if dropped. `edit-resend` carries all eight; the bullets name
@@ -3148,8 +3164,16 @@ envelope on a cold session.
 byte-order mark reads normally. A file that is not a JSON object starts the map
 empty, and the first write moves it to `session_map.json.corrupt-<utc>` before
 landing; a failed move fails that write and the state stays owed. A file whose
-read raises `OSError` is left alone, and every write raises until a restart reads
-it (`session_map_store._load`, `_write_payload`).
+read raises `OSError` is left alone, and every write raises until an async
+flush re-reads it or a restart does (`session_map_store._load`, `_write_payload`).
+The deferred flush and `aflush` all wait for one re-read, run in a worker thread
+and never under `_MAP_LOCK`; inline writes keep raising until it has run. It
+adopts the file beside the keys written since only when the file holds none of
+them and no entry in memory binds a Slack thread or a mirror, whose one-owner
+checks could not see the file (`_reread_after_failed_load`). A key removed in
+memory since then comes back from the file, as it would after a restart.
+Otherwise, or when the re-read fails or does not parse, writes raise until a
+restart reads the file.
 
 **Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
 itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
@@ -4348,19 +4372,26 @@ so absence clears it.
   rejected before a command outcome, including validation and idle-dispatch
   race refusals, are recorded by the generic mutating-API audit instead.
 
-- **A steer that missed its turn is not held behind sub-agents.** The sub-agent
-  hold (`_dequeue_next_system_message`) drains system injections and keeps plain
-  user prompts parked until the wave ends. A composer steer reaches the queue
-  only when the running turn could not take it: the steer was unavailable
-  (`api_chat`'s fall-through to `queue_for_next_turn(steer_intent=True)`), or
-  the turn ended before consuming it (`_requeue_unconsumed_steers`, from the
-  slot's `_steer_act_now` set). Either entry carries `meta.steer_intent`, and
+- **The session's own human is never held behind sub-agents.** The sub-agent
+  hold (`_dequeue_next_system_message`) drains system injections and keeps
+  other user prompts parked until the wave ends. A composer send is not one of
+  them. A composer send is one `token_auth` marked `is_dashboard_user` (a
+  validated dashboard token with no app claim); a loopback internal-secret
+  caller (an MCP tool, a cron script's `send_to_session`) never is. On
+  an idle slot whose children are still running, `api_chat` holds every other
+  send; the composer's starts a turn at once, whatever the busy-send mode. On a running slot, every composer send that reaches the queue carries
+  `meta.composer_send`: a Queue choice or an `auto` send Jev decided to queue
+  (`queue_for_next_turn(composer_send=True)`), a steer that was unavailable
+  (the same fall-through), or a steer the turn ended before consuming
+  (`_requeue_unconsumed_steers`, from the slot's `_steer_act_now` set).
   `releases_past_subagent_hold` lets it drain at that turn's end like an
-  injection: its sender chose Steer, not Queue. Only the session's own human
-  typing in the composer gets the mark. A peer's `session_send` steer, a
-  channel steer, an app send and an `auto` send Jev decided to queue all wait
-  for the wave. The mark decides ordering only, never authority, and the drain
-  pops it so it never reaches the row's meta.
+  injection, because Queue means after this turn, not after the background
+  work. A card the turn-end read hands the floor (`required_queue_id`) runs
+  under the hold when it carries the mark and stays queued otherwise. A peer's
+  `session_send`, a channel message, an app send and an internal-secret send
+  all wait for the wave. The
+  mark decides ordering only, never authority, and the drain pops it so it
+  never reaches the row's meta.
 - **Only a plain user prompt is durable.** An entry carrying a `kind` is an
   injection whose producer is gone (a cron notification names an event, and a
   restart is not that event happening again); an entry carrying a `payload` is a
@@ -4417,7 +4448,15 @@ so absence clears it.
 - **Restored entries are handed back as queue CARDS, not dispatched.** Nothing
   drains an idle slot on boot, so the user sends, edits or deletes them. This is
   the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
-  turn may have run un-persisted must never be auto-resent.
+  turn may have run un-persisted must never be auto-resent. Resume on an
+  interrupted slot runs only that turn and leaves the cards waiting, so while the
+  main chat or a split pane offers Resume over restored cards, the composer
+  placeholder says how many wait to be sent (`turn_interrupted_restored_queue`,
+  which first points to the collapsed queue strip) or, for one card,
+  `turn_interrupted_restored_card`. The choice is on the count, not the plural
+  category, because one card shows its Send now button without opening the stack.
+  A crewmate's chat (no cards, only bubbles) and the crew window (read-only
+  cards) keep the plain Resume hint, since neither lets the user send a card.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a

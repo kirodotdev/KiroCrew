@@ -895,9 +895,7 @@ async def _requeue_after_prompt_busy(
         # the finally choke point. Past the Stop guard above, so
         # a user cancel never reaches here.
         if turn is not None:
-            turn.died_notice = (
-                "The chat stayed busy and could not recover. " "Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_busy"
     else:
         # depth>0 with budget remaining: no re-queue (mirrors AcpProcessDied),
         # but still surface feedback so the nested turn doesn't fail silently.

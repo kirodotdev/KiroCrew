@@ -47,8 +47,9 @@ notification:system     Gateway-internal pushes with no source_app -- cron
                         rather than the app's own: bundling them would make
                         one declaration a broad grant, the very shape this
                         module exists to remove.
-notification_ack / notification_unack carry only a timestamp, so they cannot be
-attributed to a source at all and need `notification:all`.
+notification_ack / notification_unack / notification_dismiss carry only a
+timestamp, so they cannot be attributed to a source at all and need
+`notification:all`.
 notifications_clear carries no payload at all -- it fires when the WHOLE log is
 cleared, not one app's slice -- so it needs `notification:all` for the same reason.
 notification_channel_settings IS attributable -- its channel is `<app>.<id>` or
@@ -61,6 +62,8 @@ sessions                sessions_restarting, session_health_changed
                         moved, never what it says)
 yolo                    yolo_expired
 artifacts               artifact_update ({slug, version, deleted}; metadata only)
+lessons                 lessons.changed ({action, source, count}; global store
+                        only, never the lesson text)
 workflow_run_event      Declared by its own literal name -- already the correct
                         per-event Tier 2 shape, and the only events declaration
                         present in the tree today (the workflows app).
@@ -206,6 +209,8 @@ _TIER0_ALWAYS = frozenset({
     # Dashboard-wide progress signals with no user data.
     "refresh",
     "update_progress",
+    # A harness's model list just filled; the payload is empty.
+    "models_changed",
 })
 
 # ---------------------------------------------------------------------------
@@ -372,6 +377,7 @@ _APP_SOURCE_PREFIX = "app:"
 _UNATTRIBUTED_NOTIFICATION_EVENTS = frozenset({
     "notification_ack",
     "notification_unack",
+    "notification_dismiss",
     "notifications_clear",
 })
 
@@ -441,6 +447,7 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # the stricter branch in ws_event_allowed, which these never reach.
     "notification_ack": "notification",
     "notification_unack": "notification",
+    "notification_dismiss": "notification",
     "notifications_clear": "notification",
     # Channel mute/priority metadata only ({muted, priority}) -- same domain as
     # the notification events themselves, so it rides the same declaration.
@@ -461,6 +468,13 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # what the user is building, so it takes an explicit declaration rather
     # than riding Tier 0. Same treatment as artifact_update above.
     "skills.pending_changed": "skills",
+    # Metadata only ({action, source, count}): no rule text, no repo scope, no row
+    # key, and only for the GLOBAL store an app token's read resolves to
+    # (``kiro_crew.lesson_events``). Still an explicit declaration rather than Tier
+    # 0, for the reason `skills.pending_changed` above gives: when the user is
+    # teaching the agent is not every app's business. Holding `lessons` is not a
+    # read grant either; the rows stay behind `permissions.api` and that route.
+    "lessons.changed": "lessons",
     # Declared by its own literal name: this is already the correct Tier 2
     # shape (per-event opt-in), and it is the one declaration that exists in
     # the tree today (the workflows app), so the name must not change.

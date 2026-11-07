@@ -175,6 +175,7 @@ from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
     FOREIGN_HOLDER,
     HEALTHY_PEER,
     NO_HOLDER,
+    RECLAIM_FAILED,
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
@@ -285,6 +286,8 @@ from kiro_crew.dashboard.server_runtime.listener import (  # noqa: F401
     _export_bound_port,
     _export_reserved_bind_evidence,
     _holds_every_loopback_family,
+    _log_port_still_in_use,
+    _port_wait_message,
     _register_unix_socket_cleanup,
     _remove_stale_unix_socket,
     _reserve_dashboard_port,
@@ -393,6 +396,7 @@ from kiro_crew.dashboard.server_runtime.session_restore import (  # noqa: F401
 from kiro_crew.dashboard.server_runtime.skill_learning import (  # noqa: F401
     _auto_create_consolidator,
     _pending_skill_notification,
+    _register_lesson_change_hook,
     _register_pending_skill_hooks,
 )
 from kiro_crew.dashboard.server_runtime.static_assets import (  # noqa: F401
@@ -444,6 +448,7 @@ from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401
 from kiro_crew.instances.registry import InstancesRegistry  # noqa: F401
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState  # noqa: F401
+from kiro_crew.lesson_events import set_lessons_changed_hook  # noqa: F401
 from kiro_crew.mate_config_migration import migrate_existing_crewmates
 from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600  # noqa: F401
 from kiro_crew.metrics.http_metrics import (  # noqa: F401
@@ -741,6 +746,7 @@ async def start_dashboard(
     kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    approval_mode: str | None = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
     # Channels retain this same runner on the gateway, independently of state.
@@ -778,6 +784,8 @@ async def start_dashboard(
 
     # --- Pending-skill approval notifications ---
     _register_pending_skill_hooks(state)
+    # --- Lesson-store change signal for apps that declare `lessons` ---
+    _register_lesson_change_hook(state)
 
     state._hook_store = ScriptHookStore()
     set_global_hook_store(state._hook_store)
@@ -1117,11 +1125,9 @@ async def start_dashboard(
         # which ignores that local switch with the rest of the tunnel control. Either
         # way the ingress middleware hands every request that is not a verified
         # handover on to the client-sent relay-header strip.
-        from kiro_crew.edition_locks import local_enable_locked
+        from kiro_crew.edition_locks import relay_selected
 
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(
-            enabled=_cfg.tunnel.relay_enabled is True and not local_enable_locked("tunnel")
-        )
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=relay_selected(_cfg))
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
@@ -1513,7 +1519,7 @@ async def start_dashboard(
     # ``stat`` walk of the profiles dir. We are inside ``async def start_dashboard``,
     # so running it inline stalls the gateway's loop, and on slow storage it stalls
     # the heartbeat with it.
-    await asyncio.to_thread(_apply_startup_yolo, state, cfg)
+    await asyncio.to_thread(_apply_startup_yolo, state, cfg, approval_mode)
 
     # Wire safety override expiry notifications
     def _on_override_expired(source: str) -> None:

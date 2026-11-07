@@ -39,16 +39,16 @@ async function main() {
     const page = await ctx.newPage()
     page.on('console', m => { if (m.type() === 'error') errors.push(`${shot.name}: ${m.text()}`) })
     page.on('pageerror', e => errors.push(`${shot.name}: pageerror: ${e.message}`))
-    await stubDashboardApi(page)
-
-    // Seed BEFORE first paint: System is the option the new sentence is about,
-    // so it is the one the frame must show selected.
-    await page.addInitScript(([lang, mode]) => {
-      localStorage.setItem('mc-lang', lang)
-      localStorage.setItem('mc-theme', mode)
-      localStorage.setItem('mc-font-family', 'system')
-      localStorage.setItem('mc-onboarded', '1')
-    }, [shot.lang, shot.mode])
+    await stubDashboardApi(page, {
+      localStorageEntries: {
+        'mc-lang': shot.lang,
+        'mc-theme': shot.mode,
+        // Seed BEFORE first paint: System is the option the new sentence is
+        // about, so it is the one the frame must show selected.
+        'mc-font-family': 'system',
+        'mc-onboarded': '1',
+      },
+    })
 
     await page.goto(base + '/settings/display/zoom', { waitUntil: 'domcontentloaded' })
 

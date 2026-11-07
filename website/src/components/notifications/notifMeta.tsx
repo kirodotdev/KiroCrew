@@ -111,12 +111,28 @@ const SYSTEM_NOTE_TITLE_KEY = {
   turn_limit: 'components.notifications.systemNote.turn_limit_title',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_title',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_title',
+  chat_stopped_signed_out: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_error: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_connection_dropped: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_agent_restarting: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_unrecovered: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_busy: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_refused: 'components.notifications.systemNote.chat_stopped_title',
+  chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   turn_limit: 'components.notifications.systemNote.turn_limit_body',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_body',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_body',
+  chat_stopped_signed_out: 'components.notifications.systemNote.chat_stopped_signed_out_body',
+  chat_stopped_error: 'components.notifications.systemNote.chat_stopped_error_body',
+  chat_stopped_connection_dropped: 'components.notifications.systemNote.chat_stopped_connection_dropped_body',
+  chat_stopped_agent_restarting: 'components.notifications.systemNote.chat_stopped_agent_restarting_body',
+  chat_stopped_unrecovered: 'components.notifications.systemNote.chat_stopped_unrecovered_body',
+  chat_stopped_busy: 'components.notifications.systemNote.chat_stopped_busy_body',
+  chat_stopped_refused: 'components.notifications.systemNote.chat_stopped_refused_body',
+  chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_stalled_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway

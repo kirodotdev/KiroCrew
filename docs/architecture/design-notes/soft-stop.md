@@ -258,7 +258,7 @@ The `stop_event` entry is a `system` message whose structured payload is
 JSON-encoded into **both** `cls` (so `parse_cls_meta` populates `meta` on the wire,
 which is what the frontend routes on) and `content` (for consumers that read only
 content). The payload carries `kind`, `id`, `state`
-(`stopping` / `stopped` / `stop_failed_reset`), `outcome`, `ts_start` and `ts_end`.
+(`stopping` / `stopped` / `stop_failed_reset` / `force_stopped`), `outcome`, `ts_start` and `ts_end`.
 `_resolve_stop_event` rewrites it **in place** by id and re-broadcasts, so
 `StopEventCard` transitions from its pulsing "Stopping" state to a settled one.
 
@@ -275,7 +275,9 @@ concurrently drives `_stop_state` back to `idle`:
   cannot carry that fact because teardown resets it to `idle` from `killing` just as
   readily as from `soft_pending`. So the escalation path sets
   `slot._stop_escalated_card_id`, which teardown never touches, and only the **soft**
-  callback defers on it. `hard` is terminal and nothing outranks it. The marker holds
+  callback defers on it. `hard` is terminal and nothing outranks it, and
+  `_resolve_stop_event` reads the same marker to settle an escalated hard kill as
+  `force_stopped` rather than `stop_failed_reset`. The marker holds
   an **id** rather than a boolean, because a bare flag left set would make the NEXT
   card's cooperative ack defer to a hard callback that never fires, stranding that
   card at "stopping".
@@ -309,7 +311,7 @@ three shapes:
   exactly this reason, since a plain soft cancel would be ignored as redundant by the
   backend and the button would be a no-op.
 
-`StopEventCard` renders the three payload states with `lucide-react` icons and the
+`StopEventCard` renders each payload state with `lucide-react` icons and the
 danger design tokens, and the pulsing state uses a Framer Motion opacity loop rather
 than new CSS keyframes.
 

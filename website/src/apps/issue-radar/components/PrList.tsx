@@ -374,11 +374,13 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
             </span>
           )}
           <button
-            onClick={refreshPulls}
-            disabled={pullsRefreshing}
+            onClick={() => { if (!pullsRefreshing) refreshPulls() }}
+            // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            // order and drops a keyboard user's focus to the page while it runs.
+            aria-disabled={pullsRefreshing || undefined}
             title={i18nT('apps.issueRadar.components.prList.re_fetch_from', { label: terms.changeRequestPluralTitle, provider: terms.providerName })}
             aria-label={i18nT('apps.issueRadar.components.prList.refresh', { label: terms.changeRequestPlural })}
-            className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
+            className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text aria-disabled:opacity-30 aria-disabled:cursor-default"
           >
             <RefreshCw size={13} className={pullsRefreshing ? 'animate-spin' : ''} />
           </button>

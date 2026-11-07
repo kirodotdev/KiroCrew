@@ -55,6 +55,7 @@ from kiro_crew import (  # noqa: F401
     agent_state,
     dep_sync,
     diagnostics,
+    env,
     gateway_lock,
     host_task_sizing,
     kiro_sandbox_conflict,
@@ -309,6 +310,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _LEGACY_VENV_DIR_NAMES,
         _doctor_cron_script_sources,
         _doctor_data_home,
+        _doctor_data_home_owner,
         _doctor_import_path,
         _doctor_path_launcher,
         _doctor_skill_currency,
@@ -785,6 +787,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover legacy home) ──
     install._doctor_data_home()
+    install._doctor_data_home_owner(issues)
     install._doctor_cron_script_sources(issues)
     install._doctor_skill_currency(issues)
     agents._doctor_deprecated_agent_specs(cfg, issues)
@@ -1110,6 +1113,7 @@ _EXPORTS: dict[str, str] = {
             "_LEGACY_VENV_DIR_NAMES",
             "_doctor_cron_script_sources",
             "_doctor_data_home",
+            "_doctor_data_home_owner",
             "_doctor_import_path",
             "_doctor_path_launcher",
             "_doctor_skill_currency",

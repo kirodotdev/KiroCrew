@@ -694,7 +694,16 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 20, from 34,733, for the git publish check in ``argv_floor_git``: a git
 #: option word with an unquoted expansion (``git -C $d push ...``) can word-split into
 #: the subcommand and refspecs, so it is handed to the ``$`` check. Deny-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_753
+#: Raised by 24, from 34,753, for ``rm_floor._carrier_home``: each ``$HOME`` the carrier
+#: command leaves live is read as home in a nested payload. Deny-only. Re-measured.
+#: Raised by 25, from 34,777, for the prior spellings of the two interpreter-payload
+#: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
+#: it, and the catalog comment on why their call names stand bare (both rows match
+#: exactly what they matched). Nothing is relaxed. Re-measured.
+#: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
+#: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
+#: (55 lines; the rest fit in the headroom main had left). Re-measured.
+_PACKAGE_LINE_BUDGET = 34_845
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

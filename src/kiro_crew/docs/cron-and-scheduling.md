@@ -32,10 +32,15 @@ kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"          # one-s
 kirocrew cron add "version-check" "" --every 3600 \
   --script ~/.kiro/crew/crons/check.py:run --no-persistent-session --minimal-context   # zero-token script job
 kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60  # zero-token command job
+kirocrew cron add "digest" "summarize the news" --every 86400 --folder "Veille"  # filed in a Schedule-page folder
 kirocrew cron update <job-id> --name "new name" --message "new prompt" --approval-mode auto
+kirocrew cron update <job-id> --folder "Reports"   # move to a folder; --folder "" moves it out
 kirocrew cron list
+kirocrew cron list --folder "Veille"                # only that folder; --folder - lists ungrouped jobs
 kirocrew cron remove <id>
 ```
+
+`--folder` takes a Schedule-page folder name or id, as the `cron_add` and `cron_update` tools do. A missing name is created, then the job is filed in it; an unknown id and a name several folders share are refused. The folder is created through the running gateway (the dashboard owns the folder list), so with no gateway running only an existing folder can be named. `cron list` shows each job's folder, and its `--folder` filter only reads: it never creates one. The `cron_list` tool's `json` output carries the same `folder` field (`{id, name}`, or `null` when ungrouped).
 
 A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script`/`--command` and `--agent` are mutually exclusive, as are `--every`/`--cron`/`--at`. Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
 
@@ -144,6 +149,8 @@ def run(ctx):
 
 `ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool and returns every text block of its result, in order, joined by newlines (a tool that puts a notice ahead of its JSON returns both, the notice first). `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. Arguments are scanned for credentials before they are sent: a credential-shaped span inside a longer string is replaced by a `[REDACTED: ...]` placeholder, and when a whole argument is a credential (a long opaque id can look like one) the call is not sent: it raises `ValueError` naming the argument's path, never its value. `kirocrew cron preview` refuses it the same way. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
 
+On Linux and macOS the script body runs in a sandbox that hides credential directories such as `~/.aws` and `~/.kube`, and every process it starts runs inside that same sandbox, including an MCP server it calls with `ctx.call_tool`. A vault secret granted to the job (`secret_env`) reaches the script as an environment variable, never as a file. So a program that reads its credential from a file the sandbox hides cannot read it from a script cron. `kirocrew cron preview` runs the script outside this sandbox, so a preview can read a file the scheduled run cannot. Run that job as an agent cron instead, whose commands run at the `agent.sandbox` [tier](configuration.md#sandbox), or [outside Kiro Crew](#a-long-job-that-must-outlive-the-chat).
+
 A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
 
 - `ctx.list_session_folders()` returns the dashboard's session folders. Each folder carries its `id` and `parent_id` (empty for a top-level folder), so a script can find an existing child folder before creating one.
@@ -207,6 +214,21 @@ cron_add(
 | `persistent_session: false` | `cron:{id}:{uuid}` (fresh each run) | Clean slate, no `last_result` | Polling, scanners, alerting |
 
 The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral sessions.
+
+### A New Chat per Run (`new_chat_per_run`)
+
+A stateless job has no chat tab: its result reaches the bell, Slack and the job's History, but there is no conversation to reply in. Set `new_chat_per_run: true` to give every run its own tab, `Cron: <name> | <run time>`, on that run's own fresh session. Open it and reply like any other chat, for example to approve a draft the run wrote; the next run starts clean in a tab of its own.
+
+```
+cron_add(
+    name="monthly-status",
+    message="draft this month's status update; do not post it",
+    cron="0 9 8 * *",
+    new_chat_per_run=true
+)
+```
+
+It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
 
 ## Skipping Dates
 

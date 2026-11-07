@@ -117,6 +117,18 @@ test("a stored accelerator taken by another app falls back to the default", () =
   assert.ok(DEFAULT in state.registered);
   assert.ok(logs.some((l) => /failed to register/.test(l)), logs);
   assert.ok(logs.some((l) => /falling back to default/.test(l)), logs);
+  // What was asked for survives the fallback, so the UI can say so.
+  assert.strictEqual(mod.requestedGlobalHotkey(), "CommandOrControl+Shift+J");
+});
+
+test("the requested accelerator tells a turned-off hotkey from a taken default", () => {
+  const { mod } = loadModule({ failFor: new Set([DEFAULT]) });
+  mod.setGlobalHotkeyLogger(() => {});
+  mod.bindGlobalHotkey(null, () => {});
+  assert.deepStrictEqual([mod.currentGlobalHotkey(), mod.requestedGlobalHotkey()], ["", DEFAULT]);
+  // Rebinding to off must clear what the earlier bind asked for.
+  mod.bindGlobalHotkey("", () => {});
+  assert.deepStrictEqual([mod.currentGlobalHotkey(), mod.requestedGlobalHotkey()], ["", ""]);
 });
 
 test("a malformed stored accelerator (register throws) is caught and falls back", () => {

@@ -35,7 +35,7 @@ import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../../lib/splitOnPlaceholder'
-import { sliceCodePoints } from '../../../components/CommentOverlay'
+import { sliceCodePoints } from '../../../utils/codePoints'
 import { CopyCommandButton } from '../../../components/settingRef/CopyCommandButton'
 
 /** The theme token a node state paints with. `open`/`done` are drawn muted. */
@@ -277,11 +277,13 @@ export default function GraphView() {
             ))}
           </datalist>
           <button
-            onClick={refreshNow}
-            disabled={depsQuery.isFetching}
+            onClick={() => { if (!depsQuery.isFetching) refreshNow() }}
+            // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            // order and drops a keyboard user's focus to the page while it runs.
+            aria-disabled={depsQuery.isFetching || undefined}
             aria-label={i18nT('apps.issueRadar.views.graphView.refresh')}
             title={i18nT('apps.issueRadar.views.graphView.refresh')}
-            className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
+            className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-border text-muted hover:text-text hover:border-border-strong aria-disabled:opacity-40 aria-disabled:cursor-default cursor-pointer"
           >
             <RefreshCw size={13} className={depsQuery.isFetching ? 'animate-spin' : ''} />
           </button>
@@ -878,9 +880,11 @@ function FailureActions({
       {onRetry ? (
         <button
           type="button"
-          onClick={onRetry}
-          disabled={refreshing}
-          className="self-start inline-flex items-center gap-1.5 text-[11px] tracking-[.06em] px-3 py-1.5 border border-border-strong rounded-md text-text hover:border-accent hover:text-accent disabled:opacity-40 cursor-pointer"
+          onClick={() => { if (!refreshing) onRetry() }}
+          // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+          // order and drops a keyboard user's focus to the page while it runs.
+          aria-disabled={refreshing || undefined}
+          className="self-start inline-flex items-center gap-1.5 text-[11px] tracking-[.06em] px-3 py-1.5 border border-border-strong rounded-md text-text hover:border-accent hover:text-accent aria-disabled:opacity-40 aria-disabled:cursor-default cursor-pointer"
         >
           <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
           {i18nT('apps.issueRadar.views.graphView.retry')}
@@ -960,9 +964,11 @@ function EmptyBoard({
         </p>
       )}
       <button
-        onClick={onRetry}
-        disabled={refreshing}
-        className="inline-flex items-center gap-1.5 text-[11px] tracking-[.06em] px-4 py-2 border border-border-strong rounded-md text-text hover:border-accent hover:text-accent disabled:opacity-40 cursor-pointer"
+        onClick={() => { if (!refreshing) onRetry() }}
+        // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+        // order and drops a keyboard user's focus to the page while it runs.
+        aria-disabled={refreshing || undefined}
+        className="inline-flex items-center gap-1.5 text-[11px] tracking-[.06em] px-4 py-2 border border-border-strong rounded-md text-text hover:border-accent hover:text-accent aria-disabled:opacity-40 aria-disabled:cursor-default cursor-pointer"
       >
         <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
         {i18nT('apps.issueRadar.views.graphView.retry')}

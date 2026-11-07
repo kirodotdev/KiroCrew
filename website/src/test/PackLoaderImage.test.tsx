@@ -98,6 +98,19 @@ describe('PackLoaderImage', () => {
     expect(drawImage).toHaveBeenCalledWith(img, 0, 3.5, 14, 7)
   })
 
+  it('sizes a canvas under a hidden ancestor from its CSS box, not the 14px slot edge', () => {
+    stubCanvas()
+    // The welcome hero is display:none on a short viewport, and can be shown later.
+    const hidden = document.body.appendChild(document.createElement('div'))
+    hidden.style.display = 'none'
+    const canvas = hidden.appendChild(document.createElement('canvas'))
+    canvas.style.width = '48px'
+    canvas.style.height = '48px'
+    paintStill(canvas, document.createElement('img'))
+    hidden.remove()
+    expect([canvas.width, canvas.height]).toEqual([48, 48])
+  })
+
   it('fills the box for an image that reports no intrinsic size', () => {
     const drawImage = stubCanvas()
     const canvas = document.createElement('canvas')

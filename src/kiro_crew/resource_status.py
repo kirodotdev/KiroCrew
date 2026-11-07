@@ -15,8 +15,8 @@ The advisory surfaces carry no enforcement, no lease, no cross-session
 coordination. Two sessions can both read "ample" and both launch heavy work —
 the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
 on top: :func:`admission_check` gates *background* work admission (scheduled
-cron firings, task-runner steps) while posture is CRITICAL, so the scheduler
-stops piling work onto a host that is about to freeze. Subagent spawns are not
+cron firings, task-runner steps, background helper turns) while posture is CRITICAL,
+so the scheduler stops piling work onto a host about to freeze. Subagent spawns are not
 gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``),
 which the pull tool reports on the gate's own figure (:func:`spawn_floor_reading`)
 because the posture can read AMPLE while that floor holds every start. Direct user chat turns
@@ -1439,7 +1439,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
     The single enforcement point layered on the advisory posture tier: a
     CRITICAL posture refuses; every other posture — ample, tight, and unknown —
     admits. Callers on the gated paths (scheduled cron firings, task-runner
-    steps) consult this once per admission decision; it reuses the
+    steps, background helper turns) consult this once per admission decision; it reuses the
     same cheap :func:`probe` the advisory surfaces use (fingerprint-cached
     config, one memory read, and a handful of single-value cgroup reads for the
     slice's task figure) and never scans processes. The task figure is reported,

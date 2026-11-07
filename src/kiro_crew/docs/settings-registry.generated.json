@@ -690,6 +690,13 @@
       "hint": "Expand history sidebar by default"
     },
     {
+      "id": "chat.include-subfolder-contents-in-folder-counts",
+      "label": "Include Subfolder Contents in Folder Counts",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.include-subfolder-contents-in-folder-counts",
+      "hint": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds"
+    },
+    {
       "id": "chat.jump-to-the-bottom-when-you-send",
       "label": "Jump to the bottom when you send",
       "tab": "chat",
@@ -811,6 +818,20 @@
       "label": "Quick Send",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.quick-send"
+    },
+    {
+      "id": "chat.recall-sent-messages-with-arrow-keys",
+      "label": "Recall Sent Messages with Arrow Keys",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.recall-sent-messages-with-arrow-keys",
+      "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
+    },
+    {
+      "id": "chat.require-a-second-escape-to-stop-the-turn",
+      "label": "Require a second Escape to stop the turn",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.require-a-second-escape-to-stop-the-turn",
+      "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn."
     },
     {
       "id": "chat.response-verbosity",
@@ -1487,6 +1508,13 @@
       "description": "Copies the command for you to paste. It is never run for you.",
       "hint": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
       "configKey": "dashboard.terminal.reuse_current"
+    },
+    {
+      "id": "display.show-tray-icon",
+      "label": "Show tray icon",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-tray-icon",
+      "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there."
     },
     {
       "id": "display.show-unread-dot-on-session-cards",

@@ -31,6 +31,10 @@ from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import SemanticRejectCode
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 def _write(path: Path, text: str) -> None:
     """Write *text* with LF endings on every platform (Windows would translate)."""

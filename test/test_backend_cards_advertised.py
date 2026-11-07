@@ -68,7 +68,6 @@ SET_GATE_ALLOWLIST: Dict[Tuple[str, str], int] = {
     ("dashboard/chat_turn/slash_commands.py", "ACP_BACKENDS_COMPACT"): 1,
     ("deny_notice.py", "ACP_BACKENDS_STEER"): 1,
     ("providers/acp.py", "ACP_BACKENDS_COMPACT"): 2,
-    ("providers/acp.py", "ACP_BACKENDS_KIRO_FAMILY"): 1,
     ("providers/acp.py", "ACP_BACKENDS_STEER"): 1,
     ("providers/acp.py", "ACP_BACKENDS_STEERING_REQUEST"): 2,
     ("providers/acp_model_effort.py", "ACP_BACKENDS_KIRO_FAMILY"): 2,

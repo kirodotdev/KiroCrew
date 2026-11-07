@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import string
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
@@ -738,13 +738,50 @@ _TURN_DIED_CHANNEL = "system.turn"
 #: ``system.monitor`` and ``system.member`` notes use for the same reason; the
 #: mute/priority that actually govern this note travel on the channel.
 _TURN_DIED_KIND = "agent"
+#: Why a terminal arm says the turn died: the copy id the bell renders the note
+#: from in the reader's language (``SYSTEM_NOTE_BODY_KEY`` in ``notifMeta.tsx``).
+_TurnDiedNote = Literal[
+    "chat_stopped_signed_out",
+    "chat_stopped_error",
+    "chat_stopped_connection_dropped",
+    "chat_stopped_agent_restarting",
+    "chat_stopped_unrecovered",
+    "chat_stopped_busy",
+    "chat_stopped_refused",
+    "chat_stopped_stalled",
+]
+#: Each one's English body, kept on the note for every reader with no catalog.
+_TURN_DIED_BODIES: dict[_TurnDiedNote, str] = {
+    "chat_stopped_signed_out": (
+        "The chat stopped because the agent is signed out. Open the chat to sign in."
+    ),
+    "chat_stopped_error": "The chat stopped with an error. Open the chat to see what happened.",
+    "chat_stopped_connection_dropped": (
+        "The connection to the agent kept dropping. Open the chat to start a new one."
+    ),
+    "chat_stopped_agent_restarting": (
+        "The agent process kept restarting and the turn did not finish. Open the chat to retry."
+    ),
+    "chat_stopped_unrecovered": (
+        "The chat stopped and could not recover. Open the chat to start a new one."
+    ),
+    "chat_stopped_busy": (
+        "The chat stayed busy and could not recover. Open the chat to start a new one."
+    ),
+    "chat_stopped_refused": (
+        "The model declined to answer and the chat stopped. Open the chat to see why."
+    ),
+    "chat_stopped_stalled": (
+        "The chat stalled and could not recover. Open the chat to start a new one."
+    ),
+}
 
 
-def _notify_turn_died(turn, body: str) -> None:
+def _notify_turn_died(turn, note: _TurnDiedNote) -> None:
     """Raise a notification-bell entry for a turn that DIED and needs the user.
 
-    When a turn ends in an error the user must
-    act on -- a provider 5xx / throttle, a content-filter refusal, or a
+    *note* names why, as a key of :data:`_TURN_DIED_BODIES`. When a turn ends in
+    an error the user must act on -- a provider 5xx / throttle, a content-filter refusal, or a
     terminal transport death -- the transcript shows the inline error card with
     its Resume/Continue control, but nothing reaches the bell, so an operator
     working in another session learns work has stopped only by opening it. This
@@ -796,7 +833,7 @@ def _notify_turn_died(turn, body: str) -> None:
         payload = payload_from_legacy(
             _TURN_DIED_KIND,
             "⚠️ A chat stopped",
-            body,
+            _TURN_DIED_BODIES[note],
             # Name the dying slot so the banner gate scopes to it: a banner is
             # suppressed only while the operator is viewing THAT slot
             # (targetsCurrentView's n.slot === activeSlot branch), not whenever
@@ -812,6 +849,7 @@ def _notify_turn_died(turn, body: str) -> None:
             # (`dashboard:slack_<ts>`), which would read as unmuted. Same key
             # member_message_notes publishes under.
             publisher_session=slot.key or None,
+            i18n={"id": note},
         )
         # One stacked bell row per session, not one per death.
         if session_key:

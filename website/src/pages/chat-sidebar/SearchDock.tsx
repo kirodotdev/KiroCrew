@@ -5,16 +5,17 @@
  *  capsule, holds the active filter chips (tags, models, status, hides) and the
  *  list-level notices (seed, crew names, read failures, close refusal, folder
  *  writes and order, create, rename, title, peer sessions). */
-import { Fragment } from 'react'
+import { Fragment, useLayoutEffect, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { setCloseRefused } from '../../store/chatSlice'
 import { api } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { errMessage } from '../../utils/thunkError'
 import { Btn, IconButton } from '../../components/ui'
@@ -33,9 +34,34 @@ import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
 import { DisclosureChevron } from './chrome'
+import { keepRowInMenuView } from '../../lib/menuRowReveal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
+
+/**
+ * The menu's Folders section, its separator included. Opened for it (`reveal`, the board
+ * notice's Show), it takes focus on its heading and stays in view while the menu settles:
+ * it sits last, so a menu taller than the room below the funnel would otherwise open with
+ * it out of sight, and a keyboard reader's first arrow would start from the top. Radix
+ * leaves a focus already inside the menu where it is.
+ */
+function FoldersSection({ reveal, children }: { reveal: boolean; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = ref.current
+    const menu = reveal ? el?.closest<HTMLElement>('[role="menu"]') : null
+    if (!menu || !el) return
+    el.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
+    return keepRowInMenuView(menu, () => el)
+  }, [reveal])
+  return (
+    <DropdownMenuGroup ref={ref} data-testid="folder-filter-section">
+      <DropdownMenuSeparator />
+      {children}
+    </DropdownMenuGroup>
+  )
+}
 
 /**
  * A pill for one duration choice, shared by the Recent window presets and — on a
@@ -163,11 +189,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
-    laneSwitchLabel, listNarrowed, manualOrderError, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError,
+    laneSwitchLabel, listNarrowed, manualOrderError, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError, prStatusRefreshError,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, remoteSessionsError,
     renameError, seedError, seedStateLanesMutation, selectRecentPreset, setAllFiltersPaused,
     setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setManualOrderError, setModelFilterExcluded, setNewChatError,
-    setPinnedOrderError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
+    setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter } = shell
@@ -230,7 +256,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
               </AnimatePresence>
             </button>
             )}
-            <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
+            <DropdownMenu open={filterSortOpen !== false} onOpenChange={setFilterSortOpen}>
               <DropdownMenuTrigger asChild>
                 {/* The funnel holds the way back, so while a hide withholds rows its
                     title says both that something is withheld and how much.
@@ -888,8 +914,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     no reveal row either, and without this section the hide would have no
                     way back short of leaving board view. */}
                 {folderFilterRows.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
+                    <FoldersSection reveal={filterSortOpen === 'folders'}>
                     {/* The heading doubles as the shelve control: activating it
                         rolls the folder list up or down. It stays a menu item so
                         keyboard users reach it with the same arrow keys as every
@@ -980,7 +1005,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     })}
                       </>
                     )}
-                  </>
+                    </FoldersSection>
                 )}
               </FilterMenuContent>
             </DropdownMenu>
@@ -1158,8 +1183,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
       {/* Read failures for the two lists this pane is built from. Same placement
        *  rationale as the seed banner: a failed folders query means no folder
        *  tree, a failed columns query means no board, so neither branch can host
-       *  its own notice. Both are pure reads — askAgent on, Retry via refetch. */}
-      {foldersFailed && (
+       *  its own notice. Both are pure reads — askAgent on, Retry via refetch.
+       *  A permission refusal (`owner_only`, or the relay's teammate refusal) is
+       *  not a failed read: this caller is not given the list, a Retry cannot
+       *  change that, and the chats still list unfiled, so no notice (#32031). */}
+      {foldersFailed && !isPermissionRefusal(foldersError) && (
         <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
           <ErrorNotice
             title={i18nT('pages.chatSidebar.folders_load_failed')}
@@ -1174,7 +1202,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </div>
         </div>
       )}
-      {columnsFailed && (
+      {columnsFailed && !isPermissionRefusal(columnsError) && (
         <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
           <ErrorNotice
             title={i18nT('pages.chatSidebar.columns_load_failed')}
@@ -1341,6 +1369,16 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         onDismiss={() => setNewChatError('')}
         className="mx-2 mt-2 shrink-0"
         testId="new-chat-error"
+      />
+      <ErrorNotice
+        title={i18nT('pages.chatSidebar.refresh_pr_status_failed')}
+        message={prStatusRefreshError}
+        messagePlacement="below"
+        askAgent
+        actionPlacement="below"
+        onDismiss={() => setPrStatusRefreshError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="pr-status-refresh-error"
       />
       {/* A refused rename: the editor is already closed and the title has been
        *  reverted to the server value by the recovery refetch, so there is no

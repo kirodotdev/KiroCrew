@@ -43,6 +43,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest import mock
 
+import owner_import_scan
 import pytest
 import source_corpus
 from webex_dispatch_helpers import (
@@ -813,29 +814,11 @@ def test_the_placement_scan_passes_the_constructs_an_owner_may_hold() -> None:
 # ── who imports an owner ─────────────────────────────────────────────────────────
 
 
-def _imported_by(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(f"{FACADE}_") for name in _imported_by(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(f"{FACADE}_")
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:

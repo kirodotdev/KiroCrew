@@ -449,6 +449,50 @@ def test_web_push_payload_worst_case_fits_the_push_limit():
         assert len(sealed) <= 4096, (repr(filler), len(sealed))
 
 
+def test_web_push_payload_worst_case_keyed_note_fits_the_push_limit():
+    """A keyed note adds a full-budget tag and ``renotify`` on top of every
+    other field at its maximum. Those additions are what the worst case above
+    never measures, so measure them: the plaintext must stay inside the
+    module's payload budget and the sealed message under the 4096 byte
+    ceiling, or the keyed push is rejected with 413 and never arrives."""
+    from kiro_crew.dashboard.notification_coordinator import NATIVE_TAG_MAX_BYTES
+    from kiro_crew.dashboard.state_parts import dashboard_services
+    from kiro_crew.dashboard.state_parts.dashboard_services import _web_push_payload
+
+    plain_budget = getattr(dashboard_services, "_PUSH_PAYLOAD_BYTES", 4096 - 103)
+    # The largest tag a keyed note can carry: an ASCII key costs one serialized
+    # byte per character, so it fills the tag budget exactly instead of being
+    # hashed down to the much shorter ``key#<hex>`` form.
+    tag_prefix = "key:system:"
+    note_key = "k" * (NATIVE_TAG_MAX_BYTES - len(tag_prefix))
+    worst_tag = tag_prefix + note_key
+    tag_bytes = len(json.dumps(worst_tag, ensure_ascii=False).encode("utf-8")) - 2
+    assert tag_bytes == NATIVE_TAG_MAX_BYTES, tag_bytes
+
+    for filler in ("\x01", "件", '"'):
+        payload = _web_push_payload(
+            {
+                "ts": "2026-10-23T05:00:00.000000+00:00",
+                "title": filler * 500,
+                "body": filler * 20000,
+                # Just under the replacement threshold, so it is kept as is.
+                "url": "/" + "%" * 383,
+                "channel": filler * 2000,
+                "group_key": filler * 2000,
+                "source": "system",
+                "key": note_key,
+            }
+        )
+        n = payload["notification"]
+        assert n["tag"] == worst_tag, (repr(filler), n["tag"])
+        assert n["renotify"] is True
+        plain = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        assert len(plain) <= plain_budget, (repr(filler), len(plain))
+        sub = _fake_subscription()
+        sealed = web_push._encrypt(plain, sub["keys"]["p256dh"], sub["keys"]["auth"])
+        assert len(sealed) <= 4096, (repr(filler), len(sealed))
+
+
 @pytest.mark.asyncio
 async def test_send_web_push_loads_vapid_keys_off_the_event_loop(monkeypatch, tmp_path):
     """A cold key cache reads or generates the keypair file; that IO must run

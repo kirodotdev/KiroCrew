@@ -202,6 +202,18 @@ It is reserved, so `extra` can neither set nor strip it
 (`test_the_session_claim_cannot_be_set_or_stripped_through_extra`;
 `test_skipping_nonce_registration_does_not_make_a_session`).
 
+`owner_mint` (`token_auth_tokens.OWNER_MINT_CLAIM`, value `"1"`) marks a token
+minted FOR the owner: the desktop `/api/token/local` bootstrap, the startup and
+`KIROCREW_READY` links, the owner's Slack session deep link
+(`messaging_api/proactive_send.py`), and the `/kirocrew dashboard` / `!dashboard`
+link when the caller is the owner loaded into the Slack handler. A
+messaging-allowlist user's link never carries it. The link→session exchange
+copies it onto the session token, the refresh token carries it through every
+rotation, and `_caller_bounds` copies it onto a link a session lends a phone. It
+grants nothing: the owner gate reads it only to label an already-refused former
+owner's session `401 stale_session_reauth` ([security](security.md)). A session
+minted without the claim keeps the generic denial until one fresh sign-in.
+
 Two expiry times:
 - `exp`: link click expiry; query-param validation uses this claim (`token_auth.validate_token`).
 - `session_exp`: cookie-session expiry; cookie validation uses this claim and refresh rotates the cookies before expiry (`token_auth.validate_token`; `test_tr_u_04_session_exp_within_max`).
@@ -245,6 +257,9 @@ differently:
   that has `require_peer` but no signed `peer_key` fails closed and requires one
   new QR scan. Any child mobile/QR link minted by a peer-bound session carries
   the same `require_peer` + `peer_key` pair, so delegation cannot widen it.
+  When that key is not login-scoped (`ts:login:`), the phone-access QR refuses
+  the mint instead (`403 caller_device_bound`): its child could sign in only the
+  device already showing it. A login-scoped key still mints.
 
 `require_peer` is no longer exclusive to the QR shape. An **ordinary** session
 whose `?token=` exchange resolved a daemon-verified allowed peer also opens its
@@ -384,13 +399,24 @@ Request flow:
    refused by `is_owner_dashboard_request`, so a claim would withdraw the
    capability the admission grants. Consulting the registry first changes what is
    recorded, never what is admitted; a registry that raises names no app and
-   leaves the host-process leg to decide as before.
+   leaves the host-process leg to decide as before. On loopback TCP the caller's
+   pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
+   descriptors, so it is resolved once per accepted connection: the answer is kept
+   against that connection's transport with the process start id read beside it,
+   and a later request on the same kept-alive connection reuses it while the pid
+   still reports that start id. A new connection, or a changed start id, resolves
+   again. The owner-process judgement itself still runs on every request. The
+   process that was the connection's unique holder at its first request stays its
+   caller for the connection's life: a later share of that socket (a fork without
+   exec, a descriptor passed over a Unix socket) is the holder delegating, which it
+   could equally do by handing over a minted token, and detecting it would take the
+   full scan this lookup avoids.
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie). The cookie (session) path also requires `kind=session` or a non-empty `app` claim, so a link presented as `mc_token_{port}` is refused (`validate_token_with_app`; `test_unclicked_login_link_is_refused_as_a_session_cookie`). An unexchanged `?token=` on an internal path gets the link rules — its click window and a live nonce — never its session lifetime (`test_link_on_an_internal_path_query_gets_link_rules_not_session_rules`). A client that mints at `/api/token/local` and presents the result as the cookie must first trade it for a session: one `GET /api/status?token=<link>` with redirects off, keeping the `mc_token_{port}` `Set-Cookie` value (`ssh_tunnel_manager` does this)
 5. Check IP binding
 6. On query-param use: mint a SEPARATE session token, bind it to the peer key, add the link token's own nonce to the persisted denylist so the link string can never be presented as a cookie, and set `mc_token_{port}` with `max_age` derived from `session_exp`
 7. Log to SEL
-8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
+8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the relay branch (right after `admit_relay_caller`), the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
 
 #### SSM listener: a Crew invite instead of a token
@@ -964,6 +990,7 @@ carries any relay header:
 | a personal Crew, and the named user is not its owner | `403 relay_not_owner` |
 | a remote limit applies (below) | `403` with that limit's code |
 | a verified handover whose headers can't be rebuilt without the relay header (a value that can't be re-encoded) | `400 relay_header_invalid`, never served with the header |
+| a `GET` or `HEAD` of the bare `/`, with no query and no `Upgrade` | `302` to `/chat`: the relay root is the Crew address the control plane hands out, and the dashboard's home is `/chat`. Every other path, a query on `/`, and a direct (non-relay) `/` are served as before |
 | otherwise | served as relayed |
 
 **The strip inside the rule.** Both layers name relay headers by one definition,

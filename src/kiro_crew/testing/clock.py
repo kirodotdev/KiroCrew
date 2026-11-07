@@ -306,26 +306,22 @@ class _ClockedDatetimeModule(types.ModuleType):
 class ManualClock:
     """A wall clock and a monotonic clock that move only when the test moves them.
 
-    ``start`` is the wall time in epoch seconds. ``monotonic_start`` is the
-    monotonic reading; by default it is the REAL ``time.monotonic()`` at
-    construction, floored to a multiple of 1/512 s, because product deadlines are
-    often set on one module's clock and read on another's (a deadline computed
-    by a real reader and compared on the clocked one must still make sense), and
-    a reading on that grid is exact as a float, so a deadline the product
-    computes as ``monotonic() + <whole seconds>`` is met exactly once the test
-    has advanced the clock by that many seconds (:func:`_snap_monotonic_start_ns`
-    says why an unsnapped reading is not). An explicit ``monotonic_start`` is
-    taken as given. ``perf_counter`` is the monotonic clock. ``tick`` advances both clocks by that many seconds after every read,
-    so ``tick=0`` (the default) is a frozen clock and ``tick>0`` a strictly
-    increasing one (in the ``_ns`` readers; a float reading of an epoch time
-    resolves to about a quarter of a microsecond, so give a tick at least
-    that). ``tz`` is the zone of an aware :meth:`now`; a naive reading from the
-    ``datetime`` stand-in is local time in the process's zone, as the stdlib's.
+    ``start`` is the wall time in epoch seconds. ``monotonic_start`` defaults to
+    the REAL ``time.monotonic()``, because a deadline set on a real reader may be
+    compared on the clocked one. It is floored to a multiple of 1/512 s, exact as
+    a float, so ``monotonic() + <whole seconds>`` is met exactly after advancing
+    that many seconds (see :func:`_snap_monotonic_start_ns`). An explicit value is
+    taken as given. ``perf_counter`` is the monotonic clock.
 
-    Time is held as whole nanoseconds under a lock, so ten ``advance(0.1)``
-    calls land exactly one second later and threads may read and advance the
-    clock concurrently. ``sleep(s)`` records ``s``, advances by it and yields
-    the GIL; it never blocks. Concurrent sleepers each add their own duration.
+    ``tick`` advances both clocks after every read: ``0`` (default) is frozen,
+    ``>0`` strictly increasing in the ``_ns`` readers (a float epoch reading
+    resolves to about 0.25 us, so tick at least that). ``tz`` is the zone of an
+    aware :meth:`now`; naive ``datetime`` readings are process-local, as stdlib.
+
+    Time is whole nanoseconds under a lock, so ten ``advance(0.1)`` land exactly
+    one second later and threads may share the clock. ``sleep(s)`` records ``s``,
+    advances by it and yields the GIL; it never blocks. Concurrent sleepers each
+    add their own duration.
     """
 
     def __init__(
@@ -475,19 +471,16 @@ class ManualClock:
         replaces a binding of the ``datetime`` module, of ``datetime.datetime``
         and of ``datetime.date``. Returns the names it patched, sorted.
 
-        Refused with ``ValueError``: a standard-library module or a submodule of
-        one (installing on ``time`` or ``asyncio.base_events`` would freeze the
-        worker or the event loop), a test-runner package, ``kiro_crew.testing``
-        itself, a module where a requested kind matched nothing (a silent no-op
-        install is the trap this helper removes), and a module already holding
-        another clock's stand-in.
+        Refused with ``ValueError``: the standard library or a submodule of it
+        (it would freeze the worker or the event loop), a test-runner package,
+        ``kiro_crew.testing`` itself, a module where a requested kind matched
+        nothing (a silent no-op install), and a module holding another clock.
 
-        Not reached: a function-local ``import time``, a clock captured at
-        import (a default argument ``clock=time.monotonic``), and the host-zone
-        semantics of ``time.localtime()`` / ``astimezone()`` with no argument.
-        A product loop such as ``while not stop: time.sleep(1)`` spins under the
-        clock because ``sleep`` never blocks, so install only where the
-        subject's sleeps are bounded by the test.
+        Not reached: a function-local ``import time``, a clock captured at import
+        (``clock=time.monotonic``), and zone-less ``time.localtime()`` /
+        ``astimezone()``. ``sleep`` never blocks, so a loop like
+        ``while not stop: time.sleep(1)`` spins: install only where the test
+        bounds the subject's sleeps.
         """
         if not isinstance(module, types.ModuleType):
             raise TypeError(f"install() takes a module, not {type(module).__name__}")

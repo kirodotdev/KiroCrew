@@ -813,12 +813,17 @@ def rebuild_agent_config(
     # manual mcp.json edits — unlike managed servers, they should always
     # be registered regardless of fresh/existing config state.
     mcp_sources.sync_shared_server_refs(config, sources, mounted, mount_only=_mount_only)
-    managed_mcp.register_managed_refs(config, fresh_install=fresh_install, gated_off=gated_off)
+    managed_mcp.register_managed_refs(
+        config, fresh_install=fresh_install, gated_off=gated_off, mounted_aliases=mounted
+    )
     guide_grant_pending = guide_platform.grant_guide_platform_once(
         config, fresh_install=fresh_install
     )
     mate_grant_pending = guide_platform.grant_mate_platform_once(
         config, fresh_install=fresh_install
+    )
+    edition_refs_pending = guide_platform.grant_edition_refs_once(
+        config, fresh_install=fresh_install, gated_off=gated_off, mounted_aliases=mounted
     )
 
     # Final dedup (preserves order).
@@ -857,6 +862,17 @@ def rebuild_agent_config(
                 resolved=resolved,
                 app_owned_at_start=_app_owned_at_start,
             )
+            from kiro_crew import mcp_dropped_servers
+            from kiro_crew.mcp_utils import mcp_server_alias
+
+            # Keep the report ordered with spec writes; aliases can still be mounted.
+            mcp_dropped_servers.record_rebuild_drops(
+                {
+                    key: command
+                    for key, command in resolved.unresolved_commands.items()
+                    if mcp_server_alias(key) not in config["mcpServers"]
+                }
+            )
         except _AgentSpecUnreadable as exc:
             # The commit re-reads the spec inside its write lock
             # (``mcp_aliases._durable_tool_aliases``); a failure there is the same
@@ -875,6 +891,8 @@ def rebuild_agent_config(
         guide_platform.mark_guide_platform_granted()
     if mate_grant_pending:
         guide_platform.mark_mate_platform_granted()
+    if edition_refs_pending:
+        guide_platform.mark_edition_refs_offered(edition_refs_pending)
 
     conductor_held = _install_sibling_specs(refresh_forks, gated_off, clean=clean)
 

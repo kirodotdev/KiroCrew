@@ -177,7 +177,9 @@ class TestLowSignalLockSites:
     async def test_manual_regenerate_clears_the_flag(self, monkeypatch):
         """A regenerated title comes from the recent tail — not an echo."""
 
-        async def _fake_generate(_state, _messages, *, session_key: str = ""):
+        async def _fake_generate(
+            _state, _messages, *, session_key: str = "", memory_gate: bool = True
+        ):
             return "Real topic name"
 
         async def _noop(*_a, **_kw):

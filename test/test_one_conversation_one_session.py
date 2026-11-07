@@ -282,7 +282,7 @@ class TestA4TheTabStaysCurrent:
         published: list[set[str]] = []
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_utils.set_dashboard_surfaced",
-            lambda keys: published.append(set(keys)),
+            lambda keys, _tabs=None: published.append(set(keys)),
         )
         state.sessions.set_active_dashboard_slots = MagicMock()
         _write_transcript(Path(log._dir), SLACK_STEM, _turns(2))

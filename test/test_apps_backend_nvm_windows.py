@@ -50,9 +50,7 @@ def _spy_runs(
     return calls
 
 
-# ---------------------------------------------------------------------------
 # Windows: the guard fires before the filesystem gate and before any spawn
-# ---------------------------------------------------------------------------
 
 
 class TestWindowsNeverSpawnsBash:
@@ -113,9 +111,7 @@ class TestWindowsNeverSpawnsBash:
         assert calls == []
 
 
-# ---------------------------------------------------------------------------
 # POSIX: unchanged -- the nvm lookup still runs, with the same argv
-# ---------------------------------------------------------------------------
 
 
 class TestPosixStillUsesNvm:

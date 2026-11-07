@@ -255,6 +255,26 @@ class TestCrewLogsAreTheSessions:
         assert not (crew_log_trash_root() / batch.batch_id).exists()
         assert not _crew_log_exists("acp-before-reset")
 
+    @pytest.mark.parametrize("coarse", [False, True], ids=["platform-delete", "coarse-delete"])
+    def test_the_empty_job_total_is_what_the_delete_frees(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, coarse: bool
+    ) -> None:
+        """The job's denominator counts the crew logs and the manifest the delete frees."""
+        if coarse:
+            monkeypatch.setattr(session_storage, "_FD_SAFE_DELETE", False)
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        _crew_log("acp-before-reset", "chat-1")
+        session_storage.move_to_trash(
+            ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+        )
+
+        ids, total, identities = session_storage.staged_targets()
+        freed = session_storage.empty_trash(ids, expect=identities)
+
+        assert len(ids) == 1
+        assert freed == total
+
     def test_a_crew_log_a_writer_holds_leaves_the_whole_session_in_place(
         self, stores: tuple[Path, Path]
     ) -> None:

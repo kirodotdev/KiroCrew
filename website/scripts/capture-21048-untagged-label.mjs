@@ -54,13 +54,15 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 2 })
   const page = await context.newPage()
   logPageProblems(page)
-  await stubDashboardApi(page, { slots: [slot], theme: 'dark', extra })
-  await page.addInitScript(() => {
-    localStorage.setItem('mc-active-slot', 'chat-active')
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-sidebar-pinned', 'true')
-    localStorage.setItem('mc-session-stale-collapse-ms', '0')
-    localStorage.setItem('mc-chat-config', JSON.stringify({ tagColumnsEnabled: true }))
+  await stubDashboardApi(page, {
+    slots: [slot], theme: 'dark', extra,
+    localStorageEntries: {
+      'mc-active-slot': 'chat-active',
+      'mc-privacy-notice-v1': '1',
+      'mc-sidebar-pinned': 'true',
+      'mc-session-stale-collapse-ms': '0',
+      'mc-chat-config': JSON.stringify({ tagColumnsEnabled: true }),
+    },
   })
   try {
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })

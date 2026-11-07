@@ -223,7 +223,9 @@ def _intersect_ceilings(
       chose, so a lower tier supplying one redirects nothing; ``compose_tier_ladder``
       lets the first declared value through.
     * **Absence means the fail-closed floor** -- ``fallback_profile``, ``tier``,
-      identity, signature state, and the update *commands* (``check_command``,
+      identity, signature state, ``mcp_registry_local_control_plane`` (an admin
+      opt-in that widens a registry-governed host, so a lower tier supplying it is
+      an escalation), and the update *commands* (``check_command``,
       ``apply_command``, ``platform_commands``: a command runs unsandboxed as the
       gateway, so a lower tier supplying one is an escalation, not a restriction).
       Authority-only, never ``authority.x or subordinate.x``.  For
@@ -462,6 +464,9 @@ def compose_tier_ladder(
             _warn_env_beneath_central_once(ceiling.tier)
         _audit_tier_intersect_once(ceiling.tier, lower.tier)
         ceiling = _intersect_ceilings(ceiling, lower)
+    if len(present) > 1:
+        # Only on a real fold, so a ceiling that composes alone stays the same object.
+        ceiling = replace(ceiling, lower_tier_folded=True)
     if distribution != ceiling.distribution:
         # Only when the fold actually moved them, so a ceiling that composes alone
         # is returned as the same object: callers assert that identity to prove a

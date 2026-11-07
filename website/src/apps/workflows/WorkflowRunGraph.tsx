@@ -29,7 +29,7 @@ import {
   Square,
   XCircle,
 } from 'lucide-react'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { fmtElapsed } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'

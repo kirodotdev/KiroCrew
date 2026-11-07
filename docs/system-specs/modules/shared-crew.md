@@ -117,6 +117,7 @@ Evidence, strongest first (`identity.derive_principal`):
 
 | Request | Principal | Provenance |
 |---|---|---|
+| A request the Crew's relay client handed over and the relay ingress verified (`kiro_relay.caller.published_relay_caller`), checked first in `identity._derive_actor` and never followed by a `whois` | a teammate: `human` under provider `kiro`, issuer `kiro-relay`, keyed by the exact Kiro user ID (no case folding), labelled with the relay's name, else its email, else `Kiro user ...` and the ID's last 6 characters; the relayed owner of a personal Crew: the local operator's own principal id for the admitted owner subject, so the machine tab and the relay tab are one person | `kiro_relay` |
 | An app identity (an app token, or an internal caller the middleware derived an app for) | `system`, component `app:<name>` | `internal` |
 | The internal loopback secret (kiro-cli, MCP, doctor) | `system`, component `internal` | `internal` |
 | Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
@@ -125,6 +126,19 @@ Evidence, strongest first (`identity.derive_principal`):
 | A request on the SSM listener's loopback port, admitted by a Crew invite (`dashboard.ssm_gate`) | `human` keyed by the invite id | `ssm_invite` |
 | Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled with this machine's name when the subject is one of the owner's (see Owner label) | `local_operator` |
 | Anything else auth admitted | `Principal.unknown()` | `none` |
+
+A relayed principal's email and name are display only. Its display `login` is always
+empty: an author stamp read back from a transcript loses its provenance, so a login there
+could reach an audit record. The email is only the label when the relay sent no name, and
+`audit.audit_principal` blanks the login of any `kiro_relay` principal as a backstop.
+People records the relayed owner under the local operator's provenance
+(`identity._people_principal`), so the owner's one entry never flips with whichever tab
+spoke last, while the published actor keeps `kiro_relay` for every request-time gate. Its `kiro_relay` provenance is never `local_operator`, so every gate that
+requires the local operator (the invite routes' owner gate, the operator-id fold in
+`crew_mode.operator_ids`) still refuses or narrows a relayed owner, and the
+provenance gates that ask whether the Crew is reached over a network
+(`crew_mode.others_observed`, `memory_changes.crew_is_shared`) count it as one. A
+relayed person is not a collaborator (`collaborators.is_collaborator_actor`).
 
 A tailnet principal's subject is the lowercased daemon login under provider
 `tailscale` and issuer `tailnet`; a tagged node's is `node:<name>`, because every

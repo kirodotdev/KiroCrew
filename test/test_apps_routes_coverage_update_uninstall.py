@@ -35,9 +35,7 @@ import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
 from kiro_crew.apps.routes import register_app_routes
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/update
-# ---------------------------------------------------------------------------
 
 
 class TestUpdateApp:
@@ -573,9 +571,7 @@ class TestUpdateApp:
         assert not (home / "apps" / APP / "attacker.py").exists()
 
 
-# ---------------------------------------------------------------------------
 # Uninstall preview + uninstall refusals
-# ---------------------------------------------------------------------------
 
 
 class TestUninstallPreview:
@@ -805,9 +801,7 @@ class TestUninstallRefusals:
             assert (await resp.json())["error"] == "permission denied"
 
 
-# ---------------------------------------------------------------------------
 # DELETE /api/apps/{name}/migrate-cleanup
-# ---------------------------------------------------------------------------
 
 
 class TestMigrateCleanup:
@@ -1002,10 +996,8 @@ async def test_update_stops_the_backend_before_deregistering_resources(
     """Teardown order is load-bearing, not cosmetic.
 
     `stop_app_backend` pops the tracking record, which is what stops the health watch
-    from reconciling MCP for the app. Deregistering first leaves a window in which a
-    recovering backend re-registers the OLD manifest's servers, so entries the update
-    removed survive it. Uninstall and the disable rollback already stop first; these are
-    the paths that did not.
+    from reconciling MCP for the app. Deregistering first lets a recovering backend
+    re-register the OLD manifest's servers.
     """
     _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)

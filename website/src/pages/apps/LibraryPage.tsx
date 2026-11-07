@@ -29,6 +29,8 @@ import { api } from '../../api/client'
 import { appNavTarget } from '../../appNav'
 import { Btn, EmptyState, PageHeader, PanelSectionHeader, SearchInput } from '../../components/ui'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { useConnected } from '../../hooks/useConnected'
+import { offlineProps } from '../../utils/offline'
 import { recordEvent } from '../../rum'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import type { InstalledApp } from '../../components/appstore/types'
@@ -55,6 +57,10 @@ type UserInstalledDep = UninstallPreview['dependencies']['userInstalled'][number
 
 export default function LibraryPage() {
   const navigate = useNavigate()
+  // Every management verb below writes to the gateway, so each one is refused
+  // while it is offline (offlineProps names why) instead of firing a doomed call.
+  const connected = useConnected()
+  const offlineVerb = i18nT('utils.offline.manage_apps')
   const {
     apps, appsLoading, appsError, registryError,
     browseApps, installedApps, updatables, announceAppsChanged, sources,
@@ -181,6 +187,7 @@ export default function LibraryPage() {
   // the two pages cannot drift on how an action behaves.
 
   const handleAction = async (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update', opener?: HTMLElement | null) => {
+    if (!connected) return
     // Intercept uninstall to show confirmation modal with preview
     if (action === 'uninstall') {
       const app = apps.find(a => a.name === name)
@@ -276,12 +283,18 @@ export default function LibraryPage() {
               {app.enabled ? (
                 <Btn
                   onClick={() => handleAction(app.name, 'disable')}
-                  disabled={actionLoading === `${app.name}:disable`}
+                  disabled={actionLoading === `${app.name}:disable` || !connected}
+                  {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installedAppCard.disable'))}
                 >
                   <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
                 </Btn>
               ) : app.lifecycle !== 'locked' && (
-                <Btn danger onClick={() => handleAction(app.name, 'uninstall')}>
+                <Btn
+                  danger
+                  onClick={() => handleAction(app.name, 'uninstall')}
+                  disabled={!connected}
+                  {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installedAppCard.uninstall'))}
+                >
                   <Trash2 size={14} /> {i18nT('components.appstore.installedAppCard.uninstall')}
                 </Btn>
               )}
@@ -292,6 +305,7 @@ export default function LibraryPage() {
             app={app}
             pinned={!!target && !navHidden.has(target.id)}
             pinnable={!!target}
+            connected={connected}
             actionLoading={updatingAll
               ? `${app.name}:update`
               : updatePending ? `${updatePending}:update` : actionLoading}
@@ -533,7 +547,13 @@ export default function LibraryPage() {
                 <Btn onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}>{i18nT('pages.appsPage.cancel')}</Btn>
                 {/* The removal itself: a guide that led here ends when this is
                     pressed, and goes back to its step on any other answer. */}
-                <Btn danger onClick={confirmUninstall} disabled={actionLoading === `${uninstallTarget.name}:uninstall`} {...guideConfirm()}>
+                <Btn
+                  danger
+                  onClick={confirmUninstall}
+                  disabled={actionLoading === `${uninstallTarget.name}:uninstall` || !connected}
+                  {...offlineProps(connected, offlineVerb, i18nT('pages.appsPage.uninstall'))}
+                  {...guideConfirm()}
+                >
                   {actionLoading === `${uninstallTarget.name}:uninstall` ? i18nT('pages.appsPage.removing') : i18nT('pages.appsPage.uninstall')}
                 </Btn>
               </div>

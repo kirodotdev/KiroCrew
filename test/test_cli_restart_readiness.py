@@ -358,7 +358,33 @@ class TestRestartReadinessVerdict:
         assert code == 1
         out = capsys.readouterr().out
         assert "✅" not in out
-        assert "did not become ready" in out
+        assert "could not confirm that replacement gateway" in out
+        mock_token_url.assert_not_called()
+
+    def test_a_200_with_an_unwritten_marker_is_not_reported_as_not_serving(self, capsys):
+        """A port that answers 200 while the marker stays unwritten is unconfirmed, not idle.
+
+        The marker write is best-effort, so a replacement that serves but cannot
+        write ``run/`` keeps the marker empty for the whole wait. Saying nothing
+        serves the port sends the operator to re-run restart, which stops it.
+        """
+        from kiro_crew.config.loader import config_dir
+
+        code, mock_sel, mock_token_url = self._drive(
+            poll=None, ready_status=200, marker_pid=[None, None]
+        )
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        assert "not serving" not in out
+        assert "could not confirm that replacement gateway (pid 4321) is the one serving" in out
+        assert "re-running restart would stop it" in out
+        assert f"check that {config_dir() / 'run'} is writable" in out
+        assert self._outcomes(mock_sel) == ["denied"]
+        assert "reason=replacement_unconfirmed_within=" in (
+            mock_sel.log_api_access.call_args.kwargs["resources"]
+        )
         mock_token_url.assert_not_called()
 
 

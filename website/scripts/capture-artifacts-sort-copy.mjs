@@ -79,11 +79,10 @@ async function main() {
     permissions: ['clipboard-read', 'clipboard-write'],
   })
   const page = await context.newPage()
-  await page.addInitScript(() => {
-    localStorage.setItem('mc-artifacts-view', 'table')
-    localStorage.setItem('mc-artifacts-pinned-only', '0')
+  await stubDashboardApi(page, {
+    extra, preserveStorage: true,
+    localStorageEntries: { 'mc-artifacts-view': 'table', 'mc-artifacts-pinned-only': '0' },
   })
-  await stubDashboardApi(page, { extra, preserveStorage: true })
   logPageProblems(page)
 
   await page.goto(base + '/artifacts', { waitUntil: 'domcontentloaded' })

@@ -33,7 +33,12 @@ from kiro_crew.eval.bench.member_v2 import (
 # worker re-pays that report -- measured at 4 workers x ~45 s per shard, which is
 # how this file topped every shard's ``--durations`` list. Grouping keeps the
 # report single-copy per run, the same way the tree_scan_* modules do.
-pytestmark = pytest.mark.xdist_group(name="member_v2_bench_report")
+# Whichever test runs first pays that report in its setup, so the whole module
+# gets 8 x 50 s (the CI worst case above), rounded up to a multiple of 30.
+pytestmark = [
+    pytest.mark.xdist_group(name="member_v2_bench_report"),
+    pytest.mark.timeout(420),
+]
 
 
 def _fake_vector(text: str, dim: int = 8) -> list[float]:

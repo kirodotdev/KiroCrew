@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from flake_pattern_js_detectors import JS_DETECTORS
 from source_corpus import repo_files, repo_root
 from test_ratchet_scope import (
     _GIT_COMMAND_LINE_CONFIG,
@@ -604,6 +605,28 @@ def _k19_short_literal_duration_arg(module: _Module) -> Iterable[ast.AST]:
             break
 
 
+#: Session-metadata writers whose last step is ``replace_with_retry``'s rename.
+_SESSION_WRITES = frozenset({"update_metadata", "update_metadata_if"})
+
+
+def _k20_on_loop_session_write(module: _Module) -> Iterable[ast.AST]:
+    """``<log>.update_metadata(...)`` or ``update_metadata_if`` in a coroutine's own frame.
+    On the loop thread ``replace_with_retry`` makes one rename attempt, so a Windows
+    sharing violation on the transcript fails the test;
+    ``await asyncio.to_thread(log.update_metadata, ...)`` gets the retry. A call in a
+    nested ``def`` or ``lambda`` runs wherever that is sent, so it is not counted. Known
+    miss: a sync helper that writes, called from a coroutine."""
+    frames = (*FUNC_TYPES, ast.Lambda)
+    for node in module.calls:
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr in _SESSION_WRITES):
+            continue
+        frame = module.parents.get(node)
+        while frame is not None and not isinstance(frame, frames):
+            frame = module.parents.get(frame)
+        if isinstance(frame, ast.AsyncFunctionDef):
+            yield node
+
+
 def _kiro_crew_module_names(module: _Module) -> frozenset[str]:
     """Lowercase names imported from ``kiro_crew.*`` at module scope.
 
@@ -914,6 +937,7 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K16-module-async-state": ("create_task", "call_later", "ensure_future", "call_at"),
     "K18-xfail-strict-false": ("xfail",),
     "K19-short-literal-duration-arg": ("(",),
+    "K20-on-loop-session-write": ("update_metadata",),
 }
 
 #: The classes whose detector also reads the source text.
@@ -933,85 +957,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K16-module-async-state": _k16_module_async_state,
     "K18-xfail-strict-false": _k18_xfail_strict_false,
     "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
-}
-
-
-# ── TypeScript / JavaScript detectors (line patterns) ─────────────────
-
-_J1 = re.compile(
-    r"new Promise(?:<[^>]*>)?\(\s*\(?\s*(\w+)[^)=]*\)?\s*=>\s*\{?\s*setTimeout\(\s*\1\s*,"
-    r"\s*([1-9][\d_]*)"
-)
-_J3 = re.compile(r"\bDate\.now\(\)|\bnew Date\(\s*\)")
-_J4 = re.compile(r"\bif\s*\(\s*!?\s*\(?\s*await\b[^;{]*?\.isVisible\(")
-_J5 = re.compile(
-    r"expect\([^;]*(?:performance\.now\(\)|Date\.now\(\)|\b\w*(?:elapsed|duration|took)\w*\b)[^;]*\)"
-    r"\s*\.\s*toBeLessThan(?:OrEqual)?\(\s*\d",
-    re.IGNORECASE,
-)
-_J6 = re.compile(r"\buseFakeTimers\(")
-_STALLS = re.compile(r"\bawait\b|\bwaitFor\b|\bfindBy|\bfindAllBy")
-
-
-def _j_lines(pattern: re.Pattern[str]) -> Callable[[str, str], list[int]]:
-    def detect(rel: str, text: str) -> list[int]:
-        return [n for n, line in enumerate(text.splitlines(), 1) if pattern.search(line)]
-
-    return detect
-
-
-def _j1_electron_promise_sleep(rel: str, text: str) -> list[int]:
-    """Promise-sleeps in the Electron tests: ``kirocrew.test-promise-sleep`` reads
-    only TypeScript under ``website/src``, ``integration`` and ``playwright``."""
-    if not rel.startswith("website/electron/"):
-        return []
-    return _j_lines(_J1)(rel, text)
-
-
-def _j3_unpinned_date(rel: str, text: str) -> list[int]:
-    if "setSystemTime" in text or "mock.timers" in text:
-        return []
-    return _j_lines(_J3)(rel, text)
-
-
-def _j4_visible_branch(rel: str, text: str) -> list[int]:
-    if not rel.startswith("website/playwright/"):
-        return []
-    return _j_lines(_J4)(rel, text)
-
-
-def _restored_by_a_synchronous_finally(lines: list[str], index: int) -> bool:
-    """Whether ``useFakeTimers`` on line *index* opens a ``try`` whose ``finally``
-    restores real timers with nothing in between that a fake clock could stall."""
-    rest = "\n".join(lines[index : index + 200])
-    start = rest.find("try {")
-    end = rest.find("finally", start)
-    if start < 0 or end < 0:
-        return False
-    between = rest[:start].split("useFakeTimers", 1)[-1].replace("()", "")
-    if between.strip(" \t\n;"):
-        return False  # the try is not the next statement
-    restore = rest.find("useRealTimers", end)
-    return restore >= 0 and not _STALLS.search(rest[start:end])
-
-
-def _j6_unrestored_fake_timers(rel: str, text: str) -> list[int]:
-    if ("afterEach" in text and "useRealTimers" in text) or "onTestFinished" in text:
-        return []
-    lines = text.splitlines()
-    return [
-        n
-        for n, line in enumerate(lines, 1)
-        if _J6.search(line) and not _restored_by_a_synchronous_finally(lines, n - 1)
-    ]
-
-
-JS_DETECTORS: dict[str, Callable[[str, str], list[int]]] = {
-    "J1-electron-promise-sleep": _j1_electron_promise_sleep,
-    "J3-unpinned-date": _j3_unpinned_date,
-    "J4-playwright-visible-branch": _j4_visible_branch,
-    "J5-duration-upper-bound": _j_lines(_J5),
-    "J6-unrestored-fake-timers": _j6_unrestored_fake_timers,
+    "K20-on-loop-session-write": _k20_on_loop_session_write,
 }
 
 
@@ -1468,6 +1414,18 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    asyncio.wait_for(coro, timeout=30)\n    t.join(timeout=5)\n"
         "    every_secs=60\n    idle_secs=60\n    elapsed_ms=1.0\n    age_secs=5\n    duration_ms=10\n"
         "    run(on_timeout=cb)\n    run(on_timeout=lambda: None)\n",
+    ),
+    "K20-on-loop-session-write": (
+        (
+            "async def test_x(log):\n    log.update_metadata(k, {})\n",
+            "class T:\n    async def seed(self):\n        with lock:\n"
+            "            self.log.update_metadata_if(k, {}, ok)\n",
+        ),
+        # Off the loop: a sync test, the method handed to a worker, a nested def or lambda.
+        "def test_x(log):\n    log.update_metadata(k, {})\n"
+        "async def test_y(log):\n    await asyncio.to_thread(log.update_metadata, k, {})\n"
+        "    await asyncio.to_thread(lambda: log.update_metadata(k, {}))\n"
+        "    def seed():\n        log.update_metadata(k, {})\n",
     ),
 }
 

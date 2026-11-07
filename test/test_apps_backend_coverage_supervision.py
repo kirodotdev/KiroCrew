@@ -45,9 +45,7 @@ class _SweepClock(ManualClock):
         self._on_sleep(seconds)
 
 
-# ---------------------------------------------------------------------------
 # Accessors
-# ---------------------------------------------------------------------------
 
 
 def test_the_proxy_port_is_only_published_once_the_backend_is_healthy() -> None:
@@ -62,9 +60,7 @@ def test_the_proxy_port_is_only_published_once_the_backend_is_healthy() -> None:
     assert bmod.get_app_backend_port("absent") is None
 
 
-# ---------------------------------------------------------------------------
 # Pidfile helpers
-# ---------------------------------------------------------------------------
 
 
 class TestPidfileHelpers:
@@ -114,12 +110,9 @@ class TestPidfileHelpers:
 class TestProcStartTime:
     """The wrapper must not re-implement the per-platform probe.
 
-    Every platform source (Linux /proc field 22, the Windows creation
-    FILETIME, the BSD ``ps`` leg) and its fail-safe behaviour is pinned in
-    test_platform_compat_process_identity::TestProcessStartTime. What matters here is that this
-    module reads identity from that shim, because a /proc-or-ps probe answers
-    None for every pid on Windows and a recorded None makes the stale-reap
-    decline to confirm any backend at all.
+    The per-platform sources are pinned in
+    test_platform_compat_process_identity::TestProcessStartTime. A /proc-or-ps probe
+    answers None on Windows, and a recorded None makes the stale-reap confirm nothing.
     """
 
     def test_it_delegates_to_the_platform_shim(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,7 +360,7 @@ class TestRestartExitedBackend:
         )
         # Supervision ended for good, so the attempt counter is cleared: a derived
         # "repeatedly failing to restart" banner (routes.handle_list_apps) must not
-        # keep telling the operator to retry a restart that policy now refuses.
+        # keep telling the operator to retry a restart that policy refuses.
         assert "app" not in bmod._restart_attempts
         # Kept down, so the backstop sweep does not read the app as wanted either.
         assert bmod._lifecycle_generation["app"][1] == bmod._LIFECYCLE_STOP

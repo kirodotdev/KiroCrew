@@ -3,7 +3,8 @@
 The critical-rules block is the dashboard and channel assistant's own output contract:
 diff blocks for file changes (selected per runtime by :func:`_critical_rules_for`, from
 the same trusted resolution that names the ``[RUNTIME]`` line), the ``[OPTIONS: ...]``
-footer and the absolute-path and link rules. Both variants are fixed module constants,
+footer, the absolute-path and link rules, and the rule to ask a person only when
+human involvement is truly required (in every variant). Both variants are fixed module constants,
 never templated, so the marker-neutralization prefix check and the tests can treat
 "a critical-rules block" as one of two strings. The ``[UI LANGUAGE]`` block steers the
 language of tool-call purpose text to the configured dashboard language, admitted only
@@ -193,6 +194,20 @@ _LIVE_STATE_RULE = (
 )
 
 
+# Every variant carries this rule, so every Crew agent (conductor, worker, Bot,
+# Ultra Mode, sub-agent) gets it from this one place.
+_ASK_ONLY_WHEN_NEEDED_RULE = (
+    "Ask a person only when human involvement is truly required. When you have a "
+    "clear recommendation, act on it and report what you did. Ask only when the "
+    "step (a) needs credentials, a sign-in or a permission only they can grant, "
+    "(b) spends money or meaningful quota, (c) cannot be undone or deletes or "
+    "overwrites someone else's work, (d) turns on a real preference you cannot "
+    "infer and a wrong guess is costly, or (e) the person explicitly asked to "
+    "decide it. Otherwise pick the default, state it as an assumption, and "
+    "continue. Never stop work just to confirm a plan that is already approved.\n"
+)
+
+
 _CRITICAL_RULES_TAIL = (
     "When referencing file paths in your response, ALWAYS use the absolute path "
     "inside inline `code` backticks (e.g. `/home/user/project/src/main.py`). "
@@ -240,10 +255,14 @@ _CRITICAL_RULES_TAIL = (
 
 # Every variant stays a fixed module constant, never templated: the
 # marker-neutralization prefix check matches _CRITICAL_RULES_VARIANTS exactly.
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD + _ASK_ONLY_WHEN_NEEDED_RULE + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
+)
 
 
-_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES_CHANNEL = (
+    _CRITICAL_RULES_HEAD + _ASK_ONLY_WHEN_NEEDED_RULE + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+)
 
 
 # A sub-agent's reply is read by the parent agent that spawned it, not drawn in
@@ -253,6 +272,7 @@ _CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_
 # absolute paths, and the gender rule.
 _CRITICAL_RULES_SUBAGENT = (
     _CRITICAL_RULES_HEAD
+    + _ASK_ONLY_WHEN_NEEDED_RULE
     + "Your reply goes to the agent that started you, not to a person in a chat "
     "UI. Do not add [OPTIONS: ...] lines, <!-- keep-visible --> markers or other "
     "UI markup.\n"

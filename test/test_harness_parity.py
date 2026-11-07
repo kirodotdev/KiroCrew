@@ -1408,6 +1408,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
     "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
     (
+        "src/kiro_crew/acp/session_handle_kas.py",
+        "kas_command_call",
+    ): "``_kiro/session/context``, ``_kiro/knowledge`` and ``_kiro/codeIntelligence`` are "
+    "KAS's own extension verbs behind a person's ``/context``, ``/knowledge`` and "
+    "``/code``. The positive test keeps them off every other harness's wire.",
+    (
         "src/kiro_crew/acp/session_handle_updates.py",
         "_handle_update",
     ): "KAS emits its own notification discriminants. The positive gate restores those "

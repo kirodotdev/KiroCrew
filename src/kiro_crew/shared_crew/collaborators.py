@@ -5,8 +5,9 @@ verified actor is a person the operator admitted through an identity boundary
 that enforces membership: a tailnet login on the serve path (the middleware
 allowlists it and pins the token to it).
 A Slack-allowlist dashboard token, an app token, an internal caller, a direct
-tailnet peer (attribution only, never allowlisted) and an Unknown actor are not
-collaborators, so they keep every refusal they had.
+tailnet peer (attribution only, never allowlisted), a person the Kiro relay
+handed over (``kiro_relay``, whose remote limits are their scope) and an Unknown
+actor are not collaborators, so they keep every refusal they had.
 
 Agent questions go to every collaborator: the card frames, the decision frame
 and the pending read. The owner's sockets keep receiving them through

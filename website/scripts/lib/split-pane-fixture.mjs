@@ -18,8 +18,10 @@ import { stubDashboardApi, json } from './stub-dashboard-api.mjs'
  * @param opts.extra        optional (path, route) handler tried FIRST,
  *                          for harness-specific routes (e.g. POST intercepts)
  * @param opts.theme        theme mode the dashboard boots in ('dark' by default)
+ * @param opts.localStorageEntries  extra seeds, written beside the layout by the
+ *                          stub's own init script
  */
-export async function stubSplitPanes(page, { slots, transcripts, layout, extra = null, theme = 'dark' }) {
+export async function stubSplitPanes(page, { slots, transcripts, layout, extra = null, theme = 'dark', localStorageEntries = {} }) {
   await stubDashboardApi(page, {
     folders: [], slots, theme,
     extra: async (path, route) => {
@@ -42,9 +44,6 @@ export async function stubSplitPanes(page, { slots, transcripts, layout, extra =
       if (path === '/api/chat/pins') { await json(route, { pins: [] }); return true }
       return false
     },
+    localStorageEntries: { 'mc-split-layouts': JSON.stringify(layout), ...localStorageEntries },
   })
-  // Added after stubDashboardApi so it runs after that script's localStorage.clear().
-  await page.addInitScript(l => {
-    localStorage.setItem('mc-split-layouts', JSON.stringify(l))
-  }, layout)
 }
