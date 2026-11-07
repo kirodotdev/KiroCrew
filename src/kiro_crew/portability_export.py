@@ -327,6 +327,10 @@ def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> i
             return None
         if not fenced_ok and is_sensitive_path(real):
             return None
+        # The fence's targets keep the root's own spelling, so ask in that one too.
+        if not fenced_ok and root_cmp != root_real:
+            if is_sensitive_path(root_real + real[len(root_cmp) :]):
+                return None
     except OSError:
         return None
     else:

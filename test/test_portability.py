@@ -143,6 +143,10 @@ class TestExport:
         # The SQLite backup builds a file URI that rejects this spelling; it is a separate path.
         for db in ("memory.db", "memory_index.db"):
             (patched_config_dir / db).unlink()
+        # A fenced credential under the workspace must stay out under this spelling too.
+        pat = patched_config_dir / "workspace" / "md-notebook" / "pat"
+        pat.parent.mkdir(parents=True, exist_ok=True)
+        pat.write_text("secret")
         prefixed = "\\\\?\\" + os.path.realpath(patched_config_dir)
         with patch.dict(os.environ, {"KIROCREW_HOME": prefixed}):
             zip_bytes, manifest = create_export_zip()
@@ -150,7 +154,9 @@ class TestExport:
         assert manifest["contents"]["plan_memory_files"] == 1
         assert manifest["contents"]["skill_count"] == 1
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            assert any("preferences.md" in n for n in zf.namelist())
+            names = zf.namelist()
+        assert any("preferences.md" in n for n in names)
+        assert not any(n.endswith("md-notebook/pat") for n in names)
 
     def test_export_includes_skills(self, patched_config_dir):
         zip_bytes, manifest = create_export_zip()
