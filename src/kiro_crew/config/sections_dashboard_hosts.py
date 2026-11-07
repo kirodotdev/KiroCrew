@@ -77,7 +77,47 @@ def coerce_browser_local_origins(raw: object) -> list[str]:
     return out
 
 
-def _coerce_gitlab_hosts(raw: object) -> list[str]:
+#: One segment of a GitLab relative URL root (the ``/gitlab`` in
+#: ``https://host/gitlab/group/project``): the same conservative character set the
+#: Bitbucket Server and Gerrit context paths accept.
+_GITLAB_URL_ROOT_SEGMENT_RE = _re.compile(r"[A-Za-z0-9._~-]{1,64}")
+_GITLAB_URL_ROOT_MAX_SEGMENTS = 8
+_GITLAB_PUBLIC_HOSTS = frozenset({"gitlab.com", "www.gitlab.com"})
+
+
+def split_gitlab_host_entry(entry: str) -> tuple[str, str]:
+    """Split a coerced ``dashboard.gitlab_hosts`` entry into ``(authority, url_root)``.
+
+    ``authority`` is the ``host[:port]`` every allowlist check and every
+    ``glab --hostname`` uses; ``url_root`` is ``""`` for an instance served at
+    the root, or the instance's relative URL root (``/gitlab``) when the entry
+    carries one. The root is never part of a project path.
+    """
+    authority, sep, rest = entry.partition("/")
+    return authority, (f"/{rest}" if sep and rest else "")
+
+
+def gitlab_host_authorities(entries: Iterable[str]) -> list[str]:
+    """The ``host[:port]`` part of each coerced GitLab entry, in order."""
+    return [split_gitlab_host_entry(entry)[0] for entry in entries]
+
+
+def _coerce_gitlab_url_root(text: str) -> str | None:
+    """Validate the path part of a GitLab entry; ``None`` refuses the entry."""
+    segments = text.strip("/").split("/")
+    if (
+        not text.strip("/")
+        or len(segments) > _GITLAB_URL_ROOT_MAX_SEGMENTS
+        or any(
+            segment in {".", ".."} or not _GITLAB_URL_ROOT_SEGMENT_RE.fullmatch(segment)
+            for segment in segments
+        )
+    ):
+        return None
+    return "".join(f"/{segment}" for segment in segments)
+
+
+def _coerce_gitlab_hosts(raw: object, *, allow_url_root: bool = False) -> list[str]:
     """Coerce the self-hosted GitLab allowlist to clean ``host[:port]`` entries.
 
     Fails closed: a non-list yields ``[]``, and an entry is dropped unless it is
@@ -85,15 +125,34 @@ def _coerce_gitlab_hosts(raw: object) -> list[str]:
     carrying a scheme, userinfo, path, query, or wildcard is rejected rather than
     sanitized, so a hand-edited config cannot smuggle a different target past the
     exact-match check the source-provider handler performs.
+
+    With ``allow_url_root`` (``dashboard.gitlab_hosts`` only) an entry may also
+    carry the instance's relative URL root, ``gitlab.example.com/gitlab``; the
+    root keeps its case, since URL paths are case-sensitive. One host names one
+    instance, as glab keys its per-host config by host, so a later entry for an
+    authority already listed is dropped.
     """
     if not isinstance(raw, list):
         return []
     out: list[str] = []
+    seen_authorities: set[str] = set()
     for entry in raw:
         if not isinstance(entry, str):
             continue
-        host = entry.strip().lower()
-        if not host or len(host) > 255:
+        text = entry.strip()
+        if not text or len(text) > 255:
+            continue
+        url_root = ""
+        authority_text, slash, root_text = text.partition("/")
+        if slash:
+            if not allow_url_root:
+                continue
+            coerced_root = _coerce_gitlab_url_root(root_text)
+            if coerced_root is None:
+                continue
+            url_root = coerced_root
+        host = authority_text.lower()
+        if not host:
             continue
         # Split the optional port BEFORE stripping trailing dots: an absolute-FQDN
         # entry with a port ("gitlab.example.:8443") keeps its dot in the middle of
@@ -133,9 +192,10 @@ def _coerce_gitlab_hosts(raw: object) -> list[str]:
         else:
             host = name
         # gitlab.com is always accepted and must not need an allowlist entry.
-        if host in {"gitlab.com", "www.gitlab.com"} or host in out:
+        if host in _GITLAB_PUBLIC_HOSTS or host in seen_authorities:
             continue
-        out.append(host)
+        seen_authorities.add(host)
+        out.append(f"{host}{url_root}")
     return out
 
 

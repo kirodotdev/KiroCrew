@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import quote, unquote, urlparse
 
+from kiro_crew.config.sections_dashboard_hosts import split_gitlab_host_entry
 from kiro_crew.monitoring.github_pull_request import parse_github_pull_request_target
 from kiro_crew.monitoring.plugins import (
     MonitorKindPlugin,
@@ -66,6 +67,9 @@ class GitLabMergeRequestTarget:
     host: str
     project_path: str
     iid: int
+    # The instance's relative URL root (``/gitlab``) from its
+    # ``dashboard.gitlab_hosts`` entry; part of the URL, never of the project.
+    url_root: str = ""
 
     @property
     def identity(self) -> str:
@@ -76,7 +80,7 @@ class GitLabMergeRequestTarget:
         path = PurePosixPath(
             *(quote(part, safe="._~-") for part in PurePosixPath(self.project_path).parts)
         ).as_posix()
-        return f"https://{self.host}/{path}/-/merge_requests/{self.iid}"
+        return f"https://{self.host}{self.url_root}/{path}/-/merge_requests/{self.iid}"
 
 
 @dataclass(frozen=True)
@@ -139,17 +143,27 @@ def parse_gitlab_merge_request_target(
     gitlab_hosts: list[str] | tuple[str, ...],
 ) -> GitLabMergeRequestTarget:
     actual_host, parts = _parts(raw, allow_port=True)
-    allowed = {"gitlab.com", *(host.lower() for host in gitlab_hosts)}
+    # An entry may carry the instance's relative URL root (``host/gitlab``).
+    url_roots = {"gitlab.com": ""}
+    for entry in gitlab_hosts:
+        authority, url_root = split_gitlab_host_entry(entry)
+        url_roots[authority.lower()] = url_root
     if len(parts) < 5 or tuple(parts[-3:-1]) != _GITLAB_MARKER:
         raise ValueError("target must be an allowed GitLab merge request")
-    if actual_host not in allowed:
+    if actual_host not in url_roots:
         raise GitLabHostNotAllowed("GitLab target host is not allowed")
-    # Path shape is <namespace...>/<repo>/-/merge_requests/<iid>.
-    project_parts = parts[:-3]
+    url_root = url_roots[actual_host]
+    root_parts = [part for part in url_root.split("/") if part]
+    if parts[: len(root_parts)] != root_parts:
+        raise ValueError("target must be an allowed GitLab merge request")
+    # Path shape is [<url root...>/]<namespace...>/<repo>/-/merge_requests/<iid>.
+    project_parts = parts[len(root_parts) : -3]
     if len(project_parts) < 2:
         raise ValueError("target must be an allowed GitLab merge request")
     iid = _positive_id(parts[-1])
-    target = GitLabMergeRequestTarget(actual_host, PurePosixPath(*project_parts).as_posix(), iid)
+    target = GitLabMergeRequestTarget(
+        actual_host, PurePosixPath(*project_parts).as_posix(), iid, url_root
+    )
     if target.url != raw:
         raise ValueError("target must use the canonical GitLab URL")
     return target

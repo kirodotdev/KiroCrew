@@ -151,9 +151,20 @@ def _github_ref(host: str, path: str) -> SourceRef:
     )
 
 
-def _gitlab_ref(host: str, path: str) -> SourceRef:
-    """Build a GitLab ``SourceRef`` for an already-authorized host."""
-    project, number, kind = _parse_gitlab_path(path)
+def _gitlab_ref(host: str, path: str, url_root: str = "") -> SourceRef:
+    """Build a GitLab ``SourceRef`` for an already-authorized host.
+
+    ``url_root`` is the instance's relative URL root from its
+    ``dashboard.gitlab_hosts`` entry (``/gitlab``). It is stripped before the
+    project path is split, since glab already serves the API under it, and kept
+    in the canonical URL. A path outside the root is not on that instance.
+    """
+    project_path = path
+    if url_root:
+        if not path.startswith(f"{url_root}/"):
+            raise ValueError(f"Expected a GitLab URL under {url_root} on {host}.")
+        project_path = path[len(url_root) :]
+    project, number, kind = _parse_gitlab_path(project_path)
     normalized = urlunparse(("https", host, path, "", "", ""))
     repo = project.rsplit("/", 1)[-1]
     owner = project.rsplit("/", 1)[0] if "/" in project else ""
@@ -388,7 +399,7 @@ def parse_source_url(raw_url: str) -> SourceRef:
     if host and candidate in hosts._allowed_github_hosts():
         return _github_ref(candidate, path)
     if host and candidate in hosts._allowed_gitlab_hosts():
-        return _gitlab_ref(candidate, path)
+        return _gitlab_ref(candidate, path, hosts._gitlab_url_root(candidate))
     # Bitbucket Server has no public default host, so it is recognized only
     # through its allowlist. Config load refuses a host listed under two
     # providers, so placing it after GitHub Enterprise and GitLab is a backstop.
@@ -500,6 +511,16 @@ def parse_repo_url(raw_url: str) -> RepoRef:
                 "Expected a GitLab repository URL like https://gitlab.com/group/project."
             )
         gitlab_host = "gitlab.com" if is_public_gitlab else candidate
+        # A relative URL root (``/gitlab``) is not part of the project path.
+        root_segments = [s for s in hosts._gitlab_url_root(gitlab_host).split("/") if s]
+        if root_segments:
+            if segments[: len(root_segments)] != root_segments:
+                raise ValueError("Expected a GitLab repository URL under its URL root.")
+            segments = segments[len(root_segments) :]
+            if len(segments) < 2:
+                raise ValueError(
+                    "Expected a GitLab repository URL like https://gitlab.com/group/project."
+                )
         owner = "/".join(segments[:-1])
         return RepoRef("gitlab", gitlab_host, owner, _strip_git_suffix(segments[-1]))
 

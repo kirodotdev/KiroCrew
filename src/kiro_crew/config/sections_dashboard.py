@@ -1140,6 +1140,9 @@ class DashboardConfig:
             "only sent to the glab CLI if its host is an exact member of this "
             "list, so a pasted link cannot aim the credential-bearing CLI at an "
             "arbitrary or internal host. Suffixes and wildcards are not matched. "
+            "An instance served under a relative URL root lists it after the "
+            "host (gitlab.example.com/gitlab); Issue Radar does not use such an "
+            "entry. "
             "Adding an entry authorizes the local glab CLI, with its token, to "
             "reach that host, including hosts only resolvable on your network.",
         ),
