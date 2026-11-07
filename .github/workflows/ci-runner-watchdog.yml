@@ -5,8 +5,9 @@ name: CI Runner Watchdog
 # `ci.yml` routes several Linux jobs to an AWS CodeBuild-hosted runner through a
 # label that is specific to one run attempt:
 # `codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}`
-# (computed once, in the `changes` job; docs/ci/ci-and-reviews.md, "CodeBuild-hosted
-# runner (pilot)"). CodeBuild answers each `workflow_job.queued` webhook with one
+# (admission decided once, in the `changes` job, the label spelled in each routed
+# job's own `runs-on`; docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner
+# (pilot)"). CodeBuild answers each `workflow_job.queued` webhook with one
 # ephemeral just-in-time runner. That runner must open a broker session before it
 # can take the job, and the handshake can fail in a way nothing retries: the broker
 # returns a 500 on the first `CreateSession` having already half-created the
@@ -99,13 +100,12 @@ name: CI Runner Watchdog
 # minutes (CodeBuild's measured queue-to-start here is under a minute). Oldest
 # first across every watched workflow, at most 5 per tick as one global cap, the
 # script cancels the run, waits for the cancellation to land, and re-runs it. The
-# re-run is a new attempt: `changes` recomputes the label with the new attempt
+# re-run is a new attempt: every routed job asks for a label with the new attempt
 # suffix and GitHub emits fresh `workflow_job.queued` webhooks, so CodeBuild
-# starts fresh runners. It
-# is a FULL re-run, not `rerun-failed-jobs`: the failed-jobs form does not run
-# `changes` again, so it would re-queue the routed jobs under a label whose attempt
-# suffix is stale, and CodeBuild's documentation does not say whether it honours
-# that. One CI round is the price; the alternative was a ten-hour hold.
+# starts fresh runners. It is a FULL re-run, not `rerun-failed-jobs`, so
+# `changes` re-runs as well and the new attempt decides its surface and fleet
+# admission afresh instead of reusing the cancelled attempt's outputs. One CI
+# round is the price; the alternative was a ten-hour hold.
 #
 # A GitHub rate limit is survivable. A 403 or 429 whose body names a rate limit is
 # honoured against its `Retry-After` / `X-RateLimit-Reset` with one cheap in-budget
@@ -269,7 +269,7 @@ name: CI Runner Watchdog
 # Manual fallback, when this workflow cannot run (Actions saturation holds it
 # queued too) or for a run it declined: `gh run cancel <run-id>`, wait for the run
 # to report `completed`, then `gh run rerun <run-id>` (`--failed` keeps the
-# successful jobs but carries the stale-label caveat above).
+# successful jobs but reuses the cancelled attempt's `changes` outputs).
 #
 # This job runs on `ubuntu-latest` and must never be routed to CodeBuild: a
 # watchdog for the CodeBuild path cannot depend on the CodeBuild path.

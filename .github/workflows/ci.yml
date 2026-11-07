@@ -100,9 +100,12 @@ jobs:
       # `kirocrew-runners` group's own runner label, and a fork running its own
       # CI uses `ubuntu-latest`, because it cannot reach that group. Windows
       # uses the hosted image on every non-fleet path, since the group is
-      # Linux-only. Linux consumers retain a hosted fallback for when this job
-      # never reports at all:
-      # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}` --
+      # Linux-only. A consumer reads a `codebuild-` output as "admitted" and
+      # spells the fleet label from its OWN `github.run_attempt`: re-running one
+      # job starts a new attempt without re-running this job, so the output names
+      # an earlier attempt's label, which CodeBuild does not reliably serve. Linux
+      # consumers retain a hosted fallback for when this job never reports at
+      # all (`|| needs.changes.outputs.linux_runner || 'ubuntu-latest'`) --
       # deliberately still hosted, because an empty output means the resolver
       # failed rather than that the run was found ineligible.
       # if this job fails or is cancelled the output is empty, and a job that
@@ -549,7 +552,7 @@ jobs:
     # admission is not restated here; a run it rejects takes the
     # `kirocrew-runners` group in this repository and the hosted image in a
     # fork, which is what the resolver's own fallbacks already decide.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       max-parallel: 4
@@ -742,7 +745,7 @@ jobs:
       && needs.await-fast-gate.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
       && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Backend and Frontend Lint passed or were not needed
@@ -767,7 +770,7 @@ jobs:
     if: needs.changes.outputs.only_frontend != 'true'
     # Large alone did not fix black's process-pool failure. Bound its workers
     # below as well, on hosted and fleet alike; preserve every lint/type gate.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # The job's floor on today's hosted runners is ~14-15 min (black --check
     # over the whole tree alone takes 7-8 min, flake8 ~2 min, mypy cold ~3 min),
     # so 15 cancelled mypy mid-run on green PRs. 25 is the budget frontend-test
@@ -962,7 +965,7 @@ jobs:
     # Not `linux_runner_large`: black, the one backend gate that needs the
     # large fleet for its process pool, runs in `backend-lint`. Every gate
     # below is a single-process stdlib scan.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       # Full history, for the same reason `backend-lint` needs it: four of the
@@ -1076,7 +1079,7 @@ jobs:
     # and event admission is not restated here. A run the fleet does not admit
     # takes the `kirocrew-runners` group in this repository and the hosted
     # image in a fork, the destination this lane had before.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1133,7 +1136,7 @@ jobs:
     # All eight shards use large compute and the measured non-root boundary.
     # A non-admitted run executing here takes the `kirocrew-runners` group; a
     # fork's own CI, and an absent resolver output, stay on the hosted pool.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Individual tests still time out at 120 seconds; this is the per-shard
     # wall-clock budget. File sharding reduces repeated collection, not test
     # coverage. On CodeBuild (admitted runs) eight shards finish in ~20 min, so
@@ -1438,7 +1441,7 @@ jobs:
     # `!= 'false'` keeps an absent output running the suite.
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.windows_tests != 'false' }}
     # All eight shards share the actor-gated large label; absent output is hosted.
-    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
@@ -2004,7 +2007,7 @@ jobs:
     name: Windows Fail-Closed Sandbox Contract
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Keep the real gateway/ACP contract and its existing timeout unchanged.
     timeout-minutes: 25
     steps:
@@ -2456,7 +2459,7 @@ jobs:
     name: Backend Tests (crew container)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       KIROCREW_TMP_RESIDUE_STRICT: "1"
@@ -2571,7 +2574,7 @@ jobs:
     # adapters are spawned through Crew's own session code, which refuses
     # provider execution as root. Setup runs as the runner identity; the
     # contract tests and the junit read-back run through ci-shell.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       # THE point of this job. Every guarded test skips where its adapter is absent
@@ -2791,7 +2794,7 @@ jobs:
       && needs.changes.outputs.only_frontend != 'true'
       && needs.changes.outputs.leaf_tests != 'true' }}
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2878,7 +2881,7 @@ jobs:
   coverage-gate:
     name: Coverage Gate
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint]
     # Single source of truth for the floors -- referenced by the check steps,
@@ -3180,7 +3183,7 @@ jobs:
     # input byte-identical. only_backend is the catch-all side of the same
     # decision, so an unclassifiable path still runs this.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # Nothing in THIS job reads history or the remote: tsc and eslint judge
@@ -3274,7 +3277,7 @@ jobs:
     # byte-identical, and only_backend is the catch-all side of the same
     # decision so an unclassifiable path still runs them.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: frontend-ratchets/Check for new hardcoded
@@ -3530,7 +3533,7 @@ jobs:
     needs: [changes, await-fast-gate]
     # Reads website/package.json + website/package-lock.json and nothing else.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3591,7 +3594,7 @@ jobs:
     # request takes the `kirocrew-runners` group and a fork's own CI takes
     # `ubuntu-latest`. Rollback: `ubuntu-latest`. Policy, image caveat
     # and exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3627,7 +3630,7 @@ jobs:
     name: Electron Shell Tests
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3671,7 +3674,7 @@ jobs:
     name: Electron Shell Tests (Windows port identity)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3698,7 +3701,7 @@ jobs:
     # vitest --coverage shards' memory; routing and rollback as for cfn-lint. See
     # docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
     # Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Per-shard budget. The whole suite was ~23 min on one runner; split four
     # ways each shard is well under this, and a hung shard fails fast.
     #
@@ -3899,7 +3902,7 @@ jobs:
       && needs.changes.outputs.only_backend != 'true' }}
     # CodeBuild-hosted runner (pilot), default size: a merge is one process
     # re-reading four blobs, not a test run. Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3982,7 +3985,7 @@ jobs:
     name: Bundle Size Gate
     needs: [changes, await-fast-gate, lint-gate]
     # The analyze build reserves a 6 GiB Node heap; use the large memory tier.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 25
     # A backend-only diff cannot change the frontend bundle, so this gate has
     # nothing to measure there. Meta diffs (.github/**, scripts/**) leave both
@@ -4076,7 +4079,7 @@ jobs:
     name: i18n Render Gate (en-XA, head vs base)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_backend != 'true' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: the base-ref resolver below runs
@@ -4231,7 +4234,7 @@ jobs:
     name: E2E (stub ACP backend, offline)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Route-aware, for the same reason backend-test is. Off the CodeBuild fleet
     # this job runs on `kirocrew-linux-4-core`, where the slowest of six
     # observed fork runs took 23.9 of the 25 minutes -- 66 seconds of margin, so
@@ -4577,7 +4580,7 @@ jobs:
     name: Integration (in-process gateway)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4716,7 +4719,7 @@ jobs:
           && '["macos-15"]'
           || '["ubuntu-latest","macos-15","windows-latest"]') }}
     # Keep matrix.os stable: names, readiness windows and artifact names use it.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || matrix.os == 'windows-latest' && (needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || matrix.os == 'windows-latest' && (startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}
     timeout-minutes: 20
     defaults:
       run:

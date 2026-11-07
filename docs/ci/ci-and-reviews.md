@@ -1867,10 +1867,16 @@ Details worth knowing:
   At peak hours the hosted backend and frontend shards each queue for many
   minutes with about a hundred of these jobs running at once, which is the
   reason for the move. Things to know when touching it:
-  - **Forks never see it.** The label is computed once, in the `changes` job
-    (outputs `linux_runner` and `linux_runner_large`), and the routed jobs read
-    it as `runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`,
-    so there is one copy of the decision rather than one per job, and a job
+  - **Forks never see it.** The routing decision is made once, in the `changes`
+    job (outputs `linux_runner` and `linux_runner_large`), so there is one copy
+    of it rather than one per job. A routed job reads a `codebuild-` output only
+    as "admitted" and spells the fleet label from its OWN `github.run_attempt`
+    (`startsWith(<output>, 'codebuild-') && format(<label>, github.run_id,
+    github.run_attempt) || <output> || 'ubuntu-latest'`), because re-running one
+    job starts a new attempt without re-running `changes`: read verbatim, the
+    output names an earlier attempt's label, which CodeBuild does not reliably
+    serve (CI run 36831273812 got runners on one; a job of run 39611455569 sat
+    queued on one for over 40 minutes). A job
     that runs after `changes` failed (`coverage-gate` fails closed with
     `if: always()`) still gets a runner instead of erroring out before its own
     checks execute: a run in any
@@ -2030,17 +2036,15 @@ Details worth knowing:
     carries a `codebuild-` label, and has waited more than 15 minutes
     (queue-to-start on CodeBuild is measured in seconds here, so that margin is
     generous). It then cancels the run, waits for the cancellation to land, and
-    re-runs it: the re-run is a new attempt, so `changes` recomputes the label
-    with the new attempt suffix and GitHub emits fresh `workflow_job.queued`
+    re-runs it: the re-run is a new attempt, so every routed job asks for a
+    label with the new attempt suffix and GitHub emits fresh `workflow_job.queued`
     webhooks that start fresh runners. The re-run cap of five per tick is one
     global budget across every watched workflow, not five per workflow. The
-    watchdog re-runs *all* jobs rather
-    than only the failed ones, because `gh run rerun --failed` reuses the first
-    attempt's `changes` outputs and therefore re-queues the routed jobs under a
-    label whose attempt suffix is stale, and CodeBuild's documentation does not
-    say whether it honours that. (It did on CI run 36831273812: attempts 2 and 3
-    of a `--failed` rerun kept the `-1` label on their Linux and Windows jobs and
-    each got a fresh runner within two minutes.) A workflow clears TWO heal-safety gates. The
+    watchdog re-runs *all* jobs rather than only the failed ones, so `changes`
+    re-runs as well and the new attempt decides its surface and fleet admission
+    afresh instead of reusing the cancelled attempt's outputs. Either form asks
+    for a current label, because every routed job spells it from its own
+    `github.run_attempt`. A workflow clears TWO heal-safety gates. The
     declared gate is `HEAL_SAFE_WORKFLOWS`, a written judgement that a full
     re-run is safe, and it is the LOAD-BEARING one: a workflow joining the
     watched set is exempt until a person puts it there. There are two declared
@@ -2337,8 +2341,8 @@ Details worth knowing:
     waits. **Manual fallback** when the watchdog itself is held queued by
     Actions saturation, or for a run it declined: `gh run cancel <run-id>`, wait
     for the run to report `completed`, then `gh run rerun <run-id>`
-    (`gh run rerun <run-id> --failed` keeps the successful jobs but carries the
-    stale-label caveat). `workflow_dispatch` with `dry_run: true` (the default
+    (`gh run rerun <run-id> --failed` keeps the successful jobs but reuses the
+    cancelled attempt's `changes` outputs). `workflow_dispatch` with `dry_run: true` (the default
     for a manual dispatch) detects and reports without acting. **A hand re-run is
     safe from the watchdog's cancel once a newer push supersedes it**: a run past
     attempt 1 may be the very `gh run rerun` above, and cancelling a superseded run

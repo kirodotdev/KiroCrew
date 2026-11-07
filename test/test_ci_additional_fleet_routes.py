@@ -41,6 +41,8 @@ def _evaluate(expression: str, context: dict[str, object]) -> object:
         "fromJSON": json.loads,
         "contains": lambda values, value: value in values,
         "format": lambda template, *args: template.format(*args),
+        # Actions compares case-insensitively.
+        "startsWith": lambda value, prefix: value.lower().startswith(prefix.lower()),
     }
 
     def context_key(node):
@@ -109,6 +111,8 @@ def _evaluate(expression: str, context: dict[str, object]) -> object:
         ("contains(fromJSON('[\"123\"]'), '12')", False),
         ("contains(fromJSON('[\"123\"]'), '123')", True),
         ("format('runner-{0}-{1}', '42', '2')", "runner-42-2"),
+        ("startsWith('CodeBuild-x', 'codebuild-')", True),
+        ("startsWith('ubuntu-latest', 'codebuild-')", False),
     ],
 )
 def test_expression_interpreter_operand_returns_and_short_circuit(expression, expected):
@@ -382,3 +386,45 @@ def test_reusable_routes_keep_schedule_callers_off_the_fleet(filename):
         ), f"{caller} must exercise the reusable route"
     for job in workflow["jobs"].values():
         assert job["runs-on"] == parity._CANONICAL_PUSH_EXPR
+
+
+# The resolver output each consumer tier reads, so a case asserts its own size suffix.
+_CONSUMER_OUTPUT = {
+    parity._CANONICAL_CONSUMER_EXPR: "linux_runner",
+    parity._CANONICAL_CONSUMER_EXPR_LARGE: "linux_runner_large",
+    parity._CANONICAL_WINDOWS_CONSUMER_EXPR: "windows_runner",
+}
+
+
+@pytest.mark.parametrize(
+    "job_id,os_leg,output",
+    [
+        (job_id, "ubuntu-latest", _CONSUMER_OUTPUT[expression])
+        for (_, job_id), expression in sorted(parity._EXPECTED_RESOLVER_CONSUMER_JOBS.items())
+        if expression in _CONSUMER_OUTPUT
+    ]
+    + [
+        ("e2e-boot-matrix", "ubuntu-latest", "linux_runner_large"),
+        ("e2e-boot-matrix", "windows-latest", "windows_runner"),
+    ],
+)
+def test_a_rerun_consumer_asks_for_its_own_attempts_fleet_label(job_id, os_leg, output):
+    """Re-running one job is a new attempt that does not re-run `changes`.
+
+    The resolver's outputs still name an earlier attempt, whose label CodeBuild does
+    not reliably serve. At the resolver's own attempt a consumer asks for exactly
+    what it emitted, size suffix included; at a later one, only the attempt moves.
+    """
+    workflow = yaml.safe_load((parity._WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    runs_on = workflow["jobs"][job_id]["runs-on"]
+    outputs = {
+        "linux_runner": "codebuild-kirocrew-gha-linux-456-1",
+        "linux_runner_large": "codebuild-kirocrew-gha-linux-456-1 instance-size:large",
+        "windows_runner": "codebuild-kirocrew-gha-windows-456-1 instance-size:large",
+    }
+    context = {f"needs.changes.outputs.{k}": v for k, v in outputs.items()}
+    context.update({"github.run_id": "456", "matrix.os": os_leg})
+    assert _evaluate(runs_on, {**context, "github.run_attempt": "1"}) == outputs[output]
+    assert _evaluate(runs_on, {**context, "github.run_attempt": "3"}) == outputs[output].replace(
+        "-456-1", "-456-3"
+    )
