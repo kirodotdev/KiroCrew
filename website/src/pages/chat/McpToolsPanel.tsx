@@ -77,8 +77,8 @@ const SESSION_LABEL_KEY: Record<McpSessionServerState, string> = {
  * false authority this split exists to remove.
  *
  * The tool rows' loaded/deferred/disabled dot is a third thing again — a
- * client-side approximation derived from this session's tool_search results (see
- * deriveLoadedMcpTools), which starts empty after a reload.
+ * client-side approximation derived from the tool_search results and MCP tool
+ * calls in the messages this tab holds (see deriveLoadedMcpTools).
  */
 export default function McpToolsPanel({
   servers,
