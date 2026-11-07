@@ -2108,6 +2108,13 @@ An entryPoint backend that declares `notifications.channels` in `app.json` pushe
 your callback base. If `KIROCREW_GATEWAY_ORIGIN` is unset the gateway did not publish a
 bound-port origin, so the backend has no callback base and should not push.
 
+To read and clear what it pushed, a backend that declares `/api/notifications/own` in
+`permissions.api` calls `GET {KIROCREW_GATEWAY_ORIGIN}/api/notifications/own` (returns
+`{notifications, unread}`) and `POST .../own/ack` with `{"ts": "<note ts>"}`, or
+`POST .../own/ack-all`. The gateway answers only the notes it stamped with your app's
+name, so the list is exactly the one behind your sidebar badge; another app's note reads as
+`404`. The dashboard page gets the same list from `useAppNotifications()`.
+
 ## App Dev Mode (live reload)
 
 Dev mode speeds up app-UI iteration: no manual copy-and-hard-refresh loop. When
