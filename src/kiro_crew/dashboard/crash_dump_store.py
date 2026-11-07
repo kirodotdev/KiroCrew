@@ -757,10 +757,35 @@ def dump_age_seconds(dump_path: Path) -> float:
     return max(0.0, time.time() - dump_path.stat().st_mtime)
 
 
-#: Matches a faulthandler per-thread stack header, e.g.
-#: ``Thread 0x00007f72c082b640 (most recent call first):`` or
-#: ``Current thread 0x... (most recent call first):``.
-_THREAD_HEADER_RE = re.compile(r"^(?:Current thread|Thread) 0x[0-9a-fA-F]+")
+#: The most threads, and frames per thread, faulthandler lists in one dump
+#: (CPython's ``MAX_NTHREADS`` and ``MAX_FRAME_DEPTH``). Past the thread limit
+#: it writes ``...`` and stops; it lists the newest thread first, so the oldest
+#: (the main thread, where the event loop runs) is the one it leaves out.
+FAULTHANDLER_MAX_THREADS = 100
+FAULTHANDLER_MAX_FRAMES = 100
+
+#: Header of the block the loop watchdog writes for the event-loop thread
+#: before the alarm's dump, so the dump holds that stack however many threads
+#: there are (``loop_watchdog.LoopStallWatchdog._write_loop_stack``).
+LOOP_THREAD_HEADER = "Loop thread"
+
+#: The line a reader shows in place of the wedged thread when faulthandler cut
+#: the dump at its thread limit and the loop thread's own block is absent.
+LOOP_THREAD_MISSING_NOTE = (
+    f"(the event-loop thread is not in this dump: faulthandler lists only the newest "
+    f"{FAULTHANDLER_MAX_THREADS} threads)"
+)
+
+#: How a per-thread stack header starts, e.g.
+#: ``Thread 0x00007f72c082b640 (most recent call first):``,
+#: ``Current thread 0x... (most recent call first):`` or the watchdog's
+#: ``Loop thread 0x... (most recent call first):``.
+_THREAD_HEADER_PREFIXES = ("Current thread 0x", "Thread 0x", f"{LOOP_THREAD_HEADER} 0x")
+
+
+def _is_thread_header(line: str) -> bool:
+    """True when *line* opens a thread's block: a known prefix and a hex ident."""
+    return line.startswith(_THREAD_HEADER_PREFIXES) and _block_ident([line]) is not None
 
 
 def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[str]]]:
@@ -776,7 +801,7 @@ def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[s
     blocks: list[list[str]] = []
     current: list[str] | None = None
     for ln in stack_lines:
-        if _THREAD_HEADER_RE.match(ln.strip()):
+        if _is_thread_header(ln.strip()):
             current = [ln]
             blocks.append(current)
         elif current is None:
@@ -789,23 +814,57 @@ def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[s
 def _wedged_thread_block(blocks: list[list[str]]) -> list[str] | None:
     """Return the stack block of the thread the event loop wedged on.
 
-    ``faulthandler.dump_traceback_later`` (what the loop watchdog arms) fires
-    from an internal C thread, so no block carries the ``Current thread``
-    marker — and CPython dumps Python threads newest-first, which puts the
-    MAIN thread (where the gateway's asyncio loop runs) LAST in the file.
-    The blocks at the top are typically idle thread-pool workers parked in
+    In order: faulthandler's block (``Current thread`` or ``Thread``) for the
+    same thread as the watchdog's ``Loop thread`` block; the ``Loop thread``
+    block; a
+    ``Current thread`` marker (dumps taken synchronously from Python mark the
+    dumping thread); otherwise the last block, because CPython dumps threads newest-first and
+    the MAIN thread, where the gateway's asyncio loop runs, comes LAST.  The
+    blocks at the top are typically idle thread-pool workers parked in
     ``Queue.get``, useless for diagnosing the stall.
 
-    Prefer an explicit ``Current thread`` marker when one exists (dumps taken
-    synchronously from Python mark the dumping thread); otherwise take the
-    last block.
+    ``None`` when the dump ends in faulthandler's ``...``: it stopped at
+    :data:`FAULTHANDLER_MAX_THREADS` threads, so the last block is the 100th
+    newest thread, not the main thread, and naming it would point at the
+    wrong stack.
     """
     if not blocks:
         return None
-    for block in blocks:
-        if block[0].lstrip().startswith("Current thread"):
-            return block
+    loop = next((b for b in blocks if b[0].lstrip().startswith(LOOP_THREAD_HEADER)), None)
+    current = next((b for b in blocks if b[0].lstrip().startswith("Current thread")), None)
+    if loop is not None:
+        # faulthandler's own stack of that thread, taken when the dump fired, is
+        # newer than the watchdog's. Its label is ``Current thread`` on the
+        # alarm path and ``Thread`` on faulthandler's timer path.
+        ident = _block_ident(loop)
+        fatal = next((b for b in blocks if b is not loop and _block_ident(b) == ident), None)
+        return fatal if fatal is not None else loop
+    if current is not None:
+        return current
+    if _cut_at_thread_limit(blocks):
+        return None
     return blocks[-1]
+
+
+def _block_ident(block: list[str]) -> int | None:
+    """The thread ident a ``<kind> thread 0x...`` or ``Thread 0x...`` header names."""
+    for word in block[0].split():
+        if word.startswith("0x"):
+            try:
+                return int(word, 16)
+            except ValueError:
+                return None
+    return None
+
+
+def _cut_at_thread_limit(blocks: list[list[str]]) -> bool:
+    """True when faulthandler stopped listing threads (its trailing ``...``).
+
+    Only the unindented marker: faulthandler ends a thread whose stack runs
+    past its frame limit with an indented ``  ...`` inside that thread's block,
+    and that dump still lists every thread.
+    """
+    return bool(blocks) and blocks[-1][-1].rstrip() == "..."
 
 
 def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
@@ -829,6 +888,8 @@ def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
     preamble, blocks = _split_stack_content(stack_lines)
     wedged = _wedged_thread_block(blocks)
     if wedged is None:
+        if _cut_at_thread_limit(blocks):
+            return (preamble + [LOOP_THREAD_MISSING_NOTE])[:max_lines]
         return stack_lines[:max_lines]
     return (preamble + wedged)[:max_lines]
 
@@ -934,6 +995,8 @@ def dump_replay_lines(
     if wedged is not None:
         others = [ln for block in blocks if block is not wedged for ln in block]
         stack_lines = preamble + wedged + others
+    elif _cut_at_thread_limit(blocks):
+        stack_lines = [LOOP_THREAD_MISSING_NOTE, *stack_lines]
     result: list[str] = []
     total = 0
     for ln in stack_lines:
