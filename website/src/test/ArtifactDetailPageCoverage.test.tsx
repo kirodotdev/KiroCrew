@@ -469,6 +469,14 @@ describe('ArtifactDetailPage — mutation paths', () => {
     )
   })
 
+  it('hands focus to the add-tag button when a tag is removed', async () => {
+    await mount(mkArtifact({ tags: ['ops', 'cr'] }))
+    const remove = screen.getByLabelText('Remove tag ops')
+    remove.focus()
+    fireEvent.click(remove)
+    expect(screen.getByLabelText('Add a tag')).toHaveFocus()
+  })
+
   it('surfaces a tag-write failure', async () => {
     await mount(mkArtifact({ tags: ['ops'] }))
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('tags rejected'))
