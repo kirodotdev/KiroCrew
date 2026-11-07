@@ -978,6 +978,7 @@ class GatewayOrchestrator:
     _report_monitor_completion = _nudge_chan._report_monitor_completion
     # gateway_runtime/nudge_dashboard_fire.py
     _fire_dashboard_nudge = _nudge_dash._fire_dashboard_nudge
+    _start_dashboard_wake_turn = _nudge_dash._start_dashboard_wake_turn
     _work_ledger_wake_loop = _nudge_dash._work_ledger_wake_loop
     _work_ledger_wake_text = _nudge_dash._work_ledger_wake_text
     _steer_work_ledger_wake = _nudge_dash._steer_work_ledger_wake

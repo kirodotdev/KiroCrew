@@ -395,6 +395,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, loop: 'NudgeLoop', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
         ),
         (
+            "_start_dashboard_wake_turn",
+            "async method",
+            "(self, loop: 'NudgeLoop', slot: 'Any', wake_message: 'str | None', tagged: 'str', visible: 'str', trigger_text: 'str | None', fired_generation: 'int') -> 'MonitorDispatchResult'",
+        ),
+        (
             "_work_ledger_wake_loop",
             "method",
             "(self, loop: 'NudgeLoop', wake_message: 'str | None') -> 'bool'",
