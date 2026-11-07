@@ -6507,7 +6507,8 @@ terminal-error branch when the failure carries the `session_start_failed` tag
 on the oversize-reply arm; a runtime that DIES during the start raises an untagged
 `AcpRuntimeDead`, so a death advances no loop's streak, the starting loop's or a
 sibling's) AND
-the turn was this loop's own `_directive_self_wake` cycle — raises the persisted
+the turn was this loop's own `_directive_self_wake` cycle or a recovery that cycle
+queued for itself (see below) — raises the persisted
 `consecutive_start_failures`, and `notify_cycle_landed(slot_key)` zeroes it on
 ANY landed turn, a human's included, since a turn that completed proves the
 session can start. `_timer` reads the streak with the other terminal bounds: at
@@ -6530,6 +6531,17 @@ clears it (`notify_cycle_landed`). At `_CONSECUTIVE_FAILURE_STANDDOWN_AFTER` (5)
 loop deactivates with `consecutive_failures` and emits `expired`. Like the
 start-failure stop it is system-imposed and re-armable, since the remedy (the backend
 recovering, the tool being fixed) is not something the loop can arrange.
+
+A recovery the cycle's own turn queued for itself (a CONTINUE after a mid-stream
+transient error, a verbatim replay) is still that cycle when it drains alone: its
+queue entry carries the loop's id and config generation (`_recovered_wake`,
+process-local, never persisted), so a fault that ends the recovery counts toward
+both streaks as the cycle's own fault would, the failed cycle under the same
+`(id, generation)` fence and the start failure by slot. It carries no wake
+authority: the recovery stays a non-`_directive_self_wake` turn. So a loop of any
+kind whose cycles keep dying in their recovery reaches these stand-downs, and a
+work-ledger wake whose turn died on a provider throttle earns its one retry on the
+next tick (#31640).
 
 A `model_refused` stop is imposed when a loop's own delivered cycle ends on a
 model-side content refusal that nothing retried. `agent.refusal_fallback_model`

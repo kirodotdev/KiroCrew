@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _turn_line_changes
     from kiro_crew.dashboard.chat_turn.queue_drain import (
+        _RECOVERED_WAKE_KEY,
         _RECOVERY_TURN_META_KEY,
         _REPLAYS_COMPLETION_KEY,
         TURN_ACTOR_META_KEY,
@@ -221,6 +222,12 @@ def _queue_recovery(
         for _entry in slot._queue:
             if _entry.get("id") == _recovery_qid:
                 _entry[_REPLAYS_COMPLETION_KEY] = True
+                break
+    if turn._wake_cycle:
+        # A loop's own cycle retried is still that cycle: its fault charges the loop.
+        for _entry in slot._queue:
+            if _entry.get("id") == _recovery_qid:
+                _entry[_RECOVERED_WAKE_KEY] = turn._wake_cycle
                 break
     if turn._is_refusal_retry_turn and index == 0 and _replays_this_turn:
         # A verbatim requeue of the refusal retry's own message REPLACES

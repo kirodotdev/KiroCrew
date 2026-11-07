@@ -427,6 +427,12 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 #: durable (``slot_queue_repository._is_durable_queue_entry``).
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
+#: Process-local key on a synthetic-recovery queue entry that a loop's own cycle
+#: queued for itself: that loop's ``(id, config generation)``, so the recovery's
+#: fault is charged to the loop like the cycle it retries. Never persisted: a kinded
+#: entry is not durable.
+_RECOVERED_WAKE_KEY = "_recovered_wake"
+
 
 def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
     """Whether an injector may start the queued head of an idle *slot* now.
@@ -1407,6 +1413,8 @@ async def _start_next_queued_turn(
         _run_kwargs["_synthetic_recovery_turn"] = True
         if len(consumed) == 1 and consumed[0].get(_REPLAYS_COMPLETION_KEY) is True:
             _run_kwargs["_replays_completion"] = True
+        if len(consumed) == 1 and consumed[0].get(_RECOVERED_WAKE_KEY):
+            _run_kwargs["_recovered_wake"] = consumed[0][_RECOVERED_WAKE_KEY]
     if _possibly_delivered_steer:
         _run_kwargs["_steer_possibly_delivered"] = True
     # A re-routed automation refusal carries the originating wake's provenance

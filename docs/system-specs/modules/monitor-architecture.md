@@ -218,10 +218,11 @@ each stall token (`stall:<last_report_at>`) is kept in a seen set in the
 gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
-A token is marked seen when the probe emits it, not when the turn lands; the
-quiet floor above covers a lost delivery, because a worker report moves
-`ledger_revision` and only a landed turn catches `ledger_delivered_revision` up,
-so the loop stays on the shipped floor and a plain patrol turn reads the board.
+A token is marked seen when the probe emits it, not when the turn lands. A woken
+turn that fails, or a recovery it queued for itself that fails, is charged to the
+loop (see [learn-cron-dashboard](learn-cron-dashboard.md)), so
+`gate._spend_ledger_wake_retry` buys one plain patrol turn on the next tick that
+reads the board, not the wake's text again.
 
 A delivered work-ledger wake is a POINTER, not a copy of the board.
 `ledger_wake.wake_turn_text` prefixes the nudge with the kernel's structural briefs
