@@ -79,6 +79,7 @@ from kiro_crew.acp.kas_app_identity import (
 )
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_literal
+from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
@@ -95,7 +96,6 @@ from kiro_crew.acp.kas_permissions import (
     unprompted_capabilities,
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
-    without_allowed_commands,
 )
 from kiro_crew.acp.kas_projection_reads import _registry_governed, _relayed_env_references
 from kiro_crew.acp.kas_prompt import (
@@ -296,7 +296,7 @@ def _allowed_commands_withheld(spec: dict[str, Any], policy: dict[str, Any] | No
         {"execute_bash"},
         policy,
         authored_permissions=spec.get("permissions"),
-        tools_settings=without_allowed_commands(spec.get("toolsSettings")),
+        tools_settings=without_grant_only_settings(spec.get("toolsSettings")),
     )
 
 
@@ -1155,7 +1155,7 @@ def to_client_custom_agent(
         crew_answered,
         authored_policy,
         authored_permissions=spec.get("permissions"),
-        tools_settings=spec.get("toolsSettings"),
+        tools_settings=without_grant_only_settings(spec.get("toolsSettings")),
     )
     if crew_answered:
         out[CREW_ANSWERED_BUILTINS_KEY] = sorted(crew_answered)
