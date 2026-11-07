@@ -55,6 +55,7 @@ from kiro_crew import (  # noqa: F401
     agent_state,
     dep_sync,
     diagnostics,
+    env,
     gateway_lock,
     host_task_sizing,
     kiro_sandbox_conflict,

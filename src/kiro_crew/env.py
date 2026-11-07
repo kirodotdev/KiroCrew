@@ -20,6 +20,11 @@ from typing import Any
 
 from kiro_crew import env_node_windows, env_own_kirocrew, platform_compat
 from kiro_crew.config.paths import data_home
+from kiro_crew.env_krb5_keyring import (  # noqa: F401  (re-exported from env)
+    KRB5_KEYRING_REMEDY,
+    _warn_keyring_ccache_once,
+    krb5_keyring_ccache,
+)
 from kiro_crew.env_mise import _mise_bin
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -1569,13 +1574,15 @@ def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:
 def resolve_krb5_ccname(env: dict[str, str]) -> None:
     """Point *env* at a FILE: Kerberos ccache, mutating it in place.
 
-    The gateway is a long-lived, non-login process.  On AL2023 the default
-    ``krb5.conf`` uses ``KEYRING:persistent:<uid>`` for the ccache, and kernel
-    keyrings are session-scoped — they are NOT visible to subprocesses spawned
-    by a background daemon.  So a child (kiro-cli / claude / a pooled MCP
-    backend) inheriting ``os.environ`` sees no usable ticket, and Kerberos-gated
-    MCP servers (e.g. an SSO-backed MCP server) fail with
-    "no Kerberos ticket" even though ``kinit`` succeeded in the user's shell.
+    On AL2023 the default ``krb5.conf`` uses ``KEYRING:persistent:<uid>`` for
+    the ccache.  The Linux sandbox starts every agent child in a new user
+    namespace, and the kernel keeps persistent (and user) keyrings per user
+    namespace, so inside the sandbox ``KEYRING:persistent:<uid>`` resolves to a
+    fresh, EMPTY keyring rather than the one ``kinit`` filled in the user's
+    terminal.  A child (kiro-cli / claude / an MCP server it starts) inheriting
+    that default sees no ticket, and Kerberos-gated MCP servers fail with
+    "no Kerberos ticket" even though ``klist`` in the user's shell shows one.
+    A FILE: cache is a plain file, so it reads the same on both sides.
 
     This mirrors :func:`_resolve_ssh_auth_sock` in ``acp.client``: repair the
     credential pointer at spawn time rather than trusting the daemon's stale
@@ -1592,7 +1599,10 @@ def resolve_krb5_ccname(env: dict[str, str]) -> None:
     * Else, if ``/tmp/krb5cc_<uid>`` resolves to a regular file we own, point
       at it.
     * Else, do nothing — no ticket to find; let the MCP surface its own
-      auth error rather than masking it.
+      auth error rather than masking it.  When the cache the child is left on
+      is a per-namespace keyring (``KEYRING:persistent:`` / ``KEYRING:user:``),
+      log a single warning per process naming the remedy (see
+      :func:`krb5_keyring_ccache`), so the failure is not silent.
 
     The candidate lives in ``/tmp`` (world-writable, sticky-bit), so we ``lstat``
     it first and require ownership by the current uid.  We do NOT reject a
@@ -1622,6 +1632,20 @@ def resolve_krb5_ccname(env: dict[str, str]) -> None:
     # and gives Windows the same no-op behaviour it needs (no ``os.getuid``).
     if not platform_compat.IS_LINUX:
         return
+    cache = usable_file_ccache()
+    if cache is not None:
+        env["KRB5CCNAME"] = f"FILE:{cache}"
+        logger.debug("resolved KRB5CCNAME to FILE:%s", cache)
+        return
+    _warn_keyring_ccache_once(env)
+
+
+def usable_file_ccache() -> str | None:
+    """Return the ``/tmp/krb5cc_<uid|user>`` path a child can use, else ``None``.
+
+    Linux only (callers gate on :data:`platform_compat.IS_LINUX`).  A candidate
+    that exists but fails :func:`_reject_reason` is logged at debug.
+    """
     # The kernel's default FILE ccache is named by numeric UID
     # (``/tmp/krb5cc_<uid>``) — this is also what the documented workaround
     # ``kinit -c /tmp/krb5cc_$(id -u)`` produces.  Some setups instead use the
@@ -1636,9 +1660,7 @@ def resolve_krb5_ccname(env: dict[str, str]) -> None:
     for cache in candidates:
         reason = _reject_reason(cache)
         if reason is None:
-            env["KRB5CCNAME"] = f"FILE:{cache}"
-            logger.debug("resolved KRB5CCNAME to FILE:%s", cache)
-            return
+            return cache
         if reason != "absent":
             # A candidate physically exists but failed the ownership/type gate.
             # Log it so this is distinguishable from the plain "no ccache" case —
@@ -1646,6 +1668,7 @@ def resolve_krb5_ccname(env: dict[str, str]) -> None:
             rejected.append(f"{cache} ({reason})")
     if rejected:
         logger.debug("KRB5CCNAME left unset; rejected ccache candidate(s): %s", ", ".join(rejected))
+    return None
 
 
 def _reject_reason(cache: str) -> str | None:
