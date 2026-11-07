@@ -429,6 +429,9 @@ _UNCARRIED_SETTINGS = {
             {"web_fetch": {"blocked": ["https://example.com/private/.*"]}},
             "toolsSettings.web_fetch.blocked",
         ),
+        # KAS cannot carry any blocked entry exactly (host-only rules), so even a
+        # bare host is refused rather than widened to "deny every fetch".
+        ({"web_fetch": {"blocked": ["evil\\.example\\.com"]}}, "toolsSettings.web_fetch.blocked"),
     ],
     "a_tools_setting_outside_the_allowlist_is_refused_by_name": [
         ({"fs_write": {"allowedPaths": ["/srv/**"]}}, "toolsSettings.fs_write.allowedPaths"),
@@ -527,7 +530,6 @@ def _deny_rules(settings: dict) -> list[dict]:
         ({"execute_bash": {"deniedCommands": ["rm .*"]}}, "shell"),
         ({"fs_read": {"deniedPaths": ["/etc/shadow"]}}, "fs_read"),
         ({"fs_write": {"deniedPaths": ["/etc"]}}, "fs_write"),
-        ({"web_fetch": {"blocked": ["evil\\.example\\.com"]}}, "web_fetch"),
     ],
 )
 def test_each_carried_deny_reaches_the_workers_kas_rules(settings, capability):
@@ -549,7 +551,7 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
 
 def test_an_allowed_command_crews_gate_cannot_answer_is_refused():
     """A listed grant must take effect too: an unusable entry is refused."""
-    settings = {"execute_bash": {"allowedCommands": ["make -j\\d+"]}}
+    settings = {"execute_bash": {"allowedCommands": ["make -j\\D+"]}}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert "toolsSettings.execute_bash.allowedCommands" in caught.value.fields

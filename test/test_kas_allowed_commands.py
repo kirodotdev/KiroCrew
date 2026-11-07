@@ -334,11 +334,14 @@ def test_only_the_subset_both_engines_read_alike_is_kept() -> None:
         # Rust reads a POSIX class; Python reads a set of the characters `[:alph`.
         "rm [[:alpha:]]+",
         "rm [[:alpha:]]",
-        r"ls \d+",
-        r"ls \w",
+        r"ls \D+",
+        r"ls \W",
         r"ls \b",
-        "make a{2}",
-        "make a{2,}",
+        "make a{,2}",
+        "make a{2}?",
+        "make a{3,2}",
+        "make a{257}",
+        "make [\\d-z]",
         "make a*?",
         "make a+*",
         "*make",
@@ -407,6 +410,21 @@ def test_a_pattern_outside_the_subset_grants_nothing() -> None:
         ("git status|ls", "git status", True),
         ("git status|ls", "git status ls", False),
         ("make (a+)+", "make aaaa", True),
+        (r"git log -n \d+", "git log -n 12", True),
+        (r"git log -n \d+", "git log -n x", False),
+        (r"rm\s+-f scratch", "rm  -f scratch", True),
+        (r"rm\s+-f scratch", "rm-f scratch", False),
+        (r"npm run [\w.-]+", "npm run build.prod", True),
+        (r"npm run [\w.-]+", "npm run a b", False),
+        (r"ls [^\s]+", "ls a b", False),
+        ("make a{2}", "make aa", True),
+        ("make a{2}", "make aaa", False),
+        ("make a{2,3}", "make a", False),
+        ("make a{2,3}", "make aaa", True),
+        ("make a{2,3}", "make aaaa", False),
+        ("make a{2,}", "make aaaaa", True),
+        ("make (ab){0,2}c", "make ababc", True),
+        ("make (ab){0,2}c", "make abababc", False),
     ],
 )
 def test_classes_groups_alternation_and_repeats_are_read_like_kiro_cli(
@@ -438,6 +456,45 @@ def test_nested_repetition_matches_in_linear_time(
     )
     assert allowed_commands.matches(parsed, command)
     assert not allowed_commands.matches(parsed, command + "!")
+
+
+@pytest.mark.parametrize("pattern", [r"git log -n \d+", r"ls [\w]+", r"ls\s.*"])
+def test_a_class_escape_does_not_judge_a_non_ascii_command(pattern: str) -> None:
+    """Rust reads ``\\d \\s \\w`` over Unicode and Crew over ASCII, so an entry using
+    one judges no non-ASCII command: it grants nothing, and it spends the shared
+    budget so a deny reader that reads a spent budget as "cannot judge" refuses."""
+    from kiro_crew.platform import allowed_commands
+
+    parsed = allowed_commands.parse(pattern)
+    assert parsed is not None and parsed.ascii_only
+    budget = [allowed_commands._MAX_MATCH_STEPS]
+    assert not allowed_commands._match(parsed, "git log -n \uff11\uff12", budget)
+    assert budget[0] < 0
+    assert not allowed_commands.matches_any([pattern], "ls caf\u00e9")
+    # Skipped in a list: the entries after it still judge the command, in any order.
+    for entries in ([pattern, "ls caf(\u00e9|e)"], ["ls caf(\u00e9|e)", pattern]):
+        assert allowed_commands.matches_any(entries, "ls caf\u00e9")
+        # The gate's chain matcher reads a plain command the same way.
+        assert allowed_commands.chain_matches_all(entries, "ls caf\u00e9")
+        assert _judge(_shell("ls caf\u00e9"), entries).tier == "spec-builtin-grant"
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "make (a{256}){256}",
+        "git status(((){0,256}){256}){256}",
+        "git status((){256}){256}",
+        "git status(){256}(){256}" * 20,
+    ],
+)
+def test_counted_repeats_are_bounded_when_expanded(pattern: str) -> None:
+    """Every node counts toward the bound, an empty group too, so no short entry
+    expands into a program past it."""
+    from kiro_crew.platform import allowed_commands
+
+    assert allowed_commands.parse("make (a{32}){32}") is not None
+    assert allowed_commands.parse(pattern) is None
 
 
 def test_a_match_past_the_step_budget_grants_nothing() -> None:

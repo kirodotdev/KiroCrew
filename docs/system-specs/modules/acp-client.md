@@ -2465,6 +2465,15 @@ spec the same way kiro-cli v2 does where the wire allows it:
   kiro-cli 2.35.1: the deny with the target excluded left the call to its
   permission request, with another name excluded it was refused by the rule, and
   the allow ran it with no request.
+- `toolsSettings.web_fetch` fails closed (#30167). KAS matches a `web_fetch`
+  rule on the URL's host only, while kiro-cli matches each `blocked` regex
+  against the whole URL, and no host rule says the same. So any `blocked` entry
+  becomes one unscoped `web_fetch` `deny` that refuses every fetch, and the
+  session-start notice says so and why (`tool_approval._spec_keys_notice`,
+  `kas=True`); a crewmate's carried policy refuses the key. `trusted` is never
+  carried: a host allow would also cover URLs the regex does not (another port),
+  so those fetches ask, and the notice names it. A precise full-URL match at
+  Crew's gate is #32106.
 - `toolsSettings.shell.allowedCommands` travels as no rule: a shell allow would
   skip the permission request Crew's deny floor runs on. Crew answers a matching
   command at that request itself, through the gate's `spec-builtin-grant` row

@@ -252,3 +252,20 @@ def test_the_gate_applied_allowlists_are_left_out(settings, named):
     from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 
     assert tools_settings_unapplied(settings, gate_allowlists=True) == named
+
+
+def test_a_kas_web_fetch_blocked_says_every_fetch_is_refused_and_why():
+    """On KAS a blocked entry refuses every fetch, so the notice says so and why,
+    instead of naming it among the keys that have no effect."""
+    from kiro_crew.dashboard.chat_turn.tool_approval import _spec_keys_notice
+
+    text = _spec_keys_notice(
+        "a", ["toolsSettings.web_fetch.blocked", "toolsSettings.web_fetch.trusted"], kas=True
+    )
+    assert "toolsSettings.web_fetch.trusted, which this backend does not receive" in text
+    assert "sets toolsSettings.web_fetch.blocked, so every web fetch is refused" in text
+    assert "match a URL's host only" in text
+    # Off KAS the key is not enforced, so it reads like any other key.
+    off = _spec_keys_notice("a", ["toolsSettings.web_fetch.blocked"])
+    assert "every web fetch is refused" not in off
+    assert "does not receive" in off

@@ -176,12 +176,74 @@ class TestTranslation:
         # A value the gate does not read as deny is still named.
         assert _lost({"fs_write": {"fallbackAction": "ask-me"}}) == ["fs_write.fallbackAction"]
 
-    def test_web_fetch_blocked_matches_the_host_only(self):
-        settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", r"https://evil\.com/.*"]}}
-        assert _rules(settings) == [
-            {"capability": "web_fetch", "match": ["*pastebin.com*"], "effect": "deny"}
-        ]
+    @pytest.mark.parametrize(
+        "blocked",
+        [
+            # The four shapes a host rule cannot say exactly (local review):
+            [r".*evil\.com.*"],  # the host could sit in a path: https://good.com/evil.com
+            [r"evil\.com"],  # anchored on kiro-cli, so it never matches a URL
+            [r"https://127\.1/.*"],  # Node reads the host as 127.0.0.1
+            [r"https://x\.com/private/.*"],  # a path a host rule cannot hold
+            [r"["],  # invalid: kiro-cli refuses every URL
+            [7],
+            "evil.com",
+        ],
+    )
+    def test_any_blocked_entry_refuses_every_fetch_and_is_named(self, blocked):
+        """KAS rules match a URL's host only and kiro-cli's blocked patterns are
+        regexes over the whole URL, so any blocked entry fails closed: one deny on
+        every fetch, named so the session notice says why."""
+        settings = {"web_fetch": {"blocked": blocked}}
+        assert _rules(settings) == [{"capability": "web_fetch", "effect": "deny"}]
         assert _lost(settings) == ["web_fetch.blocked"]
+
+    def test_an_empty_blocked_list_restricts_nothing(self):
+        assert _rules({"web_fetch": {"blocked": []}}) == []
+        assert _lost({"web_fetch": {"blocked": []}}) == []
+
+    @pytest.mark.parametrize(
+        "trusted",
+        [[r"https://x\.com/.*"], [r"https://docs\.rs/.*", r".*"]],  # x.com:8443 too
+    )
+    def test_web_fetch_trusted_is_never_carried(self, trusted, monkeypatch):
+        """A host allow would also cover URLs the regex does not (another port),
+        so trusted becomes no rule: those fetches ask, and the key is named."""
+        settings = {"web_fetch": {"trusted": trusted}}
+        assert _rules(settings) == []
+        assert _lost(settings) == ["web_fetch.trusted"]
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        rules = (
+            to_client_custom_agent("a1", _spec(toolsSettings=settings), "p").get("permissions")
+            or {}
+        ).get("rules", [])
+        assert not [r for r in rules if r["capability"] == "web_fetch"]
+
+    def test_a_blocked_entry_beside_an_allowed_tools_grant_still_refuses(self, monkeypatch):
+        """The deny outranks the allowedTools web_fetch allow on KAS."""
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        spec = _spec(
+            allowedTools=["web_fetch"], toolsSettings={"web_fetch": {"blocked": [r".*evil.*"]}}
+        )
+        rules = to_client_custom_agent("a1", spec, "p")["permissions"]["rules"]
+        assert {"capability": "web_fetch", "effect": "deny"} in rules
+
+    def test_an_allow_list_past_the_rule_bound_never_sinks_the_denies(self):
+        """Allows are added last and only when they fit, so a long trustedAgents
+        list is named and dropped while every deny still travels."""
+        settings = {
+            "web_fetch": {"blocked": [r".*evil\.com.*"]},
+            "subagent": {"trustedAgents": [f"agent-{i}" for i in range(64 * 201)]},
+        }
+        assert _rules(settings) == [{"capability": "web_fetch", "effect": "deny"}]
+        assert "subagent.trustedAgents" in _lost(settings)
+
+    def test_denies_past_the_rule_bound_deny_their_capability_whole(self):
+        """Too many denies to send fail closed: each capability they name is
+        denied whole, never sent with no restriction."""
+        settings = {"read": {"deniedPaths": [f"/d{i}/**" for i in range(64 * 201)]}}
+        block, lost = tools_settings_to_permissions(settings)
+        assert block == {"rules": [{"capability": "fs_read", "effect": "deny"}]}
+        assert "(all: too many rules)" in lost
 
     def test_available_agents_deny_every_other_sub_agent(self):
         # The shape run live: a deny over "*" with the listed names in
