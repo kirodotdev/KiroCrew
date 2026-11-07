@@ -2,14 +2,17 @@
 
 :func:`open_turn_crew_log` writes the ``session/opened`` entry the dashboard runner writes for
 its own turns, from the facts the shared channel turn pipeline
-(:mod:`kiro_crew.messaging.dispatch`) can establish: the predecessor and the requested model
-the allocation captured (:func:`predecessor_sid`, :func:`requested_model_sid`) and the
-workspace the dashboard states for the conversation's slot (:func:`slot_workspace`). Callers
-import these names from :mod:`kiro_crew.messaging.dispatch`.
+(:mod:`kiro_crew.messaging.dispatch`) can establish: the predecessor the allocation captured
+or the store holds (the opener's own :func:`predecessor_edge`, over :func:`predecessor_sid`
+and the caller's :func:`store_predecessor`), the requested model the allocation captured
+(:func:`requested_model_sid`) and the workspace the dashboard states for the conversation's
+slot (:func:`slot_workspace`). Callers import these names from
+:mod:`kiro_crew.messaging.dispatch`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -41,6 +44,75 @@ def predecessor_sid(sessions: Any, session_key: str) -> str:
     except Exception:
         logger.debug("crew log: predecessor unreadable for %s", session_key, exc_info=True)
         return ""
+
+
+async def store_predecessor(sessions: Any, session_key: str) -> tuple[str, bool, bool] | None:
+    """The slot's newest crew log IN THE STORE -- read BEFORE the allocation, off the loop.
+
+    The durable tier behind :func:`predecessor_sid`, for :func:`predecessor_edge`:
+    ``crew_log.emit.slot_previous_store`` reads the units on disk, so a gateway that
+    restarted gets the answer the process before it held. Read before the claim, because
+    the read blocks and the opener must not suspend, and only when no session is
+    registered for the key: a warm turn would otherwise pay a store listing every time. A
+    successor started behind a registered session (a recycle, a dead provider) keeps the
+    capture alone. ``None`` means not read (a registered session, the crew log off); a
+    read that failed is undecided.
+    """
+    try:
+        if sessions.has_session(session_key):
+            return None
+    except Exception:
+        return None
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    if not crew_log_emit.enabled():
+        return None
+    try:
+        return await asyncio.to_thread(
+            crew_log_emit.slot_previous_store, transcript_stem(session_key)
+        )
+    except Exception:
+        logger.debug("crew log: slot store unreadable for %s", session_key, exc_info=True)
+        return ("", False, False)
+
+
+def predecessor_edge(
+    sessions: Any, session_key: str, store: tuple[str, bool, bool] | None
+) -> tuple[str, bool | None]:
+    """``(previous_sid, previous_undecided)`` for :func:`open_turn_crew_log`, after the claim.
+
+    The tiers the dashboard runner reads (``_slot_predecessor_store``), with the
+    allocation's capture ahead of the store: it alone can name a store whose create is
+    still queued to the writer. The capture is the mapping as registration read it,
+    though, and while the live session owes a history replay the mapping knowingly holds
+    the generation before -- asked HERE, where that session exists -- so the store decides
+    then. A named store is cited; a store holding no unit of the slot states there is none
+    (``False``); anything that cannot be named is recorded as undetermined (``True``)
+    rather than written as an absence; ``None`` determines nothing, which writes no key.
+    """
+    capture = predecessor_sid(sessions, session_key)
+    if store is None or (capture and not _replay_pending(sessions, session_key)):
+        return capture, (False if capture else None)
+    sid, decided, complete = store
+    if sid:
+        return sid, False
+    if not decided or capture:
+        # Unreadable, or a mapped id inside the replay window the store cannot confirm:
+        # a predecessor exists and cannot be named, so the entry records a break.
+        return "", True
+    return "", (False if complete else None)
+
+
+def _replay_pending(sessions: Any, session_key: str) -> bool:
+    """Whether *session_key*'s live session still owes its history replay. Never raises."""
+    reader = getattr(sessions, "provider_switch_replay_pending", None)
+    if not callable(reader):
+        return False
+    try:
+        return reader(session_key) is True
+    except Exception:
+        logger.debug("crew log: replay marker unreadable for %s", session_key, exc_info=True)
+        return False
 
 
 def requested_model_sid(sessions: Any, session_key: str) -> str:
@@ -95,7 +167,8 @@ def open_turn_crew_log(
     agent: str,
     resumed: bool,
     ctx_builder: Any = None,
-    previous_sid: str = "",
+    sessions: Any = None,
+    store: tuple[str, bool, bool] | None = None,
     model_requested: str = "",
     workspace: str = "",
 ) -> None:
@@ -119,10 +192,11 @@ def open_turn_crew_log(
     ``workspace`` must come from :func:`slot_workspace`, the dashboard writer's own
     source, or the two writers record false ``session/class`` moves. No ``parent``
     and ``depth`` from :func:`~kiro_crew.crew_log.session_tree_projection.root_depth`:
-    a conversation the person opened is a root. ``previous_sid`` comes from
-    :func:`predecessor_sid`; the emitter writes the ``previous`` edge only for a new
-    log, which keeps history reachable across a cold successor after a failed
-    compaction.
+    a conversation the person opened is a root. The ``previous`` edge is
+    :func:`predecessor_edge` over *sessions* and the *store* answer
+    :func:`store_predecessor` read before the claim; the emitter writes it only for a
+    new log, which keeps history reachable across a cold successor after a failed
+    compaction or a restart.
 
     For the channel's OWN sessions only. A dashboard session resumed into the chat
     (``!sessions``) is opened by the dashboard runner, which alone holds its
@@ -139,6 +213,7 @@ def open_turn_crew_log(
         session_id = crew_log_emit.session_id_of(provider)
         if not session_id:
             return
+        previous_sid, previous_undecided = predecessor_edge(sessions, session_key, store)
         memory_mode = ""
         live_mode = getattr(ctx_builder, "live_memory_mode_for_session", None)
         if callable(live_mode):
@@ -162,6 +237,7 @@ def open_turn_crew_log(
             channel=True,
             workspace=workspace,
             previous_sid=previous_sid,
+            previous_undecided=previous_undecided,
         )
     except Exception:
         logger.debug("crew log: opener skipped for %s", session_key, exc_info=True)

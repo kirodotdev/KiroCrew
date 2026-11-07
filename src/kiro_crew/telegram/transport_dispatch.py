@@ -93,7 +93,6 @@ from kiro_crew.messaging.dispatch import (  # noqa: F401
     delivery_is_muted,
     driver_turn_landed,
     open_turn_crew_log,
-    predecessor_sid,
     rearm_reinjection,
     requested_model_sid,
     rollback_skill_bodies,

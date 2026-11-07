@@ -305,6 +305,35 @@ class TestAutomaticOriginMirror:
         self._turn(d)
         assert opened[-1] == ("acp-gen-2", "")
 
+    def test_a_cold_start_with_no_capture_cites_the_slots_newest_store(self, monkeypatch) -> None:
+        """The Telegram twin of the Discord restart pin: with no live session before
+        the claim and nothing captured, the slot's newest store on disk is cited, and
+        the determination reaches ``on_session_opened`` with it."""
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.history import transcript_stem
+
+        opened: list[tuple[str, str, Any]] = []
+        monkeypatch.setattr(
+            crew_log_emit,
+            "on_session_opened",
+            lambda session_id, **kw: opened.append(
+                (session_id, kw.get("previous_sid", ""), kw.get("previous_undecided"))
+            ),
+        )
+        slots: list[str] = []
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: True)
+        monkeypatch.setattr(
+            crew_log_emit,
+            "slot_previous_store",
+            lambda slot: slots.append(slot) or ("acp-gen-1", True, True),
+        )
+        monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
+        d, _cli, sess = _dispatcher({7})
+        sess.has_session = lambda key: False
+        self._turn(d)
+        assert opened == [("acp-gen-2", "acp-gen-1", False)]
+        assert slots == [transcript_stem(d._session_key(("direct", "7")))]
+
     def test_the_opener_states_the_workspace_off_the_conversations_dashboard_slot(
         self, monkeypatch
     ) -> None:
