@@ -59,6 +59,7 @@ from kiro_crew.port_resolution import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
+from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
 
 
@@ -917,12 +918,13 @@ def _restart(cli_port: int | None = None) -> None:
 
         # Our unit is stopped and no gateway runs: never start one outside it.
         unit = service_controller.installed_unit_path()
+        if unit is not None and not service_controller.unit_is_ours(unit):
+            # The system file is not our loaded unit (an alias of another unit, or
+            # a file the manager does not load); our per-user unit may still be
+            # installed beside it.
+            unit = svc_linux.user_unit_path()
         running = True
-        if (
-            unit is not None
-            and service_controller.unit_is_ours(unit)
-            and not platform_compat.find_listening_pids(port)
-        ):
+        if unit is not None and not platform_compat.find_listening_pids(port):
             try:
                 running = lock_holder(config_dir()).pid is not None
             except LockProbeError:
