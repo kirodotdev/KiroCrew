@@ -485,9 +485,10 @@ export const subagentReducers = {
    *  misapplied `subagent_queued` frame left behind is corrected by the next
    *  push, for every slot it names and not only the one on screen. A row without
    *  the field (a metadata `slot_patch` row, an older gateway) leaves its count
-   *  alone. The wait label is kept while rows still wait: the
-   *  push carries the count, and the label stays the one the frames gave it. */
-  reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown }>>) {
+   *  alone. The wait label is kept while rows still wait. A full-list row also
+   *  carries the label of the last frame (`subagents_queued_reason`), so a
+   *  reload, which saw no frame, still shows why the rows wait. */
+  reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown; subagents_queued_reason?: unknown }>>) {
     state.subagentQueued ??= {}
     state.subagentQueuedReason ??= {}
     for (const row of action.payload) {
@@ -498,8 +499,16 @@ export const subagentReducers = {
       if (n === 0) {
         delete state.subagentQueued[key]
         delete state.subagentQueuedReason[key]
-      } else if (state.subagentQueued[key] !== n) {
-        state.subagentQueued[key] = n
+      } else {
+        if (state.subagentQueued[key] !== n) state.subagentQueued[key] = n
+        const label = row.subagents_queued_reason
+        const reason = label && typeof label === 'object'
+          ? parseSubagentQueuedReason({ ...label, slot: row.key, queued: n } as SubagentQueuedEvent)
+          : undefined
+        // Compared by value: an equal label must not wake every chip on each push.
+        if (reason && JSON.stringify(reason) !== JSON.stringify(state.subagentQueuedReason[key])) {
+          state.subagentQueuedReason[key] = reason
+        }
       }
     }
   },

@@ -908,6 +908,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, task: 'str', **kwargs: 'Any') -> \"'SubagentInfo | PreparedSpawn | MemoryReadPoint | None'\"",
     ),
     "published_queued_depths": ("method", "(self) -> 'dict[str, int]'"),
+    "published_queued_labels": ("method", "(self) -> 'dict[str, dict[str, object]]'"),
     "queued_count": ("property", ""),
     "queued_count_for": ("method", "(self, parent_session_key: 'str') -> 'int'"),
     "queued_count_for_async": ("async method", "(self, parent_session_key: 'str') -> 'int'"),
