@@ -747,11 +747,11 @@ def sign_in_words(slug: str) -> tuple[str, ...]:
     return tuple(provider.get("sign_in_words", ())) if provider is not None else ()
 
 
-def get_visible_providers() -> list[Provider]:
-    """Return providers the gallery shows.
+def is_visible(provider: Provider) -> bool:
+    """Whether the gallery shows ``provider``.
 
     Two ways in. A provider whose launch gate passed and which is not
-    vendor-blocked, as before. And a PRE-REGISTERED provider regardless of the
+    vendor-blocked. And a PRE-REGISTERED provider regardless of the
     launch gate, because its card is not yet an offer to connect: until an
     operator has configured a client it renders as an instruction ("an
     administrator must configure an OAuth app") and hiding an instruction is
@@ -763,12 +763,15 @@ def get_visible_providers() -> list[Provider]:
     instruction.
     """
 
-    return [
-        _copy_provider(provider)
-        for provider in _PROVIDERS
-        if not provider["vendor_approval_pending"]
-        and (provider["launch_gate_passed"] or is_preregistered(provider))
-    ]
+    return not provider["vendor_approval_pending"] and (
+        provider["launch_gate_passed"] or is_preregistered(provider)
+    )
+
+
+def get_visible_providers() -> list[Provider]:
+    """Return providers the gallery shows (:func:`is_visible`)."""
+
+    return [_copy_provider(provider) for provider in _PROVIDERS if is_visible(provider)]
 
 
 def get_preregistered_providers() -> list[Provider]:
