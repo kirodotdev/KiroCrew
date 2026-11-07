@@ -1755,10 +1755,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // through — so even once signed in it cannot start a single turn (it would
   // fail at session-create). The probe runs whether or not the CLI is signed
   // in, so this branch and its card make no claim about sign-in.
-  // `acp_supported === false` is a FRESH
-  // probe result, not a latch (a `false` default would hide the state on an older
-  // gateway that omits the field, so the strict `=== false` is deliberate), so it
-  // is safe to surface even on an established install — and its remedy is unique:
+  // `acp_supported === false` is either a probe
+  // result or a spawn-proven latch (a session start that rejected
+  // `--auth-method`), which only a successful update or Check again clears (a
+  // `false` default would hide the state on an older gateway that omits the
+  // field, so the strict `=== false` is deliberate). Both prove the installed CLI
+  // cannot run a session, so it is safe to surface even on an established
+  // install — and its remedy is unique:
   // update the CLI in place, which Kiro Crew runs for the user here. Ordered
   // BEFORE the established-install bail-out for the same reason as the spec
   // branches: this is a total failure the chat error card cannot pre-empt, and

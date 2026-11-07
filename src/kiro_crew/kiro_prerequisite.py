@@ -229,6 +229,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _turn_auth_service,
         kiro_signed_out_confirmed,
         logger,
+        mark_registered_cli_too_old,
         register_turn_auth_service,
     )
     from kiro_crew.kiro_prerequisite_spawn_identity import (  # noqa: F401

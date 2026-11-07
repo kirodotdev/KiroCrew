@@ -126,6 +126,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop  # noqa: F40
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_title import title_then_refresh
 from kiro_crew.dashboard.chat_turn.account_identity import (
+    _mark_kiro_cli_too_old,
     _mark_kiro_signed_out,
     _retire_sessions_on_identity_change,
 )
