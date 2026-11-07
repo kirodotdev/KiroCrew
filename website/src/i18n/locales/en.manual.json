@@ -10319,6 +10319,7 @@
       "export_sessions": "export sessions",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
       "hide_folders": "hide folders",
+      "manage_apps": "manage apps",
       "menu_reason": "Gateway offline — the dimmed actions need a connection",
       "move_folders": "move folders",
       "move_artifacts": "move artifacts",

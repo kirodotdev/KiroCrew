@@ -21039,6 +21039,7 @@
       "export_sessions": "导出会话",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
       "hide_folders": "隐藏文件夹",
+      "manage_apps": "管理应用",
       "menu_reason": "网关离线 — 变暗的操作需要连接",
       "move_folders": "移动文件夹",
       "move_artifacts": "移动工件",

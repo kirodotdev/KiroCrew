@@ -38,6 +38,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import {
   APP_NAV_HIDDEN_CHANGED_EVENT, APP_NAV_HIDDEN_KEY,
@@ -108,14 +110,16 @@ function renderLibrary(
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }),
 ) {
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps/library']}>
-        <Routes>
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="*" element={<RouteProbe />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/library']}>
+          <Routes>
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="*" element={<RouteProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
@@ -631,6 +635,7 @@ describe('LaunchpadTile — the disabled gate is the tile’s own branch', () =>
           app={installedApp('secretary', 'Secretary', { enabled: false }) as never}
           pinned
           pinnable
+          connected
           actionLoading={null}
           onTogglePin={vi.fn()}
           onAction={vi.fn()}
@@ -663,6 +668,7 @@ describe('LaunchpadTile — a built-in app skipped at boot', () => {
           }) as never}
           pinned
           pinnable
+          connected
           actionLoading={null}
           onTogglePin={vi.fn()}
           onAction={vi.fn()}
