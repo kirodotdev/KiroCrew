@@ -1289,7 +1289,14 @@ traffic into `configured_targets()` — Weixin's `_known_users` (`_allowed |
 _known_users`), WeCom's `_warm_chats`, which under `allow_all_users` become the list
 outright ("there is no configured list to draw on, so the warm peers ARE the list").
 So a peer who messaged the bot once can be the single available direct target, which
-is exactly what `_owner_dm_target` reads as the owner. Nothing downstream catches
+is exactly what `_owner_dm_target` reads as the owner. WeCom marks each such peer
+`ConfiguredChannelTarget(learned=True)`, and both owner inferences skip learned
+targets (`sole_direct_target`, and the cross-channel owner notice's candidate count
+in `server_runtime.owner_notices._notify_owner_channels`), so on WeCom they name
+only a configured userid or `owner_id`;
+the dashboard picker still lists the learned peers. WeCom stays out of
+`CHANNEL_OWNER_DM_NAMESPACES` until the ratchet below reads that flag rather than
+the `configured_targets()` source. Without the flag nothing downstream catches
 it: both `may_send_to` implementations return True unconditionally under their open
 policy (Weixin's promise to consult `_allowed` alone holds only on its `allowlist`
 branch), and `resolve_configured_target` accepts the learned set too. Weixin's
