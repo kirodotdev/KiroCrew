@@ -15233,6 +15233,11 @@
       "error_title": "Não foi possível ler este quadro"
     },
     "devFleetPage": {
+      "create_release_worktree": "Worktree da versão",
+      "create_release_worktree_hint": "Criar um worktree na versão estável mais recente",
+      "creating_release_worktree": "Criando…",
+      "release_worktree_created": "{{name}} criado em {{version}}",
+      "release_worktree_failed": "Não foi possível criar o worktree da versão",
       "actions": "Ações",
       "applies_the_last_pull_build_the_dashboard_will_b": "Aplica o último Pull+Build. O dashboard vai se desconectar por um instante e reconectar sozinho.",
       "backend_unavailable": "Backend indisponível",
