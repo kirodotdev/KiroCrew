@@ -2253,7 +2253,10 @@ binding, so it is dispatched straight into the slots list (`addSlotOptimistic`)
 and the panel becomes interactive immediately. The silent context entry POST and
 the `fetchSlots` reconciliation run in the background: the context entry is
 consumed on the *next* user message, so it always lands before a human can type
-and send.
+and send. The panel withholds the new session until that response is handled,
+even if the WS `slots` frame listing it lands first (an artifact-bound create
+broadcasts before it answers), because ChatPage takes a staged prompt only when
+it mounts or switches slot.
 
 **Chat parity** — the panel embeds the same `ChatPage` component as `/chat`
 (`embedded` + `embedMode="chat"` for the single-session chrome), so follow-up
