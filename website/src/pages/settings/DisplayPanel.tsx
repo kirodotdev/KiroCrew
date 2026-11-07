@@ -1204,13 +1204,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           discards the draft unconditionally: on an untouched form both
           accidental exits still work (Escape is the capability the issue asks
           for), and once a name or a colour has been entered only the explicit
-          exits — the header close button and the panel's own Cancel — close it. */}
+          exits — the header close button and the panel's own Cancel — close it.
+          It is also held while the delete confirmation is open above it, so the
+          Escape that cancels that confirmation does not close the editor too. */}
       <Modal
         open={editor.editorOpen}
         onClose={editor.closeEditor}
         title={editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')}
         maxWidth={672}
-        guardAccidentalDismiss={editor.isDirty}
+        guardAccidentalDismiss={editor.isDirty || editor.confirmingDelete}
       >
         <ThemeEditorPanel editor={editor} />
       </Modal>
