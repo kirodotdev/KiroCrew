@@ -37,6 +37,7 @@ from kiro_crew.dashboard.subagent_replay_scope import (
     live_subagent_ids,
     replay_executor,
     requested_slots,
+    startup_restore_wait,
 )
 from kiro_crew.dashboard.warm_task_brief import handle_focus_frame, note_view_closed
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_CAPABILITY, SLOT_PATCH_WS_FLAG
@@ -1698,7 +1699,15 @@ async def _serve_ws(
                                 return False
 
                             _replay_queue = SubagentReplayQueue(
-                                _durable_replay, admit=_replay_admits
+                                _durable_replay,
+                                admit=_replay_admits,
+                                # An app's visible slots are read at subscribe, so
+                                # waiting would admit nothing for it.
+                                ready=(
+                                    startup_restore_wait(state)
+                                    if ws.get("_is_dashboard_user", False)
+                                    else None
+                                ),
                             )
                         else:
                             _replay_queue.reset(_durable_replay)
