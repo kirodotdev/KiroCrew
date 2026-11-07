@@ -260,11 +260,12 @@ function ZoomableImage({ filePath }: { filePath: string }) {
 /* ── Inline SVG viewer (content-string-based) ─────────────────────────────
  * Used for artifact `kind: svg` where the SVG XML lives in the artifact
  * content, not on disk. DOMPurify with the SVG profile strips dangerous
- * elements (script, foreignObject) while preserving normal SVG markup. */
+ * elements (script, foreignObject) while preserving normal SVG markup. It
+ * also drops <style>: CSS in an inline SVG styles the whole page, not the SVG. */
 export const SvgViewer = memo(function SvgViewer({ content }: { content: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const safe = useMemo(
-    () => stripGuideMarkers(DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } })),
+    () => stripGuideMarkers(DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['style'] })),
     [content],
   )
   return (
