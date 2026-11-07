@@ -14059,6 +14059,7 @@
       "broadcast_delivery_hint": "진행 중인 작업은 중단되지 않아요. 실행 중인 턴은 현재 도구 호출이 끝난 뒤 읽고, 쉬는 세션은 새 턴을 시작해요.",
       "broadcast_retry": "실패한 {{n}}개 다시 보내기",
       "folder_renamed_to": "폴더 이름이 {{name}}(으)로 변경되었습니다",
+      "folder_name_label": "폴더 이름",
       "filter_crew": "Ultra Mode",
       "filter_crew_hint": "Ultra Mode 채팅의 크루 멤버는 이 목록에 나오지 않습니다. 채팅 자체는 나옵니다.",
       "group_by_kind": "종류별로 그룹화",

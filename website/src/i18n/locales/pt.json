@@ -14779,6 +14779,7 @@
       "broadcast_delivery_hint": "Nenhum trabalho em andamento é interrompido: um turno ativo lê a mensagem após a chamada de ferramenta atual; uma sessão ociosa começa um novo turno.",
       "broadcast_retry": "Tentar de novo {{n}} com falha",
       "folder_renamed_to": "Pasta renomeada para {{name}}",
+      "folder_name_label": "Nome da pasta",
       "filter_crew": "Ultra Mode",
       "filter_crew_hint": "Os membros da crew de um chat em Ultra Mode não aparecem nesta lista; o chat aparece.",
       "group_by_kind": "Agrupar por tipo",
