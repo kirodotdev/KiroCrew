@@ -16,9 +16,9 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    COMPOSER_SEND_META,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
-    STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     SUBAGENT_COMPLETION_KIND,
     _remove_queued_by_id,
@@ -352,7 +352,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _act_now: set[str] = getattr(slot, "_steer_act_now", set())
         if steer_msg in _act_now:
             _act_now.discard(steer_msg)
-            _meta[STEER_INTENT_META] = True
+            _meta[COMPOSER_SEND_META] = True
         # An automation steer (a work-ledger wake) keeps its origin on the entry,
         # so the drain writes it as a nudge row, alone, and never merges it into
         # the person's own queued text.
