@@ -1746,8 +1746,8 @@ choose the gateway's next image. Instead:
   stub is a point fix for the one hidden leaf whose absence is a code-execution
   input; the other file leaves in `sandbox._CREW_HIDDEN_LEAVES` share the
   absent-mask gap (secret disclosure, not execution) and are tracked as a separate,
-  class-level follow-up rather than closed here (`.env` is closed: see
-  [security](security.md), *Channel credentials*).
+  class-level follow-up rather than closed here (the leaves closed so far are listed in
+  [security](security.md), from *Channel credentials* on).
   `read_target_reason` reads the stub as `(None, None)` exactly like an absent
   file. A present `checkout` of another type, or a missing key, is still reported
   as a defect. **Downgrade note:** the stub is an ordinary file and survives a roll
