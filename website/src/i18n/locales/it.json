@@ -14997,6 +14997,7 @@
       "mint_failure_grant_unproven": "Non è stato possibile confermare l'accesso salvato. Prova a connetterti di nuovo.",
       "mint_failure_process_gone": "Il processo di autorizzazione si è interrotto prima del completamento dell’approvazione. Prova a connetterti di nuovo.",
       "mint_failure_server_absent": "La voce del server MCP è scomparsa prima che l’autorizzazione potesse iniziare. Prova a connetterti di nuovo.",
+      "mint_failure_sign_in_rejected": "Il provider non ha accettato l’accesso. Connetti di nuovo.",
       "mint_failure_sign_in_timed_out": "Accesso scaduto. Connetti di nuovo.",
       "mint_failure_timed_out": "La configurazione dell’autorizzazione è scaduta prima che l’indirizzo di approvazione fosse pronto. Prova a connetterti di nuovo.",
       "mint_failure_unknown": "La configurazione dell’autorizzazione non è riuscita prima che l’indirizzo di approvazione fosse pronto. Prova a connetterti di nuovo.",

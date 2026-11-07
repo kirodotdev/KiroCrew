@@ -814,6 +814,7 @@ _OWNERS: dict[str, tuple[str, ...]] = {
         "_release_shared_claims",
         "_shared_mints_pending",
         "_warm_table_row",
+        "fail_refused_sign_ins",
     ),
     "spec_body": (
         "_WARM_AGENT_PREFIX",

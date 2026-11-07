@@ -296,6 +296,36 @@ describe('connecting a new provider', () => {
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'), { timeout: 8000 })
   })
 
+  it('keeps a stored grant off the Connected badge when its reconnect sign-in is refused', async () => {
+    // A reconnect whose check disproved the stored grant mints a URL; the provider
+    // then refuses the code. The grant files stay on disk (grantPresent) and the
+    // probe answers needs_auth, the pair that otherwise folds to Connected.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_sign_in_rejected', token: 'tok1',
+    })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: The provider did not accept the sign-in. Connect again.')
+      expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+    })
+  })
+
   it('keeps a chat completion from before a failed check off the Connected badge', async () => {
     // An older chat banner says the grant completed; the Connect that follows
     // fails its check, so that banner must not bring Connected back.
@@ -640,6 +670,91 @@ describe('relaying the loopback return address', () => {
 
     pending.resolve({ ok: true })
     await waitFor(() => expect(relayInput()).toBeEnabled())
+  })
+
+  it('replaces the delivered line with the failure and leaves waiting when a reloaded attempt fails', async () => {
+    // After a reload the waiting card comes from the status feed alone, so this tab
+    // holds no wait of its own. The delivered line must still give way to the verdict.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'awaiting_consent', grantPresent: false }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'waiting', oauth_url: 'https://example.com/approve', token: 'tokA',
+    })
+    mount()
+    await waitFor(() => within(card('notion')).getByRole('link', { name: /Re-open approval/ }))
+
+    fireEvent.change(relayInput(), { target: { value: 'http://127.0.0.1:4321/?code=bogus' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+    expect(await screen.findByText('Return address delivered. Checking the connection…')).toBeInTheDocument()
+
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_sign_in_rejected', token: 'tokA',
+    })
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'not_connected', grantPresent: false }],
+    })
+
+    await waitFor(
+      () => expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: The provider did not accept the sign-in. Connect again.'),
+      { timeout: 8000 },
+    )
+    expect(screen.queryByText('Return address delivered. Checking the connection…')).toBeNull()
+    // The status feed's next poll is 30s away; the failure must not wait for it.
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
+  }, 15000)
+
+  it('shows a chat banner sign-in failing after its return address is relayed', async () => {
+    // No mint here: the chat banner owns this sign-in and is patched in place (same ts)
+    // with its verdict, so relaying must not fence that banner off behind a wait.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    const { store } = mount({ chat: { messages: [banner('notion', { oauth_url: 'https://notion.example/authorize?x=1' })] } })
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+
+    fireEvent.change(relayInput(), { target: { value: 'http://127.0.0.1:4321/?code=bogus' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+    expect(await screen.findByText('Return address delivered. Checking the connection…')).toBeInTheDocument()
+
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: 'https://notion.example/authorize?x=1', failed: true })]))
+    })
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'needs-attention'))
+  })
+
+  it('shows a chat banner sign-in failing when the card also has a waiting mint', async () => {
+    // The banner's URL outranks the mint's, so the return address reaches the banner's
+    // listener and the banner, not the unrelated mint, carries the verdict.
+    const bannerUrl = 'https://notion.example/authorize?x=1'
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'awaiting_consent', grantPresent: false }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'waiting', oauth_url: 'https://example.com/approve', token: 'tokA',
+    })
+    const { store } = mount()
+    const approval = () => within(card('notion')).getByRole('link', { name: /Re-open approval/ })
+    await waitFor(() => expect(approval()).toHaveAttribute('href', 'https://example.com/approve'))
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: bannerUrl })]))
+    })
+    await waitFor(() => expect(approval()).toHaveAttribute('href', bannerUrl))
+
+    fireEvent.change(relayInput(), { target: { value: 'http://127.0.0.1:4321/?code=bogus' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+    expect(await screen.findByText('Return address delivered. Checking the connection…')).toBeInTheDocument()
+
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: bannerUrl, failed: true })]))
+    })
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'needs-attention'))
   })
 })
 
