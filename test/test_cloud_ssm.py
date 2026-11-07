@@ -1186,11 +1186,14 @@ class TestSessionManagerPlugin:
             "_session_manager_plugin_install_plan",
             lambda tmpdir: (
                 "https://example.com/session-manager-plugin.deb",
+                "0" * 64,
                 tmpdir / "session-manager-plugin.deb",
                 [["sudo", "dpkg", "-i", str(tmpdir / "session-manager-plugin.deb")]],
             ),
         )
-        monkeypatch.setattr(ssm, "_download_file", lambda url, dest: downloaded.append((url, dest)))
+        monkeypatch.setattr(
+            ssm, "_download_file", lambda url, dest, _sha256: downloaded.append((url, dest))
+        )
         monkeypatch.setattr(
             ssm, "_run_install_command", lambda argv: commands.append(argv) or (0, "", "")
         )
@@ -1208,7 +1211,7 @@ class TestSessionManagerPlugin:
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
 
         assert plan is not None
-        url, package_path, commands = plan
+        url, _sha256, package_path, commands = plan
         assert "mac_arm64/session-manager-plugin.pkg" in url
         assert package_path.name == "session-manager-plugin.pkg"
         assert commands[0][:3] == ["sudo", "installer", "-pkg"]
@@ -1223,7 +1226,7 @@ class TestSessionManagerPlugin:
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
 
         assert plan is not None
-        url, package_path, commands = plan
+        url, _sha256, package_path, commands = plan
         assert "ubuntu_arm64/session-manager-plugin.deb" in url
         assert package_path.name == "session-manager-plugin.deb"
         assert commands == [["sudo", "dpkg", "-i", str(package_path)]]
