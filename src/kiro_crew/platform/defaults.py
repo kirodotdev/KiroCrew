@@ -639,6 +639,10 @@ class DefaultDashboardContributor:
         # None → the dashboard keeps its built-in /api/sso-login stub handler.
         return None
 
+    def feature_preview_config_keys(self) -> Sequence[str]:
+        # The public edition registers no Feature Preview rows, so it names no keys.
+        return ()
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         # The public edition mounts no routes, so it has none to make reachable
         # by an internal loopback caller. Empty keeps the middleware's admitted

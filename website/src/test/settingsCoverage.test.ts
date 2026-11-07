@@ -407,6 +407,12 @@ describe('settings coverage gate — bare controls', () => {
  * skipped"; this pins each one so a new silent skip fails the build.
  */
 const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> = {
+  'EditionPreviewRows.tsx': {
+    count: 1,
+    reason:
+      'One toggle per edition-registered Feature Preview row; its label is the ' +
+      "edition's own text, known only at runtime. The stock build registers none.",
+  },
   'BrowserLiveSection.tsx': {
     count: 1,
     reason:
