@@ -21187,7 +21187,6 @@
       "custom_title": "사용자 지정 보안 비밀",
       "custom_description": "MCP 서버와 .env 설정용 암호화된 키입니다. secret://YOUR_KEY로 참조하며, 값은 채팅에 표시되지 않습니다.",
       "custom_authorize": "멤버 채팅의 에이전트가 보안 비밀로 승인된 API 하나를 호출하게 하려면 에이전트에 {{server}} 권한을 부여한 다음, 셸이나 터미널 페이지에서 아래 명령을 실행하세요.",
-      "custom_authorize_windows": "사용자 지정 보안 비밀로 API를 호출하는 기능은 Windows에서 아직 사용할 수 없습니다.",
       "custom_empty": "아직 저장된 사용자 지정 보안 비밀이 없습니다. 하나를 추가하면 MCP 서버에서 secret://YOUR_KEY로 참조할 수 있습니다.",
       "managed_config_error": "$KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)을 읽을 수 없어 일부 자동 자격 증명이 숨겨졌습니다.",
       "managed_name_hint": "여기에 저장하면 자동 자격 증명 섹션의 {{name}} 항목이 업데이트됩니다. — {{productName}}",

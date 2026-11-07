@@ -22239,7 +22239,6 @@
       "custom_title": "Secretos personalizados",
       "custom_description": "Claves cifradas para servidores MCP y ajustes .env. Haz referencia a una como secret://YOUR_KEY; el valor nunca se muestra en el chat.",
       "custom_authorize": "Para que un agente en un chat de miembro llame a una API aprobada con un secreto, concede al agente {{server}} y luego ejecuta el comando de abajo en una shell o en la página Terminal.",
-      "custom_authorize_windows": "Llamar a una API con un secreto personalizado aún no está disponible en Windows.",
       "custom_empty": "Todavía no hay secretos personalizados almacenados. Añade uno para hacerle referencia desde un servidor MCP como secret://YOUR_KEY.",
       "managed_config_error": "Algunas credenciales automáticas están ocultas porque no se pudo leer $KIROCREW_HOME/config.json (predeterminado: ~/.kiro/crew/config.json).",
       "managed_name_hint": "Al guardar aquí se actualiza {{name}} en la sección de credenciales automáticas. — {{productName}}",
