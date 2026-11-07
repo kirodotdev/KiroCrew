@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -519,3 +520,25 @@ class TestSessionIdentity:
         # spawn_run / cron tools.
         dispatcher, _, _ = _dispatcher()
         assert dispatcher._resolve_agent() == "kirocrew"
+
+
+class TestSenderRecheck:
+    @pytest.mark.asyncio
+    async def test_the_turn_rechecks_the_live_handle_roster(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.imessage.transport import IMessageTransport
+
+        turns: list[Any] = []
+
+        async def _capture(turn: Any, **_kw: Any) -> None:
+            turns.append(turn)
+
+        monkeypatch.setattr("kiro_crew.imessage.transport_dispatch.drive_turn", _capture)
+        dispatcher, client, _ = _dispatcher()
+        transport = IMessageTransport(client, allowed_handles=[HANDLE])  # type: ignore[arg-type]
+        dispatcher.transport = transport
+        await dispatcher.handle_message(_inbound("hi"))
+        assert turns[0].still_admitted() is True
+        transport.reconfigure(SimpleNamespace(allowed_handles=[]))
+        assert turns[0].still_admitted() is False
