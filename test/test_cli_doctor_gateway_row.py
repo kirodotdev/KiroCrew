@@ -11,12 +11,18 @@ connect timeout through the shared ``loopback_http.deadline_expired``.
 
 from __future__ import annotations
 
+import http.server
+import threading
 import urllib.error
+import urllib.request
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
+from kiro_crew import loopback_http
 from kiro_crew.doctor_checks import services
 from kiro_crew.doctor_checks.services import DashboardBinding
+from kiro_crew.service import live_target
 
 
 def _binding(port: int = 5476) -> DashboardBinding:
@@ -104,16 +110,22 @@ def _gateway_answers(
         return _Response(health)
 
     monkeypatch.setattr(services.urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(loopback_http, "loopback_urlopen", _urlopen)
+
+
+def _select(monkeypatch: pytest.MonkeyPatch, version: str | None) -> None:
+    monkeypatch.setattr(live_target, "selected_version", lambda: (version, None))
 
 
 class TestRunningVersionRow:
     """The ``running:`` row reads the gateway's own version from token-exempt
-    ``/api/health`` and compares it with the on-disk ``cli_doctor._mc_version``."""
+    ``/api/health`` and compares it with ``live_target.selected_version()``, the
+    reading ``kirocrew status`` prints, so the two commands cannot disagree."""
 
     def test_match_reads_same_as_on_disk(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(services.cli_doctor, "_mc_version", "1.2.3")
+        _select(monkeypatch, "1.2.3")
         probed: list[str] = []
         _gateway_answers(monkeypatch, b'{"ok": true, "version": "1.2.3"}', probed)
         issues: list[str] = []
@@ -127,7 +139,7 @@ class TestRunningVersionRow:
     def test_mismatch_flags_restart_needed(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(services.cli_doctor, "_mc_version", "1.2.4")
+        _select(monkeypatch, "1.2.4")
         _gateway_answers(monkeypatch, b'{"ok": true, "version": "1.2.3"}')
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
@@ -153,7 +165,7 @@ class TestRunningVersionRow:
         capsys: pytest.CaptureFixture[str],
         health: object,
     ) -> None:
-        monkeypatch.setattr(services.cli_doctor, "_mc_version", "1.2.3")
+        _select(monkeypatch, "1.2.3")
         _gateway_answers(monkeypatch, health)
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
@@ -171,7 +183,60 @@ class TestRunningVersionRow:
             raise urllib.error.URLError(ConnectionRefusedError("refused"))
 
         monkeypatch.setattr(services.urllib.request, "urlopen", _refused)
+        monkeypatch.setattr(loopback_http, "loopback_urlopen", _refused)
         services._doctor_gateway_reachability(_binding(), [])
         out = capsys.readouterr().out
         assert "running:" not in out
         assert not any(url.endswith("/api/health") for url in probed)
+
+
+def _health_server(version: str, hits: list[str]) -> LoopbackHTTPServer:
+    """A loopback listener that answers every GET with ``version`` and records the path."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+            hits.append(self.path)
+            body = f'{{"ok": true, "version": "{version}"}}'.encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a: object) -> None:
+            pass
+
+    server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_running_version_ignores_a_configured_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``no_proxy=localhost`` does not cover the literal ``127.0.0.1``, so a plain
+    ``urlopen`` sends the health read to the proxy; the probe must reach the gateway."""
+    gateway_hits: list[str] = []
+    proxy_hits: list[str] = []
+    gateway = _health_server("1.2.3", gateway_hits)
+    proxy = _health_server("proxy", proxy_hits)
+    try:
+        for key in (
+            "http_proxy",
+            "HTTP_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "REQUEST_METHOD",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy.server_address[1]}")
+        monkeypatch.setenv("no_proxy", "localhost")
+        # A fresh global opener, so the proxy env above is what a plain urlopen would see.
+        monkeypatch.setattr(urllib.request, "_opener", None)
+
+        version = services._running_gateway_version(gateway.server_address[1])
+    finally:
+        gateway.shutdown()
+        proxy.shutdown()
+
+    assert proxy_hits == []
+    assert version == "1.2.3"
+    assert gateway_hits == ["/api/health"]

@@ -139,6 +139,13 @@ def _status(args: argparse.Namespace) -> None:
         if e.code in (401, 403):
             print("Kiro Crew gateway is running (token auth enabled).")
             print("  For detailed stats, see the Overview page in the dashboard.")
+            from kiro_crew.doctor_checks.services import _running_gateway_version
+            from kiro_crew.service import live_target
+
+            version = _format_version_line(
+                {"version": _running_gateway_version(port)}, live_target.selected_version()[0], None
+            )
+            print(f"  Version:     {version}")
         else:
             print(f"Kiro Crew gateway is running but returned HTTP {e.code}.")
         return
@@ -171,6 +178,34 @@ def _status(args: argparse.Namespace) -> None:
     print(f"  Cron jobs:   {_format_count(data, 'cron_jobs')}")
     print(f"  Lessons:     {_format_count(data, 'lessons')}")
     print(f"  Memory:      {_format_memory_line(data)}")
+    # Imported in-function, like ``deadline_expired`` above: a module-scope import
+    # would surface on this split module's star-import facade.
+    from kiro_crew.service import live_target
+
+    print(f"  Version:     {_format_version_line(data, *live_target.selected_version())}")
+
+
+def _format_version_line(data: dict, selected: str | None, changed_at: float | None) -> str:
+    """The gateway's reported ``version`` against the selected one, aged when they differ.
+
+    See :func:`live_target.selected_version` for what is selected and why the age
+    runs from the later of the gateway's start and *changed_at*.
+    """
+    from kiro_crew.dashboard.state import _fmt_duration  # in-function: see _status
+
+    running = data.get("version")
+    if not running:
+        return "unknown (the gateway did not report its version; try `kirocrew doctor`)"
+    if selected is None:
+        return "unknown (could not read the selected package's version; check the install)"
+    if running == selected:
+        return f"aligned ({running})"
+    starts = [t for t in (changed_at, data.get("start_time")) if t]
+    age = f" for at least {_fmt_duration(int(max(0, time.time() - max(starts))))}" if starts else ""
+    return (
+        f"version_skew{age}: the gateway runs {running}, {selected} is selected;"
+        " restart the gateway to run it"
+    )
 
 
 def _format_count(data: dict, key: str) -> str:

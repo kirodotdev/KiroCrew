@@ -26,11 +26,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew import _llama_lib_path, cli_doctor
+from kiro_crew import _llama_lib_path, cli_doctor, loopback_http
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.doctor_checks import access, install, services
 from kiro_crew.platform import PlatformCompositionError
+from kiro_crew.service import live_target
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the frozen report describes a Linux host"
@@ -178,6 +179,7 @@ class _Host:
         mp.setattr(cli_doctor, "data_home", lambda: self.home)
         mp.setattr(cli_doctor, "warm_backend", lambda timeout=None: None)
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
+        mp.setattr(live_target, "selected_version", lambda: ("9.9.9", None))
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
         mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
@@ -189,6 +191,7 @@ class _Host:
         )
         mp.setattr(cli_doctor.subprocess, "run", self._run)
         mp.setattr(cli_doctor.urllib.request, "urlopen", self._urlopen)
+        mp.setattr(loopback_http, "loopback_urlopen", self._urlopen)
         mp.setattr(cli_doctor, "current_context", lambda: self.ctx)
         mp.setattr(cli_doctor, "_agent_spec_model_problems", self._model_pins)
         mp.setattr(cli_doctor, "_doctor_gated_off_mcps", lambda: _GATED_OFF)
