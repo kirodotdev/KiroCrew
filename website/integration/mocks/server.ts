@@ -649,6 +649,14 @@ handlers.push(
     new HttpResponse('', { status: 200, headers: { 'Content-Type': 'application/javascript' } })),
 )
 
+// Mouse haptics: Settings > Notifications > Sound probes the Logi Options+ plugin
+// on its loopback port, and so does the app-wide bridge when a chime plays. The
+// default is what a machine without the plugin answers, a refused connection. A
+// test about the plugin answers with server.use().
+handlers.push(
+  http.all('http://127.0.0.1:41870/*', () => HttpResponse.error()),
+)
+
 handlers.push(
   http.all('*', ({ request }) => {
     const scheme = request.url.slice(0, 5)

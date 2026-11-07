@@ -53,6 +53,7 @@ describe('app shell composition', () => {
       'useShellBranding({',
       'useRumPageView()',
       'useNotificationSound()',
+      'useMouseHaptics()',
       'useMacFullscreen()',
       'useFocusChrome({',
       'useDrawerSwipe(shellRef, {',
