@@ -362,8 +362,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Feishu answer body",
         "feishu/renderer.py",
-        "The answer body Feishu renders as markdown. `text()` is what `on_done` "
-        "sends, and Feishu is a buffered zero-widget channel: its body reaches "
+        "The answer body Feishu renders as markdown. Feishu is a buffered "
+        "zero-widget channel: its body reaches "
         "`render_options_as_text` -> `apply_options_cap`, which display-redacts the "
         "numbered OPTIONS choices but returns the body itself unscrubbed, so the "
         "only pass the body had was the driver's channel-neutral LITERAL stream "
@@ -371,8 +371,9 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "survives that scan and is reassembled when Feishu renders the markdown. "
         "The body is screened at the send boundary through `Renderer.redact_for_"
         "target` -- the `redact_for_display` pass over the credential + "
-        "exfiltration-URL chain, on the display form that actually ships. `text()` "
-        "is where the scrub lands because `text()` is what `on_done` sends; history "
+        "exfiltration-URL chain, on the display form that actually ships: `on_done` "
+        "runs it over the body after taking out the image references it uploads, so "
+        "the refusal lines and the failed-upload note are covered too; history "
         "is persisted separately by `messaging.dispatch` from the driver's own "
         "accumulated text, so this pass covers the shipped bytes without touching "
         "the transcript.",

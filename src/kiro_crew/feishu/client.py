@@ -4,9 +4,10 @@ Inbound: lark-oapi ``ws.Client`` runs in a daemon thread and pushes
 normalized ``LarkInbound`` frames into the async event loop via
 ``asyncio.run_coroutine_threadsafe``.
 
-Outbound: ``send_reply`` (an answer to an inbound message) and ``send_new``
-(a new message to a person or group) wrap the sync lark-oapi REST API in
-``run_in_executor`` so they never block the event loop.
+Outbound: ``send_reply`` (an answer to an inbound message), ``send_image_reply``
+(an image answering one) and ``send_new`` (a new message to a person or group)
+wrap the sync lark-oapi REST API in ``run_in_executor`` so they never block the
+event loop.
 
 ``lark-oapi`` is an OPTIONAL dependency: it ships in the ``feishu`` extra, and
 is installed on its own with ``pip install 'lark-oapi>=1.4,<2'`` (this project
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import io
 import json
 import logging
 import mimetypes
@@ -449,11 +451,6 @@ class LarkClient:
 
     def _sync_reply(self, message_id: str, text: str) -> None:
         """Blocking REST reply; call only from a worker thread."""
-        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
-            ReplyMessageRequest,
-            ReplyMessageRequestBody,
-        )
-
         # ensure_ascii=False: the default escapes non-ASCII to ``\uXXXX``, which
         # DOUBLES a CJK reply's payload (6 bytes per char) and quadruples an
         # emoji's (12, as a surrogate pair). The splitter bounds the reply in
@@ -461,11 +458,20 @@ class LarkClient:
         # escaped form pushes an ordinary 4000-char Chinese reply past the limit
         # and the API rejects it -- the user receives nothing.
         content = json.dumps({"text": text}, ensure_ascii=False)
+        self._sync_post_reply(message_id, "text", content)
+
+    def _sync_post_reply(self, message_id: str, msg_type: str, content: str) -> None:
+        """Blocking REST reply of one *msg_type* message; call only from a worker thread."""
+        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
+            ReplyMessageRequest,
+            ReplyMessageRequestBody,
+        )
+
         req = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
             .request_body(
-                ReplyMessageRequestBody.builder().content(content).msg_type("text").build()
+                ReplyMessageRequestBody.builder().content(content).msg_type(msg_type).build()
             )
             .build()
         )
@@ -507,6 +513,45 @@ class LarkClient:
             raise RuntimeError(f"Feishu resource download refused: code={resp.code} msg={resp.msg}")
         with open(dest, "wb") as fh:
             shutil.copyfileobj(resp.file, fh)
+
+    async def send_image_reply(self, message_id: str, data: bytes) -> bool:
+        """Reply to *message_id* with *data* as an image message.  True on success.
+
+        Uploads the bytes with ``im.v1.image.create`` (``image_type=message``),
+        then replies ``msg_type=image`` with the returned ``image_key``. A refusal
+        at either step (an app without the ``im:resource`` grant, an image Feishu
+        rejects) is logged and returned as False, never raised.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(self._executor, self._sync_image_reply, message_id, data)
+        except Exception as exc:
+            logger.error("Feishu image reply failed (message_id=%s): %s", message_id, exc)
+            return False
+        return True
+
+    def _sync_image_reply(self, message_id: str, data: bytes) -> None:
+        """Blocking upload + image reply; call only from a worker thread."""
+        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
+            CreateImageRequest,
+            CreateImageRequestBody,
+        )
+
+        req = (
+            CreateImageRequest.builder()
+            .request_body(
+                CreateImageRequestBody.builder()
+                .image_type("message")
+                .image(io.BytesIO(data))
+                .build()
+            )
+            .build()
+        )
+        resp = self._lark.im.v1.image.create(req)
+        image_key = getattr(resp.data, "image_key", "") if resp.success() else ""
+        if not image_key:
+            raise RuntimeError(f"Feishu image upload error: code={resp.code} msg={resp.msg}")
+        self._sync_post_reply(message_id, "image", json.dumps({"image_key": image_key}))
 
     # -- Bot identity --------------------------------------------------------
 
