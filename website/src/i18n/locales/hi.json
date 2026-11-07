@@ -11182,6 +11182,7 @@
       "cycle_model": "मॉडल बदलते जाएँ",
       "cycle_reasoning_effort": "रीज़निंग प्रयास बदलते जाएँ",
       "focus_pending_approval": "लंबित मंज़ूरी पर फ़ोकस करें",
+      "reject_pending_approval": "इंतज़ार कर रहा टूल कॉल अस्वीकार करो (एजेंट फिर से पूछ सकता है)",
       "focus_text_input": "टेक्स्ट इनपुट पर फ़ोकस करें",
       "edit_last_message": "अंतिम संदेश संपादित करो",
       "indent_list_line": "सूची पंक्ति इंडेंट करो",

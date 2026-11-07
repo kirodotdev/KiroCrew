@@ -11430,6 +11430,7 @@
       "cycle_model": "Scorri i modelli",
       "cycle_reasoning_effort": "Scorri i livelli di ragionamento",
       "focus_pending_approval": "Attiva l’approvazione in attesa",
+      "reject_pending_approval": "Rifiuta la chiamata allo strumento in attesa (l’agente può chiederla di nuovo)",
       "focus_text_input": "Attiva il campo di testo",
       "edit_last_message": "Modifica l'ultimo messaggio",
       "indent_list_line": "Aumenta il rientro della riga di elenco",

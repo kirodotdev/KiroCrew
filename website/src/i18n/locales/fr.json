@@ -11430,6 +11430,7 @@
       "cycle_model": "Faire défiler les modèles",
       "cycle_reasoning_effort": "Faire défiler les efforts de raisonnement",
       "focus_pending_approval": "Placer le focus sur l’approbation en attente",
+      "reject_pending_approval": "Refuser l’appel d’outil en attente (l’agent peut le redemander)",
       "focus_text_input": "Placer le focus sur la zone de saisie",
       "edit_last_message": "Modifier le dernier message",
       "indent_list_line": "Ajouter un retrait à la ligne de liste",

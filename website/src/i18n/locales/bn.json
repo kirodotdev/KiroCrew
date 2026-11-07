@@ -11182,6 +11182,7 @@
       "cycle_model": "মডেল পাল্টানো",
       "cycle_reasoning_effort": "রিজনিং এফোর্ট পাল্টানো",
       "focus_pending_approval": "অপেক্ষমাণ অনুমোদনে ফোকাস",
+      "reject_pending_approval": "অপেক্ষমাণ টুল কল প্রত্যাখ্যান (এজেন্ট আবার চাইতে পারে)",
       "focus_text_input": "টেক্সট ইনপুটে ফোকাস",
       "edit_last_message": "শেষ বার্তাটি সম্পাদনা করো",
       "indent_list_line": "তালিকার লাইন ইন্ডেন্ট করো",
