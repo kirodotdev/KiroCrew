@@ -1,6 +1,6 @@
 /**
- * One image of an installed pack's loader art, held on its first frame while the
- * user asks for reduced motion.
+ * One image of an installed pack's art (a loader image, or the welcome screen's
+ * brand mark), held on its first frame while the user asks for reduced motion.
  *
  * Pack loader art may animate by itself: an animated WebP/APNG/GIF, or an SVG
  * carrying its own CSS or SMIL animation. That motion runs inside the image, where
@@ -50,8 +50,10 @@ export function paintStill(canvas: HTMLCanvasElement | null, img: HTMLImageEleme
   const ctx = canvas?.getContext('2d')
   if (!canvas || !ctx) return
   const dpr = window.devicePixelRatio || 1
-  const w = Math.max(1, Math.round((canvas.clientWidth || FALLBACK_EDGE_PX) * dpr))
-  const h = Math.max(1, Math.round((canvas.clientHeight || FALLBACK_EDGE_PX) * dpr))
+  // A canvas under a hidden ancestor has no layout box but still has its CSS size.
+  const css = getComputedStyle(canvas)
+  const w = Math.max(1, Math.round((canvas.clientWidth || parseFloat(css.width) || FALLBACK_EDGE_PX) * dpr))
+  const h = Math.max(1, Math.round((canvas.clientHeight || parseFloat(css.height) || FALLBACK_EDGE_PX) * dpr))
   // Assigning the bitmap size also clears it, so a new src never paints over the old art.
   canvas.width = w
   canvas.height = h

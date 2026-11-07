@@ -267,7 +267,8 @@ branding/wordmark.svg   # reserved brand artwork for supporting surfaces
 
 `logo` accepts `.svg` or `.png`; `favicon` accepts `.ico`, `.png`, or `.svg`;
 `welcome` accepts `.svg`, `.png`, `.webp`, or `.gif` (256 KB), and an animated
-WebP/GIF/SVG plays in place. The welcome screen shows `welcome`, else `logo`,
+WebP/GIF/SVG plays in place; under `prefers-reduced-motion: reduce` it holds its
+first frame, like the loader art. The welcome screen shows `welcome`, else `logo`,
 else the stock ghost, in the 48px hero slot.
 The backend serves only validated files from the installed pack, and the label is
 trimmed to 48 printable characters. When an asset or label is absent, the shell
