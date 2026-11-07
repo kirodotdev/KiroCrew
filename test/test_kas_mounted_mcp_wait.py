@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import pytest
 
@@ -22,6 +21,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead, AcpRuntimeError
 from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_KAS_MCP_STATUS, JsonRpcMessage
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, finished
 
 _SID = "sess-mounted"
 _CORE = KIROCREW_BIN_MCP_SERVERS[0]
@@ -42,7 +42,7 @@ def _status(**states: str) -> JsonRpcMessage:
     )
 
 
-def _handle(*frames: JsonRpcMessage) -> AcpSessionHandle:
+def _handle(*frames: JsonRpcMessage | None) -> AcpSessionHandle:
     handle = AcpSessionHandle.__new__(AcpSessionHandle)
     handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
@@ -57,42 +57,48 @@ def _handle(*frames: JsonRpcMessage) -> AcpSessionHandle:
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_session_load, "_declared_governed", lambda: False)
+    monkeypatch.setattr(runtime_session_load, "MOUNTED_MCP_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
     return AcpRuntime(work_dir=tmp_path / "ws", sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
+
+
+def _start(runtime: AcpRuntime, handle: AcpSessionHandle):
+    return runtime._wait_managed_mcp(handle, _PARAMS, "default", FALLBACK_TIMEOUT_SECS, 0)
 
 
 @pytest.mark.asyncio
 async def test_a_slow_connection_is_waited_for_before_turn_one(runtime):
     handle = _handle(_status(**{_CORE: "connected", "github": "connecting"}))
-    asyncio.get_running_loop().call_later(
-        0.3, handle._queue.put_nowait, _status(**{_CORE: "connected", "github": "connected"})
-    )
-    start = time.monotonic()
-    await runtime._wait_managed_mcp(handle, _PARAMS, "default", 5.0, 0)
-    assert time.monotonic() - start >= 0.3
+    task = asyncio.ensure_future(_start(runtime, handle))
+    try:
+        # The required barrier is through; the start now parks on github alone.
+        await async_wait_until(lambda: handle._queue.empty() and bool(handle._queue._getters))
+        assert not task.done()
+        handle._queue.put_nowait(_status(**{_CORE: "connected", "github": "connected"}))
+        await finished(task, "start barrier")
+    finally:
+        task.cancel()
     assert handle._mcp_report.unreported(("github",)) == ()
 
 
 @pytest.mark.asyncio
-async def test_a_server_ready_during_the_required_wait_costs_nothing(runtime, monkeypatch):
-    # Its frame was consumed by the required barrier; the report still has it.
-    monkeypatch.setattr(runtime_session_load, "MOUNTED_MCP_WAIT_SECS", 5.0)
+async def test_a_server_ready_during_the_required_wait_is_not_waited_for_again(runtime):
+    # Its frame was consumed by the required barrier; the report still has it,
+    # so the start returns with no further frame (a regression parks to the cap).
     handle = _handle(
         _status(**{_CORE: "connecting", "github": "connected"}),
         _status(**{_CORE: "connected", "github": "connected"}),
     )
-    start = time.monotonic()
-    await runtime._wait_managed_mcp(handle, _PARAMS, "default", 5.0, 0)
-    assert time.monotonic() - start < 1.0
+    await finished(_start(runtime, handle), "start barrier")
+    assert handle._queue.empty()
 
 
 @pytest.mark.asyncio
-async def test_a_server_never_ready_costs_at_most_the_cap(runtime, monkeypatch, caplog):
-    monkeypatch.setattr(runtime_session_load, "MOUNTED_MCP_WAIT_SECS", 0.2)
+async def test_a_server_never_ready_starts_at_the_cap(runtime, monkeypatch, caplog):
+    monkeypatch.setattr(runtime_session_load, "MOUNTED_MCP_WAIT_SECS", 0)
     handle = _handle(_status(**{_CORE: "connected", "github": "connecting"}))
-    start = time.monotonic()
     with caplog.at_level(logging.INFO):
-        await runtime._wait_managed_mcp(handle, _PARAMS, "default", 5.0, 0)
-    assert time.monotonic() - start < 1.0
+        await finished(_start(runtime, handle), "start barrier")
+    assert handle._mcp_report.unreported(("github",)) == ("github",)
     assert "github" in caplog.text
 
 
@@ -100,11 +106,11 @@ async def test_a_server_never_ready_costs_at_most_the_cap(runtime, monkeypatch, 
 async def test_runtime_death_while_waiting_still_raises(runtime):
     handle = _handle(_status(**{_CORE: "connected", "github": "connecting"}), None)
     with pytest.raises(AcpRuntimeDead):
-        await runtime._wait_managed_mcp(handle, _PARAMS, "default", 5.0, 0)
+        await _start(runtime, handle)
 
 
 @pytest.mark.asyncio
 async def test_a_failed_required_server_still_fails_the_start(runtime):
     handle = _handle(_status(**{_CORE: "failed", "github": "connected"}))
     with pytest.raises(AcpRuntimeError, match=_CORE):
-        await runtime._wait_managed_mcp(handle, _PARAMS, "default", 5.0, 0)
+        await _start(runtime, handle)
