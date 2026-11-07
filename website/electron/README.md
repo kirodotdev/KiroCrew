@@ -374,9 +374,13 @@ Open via **Connection → Open Config File** or the tray menu.
   `showTrayIcon` key in this app's config file; only `false` hides the icon
   (`tray-icon.js`), and the icon appears or disappears as soon as either
   setting changes.
-- **GPU rendering.** Hardware acceleration is on by default.
-  `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
-  (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard
+- **GPU rendering.** Hardware acceleration is on by default, except in a
+  Windows RDP session (`SESSIONNAME` starting with `RDP-`), where it starts
+  off. The decision, first match wins (`disable-gpu.js`):
+  `KIROCREW_DISABLE_GPU=0` (or `false`/`no`/`off`) or `--enable-gpu` keeps it
+  on, including over RDP; `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it
+  off for a launch; otherwise an RDP session turns it off; otherwise it stays
+  on. On Windows, if the GPU process dies before the dashboard
   has loaded, the app relaunches itself once with software rendering
   (`--in-process-gpu --use-angle=swiftshader`, never `--no-sandbox`) and keeps
   that setting for the current app version under `gpuSoftwareFallback` in
