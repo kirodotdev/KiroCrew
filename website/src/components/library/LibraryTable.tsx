@@ -820,7 +820,7 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
                   {/* The cell spans the whole table, which scrolls sideways on a
                       phone, so `ml-auto` would park the always-visible touch menu
                       past the viewport edge. Touch keeps it inline after the count. */}
-                  <span className="ml-auto [@media(hover:none)]:ml-0 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+                  <span className="ml-auto [@media(hover:none)]:ml-0 opacity-0 group-hover:opacity-100 has-[:focus-visible]:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                     <FolderMenu folder={folder} folders={folders} actions={actions} />
                   </span>
                 </div>
