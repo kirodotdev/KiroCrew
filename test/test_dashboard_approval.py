@@ -397,6 +397,15 @@ class TestBuildRefusalRecoveryPrompt:
         assert "continue the task where you left off" not in out
         assert "Do NOT repeat" in out
 
+    def test_answered_finished_task_leads_with_the_outcome_not_the_block(self):
+        """The continuation's reply becomes the user's last message, so a finished
+        task opens with what was done; a reply that only notes the block buries the
+        summary the user needs."""
+        out = build_refusal_recovery_prompt([("bash", "reason")], answered=True)
+        finished = out[out.index("Only if the task IS finished") :]
+        assert "reply with one short line noting the block" not in out
+        assert finished.index("outcome of the work") < finished.index("noting the block")
+
     def test_unanswered_turn_keeps_the_continuation_body(self):
         out = build_refusal_recovery_prompt([("bash", "reason")], answered=False)
         assert "ended the turn early" in out
