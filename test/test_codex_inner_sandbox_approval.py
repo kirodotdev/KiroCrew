@@ -27,7 +27,6 @@ import functools
 import json
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -38,7 +37,7 @@ from test_codex_session_mcp import _ENTRY, _require_codex_acp, _run_driver_reapi
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
 from kiro_crew.agent_sdk.backends_routing import ACP_BACKEND_PERMISSION_CONFIG
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.sandbox import userns_available
 
 #: One step per prompt: the shell call the stub model makes, and Crew's answer to
 #: any ask it raises (``None`` = the step must not ask at all).
@@ -340,30 +339,23 @@ def _ended(m: dict, step: str) -> bool:
     return ((m["turns"].get(step) or {}).get("result") or {}).get("stopReason") == "end_turn"
 
 
-#: Asked of a throwaway child, so this process keeps its own namespaces.
-_USERNS_PROBE = "import os; os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS)"
-
-
 @functools.lru_cache(maxsize=1)
 def _unprivileged_userns() -> bool:
     """Whether this host lets an unprivileged process build codex's sandbox.
 
-    On Linux codex's sandbox is bubblewrap, which needs a new user and mount
-    namespace. Many hosts turn that off (a sysctl, an AppArmor restriction, a
-    container's seccomp profile), and then every command codex runs inside its
-    own sandbox fails before it starts. Off Linux the sandbox is not bubblewrap.
+    On Linux codex's sandbox is bubblewrap, which needs a new user namespace with
+    its identity maps written, and a mount namespace with a private ``/`` inside
+    it. Many hosts refuse part of that (a sysctl, an AppArmor restriction, a
+    container's seccomp profile), and then every command codex runs inside its own
+    sandbox fails before it starts. Some refuse only a later step: under an
+    AppArmor userns restriction ``unshare(CLONE_NEWUSER)`` succeeds and writing
+    ``uid_map`` is refused, which bubblewrap reports as ``setting up uid map``. So
+    the answer is Crew's own launcher probe, which takes each of those steps,
+    rather than ``unshare`` alone. Off Linux the sandbox is not bubblewrap.
     """
     if not sys.platform.startswith("linux"):
         return True
-    probe = subprocess.run(  # noqa: S603 - this interpreter, a fixed program
-        [sys.executable, "-c", _USERNS_PROBE],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=FALLBACK_TIMEOUT_SECS,
-        check=False,
-    )
-    return probe.returncode == 0
+    return userns_available()
 
 
 def _assert_sandboxed_step(m: dict, step: str, ran: str) -> None:
