@@ -257,6 +257,7 @@ class AcpRuntime:
     #: See ``__init__``. Set on the class too, so a runtime built without
     #: ``__init__`` (a test double, a restored instance) reads as having none.
     _launch_agent = ""
+    _harness_pin = ""
 
     def __init__(
         self,
@@ -278,6 +279,7 @@ class AcpRuntime:
         shared_scratch: Path | None = None,
         launch_agent: str = "",
         native_skill_projection: bool = True,
+        harness_pin: str = "",
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -307,6 +309,9 @@ class AcpRuntime:
         # later sessions inherit the claiming crew, not the pool's spawn state.
         self._crew_agent = crew_agent
         self._acp_backend = acp_backend
+        # The Bot pin of the session this process was started for, as stored
+        # (``SpawnContext.harness_pin``); ``""`` when it pins no harness.
+        self._harness_pin = harness_pin
         # The operator's MCP Tool Search choice, for hosts that take it over the
         # wire (``client_meta_settings``). None leaves the handshake as the harness
         # declares it. ``_tool_search_wire`` is what was actually sent, kept so a

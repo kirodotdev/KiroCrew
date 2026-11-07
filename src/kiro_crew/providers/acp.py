@@ -158,6 +158,7 @@ class AcpProvider(LLMProvider):
         channel_id: str | None = None,
         extra_env: dict[str, str] | None = None,
         acp_backend: str = "",
+        harness_pin: str = "",
         effort_per_model: dict[str, str] | None = None,
         unbound_effort: str = "",
         inherited_effort: str = "",
@@ -227,6 +228,9 @@ class AcpProvider(LLMProvider):
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
         # inherited work directory has to reach THAT process.
         self._shared_scratch: Path | None = shared_scratch
+        # The Bot pin the factory's selection used (``crewmate_harness.route_pin``),
+        # for the runtimes this provider builds.
+        self._harness_pin = harness_pin
         # Start-queue exit/entry callbacks, forwarded to BOTH ``runtime.spawn`` calls
         # (the first spawn and the resume-died respawn: the cold-start admission)
         # and to ``runtime.create_session`` on the fresh-session path
@@ -930,6 +934,11 @@ class AcpProvider(LLMProvider):
     def tool_search_settings(self) -> ToolSearchSettings | None:
         """The resolved Tool Search choice this provider spawns runtimes with (H14 capability)."""
         return self._tool_search_settings()
+
+    @property
+    def harness_pin(self) -> str:
+        """The Bot pin this provider's runtimes carry for KAS's route rule 2 (H14 capability)."""
+        return self._harness_pin
 
     def _tool_search_settings(self) -> ToolSearchSettings | None:
         """The operator's Tool Search choice, for the runtime's wire channel.

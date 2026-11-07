@@ -11,10 +11,12 @@ and the gateway installs the pinned engine if it is missing
 The rule, in order:
 
 1. ``agent.kas_bundle`` on: the bundle route, as configured.
-2. ``agent.acp_backend`` stored as the Kiro CLI pick (``"kiro"``): the relay. That
-   pick runs on KAS only because kiro-cli itself offers v3 (the decision entry
-   "A Kiro CLI harness choice runs on Kiro Crew's KAS path"), so it never moves
-   onto an engine kiro-cli does not serve.
+2. The harness choice stored as the Kiro CLI pick (``"kiro"``): the relay. The
+   choice is the session's own Bot pin (``agents.<name>.acp_backend``) when it
+   has one, else ``agent.acp_backend``. That pick runs on KAS only because
+   kiro-cli itself offers v3 (the decision entry "A Kiro CLI harness choice runs
+   on Kiro Crew's KAS path"), so it never moves onto an engine kiro-cli does not
+   serve.
 3. No kiro-cli resolves: the bundle route.
 4. kiro-cli resolves, and is not the operator's own ``KIROCREW_KIRO_BIN`` (that
    binary is never second-guessed), but cannot run a session: kiro-cli's own sign-in is proven
@@ -40,6 +42,8 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from kiro_crew.acp_backends import STORED_BACKEND_KIRO
 
 logger = logging.getLogger(__name__)
 
@@ -193,8 +197,14 @@ def _stored_as_kiro_pick() -> bool:
         return False
 
 
-def automatic_switch_allowed() -> bool:
-    """Rule 2: a stored Kiro CLI pick never leaves kiro-cli. Blocking (reads config)."""
+def automatic_switch_allowed(pin: str = "") -> bool:
+    """Rule 2: a stored Kiro CLI pick never leaves kiro-cli. Blocking (reads config).
+
+    *pin* is the session's own Bot pin as stored; ``""`` means it has none, and
+    the installation's ``agent.acp_backend`` decides.
+    """
+    if pin:
+        return pin != STORED_BACKEND_KIRO
     return not _stored_as_kiro_pick()
 
 
