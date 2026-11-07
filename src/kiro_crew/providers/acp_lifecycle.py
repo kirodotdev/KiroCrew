@@ -118,10 +118,13 @@ async def shutdown(self: AcpProvider) -> None:
     try:
         await self._client.shutdown()
     finally:
-        if self.memory_mode != "persistent" and session_id:
-            await self.cleanup_session(session_id)
-        if self._disposable_work_dir:
-            await self._reclaim_work_dir()
+        try:
+            if self.memory_mode != "persistent" and session_id:
+                await self.cleanup_session(session_id)
+        finally:
+            # A cancel delivered during the transcript delete must not skip the reclaim.
+            if self._disposable_work_dir:
+                await self._reclaim_work_dir()
 
 
 def set_work_dir_claim_probe(
@@ -197,7 +200,7 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     kiro-cli's replay log is ``<sid>.json`` + ``.jsonl`` under
     ``~/.kiro/sessions/cli``. A Claude session's record is Claude Code's own
     store instead (``agent_sdk.claude_transcripts``), spelled from the client's work
-    directory and deleted off the loop, to completion even when cancelled.
+    directory. Either is deleted off the loop, to completion even when cancelled.
     """
     if not session_id:
         return
@@ -205,6 +208,11 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
         work_dir = str(getattr(self._client, "_work_dir", "") or "")
         await drained_to_thread(delete_claude_session_files, session_id, work_dir)
         return
+    await drained_to_thread(_delete_kiro_session_files, session_id)
+
+
+def _delete_kiro_session_files(session_id: str) -> None:
+    """Unlink kiro-cli's replay log of ``session_id``: blocking disk work, run in a thread."""
     sessions_dir = kiro_sessions_dir()
     for suffix in (".json", ".jsonl"):
         target = sessions_dir / f"{session_id}{suffix}"

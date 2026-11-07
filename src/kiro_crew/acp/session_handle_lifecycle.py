@@ -36,6 +36,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.types import METHOD_CANCEL, METHOD_COMMANDS_EXECUTE, JsonRpcMessage
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -302,7 +303,8 @@ async def destroy(self: AcpSessionHandle) -> None:
             await self._runtime.terminate_session(self._session_id)
     finally:
         if self.memory_mode != "persistent" or not getattr(self, "keep_transcript", False):
-            self._cleanup_transcript()
+            # Off the loop, and drained: a cancelled destroy returns only once it is done.
+            await drained_to_thread(self._cleanup_transcript)
 
 
 def _release_ending(self: AcpSessionHandle) -> "asyncio.Future[None] | None":
@@ -389,12 +391,14 @@ def cleanup_transcript_files(sid: str) -> None:
         target = (sessions_dir / f"{sid}{suffix}").resolve()
         # Guard against a crafted sessionId escaping the sessions dir.
         if target.parent != sessions_dir:
-            logger.error("destroy: path traversal blocked for %s", target)
+            logger.error("transcript cleanup: path traversal blocked for %s", target)
             return
         try:
             target.unlink(missing_ok=True)
         except OSError:
-            logger.warning("destroy: failed to delete transcript %s", target, exc_info=True)
+            logger.warning(
+                "transcript cleanup: failed to delete transcript %s", target, exc_info=True
+            )
 
 
 async def _wait_for_response(
