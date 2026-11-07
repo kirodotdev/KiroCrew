@@ -28,6 +28,10 @@ from kiro_crew.llm_helpers import is_context_overflow_error, run_bg_oneliner, st
 from kiro_crew.session import _BG_BLIND_RECYCLE_PROMPTS, BACKGROUND_KEY, SessionManager
 from kiro_crew.session_background import mark_context_overflowed
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 # The claude adapter's refusal as Crew formats it: the phrase sits in the JSON-RPC
 # ``message``, which the raise-time classifier does not read, so no
 # ``context_overflow`` tag is set on it.

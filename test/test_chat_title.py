@@ -37,6 +37,10 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.testing.wait import await_until
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 def test_prompt_isolates_and_delimits_transcript():
     """The title prompt must instruct the model to name ONLY the delimited

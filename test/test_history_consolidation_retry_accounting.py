@@ -30,6 +30,10 @@ from kiro_crew.history import (
 )
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 class _OneTurnProvider:
     """Streams *text* as one turn, on fresh stats that bill *credits*, as a runner does."""

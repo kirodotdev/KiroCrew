@@ -36,6 +36,10 @@ from kiro_crew.vector_memory import (
     _split_stored,
 )
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 _CRON_LOGGER = "kiro_crew.dashboard.handlers.cron"
 
 
