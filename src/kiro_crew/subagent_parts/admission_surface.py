@@ -50,7 +50,7 @@ if TYPE_CHECKING:
         logger,
         parent_project_dirs,
         parent_spawn_policy,
-        parent_template_allowlists,
+        parent_template_spawn_policy,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -529,17 +529,14 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
                 # record read.
                 template = record.template_id if record is not None else ""
                 kwargs["_parent_spawn_policy"] = (
-                    template,
-                    (
-                        await asyncio.to_thread(
-                            parent_template_allowlists,
-                            parent,
-                            template,
-                            kwargs.get("_parent_project_dirs"),
-                        )
-                        if template
-                        else ()
-                    ),
+                    await asyncio.to_thread(
+                        parent_template_spawn_policy,
+                        parent,
+                        template,
+                        kwargs.get("_parent_project_dirs"),
+                    )
+                    if template
+                    else (template, (), ())
                 )
             execution = self._admission.resolve_spawn_execution(
                 parent_session_key=parent,

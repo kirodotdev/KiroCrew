@@ -1400,6 +1400,12 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/mcp_gateway/mate_overlays.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
+    # A spawn refused because the parent's allowlist is unknown names each spec
+    # the reader refused; this re-read keeps the error class for that text.
+    "kiro_crew/subagent_parts/agent_policy.py": [
+        ("spawn_available_agents", "subagent"),
+        ("spawn_available_agents_project", "subagent"),
+    ],
 }
 
 

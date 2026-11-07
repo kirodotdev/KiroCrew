@@ -1560,7 +1560,7 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   honouring the project scope only ever narrows. Every unreadable or
   unscannable rule below applies to the project directory too, and either
   scope answering UNKNOWN refuses. Every entry point resolves it the same way
-  (`subagent.parent_template_allowlists(parent_session_key, template)`).
+  (`subagent.parent_template_spawn_policy(parent_session_key, template)`).
 - **Unresolved parent = surfaced.** When the project directory is unknown (no
   resolver in this process, a session with no slot project, a sub-agent run
   with no cwd) and no user-level spec names the parent, a project-scope
@@ -1612,8 +1612,18 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   file in the directory (`iter_agent_spec_files`, minus the `._` AppleDouble
   sidecars the reader rejects by design) did not parse, that answer is UNKNOWN
   — the declaration may be inside the very file that did not parse — and the
-  gate refuses with the same `agent_not_available` code, logging the
-  unreadable file, rather than failing open. A parent whose declaration is
+  gate refuses with the same `agent_not_available` code rather than failing
+  open. The refusal names each unreadable file as
+  `'<file name>' (<user|project> scope): <parse error>`, up to five and then
+  `(+N more)`, so a broken file shows up in the refusal as well as in the
+  WARNING log line. The bound is applied before the scan memo keeps the answer
+  (`_describe_unreadable_specs`): the memo holds at most five descriptions,
+  and only those five files are read a second time to recover their errors.
+  The descriptions travel with the answer, as the
+  third item of the `ParentSpawnPolicy` the gate receives
+  (`parent_template_spawn_policy`), so a refusal names only the files of its
+  own resolution, never those of another session that resolved the same
+  template in a different project. A parent whose declaration is
   readable is never refused by an unrelated broken file. The accepted cost: a
   parent with no user-level spec at all (a project-scope or edition agent)
   cannot be told apart from one whose declaring spec broke, so it is refused
@@ -1622,7 +1632,7 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   (probed with `os.scandir` before the snapshot read, which folds a walk
   failure into "no specs") refuses too, while an absent directory declares
   nothing; and so does a parent session whose execution record exists but
-  cannot be read (`ParentRecordUnreadable` → policy `("", None)`): an
+  cannot be read (`ParentRecordUnreadable` → policy `("", None, ())`): an
   unreadable parent is not a parent without a spec. A caller with no session,
   or a session with no record, is parentless and unrestricted.
 - **When it bites**: ONLY when the parent's spec declares the key. No parent
