@@ -357,6 +357,24 @@ def test_seatbelt_keeps_a_window_over_a_lift_and_never_lifts_the_voice_runtime()
     assert linux.windows == ()
 
 
+def test_seatbelt_records_the_directories_realpath_stats_to_reach_an_exposed_file() -> None:
+    """A file carved out of a Seatbelt mask is reached through the masked directories
+    above it, and ``realpath`` stats each one: a launch config staged in a masked tree is
+    unopenable by a CLI that canonicalizes its path unless they are recorded."""
+    staging = f"{CREW}/auth-store-staging"
+    exposed = f"{staging}/sub/strands-mcp-1-x.json"
+    macos = _plan(
+        "standard", BACKEND_SEATBELT, extra_hidden_dirs=(staging,), extra_expose_files=(exposed,)
+    )
+    [caller] = [m for m in macos.masks if m.path == staging]
+    assert caller.exposed == (exposed,)
+    assert caller.exposed_ancestors == (f"{staging}/sub", staging)
+    aws = {m.path: m for m in _plan("cc", BACKEND_SEATBELT).masks}[f"{HOME}/.aws"]
+    assert aws.exposed_ancestors == (f"{HOME}/.aws",)
+    unexposed = {m.path: m for m in _plan("strict", BACKEND_SEATBELT).masks}[f"{HOME}/.aws"]
+    assert unexposed.exposed_ancestors == ()
+
+
 def test_only_the_namespace_launcher_folds_crew_home_aliases() -> None:
     alias = (f"{HOME}/.kiro/crew", "/real/crew", 1, 2)
     request = {"crew_home_aliases": (alias,), "extra_hidden_dirs": (f"{CREW}/apps",)}
@@ -659,6 +677,7 @@ _SEATBELT_GOLDEN = """\
 (deny file-read* (literal "/work/relative/hidden"))
 (deny file-write* (literal "/work/relative/hidden"))
 (deny file-link (literal "/work/relative/hidden"))
+(allow file-read-metadata (literal "/work/relative/hidden"))
 (deny file-read* (require-all (subpath "/srv/u/.ssh") (require-not (literal "/srv/u/.ssh/known_hosts"))))
 (deny file-write* (subpath "/srv/u/.ssh"))
 (deny file-link (subpath "/srv/u/.ssh"))
@@ -1155,3 +1174,53 @@ def test_the_kernel_refuses_connecting_renaming_and_linking_a_credential_agent_s
                 os.unlink(path)
             except FileNotFoundError:
                 pass
+
+
+def test_the_kernel_lets_realpath_reach_an_exposed_file_and_keeps_its_siblings_hidden(
+    tmp_path: Path,
+) -> None:
+    """A file carved out of a Seatbelt mask canonicalizes inside the sandbox, as a Node
+    CLI's ``realpath`` of its ``--mcp-config`` does at boot, while the masked directory
+    stays unlistable and a sibling in it stays unreadable."""
+    _require_unsandboxed_seatbelt()
+    base = os.path.realpath(tmp_path)
+    masked = os.path.join(base, "auth-store-staging")
+    sub = os.path.join(masked, "sub")
+    os.makedirs(sub)
+    exposed = os.path.join(sub, "strands-mcp-1-x.json")
+    sibling = os.path.join(masked, "token_signing.key")
+    for path in (exposed, sibling):
+        Path(path).write_text("{}", encoding="utf-8")
+    request = SandboxRequest(
+        tier="standard",
+        backend=BACKEND_SEATBELT,
+        extra_hidden_dirs=(masked,),
+        extra_expose_files=(exposed,),
+    )
+    profile = sandbox_seatbelt.render_seatbelt_profile(
+        plan_confinement(request, PlanHost(home=base))
+    )
+    child = (
+        "import os, sys\n"
+        "exposed, masked, sibling = sys.argv[1:]\n"
+        "def attempt(f, *a):\n"
+        "    try:\n"
+        "        f(*a); return 'ok'\n"
+        "    except OSError as e:\n"
+        "        return str(e.errno)\n"
+        "print(attempt(lambda p: os.path.realpath(p, strict=True), exposed))\n"
+        "print(attempt(lambda p: open(p).read(), exposed))\n"
+        "print(attempt(os.listdir, masked))\n"
+        "print(attempt(lambda p: open(p).read(), sibling))\n"
+    )
+    result = subprocess.run(
+        ["/usr/bin/sandbox-exec", "-p", profile, sys.executable, "-I", "-c", child]
+        + [exposed, masked, sibling],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    realpath, read, listing, sibling_read = result.stdout.split()
+    assert (realpath, read) == ("ok", "ok")
+    assert listing != "ok" and sibling_read != "ok"

@@ -31,6 +31,19 @@ def _quoted(path: str) -> str:
     return path.replace('"', '\\"')
 
 
+def _metadata_allows(directories: tuple[str, ...]) -> list[str]:
+    """Stat-only allows for the masked directories ``realpath`` walks through.
+
+    ``realpath`` lstat()s every component, so a file re-opened inside a masked tree is
+    unreachable by a program that canonicalizes its path first (a Node CLI resolving the
+    ``--mcp-config`` it was handed) unless each masked directory above it may be stat'ed.
+    Metadata only, literal paths only: no directory becomes listable and no sibling
+    readable. Emitted after the mask's own denies, because an allow wins only over the
+    denies before it.
+    """
+    return [f"(allow file-read-metadata (literal {json.dumps(d)}))" for d in directories]
+
+
 def render_seatbelt_profile(plan: ConfinementPlan) -> str:
     """Render *plan* as a Seatbelt profile.
 
@@ -50,12 +63,9 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
             predicate = f"(require-all (subpath {json.dumps(mask.path)}) {exceptions})"
             for operation in ("file-read*", "file-write*", "file-link"):
                 rules.append(f"(deny {operation} {predicate})")
-            # ...but stat on the masked directories ABOVE each window stays allowed:
-            # ``realpath`` of the window lstat()s every component, so a harness that
-            # canonicalizes its $TMPDIR would otherwise fail on its own window. Metadata
-            # only, literal paths only: no sibling becomes listable or readable.
-            for ancestor in mask.window_ancestors:
-                rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
+            # ...but stat on the masked directories ABOVE each window stays allowed, so a
+            # harness that canonicalizes its $TMPDIR does not fail on its own window.
+            rules.extend(_metadata_allows(mask.window_ancestors))
             continue
         if mask.cancelled:
             # A lifted governance cache stays READ-only: the write and hardlink denies
@@ -100,6 +110,7 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         if mask.literal_write_sealed and not mask.exposed:
             rules.append(f'(deny file-read* (literal "{escaped}"))')
             rules.append(f'(deny file-link (literal "{escaped}"))')
+        rules.extend(_metadata_allows(mask.exposed_ancestors))
 
     # The voice image lives below ``run``. That parent stays readable (the launcher is
     # stored there), but every write through both spellings is denied, and literal
@@ -142,8 +153,8 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
             for operation in ("file-write*", "file-link"):
                 rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
-            for ancestor in mask.window_ancestors:
-                rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
+            ancestors = (*mask.window_ancestors, *mask.exposed_ancestors)
+            rules.extend(_metadata_allows(tuple(dict.fromkeys(ancestors))))
             continue
         if mask.cancelled:
             continue
@@ -163,6 +174,7 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         rules.append(f'(deny file-read* (literal "{escaped}"))')
         rules.append(f'(deny file-write* (literal "{escaped}"))')
         rules.append(f'(deny file-link (literal "{escaped}"))')
+        rules.extend(_metadata_allows(mask.exposed_ancestors))
 
     if plan.hide_ssh:
         # Deny all access except reading known_hosts; hardlinking any key out of the

@@ -1118,7 +1118,15 @@ share is a declared capability in `sandbox_plan.CAPABILITIES`. Today no renderer
 declares a cc directory it cannot mask: the launcher restores a read-only copy of
 `~/.aws/config` into the `~/.aws` mask, and Seatbelt denies the `~/.aws` subpath with a
 `require-not literal` exception for `~/.aws/config`, so on both backends the cc tier
-hides the credentials file and the SSO caches and keeps only `config` readable. The
+hides the credentials file and the SSO caches and keeps only `config` readable. A
+Seatbelt read deny over a subpath also denies `lstat` of the masked directory itself,
+and `realpath` lstats every component, so a program that canonicalizes a path it was
+handed (a Node CLI resolving its `--mcp-config` in `auth-store-staging`) would get
+`EPERM` on a file it may read. Each mask therefore carries `exposed_ancestors`, the
+masked directories from the mask root down to each exposed file's parent, and the
+profile allows `file-read-metadata` on exactly those literals after the mask's last
+deny, as it already does for a private window's `window_ancestors`. Stat only: the
+directory stays unlistable and every sibling unreadable. The
 rest of each backend's shape is its own planner, which `plan_confinement` picks by
 backend: one flat mask list folded onto the resolved data-home spelling for the
 launcher, which re-applies a mask nested inside a private window; a rule set per masked

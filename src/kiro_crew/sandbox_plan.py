@@ -232,7 +232,8 @@ class Mask:
     ``origin`` is ``"tier"`` for an entry the tier or the host derived and
     ``"caller"`` for an ``extra_hidden_dirs`` entry. ``windows`` are the private windows
     re-opened inside it, ``window_ancestors`` the directories ``realpath`` must stat to
-    reach them, and ``exposed`` the files carved out of its read deny.
+    reach them, ``exposed`` the files carved out of its read deny, and
+    ``exposed_ancestors`` the directories ``realpath`` must stat to reach those.
     """
 
     path: str
@@ -240,6 +241,7 @@ class Mask:
     windows: tuple[str, ...] = ()
     window_ancestors: tuple[str, ...] = ()
     exposed: tuple[str, ...] = ()
+    exposed_ancestors: tuple[str, ...] = ()
     #: The CALLER explicitly opted this mask in to a read-only seal when it carries no
     #: writable window (``SandboxRequest.seal_hidden_dirs`` seals every caller mask of the
     #: request): a data-loss mask where a silently-discarded write is the bug (a cron
@@ -621,7 +623,8 @@ def window_ancestors(target: str, windows: list[str]) -> list[str]:
     """Every directory from masked *target* down to each window's parent.
 
     These are the path components ``realpath`` must ``lstat`` to reach a window, all of
-    them inside the mask. Lexical.
+    them inside the mask. An exposed file is reached the same way, so its entries take
+    this too. Lexical.
     """
     root = target.rstrip("/")
     ancestors: list[str] = []
@@ -1103,11 +1106,13 @@ def _seatbelt_plan(
             )
             continue
         is_crew_secret = target in crew_hidden
+        exposed = sorted(f for f in expose_abs if f.startswith(target + "/"))
         masks.append(
             Mask(
                 path=target,
                 origin="tier",
-                exposed=tuple(f for f in expose_abs if f.startswith(target + "/")),
+                exposed=tuple(exposed),
+                exposed_ancestors=tuple(window_ancestors(target, exposed)) if exposed else (),
                 write_sealed=is_policy_cache_dir(target)
                 or is_voice_runtime_dir(target)
                 or is_crew_secret,
@@ -1135,6 +1140,7 @@ def _seatbelt_plan(
     for target in caller_targets:
         windows = [w for w in caller_windows if w.startswith(target.rstrip("/") + "/")]
         carved = tuple(sorted(f for f in extra_expose_abs if f.startswith(target + sep)))
+        carved_ancestors = tuple(window_ancestors(target, list(carved))) if carved else ()
         if windows:
             masks.append(
                 Mask(
@@ -1143,6 +1149,7 @@ def _seatbelt_plan(
                     windows=tuple(windows),
                     window_ancestors=tuple(window_ancestors(target, windows)),
                     exposed=carved,
+                    exposed_ancestors=carved_ancestors,
                 )
             )
             continue
@@ -1152,7 +1159,9 @@ def _seatbelt_plan(
                 Cancellation(target, _visible_lifts(target, visible, host.cwd), False)
             )
             continue
-        masks.append(Mask(path=target, origin="caller", exposed=carved))
+        masks.append(
+            Mask(path=target, origin="caller", exposed=carved, exposed_ancestors=carved_ancestors)
+        )
     hide_ssh = tier == "strict"
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
