@@ -324,6 +324,56 @@ class TestReadEndpoints:
         )
         assert _body(resp)["session_manager_plugin_command"] == ""
 
+    async def test_preflight_without_a_sandbox_is_a_coded_503_not_a_bare_500(
+        self, tmp_path, monkeypatch
+    ):
+        """On a host with no sandbox backend, ``run_aws`` -> ``wrap_argv``
+        raises before any AWS call. The route answers a coded 503, not aiohttp's bare
+        500 page."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(p, r):
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable", kind="no_backend", detail="unshare EPERM"
+            )
+
+        monkeypatch.setattr(hc.iam, "reachability_check", _refused)
+        resp = await hc.api_cloud_preflight(
+            _req("GET", "/api/cloud/preflight", state=_state(tmp_path))
+        )
+        assert resp.status == 503
+        body = _body(resp)
+        assert body["code"] == "sandbox_unavailable"
+        assert body["kind"] == "no_backend"
+        assert body["detail"] == "unshare EPERM"
+        assert "kirocrew doctor" in body["error"]
+        assert "credentials were not checked" in body["error"]
+
+    @pytest.mark.parametrize(
+        ("kind", "says"),
+        [("transient", "Try again in a moment"), ("foreign_sandbox", "another sandbox")],
+    )
+    async def test_preflight_sandbox_refusal_names_its_kind(
+        self, tmp_path, monkeypatch, kind, says
+    ):
+        """Only ``no_backend`` means this host has no sandbox; the other kinds must
+        not send the operator to ``kirocrew doctor``."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(p, r):
+            raise SandboxUnavailableError("refused", kind=kind, detail="probe")
+
+        monkeypatch.setattr(hc.iam, "reachability_check", _refused)
+        resp = await hc.api_cloud_preflight(
+            _req("GET", "/api/cloud/preflight", state=_state(tmp_path))
+        )
+        assert resp.status == 503
+        body = _body(resp)
+        assert body["kind"] == kind
+        assert says in body["error"]
+        assert "kirocrew doctor" not in body["error"]
+        assert "no sandbox" not in body["error"]
+
 
 class TestPluginInstallCommand:
     """The remedy must match the GATEWAY's platform. A hardcoded Homebrew line is
@@ -1021,6 +1071,28 @@ class TestInstanceMutations:
 
         assert resp.status == 400
         assert _body(resp)["code"] == "invalid_cloud_parameter"
+
+    async def test_a_sandbox_refusal_is_a_coded_503_not_a_500(self, tmp_path, monkeypatch):
+        """Every verb reaches the CLI through run_aws -> wrap_argv, which raises on a
+        host with no sandbox backend; the route names it instead of a 500."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(tag, p, r, **kw):
+            raise SandboxUnavailableError("no sandbox", kind="no_backend", detail="EPERM")
+
+        monkeypatch.setattr(hc.ec2, "stop", _refused)
+
+        resp = await hc.api_cloud_stop(
+            _req(
+                "POST",
+                "/api/cloud/kc-3f9a/stop",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
+        )
+
+        assert resp.status == 503
+        assert _body(resp)["code"] == "sandbox_unavailable"
 
     async def test_a_mismatched_instance_id_query_cannot_unregister_another_crew(
         self, tmp_path, monkeypatch
