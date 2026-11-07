@@ -11384,6 +11384,7 @@
       "cycle_model": "Alternar modelo",
       "cycle_reasoning_effort": "Alternar esfuerzo de razonamiento",
       "focus_pending_approval": "Enfocar la aprobación pendiente",
+      "reject_pending_approval": "Rechazar la llamada a herramienta en espera (el agente puede volver a pedirla)",
       "focus_text_input": "Enfocar el campo de texto",
       "edit_last_message": "Editar el último mensaje",
       "indent_list_line": "Aplicar sangría a la línea de lista",

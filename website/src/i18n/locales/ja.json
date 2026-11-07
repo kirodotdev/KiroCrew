@@ -10888,6 +10888,7 @@
       "cycle_model": "モデルをサイクル",
       "cycle_reasoning_effort": "推論努力度をサイクル",
       "focus_pending_approval": "保留中の承認にフォーカス",
+      "reject_pending_approval": "待機中のツール呼び出しを拒否（エージェントは再度リクエスト可能）",
       "focus_text_input": "テキスト入力にフォーカス",
       "edit_last_message": "最後のメッセージを編集",
       "indent_list_line": "リストの行をインデント",

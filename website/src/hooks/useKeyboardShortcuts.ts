@@ -7,7 +7,7 @@ import { askAppConfirm } from '../lib/appConfirm'
 import { forgetClosedSessionRef, hasRecentlyClosedSession, isClosedSessionOpenIn, rememberClosedSession, restoreClosedSession, takeRecentlyClosedSession, trackClosedSessionClose, waitForClosedSession } from '../lib/recentlyClosedSessions'
 import type { ClosedSessionRef } from '../lib/recentlyClosedSessions'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { focusComposerElement, focusComposerForResumedSession, queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
+import { focusComposerElement, focusComposerForResumedSession, queryComposerOrExpand, queryPendingApprovalAction, rejectPendingApproval, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import {
   loadPanelToggleOverrides,
@@ -47,7 +47,7 @@ import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
 
 /** Shortcuts scoped to the session on screen (see the crew-window guard). */
 const CREW_WINDOW_SCOPED: ReadonlySet<string> = new Set([
-  'close-chat', 'focus-input', 'focus-approval',
+  'close-chat', 'focus-input', 'focus-approval', 'reject-approval',
   'cycle-agent', 'cycle-prev-agent', 'cycle-reasoning', 'cycle-prev-reasoning',
   'cycle-approval', 'cycle-prev-approval', 'cycle-model', 'cycle-prev-model',
   'pop-out-session',
@@ -283,6 +283,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'history-forward': 'app.nav_forward',
   'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
   'focus-approval': 'hooks.useKeyboardShortcuts.focus_pending_approval',
+  'reject-approval': 'hooks.useKeyboardShortcuts.reject_pending_approval',
   // Reused: the same command as the chat sidebar's own New chat / Close session
   // controls, so the reference list and the buttons cannot drift apart.
   'new-chat': 'pages.chatSidebar.new_chat',
@@ -1036,12 +1037,17 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // Focus the pending tool-approval row. Firing while typing is safe HERE
         // ONLY BECAUSE IT MOVES FOCUS AND NOTHING ELSE — the decision still costs
         // a second, deliberate press on a control the user can now see is
-        // focused. A chord that ANSWERED the prompt would be a one-keystroke path
+        // focused. A chord that APPROVED the prompt would be a one-keystroke path
         // to running a tool call nobody read, which is why this one stops at
         // focus; see queryPendingApprovalAction. Claimed even with no approval
         // pending: the chord collides with no browser binding, so swallowing it
         // avoids a stray newline in the draft; nothing is focused in that case.
         'focus-approval': () => queryPendingApprovalAction()?.focus(),
+        // Reject the pending tool call once; see rejectPendingApproval. Claimed
+        // with nothing pending so ⌥⇧R never types ‰ into the draft. Inert under
+        // a remote crew, whose local pane is hidden but still mounted, and on an
+        // auto-repeat, which must not refuse the next prompt as it arrives.
+        'reject-approval': () => { if (!e.repeat && appStore.getState().instances.activeId === null) rejectPendingApproval() },
         // Focus text input — works even from other inputs. Unguarded on purpose:
         // a pressed keyboard shortcut proves a keyboard exists —
         // `focusComposer`'s touch-device skip would wrongly no-op it. Still
