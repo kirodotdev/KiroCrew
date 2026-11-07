@@ -2,6 +2,7 @@ import { useContext, useEffect, useRef, useState, type KeyboardEvent, type React
 import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { fmtList } from '../../i18n/format'
 import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
@@ -549,7 +550,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       <ErrorNotice
         message={page === 'acp_backend' && optionModels.some((q) => q.isError)
           ? t('pages.membersPage.profile_harness_models_failed', {
-              harnesses: offeredHarnesses.filter((_h, i) => optionModels[i]?.isError).map((h) => harnessLabel(h)).join(', '),
+              harnesses: fmtList(offeredHarnesses.filter((_h, i) => optionModels[i]?.isError).map((h) => harnessLabel(h))),
             })
           : null}
         testId="crew-profile-settings-option-models-error"

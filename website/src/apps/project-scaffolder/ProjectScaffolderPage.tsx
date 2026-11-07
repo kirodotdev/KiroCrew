@@ -36,6 +36,7 @@ import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, PageHeader } f
 import ProjectPicker from '../../components/ProjectPicker'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import {
   scanProject,
   scaffoldProject,
@@ -213,7 +214,7 @@ function CandidateRow({ row, checked, onToggle, parentName }: {
             <span className="font-semibold">
               {i18nT('apps.projectScaffolder.projectScaffolderPage.signals')}
             </span>{' '}
-            <span>{row.signals.map(signalLabel).join(', ')}</span>
+            <span>{fmtList(row.signals.map(signalLabel))}</span>
           </div>
         )}
       </div>
