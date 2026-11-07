@@ -13,6 +13,7 @@ import functools
 import logging
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -178,6 +179,46 @@ def _ssh_supports_accept_new() -> bool:
     except Exception:
         pass
     return False
+
+
+def _runtime_dir_is_durable(runtime_dir: str) -> bool:
+    """Whether *runtime_dir* (the plan's ``/run/user/$UID``) survives session churn.
+
+    The launcher stages the bind sources that mask ``.env`` and the other crew-home
+    leaves on ``/run/user/$UID`` first when this holds (see
+    ``sandbox_plan.namespace_payload``). That runtime directory belongs to the login
+    session; a PER-USER systemd manager keeps it coherent while the user is logged in,
+    and logind removes and remakes it on a host WITHOUT one as sessions come and go. A
+    bind source pinned inside it when that happens leaves the host leaf a bind of a
+    now-empty inode -- a 0-byte ``.env``.
+
+    The caller passes the SAME root the plan stages on
+    (``sandbox_plan.user_runtime_root``), never ``XDG_RUNTIME_DIR``: a manager found
+    under a different runtime dir says nothing about the one the bind sources use.
+
+    "A live manager" is the one LISTENING on its own private control socket,
+    ``<runtime_dir>/systemd/private`` (which ``systemctl --user`` dials). Only the
+    manager creates that socket. The session ``bus`` is not evidence: a plain
+    ``dbus-daemon --session`` listens there with no manager behind it, which is
+    exactly the host this order exists for. The test is a NON-BLOCKING ``connect()``,
+    not a stat of the socket FILE: a manager that died leaves the file behind, and only
+    a connect tells that apart from a live listener. ``connect_ex`` returning 0
+    (connected) or ``EAGAIN`` (listener with a full backlog) proves someone is
+    listening; anything else -- refused, no file, non-POSIX -- reads as not durable and
+    takes the ``/dev/shm`` order, the safe default (being wrong there only trades
+    ``/run/user/$UID``'s login-scoped auto-reclaim for ``/dev/shm``, which the janitor
+    reclaims too). The socket is closed at once, before any handshake, which the
+    manager treats as an ordinary client hang-up.
+    """
+    path = os.path.join(runtime_dir, "systemd", "private")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            err = probe.connect_ex(path)
+    except (OSError, AttributeError) as exc:
+        # AttributeError: no AF_UNIX on this platform.
+        err = getattr(exc, "errno", None) or errno.EIO
+    return err in (0, errno.EAGAIN, errno.EINPROGRESS)
 
 
 def namespace_launcher_script_dir() -> str:
@@ -425,6 +466,9 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             ()
             if namespace
             else sandbox_plan.credential_agent_socket_patterns(request.forward_ssh_auth_sock)
+        ),
+        runtime_dir_durable=(
+            _runtime_dir_is_durable(sandbox_plan.user_runtime_root(uid)) if namespace else False
         ),
     )
 
