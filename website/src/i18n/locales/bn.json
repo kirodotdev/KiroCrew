@@ -347,6 +347,9 @@
       "show_less": "কম দেখান",
       "show_more": "আরও দেখান"
     },
+    "chatPanel": {
+      "session_gone": "এই সেশনটি আর নেই। অ্যাপ থেকে একটি সেশন খোলো বা শুরু করো।"
+    },
     "newMessagesDivider": {
       "new_messages_one": "{{count}}টি নতুন বার্তা",
       "new_messages_other": "{{count}}টি নতুন বার্তা"
