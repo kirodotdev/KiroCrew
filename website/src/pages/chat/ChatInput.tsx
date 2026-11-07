@@ -1,4 +1,4 @@
-import { openActivityToTab, awaitSideRestore, setAgentSwitchNotice, sideSendStatus, sseSideQueue, takeSideQueueDroppedByClose } from '../../store/chatSlice'
+import { openActivityToTab, awaitSideRestore, setAgentSwitchNotice, sideSendStatus, sseSideQueue, takeSideQueueDroppedByClose, captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, requestSlotFolderOpen, switchSlot } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { sendTurn, SEND_ABORT_MS } from '../../chat-core/transport/sendTurn'
@@ -9,6 +9,10 @@ import { sideTurnWire } from './sideTurnWire'
 import type { AppDispatch, RootState } from '../../store'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
+import { forkFailureMessageForCode } from '../../utils/forkFailure'
+import { restoreToComposer } from '../../utils/composerRestore'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
+import { errMessage } from '../../utils/thunkError'
 
 /** `failed` marks a command that was recognized but could not run (no slot,
  *  side-open rejected, side-turn rejected — e.g. 409 while a side turn is in
@@ -19,14 +23,17 @@ import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
  *  only the message was refused) — the caller's title must match the state
  *  the user can see. `agent` is a refused `/agent <name>` switch: its reason
  *  is already on the shared agent-switch notice (the picker's surface), so the
- *  caller only keeps the composer text.
+ *  caller only keeps the composer text. `fork` is a refused `/fork`: no fork
+ *  was made.
  *  `unconfirmed` is the one `failed` that is NOT a refusal: the turn answered
  *  2xx but its receipt could not be read. The composer is kept (the same
  *  reason as a failure: the question must stay recoverable), but the report is
  *  not an error — the side panel's own standing "delivery not confirmed"
- *  notice is set here, the SideChat transport policy for the same receipt. */
+ *  notice is set here, the SideChat transport policy for the same receipt.
+ *  A second `/fork` from a session whose fork is still being made reads the
+ *  same way: the first is still running, so the command stays, unreported. */
 export type SlashInterceptResult =
-  | { intercepted: true; failed?: boolean; error?: string; stage?: 'open' | 'turn' | 'agent'; unconfirmed?: boolean }
+  | { intercepted: true; failed?: boolean; error?: string; stage?: 'open' | 'turn' | 'agent' | 'fork'; unconfirmed?: boolean }
   | { intercepted: false }
 
 /** Caller hooks for commands whose no-slot behaviour lives in the caller. */
@@ -40,6 +47,12 @@ export interface SlashInterceptOptions {
    *  pane re-binding the panel) passes its own; `false` means it did not open,
    *  so the question is not sent into a Side Chat nobody can see. */
   openSide?: () => boolean | void | Promise<boolean | void>
+  /** Sends a `/fork` prompt into its fork, the session on screen, addressed
+   *  by key. `true`: the send owns the prompt (a failed send puts it back in
+   *  the fork's composer). Absent or `false`: it waits there, unsent. */
+  sendToFork?: (slot: string, prompt: string) => boolean
+  /** `/fork` is refused here, as the host's transcript hides Fork. */
+  forkUnavailable?: boolean
 }
 
 /** The message of a rejected side-chat request, for the caller's notice. The
@@ -75,6 +88,15 @@ export function agentSwitchTarget(trimmed: string): string | null {
   return name && !AGENT_SUBCOMMANDS.has(name.toLowerCase()) ? name : null
 }
 
+// `/fork <prompt>`: the session menu's Fork (the whole conversation, copied
+// into a new session) from the keyboard, with the prompt as the fork's first
+// message. A bare `/fork` only forks.
+const FORK_RE = /^\/fork(?:\s+([\s\S]+))?$/
+
+/** Sessions with a `/fork` still being made: a second Enter before the fork
+ *  opens is not a second fork. */
+const forking = new Set<string>()
+
 /** Whether trimmed composer text is a `/side` (or `/btw`) command. A host
  *  with no Side Chat surface refuses it before anything opens server-side. */
 export function isSideCommand(trimmed: string): boolean {
@@ -86,7 +108,48 @@ export function isSideCommand(trimmed: string): boolean {
  *  ChatPage's steer() — so this stays in lockstep with the matches below. */
 export function isInterceptedSlashCommand(raw: string): boolean {
   const trimmed = raw.trim()
-  return trimmed === '/onboarding' || SIDE_RE.test(trimmed) || agentSwitchTarget(trimmed) !== null
+  return trimmed === '/onboarding' || SIDE_RE.test(trimmed) || FORK_RE.test(trimmed) || agentSwitchTarget(trimmed) !== null
+}
+
+/** Forks `slot` at its end and opens the fork, as the session menu's Fork
+ *  does, then sends `prompt` there. A session the user opened while the fork
+ *  ran keeps the view (`forkMayOpen`), and the prompt then waits unsent in the
+ *  fork's own stored draft: a send carries what the composer on screen has
+ *  staged. */
+async function forkFromCommand(slot: string, prompt: string, dispatch: AppDispatch, sendToFork: SlashInterceptOptions['sendToFork']): Promise<SlashInterceptResult> {
+  const state = () => dispatch((_: AppDispatch, getState: () => RootState) => getState())
+  // Pending until the fork is active or failed, so the chat page does not open
+  // another session meanwhile; released once, before the fork's transcript
+  // loads (the same order as the transcript's Fork).
+  let released = false
+  const release = () => { if (!released) { released = true; dispatch(forkOpenSettled()) } }
+  // Direction-neutral, as the session menu's Fork words it: this path reads no
+  // `tail_fork_enabled`, so it cannot say which end holds the smaller slice.
+  const refused = (code: string | undefined, raw: string): SlashInterceptResult => {
+    const row = state().dashboard.slots.find(s => s.key === slot)
+    return { intercepted: true, failed: true, stage: 'fork', error: forkFailureMessageForCode(code, raw, 'unknown', 'offsite', row ? sessionDisplayTitle(row) : slot) }
+  }
+  dispatch(forkOpenStarted())
+  const origin = captureForkOrigin(state())
+  forking.add(slot)
+  try {
+    const result = await dispatch(forkSlot({ slot })).unwrap()
+    if (!result.ok) return refused(result.code, result.error ?? '')
+    if (forkMayOpen(state(), origin)) {
+      const switching = dispatch(switchSlot({ key: result.key, requestSeq: origin.seq }))
+      dispatch(requestSlotFolderOpen({ key: result.key, folder_id: result.folder_id }))
+      release()
+      await switching
+    }
+    if (prompt && !(state().chat.activeSlot === result.key && sendToFork?.(result.key, prompt))) restoreToComposer(result.key, prompt)
+    return { intercepted: true }
+  } catch (e: unknown) {
+    // A refusal is a non-2xx, so the thunk REJECTS: its code rides the payload.
+    return refused((e as { code?: string } | null)?.code, errMessage(e))
+  } finally {
+    forking.delete(slot)
+    release()
+  }
 }
 
 export async function interceptSlashCommand(
@@ -126,6 +189,13 @@ export async function interceptSlashCommand(
       new CustomEvent('mc-start-import', { detail: { continueOnboarding: true } }),
     )
     return { intercepted: true }
+  }
+  const fork = trimmed.match(FORK_RE)
+  if (fork) {
+    if (opts.forkUnavailable) return { intercepted: true, failed: true, stage: 'fork', error: i18nT('pages.chatPage.command_not_available_here', { command: '/fork' }) }
+    if (!slot) return { intercepted: true, failed: true, stage: 'fork', error: i18nT('components.sessionGridView.no_session_to_fork_yet') }
+    if (forking.has(slot)) return { intercepted: true, failed: true, unconfirmed: true }
+    return forkFromCommand(slot, fork[1]?.trim() ?? '', dispatch, opts.sendToFork)
   }
   const match = trimmed.match(SIDE_RE)
   if (!match) {

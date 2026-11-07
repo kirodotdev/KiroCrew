@@ -35,8 +35,9 @@ import type { useChatPaneDraft } from './useChatPaneDraft'
  * was typed into, through the draft's `restoreIntoComposer`.
  */
 
-/** Client-only commands the pane never runs: it has no knowledge picker. */
-const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb']
+/** Client-only commands the pane never runs: it has no knowledge picker, and
+ *  `/fork` opens its fork in the main chat. */
+const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb', '/fork']
 
 /** Delay before the post-send bottom pin, so the optimistic bubble's commit has
  *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
@@ -128,8 +129,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   // `/onboarding`) and the knowledge-fetch prefixes (`/kb`, `@kb`): the same
   // matchers and the same `interceptSlashCommand` ChatPage.send runs, so the
   // pane never posts them to the agent as text. The pane has no knowledge
-  // picker, and a host may give it no Side Chat (`openSideChat` omitted);
-  // those commands are refused here with the composer kept. Returns true when
+  // picker, `/fork` opens its fork in the main chat, and a host may give it no
+  // Side Chat (`openSideChat` omitted); those commands are refused here with
+  // the composer kept. Returns true when
   // the composer text was a command (handled or refused), so the caller must
   // not send it.
   // Commands the pane refuses (see interceptPaneSlash), kept out of its menu
@@ -154,8 +156,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       setSlashError({ slot: sentSlot, message: i18nT('pages.chatPage.agent_locked_command', { agent: paneAgentName }) })
       return true
     }
-    if (knowledge || (isSideCommand(raw) && !openSideChat)) {
-      const command = raw.split(/\s/, 1)[0]
+    const command = raw.split(/\s/, 1)[0]
+    if (knowledge || PANE_REFUSED_COMMANDS.includes(command) || (isSideCommand(raw) && !openSideChat)) {
       setSlashError({ slot: sentSlot, message: i18nT('pages.chatPage.command_not_available_here', { command }), elsewhere: true })
       return true
     }
