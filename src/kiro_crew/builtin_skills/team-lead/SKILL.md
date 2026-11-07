@@ -210,5 +210,7 @@ Two lead-only additions:
 - The ledger nests two levels by default. Width is where the parallelism lives,
   not depth; an operator who wants more levels sets `work_ledger.max_depth` and
   accepts that each level multiplies sessions.
-- `execute_bash` is never auto-approved, so each run of the evaluator costs one
-  approval. Batch every `done` item into ONE call, as `goal-conductor` directs.
+- Run the evaluator and the budget check as the `accept_eval` and
+  `patrol_budget` tools; they do not prompt. `execute_bash` is never
+  auto-approved, so the shell fallback costs one approval per run. Batch every
+  `done` item into ONE call, as `goal-conductor` directs.

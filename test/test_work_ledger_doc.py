@@ -49,7 +49,10 @@ def test_the_doc_names_every_work_tool_and_no_other(doc_text: str) -> None:
     assert advertised == set(WORK_TOOLS), (
         f"the server advertises {sorted(advertised)} but WORK_TOOLS names " f"{sorted(WORK_TOOLS)}"
     )
+    from kiro_crew.mcp_work import CHECK_TOOLS
+
     named = set(re.findall(r"`(work_[a-z_]+)`", doc_text))
+    named |= {tool for tool in CHECK_TOOLS if f"`{tool}`" in doc_text}
     assert named == set(WORK_TOOLS), (
         f"the page names {sorted(named)} but the server serves {sorted(WORK_TOOLS)}; "
         "an invented name is a call that fails, and an omitted one understates the surface"
