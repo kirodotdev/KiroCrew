@@ -859,9 +859,10 @@ class CompactionCoordinator:
                 # failure, not a cancel; refreshed once the semaphore is held,
                 # so a Stop that ended THAT turn is not this compaction's cancel.
                 stop_gen = self._stop_generation(key)
+                dispatched = False
 
                 async def _run_compact() -> None:
-                    nonlocal stop_gen
+                    nonlocal stop_gen, dispatched
                     # Manual acquire/release, not ``async with``: a hard Stop
                     # that lands on this compaction pops the session and hands
                     # the permit to a woken claimant, and a context manager
@@ -872,6 +873,7 @@ class CompactionCoordinator:
                     claude_session.turn_owner = asyncio.current_task()
                     try:
                         stop_gen = self._stop_generation(key)
+                        dispatched = True
                         await claude_session.provider.compact()
                     finally:
                         if not owner.absorb_orphaned_release(key):
@@ -890,6 +892,11 @@ class CompactionCoordinator:
                         self._deps.logger.error(
                             "Compact timed out after %.0fs for %s", timeout, key
                         )
+                        if dispatched:
+                            # Its /compact may be on the wire and still finish,
+                            # and the next turn's pre-turn drain drops the late
+                            # frames only after that turn's prompt was built.
+                            claude_session.needs_context_reinjection = True
                     else:
                         self._deps.logger.exception("Compact failed for %s", key)
                     self.state.cooldown_until[key] = (
