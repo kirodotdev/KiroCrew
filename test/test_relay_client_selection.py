@@ -19,6 +19,7 @@ from kiro_crew import edition
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import (
     PROFILE_ENTERPRISE,
+    bootstrap,
     bootstrap_context,
     build_default_context,
     current_context,
@@ -77,11 +78,12 @@ class TestSelection:
         assert provider.public_url() == ""
 
     def test_a_stand_in_config_never_selects_it(self) -> None:
-        assert type(public_tunnel_provider(MagicMock())) is DefaultTunnelProvider
+        assert type(bootstrap._public_tunnel_provider(MagicMock())) is DefaultTunnelProvider
 
     def test_an_enterprise_build_ignores_the_local_enable(self, monkeypatch) -> None:
         monkeypatch.setattr(edition, "is_enterprise", lambda: True)
-        assert type(public_tunnel_provider(_cfg(relay_enabled=True))) is DefaultTunnelProvider
+        tunnel = bootstrap._public_tunnel_provider(_cfg(relay_enabled=True))
+        assert type(tunnel) is DefaultTunnelProvider
 
     def test_not_selected_when_an_edition_supplies_its_provider(self, monkeypatch) -> None:
         from kiro_crew.platform import bootstrap as bootstrap_mod
@@ -648,6 +650,18 @@ class TestTheRelaySwitch:
             assert _build_tunnel_config({"relay_enabled": hand_edit}).relay_enabled is False
         assert _build_tunnel_config({"relay_enabled": True}).relay_enabled is True
 
+    def test_one_predicate_reads_the_switch(self, monkeypatch) -> None:
+        from kiro_crew.edition_locks import relay_selected
+
+        assert relay_selected(_cfg(relay_enabled=True)) is True
+        assert relay_selected(_cfg()) is False
+        # A stand-in config answers every attribute truthily, and a config with no
+        # tunnel section has no switch at all.
+        assert relay_selected(MagicMock()) is False
+        assert relay_selected(object()) is False
+        _lock_tunnel(monkeypatch)
+        assert relay_selected(_cfg(relay_enabled=True)) is False
+
     def test_an_enterprise_build_locks_the_switch(self, monkeypatch) -> None:
         from kiro_crew import edition_locks
 
@@ -656,7 +670,8 @@ class TestTheRelaySwitch:
         try:
             assert edition_locks.config_path_locked("tunnel.relay_enabled")
             assert edition_locks.local_enable_locked("tunnel")
-            assert type(public_tunnel_provider(_cfg(relay_enabled=True))) is DefaultTunnelProvider
+            tunnel = bootstrap._public_tunnel_provider(_cfg(relay_enabled=True))
+            assert type(tunnel) is DefaultTunnelProvider
         finally:
             edition_locks.reset_logged()
 

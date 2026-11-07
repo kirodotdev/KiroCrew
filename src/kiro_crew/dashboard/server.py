@@ -1117,11 +1117,9 @@ async def start_dashboard(
         # which ignores that local switch with the rest of the tunnel control. Either
         # way the ingress middleware hands every request that is not a verified
         # handover on to the client-sent relay-header strip.
-        from kiro_crew.edition_locks import local_enable_locked
+        from kiro_crew.edition_locks import relay_selected
 
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(
-            enabled=_cfg.tunnel.relay_enabled is True and not local_enable_locked("tunnel")
-        )
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=relay_selected(_cfg))
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
