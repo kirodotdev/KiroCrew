@@ -253,7 +253,7 @@ class TestQueuePushFrameCarriesTheLists:
         (frame,) = _queue_push_frames(state)
         entry = next(i for i in slot._queue if i["content"] == _WIRE)
         assert frame["queue_id"] == entry["id"]
-        assert frame["meta"] == {"files": [_PATH], "dirs": [_DIR]}
+        assert frame["meta"] == {"files": [_PATH], "dirs": [_DIR], "requeuedSteer": True}
 
 
 class TestDrainedRow:
