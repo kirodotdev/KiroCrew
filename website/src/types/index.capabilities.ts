@@ -21,6 +21,9 @@ export interface Lesson {
   /** Where the lesson came from (`user_explicit`, `consolidation`, ...), as the
    *  store recorded it. Absent or empty when the row carries no source. */
   source?: string
+  /** `false` when the shown `rule` is redacted, so editing it would store the
+   *  placeholder; absent when the row can be edited. */
+  rule_editable?: boolean
 }
 
 /** One row of `GET /api/memory/stores` — a declared memory store.

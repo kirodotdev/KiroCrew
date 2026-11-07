@@ -470,6 +470,66 @@ class LessonStore:
         """
         return self._insert_or_enrich(lesson, enrich=True, superseded_out=superseded_out)
 
+    @named_store_operation
+    def replace_rule(self, old_rule: str, old_repo_scope: str | None, lesson: Lesson) -> str:
+        """Rewrite the row ``(old_rule, old_repo_scope)`` to *lesson*'s text, in place.
+
+        The Memory tab's edit. One lock acquisition, so the row count never changes:
+        an insert-then-delete at the ``_MAX_LESSONS_TOTAL`` cap would first evict an
+        unrelated row. The row keeps its position, tier and NOT-clause; only the
+        rule and the writer change. The clause is the one stored NOW, read under the
+        lock, so a clause another writer attached since the list was read survives.
+
+        Returns ``replaced``; ``refused_volatile`` or ``refused_injection`` when a
+        content screen refuses the rule with the row's stored clause;
+        ``missing`` when no row matches the old pair exactly (case-insensitive,
+        surrounding whitespace ignored, scope compared canonically); ``ambiguous``
+        when more than one row does, since the edit cannot say which; ``collision``
+        when ANOTHER row already holds the new text in that scope, because merging
+        into it would drop one of the two rows' tiers. Nothing is written unless the
+        outcome is ``replaced``.
+        """
+        old_text = old_rule.lower().strip()
+        new_text = lesson.rule.lower().strip()
+        scope = canonical_scope(old_repo_scope)
+        with self._lock:
+            rows = self._load_for_write()
+            # A stored scope that is present but inadmissible (an imported "/") marks a
+            # scoped-but-broken row, not a global one, exactly as ``remove`` reads it:
+            # it folds to None, so it would otherwise stand in for the global row.
+            same_scope = [
+                i
+                for i, le in enumerate(rows)
+                if (le.repo_scope is None or scope_is_admissible(le.repo_scope))
+                and canonical_scope(le.repo_scope) == scope
+            ]
+            sources = [i for i in same_scope if rows[i].rule.lower().strip() == old_text]
+            if not sources:
+                return "missing"
+            # Two rows sharing the text and scope (different tiers or clauses) cannot
+            # be told apart by the selector, so the edit refuses rather than guess.
+            if len(sources) > 1:
+                return "ambiguous"
+            source = sources[0]
+            if any(i != source and rows[i].rule.lower().strip() == new_text for i in same_scope):
+                return "collision"
+            # The screens judge the row as it will be stored: the new rule with the
+            # clause the row holds now.
+            negative = rows[source].negative
+            if contains_volatile_lesson_fact(lesson.rule, negative):
+                return "refused_volatile"
+            if lesson_contains_injection(lesson.rule, negative):
+                return "refused_injection"
+            updated = list(rows)
+            updated[source] = replace(
+                rows[source],
+                rule=lesson.rule,
+                written_by=lesson.written_by or rows[source].written_by,
+            )
+            self._write_all(updated)
+        logger.info("Replaced lesson: %s", lesson.rule)
+        return "replaced"
+
     def _insert_or_enrich(
         self, lesson: Lesson, *, enrich: bool, superseded_out: list[str] | None = None
     ) -> str:
