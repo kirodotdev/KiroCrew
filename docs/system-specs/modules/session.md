@@ -1982,7 +1982,14 @@ against sweep completeness, and are torn down at `close_all`.
   automatically. kiro-cli only: if the in-place compact fails, times out,
   or the provider lacks native support, falls back to the legacy
   **recycle** (kill session; context re-injected via
-  `build_session_context()` on next message). A recycle is never forced
+  `build_session_context()` on next message). On claude a timed-out
+  compact keeps the session, with the cooldown and the failure callback.
+  Once the compaction held the turn semaphore, its `/compact` may already
+  be on the wire and claude can still finish it, while the next turn's
+  pre-turn drain drops those late frames only after that turn's prompt is
+  built. So the timeout then also arms the one-shot re-injection flag, at
+  the cost of one extra startup context if claude never finished. A budget
+  spent waiting for the semaphore arms nothing. A recycle is never forced
   through a live turn — if the turn semaphore cannot be acquired within
   the budget, the attempt is deferred to the next turn-end check. A
   compaction whose IMMEDIATELY-MEASURED effect verdict (a confirmed reading
