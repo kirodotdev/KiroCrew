@@ -960,9 +960,11 @@ async def _dispatch_events(
     got_complete = False
     saw_agent_switch = False
     # A prompt turn takes ``_session/steering`` steers; a command turn and a
-    # turn the agent started do not. Steers accepted into an earlier turn were
-    # settled or dropped there.
+    # turn the agent started do not. Steers accepted into or held for an
+    # earlier turn were settled or dropped there.
     self._steers_accepted = []
+    self._steers_held = []
+    self._held_steers_unanswered = set()
     self._steering_turn_req = (
         None if extract_agent_from_result or req_id == _AGENT_STARTED_REQUEST_ID else req_id
     )
@@ -1227,6 +1229,8 @@ async def _dispatch_events(
                     self._active_tool_calls.discard(tool_result_event.tool_call_id or "")
                     self._tool_dispatched = self._active_tool_calls.possibly_open
                     self._stale_eligible = not self._active_tool_calls.possibly_open
+                    # A steer held while a call ran goes out once none is open.
+                    self._release_held_steers()
                 # Fire the PostToolUse HOOK ENGINE now that the tool RESULT
                 # (and its output) exists — the Pre-vs-Post split is required
                 # because fire_tool_hooks above is PreToolUse-only. No-op
