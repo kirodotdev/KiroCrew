@@ -552,9 +552,9 @@ class TestUninstall:
 
     def _hold_app_dir(self, monkeypatch, app_root, *, releases_after, exc_factory):
         """Make ``rmtree`` of *app_root* fail ``releases_after`` times, then delete it."""
-        import kiro_crew.apps.manager_uninstall as uninstall_mod
+        import kiro_crew.platform_compat_files as files_mod
 
-        monkeypatch.setattr(uninstall_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
         real_rmtree = shutil.rmtree
         attempts = []
 
@@ -589,7 +589,7 @@ class TestUninstall:
         self, tmp_path, app_home, monkeypatch
     ):
         """A holder that never releases fails the purge, names the file, keeps the app."""
-        import kiro_crew.apps.manager_uninstall as uninstall_mod
+        import kiro_crew.platform_compat_files as files_mod
 
         install_app(_make_app_source(tmp_path))
         app_root = app_home / "apps" / "test-app"
@@ -600,7 +600,7 @@ class TestUninstall:
         result = uninstall_app("test-app", keep_data=False)
 
         assert not result.ok
-        assert len(attempts) == uninstall_mod._RMTREE_MAX_ATTEMPTS
+        assert len(attempts) == files_mod._RMTREE_MAX_ATTEMPTS
         assert str(app_root / "backend.log") in result.error
         assert "held open by another process" in result.error
         assert (app_root / APP_MANIFEST_FILENAME).is_file()
