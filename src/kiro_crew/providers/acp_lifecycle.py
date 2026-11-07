@@ -63,7 +63,8 @@ async def start(self: AcpProvider) -> None:
         # dead predecessor of this data home (session_work_dir); the shutdown
         # reclaim below keys on the flag and on the mark naming this process.
         await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
-    # Re-apply the overlay on every (re)start to cover resume / model swap.
+    # Apply the overlay on every (re)start, the first spawn included, to cover
+    # resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)
     # Off the loop: the cli.json lock is shared with sibling threads and
     # processes, and an acquire on the loop thread makes one attempt and
