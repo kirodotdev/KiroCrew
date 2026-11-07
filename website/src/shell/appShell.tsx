@@ -37,6 +37,7 @@ import { useNativeNotification } from '../hooks/useNativeNotification'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
+import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
 import { safeSetItem } from '../utils/safeStorage'
 import { gcOrphanedStorage } from '../utils/storageGc'
@@ -696,8 +697,13 @@ export function useAppShell() {
         // extra request, and the shell never names a specific app.
         setSlotOwners(resolveSlotOverlays(apps))
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         if (gen !== appNavGenRef.current) return
+        // A permission refusal (the relay's `relay_apps_teammate` for a teammate, an
+        // `owner_only` 403) is the answer, not a blip: asking again on a backoff
+        // only fills the console with the same refusal (#32031). The rail stays
+        // without apps, which is what that caller has.
+        if (isPermissionRefusal(e)) return
         // A transient failure (e.g. the gateway mid-restart right after a
         // `kirocrew update`, or the cold apps-dir scan) used to be swallowed
         // here, leaving the Apps rail empty until a manual reload or an app

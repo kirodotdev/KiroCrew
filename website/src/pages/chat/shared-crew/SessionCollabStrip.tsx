@@ -10,6 +10,7 @@
  *  owner joined. It also reports this tab's presence for the session. */
 import { useEffect } from 'react'
 import { capabilityUsable, isUnknownPrincipal } from '../../../api/sharedCrewUi'
+import { isPermissionRefusal } from '../../../api/apiError'
 import ErrorNotice from '../../../components/ErrorNotice'
 import {
   useSessionDecisions,
@@ -72,7 +73,10 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const viewerId = viewer.data && !isUnknownPrincipal(viewer.data) ? viewer.data.id : ''
   const teamDecisions = team ? decisions.data?.items ?? [] : []
   const decisionItems = shown || involvesOthers(teamDecisions, viewerId) ? visibleDecisions(teamDecisions) : []
-  const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease].find(query => query.isError)
+  // A read refused to this caller (403 `owner_only` to a relay teammate, say) is
+  // not a failure to report: the feature is simply not theirs (#32031).
+  const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease]
+    .find(query => query.isError && !isPermissionRefusal(query.error))
   if (!sessionKey || (!failed && !shown && decisionItems.length === 0)) return null
   return (
     <>

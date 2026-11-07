@@ -8,7 +8,7 @@
 import { normalizeInstalledApps, normalizeInstalledApp } from '../../components/appstore/types'
 import { i18nT } from '../../i18n/t'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../../lib/sessionControlStatusPath'
-import { ApiError, toApiError } from '../apiError'
+import { ApiError, isRelayAppsRefusal, toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
 /** Final payload resolved by installFromRegistryStream's SSE `done` event. */
@@ -67,7 +67,21 @@ export interface FileMenuContext {
   root?: string
 }
 
-export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
+export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
+  // The relay refuses the app surface to a teammate (`relay_apps_teammate`), and
+  // nothing this document does can change who its caller is. Once that answer
+  // arrives it is kept and handed back without a request, so the shell's retry
+  // ladder, a tab-return re-read and every newly mounted `['apps']` observer stop
+  // asking `/api/apps` the same question (#32031). Only that one code is kept: any
+  // other failure, an `owner_only` 403 included, still reaches the gateway next time.
+  let appsRefusedForTeammate: unknown = null
+  const listApps = (): Promise<ReturnType<typeof normalizeInstalledApps>> => {
+    if (appsRefusedForTeammate) return Promise.reject(appsRefusedForTeammate)
+    return fetch('/api/apps').then(jApps).then(normalizeInstalledApps).catch((e: unknown) => {
+      if (isRelayAppsRefusal(e)) appsRefusedForTeammate = e
+      throw e
+    })
+  }
   const platform = {
     // --- Apps ---
     // Installed-app payloads are normalized HERE rather than in a queryFn. The
@@ -75,7 +89,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     // `useQuery`; `/api/apps` has four (the Apps page, the left rail, the command
     // palette, the migration check), and normalizing per consumer is how the
     // fourth one gets forgotten. This is the boundary all four share.
-    listApps: () => fetch('/api/apps').then(j).then(normalizeInstalledApps),
+    listApps,
     getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),

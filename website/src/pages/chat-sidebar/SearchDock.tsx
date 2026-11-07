@@ -15,6 +15,7 @@ import { useLocation } from 'react-router-dom'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { setCloseRefused } from '../../store/chatSlice'
 import { api } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { errMessage } from '../../utils/thunkError'
 import { Btn, IconButton } from '../../components/ui'
@@ -1182,8 +1183,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
       {/* Read failures for the two lists this pane is built from. Same placement
        *  rationale as the seed banner: a failed folders query means no folder
        *  tree, a failed columns query means no board, so neither branch can host
-       *  its own notice. Both are pure reads — askAgent on, Retry via refetch. */}
-      {foldersFailed && (
+       *  its own notice. Both are pure reads — askAgent on, Retry via refetch.
+       *  A permission refusal (`owner_only`, or the relay's teammate refusal) is
+       *  not a failed read: this caller is not given the list, a Retry cannot
+       *  change that, and the chats still list unfiled, so no notice (#32031). */}
+      {foldersFailed && !isPermissionRefusal(foldersError) && (
         <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
           <ErrorNotice
             title={i18nT('pages.chatSidebar.folders_load_failed')}
@@ -1198,7 +1202,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </div>
         </div>
       )}
-      {columnsFailed && (
+      {columnsFailed && !isPermissionRefusal(columnsError) && (
         <div className="mx-2 mt-2 flex flex-col gap-1 shrink-0">
           <ErrorNotice
             title={i18nT('pages.chatSidebar.columns_load_failed')}
