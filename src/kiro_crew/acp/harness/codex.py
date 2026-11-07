@@ -140,7 +140,6 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
-    ACP_CLIENT_CAPABILITIES,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_UPDATE,
 )
@@ -370,7 +369,9 @@ class CodexHarness(MembershipHarness):
 
     @property
     def client_capabilities(self) -> dict[str, Any]:
-        return ACP_CLIENT_CAPABILITIES
+        from kiro_crew.acp.client_native_children import client_capabilities_for
+
+        return client_capabilities_for(ACP_BACKEND_CODEX)
 
     # ── Seam 3: session/new and session/load extras ──
 
