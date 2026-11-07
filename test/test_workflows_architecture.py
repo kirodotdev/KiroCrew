@@ -45,6 +45,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     "store": set(),  # durable JSON-per-run persistence; imports config.paths + security
     #                  (external), no intra-pkg siblings — an OPTIONAL persistence adapter
     "library": {"store"},  # reusable-definition persistence; shares store path resolution
+    "nesting": set(),  # leaf: depth and fan-out caps on nested runs; imports config only
     "context": {"validate"},
     "runner": {"validate", "dsl", "events", "context", "schema", "registry"},
     # service is the gateway-side façade ABOVE runner — composes the engine for the
@@ -58,6 +59,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
         "store",
         "library",
         "events",
+        "nesting",
     },
 }
 

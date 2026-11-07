@@ -3064,7 +3064,8 @@ malformed fail-closed section.
 Where appliers live: an applier owned by a long-lived object registers in that
 object's constructor (session manager, subagent manager, each channel
 dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
-`set_timeout_secs` and `ChannelManager` binds `agent.max_channels` /
+`set_timeout_secs`, and `agent.workflow_max_depth` / `agent.workflow_max_nested_runs`
+to its `NestingLedger` setters, and `ChannelManager` binds `agent.max_channels` /
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, that must rebuild agent artifacts, or that set
 process-wide registry state

@@ -349,6 +349,7 @@ async def start_background(
     execution_context: ExecutionContext | None = None,
     input_content: str | None = None,
     task_id: str = "",
+    nesting_reservation: str = "",
 ) -> str:
     """Plan and execute *spec_path* in the background; returns the task id.
 
@@ -360,6 +361,8 @@ async def start_background(
 
     *task_id*, from :func:`mint_task_id`, is the id a caller recorded before
     the start (fair admission links it first); one already in use is refused.
+    *nesting_reservation* is the workflow nesting placeholder the caller holds
+    for this start, handed to the shared run that ``_workflow_begin`` publishes.
     """
     requested_id = task_id  # the pruning loops below rebind ``task_id``
     execution = await capture_admission_execution(
@@ -450,7 +453,10 @@ async def start_background(
             )
             if session_key:
                 self._run_session_keys[task_id] = session_key
-            await self._workflow_begin(self._runs[task_id])
+            await self._workflow_begin(
+                self._runs[task_id],
+                nesting_reservation=nesting_reservation,
+            )
             persist_task = asyncio.create_task(self._apersist_runs())
             try:
                 await asyncio.shield(persist_task)  # durable before background execution

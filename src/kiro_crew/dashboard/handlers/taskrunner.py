@@ -421,6 +421,14 @@ class _RunNotLinked(Exception):
     """The admitted record could not take the run's id, so the run must not start."""
 
 
+class _NestingRefused(Exception):
+    """The start would pass a workflow nesting cap; ``refusal`` is the error body."""
+
+    def __init__(self, refusal: dict) -> None:
+        super().__init__(str(refusal.get("error", "")))
+        self.refusal = refusal
+
+
 def _not_linked_response() -> web.Response:
     from kiro_crew.shared_crew.admission_gate import Admission
 
@@ -559,19 +567,37 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         run_id = "" if run_principal is None else str(runner.mint_task_id(spec_path))
         if run_id and not await link_run(run_admission, run_id):
             raise _RunNotLinked
-        with principal_scope(run_principal):
-            task_id = await state.task_runner.start_background(
-                spec_path,
-                agent=agent,
-                name=task_name,
-                source=source,
-                workspace_dir=workspace_dir,
-                auto_approve=auto_approve,
-                session_key=origin,
-                execution_context=execution,
-                **({"input_content": inline_content} if inline_content is not None else {}),
-                **({"task_id": run_id} if run_id else {}),
-            )
+        # A task started from inside a workflow run counts against that run's
+        # nesting caps. The task runner allocates the shared run's id, so the
+        # check holds a placeholder that moves onto the id once the task starts.
+        workflows = getattr(state, "workflow_service", None)
+        reserved = ""
+        if workflows is not None:
+            reserved, nesting_refusal = workflows.reserve_nested_start(origin)
+            if nesting_refusal is not None:
+                raise _NestingRefused(nesting_refusal)
+        shared_run_id = ""
+        try:
+            with principal_scope(run_principal):
+                task_id = await state.task_runner.start_background(
+                    spec_path,
+                    agent=agent,
+                    name=task_name,
+                    source=source,
+                    workspace_dir=workspace_dir,
+                    auto_approve=auto_approve,
+                    session_key=origin,
+                    execution_context=execution,
+                    **({"input_content": inline_content} if inline_content is not None else {}),
+                    **({"task_id": run_id} if run_id else {}),
+                    **({"nesting_reservation": reserved} if reserved else {}),
+                )
+            if reserved:
+                started = state.task_runner._runs.get(task_id)
+                shared_run_id = str(getattr(started, "workflow_run_id", "") or "")
+        finally:
+            if workflows is not None and reserved:
+                workflows.settle_nested_start(reserved, shared_run_id)
     except BaseException as exc:
         await run_admission.abandon()
         # The handler owns the temp file ONLY when it created it AND no run
@@ -604,6 +630,11 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             raise  # CancelledError and friends: propagate after cleanup.
         if isinstance(exc, _RunNotLinked):
             return _not_linked_response()
+        if isinstance(exc, _NestingRefused):
+            return web.json_response(
+                {"error": exc.refusal.get("error", ""), "code": exc.refusal.get("error_code", "")},
+                status=400,
+            )
         if isinstance(exc, WorkflowInitializing):
             return web.json_response({"error": str(exc), "code": exc.code}, status=503)
         return web.json_response({"error": str(exc)}, status=400)

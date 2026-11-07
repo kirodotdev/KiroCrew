@@ -91,6 +91,7 @@ async def plan(
     session_key: str = "",
     execution_context: ExecutionContext | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    nesting_reservation: str = "",
 ) -> Project:
     execution = await capture_admission_execution(
         self._ctx,
@@ -200,7 +201,11 @@ async def plan(
         self._run_session_keys[task_id] = session_key
     committed = False
     try:
-        await self._workflow_begin(run, source=workflow_source)
+        await self._workflow_begin(
+            run,
+            source=workflow_source,
+            nesting_reservation=nesting_reservation,
+        )
         await self._workflow_set_plan(
             run,
             pause=True,
@@ -253,6 +258,7 @@ async def start_workflow_definition(
     author: str = "",
     session_key: str = "",
     execution_context: ExecutionContext | None = None,
+    nesting_reservation: str = "",
 ) -> dict[str, str]:
     """Execute one saved task-plan revision through the existing TaskRunner."""
     del author  # reserved for a future TaskRunner attribution surface
@@ -266,6 +272,7 @@ async def start_workflow_definition(
         workflow_source=str(definition.get("source", "")),
         session_key=session_key,
         execution_context=execution_context,
+        nesting_reservation=nesting_reservation,
     )
     run.original_input = input_text
     await self._apersist_runs()

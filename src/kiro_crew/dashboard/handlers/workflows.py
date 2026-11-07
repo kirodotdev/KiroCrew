@@ -107,7 +107,9 @@ def _workflow_worker_keys(run_id: str) -> tuple[str, ...]:
     Bound to the run's admitted budget at attach, so a worker's ``spawn_run`` is
     charged to the person who started the workflow (``AdmissionService._binding``).
     """
-    return tuple(f"{prefix}:{run_id}" for prefix in ("wf", "wf-pool", "wf-unpooled", "wf-worker"))
+    from kiro_crew.workflows.nesting import WORKER_KEY_PREFIXES
+
+    return tuple(f"{prefix}:{run_id}" for prefix in WORKER_KEY_PREFIXES)
 
 
 def _svc(request: web.Request):

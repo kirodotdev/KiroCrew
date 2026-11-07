@@ -302,7 +302,7 @@ class TaskRunner:
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None
     async def plan(self, input_text: str = "", source: str = "text", spec_path: str = "", agent: str = "", workspace_dir: str = "", workflow_name: str = "", workflow_id: str = "", workflow_slug: str = "", workflow_revision: int = 0, workflow_source: str = "", session_key: str = "", execution_context: ExecutionContext | None = None, start_priority: StartPriority = BACKGROUND) -> Project
     async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, input_content: str | None = None) -> Project
-    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None) -> str
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None, task_id: str = "", nesting_reservation: str = "") -> str
     def cancel(self, task_id: str | None = None, *, exact: bool = False) -> None  # None = cancel all
     def pause(self, task_id: str) -> None
     def status(self) -> dict
@@ -446,6 +446,7 @@ class Project:
 - `cancel(task_id)` cancels specific task; `cancel()` cancels all
 - Completed cron runs are pruned on new start; other completed runs retain bounded history.
 - `_tasks` cleaned in `finally` block (no leaks)
+- `POST /api/taskrunner` (`api_taskrunner_start`, which the `task_run` tool reaches) checks the caller against the workflow nesting caps before `start_background()` runs: a caller that works for a workflow run (a worker session, a task step, a subagent or an opened session of that run) is refused with status 400 and the ledger's error code as `code` (`workflow_nesting_depth` or `workflow_nested_runs`) when the new task's shared run would pass `agent.workflow_max_depth` or the parent run's `agent.workflow_max_nested_runs`. The handler passes the placeholder it holds to `start_background(nesting_reservation=...)`, which hands it to the shared run `_workflow_begin` publishes. See [workflows: Nested runs](workflows.md#nested-runs).
 - `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run. With a task admission attached (below) the guard is skipped: the lane meters the steps, so an over-limit run queues instead of being refused.
 - Replanned steps also reset sessions after execution (no leaks in `_try_replan`)
 - Installing a revised plan marks every failed step (a parallel group can fail more than the one handed to `_try_replan`) and the original plan's steps that never started `superseded` (the latter also `PENDING` → `SKIPPED`); `execute_plan` never resets a superseded step, so a later resume runs only the revised plan. The failed step keeps `FAILED` and its error; `superseded` is persisted in `runs.json`

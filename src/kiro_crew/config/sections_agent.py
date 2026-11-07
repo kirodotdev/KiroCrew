@@ -32,7 +32,13 @@ from kiro_crew.config.sections_agent_fields import (
     coerce_role_models,
     normalize_agent_model,
 )
-from kiro_crew.config.sections_defaults import DEFAULT_MODEL
+from kiro_crew.config.sections_defaults import (
+    DEFAULT_MODEL,
+    WORKFLOW_MAX_DEPTH_CEILING,
+    WORKFLOW_MAX_DEPTH_DEFAULT,
+    WORKFLOW_MAX_NESTED_RUNS_CEILING,
+    WORKFLOW_MAX_NESTED_RUNS_DEFAULT,
+)
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB as _DEFAULT_SPAWN_MIN_MEMORY_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_COST_GB as _DEFAULT_SUBAGENT_COST_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS as _DEFAULT_SUBAGENT_MAX_TURNS
@@ -1218,6 +1224,26 @@ class AgentConfig:
             "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by "
             "default. This build has no surface that reads it yet, so setting it "
             "changes nothing. No effect unless the backend is Kiro Agent.",
+        ),
+    )
+    workflow_max_depth: int = field(
+        default=WORKFLOW_MAX_DEPTH_DEFAULT,
+        metadata=_meta(
+            "Workflow Max Nesting Depth",
+            "Deepest dynamic-workflow run that workflow_run may start, counting a run "
+            "started outside any run as depth 1. A run started from a run's agent "
+            "session, or from a subagent that session spawned, is one level deeper. A "
+            "start past the cap is refused with an error, not queued. Clamped to "
+            f"1..{WORKFLOW_MAX_DEPTH_CEILING}.",
+        ),
+    )
+    workflow_max_nested_runs: int = field(
+        default=WORKFLOW_MAX_NESTED_RUNS_DEFAULT,
+        metadata=_meta(
+            "Workflow Max Nested Runs",
+            "How many runs one dynamic-workflow run may have in flight at once that "
+            "were started from inside it. A start past the cap is refused with an "
+            f"error, not queued. Clamped to 1..{WORKFLOW_MAX_NESTED_RUNS_CEILING}.",
         ),
     )
     subagent_mem_buffer_pct: int = field(

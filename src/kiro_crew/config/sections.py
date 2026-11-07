@@ -310,6 +310,10 @@ from kiro_crew.config.sections_defaults import (  # noqa: F401
     DEFAULT_SEARCH_SCAN_WINDOW,
     DEFAULT_SESSION_TIMEOUT,
     DEFAULT_WATCHDOG_RSS_MAX_MB,
+    WORKFLOW_MAX_DEPTH_CEILING,
+    WORKFLOW_MAX_DEPTH_DEFAULT,
+    WORKFLOW_MAX_NESTED_RUNS_CEILING,
+    WORKFLOW_MAX_NESTED_RUNS_DEFAULT,
     SectionReader,
 )
 from kiro_crew.config.sections_limits import (  # noqa: F401
