@@ -299,7 +299,7 @@ class TestLocalToken:
         assert resp.status == 200
         assert json.loads(resp.body)["expires_in"] == 7200
         assert minted["owner"] == "owner-1"
-        assert minted["extra"] == {"embed_parent_port": "5476"}
+        assert minted["extra"] == {"embed_parent_port": "5476", "owner_mint": "1"}
 
     @pytest.mark.asyncio
     async def test_a_host_process_mint_is_audited_without_an_app(
@@ -363,7 +363,7 @@ class TestLocalToken:
         body = json.loads(resp.body)
         assert body == {"token": "issued-value", "expires_in": core_mod.MAX_SESSION_TTL_SECS}
         assert minted["owner"] == "owner-1"
-        assert minted["extra"] is None
+        assert minted["extra"] == {"owner_mint": "1"}
         row = fake_sel.log_api_access.call_args.kwargs
         assert row["operation"] == "token.local"
         assert row["outcome"] == "success"
@@ -620,7 +620,7 @@ class TestLocalToken:
             )
         )
         assert resp.status == 200
-        assert minted["extra"] is None
+        assert minted["extra"] == {"owner_mint": "1"}
 
 
 class TestLogout:

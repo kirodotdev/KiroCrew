@@ -1031,8 +1031,12 @@ async def run(self: GatewayOrchestrator) -> None:
     # its ready=True boundary. No suspension has followed its return, so the
     # restore/open worker still cannot run before this process-ready marker.
     if self._json_ready:
+        from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+
         ready_token = generate_token(
-            self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
+            self._owner_id or "local-startup",
+            ttl_seconds=MAX_SESSION_TTL_SECS,
+            extra=owner_mint_extra(),
         )
         ready_payload = {
             "port": self._dashboard_port,
@@ -1371,8 +1375,12 @@ async def run(self: GatewayOrchestrator) -> None:
                 base_url = _cfg_url.rstrip("/")
             else:
                 base_url = f"http://{host}:{self._dashboard_port}"
+            from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+
             startup_token = generate_token(
-                self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
+                self._owner_id or "local-startup",
+                ttl_seconds=MAX_SESSION_TTL_SECS,
+                extra=owner_mint_extra(),
             )
             dashboard_url = build_dashboard_url(
                 base_url, startup_token, local_only=self._local_only
