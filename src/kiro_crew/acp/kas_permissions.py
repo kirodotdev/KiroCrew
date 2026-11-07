@@ -57,6 +57,7 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
     auto_approved_mcp_servers,
     cached_mcp_tool_names,
 )
+from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_spec_grants import (
     CREW_ANSWERED_PATHS_KEY,
     CREW_SHELL_READONLY_KEY,
@@ -191,6 +192,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
         CREW_SHELL_READONLY_KEY,
+        CREW_SETTINGS_MCP_KEY,
     }
 )
 

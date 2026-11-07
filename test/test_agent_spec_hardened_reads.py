@@ -1373,6 +1373,8 @@ _EXPECTED_DECLARED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # prune re-reads a bound spec before deleting its row, so a failure must surface.
 _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    # The one-time list of agent files that keep KAS's own mcp.json behaviour.
+    "kiro_crew/acp/kas_mcp_json_legacy.py": [("kas_mcp_json_legacy", "unknown")],
     "kiro_crew/acp/managed_agent_shadow.py": [("managed_agent_shadow", "unknown")],
     "kiro_crew/agent_materialization/conductor_agents.py": [
         ("conductor_spec_regeneration", "unknown"),

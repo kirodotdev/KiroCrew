@@ -1215,7 +1215,12 @@ class TestRuntimeSuppliesTheStubbedSet:
         out = await rt._kas_custom_agents("kirocrew")
 
         assert seen == [frozenset()]
-        assert out.custom_agents == [{"id": "kirocrew"}]
+        # The mcp.json stamp rides along until the wire envelope applies it.
+        from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+        assert [
+            {k: v for k, v in a.items() if k != CREW_SETTINGS_MCP_KEY} for a in out.custom_agents
+        ] == [{"id": "kirocrew"}]
 
 
 class TestNativeManagedMcpIdentity:
