@@ -63,6 +63,11 @@ logger = logging.getLogger(__name__)
 #: hope, because `tailscale status` blocks while the daemon is starting up.
 _CLI_TIMEOUT_SECS = 3.0
 
+#: Forces the macOS Tailscale executable to run as the CLI rather than launch
+#: the app; see :func:`_cli_env`.
+_CLI_MODE_ENV_KEY = "TAILSCALE_BE_CLI"
+_CLI_MODE_ENV_VALUE = "1"
+
 #: Background recovery stays cheap even when an explicitly enabled daemon is
 #: unavailable for hours.  The first retry covers the common Windows service /
 #: daemon boot race quickly; the ceiling limits steady-state subprocess work.
@@ -220,6 +225,28 @@ def _posix_candidate_trusted(candidate: str) -> bool:
     return not (os.access(candidate, os.W_OK) or os.access(directory, os.W_OK))
 
 
+def _cli_env() -> dict[str, str]:
+    """The environment every ``tailscale`` spawn gets: scrubbed, and pinned to CLI mode.
+
+    Defence in depth behind the pinned binary: even a legitimate ``tailscale``
+    has no business reading the gateway's credentials out of the inherited
+    environment, so this starts from the repo's own scrubber rather than a
+    second, narrower allowlist that could drift away from the policy every other
+    spawn follows.
+
+    The CLI-mode pin is what keeps a status read a read. On macOS the CLI is the
+    Tailscale app executable itself, and it decides between running as the CLI
+    and launching the app from the caller's environment (``SHLVL``, ``TERM``,
+    ``TERM_PROGRAM``, ``PS1``). A gateway started by the desktop app has no
+    terminal, and the executable sees this environment whether it is spawned
+    directly or through the ``/usr/local/bin`` launcher, which execs it. Unpinned,
+    such a spawn starts the Tailscale app, and with it the network extension and
+    VPN the user had quit. Tailscale documents ``TAILSCALE_BE_CLI=1`` as the way
+    to force CLI mode.
+    """
+    return {**scrub_env(), _CLI_MODE_ENV_KEY: _CLI_MODE_ENV_VALUE}
+
+
 def _run_json(args: list[str]) -> Any | None:
     """Run the CLI and parse stdout as JSON. ``None`` on ANY failure.
 
@@ -266,12 +293,7 @@ def run_cli_json(
             **UTF8_TEXT,
             timeout=_CLI_TIMEOUT_SECS if timeout is None else timeout,
             check=False,
-            # Defence in depth behind the pinned binary above: even a legitimate
-            # `tailscale` has no business reading the gateway's credentials out of
-            # the inherited environment. Uses the repo's own scrubber rather than a
-            # second, narrower allowlist, so this spawn cannot drift away from the
-            # policy every other spawn follows — and so it stays cross-OS safe.
-            env=scrub_env(),
+            env=_cli_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("tailscale %s failed to run: %s", " ".join(args), exc)
