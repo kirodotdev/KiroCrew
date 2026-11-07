@@ -84,6 +84,19 @@ def derived_slug(name: str) -> str:
     return _slugify(str(_redact(str(_redact(name)))))
 
 
+def declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Parse a validated workflow's optional ``META.adapted_from`` reference."""
+    reference = meta.get("adapted_from")
+    if not isinstance(reference, str) or "@" not in reference:
+        return None
+    workflow_id, revision_text = reference.rsplit("@", 1)
+    # isascii(): "²".isdigit() is True, but int("²") raises ValueError.
+    if not (revision_text.isascii() and revision_text.isdigit()):
+        return None
+    revision = int(revision_text)
+    return {"workflow_id": workflow_id, "revision": revision}
+
+
 def _source_hash(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 

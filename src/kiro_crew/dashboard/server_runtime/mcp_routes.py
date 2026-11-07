@@ -735,6 +735,8 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_workflow_run_intent,
         api_workflow_run_promote,
         api_workflow_run_rerun,
+        api_workflow_run_update_definition,
+        api_workflow_run_update_preview,
         api_workflow_runs,
     )
 
@@ -753,6 +755,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/workflows/runs", api_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_get(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_preview
+    )
+    app.router.add_post(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_definition
+    )
     app.router.add_post("/api/workflows/runs/{run_id}/cancel", api_workflow_run_cancel)
     app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
 

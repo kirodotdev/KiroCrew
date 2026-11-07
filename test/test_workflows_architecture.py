@@ -47,6 +47,8 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     "library": {"store"},  # reusable-definition persistence; shares store path resolution
     "context": {"validate"},
     "runner": {"validate", "dsl", "events", "context", "schema", "registry"},
+    # run-to-revision update below service: handed the service, never imports it
+    "update_from_run": {"library", "validate", "registry"},
     # service is the gateway-side façade ABOVE runner — composes the engine for the
     # live process (chat tools / app / injection). Top of the stack.
     "service": {
@@ -58,6 +60,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
         "store",
         "library",
         "events",
+        "update_from_run",
     },
 }
 

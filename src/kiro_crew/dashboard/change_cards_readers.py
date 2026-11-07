@@ -1433,17 +1433,18 @@ def _unified_hunks(old: list[str], new: list[str]) -> Iterator[str]:
                 yield from ("+" + line for line in new[j1:j2])
 
 
-def _workflow_diff(old: str, new: str) -> str:
-    """Every changed line from the saved script *old* to *new*, or a refusal.
+def workflow_source_diff(old: str, new: str) -> str:
+    """Every changed line from the saved script *old* to *new*, at any size.
 
     A unified diff (:func:`_unified_hunks`, no file headers) with each ``@@``
     hunk header replaced by a separator row naming the lines the hunk spans.
     Hunk headers are matched by their exact shape, never by prefix, because a
     source line such as ``-- x`` or a markdown ``---`` rule is written as
     ``--- x`` / ``----`` once marked as removed, and every changed line must
-    reach the card. A removed line comes from a revision saved earlier, which
-    never passed the card's character checks, so its hidden characters are
-    spelled out (``catalog.escape_hidden_characters``) before it is shown.
+    be shown. Every line's hidden characters are spelled out
+    (``catalog.escape_hidden_characters``): neither a revision saved earlier nor
+    a run's script passed the card's character checks. A card's script did, so
+    on a card that changes only removed lines.
     """
     # Split at ``\n`` only: ``splitlines`` also breaks at U+2028, U+2029 and
     # U+0085, which Python's compiler reads as ordinary characters, so a line it
@@ -1453,11 +1454,14 @@ def _workflow_diff(old: str, new: str) -> str:
         header = _HUNK_HEADER_RE.fullmatch(line)
         if header is not None:
             shown.append(_hunk_separator(header))
-        elif line.startswith("-"):
-            shown.append(catalog.escape_hidden_characters(line))
         else:
-            shown.append(line)
-    diff = "\n".join(shown)
+            shown.append(catalog.escape_hidden_characters(line))
+    return "\n".join(shown)
+
+
+def _workflow_diff(old: str, new: str) -> str:
+    """:func:`workflow_source_diff` for a card, refused when too large to carry whole."""
+    diff = workflow_source_diff(old, new)
     # Counted as the card store counts it: the escaped text.
     if len(json.dumps(diff)) - 2 > WORKFLOW_DIFF_MAX:
         raise catalog.CardCatalogError(
