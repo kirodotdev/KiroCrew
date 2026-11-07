@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, ExternalLink, Loader2 } from 'lucide-react'
 
-import { api } from '../../api/client'
+import { api, type ConnectionMintState } from '../../api/client'
 import { queryClient } from '../../api/queryClient'
 import { i18nT } from '../../i18n/t'
 import type { McpServer } from '../../types'
+import ErrorNotice from '../../components/ErrorNotice'
 import OAuthRelayAffordance, { isSafeOAuthUrl, type RelayStrings } from '../../components/OAuthRelayAffordance'
+import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 /** Take a FRESH probe and repaint the table with it, returning whether the
  *  named server was observed signed in. GET /api/mcp replays the last probe's
@@ -129,16 +132,38 @@ function McpRowSignInControl({
   const [phase, setPhase] = useState<Phase>('idle')
   const [oauthUrl, setOauthUrl] = useState('')
   const [error, setError] = useState('')
+  // The refused endpoint the error names, so the row can show where to list it.
+  const [rejectedEndpoint, setRejectedEndpoint] = useState('')
   // Guards a stale poll loop from a superseded attempt writing state after the
   // component started a new mint or unmounted.
   const attemptRef = useRef(0)
+  // The hand-off navigates to /chat, which would drop the table's staged edits.
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
 
   useEffect(() => () => { attemptRef.current += 1 }, [])
+
+  /** A mint that ended `failed`/`expired`. A URL the credential gate refused
+   *  gets the Connections card's copy, naming the endpoint when the backend
+   *  could reduce it to one: retrying alone never clears that refusal, and the
+   *  endpoint is what the user lists in oauth_endpoints.json. */
+  const failMint = ({ reason, rejected_endpoint: endpoint = '' }: ConnectionMintState) => {
+    setPhase('error')
+    if (reason !== 'mint_url_rejected') {
+      setError(i18nT('pages.overview.mcpTab.sign_in_mint_failed'))
+      return
+    }
+    setRejectedEndpoint(endpoint)
+    setError(endpoint
+      ? i18nT('pages.connectionsPage.mint_failure_url_rejected_endpoint', { endpoint })
+      : i18nT('pages.connectionsPage.mint_failure_url_rejected'))
+  }
 
   const startSignIn = async () => {
     const attempt = (attemptRef.current += 1)
     setPhase('minting')
     setError('')
+    setRejectedEndpoint('')
     setOauthUrl('')
     try {
       await mintFor(target)
@@ -181,8 +206,7 @@ function McpRowSignInControl({
         return
       }
       if (state.state === 'failed' || state.state === 'expired') {
-        setPhase('error')
-        setError(i18nT('pages.overview.mcpTab.sign_in_mint_failed'))
+        failMint(state)
         return
       }
     }
@@ -212,8 +236,7 @@ function McpRowSignInControl({
         return
       }
       if (state.state === 'failed' || state.state === 'expired') {
-        setPhase('error')
-        setError(i18nT('pages.overview.mcpTab.sign_in_mint_failed'))
+        failMint(state)
         return
       }
     }
@@ -227,6 +250,7 @@ function McpRowSignInControl({
   const onDeadEnd = (message: string) => {
     setPhase('error')
     setError(message)
+    setRejectedEndpoint('')
   }
 
   if (phase === 'idle') {
@@ -258,7 +282,21 @@ function McpRowSignInControl({
   if (phase === 'error') {
     return (
       <div className="flex flex-col gap-1.5">
-        <p className="text-[12px] leading-4 text-danger" role="alert">{error}</p>
+        <ErrorNotice variant="inline" message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
+        {rejectedEndpoint && (
+          <span className="text-[12px] leading-4 text-muted">
+            {i18nT('pages.connectionsPage.mint_failure_url_rejected_endpoint_detail', { endpoint: rejectedEndpoint })}{' '}
+            <a
+              href={OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-accent hover:text-accent-hover"
+            >
+              {i18nT('pages.connectionsPage.documentation')}{' '}
+              <ExternalLink className="lucide-inline" size={13} aria-hidden="true" />
+            </a>
+          </span>
+        )}
         <button
           type="button"
           onClick={() => void startSignIn()}
