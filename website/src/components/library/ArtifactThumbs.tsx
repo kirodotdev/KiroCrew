@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { Cloud, ImageOff, Rocket } from 'lucide-react'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight } from '../../utils/widgetHeights'
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
-import { sanitize } from '../../api/helpers'
+import DOMPurify from 'dompurify'
 import { useTheme } from '../../hooks/useTheme'
 import { framablePreviewUrl } from '../../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../../hooks/useCloudDeploymentEnabled'
@@ -304,7 +304,8 @@ export function ContentThumb({ content, kind, mini = false }: {
   }
 
   if (kind === 'svg') {
-    const clean = stripGuideMarkers(sanitize(content))
+    // No <style>: CSS in an inline SVG styles the whole page, not the SVG.
+    const clean = stripGuideMarkers(DOMPurify.sanitize(content, { FORBID_TAGS: ['style'] }))
     return (
       <div
         className="px-3 py-3 max-h-[300px] overflow-hidden bg-card flex items-center justify-center [&>svg]:max-w-full [&>svg]:max-h-[280px] [&>svg]:h-auto"
