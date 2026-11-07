@@ -18,6 +18,8 @@ const listRegistry = vi.fn()
 const system = vi.fn()
 const installFromRegistryStream = vi.fn()
 const updateApp = vi.fn()
+const trustApp = vi.fn()
+const untrustApp = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
@@ -26,6 +28,8 @@ vi.mock('../api/client', () => ({
     system: (...a: unknown[]) => system(...a),
     installFromRegistryStream: (...a: unknown[]) => installFromRegistryStream(...a),
     updateApp: (...a: unknown[]) => updateApp(...a),
+    trustApp: (...a: unknown[]) => trustApp(...a),
+    untrustApp: (...a: unknown[]) => untrustApp(...a),
     enableApp: vi.fn(),
     disableApp: vi.fn(),
     uninstallApp: vi.fn(),
@@ -139,6 +143,25 @@ describe('AppDetailPage — auto-action deep links', () => {
     expect(installFromRegistryStream).not.toHaveBeenCalled()
   })
 
+  it('installs the registry version of a PATH install that a registry row offers an update for', async () => {
+    // The tile says Update here, not Sync, and this page's Update button runs
+    // the registry install, so the navigation must too: re-copying the folder
+    // reported success while the listed version never landed.
+    getApp.mockResolvedValue({
+      name: 'secretary', displayName: 'Secretary', version: '1.0.0', enabled: true,
+      source: '/home/u/apps/secretary', origin: 'local',
+      resources: 'gateway', lifecycle: 'gateway', installedAt: '2026-07-01T00:00:00Z',
+      manifest: { displayName: 'Secretary', description: 'Slack inbox manager.', author: 'zezhexu' },
+    })
+    listRegistry.mockResolvedValue({
+      apps: [{ ...REGISTRY_APP, version: '1.2.0', installed: true, installedVersion: '1.0.0', updateAvailable: true }],
+      serverPlatform: { os: 'darwin', arch: 'arm64' },
+    })
+    renderDetail({ state: { autoAction: 'update' } })
+    await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalled())
+    expect(updateApp).not.toHaveBeenCalled()
+  })
+
   it('keeps the registry stream for an app whose source IS a registry ref', async () => {
     getApp.mockResolvedValue({
       name: 'secretary', displayName: 'Secretary', version: '1.0.0', enabled: true,
@@ -184,6 +207,77 @@ describe('AppDetailPage — auto-action deep links', () => {
     renderDetail({ state: { autoAction: 'update' } })
     await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
     expect(await screen.findByText(/Synced Secretary from its source directory/)).toBeInTheDocument()
+  })
+
+  describe('a local-only grant refusing the registry update', () => {
+    const REPO = 'https://github.com/acme/secretary'
+    const LOCAL_ONLY = {
+      ok: false,
+      name: 'secretary',
+      code: 'app_trust_local_only',
+      error: 'this app is trusted for its local source only, so that trust does not cover the repository version this update installs',
+      trustRepository: REPO,
+    }
+
+    beforeEach(() => {
+      getApp.mockResolvedValue({
+        name: 'secretary', displayName: 'Secretary', version: '1.0.0', enabled: true,
+        source: '/home/u/apps/secretary', origin: 'local',
+        resources: 'gateway', lifecycle: 'gateway', installedAt: '2026-07-01T00:00:00Z',
+        manifest: { displayName: 'Secretary', description: 'Slack inbox manager.', author: 'zezhexu' },
+      })
+      listRegistry.mockResolvedValue({
+        apps: [{ ...REGISTRY_APP, version: '1.2.0', installed: true, installedVersion: '1.0.0', updateAvailable: true }],
+        serverPlatform: { os: 'darwin', arch: 'arm64' },
+      })
+      installFromRegistryStream.mockResolvedValue(LOCAL_ONLY)
+    })
+
+    it('shows the refusal with a button that trusts the repository and runs the update', async () => {
+      updateApp.mockResolvedValue({ ok: true })
+      renderDetail({ state: { autoAction: 'update' } })
+
+      expect(await screen.findByText(/trusted for its local source only/)).toBeInTheDocument()
+      // Refused before the clone: no empty install log beside the banner.
+      expect(screen.queryByText('Install failed')).not.toBeInTheDocument()
+      fireEvent.click(await screen.findByRole('button', { name: /Trust the repository and update/ }))
+
+      // The dialog names the repository the refusal carried and says the folder
+      // copy is replaced, before anything is trusted.
+      expect(await screen.findByText(REPO)).toBeInTheDocument()
+      expect(screen.getByText(/is installed from a folder on this computer/)).toBeInTheDocument()
+      expect(updateApp).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByRole('button', { name: /Trust this app and update/ }))
+      // One call carries the update and its consent proof. The dialog writes no
+      // grant of its own: the server switches the grant for this update and
+      // puts the local one back if it fails.
+      await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary', 'registry:secretary', REPO))
+      expect(trustApp).not.toHaveBeenCalled()
+      expect(await screen.findByText(/Updated Secretary from the registry/)).toBeInTheDocument()
+    })
+
+    it('keeps the dialog open with the reason when the switched update fails', async () => {
+      updateApp.mockRejectedValue(new Error('clone failed'))
+      renderDetail({ state: { autoAction: 'update' } })
+
+      fireEvent.click(await screen.findByRole('button', { name: /Trust the repository and update/ }))
+      fireEvent.click(await screen.findByRole('button', { name: /Trust this app and update/ }))
+
+      expect(await screen.findByText('clone failed')).toBeInTheDocument()
+      // The not-saved state: the server put the local grant back, so the dialog
+      // must not claim trust was saved, and nothing here wrote or revoked trust.
+      expect(screen.getByText(/could not be updated, and trust was not saved/)).toBeInTheDocument()
+      expect(trustApp).not.toHaveBeenCalled()
+      expect(untrustApp).not.toHaveBeenCalled()
+    })
+
+    it('offers no trust button for any other install failure', async () => {
+      installFromRegistryStream.mockResolvedValue({ ok: false, error: 'clone failed', code: '' })
+      renderDetail({ state: { autoAction: 'update' } })
+      expect(await screen.findAllByText('clone failed')).not.toHaveLength(0)
+      expect(screen.queryByRole('button', { name: /Trust the repository and update/ })).not.toBeInTheDocument()
+    })
   })
 
   it('names the registry, not a source directory, when a registry-sourced app is synced', async () => {

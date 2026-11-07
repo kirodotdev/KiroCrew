@@ -92,6 +92,8 @@ import {
   APP_EXECUTION_DENIED,
   SESSION_APPROVAL_CONSENT_REQUIRED,
   credentialFreeRepository,
+  localOnlyTrustRepository,
+  APP_TRUST_LOCAL_ONLY,
   safeHref,
 } from '../components/appstore/TrustAppModal'
 import {
@@ -255,6 +257,27 @@ describe('isTrustDeniedError', () => {
     // consent modal on the install path.
     expect(isTrustDeniedError(INSTALL_DENIED())).toBe(true)
     expect(isTrustDeniedError({ ok: false, error: 'clone failed' })).toBe(false)
+  })
+})
+
+describe('localOnlyTrustRepository', () => {
+  const REPO = 'https://github.com/acme/notes'
+
+  it('reads the repository off a resolved stream refusal and a rejected /update body', () => {
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: REPO })).toBe(REPO)
+    expect(localOnlyTrustRepository(apiError(400, { code: APP_TRUST_LOCAL_ONLY, trustRepository: REPO }))).toBe(REPO)
+  })
+
+  it('answers empty for another code, a missing repository, or one carrying credentials', () => {
+    // The code decides, never the presence of a repository field.
+    expect(localOnlyTrustRepository({ ok: false, code: APP_EXECUTION_DENIED, trustRepository: REPO })).toBe('')
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY })).toBe('')
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: 7 })).toBe('')
+    // A proof that is not already credential-free is never shown or sent back.
+    expect(localOnlyTrustRepository({
+      ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: 'https://user:token@github.com/acme/notes',
+    })).toBe('')
+    expect(localOnlyTrustRepository(undefined)).toBe('')
   })
 })
 

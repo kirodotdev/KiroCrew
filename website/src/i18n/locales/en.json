@@ -6617,6 +6617,7 @@
       "storage_yes": "Storage: yes",
       "sync": "Sync",
       "sync_app_from_its_source_directory": "Sync app from its source directory",
+      "trust_repository_and_update": "Trust the repository and update",
       "tags": "Tags",
       "this_app_requires_macos_and_needs_to_be_installe": "This app requires macOS and needs to be installed on your local machine.\n                  Run this in your Mac terminal:",
       "this_will_remove_the_app_and_all_its_registered": "This will remove the app and all its registered resources.",
