@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import string
 import struct
 import zlib
 from types import SimpleNamespace
@@ -30,7 +31,7 @@ import pytest
 
 from kiro_crew.browser_harness import budgets
 from kiro_crew.browser_harness import decide as decide_mod
-from kiro_crew.browser_harness import ops, reflex
+from kiro_crew.browser_harness import ops, reflex, reflex_space
 from kiro_crew.config.sections import (
     DECISION_PROVIDER_ENDPOINT_DEFAULT,
     DecisionProviderConfig,
@@ -587,6 +588,51 @@ def test_a_later_decision_that_fails_ends_with_a_summary(seam, tmp_path):
 def test_a_malformed_call_is_refused(args, code):
     refused = reflex.parse(args)
     assert isinstance(refused, dict) and refused["code"] == code
+
+
+class _LongForm(Game):
+    """The walker's 250-row table: text fields, and dropdowns of 49 options (two fit in 100,
+    a third does not)."""
+
+    def elements(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for i in range(1, 251):
+            row = {"ref": f"e{i}", "name": f"Field {i}", "g": f"g{i}"}
+            if i % 2:
+                options = [{"i": j, "label": f"Option {j}"} for j in range(49)]
+                rows.append({**row, "role": "combobox", "ops": ["select"], "options": options})
+            else:
+                rows.append({**row, "role": "textbox", "ops": ["click", "hover", "type"]})
+        return rows
+
+
+def test_the_largest_request_keeps_within_laya_s_option_limits(seam, tmp_path):
+    values = [f"value {i}" for i in range(20)]
+    seam.provider = Provider(judge(done_after=0))
+    args = {
+        "goal": "Fill the form",
+        # Every move the call may name, each its own option (case folds "a" and "A").
+        "keys": list((string.digits + string.ascii_lowercase + ",./;")[: reflex.MAX_ACTIONS]),
+        "wait": True,
+        "targets": ["click", "hover", "type", "select"],
+        "values": values,
+        "facts": [", ".join(values)],
+    }
+    assert _run(args, _ctx(_LongForm(), tmp_path)[0])["stop"] == "done"
+    sizes = [len(q.options) for q in seam.provider.calls[0]["questions"] if isinstance(q, Choice)]
+    assert len(sizes) == 6 and max(sizes) <= 100 and sum(sizes) <= 512
+
+
+def test_a_dropdown_that_does_not_fit_does_not_hide_the_ones_after_it():
+    def dropdown(i: int, n: int) -> dict[str, Any]:
+        options = [{"i": j, "label": f"Option {j}"} for j in range(n)]
+        row = {"ref": f"e{i}", "role": "combobox", "name": f"Field {i}", "g": f"g{i}"}
+        return {**row, "ops": ["select"], "options": options}
+
+    # The walker sends at most 50 options per dropdown: 50 + 30 leave room for 5, not 50.
+    rows = [dropdown(1, 50), dropdown(2, 30), dropdown(3, 50), dropdown(4, 5)]
+    space = reflex_space.build([], ("select",), None, rows, [], {}, wait=False)
+    assert {option.split(":")[0] for option in space.targets["SELECT"]} == {"e1", "e2", "e4"}
 
 
 def test_arrange_fills_slots_from_items_and_keeps_the_bigger_of_a_merge():
