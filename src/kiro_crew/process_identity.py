@@ -881,8 +881,42 @@ def join_failures(*failures: str | None) -> str | None:
     return "; ".join(named) if named else None
 
 
+def _unrecorded_descendants(
+    child_pids: dict[Any, Any], known: Iterable[Any], get_child_pids: Callable[..., Any]
+) -> dict[int, Any]:
+    """The live descendants of a gone leader's recorded children that no record names.
+
+    A gone leader's children are re-parented, so a walk from the leader finds
+    nothing. Each recorded child still verified as this run's is walked instead,
+    and its start id is read again after the walk: a walk through a pid that
+    exited meanwhile lists another process's children, so it is dropped. What is
+    found outside *known* is kept with its start id for the post-sweep read, and
+    with no basename, so the sweep's guard would refuse it: it is never signalled.
+    """
+    seen = set(known)
+    walked: set[int] = set()
+    found: dict[int, Any] = {}
+    for parent in _verified_children_standing(child_pids):
+        if parent in walked:
+            continue  # inside a subtree an earlier walk already listed
+        descendants = get_child_pids(parent)
+        if platform_compat.get_process_start_id(parent) != _child_start_of(child_pids[parent]):
+            continue
+        walked.update(descendants)
+        for cpid in descendants:
+            if cpid not in seen:
+                found[cpid] = (platform_compat.get_process_start_id(cpid), None)
+        seen.update(descendants)
+    return found
+
+
 async def _sweep_children(
-    child_pids: dict[Any, Any], *, who: str, key: str, kill_escaped_children: Callable[..., Any]
+    child_pids: dict[Any, Any],
+    *,
+    who: str,
+    key: str,
+    kill_escaped_children: Callable[..., Any],
+    unrecorded: dict[int, Any] | None = None,
 ) -> str | None:
     """Run the client's escaped-children sweep, then name every recorded child that survived it.
 
@@ -899,32 +933,72 @@ async def _sweep_children(
     per-run record does not overrule the guard; it refuses to call the run
     reaped over it. Runs the sweep off the loop, as its callers did, and the
     standing reads with it: one read per recorded child.
+
+    *unrecorded* (:func:`_unrecorded_descendants`) is read with them and never
+    swept: each one still running is named too, so a gone leader's tree is not
+    recorded as reaped over descendants nobody recorded.
     """
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(subprocess_executor(), kill_escaped_children, child_pids)
+    watched = {**(unrecorded or {}), **child_pids}
     standing = await loop.run_in_executor(
-        subprocess_executor(), _verified_children_standing, child_pids
+        subprocess_executor(), _verified_children_standing, watched
     )
     for _ in range(_SWEEP_SETTLE_READS):
         if not standing:
             return None
         await asyncio.sleep(_SWEEP_SETTLE_SECS)
         standing = await loop.run_in_executor(
-            subprocess_executor(), _verified_children_standing, child_pids
+            subprocess_executor(), _verified_children_standing, watched
         )
-    if not standing:
-        return None
-    named = ", ".join(str(cpid) for cpid in standing)
-    logger.error(
-        "%s: recorded child pid(s) %s survived the escaped-children sweep for %s; not signalled",
-        who,
-        named,
-        key,
+    failure = join_failures(
+        _named_pids(
+            [cpid for cpid in standing if cpid in child_pids],
+            "recorded child",
+            "survived the escaped-children sweep, identity verified",
+        ),
+        _named_pids(
+            [cpid for cpid in standing if cpid not in child_pids],
+            "unrecorded descendant",
+            "of a recorded child still running after the leader exited",
+        ),
     )
-    plural = "s" if len(standing) > 1 else ""
-    return (
-        f"recorded child pid{plural} {named} survived the escaped-children sweep, identity "
-        "verified; not signalled"
+    if failure is not None:
+        logger.error("%s: %s (%s)", who, failure, key)
+    return failure
+
+
+def _named_pids(pids: list[int], what: str, state: str) -> str | None:
+    """``<what> pid[s] <pids> <state>; not signalled``, or None for no pid."""
+    if not pids:
+        return None
+    plural = "s" if len(pids) > 1 else ""
+    return f"{what} pid{plural} {', '.join(str(cpid) for cpid in pids)} {state}; not signalled"
+
+
+async def _finish_gone_tree(
+    handle: ProcessHandle, *, known: Iterable[Any], who: str, key: str, child_helpers: ChildHelpers
+) -> str | None:
+    """A gone leader's tree: its group decides, its recorded children are swept, and what they lead is named.
+
+    The descendants of the recorded children are listed BEFORE the group signal
+    and the sweep, which re-parent them out of reach (:func:`_unrecorded_descendants`).
+    """
+    _, get_child_pids, kill_escaped_children = child_helpers
+    recorded = dict(handle.child_pids)
+    unrecorded = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _unrecorded_descendants, recorded, known, get_child_pids
+    )
+    failure = await _finish_gone_leader(handle, who=who, key=key)
+    return join_failures(
+        failure,
+        await _sweep_children(
+            recorded,
+            who=who,
+            key=key,
+            kill_escaped_children=kill_escaped_children,
+            unrecorded=unrecorded,
+        ),
     )
 
 
@@ -1222,7 +1296,9 @@ async def kill_verified_process(
     the kill, at either identity read, at the Windows pin, or between the last
     read and the signal. The escaped-children sweep of the recorded children
     still runs in every case, and what survives it with its identity verified
-    is named (:func:`_sweep_children`).
+    is named (:func:`_sweep_children`). Behind a gone leader, the live
+    descendants of its recorded children that no record names are named as
+    well, never signalled (:func:`_finish_gone_tree`).
 
     The escaped-children sweep is POSIX-only by nature: on Windows
     ``_direct_children`` returns ``[]`` and ``_kill_escaped_children`` is a
@@ -1267,15 +1343,11 @@ async def kill_verified_process(
             # The leader already exited. Its group may not have: a late child
             # spawn keeps members under the retained group id, so the group
             # decides. The sweep still runs for recorded children that outlived
-            # it (POSIX only -- on win32 no descendant of a gone root is
-            # reachable at all).
+            # it, and what they lead is named (POSIX only -- on win32 no
+            # descendant of a gone root is reachable at all).
             logger.debug("%s: PID %d already dead for %s", who, pid, key)
-            failure = await _finish_gone_leader(handle, who=who, key=key)
-            return join_failures(
-                failure,
-                await _sweep_children(
-                    child_pids, who=who, key=key, kill_escaped_children=_kill_escaped_children
-                ),
+            return await _finish_gone_tree(
+                handle, known=child_pids, who=who, key=key, child_helpers=child_helpers
             )
         if handle.start_id is None or actual_start is None:
             # A live process whose identity cannot be confirmed as this
@@ -1301,12 +1373,8 @@ async def kill_verified_process(
             # pid now. The group it led decides (the pid is not read through
             # again); only the recorded children are swept.
             logger.warning("%s: PID %d recycled for %s, not signalling it", who, pid, key)
-            failure = await _finish_gone_leader(handle, who=who, key=key)
-            return join_failures(
-                failure,
-                await _sweep_children(
-                    child_pids, who=who, key=key, kill_escaped_children=_kill_escaped_children
-                ),
+            return await _finish_gone_tree(
+                handle, known=child_pids, who=who, key=key, child_helpers=child_helpers
             )
         # The root is ours: snapshot its live child tree before killing --
         # children in different PGIDs survive killpg. The macOS pgrep/ps
@@ -1338,7 +1406,6 @@ async def kill_verified_process(
                 pid,
                 key,
             )
-            failure = await _finish_gone_leader(handle, who=who, key=key)
             unattributed = sorted(p for p in child_pids if p not in handle.child_pids)
             fresh_failure: str | None = None
             if unattributed:
@@ -1357,12 +1424,8 @@ async def kill_verified_process(
                     "be attributed to the run after its leader exited; not signalled"
                 )
             return join_failures(
-                failure,
-                await _sweep_children(
-                    dict(handle.child_pids),
-                    who=who,
-                    key=key,
-                    kill_escaped_children=_kill_escaped_children,
+                await _finish_gone_tree(
+                    handle, known=child_pids, who=who, key=key, child_helpers=child_helpers
                 ),
                 fresh_failure,
             )

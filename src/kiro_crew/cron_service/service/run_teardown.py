@@ -31,7 +31,7 @@ from kiro_crew.cron_service.claims import _RunClaim
 from kiro_crew.cron_service.execution import run_parks_one_shot
 from kiro_crew.cron_service.model import _JOB_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.process_identity import failure_name, with_kill_failure
+from kiro_crew.process_identity import MAX_ERROR_DETAIL_LEN, failure_name, with_kill_failure
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronPauseNotSaved, CronService
@@ -333,6 +333,14 @@ async def _force_reap(
                     # when the passes never ran or raised.
                     "session_keys": ended,
                     "elapsed": int(elapsed),
+                    # What the kill could not do -- each process it left running,
+                    # named -- on the row that says ``failed``, as the sub-agent
+                    # reaper's row carries it.
+                    **(
+                        {"kill_failed": kill_failed[:MAX_ERROR_DETAIL_LEN]}
+                        if kill_failed is not None
+                        else {}
+                    ),
                 },
             )
         except Exception:
@@ -604,6 +612,11 @@ async def cancel(self: CronService, job_id: str) -> bool:
                     # signal yet. Auditing that second case as
                     # "killed_subprocess" asserted a kill that never happened.
                     "cancellation_accepted": killed_proc,
+                    **(
+                        {"kill_failed": kill_failed[:MAX_ERROR_DETAIL_LEN]}
+                        if kill_failed is not None
+                        else {}
+                    ),
                 },
             )
         except Exception:
