@@ -14629,7 +14629,7 @@
       "pod_memory_of_ceiling": "cgroup 上限に対する Pod のメモリ使用量",
       "pod_cpu_usage": "Pod の CPU 使用率",
       "pod_task_count": "Pod のタスク（プロセス/スレッド）数",
-      "pod_tasks_label": "タスク",
+      "pod_task_chip_other": "{{n}} 件のタスク",
       "pod_memory": "メモリ: {{value}}",
       "pod_cpu": "CPU: {{value}}",
       "pod_tasks": "タスク: {{value}}",
