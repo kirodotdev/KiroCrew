@@ -306,6 +306,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _restore_slot_nudge_loop,
     _retire_slot_nudge_loop,
     _slot_still_ours,
+    _timed_close_stage,
     api_chat_slot_delete,
     api_chat_slots_cleanup,
     close_slot,
@@ -1071,6 +1072,10 @@ _GUARDED_WRITE_WAIT_SECS = 5.0
 #: read this long never produced chips there either. Here only this close waits,
 #: and past the bound it goes on to archive what the window holds.
 _FILE_CHANGES_DRAIN_SECS = 25.0
+
+#: Seconds one stage of a close may take before it logs a warning naming it. The
+#: gateway logs warnings and up, so a slow close otherwise names no step.
+_SLOW_CLOSE_STAGE_SECS = 5.0
 
 
 # Serializes slot SWITCH transactions that share one session, keyed by
