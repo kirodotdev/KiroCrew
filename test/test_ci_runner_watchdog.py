@@ -63,8 +63,8 @@ def test_the_label_prefix_is_matched_even_with_an_override_suffix() -> None:
     assert not wd.is_codebuild_job({})
 
 
-def test_the_rerun_is_the_whole_run_so_the_runner_label_is_recomputed() -> None:
-    """A failed-jobs re-run would reuse the first attempt's `changes` outputs and its stale label."""
+def test_the_rerun_is_the_whole_run_so_changes_runs_again() -> None:
+    """A failed-jobs re-run would reuse the cancelled attempt's `changes` outputs."""
     api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
     _, outcomes = _sweep(api)
     assert outcomes == {1: wd.OUTCOME_HEALED}

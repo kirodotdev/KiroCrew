@@ -430,8 +430,10 @@ jobs:
     # Only the x64 leg maps to the resolved runner; `matrix.os`, and so the job
     # name the ruleset requires, stays `ubuntu-22.04`. The arm64 and macOS legs
     # keep their hosted images. The `||` fallback keeps a hosted runner if the
-    # resolver output is ever empty.
-    runs-on: ${{ matrix.os == 'ubuntu-22.04' && (needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}
+    # resolver output is ever empty. A fleet label is spelled here from this
+    # job's own `github.run_attempt`, not read from the output: a re-run of this
+    # job alone does not re-run the resolver, so its label names a past attempt.
+    runs-on: ${{ matrix.os == 'ubuntu-22.04' && (startsWith(needs.desktop-matrix.outputs.linux_x64_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}
     # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
     # Its healthy build already takes ~35 min, so it gets 60 and Linux keeps 45.
     timeout-minutes: ${{ matrix.os == 'macos-15' && 60 || 45 }}
