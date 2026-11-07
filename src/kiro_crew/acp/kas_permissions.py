@@ -196,28 +196,6 @@ def allowed_command_pattern(raw: Any) -> str | None:
     return raw
 
 
-def without_allowed_commands(tools_settings: Any) -> Any:
-    """*tools_settings* with each shell entry's ``allowedCommands`` key left out.
-
-    For :func:`withhold_answered_under_authored_rules`, which reads ANY entry for a
-    built-in as a restriction: the grant itself is not one. A shell entry that held
-    only that key goes too; every other key, and any malformed value, is kept, so
-    it still withholds.
-    """
-    if not isinstance(tools_settings, dict):
-        return tools_settings
-    out = dict(tools_settings)
-    for key in _SHELL_SETTINGS_KEYS:
-        entry = out.get(key)
-        if isinstance(entry, dict) and "allowedCommands" in entry:
-            rest = {k: v for k, v in entry.items() if k != "allowedCommands"}
-            if rest:
-                out[key] = rest
-            else:
-                del out[key]
-    return out
-
-
 def _usable_allowed_commands(tools_settings: Any) -> list[str]:
     """Every distinct usable ``allowedCommands`` entry of both shell keys, in order."""
     if not isinstance(tools_settings, dict):
