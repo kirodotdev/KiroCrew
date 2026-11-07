@@ -39,9 +39,10 @@ if TYPE_CHECKING:
         history_corpus_unreadable,
         logger,
         parse_cls_meta,
-        queue_entry_view,
+        queue_view,
         redact_credentials,
         redact_exfiltration_urls,
+        refused_durable_ids,
         remember_unknown_row_fields,
         slot_history_key,
         slot_not_found,
@@ -1210,6 +1211,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         }
         for q in slot._queue
     ]
+    # Judged on the live entries, in the same tick as the copy: the copy drops
+    # fields the durable writer weighs, so its verdict would differ from the write's.
+    queue_refused = refused_durable_ids(slot._queue)
     context_fields = await _context_snapshot_fields(state, slot)
     # Imported here, not at module scope: this function runs on the handlers
     # module's globals (``_facade_compose.compose``).
@@ -1300,7 +1304,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         )
         tail = json.dumps(
             {
-                "queue": [queue_entry_view(q) for q in queue_snapshot],
+                "queue": queue_view(queue_snapshot, queue_refused),
                 "total": total,
                 **page_fields,
                 # Seeds the context meter on open. Turn-scoped WS frames alone

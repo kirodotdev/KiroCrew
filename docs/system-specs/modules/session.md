@@ -4565,10 +4565,15 @@ so absence clears it.
   carried count and which ceiling refused it. Both the verdict and the reason are
   read off `durable_queue_entries`' own output — an entry absent from a full set
   was refused by the count cap, absent from a short one by the byte budget — so
-  nothing re-implements the interacting ceilings. This is a LOG, not a receipt
-  field: a caller-visible `durable` boolean on the acknowledgments has no reader,
-  so it is not shipped, and the on-screen queue-card marker belongs with its
-  consumer (issue #11695).
+  nothing re-implements the interacting ceilings. The same verdict reaches the
+  queue card: a refused entry's `queue_push` frame carries `meta.durable: false`
+  (the busy-slot send and the sub-agent hold alike), and the card shows a quiet
+  "won't survive a restart" label. A live card is judged once, when it is
+  pushed; every slot-detail read judges the whole queue again
+  (`chat_delivery.queue_view` over `refused_durable_ids`), so the turn-end
+  refresh corrects a card that a drain, an edit, a reorder or a requeued steer
+  at the head moved across the bounds. The HTTP receipts do not carry it:
+  nothing reads them for it.
 
 ## Cross-Surface Reply Mirror
 

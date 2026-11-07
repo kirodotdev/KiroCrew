@@ -9024,6 +9024,7 @@
       "save": "Salvar",
       "save_edit": "Salvar edição",
       "send_now": "Enviar agora",
+      "wont_survive_a_restart": "não sobreviverá a uma reinicialização",
       "sub_agent_result_many": "{{count}} resultados de subagente",
       "sub_agent_result_one": "{{count}} resultado de subagente",
       "sub_agent_result_other": "{{count}} resultados de subagente",

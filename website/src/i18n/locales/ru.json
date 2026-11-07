@@ -9241,6 +9241,7 @@
       "save": "Сохранить",
       "save_edit": "Сохранить правку",
       "send_now": "Отправить сейчас",
+      "wont_survive_a_restart": "не сохранится после перезапуска",
       "sub_agent_result_few": "{{count}} результата субагентов",
       "sub_agent_result_many": "{{count}} результатов субагентов",
       "sub_agent_result_one": "{{count}} результат субагента",

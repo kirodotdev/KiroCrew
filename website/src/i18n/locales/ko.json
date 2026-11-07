@@ -8590,6 +8590,7 @@
       "save": "저장",
       "save_edit": "편집 내용 저장",
       "send_now": "지금 보내기",
+      "wont_survive_a_restart": "재시작하면 사라집니다",
       "sub_agent_result_other": "서브 에이전트 결과 {{count}}개",
       "queued_count_other": "{{count}}개 대기 중"
     },

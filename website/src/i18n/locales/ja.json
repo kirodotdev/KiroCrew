@@ -8590,6 +8590,7 @@
       "save": "保存",
       "save_edit": "編集を保存",
       "send_now": "今すぐ送信",
+      "wont_survive_a_restart": "再起動すると失われます",
       "sub_agent_result_other": "{{count}} 個のサブエージェント結果",
       "queued_count_other": "{{count}} 件がキュー内"
     },

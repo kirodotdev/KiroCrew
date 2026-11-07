@@ -8807,6 +8807,7 @@
       "save": "সংরক্ষণ করুন",
       "save_edit": "সম্পাদনা সংরক্ষণ করুন",
       "send_now": "এখনই পাঠান",
+      "wont_survive_a_restart": "রিস্টার্টের পরে থাকবে না",
       "sub_agent_result_one": "{{count}}টি সাবএজেন্ট ফলাফল",
       "sub_agent_result_other": "{{count}}টি সাবএজেন্ট ফলাফল",
       "queued_count_one": "{{count}}টি সারিতে",

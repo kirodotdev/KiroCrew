@@ -642,6 +642,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
             // WHEN or WHETHER the entry runs, never who authored its text.
             const isAppEntry = isAppMessageQueued(m)
             const displayText = queuedDisplayText(m)
+            const notDurable = m.meta?.durable === false
             // The card hides the knowledge envelope, so this chip is what says
             // the send still carries it. Same icon as the sent bubble's
             // knowledge chip, so the two read as one thing.
@@ -756,8 +757,16 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                       )}
                       {/* `min-w-16` only when a chip shares the row: the chip
                           gives way (truncates) before the typed words do. */}
-                      <span className={`truncate flex-1${knowledgeChip ? ' min-w-16' : ''}`}>{displayText}</span>
+                      <span className={`truncate flex-1${knowledgeChip || notDurable ? ' min-w-16' : ''}`}>{displayText}</span>
                       {knowledgeChip}
+                      {/* The server's verdict that the durable copy of the queue
+                          cannot hold this entry: accepted, but a restart before
+                          it runs loses it. Quiet on purpose, not an error. */}
+                      {notDurable && (
+                        <span data-testid="queue-card-not-durable" className="min-w-0 truncate text-[11px] italic opacity-80" title={i18nT('components.queueStack.wont_survive_a_restart')}>
+                          {i18nT('components.queueStack.wont_survive_a_restart')}
+                        </span>
+                      )}
 
                       {/* Reorder arrows only make sense with 2+ cards, and only
                           in the expanded stack where the run order is visible.

@@ -16,6 +16,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
+# Loaded here, before any test patches chat_delivery / chat_runner: chat_handlers
+# copies those names in at import, so a first import under a patch would keep the
+# fake for every later test on this worker.
+import kiro_crew.dashboard.chat_handlers  # noqa: F401
 from kiro_crew import crew_mode
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -846,7 +850,7 @@ async def test_a_held_steer_is_reported_queued_persisted_and_shown(_open_gate, m
     monkeypatch.setattr(
         chat_delivery, "start_queue_persist", lambda st, sl: persisted.append(sl.key)
     )
-    monkeypatch.setattr(chat_delivery, "warn_if_not_durable", lambda *a: None)
+    monkeypatch.setattr(chat_delivery, "warn_if_not_durable", lambda *a: True)
     monkeypatch.setattr(crew_log_emit, "on_message_queued", lambda *a, **k: None)
     monkeypatch.setattr("kiro_crew.dashboard.relay_archive.is_relay_archive", lambda s: False)
     queue: list[dict[str, Any]] = []
