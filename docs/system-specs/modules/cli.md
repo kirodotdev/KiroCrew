@@ -528,12 +528,13 @@ the name still holds that regular inode; a mismatch imports nothing. Holding the
 descriptor keeps the inode alive, so its number cannot be reused by a planted entry.
 The replace stages a temporary by name inside the data home, as the cron store's own
 save does, so a same-UID writer that can replace that temporary is not stopped. A
-rename replaces the entry and never follows it. Where the store can be pinned but its
-access control cannot be carried onto a fresh inode (macOS: its native ACLs are not
-exposed through the xattr API, `atomic_write.ACCESS_CONTROL_XATTRS_SUPPORTED` is False),
+rename replaces the entry and never follows it. Where the store can be pinned but the
+xattr API is absent (macOS: `atomic_write.ACCESS_CONTROL_XATTRS_SUPPORTED` is False),
 `_cron_rewrite_in_place` makes the merge open the live store read-write and truncate and
 rewrite that same validated inode instead, after the same identity re-check, so a
-hand-set ACL survives exactly as it did when the merge wrote by name. Residual, macOS
+hand-set ACL survives exactly as it did when the merge wrote by name. `atomic_write`
+itself carries a macOS extended ACL from a passed descriptor, so the ACL no longer needs
+this rewrite; the merge keeps it until it is moved back to the atomic replace. Residual, macOS
 only: that rewrite is not atomic, so a crash or a full disk mid-write can leave a torn
 `crons.json`. The memory merge (`_merge_memory`) opens the staged `memory.db` once,
 through its `ATTACH`, and runs `PRAGMA src.integrity_check` on that attached database, so
