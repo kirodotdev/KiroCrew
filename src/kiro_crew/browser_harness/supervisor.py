@@ -566,7 +566,7 @@ class HarnessSupervisor:
         except Exception:  # noqa: BLE001 - a config read failure means defaults
             cfg = {}
         try:
-            return discover.choose_browser(
+            choice = discover.choose_browser(
                 cfg,
                 kiro_chromium=state.chromium.executable,
                 kiro_profile=self.profile_dir,
@@ -574,6 +574,14 @@ class HarnessSupervisor:
         except Exception:  # noqa: BLE001 - a probe failure is "unknown", not a crash
             logger.debug("browser discovery failed", exc_info=True)
             return None
+        # The headless shell has no window: a windowed pin on a display host still
+        # runs headless, and status, the live card and the startup warm must say so.
+        if (
+            choice.kind == "kiro_chromium"
+            and state.chromium.build == install.chromium.BUILD_HEADLESS_SHELL
+        ):
+            return dataclasses.replace(choice, headless=True)
+        return choice
 
     async def _start(self) -> HarnessHandle:
         # Nothing is launched, and no credential is pulled, under a deny.
