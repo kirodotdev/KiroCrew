@@ -117,23 +117,24 @@ class SessionConfig:
     idle_compaction: bool = field(
         default=False,
         metadata=_meta(
-            "Compact Idle Chats Before Cache Expiry",
+            "Summarize Idle Chats to Save Credits",
             "When a dashboard chat has been idle for slightly less than its "
             "backend's prompt-cache lifetime, compact it once so your next turn "
             "re-sends a summary instead of the full history. It saves credits only "
             "on large chats you come back to: each idle compaction is an extra "
-            "model call that costs credits even if you never return, if you return "
+            "model call that can cost about as much as one or two messages in that "
+            "chat, even if you never return, if you return "
             "just after it starts you wait for it to finish, up to the compaction "
             "wait limit plus about 20 seconds (5 minutes by default), "
             "and the summary loses detail from earlier in the conversation. Only "
-            "chats whose context is at least Idle Compaction Minimum Context full "
+            "chats whose context is at least Minimum Context to Summarize full "
             "are compacted. Backends with an unknown cache lifetime are skipped.",
         ),
     )
     idle_compaction_min_context_pct: float = field(
         default=50.0,
         metadata=_meta(
-            "Idle Compaction Minimum Context",
+            "Minimum Context to Summarize",
             "Context usage percentage below which an idle chat is left alone. "
             "Below about 40% a compaction costs more than re-sending the history "
             "it replaces, so values below 40 are raised to 40 (40-90).",

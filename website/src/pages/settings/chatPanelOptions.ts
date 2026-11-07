@@ -54,6 +54,14 @@ export function clampAutocompactPct(n: number): number {
   return Math.min(AUTOCOMPACT_PCT_MAX, Math.max(AUTOCOMPACT_PCT_MIN, n))
 }
 
+/** Bounds of `session.idle_compaction_min_context_pct`, the same pair the loader
+ *  clamps to (IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN/MAX in config/sections_limits.py).
+ *  The write path clamps a value outside them and returns a clamp notice, so the
+ *  field sends what was typed and shows what was saved. */
+export const IDLE_COMPACTION_MIN_PCT_MIN = 40
+export const IDLE_COMPACTION_MIN_PCT_MAX = 90
+export const IDLE_COMPACTION_MIN_PCT_DEFAULT = 50
+
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
 export const ROLE_OPTIONS = ['', ...ROLE_SLUGS]
 export function roleLabels(): string[] {
@@ -165,7 +173,12 @@ export type ClampNotice = { requested: number; stored: number; min: number; max:
 
 /** Shape of the kirocrewConfig query payload this panel reads and patches. */
 export type KirocrewConfigShape = {
-  session?: { autocompact_pct?: number; compact_wait_secs?: number }
+  session?: {
+    autocompact_pct?: number
+    compact_wait_secs?: number
+    idle_compaction?: boolean
+    idle_compaction_min_context_pct?: number
+  }
   session_summary?: { enabled?: boolean }
   agent?: {
     acp_backend?: string

@@ -20,10 +20,12 @@ import {
   VERBOSITY_OPTIONS, MEMORY_MODE_OPTIONS, FOLDER_ROOT_EXAMPLE, memoryModeLabels, asMemoryMode,
   asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
   COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape, COMPACT_CUSTOM, AUTOCOMPACT_PCT_MIN,
-  AUTOCOMPACT_PCT_MAX,
+  AUTOCOMPACT_PCT_MAX, IDLE_COMPACTION_MIN_PCT_MIN, IDLE_COMPACTION_MIN_PCT_MAX,
+  IDLE_COMPACTION_MIN_PCT_DEFAULT,
 } from './chatPanelOptions'
 import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
+import { useIdleCompactionFields, idleCompactionPct } from './useIdleCompactionFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
@@ -257,6 +259,13 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     keepModeMut, compactSelect, pickCompact, localCompactPct, editCompactPct, commitCompactPct,
     compactClampNotice, compactPctMut,
   } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ })
+  const {
+    idleCompactionOn, idleToggleMut, localIdleMinPct, editIdleMinPct, commitIdleMinPct,
+    idleMinClampNotice, idleMinPctMut,
+  } = useIdleCompactionFields({
+    qc, setPathSaveError, clearOwnPathError, mcQ, overlay,
+    onSaveFailure: () => setChatSaveFailTick(t => t + 1),
+  })
 
   const {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
@@ -815,6 +824,47 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               <FieldHint message={compactClampNotice} />
             </>
           )}
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.idle_compaction')}
+            description={i18nT('pages.settings.chatPanel.idle_compaction_description')}
+            hint={i18nT('pages.settings.chatPanel.idle_compaction_hint')}
+            checked={idleCompactionOn}
+            onChange={v => idleToggleMut.mutate(v)}
+            disabled={!mcQ.isSuccess || idleToggleMut.isPending}
+            configKey="session.idle_compaction"
+          />
+          {/* SettingsInput draws a disabled field the same as an enabled one,
+              so this row takes the classes a disabled SettingsToggle row uses
+              while the switch is off. An in-flight save does not dim it, so a
+              save on blur does not make the row flash. */}
+          <div className={idleCompactionOn ? undefined : 'opacity-40 cursor-not-allowed'}>
+            <SettingsInput
+              label={i18nT('pages.settings.chatPanel.idle_compaction_min_context')}
+              // While the switch is off, the dimmed row says why it is locked.
+              description={idleCompactionOn
+                ? i18nT('pages.settings.chatPanel.idle_compaction_min_context_description', {
+                  min: idleCompactionPct(IDLE_COMPACTION_MIN_PCT_MIN),
+                  max: idleCompactionPct(IDLE_COMPACTION_MIN_PCT_MAX),
+                  default: idleCompactionPct(IDLE_COMPACTION_MIN_PCT_DEFAULT),
+                })
+                : i18nT('pages.settings.chatPanel.idle_compaction_min_context_locked')}
+              hint={i18nT('pages.settings.chatPanel.idle_compaction_min_context_hint', { min: idleCompactionPct(IDLE_COMPACTION_MIN_PCT_MIN) })}
+              type="number"
+              value={localIdleMinPct}
+              min={IDLE_COMPACTION_MIN_PCT_MIN}
+              max={IDLE_COMPACTION_MIN_PCT_MAX}
+              step={1}
+              onChange={editIdleMinPct}
+              onBlur={commitIdleMinPct}
+              onKeyDown={e => { if (e.key === 'Enter') commitIdleMinPct() }}
+              // Disabled while idle compaction is off, because the minimum then
+              // gates nothing, and while a save is in flight, because its result
+              // rewrites the field and must never land on a newer draft.
+              disabled={!mcQ.isSuccess || !idleCompactionOn || idleMinPctMut.isPending}
+              configKey="session.idle_compaction_min_context_pct"
+            />
+          </div>
+          <FieldHint message={idleMinClampNotice} tone="neutral" />
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.compaction_wait_budget')}
             description={i18nT('pages.settings.chatPanel.compaction_wait_budget_description')}

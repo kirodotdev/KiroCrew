@@ -39,6 +39,7 @@ from kiro_crew.config.loader import (
     SOFT_STOP_BUDGET_MIN,
     SWEEP_CHUNK_BUDGET_MAX,
     _clamp_compact_wait_secs,
+    _safe_float,
 )
 from kiro_crew.config.sections import (
     BROWSER_CHOICES,
@@ -54,6 +55,8 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
+    IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+    IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
     JUDGE_PROVIDERS,
     LIVE_MAX_FPS_CHOICES,
     LIVE_QUALITIES,
@@ -254,6 +257,27 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": COMPACT_WAIT_SECS_MIN,
         "max": COMPACT_WAIT_SECS_MAX,
         "clamp_fn": lambda v: _clamp_compact_wait_secs(v, 0.0),
+    },
+    # Opt-in, because each idle compaction is a model call the user pays for.
+    # The live config watcher applies a change: turning it off ends every
+    # pending idle timer, so no restart is needed.
+    "session.idle_compaction": {"type": "bool"},
+    # CLAMPS to 40-90 through the load path's own ``_safe_float`` read instead
+    # of rejecting: a value below the floor is a request for the cheapest
+    # setting, which is the floor, and the stored value is exactly what a load
+    # of it produces. The response's ``clamp_notice`` lets the Settings row say
+    # what was saved. The value is already a finite non-bool number here, so
+    # the coercer's fallback argument is never used.
+    "session.idle_compaction_min_context_pct": {
+        "type": "float",
+        "min": IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+        "max": IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+        "clamp_fn": lambda v: _safe_float(
+            v,
+            IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+            IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+            IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+        ),
     },
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
