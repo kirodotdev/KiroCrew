@@ -1,4 +1,4 @@
-import { useState, useEffect, useReducer, useRef } from 'react'
+import { useState, useEffect, useReducer, useRef, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Info, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
@@ -665,6 +665,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
   const [answerText, setAnswerText] = useState('')
   const [questionExpanded, setQuestionExpanded] = useState(false)
   const [showReport, setShowReport] = useState(false)
+  const reportRegionId = useId()
   // In-app dialog, NOT window.confirm: the native confirm is synchronous and
   // blocks the renderer's event loop, so a Quit event arriving while it is open
   // queues behind it and fires the instant it dismisses — tearing the app down
@@ -781,9 +782,9 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
     <div className="mt-4">
       <div className="flex items-center justify-between mb-2">
         <div className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.findings_count', { count: findings.filter(f => f.new_findings_count > 0).length })}</div>
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowReport(v => !v)}>{showReport ? i18nT('apps.autoResearch.researchLabPage.hide_report') : i18nT('apps.autoResearch.researchLabPage.view_report')}</button>
+        <button type="button" className="text-xs px-2 py-1 rounded bg-bg-elevated" aria-expanded={showReport} aria-controls={reportRegionId} onClick={() => setShowReport(v => !v)}>{showReport ? i18nT('apps.autoResearch.researchLabPage.hide_report') : i18nT('apps.autoResearch.researchLabPage.view_report')}</button>
       </div>
-      {showReport && <div className="mb-3">
+      {showReport && <div id={reportRegionId} className="mb-3">
         {reportData?.report ? <ReportSections report={reportData.report} /> : <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.no_report_yet')}</div>}
       </div>}
       {sorted.filter(f => f.new_findings_count > 0 || f.cycle === 1).map(f => <FindingCard key={f.cycle} f={f} />)}
