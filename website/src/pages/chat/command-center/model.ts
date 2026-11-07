@@ -3,6 +3,7 @@ import { isAwaitingSpawnApproval } from '../../../store/chatSlice'
 import { slotApprovalMode } from '../../../utils/slotApprovalMode'
 import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
+import { dispatchIsCommandShaped } from '../../../app-sdk/protocol/dispatchShape'
 import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
@@ -78,6 +79,8 @@ export interface AttentionItem {
   /** On a conductor's own rollup item (All Dashboards): how many of its workers
    *  wait on a tool decision. */
   crewCount?: number
+  /** Follow-up options withheld from this card because sending them bare would run them. */
+  sessionOnlyOptions?: number
 }
 /** The command an approval asks about, as the transcript would title it. Empty
  * when the inventory carried no tool input to title. */
@@ -216,13 +219,22 @@ function failedWorkflowState(endedAt: string | null | undefined, now: number): R
 
 /** The choices an idle session's newest reply offers, or none when it is not
  *  waiting on them: the session is running or interrupted, or a queued prompt
- *  may already be the answer. A label starting with `/` is dropped, since sent
- *  bare it would be parsed as a slash command. The one definition of the rule;
- *  the Command Center and the sidebar's needs-me card both read it. */
-export function replyOptions(s: Pick<ChatSlot, 'has_options' | 'options' | 'running' | 'interrupted' | 'queue_depth'>): string[] {
-  const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
-  if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0) return []
-  return labels
+ *  may already be the answer. A command-shaped label is dropped, since sent
+ *  bare it would run rather than say (see dispatchShape.ts). The one definition
+ *  of the rule; the Command Center and the sidebar's needs-me card both read it. */
+export function replyOptions(s: ReplySlot): string[] {
+  return offeredReplyOptions(s).filter(label => !dispatchIsCommandShaped(label))
+}
+
+type ReplySlot = Pick<ChatSlot, 'has_options' | 'options' | 'running' | 'interrupted' | 'queue_depth'>
+
+/** Every option an idle slot's last reply offers, command-shaped labels included.
+ *  Whether the slot waits on the person reads this; which labels may be sent bare
+ *  reads `replyOptions`. */
+export function offeredReplyOptions(s: ReplySlot): string[] {
+  const offered = s.has_options ? (s.options || []).filter(Boolean) : []
+  if (!offered.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0) return []
+  return offered
 }
 
 export function buildCommandCenter(source: CommandCenterSources, now = Date.now()) {
@@ -245,9 +257,13 @@ export function buildCommandCenter(source: CommandCenterSources, now = Date.now(
   // queued prompt may already be the answer: it writes no transcript row until
   // it runs, so `has_options` stays true and the ask must not be offered twice.
   for (const s of slots) {
+    // The card stays even when every label is withheld, so the ask is never hidden;
+    // it says the rest are answered in the session.
+    const offered = offeredReplyOptions(s)
     const labels = replyOptions(s)
-    if (!labels.length || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
-    addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${labels.join('\u0000')}`, slot: s.key, kind: 'question',
+    if (!offered.length || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
+    addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${offered.join('\u0000')}`, slot: s.key, kind: 'question',
+      sessionOnlyOptions: offered.length - labels.length,
       question: { slot: s.key, followUp: true, questions: [{ question: '', options: labels.map(label => ({ label })) }] } })
   }
   for (const s of slots) {

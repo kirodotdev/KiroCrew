@@ -56,6 +56,7 @@
     "open_session": "Sitzung öffnen",
     "open_to_answer": "Diese Ansicht kann die Anfrage nicht verifizieren. Öffne die Sitzung, um sie zu prüfen und zu antworten.",
     "explicit_input": "Erst dein ausdrückliches Absenden übermittelt eine Antwort oder Genehmigung.",
+    "session_only_options": "Manche Optionen lassen sich nur in der Sitzung beantworten.",
     "recorded": "Deine Antwort wurde erfasst.",
     "send_refused": "Die Sitzung hat diese Antwort nicht angenommen.",
     "send_unknown": "Die Zustellung ist ungewiss. Deine Antwort bleibt erhalten. Prüfe vor einem erneuten Versuch die Sitzung, um Doppelversand zu vermeiden.",

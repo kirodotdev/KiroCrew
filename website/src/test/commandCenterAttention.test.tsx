@@ -389,6 +389,26 @@ describe('task dashboard input routing', () => {
     expect(dismiss).not.toHaveBeenCalled()
   })
 
+  it('says when options are left for the session, and keeps a card whose every option was withheld', () => {
+    const card = (options: string[]) => {
+      const [item] = buildCommandCenter({ root: 'child', slots: [{ key: 'child', messages: 2, running: false, has_options: true, options }],
+        subagents: {}, workflows: [], questions: [], approvals: [] }).attention
+      return renderWithProviders(<AttentionCard item={item} title="Worker" />)
+    }
+    const note = 'Some options can only be answered in the session.'
+    const mixed = card(['/clear', 'Keep it'])
+    expect(screen.getByText(note)).toBeVisible()
+    expect(screen.getByText('Keep it')).toBeVisible()
+    expect(screen.queryByText('/clear')).not.toBeInTheDocument()
+    mixed.unmount()
+    const allWithheld = card(['/clear', '@deploy'])
+    expect(screen.getByText(note)).toBeVisible()
+    expect(screen.getByText('The session is waiting for your choice.')).toBeVisible()
+    allWithheld.unmount()
+    card(['Keep it'])
+    expect(screen.queryByText(note)).not.toBeInTheDocument()
+  })
+
   it('keeps an in-progress options pick through a language switch', async () => {
     const { i18next } = await import('../i18n/all')
     const [item] = buildCommandCenter({ root: 'child', slots: [{ key: 'child', messages: 2, running: false, has_options: true, options: ['Fix all 3', 'Keep it'] }],

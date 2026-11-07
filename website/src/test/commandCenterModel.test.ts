@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { FAILED_WORKFLOW_BLOCKED_MS, buildCommandCenter, questionText, runTitle, scopedSlots, slotKey, type CommandCenterSources } from '../pages/chat/command-center/model'
+import { slotNeedsMe } from '../pages/chat-sidebar/needsMeCard'
 import type { ChatSlot, SubagentActivity } from '../types'
 
 const slot = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({ key, messages: 0, running: false, ...extra })
@@ -104,14 +105,28 @@ describe('command center projection', () => {
     expect(model.settled).toBe(false)
     expect(buildCommandCenter(sources({ slots: [slot('root', { has_options: false, options: ['stale'] })] })).attention).toEqual([])
   })
-  it.each(['/clear', '  /model x'])('drops the slash-command follow-up label %j while keeping a safe choice', label => {
+  it.each(['/clear', '  /model x', 'Run $deploy now'])('drops the command-shaped follow-up label %j while keeping a safe choice', label => {
     const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: [label, 'Keep it'] })] }))
     expect(model.attention).toHaveLength(1)
     expect(model.attention[0].question!.questions[0].options).toEqual([{ label: 'Keep it' }])
+    expect(model.attention[0].sessionOnlyOptions).toBe(1)
   })
-  it('omits a follow-up question when every option is a slash command', () => {
-    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['/clear'] })] }))
-    expect(model.attention).toEqual([])
+  it('withholds a digit-only token, which the resolver loads like any skill name', () => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['Approve $40 spend', 'Reject it'] })] }))
+    expect(model.attention[0].question!.questions[0].options).toEqual([{ label: 'Reject it' }])
+    expect(model.attention[0].sessionOnlyOptions).toBe(1)
+  })
+  it('keeps the card when every option is command-shaped, so the ask is not hidden', () => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['/clear', 'Run $deploy now'] })] }))
+    expect(model.attention).toHaveLength(1)
+    expect(model.attention[0].kind).toBe('question')
+    expect(model.attention[0].question!.questions[0].options).toEqual([])
+    expect(model.attention[0].sessionOnlyOptions).toBe(2)
+  })
+  it('flags the sidebar needs-me signal for the same all-withheld reply the card keeps', () => {
+    const waiting = slot('root', { has_options: true, options: ['@deploy', 'Approve $40 spend'] })
+    expect(slotNeedsMe(waiting, false)).toBe(true)
+    expect(slotNeedsMe(slot('root', { has_options: true, options: ['@deploy'], running: true }), false)).toBe(false)
   })
   it('keys identical options separately for each new reply but keeps the same reply stable', () => {
     const card = (options_ts: string) => buildCommandCenter(sources({ slots: [slot('root', {
