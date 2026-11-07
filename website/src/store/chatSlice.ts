@@ -22,7 +22,6 @@ import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold,
 import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
-import { gcSessionStorage } from '../utils/storageGc'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
 import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
@@ -700,7 +699,7 @@ export const deleteSlot = createAsyncThunk<
     // so it completes the close instead of failing it.
     let alreadyGone = false
     try {
-      await api.deleteChatSlot(key).catch((err: unknown) => {
+      await api.deleteChatSlot(key, deletedSlot?.incarnation).catch((err: unknown) => {
         if (!isNotFoundError(err)) throw err
         alreadyGone = true
       })
@@ -724,7 +723,6 @@ export const deleteSlot = createAsyncThunk<
         // `await navigation` below, and a peer transcript load that outlasts the
         // in-flight cap would otherwise expire a hold whose close succeeded.
         dispatch(confirmCloseHold({ key, requestId }))
-        gcSessionStorage(key)
       }
     } catch (err) {
       const uncoded = closeRefusalCode(err) === null

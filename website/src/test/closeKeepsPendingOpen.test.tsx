@@ -156,7 +156,7 @@ describe('closing the active chat while a create is pending', () => {
       const created = store.dispatch(createSlot({ memory_mode: 'persistent' }))
       await vi.waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
       act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', altKey: true, shiftKey: true, cancelable: true, bubbles: true })) })
-      await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledWith(ACTIVE))
+      await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledWith(ACTIVE, undefined))
       await waitFor(() => expect(activeSlot()).toBe(NEIGHBOUR))
       await act(async () => { land(); await created })
 
