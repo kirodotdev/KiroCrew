@@ -474,6 +474,38 @@ class TestRecordAndReport:
         assert "1/3 verified" in summary
         assert "1 skipped" in summary and "1 not configured" in summary
 
+    def test_a_run_with_no_verified_or_reviewed_step_warns_loudly(self, tmp_path: Path) -> None:
+        """No verified AND no diff-reviewed step appends the honesty warning."""
+        step = Step(index=1, title="S1", description="d", status=StepStatus.PASSED)
+        step.verification = "not_configured"
+        step.diff_reviewed = False
+        run = _run(tmp_path, step)
+        run.started_at = 1.0
+        summary = format_completion_summary(run)
+        assert "No step was verified or diff-reviewed" in summary
+
+    def test_a_diff_reviewed_step_suppresses_the_warning(self, tmp_path: Path) -> None:
+        """A step that WAS diff-reviewed means content was gated, so no warning --
+        regardless of the run's final git_enabled (the mid-run-git-loss case)."""
+        step = Step(index=1, title="S1", description="d", status=StepStatus.PASSED)
+        step.verification = "not_configured"
+        step.diff_reviewed = True
+        run = _run(tmp_path, step)
+        run.started_at = 1.0
+        run.git_enabled = False
+        summary = format_completion_summary(run)
+        assert "No step was verified or diff-reviewed" not in summary
+
+    def test_a_verified_step_suppresses_the_warning(self, tmp_path: Path) -> None:
+        """A real test command verified the work, so the warning would be false."""
+        step = Step(index=1, title="S1", description="d", status=StepStatus.PASSED)
+        step.verification = "passed"
+        step.diff_reviewed = False
+        run = _run(tmp_path, step)
+        run.started_at = 1.0
+        summary = format_completion_summary(run)
+        assert "No step was verified or diff-reviewed" not in summary
+
 
 class TestARequeuedStepKeepsNoEarlierVerdict:
     """A step set back to pending has no verdict for its next run, on every reset path."""
