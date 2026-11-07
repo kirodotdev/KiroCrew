@@ -1304,6 +1304,7 @@
     "pages.settings.notificationsPanel.channel_tip_terminal": "Settings > Notifications > Sources: tooltip on the 'terminal' source row. A 'terminal tab' is a shell tab in the dashboard; 'exit code' is the shell's numeric exit status.",
     "pages.settings.notificationsPanel.channel_tip_member": "Settings > Notifications > Sources: tooltip on the 'Bot messages' source row. 'Bot' is the product's name for an always-on AI agent on the user's crew: keep it as the Latin word Bot in every language, never translated or transliterated; 'banner' is the on-screen pop-up notification.",
     "pages.settings.notificationsPanel.channel_tip_apps": "Settings > Notifications > Sources: tooltip on the 'App updates' source row. 'App' is a dashboard app the user installed from the App Store; 'published' means released by its author.",
-    "pages.settings.notificationsPanel.channel_tip_turn": "Settings > Notifications > Sources: tooltip on the 'Chat errors' source row. 'Provider' is the AI model service; 'rate limit' means the service refused more requests for now; 'refused reply' is a content-filter refusal. 'App' is a dashboard app the user installed."
+    "pages.settings.notificationsPanel.channel_tip_turn": "Settings > Notifications > Sources: tooltip on the 'Chat errors' source row. 'Provider' is the AI model service; 'rate limit' means the service refused more requests for now; 'refused reply' is a content-filter refusal. 'App' is a dashboard app the user installed.",
+    "appSdk.chatPanel.session_gone": "Notice inside an app's embedded chat panel when the chat session the app opened there has been deleted; 'the app' is the app the panel sits in, which is where the user opens or starts another session."
   }
 }

@@ -349,6 +349,9 @@
       "show_less": "कम दिखाएँ",
       "show_more": "और दिखाएँ"
     },
+    "chatPanel": {
+      "session_gone": "यह सत्र अब मौजूद नहीं है। ऐप से कोई सत्र खोलो या शुरू करो।"
+    },
     "newMessagesDivider": {
       "new_messages_one": "{{count}} नया संदेश",
       "new_messages_other": "{{count}} नए संदेश"

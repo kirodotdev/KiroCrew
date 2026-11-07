@@ -334,6 +334,9 @@
       "show_less": "表示を減らす",
       "show_more": "もっと表示"
     },
+    "chatPanel": {
+      "session_gone": "このセッションはもう存在しません。アプリからセッションを開くか開始してください。"
+    },
     "newMessagesDivider": {
       "new_messages_other": "新着メッセージ {{count}} 件"
     }

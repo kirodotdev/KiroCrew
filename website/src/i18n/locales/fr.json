@@ -364,6 +364,9 @@
       "show_less": "Afficher moins",
       "show_more": "Afficher plus"
     },
+    "chatPanel": {
+      "session_gone": "Cette session n’existe plus. Ouvre ou démarre une session depuis l’application."
+    },
     "newMessagesDivider": {
       "new_messages_one": "{{count}} nouveau message",
       "new_messages_other": "{{count}} nouveaux messages",

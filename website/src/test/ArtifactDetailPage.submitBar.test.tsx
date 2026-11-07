@@ -111,6 +111,8 @@ describe('ArtifactDetailPage comment submit bar', () => {
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([BOUND])
+    // The companion panel shows the chat once the bound session has opened.
+    vi.mocked(api).chatSlotDetail = vi.fn().mockResolvedValue({ messages: [], has_more: false, total: 0 })
     vi.mocked(api).sendChat = vi.fn().mockResolvedValue(accepted())
   })
 

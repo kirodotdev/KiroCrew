@@ -198,6 +198,8 @@ describe('ArtifactDetailPage — mutation paths', () => {
     vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue({ slug: SLUG, events: [] })
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [] })
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+    // The companion panel shows the chat once the bound session has opened.
+    vi.mocked(api).chatSlotDetail = vi.fn().mockResolvedValue({ messages: [], has_more: false, total: 0 })
     vi.mocked(api).updateArtifact = vi.fn().mockResolvedValue({})
     vi.mocked(api).artifactFolders = vi.fn().mockResolvedValue({ folders: [] })
     vi.mocked(api).getArtifactPublishProviders = vi
@@ -1024,6 +1026,9 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .fn()
       .mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([
+      { key: 'slot-new', title: 'Artifact: CR Queue', messages: 0, running: false, artifact: SLUG },
+    ])
     await mount(mkArtifact())
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await screen.findByTestId('chat-page')
