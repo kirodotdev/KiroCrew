@@ -601,6 +601,7 @@ def _build_from_facts(state, entries: list[dict], monkeypatch) -> None:
     state.subagents = SimpleNamespace(
         running_agents_for=lambda key: ["child"] if key in children else [],
         published_queued_depths=lambda: {},
+        published_queued_labels=lambda: {},
     )
     state._slots_under_construction = building
 

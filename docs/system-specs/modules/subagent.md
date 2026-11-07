@@ -1498,7 +1498,12 @@ made; no gate reads it back. Two consumers:
   on screen or a background session — is corrected by the next push or patch. A row
   without the field (a metadata `slot_patch` for a pin/rename/folder/lineage, an
   older gateway) leaves its count alone, and the wait label is kept while the count
-  is non-zero. Only the pushed frame or patch reconciles, never the
+  is non-zero. A full-list row with a non-zero count also carries
+  `subagents_queued_reason`, the wait label (`reason` and its figures) of the
+  newest labelled frame routed to that tab, recorded beside the depth and
+  forgotten with it or by an unlabelled frame; the client restores the label
+  from it, so a reload, which saw no frame, still says why the rows wait.
+  Only the pushed frame or patch reconciles, never the
   `fetchSlots` GET: the push is ordered with the `subagent_queued` frames on the
   same socket, and a GET answer can land after a newer frame.
   **A queued child is never Working.** The board's Working lane and the row's
