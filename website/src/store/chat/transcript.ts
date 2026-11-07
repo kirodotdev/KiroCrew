@@ -190,7 +190,7 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
   return changed ? result : merged
 }
 
-/** Carry a settled `card` or `steer` row forward over a stale snapshot copy
+/** Carry a settled or newer `card` or `steer` row forward over a stale snapshot copy
  *  that would REGRESS it to an earlier lifecycle state (#20833).
  *
  *  Besides `stop_event` (#20818) and `mcp_oauth` (#20904), two more durable
@@ -213,15 +213,22 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *  stale page copy, since the merge seats `[...olderHead(live), ...page]`.
  *
  *  Like `preserveSettledMcpOauth` (and unlike the stop rule), this runs BEFORE
- *  `deduplicateByMid`: it carries the settled prior row's `content`/`cls`/`meta`
+ *  `deduplicateByMid`: it carries the settled or newer prior row's `content`/`cls`/`meta`
  *  onto any still-earlier merged copy of the same `(role, mid, ts)`, so the
  *  surviving dedup row keeps the terminal state the user already saw. Keyed by
  *  `(role, mid, ts)` — the full row identity `deduplicateByMid` uses, so only
  *  true copies of one row overwrite each other (not two distinct rows that
- *  happen to reuse a `mid`). A row with no settled prior
+ *  happen to reuse a `mid`). A row with no settled or newer prior
  *  copy, and every other role, pass through untouched; returns `merged`
  *  unchanged (same reference) when nothing is carried, so a caller can skip the
  *  write.
+ *
+ *  A card row's REVISION decides first: `chat_cards._patch_row` bumps
+ *  `meta.card.rev` on every in-place patch, so when two copies' revisions
+ *  differ the higher one is kept whichever way the status moved, a guide
+ *  replayed `completed` -> `offered` included (#22795). Copies with EQUAL
+ *  revisions (a steer, a row never patched, or one patched before the field
+ *  existed) fall to the status rule below.
  *
  *  FAIL-SAFE on which statuses anchor a carry-forward: a card status is only a
  *  carry-forward anchor if it is terminal AND cannot legally move back to a
@@ -313,24 +320,34 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
     return steerState === 'written'
   }
 
-  const settledPrior = new Map<string, ChatMessage>()
+  // A card copy's revision; 0 before the row's first patch.
+  const cardRev = (m: ChatMessage): number => {
+    const rev = (m.meta as { card?: { rev?: unknown } } | undefined)?.card?.rev
+    return typeof rev === 'number' ? rev : 0
+  }
+  const priorWins = (prior: ChatMessage, m: ChatMessage): boolean => {
+    const newer = cardRev(prior) - cardRev(m)
+    return newer ? newer > 0 : isSettled(prior) && isEarlier(m)
+  }
+
+  const priorByKey = new Map<string, ChatMessage>()
   for (const m of existing) {
     const key = upsertKey(m)
-    if (key && isSettled(m)) settledPrior.set(key, m)
+    if (key) priorByKey.set(key, m)
   }
-  if (!settledPrior.size) return merged
+  if (!priorByKey.size) return merged
 
   let changed = false
   const result: ChatMessage[] = []
   for (const m of merged) {
     const key = upsertKey(m)
-    if (key !== undefined && isEarlier(m) && settledPrior.has(key)) {
-      // Carry the settled prior row's rendered state forward in place. Identity
+    const prior = key === undefined ? undefined : priorByKey.get(key)
+    if (prior && priorWins(prior, m)) {
+      // Carry the newer prior row's rendered state forward in place. Identity
       // (`role`, `mid`, `ts`) already matches, so replacing content/cls/meta
       // wholesale keeps the row the same row for `deduplicateByMid`. The prior
       // meta is authoritative: a partial merge could leave a hybrid row still
       // advertising the earlier state.
-      const prior = settledPrior.get(key)!
       result.push({ ...m, content: prior.content, cls: prior.cls, meta: { ...(prior.meta || {}) } })
       changed = true
       continue
