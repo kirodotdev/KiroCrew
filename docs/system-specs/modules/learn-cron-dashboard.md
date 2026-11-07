@@ -1414,6 +1414,24 @@ as a command) and an input-tier one (a document body the scanner read as a
 command line) are both `security_blocked`, and both are reported, because the
 work behind either did not happen.
 
+**Person-only directives are refused out loud.** A session directive only a
+person's turn may issue (`USER_ORIGIN_DIRECTIVES`: `set_project`,
+`reset_conversation`, `chat_tag`, `suggest_followup`) does nothing on a cron
+turn, and no session applier reads a cron turn's stream, so the run's result
+would carry only the tool's own "requested" text and no audit row would be
+written (#29805). `_cron_stream_with_posttoken_resume`, which both agent paths
+stream through, names each tool call from any of its frames the way the
+dashboard's out-of-band claim does (`directive_tool_from_call`: the
+`_meta.kiro` pair, else the wire title), never from the result body, which KAS
+re-serialises. On the call's completed result it refuses the directive with
+`refuse_user_origin_directive`, the user-origin gate's own wording and its SEL
+`denied` row. The refusals are run-scoped, as the missing-server notes are, so
+a refusal in an earlier `agent_sequence` step survives the next step's reply,
+and they lead the run's result in both paths. Nothing is applied, so a forged
+title buys only a refusal line. Every other directive kind stays unread on a
+cron turn. Covered by `test/test_cron_user_origin_directive_refusal.py` and
+`test_cron_sequence_member_alias.py::test_a_refusal_in_an_earlier_sequence_step_leads_the_runs_result`.
+
 **History is best-effort.** `CronHistoryStore` never lets a history failure reach
 the scheduler. Its directory is resolved once by `prepare()`: usable means history
 is fully on, unusable means the store constructs with `enabled` False, where every
