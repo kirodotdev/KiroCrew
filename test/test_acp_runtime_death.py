@@ -70,6 +70,8 @@ def _track_untracks(monkeypatch, rt_mod, *, pid_exists: bool):
         rt_mod, "_untrack_root_by_identity", lambda p, tok: calls.append((p, tok)) or True
     )
     monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda p: pid_exists)
+    # The POSIX retirement. Windows drains the tree instead (pinned below).
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", False)
     return calls
 
 
@@ -163,6 +165,33 @@ async def test_eof_inside_an_oversize_line_retires_the_same_way(monkeypatch):
         await _stop_reader(task)
     assert rt._dead is True
     assert calls == [(4242, "tok-4242")]
+
+
+@pytest.mark.asyncio
+async def test_observed_exit_on_windows_drains_the_tree_instead(monkeypatch):
+    """A Windows descendant has no registry line of its own, so the confirmed
+    exit drains the root's tree, which retires the root's lines itself."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, reader, proc = _make_runtime()
+    calls = _track_untracks(monkeypatch, rt_mod, pid_exists=False)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", True)
+    drained = []
+
+    async def _drain(process):
+        drained.append(process)
+        return True
+
+    monkeypatch.setattr(rt_mod.platform_compat, "terminate_windows_asyncio_tree", _drain)
+    proc.returncode = 1
+    task = await _start_reader(rt)
+    try:
+        reader.feed_eof()
+        await await_until(task, what="the reader loop exiting")
+    finally:
+        await _stop_reader(task)
+    assert drained == [proc]
+    assert calls == []
 
 
 # ── Death-log severity: deliberate teardown vs genuine death ──

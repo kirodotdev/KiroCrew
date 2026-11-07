@@ -285,7 +285,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _JOB_OBJECT_LIMIT_ACTIVE_PROCESS _JOB_OBJECT_LIMIT_JOB_MEMORY
         _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS apply_job_limits _TH32CS_SNAPTHREAD
         _THREAD_SUSPEND_RESUME _INVALID_HANDLE_VALUE _RESUME_THREAD_FAILED
-        resume_process_main_thread
+        resume_process_main_thread _adopt_job
         """.split()),
     "kiro_crew.platform_compat_wintree": tuple("""
         _WINDOWS_TERMINATE_REFUSAL_WAIT_MS terminate_process_handle process_handle_active
@@ -294,6 +294,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         WindowsTreeDrainPending _PendingWindowsTreeCleanup _PENDING_WINDOWS_TREE_CLEANUPS
         _PENDING_WINDOWS_TREE_CLEANUPS_LOCK _WINDOWS_TREE_ADMISSIONS
         reserve_windows_tree_cleanup release_windows_tree_reservation _manual_windows_tree
+        adopt_windows_tree_job _terminate_windows_tree_job
         _bind_windows_cleanup_process create_windows_cleanup_owned_process
         finish_windows_cleanup_owned_spawn _drain_windows_process_tree
         _advance_owned_windows_tree terminate_windows_process_tree_owned
