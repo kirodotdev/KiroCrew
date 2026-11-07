@@ -242,13 +242,75 @@ async def test_registry_reinstall_rechecks_retained_startup_before_replacement(
         raise AssertionError("registry reinstall must not replace old files")
 
     monkeypatch.setattr(registry, "update_app", _must_not_update)
+    taken_down: list[str] = []
 
-    result = await registry.install_from_registry("demoapp")
+    async def _take_down() -> None:
+        taken_down.append("demoapp")
+
+    result = await registry.install_from_registry("demoapp", before_replace=_take_down)
 
     assert result["ok"] is False
     assert result["code"] == "startup_hook_still_running"
     assert result["retryable"] is True
     assert cleanup_calls == [("demoapp", True), ("demoapp", True)]
+    assert taken_down == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [True, False])
+async def test_an_update_takes_the_app_down_only_to_copy_its_files(monkeypatch, tmp_path, managed):
+    """``before_replace`` runs after the clone, build and boundary recheck, right before
+    ``update_app`` copies a managed app in; a self-managed app replaces no installed
+    file, so its own registrations are never taken down."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(monkeypatch, src, cloned_manifest={"name": "demoapp", "version": "2.0.0"})
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    if not managed:
+        entry["resources"] = "app"
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "get_app", lambda _name: {"name": "demoapp", "version": "1.0.0"})
+    monkeypatch.setattr(registry, "_resolved_clone_commit", lambda root: "a" * 40)
+    monkeypatch.setattr(registry, "verified_signer", lambda manifest: "")
+    monkeypatch.setattr(registry, "set_app_provenance", lambda name, **kwargs: None)
+    calls: list[str] = []
+    harness_build = registry._clone_build_app
+
+    async def _build(*args, **kwargs):
+        calls.append("build")
+        return await harness_build(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "_clone_build_app", _build)
+
+    from kiro_crew.apps import admission, hooks_integration, manager
+
+    async def _recheck(app_name: str, *, bounded: bool) -> bool:
+        calls.append("recheck")
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_retained_startup_hooks", _recheck)
+    monkeypatch.setattr(admission, "app_version_refusal", lambda *a: None)
+    monkeypatch.setattr(manager, "refresh_app_config_keys", lambda: None)
+
+    def _register_external(**kwargs):
+        calls.append("register")
+        return MagicMock(ok=True, notice="")
+
+    monkeypatch.setattr(manager, "register_external_app", _register_external)
+
+    async def _take_down() -> None:
+        calls.append("take-down")
+
+    def _replace(path):
+        calls.append("replace")
+        return MagicMock(ok=True, name="demoapp", message="done", error="", notice="")
+
+    monkeypatch.setattr(registry, "update_app", _replace)
+
+    result = await registry.install_from_registry("demoapp", before_replace=_take_down)
+
+    assert result["ok"] is True, result
+    copy = ["take-down", "replace"] if managed else ["register"]
+    assert calls == ["recheck", "build", "recheck", *copy]
 
 
 @pytest.mark.asyncio
