@@ -12620,6 +12620,8 @@
       "chatFooter": {
         "compacting": "Compattazione in corso…",
         "killing": "Arresto forzato…",
+        "stall_elapsed": "In silenzio da {{elapsed}}",
+        "stalled": "Nessun nuovo output da un po’. Continua ad aspettare o fermalo se sembra bloccato.",
         "stopping": "Arresto in corso…",
         "thinking": "Riflessione…"
       },

@@ -12620,6 +12620,8 @@
       "chatFooter": {
         "compacting": "Compactando…",
         "killing": "Forzando la detención…",
+        "stall_elapsed": "En silencio durante {{elapsed}}",
+        "stalled": "Hace un rato que no hay salida nueva. Sigue esperando o detenlo si parece atascado.",
         "stopping": "Deteniendo…",
         "thinking": "Pensando…"
       },

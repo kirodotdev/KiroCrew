@@ -12620,6 +12620,8 @@
       "chatFooter": {
         "compacting": "Compactando…",
         "killing": "Forçando a parada…",
+        "stall_elapsed": "Em silêncio há {{elapsed}}",
+        "stalled": "Nenhuma saída nova há algum tempo. Continue esperando ou pare se parecer travado.",
         "stopping": "Parando…",
         "thinking": "Pensando…"
       },

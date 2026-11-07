@@ -12084,6 +12084,8 @@
       "chatFooter": {
         "compacting": "コンパクト中…",
         "killing": "強制停止中…",
+        "stall_elapsed": "{{elapsed}}間、動きなし",
+        "stalled": "しばらく新しい出力がありません。このまま待つか、止まっているようなら停止してください。",
         "stopping": "停止中…",
         "thinking": "考え中…"
       },
