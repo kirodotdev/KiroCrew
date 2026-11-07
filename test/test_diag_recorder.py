@@ -1015,6 +1015,29 @@ def test_a_non_finite_window_value_is_refused_by_name(tmp_path: Path, field: str
     assert field in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "kwargs, field",
+    [
+        ({"since": "nan"}, "since"),
+        ({"until": "inf"}, "until"),
+        ({"around": "nan"}, "around"),
+        ({"around": "1700000000", "radius": "nan"}, "radius"),
+        ({"around": "1700000000", "radius": "infm"}, "radius"),
+    ],
+)
+def test_a_non_finite_window_string_is_refused_by_name(
+    tmp_path: Path, kwargs: dict[str, str], field: str
+) -> None:
+    """A route passes query-string text, so "nan" and "inf" are refused as text too."""
+    recorder = _make(tmp_path)
+    try:
+        out = recorder.query(**kwargs)
+    except ValueError as exc:
+        assert field in str(exc)
+        return
+    raise AssertionError(f"query({kwargs}) was accepted, window={out['window']!r}")
+
+
 def test_a_json_line_that_is_not_a_record_is_skipped(tmp_path: Path) -> None:
     """Valid JSON is not necessarily a row.
 
