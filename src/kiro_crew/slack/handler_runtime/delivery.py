@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         DashboardState,
         PostedOptions,
         _append_footer_actions,
+        _backfill_late_link,
         _condense_thinking,
         _convert_tables,
         _dashboard_state,
@@ -723,6 +724,11 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
         if linked_session_key and _dashboard_state and answer.accumulated and not _skip_writes:
             _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
+        # A Link click while this turn ran may have imported its answer unfinished.
+        if _dashboard_state and answer.accumulated and not _skip_writes:
+            _backfill_late_link(
+                reply_ts, msg_ts, linked_session_key, answer.stream_ts, answer.accumulated
+            )
         # ── Auto-title Slack thread (fire-and-forget) ──
         # Claim-early-unclaim-on-failure pattern: ``try_claim`` checks and marks in one
         # synchronous step, so concurrent messages (and the transport path, which
