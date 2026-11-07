@@ -269,10 +269,13 @@ export function RemoteBrowseSection({ provider, onForked, onCloned }: {
       {hasNextPage && (
         <div className="mt-2 flex justify-center">
           {/* Stable aria-label: while loading the button shows only a spinner
-              icon, so it needs an accessible name in both states. */}
+              icon, so it needs an accessible name in both states. Busy is
+              `aria-disabled` plus the guard, NOT `disabled`, which leaves the
+              tab order and drops a keyboard user's focus while a page loads. */}
           <Btn
-            onClick={() => fetchNextPage()}
-            disabled={isFetchingNextPage}
+            onClick={() => { if (!isFetchingNextPage) void fetchNextPage() }}
+            aria-disabled={isFetchingNextPage || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-default"
             aria-label={i18nT('pages.artifactsPage.load_more_artifacts', { provider: provider.display_name })}
           >
             {isFetchingNextPage
