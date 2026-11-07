@@ -452,6 +452,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         HeapTrimMaintainer,
         MallocArenaCap,
         SubtreeSample,
+        _darwin_subtree_sample,
         _glibc_mallopt,
         _linux_available_mib,
         _linux_current_rss_bytes,

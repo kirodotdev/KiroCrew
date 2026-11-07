@@ -354,8 +354,8 @@ _RSS_SAMPLES_TO_SETTLE = 2
 
 
 # A row whose own session answered this long ago counts as settled even when no
-# sweep could measure it: macOS and Windows have no ``/proc`` subtree reading, so
-# ``_rss_samples`` never advances there, and the native free-memory reading
+# sweep could measure it: Windows has no subtree reading, so ``_rss_samples``
+# never advances there (macOS reads it through ``libproc``), and the native free-memory reading
 # already holds the runtime by then. Two sweep intervals, the same exposure the
 # sample count bounds where it can be read.
 _SETTLE_AFTER_SECS = 2 * _REAPER_INTERVAL
