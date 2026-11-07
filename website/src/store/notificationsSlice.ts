@@ -344,9 +344,13 @@ const notificationsSlice = createSlice({
   initialState,
   reducers: {
     addNotification(state, action: PayloadAction<Notification>) {
-      if (!state.items.some(n => n.ts === action.payload.ts)) {
-        state.items.push(action.payload)
-        state.items = capRows(state, state.items)
+      const note = action.payload
+      // Read the rows as plain objects, not through the draft: touching each
+      // row through the draft makes a proxy per row on every pass, which made a
+      // burst that fills the ring cost the cap squared in proxies.
+      const prior = (isDraft(state.items) ? original(state.items) : undefined) ?? state.items
+      if (!prior.some(n => n.ts === note.ts)) {
+        state.items = capRows(state, [...prior, note])
         pruneAckStamps(state)
       }
     },
