@@ -25,7 +25,10 @@ from kiro_crew.dashboard.session_control_parts.delivery_containment import (
     _has_channel_mirror,
     _probe_channel_mirror_for_key,
 )
-from kiro_crew.dashboard.session_control_parts.session_status import _bounded_status_title
+from kiro_crew.dashboard.session_control_parts.session_status import (
+    _bounded_status_title,
+    _creation_parent,
+)
 from kiro_crew.dashboard.session_control_parts.session_tree import _slot_tree_parent
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
     _check_caller_slot_fields,
@@ -284,20 +287,6 @@ def _rebind_in_background(slot: Any, meta: "Mapping[str, Any]") -> None:
     )
     _PENDING_REBINDS.add(task)
     task.add_done_callback(_PENDING_REBINDS.discard)
-
-
-def _creation_parent(slot_key: str) -> str:
-    """*slot_key*'s creator from the crew log's CREATION records, or ``""``. No I/O.
-
-    Never the sidebar parent: an adoption or a handoff moves that, and it says nothing
-    about who made the session.
-    """
-    from kiro_crew.crew_log import emit as crew_log_emit
-    from kiro_crew.crew_log.session_tree_projection import creator_of
-
-    if not crew_log_emit.enabled():
-        return ""
-    return creator_of(slot_key)
 
 
 def _archived_target_refusal(
