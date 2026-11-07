@@ -21,6 +21,7 @@ import pytest
 from onboarding_import_coverage_helpers import _POSIX_FS_ONLY, _reasons, _scan
 
 from kiro_crew import onboarding_plan, onboarding_scan, onboarding_sources
+from kiro_crew.dashboard.handlers import onboarding_import as onboarding_handler
 from kiro_crew.onboarding_sources import codex as codex_source
 from kiro_crew.onboarding_sources import hermes as hermes_source
 from kiro_crew.onboarding_sources import lineage as lineage_source
@@ -554,6 +555,25 @@ class TestLineageMemoryDatabase:
         lineage_source._scan_lineage_memory_db(scan)
 
         assert "invalid_memory_record" in _reasons(scan)
+
+    def test_undecodable_json_reaches_the_review_as_a_failure(self, tmp_path: Path) -> None:
+        scan = _scan(tmp_path, "predecessor")
+        # The same code from a deliberate type check, recorded first, must not hide it.
+        scan.diagnostic("memories", "invalid_memory_record")
+        _lineage_db(
+            scan.root / "memory.db",
+            semantic=[
+                ("pref.k", "{oops", 1.0, 0, "", None),
+                ("pref.key", '"AKIAIOSFODNN7EXAMPLE"', 1.0, 0, "", None),
+            ],
+        )
+
+        lineage_source._scan_lineage_memory_db(scan)
+        plan = {"sources": [], "skipped": scan.skipped}
+        rows = {row["reason"]: row for row in onboarding_handler._scan_response(plan)["skipped"]}
+
+        assert rows["invalid_memory_record"].get("failed") is True
+        assert "failed" not in rows["credential_bearing_memory"]
 
     def test_secret_fields_inside_a_decoded_value_are_omitted(self, tmp_path: Path) -> None:
         scan = _scan(tmp_path, "predecessor")

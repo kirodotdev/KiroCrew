@@ -207,7 +207,7 @@ def _openclaw_workspace_source(scan: _Scan, raw_path: str | Path) -> Path | None
     try:
         resolved = path.resolve(strict=True)
     except (OSError, RuntimeError):
-        scan.diagnostic("workspaces", "workspace_unavailable")
+        scan.diagnostic("workspaces", "workspace_unavailable", failed=True)
         return None
     if not resolved.is_dir() or is_sensitive_path(str(resolved)):
         return None

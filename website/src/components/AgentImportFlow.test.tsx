@@ -822,11 +822,29 @@ describe('AgentImportFlow', () => {
     expect(screen.getByText('Skipped')).toHaveAttribute('data-reason', 'a_code_no_one_knows_yet')
     expect(screen.getByText('Secrets are never imported')).toBeInTheDocument()
     expect(screen.queryByText('row_count_limit')).toBeNull()
-    // Pinned until the scan sends a failed flag (#29216): a caught failure
-    // reads in words but is still a note, like every other skip.
+    // A failure-sounding code alone keeps the row a note: only the scan's
+    // `failed` flag makes it an error.
     expect(screen.getByText('Files could not be read')).toHaveAttribute('data-reason', 'read_failed')
     expect(screen.getByText('Could not be read as valid settings')).toHaveAttribute('data-reason', 'invalid_config')
     expect(screen.queryByTestId('agent-import-skip-read-error')).toBeNull()
+  })
+
+  it('shows a skip the scan flags as failed as an error, and a deliberate skip as a note', async () => {
+    mockSuccessfulRequests({
+      ...SCAN_RESPONSE,
+      skipped: [
+        { source: 'Claude Code', category: 'Memories', reason: 'invalid_memory_record', failed: true },
+        { source: 'Claude Code', category: 'MCP servers', reason: 'credential_bearing_server' },
+      ],
+    })
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await goToReview()
+
+    const failures = screen.getAllByTestId('agent-import-skip-read-error')
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toHaveAttribute('role', 'alert')
+    expect(failures[0]).toHaveTextContent('Could not be read as valid settings')
+    expect(screen.getByText('Holds credentials, so it stays with its source').closest('[role="alert"]')).toBeNull()
   })
 
   it('reads a skip code by its kind, not by a suffix another kind shares', () => {

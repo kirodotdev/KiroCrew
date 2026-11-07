@@ -375,6 +375,8 @@ def _scan_response(plan: object) -> dict[str, Any]:
         }
         if "count" in item:
             projected["count"] = _nonnegative_count(item["count"])
+        if item.get("failed") is True:
+            projected["failed"] = True
         skipped.append(projected)
 
     return {
