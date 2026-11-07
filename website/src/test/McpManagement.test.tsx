@@ -914,6 +914,41 @@ describe('stub every server the evidence allows', () => {
     expect(screen.getByText(M('enable_all_review_failed_names', { names: 'failed-mcp' }), { exact: false })).toBeTruthy()
   })
 
+  it('does not name a server as skipped when another write shared it', async () => {
+    // Kiro Crew's own servers follow kirocrew-core: the follower's own write is
+    // skipped, but sharing kirocrew-core puts it in the set in effect anyway.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        { ...server({ name: 'kirocrew-dashboard' }), recommendation: declared },
+        { ...server({ name: 'kirocrew-core' }), recommendation: declared },
+        { ...server({ name: 'ineligible-mcp' }), recommendation: declared },
+      ],
+    } as never)
+    vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
+      if (name === 'kirocrew-core') {
+        return {
+          ok: true, name, stub: true, stubbed: [name], skipped: [],
+          stub_servers: ['kirocrew-core', 'kirocrew-dashboard'],
+        }
+      }
+      // A write that stubs nothing carries no `stub_servers`.
+      return { ok: true, name, stub: true, stubbed: [], skipped: [{ name, reason: 'evidence_insufficient' }] }
+    }) as never)
+    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockImplementation((async (name: string) => preview(name)) as never)
+
+    mount()
+    await screen.findByText('kirocrew-core', undefined, { timeout: 5000 })
+    fireEvent.click(await screen.findByRole('button', { name: M('enable_all') }, { timeout: 5000 }))
+    // Chain: servers re-read -> one batched launch read -> the confirm button.
+    fireEvent.click(await screen.findByRole('button', { name: M('share_all_confirm', { count: 3 }) }, { timeout: 5000 }))
+
+    // Chain: one stub POST per listed server -> the result notice.
+    await waitFor(() => expect(screen.getByText(M('enable_all_review_result_shared', { count: 2 }), { exact: false })).toBeTruthy(), { timeout: 5000 })
+    expect(screen.getByText(M('enable_all_review_skipped_names', { names: 'ineligible-mcp' }), { exact: false })).toBeTruthy()
+  })
+
   it('reads every candidate launch in one request', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
     vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
