@@ -18,9 +18,9 @@ Every catalog scope (aliases aside) is in exactly one of the two;
 neither. ``BASELINE_INNER_LISTS`` holds the inner lists a remote policy must name
 itself: one it leaves out keeps its baseline even though it named the capability.
 
-``approval_modes`` carries the catalog's undeniable floor (``normal``, ``trust``,
-``trust_reads``), so only ``yolo`` is off. The approval mode default stays
-``normal``: under it an open ``filesystem.write`` call, and an open ``commands``
+``approval_modes`` allows ``normal``, ``trust`` and ``trust_reads``, so only ``yolo``
+is off; a remote ``permission_mode`` rule may narrow it down to ``normal``. The
+approval mode default stays ``normal``: under it an open ``filesystem.write`` call, and an open ``commands``
 call that is not read-only, still asks first.
 """
 
@@ -39,7 +39,7 @@ _PUBLISH_LISTS_OFF: Mapping[str, Mapping[str, object]] = {
 }
 
 BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
-    # The catalog's ``always_permitted`` floor: only ``yolo`` is off.
+    # Only ``yolo`` is off; ``normal`` is the catalog floor a rule cannot remove.
     "approval_modes": {"mode": "allow", "allow": ["normal", "trust", "trust_reads"]},
     # Kept off by the owner (D3), while ``apps`` opened.
     "app_versions": _OFF,

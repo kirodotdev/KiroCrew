@@ -115,10 +115,13 @@ async def apply_to_live_sessions(state: Any, name: str, mode: str) -> int:
                 out.append(slot)
         return out
 
+    from kiro_crew.approval_mode_policy import clamp_session_mode, ensure_resolved
     from kiro_crew.config.sections import MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
 
-    mode = mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+    # A final policy answer before the clamp: a passing deny is not a Profile choice.
+    await asyncio.to_thread(ensure_resolved)
     workers = await asyncio.to_thread(_workers)
+    mode = clamp_session_mode(mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE)
     for slot in workers:
         if state._slots.get(slot.key) is not slot:
             continue

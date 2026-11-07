@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
+from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -113,10 +114,10 @@ class _ChatSlot:
         "_approval_futures",
         "_approval_instances",
         "_approval_stopped",
-        "_trust",
+        "_trust_held",
         "_trust_card_scoped",
         "_trust_scope",
-        "_trust_reads",
+        "_trust_reads_held",
         "_posture_inherited",
         "_member_approval_seeded",
         "_trusted_patterns",
@@ -500,10 +501,10 @@ class _ChatSlot:
     _approval_futures: dict[str, asyncio.Future[str]]
     _approval_instances: dict[str, tuple[asyncio.Future[str], str]]
     _approval_stopped: set[str]
-    _trust: bool
+    _trust_held: bool
     _trust_card_scoped: bool
     _trust_scope: str
-    _trust_reads: bool
+    _trust_reads_held: bool
     _posture_inherited: bool
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
@@ -862,6 +863,28 @@ class _ChatSlot:
     def pending_has_consumer(self) -> bool:
         """True while something can still deliver rows out of the pending queue."""
         return self._buffers.pending_has_consumer(self)
+
+    # ``_trust`` / ``_trust_reads`` read back only what the policy lets a session hold
+    # now (``approval_mode_policy``), so a grant set before a ``permission_mode`` deny
+    # landed is not honoured by any reader: tool approval, inheritance, the stored
+    # session policy and the picker all read these. A write of a denied grant holds
+    # nothing, so a grant committed late (after an await, past the deny teardown)
+    # cannot come back when a later policy allows the mode again.
+    @property
+    def _trust(self) -> bool:
+        return self._trust_held and session_mode_permitted("trust")
+
+    @_trust.setter
+    def _trust(self, value: bool) -> None:
+        self._trust_held = bool(value) and session_mode_permitted("trust")
+
+    @property
+    def _trust_reads(self) -> bool:
+        return self._trust_reads_held and session_mode_permitted("trust_reads")
+
+    @_trust_reads.setter
+    def _trust_reads(self, value: bool) -> None:
+        self._trust_reads_held = bool(value) and session_mode_permitted("trust_reads")
 
     @property
     def _has_reader(self) -> bool:

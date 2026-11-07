@@ -45,6 +45,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
+from kiro_crew.messaging.session_trust import is_session_trusted, trust_permitted
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -547,8 +548,8 @@ async def dispatch(payload: dict) -> None:
                 error="unauthorized user",
             )
             return
-        is_trust = action_id.startswith(TOOL_TRUST_ACTION_PREFIX)
-        approved = is_trust or action_id.startswith(TOOL_APPROVE_ACTION_PREFIX)
+        pressed_trust = action_id.startswith(TOOL_TRUST_ACTION_PREFIX)
+        approved = pressed_trust or action_id.startswith(TOOL_APPROVE_ACTION_PREFIX)
         # value / action_id suffix carry the session-namespaced approval token
         # (session_key:request_id) so a click resolves ONLY its own session's
         # pending tool — kiro-cli request ids restart at 1 per session — plus the
@@ -584,12 +585,17 @@ async def dispatch(payload: dict) -> None:
             return
         # Trust grants per-session auto-approve BEFORE resolving, so subsequent
         # tools in this session are auto-approved (mirrors native trust_tool).
-        if is_trust:
+        # The policy is read here, after the channels await, and the label and audit
+        # say "trusted" only when the grant really took: under a ``permission_mode``
+        # deny of ``trust`` the press approves this one tool.
+        is_trust = False
+        if pressed_trust and trust_permitted():
             sess_key = SlackApprovalDecider.session_for(approval_key, nonce=press_nonce)
             # No live prompt answers to this press, so there is no session to widen.
             # Granting on the empty key would escalate whatever later reads it.
             if sess_key:
                 add_trusted_session(sess_key, _orch.sessions if _orch else None)
+                is_trust = is_session_trusted(sess_key)
         resolved = SlackApprovalDecider.resolve_global(approval_key, approved, nonce=press_nonce)
         if not resolved:
             label = "⏱ This approval already expired."

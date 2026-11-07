@@ -611,6 +611,12 @@ async def api_channel_approve_agent(request: web.Request) -> web.Response:
             # grant above governs subsequent requests.
             agent._approval_future.set_result("approved")
             return web.json_response({"ok": True})
+        if action == "trust":
+            from kiro_crew.approval_mode_policy import session_mode_permitted
+
+            if not session_mode_permitted("trust"):
+                # The policy denies ``trust``: this press approves the one tool only.
+                action = "approved"
         agent._approval_future.set_result(action)
         if action == "trust":
             ch.trusted = True
