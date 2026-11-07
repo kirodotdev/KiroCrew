@@ -3226,6 +3226,10 @@ Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
   the verdict the lane cannot reach, and it is never a pass. A shape an accepted
   RFC already licenses is not relitigated by asking for its grounds. An ordinary fix
   with thin provenance stays where it was: an `inherited` item, a `Notes:` bullet.
+  A fix or tuning inside a shape a non-draft base RFC covers is not product shape,
+  even when the same diff edits that RFC's wording to match; the lane does not ask
+  for a separate RFC PR for it. Only a large change (the list is in
+  CONTRIBUTING.md) goes RFC-first, and lens 9 gates only the product-shape case.
 
 A third trigger is read off the diff too: **a deleted pin is a prior decision, and
 silence about it is the same case as mislabelling it.** When the diff deletes or

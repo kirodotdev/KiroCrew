@@ -1460,6 +1460,13 @@ class TestMissingEvidenceIsABlockNotAConcern:
             assert "':(exclude)docs/request-for-change/README.md'" in wf
             assert "rfc-status.txt" in _flat(wf)
 
+    def test_first_principles_accepts_a_same_pr_doc_update_for_a_non_large_change(self):
+        # Only a large change goes RFC-first as its own PR; a fix inside a
+        # covered shape updates the RFC wording in the same PR, unblocked.
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "A same-PR doc update beside a non-large change is the expected form" in contract
+        assert "this lens gates only its product-shape case" in contract
+
     def test_first_principles_product_shape_gate_is_not_a_request_for_a_document(self):
         # The lane may not ask for an RFC to be written; lens 9 reports that a
         # record is absent and names the two ways it gets made. Both sentences

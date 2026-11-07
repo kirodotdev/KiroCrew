@@ -270,7 +270,10 @@ and a `partial` plan main deliberately diverged from does not cover the diverged
 shape) -- or to a maintainer's
 `/ai-review override first-principles <head>` on the PR. A PR that flips this
 field, or ships the RFC beside the change, has proposed a decision, not
-recorded one; see `docs/ci/ci-and-reviews.md`.
+recorded one; see `docs/ci/ci-and-reviews.md`. That applies only to a new
+product-shape item. A fix or tuning inside a shape an RFC here already covers
+edits the RFC's wording in the same PR as the code; only a large change (see
+CONTRIBUTING.md) goes RFC-first as its own PR.
 
 `partial` is the most common status and the most dangerous one to read
 carelessly — several documents here describe a plan that main only partly
