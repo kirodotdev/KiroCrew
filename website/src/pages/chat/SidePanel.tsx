@@ -674,7 +674,8 @@ export default function SidePanel({
             trailing strip controls — + menu, dock toggle, close — past the
             panel root's `overflow-hidden` edge, where nothing at that width
             brings them back. The chips inside stay `shrink-0`: they scroll,
-            they never squeeze. */}
+            they never squeeze. The group yields width only once the dynamic
+            group has none left. */}
         {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
             parent, not the scrolled group. min-w-0 keeps the scroller
             shrinkable (the group must stay shrinkable per the comment above). */}
@@ -743,9 +744,13 @@ export default function SidePanel({
         )}
         {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
             parent, not the scrolled group. min-w-0 keeps the scroller
-            shrinkable. The -mb-px (border overlap) stays on the group itself,
-            which the seam-hairline contract pins. */}
-        <div ref={dynamicWrapRef} className="relative min-w-0 flex items-end">
+            shrinkable; `shrink-[10000]` (flex shrinks by factor × base size)
+            spends all its width before the pinned group's, with no floor that
+            could push the controls into the caption reserve, and
+            `overflow-x-clip` keeps its squeezed padding and fades inside. The
+            -mb-px (border overlap) stays on the group itself, which the
+            seam-hairline contract pins. */}
+        <div ref={dynamicWrapRef} className="relative min-w-0 shrink-[10000] overflow-x-clip flex items-end">
         <Reorder.Group
           ref={tabNav.dynamicScrollerRef}
           axis="x"
