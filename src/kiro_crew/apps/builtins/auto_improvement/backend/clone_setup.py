@@ -1317,4 +1317,6 @@ def _ok(spec: CloneSpec, dest: Path, *, reused: bool) -> dict:
         # The real remote, for the trusted publishers only. Kept in config rather than in
         # the clone so agent-run Bash inside the clone cannot discover it from git.
         "origin_url": spec.clone_url,
+        # Rebuilt from the validated owner/repo, so nothing else in the pasted URL is stored.
+        "target_url": f"https://github.com/{spec.display}",
     }

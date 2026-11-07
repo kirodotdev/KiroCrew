@@ -588,6 +588,7 @@ class TestSetupClone:
                 "display": "owner/repo",
                 "origin_url": "https://github.com/owner/repo.git",
                 "push_disabled": True,
+                "target_url": self.URL,
             },
         )
         response = await routes._handle_setup_clone(_request("POST", body={"url": self.URL}))
@@ -597,6 +598,28 @@ class TestSetupClone:
         assert config["clone"] == "/scratch/repo"
         assert config["origin_url"] == "https://github.com/owner/repo.git"
         assert config["target_display"] == "owner/repo"
+
+    async def test_a_token_in_the_pasted_url_is_never_persisted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Config keeps only the validated owner/repo of the pasted URL. The clone's
+        git and DNS steps are stubbed; the validation and result building are real."""
+        monkeypatch.setattr(clone_setup, "_host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(clone_setup, "_gh_prefers_ssh", lambda: False)
+        monkeypatch.setattr(clone_setup, "_push_disabled", lambda _dest: True)
+
+        def _fake(url: str, scratch: Path, **_kw: Any) -> tuple[dict, str]:
+            spec, err = clone_setup.validate_target_url(url)
+            assert spec is not None, err
+            return clone_setup._ok(spec, scratch / spec.dir_name, reused=False), ""
+
+        monkeypatch.setattr(clone_setup, "setup_safe_clone", _fake)
+        pasted = "https://github.com/owner/repo/?private_token=x"
+        response = await routes._handle_setup_clone(_request("POST", body={"url": pasted}))
+        assert response.status == 200
+        persisted = store.config_path().read_text(encoding="utf-8")
+        assert json.loads(persisted)["target_url"] == self.URL
+        assert "private_token" not in persisted
 
     async def test_retargeting_clears_the_branch_and_the_diff_scope(
         self, data_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -612,7 +635,12 @@ class TestSetupClone:
         )
         self._stub_clone(
             monkeypatch,
-            result={"clone": "/c", "display": "owner/repo", "push_disabled": True},
+            result={
+                "clone": "/c",
+                "display": "owner/repo",
+                "push_disabled": True,
+                "target_url": self.URL,
+            },
         )
         response = await routes._handle_setup_clone(_request("POST", body={"url": self.URL}))
         config = _json_of(response)["config"]
@@ -626,7 +654,12 @@ class TestSetupClone:
         _config(data_root, target_url=self.URL, branch="origin/feature")
         self._stub_clone(
             monkeypatch,
-            result={"clone": "/c", "display": "owner/repo", "push_disabled": True},
+            result={
+                "clone": "/c",
+                "display": "owner/repo",
+                "push_disabled": True,
+                "target_url": self.URL,
+            },
         )
         response = await routes._handle_setup_clone(_request("POST", body={"url": self.URL}))
         assert _json_of(response)["config"]["branch"] == "origin/feature"
