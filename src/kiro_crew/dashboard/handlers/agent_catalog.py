@@ -41,6 +41,7 @@ from kiro_crew.config.loader import (
     reset_dangling_default_agent,
 )
 from kiro_crew.config.paths import kiro_agents_dir, mate_agents_dir
+from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
@@ -325,6 +326,12 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
 
     The member-management endpoint remains unchanged. No name-based deduplication
     crosses namespaces: a shared template and a member can have the same name.
+
+    ``?project_path=`` is the owner's way to ask for a directory no chat runs in
+    yet (the folder settings modal). It is read only when the request names no
+    chat, and checked by the folder ``project_dir`` validator (absolute, not
+    sensitive, an existing directory); a path that fails lists the global
+    templates only.
     """
     state = request.app.get("state")
     session_key = _read_session_key(request)
@@ -349,6 +356,9 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     # The reset below writes the owner's config, so only the owner's own fetch
     # may run it; anyone else's still gets a freshly scanned template list.
     owner = state is not None and is_owner_dashboard_request(request)
+    named_project = (
+        request.rel_url.query.get("project_path", "") if owner and not session_key else ""
+    )
     try:
         # The picker's fetch is the one moment, after boot, that an agent removed
         # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is
@@ -361,7 +371,11 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
             _refresh_for_catalog(owner=owner)
-            discovered = list_agents(project_dir=project_dir)
+            scope = project_dir
+            if named_project:
+                resolved, _error = _validate_project_dir(named_project)
+                scope = Path(resolved) if resolved else None
+            discovered = list_agents(project_dir=scope)
             # From the WHOLE scan, not the template choices: a crewmate may be
             # bound to an agent the template list withholds.
             markdown_only = frozenset(a.name for a in discovered if a.markdown_only)

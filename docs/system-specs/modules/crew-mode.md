@@ -128,7 +128,11 @@ and source; they do not claim a member memory binding or expose spec paths.
 Project discovery uses only the requesting chat's project, selected through
 `X-Session-Key`. An unscoped chat or a request without a chat key never borrows
 another slot's project. An unknown slot and an app request for a foreign slot
-return `404 slot_not_found`. Project templates shadow same-named global templates
+return `404 slot_not_found`. A request that names no chat may name a directory
+instead with `?project_path=` (the folder settings modal's Default agent picker,
+for a folder's own or inherited project directory); it is honoured for the owner
+only and checked by the folder `project_dir` validator (absolute, not sensitive,
+an existing directory), and a path that fails lists the global templates only. Project templates shadow same-named global templates
 according to discovery's existing execution precedence, not member-name precedence.
 
 Private copies and the runtime's two background-only specs, `kirocrew-lite` and

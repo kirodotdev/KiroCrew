@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -177,6 +178,41 @@ async def test_catalog_uses_requesting_project_and_preserves_scope(catalog, tmp_
     catalog.discovery.assert_called_once_with(project_dir=tmp_path)
     assert rows[-1]["scope"] == "project"
     assert rows[-1]["selection_kind"] == "template"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case, scoped",
+    [
+        ("owner", True),
+        ("sensitive", False),
+        ("other-user", False),
+        ("app", False),
+        ("chat-key", False),
+    ],
+)
+async def test_the_owner_names_a_project_no_chat_runs_in(catalog, tmp_path, case, scoped):
+    # The folder settings modal lists the agents of the folder's project
+    # directory, which no chat is bound to yet; only the owner may name one, a
+    # request naming a chat keeps that chat's project, and a path a folder save
+    # would refuse lists the global templates only.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    named = {"sensitive": "~/.ssh"}
+    headers = {"X-Session-Key": "chat-empty"} if case == "chat-key" else {}
+    if case == "other-user":
+        catalog.caller.user = "another-user"
+    elif case == "app":
+        catalog.caller.app = "caller-app"
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get(
+            "/api/agents/catalog",
+            params={"project_path": named.get(case, str(repo))},
+            headers=headers,
+        )
+        assert response.status == 200
+    expected = Path(os.path.realpath(repo)) if scoped else None
+    catalog.discovery.assert_called_once_with(project_dir=expected)
 
 
 @pytest.mark.asyncio
