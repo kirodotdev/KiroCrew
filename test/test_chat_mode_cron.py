@@ -91,6 +91,7 @@ class _FakeOverride:
         self.activate_calls: list[str] = []
         self.deactivate_calls: list[str] = []
         self.is_declared = False
+        self.is_cli_launch = False
 
     def activate(self, source: str) -> _FakeOverride:
         self.activate_calls.append(source)

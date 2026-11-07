@@ -212,8 +212,12 @@ def enable_yolo_with_ttl(ttl_secs: int) -> None:
 
 
 def is_yolo_mode() -> bool:
-    """Return whether YOLO mode is currently active."""
-    return safety_override().is_active()
+    """Return whether YOLO mode is currently active for Slack.
+
+    ``gateway --approval yolo``'s grant is the dashboard's only (``is_cli_launch``).
+    """
+    so = safety_override()
+    return so.is_active() and so.is_cli_launch is not True
 
 
 def is_slack_session_trusted(session_key: str) -> bool:

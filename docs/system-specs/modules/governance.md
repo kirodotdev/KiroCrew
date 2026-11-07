@@ -3927,9 +3927,10 @@ iterates `SCOPE_CATALOG`.
 `24h`) plus `until_shutdown`; the timed default is `6h`. The `yolo_duration`
 `SCOPE_CATALOG` row is a `ScopedRuleset` on the `identifier` matcher and governs
 only the two no-expiry members: `permanent` (the standing
-`agent.dangerously_skip_permissions` declaration) and `until_shutdown` (an ad-hoc
-grant with no timed expiry). Timed choices remain bounded by the ordinary config
-and `SafetyOverride` ceilings rather than this scope.
+`agent.dangerously_skip_permissions` declaration, and `gateway --approval yolo` for
+its launch) and `until_shutdown` (an ad-hoc grant with no timed expiry). Timed
+choices remain bounded by the ordinary config and `SafetyOverride` ceilings rather
+than this scope.
 
 Both decisions resolve against `HOST_SESSION_KEY` with `fail_closed=True`. Denying
 `permanent` makes `grant_declared_yolo()` fall back to the configured ad-hoc

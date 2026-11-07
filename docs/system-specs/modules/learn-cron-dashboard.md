@@ -2232,7 +2232,9 @@ specified compatibility change.
   `asyncio.create_task()` and applies the startup safety override
   (`_apply_startup_yolo`): `agent.dangerouslySkipPermissions` is a standing
   instruction, so its grant does not expire unless the `yolo_duration` governance
-  scope forbids that, and it is refused when its SEL audit fails (fail-closed). The
+  scope forbids that, and it is refused when its SEL audit fails (fail-closed);
+  `gateway --approval yolo` takes the same grant for that launch (source `cli`), which
+  Slack and channel-linked dashboard turns ignore (`DashboardState.yolo_reaches`). The
   modules of `dashboard/server_runtime/` hold these responsibilities, one each:
   - `api_entrypoint` — `start_api_server`, the headless server's boot sequence;
   - `listener` — the port reservation and bind (`_reserve_dashboard_port`,

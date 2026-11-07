@@ -1013,3 +1013,44 @@ class TestScopedGrantIsNeverPersisted:
             record = await run_turn(TurnScript(events=[_DONE]), slot=slot)
         writes = [call.args for call in record.session_calls if call.name == "set_approval_policy"]
         assert writes == [(f"dashboard:{slot.key}", policy)]
+
+
+class TestGatewayApprovalYoloReachesDashboardChatsOnly:
+    """``gateway --approval yolo``'s grant (source ``cli``) approves dashboard turns only."""
+
+    @pytest.fixture(autouse=True)
+    def _cli_grant(self):
+        with patch("kiro_crew.safety_override.sel"):
+            safety_override().activate_declared("cli")
+        yield
+        with patch("kiro_crew.safety_override.sel"):
+            safety_override().deactivate("test")
+
+    @pytest.mark.asyncio
+    async def test_a_dashboard_turn_auto_approves(self) -> None:
+        record = await run_turn(
+            TurnScript(events=[_untrusted_prompt("r1"), _DONE], user_row=False),
+            slot=SlotSpec(key="chat-1-1785", yolo=True),
+        )
+        assert record.calls("approve_tool")[0].args == ("r1",)
+        assert record.approval_cards == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "script",
+        [
+            {"setup": lambda ctx: setattr(ctx.slot, "_slack_channel", "C1")},
+            {"run_kwargs": {"_directive_channel_origin": True}, "user_row": False},
+        ],
+        ids=["slack-linked-slot", "typed-in-slack"],
+    )
+    async def test_a_slack_linked_dashboard_turn_still_asks(self, script) -> None:
+        slot = SlotSpec(key="chat-1-1785", yolo=True)
+        record = await run_turn(
+            TurnScript(events=[_untrusted_prompt("r1"), _DONE], answers={"r1": REJECTED}, **script),
+            slot=slot,
+        )
+        assert len(record.approval_cards) == 1
+        assert record.audits(request_id="r1", outcome="auto_approved") == []
+        writes = [call.args for call in record.session_calls if call.name == "set_approval_policy"]
+        assert writes == [(f"dashboard:{slot.key}", "")]

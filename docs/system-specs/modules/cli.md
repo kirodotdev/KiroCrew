@@ -3079,3 +3079,18 @@ non-default path.** The flag disables every per-call approval, so pointing it at
 real data home would let a test drive an operator's live sessions and credentials.
 The guard is a startup refusal rather than a warning because a warning in CI output
 is not read.
+
+Background turns read the flag on each approval. Dashboard chats read the
+process-wide safety override instead, so `start_dashboard` arms it at startup from
+the flag (`_apply_startup_yolo`) through the declared grant
+`agent.dangerouslySkipPermissions` uses, with source `cli`. Its activation audit is
+critical (no audit row, no grant), it has no expiry unless the `yolo_duration`
+scope or `yolo_max_seconds` bounds it, and it is refused when an `approval_modes`
+policy denies `yolo`. The grant is the dashboard's only (`SafetyOverride.is_cli_launch`):
+Slack's `is_yolo_mode` ignores it, and so does a dashboard turn a channel message
+started or steered, or one in a channel-linked slot (`DashboardState.yolo_reaches`),
+and so do dashboard channel agents.
+Those keep asking exactly as without the flag. Other channels already auto-approve
+under the flag itself. That policy, and picking another mode in the dashboard,
+change dashboard chats only: background turns keep following the flag while the
+gateway runs. The tool gate's deny list and protected paths still refuse under it.
