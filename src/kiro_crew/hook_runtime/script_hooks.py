@@ -479,6 +479,12 @@ class ScriptHookStore:
         # belong to the user. Preserve their raw JSON values across later status
         # and CRUD writes so fail-soft loading does not become silent data loss.
         self._unparsed_hook_entries: list[object] = []
+        # True while the hooks in the file are not the hooks in memory: the last
+        # load could not read or represent the file, so ``self._hooks`` is empty
+        # (or partial) rather than a copy of it. Saving that would replace every
+        # hook the file holds, so ``_write_hooks_file`` refuses while it is set and
+        # each mutation reloads first (``_atomic_mutation``).
+        self._load_failed = False
         # Mutations are offloaded with asyncio.to_thread (the persistence takes a
         # file lock and fsyncs, which must not block the loop) rather than being
         # implicitly serialised on the single event-loop thread, so two of them can
@@ -495,12 +501,12 @@ class ScriptHookStore:
     def _load(self) -> None:
         if not self._path.exists():
             return
-        from kiro_crew.user_json import loads_user_json
-
         try:
-            data = loads_user_json(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+            # Bytes: json.loads detects UTF-8 (BOM or not), UTF-16 and UTF-32.
+            data = json.loads(self._path.read_bytes())
+        except (ValueError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
+            self._load_failed = True
             return
         self._load_data(data)
 
@@ -518,10 +524,12 @@ class ScriptHookStore:
         # mutation rather than overwriting data the store cannot preserve.
         if not isinstance(data, dict):
             logger.warning("Failed to load hooks: root is not an object")
+            self._load_failed = True
             return
         hooks_data = data.get("hooks", [])
         if not isinstance(hooks_data, list):
             logger.warning("Failed to load hooks: hooks collection is not a list")
+            self._load_failed = True
             return
 
         for h in hooks_data:
@@ -575,14 +583,19 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
-        from kiro_crew.user_json import loads_user_json
-
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
+            if self._load_failed:
+                # The in-memory hooks are not the file's: writing them would erase
+                # every hook the failed load could not read.
+                raise webhooks.WebhookStoreUnreadable(
+                    f"{self._path.name} could not be loaded; refusing to overwrite it "
+                    "and erase the hooks it holds"
+                )
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
+                    loaded = json.loads(self._path.read_bytes())
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"
@@ -595,7 +608,7 @@ class ScriptHookStore:
                     data = {k: v for k, v in loaded.items() if k != "hooks"}
                 except webhooks.WebhookStoreUnreadable:
                     raise
-                except (json.JSONDecodeError, OSError) as exc:
+                except (ValueError, OSError) as exc:
                     logger.warning("hooks.json unreadable, refusing to overwrite it: %s", exc)
                     raise webhooks.WebhookStoreUnreadable(
                         f"{self._path.name} is unreadable; refusing to overwrite it "
@@ -625,7 +638,26 @@ class ScriptHookStore:
         ``ScriptHook`` in place; a shallow dict copy would share those objects and
         restore nothing. The set is small (tens of hooks), so the copy is cheap
         next to the fsync it guards.
+
+        A store whose load failed reloads from disk first, so the mutation applies
+        to the hooks the file actually holds; when the file still cannot be loaded
+        the mutation raises :class:`webhooks.WebhookStoreUnreadable` before it
+        changes anything. Callers hold ``self._mutex``.
         """
+        if self._load_failed:
+            self._hooks = {}
+            self._unparsed_hook_entries = []
+            self._load_failed = False
+            try:
+                self._load()
+            except BaseException:
+                self._load_failed = True
+                raise
+            if self._load_failed:
+                raise webhooks.WebhookStoreUnreadable(
+                    f"{self._path.name} could not be loaded; refusing to overwrite it "
+                    "and erase the hooks it holds"
+                )
         snapshot = copy.deepcopy(self._hooks)
         try:
             yield
