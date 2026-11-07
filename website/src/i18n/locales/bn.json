@@ -17114,6 +17114,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "অফিস",
+        "office_desc": "ক্লাসিক পিক্সেল অফিস",
+        "panda_label": "পান্ডার ডেরা",
+        "panda_desc": "বাঁশবনের কর্মক্ষেত্র, সবাই পান্ডা",
+        "neural_label": "নিউরাল নেটওয়ার্ক",
+        "neural_desc": "নক্ষত্রমণ্ডলের মানচিত্র",
+        "wizard_label": "জাদুকরের মিনার",
+        "wizard_desc": "আলকেমির পরীক্ষাগার",
+        "underwater_label": "গভীর সমুদ্র ল্যাব",
+        "underwater_desc": "জলের নিচের স্টেশন",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA অপারেশন কেন্দ্র",
+        "serengeti_label": "জলাশয়",
+        "serengeti_desc": "জিরাফ, ওয়ার্টহগ আর হাতির সেরেঙ্গেটি সাভানা",
+        "ghost_label": "Kiro ভূতুড়ে ডেরা",
+        "ghost_desc": "টুপি, চশমা আর কেপ পরা Kiro ভূত"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "শুধু বন্ধুত্বপূর্ণ ভূতুড়েপনা",
         "kiro_ghost_haunt_animation": "Kiro ভূতের ভুতুড়ে অ্যানিমেশন",

@@ -16692,6 +16692,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "办公室",
+        "office_desc": "经典像素办公室",
+        "panda_label": "熊猫窝",
+        "panda_desc": "竹林工作区，全是熊猫",
+        "neural_label": "神经网络",
+        "neural_desc": "星座图",
+        "wizard_label": "巫师塔",
+        "wizard_desc": "炼金实验室",
+        "underwater_label": "深海实验室",
+        "underwater_desc": "水下工作站",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA 指挥中心",
+        "serengeti_label": "水源地",
+        "serengeti_desc": "塞伦盖蒂草原，有长颈鹿、疣猪和大象",
+        "ghost_label": "Kiro 出没",
+        "ghost_desc": "戴着帽子、眼镜和披风的 Kiro 幽灵"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "仅限友好出没",
         "kiro_ghost_haunt_animation": "Kiro 幽灵出没动画",

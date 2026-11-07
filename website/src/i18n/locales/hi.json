@@ -17114,6 +17114,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "ऑफ़िस",
+        "office_desc": "क्लासिक पिक्सेल ऑफ़िस",
+        "panda_label": "पांडा अड्डा",
+        "panda_desc": "बाँस के जंगल में कार्यस्थल, सब पांडा",
+        "neural_label": "न्यूरल नेटवर्क",
+        "neural_desc": "तारामंडल का नक्शा",
+        "wizard_label": "जादूगर की मीनार",
+        "wizard_desc": "कीमियागरी प्रयोगशाला",
+        "underwater_label": "गहरे समुद्र की लैब",
+        "underwater_desc": "पानी के नीचे का स्टेशन",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA संचालन केंद्र",
+        "serengeti_label": "पानी का ठिकाना",
+        "serengeti_desc": "जिराफ़, वॉर्टहॉग और हाथियों वाला सेरेनगेटी सवाना",
+        "ghost_label": "Kiro भूत-अड्डा",
+        "ghost_desc": "टोपी, चश्मा और लबादा पहने Kiro भूत"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "केवल दोस्ताना भूत",
         "kiro_ghost_haunt_animation": "Kiro भूत एनिमेशन",

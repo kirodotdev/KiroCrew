@@ -8014,6 +8014,24 @@
       "show_comments": "Show comments"
     },
     "scenes": {
+      "config": {
+        "office_label": "Office",
+        "office_desc": "Classic pixel office",
+        "panda_label": "Panda Den",
+        "panda_desc": "Bamboo forest workspace, all pandas",
+        "neural_label": "Neural Net",
+        "neural_desc": "Constellation map",
+        "wizard_label": "Wizard Tower",
+        "wizard_desc": "Alchemy lab",
+        "underwater_label": "Deep Lab",
+        "underwater_desc": "Underwater station",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA ops center",
+        "serengeti_label": "Watering Hole",
+        "serengeti_desc": "Serengeti savanna with giraffes, warthogs, and elephants",
+        "ghost_label": "Kiro Haunt",
+        "ghost_desc": "Kiro ghosts in hats, glasses, and capes"
+      },
       "ghostScene": {
         "kiro_ghost_haunt_animation": "Kiro ghost haunt animation",
         "kiro_ghost_haunt_text_overlay": "Kiro ghost haunt text overlay",
