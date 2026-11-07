@@ -53,6 +53,15 @@ const RECEIPT_FIELDS = [
   'Kiro Crew version',
 ] as const
 
+const GIT_UA_DISCLOSURE =
+  'User-Agent header: git/2.0 KiroCrew/<version> · sent to the git host you push to or fetch from · no install ID, host name or session'
+
+const GIT_UA_FIELDS = [
+  'git/2.0 KiroCrew/<version>',
+  'sent to the git host',
+  'no install ID, host name or session',
+] as const
+
 // Fields the payload excludes. Asserted ABSENT, not just omitted from the list
 // above: this text is the product's transparency commitment, so a re-added wire
 // field that nobody documented — or documentation that outlives the field — is
@@ -100,6 +109,7 @@ describe('PrivacyPanel', () => {
     expect(headings.map(heading => heading.textContent)).toEqual([
       'Anonymous daily heartbeat',
       'Official app install receipts',
+      'Git traffic from agents',
       'Never sent',
       'Stays on your device',
       'Telemetry controls',
@@ -128,6 +138,25 @@ describe('PrivacyPanel', () => {
         /External registries, local apps, and self-registered apps are never reported/,
       ),
     ).toBeInTheDocument()
+  })
+
+  it('discloses the git User-Agent tag, its recipient and what it excludes', () => {
+    renderWithProviders(<PrivacyPanel />)
+
+    const disclosure = screen.getByText(GIT_UA_DISCLOSURE)
+    for (const field of GIT_UA_FIELDS) {
+      expect(disclosure).toHaveTextContent(field)
+    }
+    // The body must say the tag goes to the git host (a third party), not to
+    // Kiro Crew's own endpoint, and name the control that turns it off BY ITS
+    // LABEL (on this page the toggle sits on another card), honest about the
+    // sessions it reaches.
+    expect(screen.getByText(/so the git host can count/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Turning off “Send anonymous usage heartbeat” stops it for agent sessions started afterwards/),
+    ).toBeInTheDocument()
+    // The toggle's own description names the git tag too.
+    expect(screen.getByText(/Also controls the git traffic tag/)).toBeInTheDocument()
   })
 
   it('no longer claims to send the four removed fields', () => {

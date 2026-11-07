@@ -51,6 +51,7 @@ from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
+from kiro_crew.outbound_user_agent import apply_git_user_agent, drop_inherited_git_user_agent
 from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
@@ -860,6 +861,17 @@ class LaunchTools:
     remember_namespace_launcher: Callable[[int, Sequence[str], str | None], None] = field(
         default_factory=lambda: _remember_namespace_launcher
     )
+    #: ``outbound_user_agent.git_user_agent_permitted``: the telemetry consent verdict
+    #: for the git User-Agent tag; blocking (config read + audit write), run off-loop.
+    git_user_agent_permitted: Callable[[], bool] = field(
+        default_factory=lambda: _git_user_agent_permitted
+    )
+
+
+def _git_user_agent_permitted() -> bool:
+    from kiro_crew.outbound_user_agent import git_user_agent_permitted
+
+    return git_user_agent_permitted()
 
 
 def _remember_namespace_launcher(
@@ -1221,6 +1233,19 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # ``kiro_crew``. Overwritten after the scrub and after ``extra_env`` so agent
     # configuration cannot redirect the trusted read gate to a foreign interpreter.
     env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
+    # Every git the agent runs tags its HTTP fetches and pushes as Kiro Crew's, so a
+    # git host can count Kiro Crew clients. A usage signal, so it asks the shared
+    # telemetry consent gate first (off-loop: it reads config and writes the audit
+    # record). Permitted: sets the header after ``extra_env`` and ``agent.env``,
+    # appending the token to a User-Agent the operator exported (a proxy string)
+    # rather than replacing it. Refused: a Kiro Crew token this gateway itself
+    # inherited (it was started from inside a tagged agent shell) is dropped so the
+    # child sends git's default; an operator's own value is kept
+    # (``outbound_user_agent``).
+    if await host._to_thread_guarding_sandbox(tools.git_user_agent_permitted):
+        apply_git_user_agent(env)
+    else:
+        drop_inherited_git_user_agent(env)
     request.env_after_scrub(env)
     # Pod-scoped kiro-cli children write their OWN MCP OAuth grants, confined to
     # the pod's tree instead of the real host's -- see

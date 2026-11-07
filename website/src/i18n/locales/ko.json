@@ -8271,7 +8271,7 @@
     "privacyChapter": {
       "continue": "계속",
       "eyebrow": "개인 정보",
-      "subtitle": "{{productName}}이(가) 전송하는 익명 필드 5개와 이를 끄는 방법입니다.",
+      "subtitle": "{{productName}}이(가) 전송하는 내용, 수신자, 그리고 끄는 방법입니다.",
       "title": "개인 정보"
     },
     "pierreEditorImpl": {
@@ -20826,6 +20826,9 @@
     "installReceiptBody": "Kiro Crew 공식 카탈로그에서 설치 또는 업데이트가 성공하면 익명 영수증 하나가 전송됩니다. 외부 레지스트리, 로컬 앱, 자체 등록된 앱은 보고되지 않습니다.",
     "installReceiptFields": "공식 앱 슬러그 · 앱별 익명 토큰(앱 간 연결 불가) · 신규/업데이트 플래그 · Kiro Crew 버전",
     "installReceiptTitle": "공식 앱 설치 영수증",
+    "gitUserAgentTitle": "에이전트의 Git 트래픽",
+    "gitUserAgentBody": "에이전트가 HTTP 또는 HTTPS로 git을 실행하면 요청이 클라이언트를 Kiro Crew로 밝혀, git 호스트가 Kiro Crew를 통해 작업하는 사용자 수를 셀 수 있습니다. 호스트는 누가 로그인했는지 이미 알고 있으며, 이는 어떤 도구를 썼는지만 더합니다. SSH로는 아무것도 보내지 않습니다. ‘{{toggle}}’을(를) 끄면 이후에 시작되는 에이전트 세션에서는 보내지 않습니다. 이미 실행 중인 세션은 다시 시작할 때까지 유지합니다.",
+    "gitUserAgentFields": "User-Agent 헤더: git/2.0 KiroCrew/<version> · push 또는 fetch 하는 git 호스트로 전송 · 설치 ID, 호스트 이름, 세션은 포함하지 않음",
     "localDataBody": "사용 및 컨텍스트 기록. 성능 메트릭은 기본적으로 꺼져 있습니다.",
     "localDataTitle": "기기에 보관",
     "notSendingAlreadySentToday": "오늘의 하트비트는 이미 전송되었습니다.",
@@ -20842,7 +20845,7 @@
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Windows 명령 프롬프트",
-    "toggleDescription": "이후 실행을 위해 저장됩니다.",
+    "toggleDescription": "Git 트래픽 태그도 함께 제어합니다. 이후 실행을 위해 저장됩니다.",
     "toggleLabel": "익명 사용 하트비트 전송",
     "toggleSaveFailed": "텔레메트리 선택을 저장할 수 없습니다. 다시 시도하세요.",
     "envOverrideWithSettingRef": "<settingRef/>이(가) 이 환경에 설정되어 있어 하트비트가 꺼져 있습니다. 여기에서 텔레메트리를 관리하려면 해제하세요."

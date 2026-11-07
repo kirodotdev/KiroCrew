@@ -3831,7 +3831,7 @@
     "privacyChapter": {
       "continue": "Continue",
       "eyebrow": "Privacy",
-      "subtitle": "The five anonymous fields {{productName}} sends, and how to turn them off.",
+      "subtitle": "What {{productName}} sends, who receives it, and how to turn it off.",
       "title": "Privacy"
     },
     "micSourceMenu": {
@@ -10150,13 +10150,16 @@
     "installReceiptBody": "After a successful install or update from Kiro Crew's official catalog, one anonymous receipt is sent. External registries, local apps, and self-registered apps are never reported.",
     "installReceiptFields": "Official app slug · per-app anonymous token (not linkable across apps) · fresh/update flag · Kiro Crew version",
     "installReceiptTitle": "Official app install receipts",
+    "gitUserAgentTitle": "Git traffic from agents",
+    "gitUserAgentBody": "When an agent runs git over HTTP or HTTPS, the request names its client as Kiro Crew, so the git host can count how many of its users work through Kiro Crew. The host already knows who signed in; this adds which tool they used. Nothing is sent over SSH. Turning off “{{toggle}}” stops it for agent sessions started afterwards; a session already running keeps it until it restarts.",
+    "gitUserAgentFields": "User-Agent header: git/2.0 KiroCrew/<version> · sent to the git host you push to or fetch from · no install ID, host name or session",
     "payloadFields": "Random installation ID · app version · Python minor version · install channel · first-run flag",
     "settingsDescription": "Telemetry, local data, and privacy controls",
     "settingsLabel": "Privacy",
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Windows Command Prompt",
-    "toggleDescription": "Saved for future launches.",
+    "toggleDescription": "Also controls the git traffic tag. Saved for future launches.",
     "toggleLabel": "Send anonymous usage heartbeat",
     "toggleSaveFailed": "Couldn't save your telemetry choice. Try again.",
     "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here."

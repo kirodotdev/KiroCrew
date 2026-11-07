@@ -26,8 +26,10 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew import outbound_user_agent as ua_mod
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpSessionHandle
 from kiro_crew.acp.types import ACP_BACKEND_KIRO, JsonRpcMessage
+from kiro_crew.outbound_user_agent import git_http_user_agent
 from kiro_crew.testing.wait import await_until
 
 # ── Round-1 follow-up fixes: #5b currentModelId backfill + send_command redaction ──
@@ -952,6 +954,11 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
     monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+    # The tag rides the telemetry consent verdict, which reads this host's
+    # config; pin it so the assertion measures the spawn, not the machine. No
+    # inherited User-Agent either: with one, the tag is appended to it instead.
+    monkeypatch.setattr(ua_mod, "git_user_agent_permitted", lambda: True)
+    monkeypatch.delenv("GIT_HTTP_USER_AGENT", raising=False)
 
     captured: dict[str, object] = {}
 
@@ -1009,6 +1016,7 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
     assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
     assert env.get("KIROCREW_RUNTIME_PYTHON") == runtime_mod.sys.executable
+    assert env.get("GIT_HTTP_USER_AGENT") == git_http_user_agent()
 
 
 class TestToolPurposeExtraction:

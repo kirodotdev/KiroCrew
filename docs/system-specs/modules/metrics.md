@@ -1781,7 +1781,7 @@ during that chain.
 
 ## Anonymous outbound telemetry (`beacon.py`, `apps/install_receipt.py`)
 
-There are now **five independent** telemetry paths. Keep them straight:
+There are now **six independent** telemetry paths. Keep them straight:
 
 | Path | Purpose | Data | Egress | Switch |
 |------|---------|------|--------|--------|
@@ -1790,6 +1790,7 @@ There are now **five independent** telemetry paths. Keep them straight:
 | Injection receipts (`usage/injections/`) | Lesson precision scoring | One line per admitted turn that rendered a lesson tier: memory keys and counts, no text | **Never** | always on; skipped for incognito and temporary sessions |
 | **Beacon (`beacon.py`)** | **Product analytics** | One anonymous ping per install per day | **Yes — to the Kiro Crew endpoint** | `telemetry.beacon_enabled` (**on**) |
 | **Install receipt (`apps/install_receipt.py`)** | **Official app adoption** | One anonymous receipt after a successful official-catalog install/update | **Yes — to the same endpoint** | `telemetry.beacon_enabled` (**on**) |
+| **Git User-Agent tag (`outbound_user_agent.py`)** | **Lets a git host count Kiro Crew clients** | `User-Agent: git/2.0 KiroCrew/<major.minor.patch>` on every HTTPS `git fetch`/`push` an agent runs; no install id, host or session | **Yes — to whichever third-party git host the agent reaches**, paired there with the user's own sign-in | `telemetry.beacon_enabled` (**on**), via the shared consent ladder; one `governance_decision` SEL row per agent spawn, since each spawn is an enforcement decision |
 
 `src/kiro_crew/beacon.py`, tests `test/test_beacon.py`. Fired from
 `slack/gateway_runtime/process_entry.py::run_gateway` on a **detached daemon thread** (never awaited —
@@ -2038,8 +2039,10 @@ retries later rather than silently losing the day.
 ### Default-ON with six suppressions
 
 `telemetry.beacon_enabled` defaults **true** and gates the repo's only default-on
-egress family: the heartbeat and official-app install receipts.
-`telemetry_permitted()` suppresses both when `KIROCREW_TELEMETRY_DISABLED` is
+egress family: the heartbeat, official-app install receipts, and the git
+User-Agent tag on agent HTTPS git traffic (`outbound_user_agent.py`, the
+mechanism in [acp-client](acp-client.md)).
+`telemetry_permitted()` suppresses all three when `KIROCREW_TELEMETRY_DISABLED` is
 truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
 the config toggle is false, the process looks like **CI**, `KIROCREW_HOME` is
 **non-default** (dev home / pod / worktree preview), or this install has never sent
@@ -2217,7 +2220,26 @@ consent flow:
   disclosure, and keying every heartbeat on the flag would silence it permanently
   rather than once. `dashboard.privacy_acked` falls back to `dashboard.onboarded`,
   so a user who finished first run before the chapter existed is never re-gated.
-  It gates the install receipt too, via the shared consent ladder.
+  It gates the install receipt too, via the shared consent ladder, and the git
+  User-Agent tag, which the disclosure names in its own section (title, body and
+  the `User-Agent header: git/2.0 KiroCrew/<version> · …` field line, pinned by
+  `PrivacyPanel.test.tsx`): that signal goes to a third-party git host and is
+  paired there with the user's own sign-in, so the consent the toggle records has
+  to say so. The body says the tag rides git's HTTP transport, plain HTTP and HTTPS alike (`GIT_HTTP_USER_AGENT` covers both), and names the control by its own label (interpolated from
+  `privacyDisclosure.toggleLabel`, because on Settings → Privacy the toggle sits on
+  another card) and says what it reaches, agent sessions started afterwards, and
+  the toggle's own description (`privacyDisclosure.toggleDescription`) names the
+  git tag. A change to `telemetry.beacon_enabled` or `dashboard.privacy_acked`
+  that WITHDRAWS consent also discards the idle warm pool and parks the shared
+  background runtime (`session_parts/config_apply.py::_apply_consent_change`;
+  the pool through `refresh_defaults`, the runtime through the same park an
+  `agent.env` change makes), since each keeps the tag it was spawned with and
+  would otherwise send it, on a session claimed from the pool or on every
+  background and cron session's git traffic, until its TTL or age ceiling;
+  foreground sessions keep their environment, as they do for `agent.env`,
+  because retiring them would cancel running turns, so a tagged foreground
+  process drops the tag at its next cold start. A grant touches no running
+  session.
 - The disclosure copy and the control are single-sourced in
   `components/PrivacyDisclosure.tsx` (`PrivacyDisclosureSections`,
   `TelemetryToggle`, `PrivacyCommandList`) and consumed by both surfaces, so the
