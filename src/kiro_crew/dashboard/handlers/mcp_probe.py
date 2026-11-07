@@ -220,6 +220,27 @@ def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
             row["probeFailing"] = state["failing"]
 
 
+def _annotate_agent_drops(rows: list[dict[str, Any]]) -> None:
+    """Stamp ``agentDropped`` onto rows the latest default-agent rebuild left out.
+
+    Recorded keys may be raw spec names while rows use canonical aliases.
+    Exact-name matches win over aliases; cached notes are refreshed each time.
+    """
+    from kiro_crew.mcp_dropped_servers import load_dropped
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    drops = load_dropped()
+    aliased_drops = {mcp_server_alias(key): drop for key, drop in drops.items()}
+    for row in rows:
+        row.pop("agentDropped", None)
+        name = row.get("name")
+        if not isinstance(name, str):
+            continue
+        drop = drops.get(name) or aliased_drops.get(mcp_server_alias(name))
+        if drop is not None:
+            row["agentDropped"] = drop
+
+
 def _record_probe_verdicts(rows: list[dict[str, Any]]) -> None:
     """Filter probe rows to eligible servers and fold them into the store.
 
@@ -568,6 +589,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
 
     # Decide AND arm the re-probe here, at the very end, all synchronously.
     #
@@ -736,6 +758,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -888,6 +911,7 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
     edited = _edited_since_probe(servers)

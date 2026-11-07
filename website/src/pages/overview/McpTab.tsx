@@ -1112,6 +1112,24 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       </div>
                     )
                   ))}
+                  {s.agentDropped && (
+                    /* The agent never got this server, whatever the probe said:
+                       the rebuild could not find its program. Plain words and the
+                       next step, since the only other record is the gateway log. */
+                    <div className="text-warn text-[12px] break-words" data-testid="mcp-agent-dropped">
+                      <AlertTriangle className="lucide-inline" />{' '}
+                      {i18nT('pages.overview.mcpTab.agent_dropped_not_found', { command: s.agentDropped.command })}
+                      <span className="block mt-0.5">
+                        {i18nT('pages.overview.mcpTab.agent_dropped_fix', {
+                          page: [
+                            i18nT('nav.agent_capabilities'),
+                            i18nT('pages.capabilitiesPage.connections_label'),
+                            i18nT('pages.connectionsPage.mcp_servers'),
+                          ].join(' → '),
+                        })}
+                      </span>
+                    </div>
+                  )}
                   {notProbedReason && (
                     /* Warn tone, not the error red: no probe ran, so nothing
                        failed, but the server stays off until the reason is
