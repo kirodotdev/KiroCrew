@@ -47,15 +47,18 @@ import os
 import plistlib
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from kiro_crew.computer_use import macos_ffi
 from kiro_crew.computer_use.policy import title_is_denied as _denied_title
 from kiro_crew.computer_use.types import (
     ERR_APP_NOT_FOUND,
+    ERR_WINDOW_NOT_FOUND,
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     AppRef,
     ComputerUseError,
+    WindowRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -209,6 +212,62 @@ def resolve_app(query: str) -> AppRef:
         if app.name and needle in app.name.lower():
             return app
     raise ComputerUseError(ERR_APP_NOT_FOUND.format(query=query, tool=TOOL_LIST_APPS))
+
+
+def _windows_of(pid: int) -> "list[macos_ffi.WindowInfo]":
+    """Every on-screen, layer-0 window *pid* owns, front to back.
+
+    The same filter :func:`list_apps` applies before it collapses an app to one
+    window, so the window list and the app list cannot disagree about what an
+    addressable window is.
+    """
+    return [
+        info
+        for info in macos_ffi.window_list()
+        if info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL and info.pid == pid and info.pid > 0
+    ]
+
+
+def list_windows(app: AppRef) -> "tuple[WindowRef, ...]":
+    """The on-screen windows of *app*'s process, front to back.
+
+    Every layer-0 window, titled or not and however small: a helper window in front of
+    an app's main window can be 66x20, and a legitimate dialog can be as small. Choosing among them is the caller's job, which is why this returns them
+    all with their size rather than guessing which one is "real".
+    """
+    return tuple(
+        WindowRef(window_id=info.window_id, title=info.title, bounds=info.bounds)
+        for info in _windows_of(app.pid)
+    )
+
+
+def resolve_window(app: AppRef, window_id: int) -> AppRef:
+    """*app*, narrowed to the window *window_id* names.
+
+    Raises :class:`ComputerUseError` naming ``computer_list_windows`` when the id is
+    not a live window of *app*'s process: closed, never existed, or recycled by
+    another process (CoreGraphics reuses window numbers, so the pid is part of the
+    check, not just the id).
+
+    **A denied title anywhere in the process still wins.** Input on macOS is
+    delivered per pid, so if any window of this process is Kiro Crew's own
+    dashboard the whole process must refuse — the rule :func:`list_apps` already
+    follows when it collapses an app. Selecting an innocuous sibling must not be a
+    way around it, so the denied window is returned instead and the dispatcher's
+    target policy refuses it.
+    """
+    windows = _windows_of(app.pid)
+    for info in windows:
+        if _denied_title(info.title):
+            return replace(app, window_id=info.window_id, window_title=info.title)
+    for info in windows:
+        if info.window_id == int(window_id):
+            return replace(
+                app, window_id=info.window_id, window_title=info.title, pinned_window=True
+            )
+    raise ComputerUseError(
+        ERR_WINDOW_NOT_FOUND.format(window_id=window_id, app=app.name, tool=TOOL_LIST_WINDOWS)
+    )
 
 
 def resolve_identity(pid: int) -> AppIdentity:
@@ -453,8 +512,13 @@ def window_bounds(window_id: int, pid: int) -> "tuple[float, float, float, float
     return None
 
 
-def pid_owns_point(pid: int, x: float, y: float) -> bool:
+def pid_owns_point(pid: int, x: float, y: float, *, window_id: int = 0) -> bool:
     """Does *pid* own the topmost on-screen window containing ``(x, y)``?
+
+    With *window_id* (the caller pinned one window of the app), that topmost
+    window must also BE the pinned window: a sibling of the same process covering
+    the point would otherwise take a real click aimed at the window the caller
+    named.
 
     THE confinement check for the real-pointer click path, and the reason it has
     to exist: ``CGWarpMouseCursorPosition`` + a global ``CGEventPost`` deliver to
@@ -512,10 +576,57 @@ def pid_owns_point(pid: int, x: float, y: float) -> bool:
             # mis-looked-past click moves the operator's real pointer onto a surface
             # they never authorized. ``topmost_window_label`` names the winning
             # window so that refusal is diagnosable from the tool result.
-            return info.pid == pid and info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL
+            return (
+                info.pid == pid
+                and info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL
+                and (window_id <= 0 or info.window_id == window_id)
+            )
         return False
     except Exception:
         logger.debug("point ownership check failed; refusing", exc_info=True)
+        return False
+
+
+def pinned_window_tops_point(pid: int, window_id: int, x: float, y: float) -> bool:
+    """Is *window_id* the front-most window of *pid* containing ``(x, y)``?
+
+    An app-scoped event (``CGEventPostToPid``) reaches the application, which hands
+    it to whichever of ITS windows is on top at that point, so other applications'
+    windows do not matter here and a sibling of the same process does. Fails closed:
+    a window of *pid* with no readable bounds ahead of the pinned one, or an error,
+    answers ``False``.
+    """
+    try:
+        for info in macos_ffi.window_list():
+            if info.pid != pid:
+                continue
+            if info.bounds is None:
+                return False
+            left, top, width, height = info.bounds
+            if left <= x < left + width and top <= y < top + height:
+                return info.window_id == window_id
+        return False
+    except Exception:
+        logger.debug("pinned window hit-test failed; refusing", exc_info=True)
+        return False
+
+
+def pinned_window_is_front(pid: int, window_id: int) -> bool:
+    """Is *window_id* the front-most normal-layer window of *pid*?
+
+    ``CGEventPostToPid`` keyboard events reach the application, which hands them to
+    its key window, the front-most of its own windows. A keystroke aimed at a pinned
+    background window therefore lands in that front sibling, which may be a window
+    the operator's title patterns deny. Fails closed: an error, or no normal-layer
+    window of *pid*, answers ``False``.
+    """
+    try:
+        for info in macos_ffi.window_list():
+            if info.pid == pid and info.layer == macos_ffi.CG_WINDOW_LAYER_NORMAL:
+                return info.window_id == window_id
+        return False
+    except Exception:
+        logger.debug("pinned window front check failed; refusing", exc_info=True)
         return False
 
 
@@ -557,10 +668,13 @@ __all__ = [
     "bundle_identity_at",
     "identity_for",
     "list_apps",
+    "list_windows",
     "pid_owns_point",
+    "pinned_window_tops_point",
     "read_bundle_plist",
     "reset_identity_cache",
     "resolve_app",
     "resolve_identity",
+    "resolve_window",
     "topmost_window_label",
 ]

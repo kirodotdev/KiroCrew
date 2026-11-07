@@ -230,6 +230,8 @@ class TestAbcContract:
             "probe_permissions",
             "list_apps",
             "resolve_app",
+            "list_windows",
+            "resolve_window",
             "launch_app",
             "snapshot",
             "click",
