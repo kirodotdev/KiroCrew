@@ -319,6 +319,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_compaction": ("function", True, "0258399cca12", "session_handle_compaction"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "session_handle_mcp"),
     "wait_mcp_ready": ("function", True, "dc863b4461ff", "session_handle_mcp"),
+    "wait_mounted_mcp": ("function", True, "8a1f54daaf86", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),
     "want_mcp_sign_in_named": ("function", False, "ce7410240196", "session_handle_mcp"),
 }

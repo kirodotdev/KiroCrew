@@ -167,6 +167,14 @@ def active_custom_agent(params: dict[str, Any], agent: str) -> dict[str, Any] | 
     return None
 
 
+def mounted_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
+    """Every server sent for the ACTIVE agent and session, named as frames name them."""
+    active = active_custom_agent(params, agent) or {}
+    block = [{"name": name} for name in active.get("mcpServers", {})]
+    servers = params.get("mcpServers")
+    return roster_names([*(servers if isinstance(servers, list) else []), *block])
+
+
 def required_managed_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
     """Managed declarations actually sent for the ACTIVE agent and session."""
     names = set(roster_names(params.get("mcpServers")))
@@ -822,8 +830,12 @@ class McpSessionReport:
 
     def declared_unreported(self) -> tuple[str, ...]:
         """Declared servers that have not reported at all yet, in spec order."""
+        return self.unreported(self.declared)
+
+    def unreported(self, names: tuple[str, ...]) -> tuple[str, ...]:
+        """*names* with no ready, failed or awaiting-authorization report yet, in order."""
         reported = {*self._ready, *self._failed, *self._awaiting_auth}
-        return tuple(name for name in self.declared if name not in reported)
+        return tuple(name for name in names if name not in reported)
 
     def declared_never_reported(self) -> tuple[str, ...]:
         """Declared servers with no report at all, for the run's notice.
