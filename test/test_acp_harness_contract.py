@@ -458,6 +458,101 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_kas_reads_workspace_mcp_settings_beside_the_session(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A session opened in another checkout is finished from THAT checkout's files."""
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    for name in ("runtime", "session"):
+        settings = tmp_path / name / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        (settings / "mcp.json").write_text(json.dumps({"mcpServers": {name: {}}}))
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras(
+        "a", work_dir=str(tmp_path / "runtime"), session_cwd=str(tmp_path / "session")
+    )
+    (entry,) = extras.custom_agents
+    assert list(entry[CREW_SETTINGS_MCP_KEY]["fileServers"]) == ["session"]
+
+
+@pytest.mark.asyncio
+async def test_kas_stamps_the_servers_the_spec_declares(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A declared server hoisted to the session-level array is still the agent's."""
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    spec = {"name": "a", "prompt": "p", "tools": [], "mcpServers": {"mine": {"command": "m"}}}
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    (entry,) = extras.custom_agents
+    assert entry[CREW_SETTINGS_MCP_KEY]["declared"] == ["mine"]
+    assert entry[CREW_SETTINGS_MCP_KEY]["legacy"] is True
+
+
+@pytest.mark.asyncio
+async def test_kas_does_not_keep_legacy_mcp_json_for_a_spec_that_states_the_key(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """The fixture's spec has no opt-in key; one that states it is not kept."""
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    spec = {"name": "a", "prompt": "p", "tools": [], "includeMcpJson": False}
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    (entry,) = extras.custom_agents
+    assert entry[CREW_SETTINGS_MCP_KEY]["legacy"] is False
+
+
+@pytest.mark.asyncio
+async def test_kas_does_not_keep_legacy_mcp_json_for_a_checkout_spec(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """The list names user-level files; a checkout's spec of a listed name is not one."""
+    from kiro_crew.acp import kas_mcp_json_legacy
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "b"}])
+    listed = kas_mcp_json_legacy.list_path()
+    listed.parent.mkdir(parents=True, exist_ok=True)
+    listed.write_text(json.dumps({"agents": ["b"]}), encoding="utf-8")
+    checkout = tmp_path / "checkout"
+    (checkout / ".kiro" / "agents").mkdir(parents=True)
+    spec = {"name": "b", "prompt": "p", "tools": []}
+    (checkout / ".kiro" / "agents" / "b.json").write_text(json.dumps(spec), encoding="utf-8")
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("b", work_dir=str(checkout))
+    (entry,) = extras.custom_agents
+    assert entry[CREW_SETTINGS_MCP_KEY]["legacy"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_checkout_spec_session_still_records_the_list(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """The first KAS session records the list whatever spec it runs."""
+    from kiro_crew.acp import kas_mcp_json_legacy
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "b"}])
+    checkout = tmp_path / "checkout"
+    (checkout / ".kiro" / "agents").mkdir(parents=True)
+    spec = {"name": "b", "prompt": "p", "tools": []}
+    (checkout / ".kiro" / "agents" / "b.json").write_text(json.dumps(spec), encoding="utf-8")
+    assert not kas_mcp_json_legacy.list_path().exists()
+    await harness_for(ACP_BACKEND_KAS).session_extras("b", work_dir=str(checkout))
+    assert json.loads(kas_mcp_json_legacy.list_path().read_text(encoding="utf-8")) == {
+        "agents": ["a"]
+    }
+
+
+@pytest.mark.asyncio
 async def test_kas_projects_nothing_without_an_agent(tmp_path):
     """No agent means nothing to register, not an empty registration."""
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("", work_dir=str(tmp_path))

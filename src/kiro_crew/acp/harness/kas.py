@@ -57,7 +57,9 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
+from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
+from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
@@ -915,6 +917,7 @@ class KasHarness(MembershipHarness):
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1105,6 +1108,20 @@ class KasHarness(MembershipHarness):
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.
             custom_agents = with_switched_off_tools(
                 custom_agents, session_mcp_disabled_tools(agent, spec=spec)
+            )
+            # The mcp.json / cli.json reads the wire envelope finishes the block
+            # from, read here off the loop and beside the session's own directory.
+            declared = spec.get("mcpServers")
+            custom_agents = stamp_settings_mcp(
+                custom_agents,
+                agent,
+                session_cwd or work_dir,
+                declared=declared if isinstance(declared, dict) else (),
+                # Called for every session so the first one records the list; only
+                # a user-level spec can be on it, since a checkout's spec of the
+                # same name is not the file that was recorded.
+                legacy_mcp_json=legacy_mcp_json(agent, agents_dir, spec)
+                and prompt_dir == agents_dir,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``

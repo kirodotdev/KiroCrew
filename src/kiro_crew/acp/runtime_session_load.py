@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
+from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
     mounted_servers,
@@ -300,6 +301,7 @@ async def load_session(
             member_dispatch=bool(member_session_key) and not member_withheld,
             crew_panel=panel_mounted,
             session_key=session_key,
+            session_cwd=session_work_dir,
             **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents
@@ -335,6 +337,7 @@ async def load_session(
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
         # Same as create_session: a worker stub the payload's spec read muted.
         mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+        mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
             active_agent,

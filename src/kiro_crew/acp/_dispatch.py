@@ -162,10 +162,14 @@ def attach_kas_custom_agents(
 
     Keys in ``kas_permissions.CREW_ONLY_ENTRY_KEYS`` are dropped here: they are
     Crew's record of what it answers itself at the permission request, not a
-    field the engine defines.
+    field the engine defines. The one that carries the mcp.json reads is applied
+    first, against the ``mcpServers`` array already in *params*
+    (:func:`~kiro_crew.acp.kas_settings_mcp.finish_settings_mcp`).
     """
     if not agents:
         return
+    from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
+
     meta = params.get("_meta")
     if not isinstance(meta, dict):
         meta = {}
@@ -173,7 +177,9 @@ def attach_kas_custom_agents(
     wire = [
         (
             {
-                **{k: v for k, v in a.items() if k not in CREW_ONLY_ENTRY_KEYS},
+                **{
+                    k: v for k, v in finish_settings_mcp(a).items() if k not in CREW_ONLY_ENTRY_KEYS
+                },
                 "id": kas_wire_agent_id(a["id"]),
             }
             if isinstance(a, dict) and isinstance(a.get("id"), str)

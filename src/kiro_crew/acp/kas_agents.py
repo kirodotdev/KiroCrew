@@ -136,6 +136,7 @@ from kiro_crew.acp.kas_prompt import (
     spec_prompt,
 )
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
+from kiro_crew.acp.kas_settings_mcp import include_mcp_json
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
@@ -1219,24 +1220,20 @@ def to_client_custom_agent(
     # revealed tool with no rule resolves to ``ask``.
     #
     # Forwarded ONLY when the spec states a bool, and no default is synthesized
-    # for an absent one. That is a decision, not an omission, because "absent"
-    # does not mean the same thing on the two hosts Crew writes for: kiro-cli
-    # reads an absent ``includeMcpJson`` as TRUE (``agent_capabilities``
-    # ``spec.get("includeMcpJson", True)``), while KAS's own disk schema defaults
-    # it to FALSE (``services/custom-agents/types.ts``). Sending a default would
-    # therefore be Crew inventing one host's answer and shipping it to the other.
-    #
-    # Nothing is lost by staying silent: the wire schema has no default, and KAS's
-    # consumer resolves an absent flag to false itself (``tools/tool-filter.ts``
-    # destructures ``includeMcpJson = false, includePowers = false``), which is
-    # already KAS's disk default. An absent flag thus reaches the same outcome as
-    # the file would have on KAS, with no guess from this side.
+    # for an absent one: kiro-cli's serde default and KAS's consumer
+    # (``tools/tool-filter.ts`` destructures ``includeMcpJson = false``) both read
+    # absent as false. kiro-cli also takes the ``useLegacyMcpJson`` spelling, which
+    # the wire lacks, so it travels as ``includeMcpJson`` (``include_mcp_json``).
+    # What an absent or false flag still lets KAS start from the mcp.json files is
+    # excluded after the hoist (``kas_settings_mcp.finish_settings_mcp``).
     #
     # A non-bool is dropped rather than coerced: ``z.boolean()`` rejects it, and a
     # client agent that fails the wire schema is dropped WHOLE, costing the
     # session its injected agent.
-    for flag in ("includeMcpJson", "includePowers"):
-        value = spec.get(flag)
+    for flag, value in (
+        ("includeMcpJson", include_mcp_json(spec)),
+        ("includePowers", spec.get("includePowers")),
+    ):
         if isinstance(value, bool):
             out[flag] = value
 
