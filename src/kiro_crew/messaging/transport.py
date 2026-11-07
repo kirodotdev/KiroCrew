@@ -9,7 +9,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 
 #: The ``configured_targets()`` prefix every transport gives a DIRECT (1:1)
 #: conversation: ``user:<identity>``. A ``thread:`` or room target is a different
@@ -327,6 +330,30 @@ class MessagingTransport(ABC):
         A channel whose plain send shows markdown literally overrides this.
         """
         return await self.send_message(conversation_id, content, thread_id=thread_id)
+
+    # -- Optional: a picture the dashboard mirror sends -----------------------
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The budgets a local image bound for this conversation is extracted under.
+
+        Asked by the dashboard -> channel reply mirror BEFORE it extracts. A
+        channel answers its own renderer's budgets where its renderer would upload
+        a picture to this conversation, and ``None`` where it would not (a room
+        its renderer keeps DM-only, or no picture-send path at all). The default
+        is ``None``: the mirror then names the picture instead of printing a path.
+        """
+        return None
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image as its own message. True only when it landed.
+
+        *file* carries the bytes extraction validated; the path is provenance and
+        is never re-opened. The default sends nothing.
+        """
+        return False
 
     @abstractmethod
     async def resolve_conversation(self, user_id: str) -> str:
