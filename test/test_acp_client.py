@@ -849,7 +849,7 @@ class TestFormatAcpError:
         # nothing, and it deliberately makes no state claim.
         assert host_auth.signed_out_message("") in out
         assert "kiro-cli login" in out.lower()
-        assert "retry" in out.lower() and "will not help" in out.lower()
+        assert "switching models will not help" in out.lower()
         # Must NOT show the misleading 5xx message.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
@@ -857,7 +857,7 @@ class TestFormatAcpError:
     def test_session_expired_names_the_failing_harness(self):
         """A harness that signs in elsewhere gets ITS message, not kiro-cli's.
 
-        The retry verdict must survive on every backend. It reads ``signed_out_message``,
+        The model-switch verdict must survive on every backend. It reads ``signed_out_message``,
         not ``sign_in_remedy``: this arm has evidence (a 401), so it may state the state.
         """
         err = {"code": -32603, "message": "Internal error", "data": "HTTP 401"}
@@ -902,7 +902,7 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "kiro-cli login" in out.lower()
-        assert "retry" in out.lower() and "will not help" in out.lower()
+        assert "switching models will not help" in out.lower()
         # Must NOT show the misleading transient-5xx advice.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
