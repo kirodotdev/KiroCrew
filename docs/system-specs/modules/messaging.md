@@ -6361,6 +6361,18 @@ grapheme clusters (a cut inside a flag, a skin-toned emoji, or a combining
 accent renders as mojibake on both sides). CJK text, having no spaces, always
 reaches the hard-cut path.
 
+**Commands.** `/new` (alias `/start`), `/compact` and `/help` match on the first
+token in `imessage/commands.py`; `/stop` (alias `/cancel`) matches only the whole
+message, so "/cancel my 3pm meeting" still reaches the agent. `/stop` is
+intercepted before the busy check, so it is never steered into the reply it
+aborts, and mirrors the Weixin stop: `compaction_in_flight` decline first (its
+escalation arms only on a notice `_notify` reports as landed), `note_user_stop`
+before the busy check, and a cooperative `cancel(wait_ack_timeout=0)` whose
+RETURNED outcome picks the reply. The per-message `inbound_permitted("imessage",
+text=...)` check runs after callback admission and receives the text only when
+that parser reads it as `stop`, so a bare `/stop` keeps the pure-cancel exemption
+on a channel governance has denied.
+
 **Topology: v1 requires the gateway to run ON the Messages host,** and refuses
 to start elsewhere. A gateway running remotely could point `cli_path` at a
 transparent stdio wrapper and would appear to work — it can read chats and

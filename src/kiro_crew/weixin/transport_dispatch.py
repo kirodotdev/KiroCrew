@@ -205,8 +205,13 @@ class WeixinDispatcher:
             if not admitted:
                 return
             # Recheck governance only after this accepted callback is visible;
-            # the off-loop policy read must not precede reservation.
-            if not await inbound_permitted("weixin"):
+            # the off-loop policy read must not precede reservation. Only a
+            # message this dispatcher acts on as /stop claims the pure-cancel
+            # exemption: Weixin has no buttons, so it is the one off-switch.
+            stop_text = inbound.text if parse_command(inbound.text) == "stop" else ""
+            if not await inbound_permitted(
+                "weixin", text=stop_text, has_attachments=bool(inbound.attachments)
+            ):
                 return
             await self._handle_admitted(inbound)
 
