@@ -1082,9 +1082,10 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // while the key trigger is on, and only when a press would record. A keyboard
   // start is silent, so with STT not ready the key does nothing and names
   // nothing; a live recording keeps the name, since the key still stops it.
+  const sttReady = sttConfigLoaded && sttEnabled && sttAvailable
   const pttBinding =
     voiceInputSupported && host.pushToTalk && pttConfig.enabled
-      && ((sttConfigLoaded && sttEnabled && sttAvailable)
+      && (sttReady
         || (voice.sessionOwner === sessionId && voice.recording))
       ? pttConfig.binding
       : null
@@ -1237,6 +1238,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     heldLanded,
     /** The push-to-talk key the mic may name, or null (see `pttBinding`). */
     pttBinding,
+    /** STT is loaded, on and able to run, so a press of the mic would record. */
+    sttReady,
     /** `VoiceDisabledModal` state; the host renders the modal and routes its settings link. */
     setup: {
       open: voiceSetupOpen,
@@ -1323,7 +1326,9 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
     voicePendingCaretRef: cv.voicePendingCaretRef,
     onVoiceToggle: voiceInputSupported ? cv.toggleVoice : undefined,
     onVoiceCancel: voiceInputSupported ? cv.cancelVoice : undefined,
-    onVoicePrewarm: voiceInputSupported && !cv.micBusyElsewhere ? voice.prewarm : undefined,
+    /* Only when a click would record: with STT off or unable to run the click
+       opens the setup dialog, and a warm-up would hold the mic for nothing. */
+    onVoicePrewarm: voiceInputSupported && cv.sttReady && !cv.micBusyElsewhere ? voice.prewarm : undefined,
     onVoiceStart: voiceInputSupported ? cv.startVoice : undefined,
     onVoiceStop: voiceInputSupported ? cv.stopVoice : undefined,
     voiceCaptureActive: voice.recording,
