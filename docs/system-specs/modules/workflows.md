@@ -1451,6 +1451,21 @@ lease. Both adapters release every successfully acquired named lease in a
 A failed or cancelled acquisition must not release a lease held by another
 caller. A later call on that same name reuses the retained history.
 
+A named session's key comes from the run and the name, never the name alone.
+The run's memory scope gives `wf-worker:{run_id}:{digest}`, and a run without
+one gives `wf:{run_id}:named:{digest}` (`agent_exec.named_session_key`), where
+the digest is the SHA-256 of `named:<name>`. A script-supplied name therefore
+never opens or reuses a session outside its run.
+
+A pool worker's transcript holds every step it has served in the run and the
+`[Workflow completion event]` of every run those steps started. The context
+builder reads nothing back from a `wf-pool:` key's transcript
+(`constants.is_workflow_pool_key`): no thread history, stop notes, recent
+session snippets or prior turns for skill selection. A reused worker's next
+step therefore starts from its own prompt alone. A run's memory scope is a separate channel:
+every pool worker of the run shares it by design, so a step can still recall
+what an earlier step wrote to the run's memory.
+
 Pool init failure is caught and falls back to `build_agent_fn`, so pooling can
 never break a run start. The runner's `on_complete` hook fires on every exit path
 (success, failure, cancellation) to shut the pool down, so warm sessions are always
@@ -1757,6 +1772,14 @@ use the same strict identity rule. `workflow_status` reports the same
 reports, each appended only when it is a positive integer and naming the
 `workflow_result` field that holds the detail, so a `finished` run whose agent
 calls failed does not read as clean and a clean run's line is unchanged.
+The run routes (`POST /api/workflows/run`, `.../run_intent`,
+`.../definitions/{ref}/run` and `.../runs/{id}/rerun`) refuse a caller whose
+session key is a workflow step (`constants.is_workflow_step_key`: `wf:`, `wf-pool:`, `wf-unpooled:`,
+`wf-worker:`, `wf-author:`) with 403 `workflow_step_cannot_start_workflow`. A
+run a step started would report to the step's own session, which no agent reads
+after the step returns. A rerun is refused for a step too: from index 0 or with
+an edited script it starts a whole new run, whose own steps could rerun again.
+Sub-agent and dashboard sessions start runs as before.
 Durable create and update operations
 are deliberately absent from the model-facing MCP surface: only the dashboard's
 explicit human management, the completed-session confirmation flow and the

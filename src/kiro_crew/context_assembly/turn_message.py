@@ -745,8 +745,16 @@ def build_message(
                 # content only. A callable, so `selected_skills` pays for it
                 # only after its gate check. `exclude_last_n` drops the
                 # current message if already flushed. Roles are restricted at
-                # the read, so tool output is never projected.
-                if not session_key or self.conversation_log is None:
+                # the read, so tool output is never projected. A pool
+                # worker's transcript holds earlier steps of its run, which are
+                # not this step's prior turns.
+                from kiro_crew.constants import is_workflow_pool_key
+
+                if (
+                    not session_key
+                    or self.conversation_log is None
+                    or is_workflow_pool_key(session_key)
+                ):
                     return []
                 return self.conversation_log.recent(
                     session_key,
