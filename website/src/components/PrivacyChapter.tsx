@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Btn, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { api } from '../api/client'
+import { apiErrorCode } from '../api/apiError'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useLocalCrewHidden } from './overlayRoot'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
@@ -33,6 +34,18 @@ const OFF_REASON_KEY = {
   env: 'components.privacyChapter.offReasonEnv',
   config: 'components.privacyChapter.offReasonConfig',
 } as const satisfies Record<UsageOffReason, string>
+// "Where it goes" while local recording is on: whether metrics also leave the
+// machine, and whether the heartbeat is sent, are separate facts.
+const WHERE_BODY_KEY = {
+  local: {
+    heartbeat: 'components.privacyChapter.whereBody',
+    none: 'components.privacyChapter.whereBodyNoHeartbeat',
+  },
+  export: {
+    heartbeat: 'components.privacyChapter.whereBodyExport',
+    none: 'components.privacyChapter.whereBodyExportNoHeartbeat',
+  },
+} as const
 
 /**
  * Privacy — the second first-run chapter, between Import setup and Customize.
@@ -78,8 +91,15 @@ const OFF_REASON_KEY = {
 export default function PrivacyChapter({
   open,
   onContinue,
+  onAskAgent,
 }: {
   open: boolean
+  /**
+   * Hides the chapter WITHOUT recording a choice when the user hands an error to
+   * the agent: the hand-off opens a chat this mandatory overlay would cover. The
+   * chapter returns at the next dashboard load. Unset, no hand-off is offered.
+   */
+  onAskAgent?: () => void
   /**
    * Persists the ack; `noticeVersion` says whether the current notice version is
    * recorded too. Rejects when the write fails; the chapter then stays open.
@@ -101,6 +121,7 @@ export default function PrivacyChapter({
   // `pinned` names what still holds usage data on, read back from the gateway.
   const [failure, setFailure] = useState<
     | { kind: 'save' }
+    | { kind: 'unconfirmed' }
     | { kind: 'pinned'; where: 'env'; envVar: string }
     | { kind: 'pinned'; where: 'overlay' | 'unknown' }
     | null
@@ -109,12 +130,23 @@ export default function PrivacyChapter({
   const choose = async (choice: 'keep' | 'off') => {
     setBusy(choice)
     setFailure(null)
+    // Set once both off writes landed: a later failure (the read-back, the ack)
+    // must not tell the user nothing changed when both switches are now off.
+    let offWritten = false
     try {
       if (choice === 'off') {
         // Off keys FIRST: a user who said no must not be left on because the
         // ack write landed and the off write did not.
-        await api.patchConfig('telemetry.enabled', false)
-        await api.patchConfig('telemetry.beacon_enabled', false)
+        // A key set in config.local.json is refused with 409
+        // `config_overlay_owned`. Send the other write anyway, then let the
+        // read-back below name the overlay instead of a generic save error.
+        const writeOff = (path: string) =>
+          api.patchConfig(path, false).catch((err: unknown) => {
+            if (apiErrorCode(err) !== 'config_overlay_owned') throw err
+          })
+        await writeOff('telemetry.enabled')
+        await writeOff('telemetry.beacon_enabled')
+        offWritten = true
         // The writes land in config.json; an env var or config.local.json can
         // still hold either switch on. Ask the gateway what is in force before
         // telling the user it is off.
@@ -143,7 +175,7 @@ export default function PrivacyChapter({
       // is on", so it is recorded only when the text shown said so.
       await onContinue({ noticeVersion: usage.status === 'ready' && usage.recordingOn })
     } catch {
-      setFailure({ kind: 'save' })
+      setFailure(offWritten ? { kind: 'unconfirmed' } : { kind: 'save' })
     } finally {
       setBusy(null)
       if (choice === 'off') {
@@ -215,6 +247,7 @@ export default function PrivacyChapter({
   if (!open) return null
 
   const reasonKey = usage.offReason ? OFF_REASON_KEY[usage.offReason] : null
+  const handoff = onAskAgent ? ({ askAgent: true, onHandoff: onAskAgent } as const) : {}
 
   return (
     <OnboardingChapterShell
@@ -255,12 +288,13 @@ export default function PrivacyChapter({
       }
       footer={
         <div className="flex flex-col items-end gap-2">
-          {/* Nothing to lose: a failed write leaves no draft on this screen, the
-              stored choice is unchanged, and the buttons stay enabled for a
-              retry, so the hand-off is on. */}
+          {/* Nothing to lose: no draft on this screen, the stored choice is
+              unchanged or already off, and the buttons stay enabled for a retry.
+              The hand-off hides the chapter (no choice recorded), since this
+              overlay would otherwise cover the chat it opens. */}
           <ErrorNotice
             variant="inline"
-            askAgent
+            {...handoff}
             message={
               failure?.kind === 'pinned'
                 ? failure.where === 'env'
@@ -270,7 +304,9 @@ export default function PrivacyChapter({
                     : i18nT('components.privacyChapter.turnOffPinned')
                 : failure?.kind === 'save'
                   ? i18nT('components.privacyChapter.saveFailed')
-                  : null
+                  : failure?.kind === 'unconfirmed'
+                    ? i18nT('components.privacyChapter.turnOffUnconfirmed')
+                    : null
             }
           />
           {!showOff && (
@@ -316,7 +352,7 @@ export default function PrivacyChapter({
           // rather than under-states; Turn off works either way.
           <ErrorNotice
             variant="inline"
-            askAgent
+            {...handoff}
             message={i18nT('components.privacyChapter.statusUnavailable')}
           />
         )}
@@ -349,17 +385,21 @@ export default function PrivacyChapter({
                 ? i18nT('components.privacyChapter.whereBodyOff')
                 : heartbeatOnly
                   ? i18nT('components.privacyChapter.whereBodyHeartbeatOnly')
-                  : i18nT('components.privacyChapter.whereBody')}
+                  : i18nT(WHERE_BODY_KEY[usage.exportOn ? 'export' : 'local'][usage.heartbeatOn ? 'heartbeat' : 'none'])}
           </p>
         </section>
-        <p className="text-sm leading-relaxed text-muted">
-          {i18nT('components.privacyChapter.changeLater')}
-        </p>
+        {/* A pin this screen cannot lift (an env var, DO_NOT_TRACK, a policy)
+            also keeps Settings from changing it, so do not point there. */}
+        {(!showOff || usage.offReason === 'config') && (
+          <p className="text-sm leading-relaxed text-muted" data-testid="privacy-change-later">
+            {i18nT('components.privacyChapter.changeLater')}
+          </p>
+        )}
       </div>
       <div className="mt-6 border-t border-border pt-5">
         {showOff && (
-          // The sections below describe what WOULD be sent; say plainly that
-          // none of it is, so the off screen does not read as still sending.
+          // The sections below describe what WOULD be sent; say plainly what
+          // stopped, and that the local usage and context records continue.
           <p className="mb-4 text-sm font-medium text-text" data-testid="privacy-details-off">
             {i18nT('components.privacyChapter.detailsOffNote')}
           </p>

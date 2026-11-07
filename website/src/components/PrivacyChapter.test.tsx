@@ -3,6 +3,7 @@ import { renderWithProviders } from '../test/helpers'
 import PrivacyChapter from './PrivacyChapter'
 import { LocalOverlayRoot } from './overlayRoot'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -173,6 +174,34 @@ describe('PrivacyChapter', () => {
     await screen.findByText('What is collected')
     fireEvent.click(await readyButton('Turn off'))
     expect(await screen.findByText(/config.local.json in the .* data folder \(~\/\.kiro\/crew unless KIROCREW_HOME is set\) keeps it on/)).toBeInTheDocument()
+    // No host to hide the chapter: a chat hand-off would land out of reach.
+    expect(screen.queryByRole('button', { name: 'Ask the agent' })).not.toBeInTheDocument()
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('hides the chapter without recording a choice when the error goes to the agent', async () => {
+    collectionStatus.mockImplementation(async () => ({ enabled: true, env_pinned: false, overlay_override: true }))
+    const onContinue = vi.fn()
+    const onAskAgent = vi.fn()
+    renderWithProviders(<PrivacyChapter open onContinue={onContinue} onAskAgent={onAskAgent} />)
+
+    await screen.findByText('What is collected')
+    fireEvent.click(await readyButton('Turn off'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask the agent' }))
+    await waitFor(() => expect(onAskAgent).toHaveBeenCalledTimes(1))
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('does not say nothing changed when the off writes landed but the read-back failed', async () => {
+    const onContinue = vi.fn()
+    renderWithProviders(<PrivacyChapter open onContinue={onContinue} />)
+
+    await screen.findByText('What is collected')
+    collectionStatus.mockImplementation(async () => { throw new Error('read-back failed') })
+    fireEvent.click(await readyButton('Turn off'))
+    expect(await screen.findByText(/Usage data was turned off, but the change could not be confirmed/)).toBeInTheDocument()
+    expect(screen.queryByText(/nothing changed/)).not.toBeInTheDocument()
+    expect(patchConfig).toHaveBeenCalledWith('telemetry.beacon_enabled', false)
     expect(onContinue).not.toHaveBeenCalled()
   })
 
@@ -195,7 +224,7 @@ describe('PrivacyChapter', () => {
     expect(screen.getByRole('heading', { name: 'What can be collected' })).toBeInTheDocument()
     // No on/off claim anywhere, and the primary button does not say "Keep on".
     expect(screen.getByText(/Here are the performance metrics and the heartbeat .* can collect/)).toBeInTheDocument()
-    expect(screen.getByText(/Performance metrics stay on this machine. When the heartbeat is on/)).toBeInTheDocument()
+    expect(screen.getByText(/Performance metrics stay on this machine unless a metrics destination is set up for it. When the heartbeat is on/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Keep on' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Continue without changes' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled()
@@ -210,6 +239,9 @@ describe('PrivacyChapter', () => {
     expect(screen.queryByText('What is collected')).not.toBeInTheDocument()
     expect(screen.getByTestId('privacy-off-reason')).toHaveTextContent('They were turned off earlier.')
     expect(screen.getByTestId('privacy-details-off')).toHaveTextContent('Off on this machine')
+    // Usage and context records are still written locally, so the note must not say "nothing".
+    expect(screen.getByTestId('privacy-details-off')).toHaveTextContent('Usage and context records still stay on this device')
+    expect(screen.getByTestId('privacy-details-off')).not.toHaveTextContent(/nothing described below/)
     expect(screen.queryByTestId('privacy-turn-off-scope')).not.toBeInTheDocument()
   })
 
@@ -292,6 +324,89 @@ describe('PrivacyChapter', () => {
     expect(await screen.findByTestId('privacy-off-reason')).toHaveTextContent(
       "Your administrator's security policy turns it off.",
     )
+  })
+
+  it('Turn off names config.local.json when the gateway refuses a write the overlay owns', async () => {
+    // The overlay holds telemetry.enabled on; its write is refused with 409.
+    patchConfig.mockImplementation(async (path: string, value: unknown) => {
+      if (path === 'telemetry.enabled') {
+        throw new ApiError(409, 'owned', JSON.stringify({ code: 'config_overlay_owned', overlay_override: true }))
+      }
+      if (path === 'telemetry.beacon_enabled') stored.beacon = value as boolean
+      return {}
+    })
+    collectionStatus.mockImplementation(async () => ({ enabled: true, env_pinned: false, overlay_override: true }))
+    const onContinue = vi.fn()
+    renderWithProviders(<PrivacyChapter open onContinue={onContinue} />)
+
+    fireEvent.click(await readyButton('Turn off'))
+    expect(await screen.findByText(/config.local.json in the .* data folder/)).toBeInTheDocument()
+    expect(screen.queryByText(/Your choice could not be saved/)).not.toBeInTheDocument()
+    // The heartbeat write config.json accepts is still sent.
+    expect(patchConfig).toHaveBeenCalledWith('telemetry.beacon_enabled', false)
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  it('Turn off finishes when the overlay-owned key is already off', async () => {
+    patchConfig.mockImplementation(async (path: string, value: unknown) => {
+      if (path === 'telemetry.enabled') {
+        stored.recording = false
+        throw new ApiError(409, 'owned', JSON.stringify({ code: 'config_overlay_owned' }))
+      }
+      if (path === 'telemetry.beacon_enabled') stored.beacon = value as boolean
+      return {}
+    })
+    const onContinue = vi.fn().mockResolvedValue(undefined)
+    renderWithProviders(<PrivacyChapter open onContinue={onContinue} />)
+
+    fireEvent.click(await readyButton('Turn off'))
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not point to Settings when DO_NOT_TRACK or a policy keeps it off', async () => {
+    beaconStatus.mockImplementation(async () => ({ ...BEACON_ON, env_override: true, env_var: 'DO_NOT_TRACK', would_send: false }))
+    collectionStatus.mockImplementation(async () => ({ enabled: false, env_pinned: true, env_var: 'DO_NOT_TRACK' }))
+    const shown = renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+    expect(await screen.findByTestId('privacy-off-reason')).toBeInTheDocument()
+    expect(screen.queryByTestId('privacy-change-later')).not.toBeInTheDocument()
+    shown.unmount()
+
+    stored = { recording: false, beacon: true }
+    beaconStatus.mockImplementation(async () => ({ ...BEACON_ON, governance_override: true, would_send: false }))
+    collectionStatus.mockImplementation(async () => ({ enabled: false, env_pinned: false, env_var: 'KIROCREW_TELEMETRY' }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+    expect(await screen.findByTestId('privacy-off-reason')).toHaveTextContent('administrator')
+    expect(screen.queryByTestId('privacy-change-later')).not.toBeInTheDocument()
+  })
+
+  it('still points to Settings when usage data was turned off there', async () => {
+    stored = { recording: false, beacon: false }
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+    expect(await screen.findByTestId('privacy-off-reason')).toHaveTextContent('They were turned off earlier.')
+    expect(screen.getByTestId('privacy-change-later')).toBeInTheDocument()
+  })
+
+  it('says metrics also leave the machine when an export destination is set up', async () => {
+    collectionStatus.mockImplementation(async () => ({ enabled: true, env_pinned: false, otlp_configured: true }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByText(/also sent to the metrics destination set up for it. Once a day/)).toBeInTheDocument()
+    expect(screen.queryByText(/Performance metrics stay on this machine/)).not.toBeInTheDocument()
+  })
+
+  it('does not say a heartbeat is sent when recording is on and the heartbeat is off', async () => {
+    stored = { recording: true, beacon: false }
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByText('Performance metrics stay on this machine. No heartbeat is sent.')).toBeInTheDocument()
+  })
+
+  it('names both facts when it exports and the heartbeat is off', async () => {
+    beaconStatus.mockImplementation(async () => ({ ...BEACON_ON, enabled: false }))
+    collectionStatus.mockImplementation(async () => ({ enabled: true, env_pinned: false, otlp_configured: true }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByText(/also sent to the metrics destination set up for it. No heartbeat is sent./)).toBeInTheDocument()
   })
 
   it('uses the same left panel copy as the Import setup chapter', () => {

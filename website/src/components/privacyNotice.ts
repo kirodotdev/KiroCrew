@@ -19,6 +19,8 @@ interface CollectionStatus {
   enabled?: boolean
   env_pinned?: boolean
   env_var?: string
+  /** Recording would also send metrics to a configured destination. */
+  otlp_configured?: boolean
 }
 
 /**
@@ -34,6 +36,10 @@ export interface UsageDataState {
   on: boolean
   /** Local metric recording is on (its EFFECTIVE state). */
   recordingOn: boolean
+  /** The daily heartbeat is on and not pinned off. */
+  heartbeatOn: boolean
+  /** Local recording is on AND sends metrics to a configured destination. */
+  exportOn: boolean
   /** Set only when `on` is false. */
   offReason: UsageOffReason | null
   /** The env var to name when `offReason` is `env`. */
@@ -64,18 +70,23 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
     retry: false,
   })
   if (beaconQ.isError || collectionQ.isError) {
-    return { status: 'error', on: false, recordingOn: false, offReason: null, envVar: '' }
+    return { status: 'error', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason: null, envVar: '' }
   }
   const beacon = beaconQ.data
   const collection = collectionQ.data
-  if (!beacon || !collection) return { status: 'loading', on: false, recordingOn: false, offReason: null, envVar: '' }
+  if (!beacon || !collection) {
+    return { status: 'loading', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason: null, envVar: '' }
+  }
   const recordingOn = !!collection.enabled
   const heartbeatOn = !!beacon.enabled && !beacon.env_override && !beacon.governance_override
-  if (recordingOn || heartbeatOn) return { status: 'ready', on: true, recordingOn, offReason: null, envVar: '' }
+  const exportOn = recordingOn && !!collection.otlp_configured
+  if (recordingOn || heartbeatOn) {
+    return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, offReason: null, envVar: '' }
+  }
   const envVar = (beacon.env_override ? beacon.env_var : collection.env_pinned ? collection.env_var : '') ?? ''
   let offReason: UsageOffReason = 'config'
   if (beacon.governance_override) offReason = 'governance'
   else if (envVar === 'DO_NOT_TRACK') offReason = 'do_not_track'
   else if (envVar) offReason = 'env'
-  return { status: 'ready', on: false, recordingOn: false, offReason, envVar }
+  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar }
 }

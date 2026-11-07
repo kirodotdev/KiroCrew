@@ -736,8 +736,21 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
 
     pin = env_pin()
     effective = cfg.telemetry.enabled if pin is None else pin
+    # Same resolver as the dashboard's disclosure. An unknown posture counts as
+    # exporting: this is a privacy statement, so it must not promise local-only.
+    try:
+        from kiro_crew.metrics.provider import otlp_egress_active
+
+        exports = otlp_egress_active(cfg.telemetry)
+    except Exception:  # noqa: BLE001 - unknown posture is treated as egress
+        exports = True
     lines = [
-        "Local metric recording (stays on this machine)",
+        "Local metric recording"
+        + (
+            " (when on, also sent to the metrics destination configured for this machine)"
+            if exports
+            else " (stays on this machine)"
+        ),
         "",
         f"  Enabled:     {'yes' if effective else 'no'}",
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
