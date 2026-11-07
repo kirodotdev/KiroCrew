@@ -56,6 +56,14 @@ class _Slot:
         return {}
 
 
+@pytest.fixture(autouse=True)
+def _clear_unadmitted_running():
+    # The registry is module-global and outlives each test's loop.
+    turn_gate._UNADMITTED_RUNNING.clear()
+    yield
+    turn_gate._UNADMITTED_RUNNING.clear()
+
+
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     clock = ManualClock(start=50_000.0)
