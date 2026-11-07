@@ -1425,3 +1425,38 @@ async def test_a_listing_during_the_resume_tail_is_corrected_on_publish(tmp_path
     assert outcome.refusal is None and "tail1" in state._slots, outcome
     assert listed and "tail1" not in listed[0], f"the tail did not run retracted: {listed}"
     assert pushes == [True, True], f"publish after the listing pushed {pushes}"
+
+
+@pytest.mark.asyncio
+async def test_a_raise_after_materialise_releases_the_construction_mark(tmp_path, monkeypatch):
+    """The reads that run after ``_materialise_slot_from_history`` returns (model,
+    app, link) work on a slot that is registered and under construction. A raise
+    there must drop the slot, its restricted marker and its mark, or the key stays
+    reserved and counted against the live-slot cap for the process lifetime."""
+    from kiro_crew.dashboard import chat_handlers as ch
+    from kiro_crew.dashboard.chat_api import resume as resume_mod
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    key = "dashboard:markleak1"
+    state.conversation_log.append(key, "user", "history-1")
+    # A temporary session: the build marks the key restricted before the raise.
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata, key, {"memory_mode": "temporary"}
+    )
+
+    def _boom(*_a, **_k):
+        assert "dashboard:markleak1" in state._restricted_keys
+        raise RuntimeError("model restore failed")
+
+    # The resume core runs on the facade's globals (``_facade_compose``).
+    monkeypatch.setattr(ch, "_restore_model_fields", _boom)
+    before = state.live_slot_count()
+    with pytest.raises(RuntimeError, match="model restore failed"):
+        await resume_mod.resume_slot_from_history(state, name="markleak1", history_key=key)
+
+    assert "markleak1" not in state._slots
+    assert "markleak1" not in state._slots_under_construction
+    assert "dashboard:markleak1" not in state._restricted_keys
+    assert state.live_slot_count() == before
+    assert state.get_or_create_slot("markleak1") is not None

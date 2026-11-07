@@ -826,20 +826,25 @@ def _restore_recent_sessions_steps(
         )
         if meta is None or messages is None:
             continue
-        _apply_recent_session(
-            state,
-            key,
-            slot_name,
-            s,
-            meta,
-            messages,
-            conv_log=conv_log,
-            kiro_model_map=kiro_model_map,
-            restore_cfg=_restore_cfg,
-            member_identity=_member_id,
-            agent=agent,
-            effort_marker=effort_marker,
-        )
+        try:
+            _apply_recent_session(
+                state,
+                key,
+                slot_name,
+                s,
+                meta,
+                messages,
+                conv_log=conv_log,
+                kiro_model_map=kiro_model_map,
+                restore_cfg=_restore_cfg,
+                member_identity=_member_id,
+                agent=agent,
+                effort_marker=effort_marker,
+            )
+        except Exception:
+            # One bad session must not stop the rest; the build undid its own slot.
+            logger.debug("restore_recent_sessions: restore failed for %s", key, exc_info=True)
+            continue
         restored += 1
         # Recover an app flag whose claim outlived its row, as the open-slots
         # driver does. This driver's reads are inline by construction.
@@ -950,21 +955,26 @@ async def restore_recent_sessions_async(
                     gone,
                 )
                 continue
-            _apply_recent_session(
-                state,
-                key,
-                slot_name,
-                s,
-                meta,
-                messages,
-                conv_log=conv_log,
-                kiro_model_map=kiro_model_map,
-                restore_cfg=_restore_cfg,
-                member_identity=_member_id,
-                agent=agent,
-                effort_marker=effort_marker,
-                pending_backfills=pending_backfills,
-            )
+            try:
+                _apply_recent_session(
+                    state,
+                    key,
+                    slot_name,
+                    s,
+                    meta,
+                    messages,
+                    conv_log=conv_log,
+                    kiro_model_map=kiro_model_map,
+                    restore_cfg=_restore_cfg,
+                    member_identity=_member_id,
+                    agent=agent,
+                    effort_marker=effort_marker,
+                    pending_backfills=pending_backfills,
+                )
+            except Exception:
+                # As in the inline driver: skip this session, restore the rest.
+                logger.debug("restore_recent_sessions: restore failed for %s", key, exc_info=True)
+                continue
             restored += 1
             # Same recovery, with the spool read awaited: this driver is
             # loop-affine, so a scan here would stall the gateway.

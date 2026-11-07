@@ -1115,10 +1115,7 @@ FIELDS: tuple[Field, ...] = (
         attr="_origin",
         line=_truthy(lambda s: s._origin),
         merge=_truthy(lambda s: s._origin),
-        why=(
-            "applied at construction (``slot_args``), as ``str(...)``: a null origin "
-            'reads as the string "None" (#17026)'
-        ),
+        why="applied at construction (``slot_args``); a null origin reads as no origin",
     ),
     # The artifact companion binding: a bound session restored after a gateway
     # restart comes back as the artifact's active bound session.
@@ -1522,7 +1519,7 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
             args["channel_origin"] = bool(meta.get("channel_origin")) or bool(
                 meta.get("linked_session_key")
             )
-    args["origin"] = str(meta.get("origin", ""))
+    args["origin"] = str(meta.get("origin") or "")
     return args
 
 

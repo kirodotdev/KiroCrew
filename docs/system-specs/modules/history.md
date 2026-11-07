@@ -1221,7 +1221,9 @@ unwinding turns), `restore_drivers.py` (`restore_open_slots`,
 tail and reports), `slot_builders.py` (`_rehydrate_slot_from_history`,
 `_apply_recent_session`, the open-tab slot build, the deferred window load and the
 prefetch reads they share) and `member_store.py` (the private member-store
-assignment). New orchestration goes to the part of its responsibility. The rules
+assignment). Both slot builders undo the slot they registered when a read raises
+(a non-string title, a malformed row), and both restore drivers log that session
+and go on to the next. New orchestration goes to the part of its responsibility. The rules
 those consult live in `dashboard/slot_persistence/`, and each file names the work
 that belongs in it. Only the newest `EAGER_WINDOW_RESTORES` open tabs are built with
 their transcript window loaded; every later tab that only a person drives (its own
@@ -1272,7 +1274,8 @@ learn-cron-dashboard):
   import) -- through `slot_args` (the constructor keywords), `apply` (every other
   field) and `AppliedMeta.settle` (the fields that need the loaded window: held
   notes already delivered, the turn-in-flight marker, the title refresh mark). A
-  purpose missing from a row is a declared asymmetry with its reason. The value
+  purpose missing from a row is a declared asymmetry with its reason. A JSON
+  `null` origin reads as no origin. The value
   checks a read applies live beside their rows, among them the title state, the
   auto-compaction threshold, the dismissed source links, the model and effort, the
   retired modes and the color. The model and effort go through one shared
