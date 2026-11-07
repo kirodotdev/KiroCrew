@@ -460,6 +460,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
     "_effort_pick_gen": ("value", "0"),
+    "_embed_question_polled_at": ("value", "None"),
     "_empty_episode_productive": ("value", "False"),
     "_empty_response_retries": ("value", "0"),
     "_end_wait_by": ("value", "''"),

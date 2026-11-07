@@ -355,6 +355,7 @@ class _ChatSlot:
         "_wait_steer_baseline",
         "_wait_contested",
         "_question_pending",
+        "_embed_question_polled_at",
         "_welcomed_agent",
     )
 
@@ -571,6 +572,7 @@ class _ChatSlot:
     #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
     _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
+    _embed_question_polled_at: float | None
 
     # Initialised by state_parts/slot_ladder.py.
     _pending_subagent_failures: list[str]
