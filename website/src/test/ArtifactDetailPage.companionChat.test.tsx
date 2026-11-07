@@ -127,7 +127,13 @@ describe('ArtifactDetailPage companion chat', () => {
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).deleteChatSlot = vi.fn().mockResolvedValue({ ok: true })
-    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+    // No bound session until the page creates one; after that the slot list has not caught up
+    // yet (an empty list would mean the new session is gone), so the panel runs off the create
+    // response alone.
+    vi.mocked(api).chatSlots = vi.fn(() => (vi.mocked(api).createChatSlot.mock.calls.length
+      ? new Promise<never>(() => {}) : Promise.resolve([])))
+    // The panel shows the chat once the bound session has opened.
+    vi.mocked(api).chatSlotDetail = vi.fn().mockResolvedValue({ messages: [], has_more: false, total: 0 })
   })
 
   // ── create + optimistic bind ────────────────────────────────────────────────

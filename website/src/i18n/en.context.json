@@ -1166,6 +1166,7 @@
     "components.weekGrid.job_title": "Hover text of a scheduled job dot on the cron week grid: job name, then its HH:MM time and time zone.",
     "components.weekGrid.job_title_paused": "Hover text of a PAUSED scheduled job dot on the cron week grid: job name, a paused marker, then its HH:MM time and time zone.",
     "pages.worldsPage.scene_button": "Screen-reader name of a scene picker button on the Agent Worlds page. {{label}} is the scene name and {{desc}} its one-line description.",
-    "components.weekGrid.job_name_paused": "Legend entry for a PAUSED job under the cron week grid: the job name with a paused marker."
+    "components.weekGrid.job_name_paused": "Legend entry for a PAUSED job under the cron week grid: the job name with a paused marker.",
+    "appSdk.chatPanel.session_gone": "Notice inside an app's embedded chat panel when the chat session the app opened there has been deleted; 'the app' is the app the panel sits in, which is where the user opens or starts another session."
   }
 }

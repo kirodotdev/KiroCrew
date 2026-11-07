@@ -582,7 +582,10 @@ on its own chat POST. No permission is involved: nothing is uploaded.
 `ChatPanel` mounts Kiro Crew's native chat experience for an existing session. The required
 `slotKey` selects the session. By default, the component keeps the standard embedded ChatPage
 behavior. A session the app has just created with `POST /api/chat/slots` can be passed straight
-away: the panel shows it before the dashboard's session list has caught up.
+away: the panel shows it before the dashboard's session list has caught up. The chat appears only
+once that session is open, so a session that cannot open never puts another conversation in its
+place: a session that no longer exists says so, and any other failure shows the error with
+**Try again**.
 
 ```tsx
 import { ChatPanel } from '@kirocrew/app-sdk'
@@ -592,7 +595,10 @@ import { ChatPanel } from '@kirocrew/app-sdk'
 
 Set `conversationOnly` when the host app already provides navigation and needs the conversation
 without ChatPage's sessions rail. This mode keeps the native transcript, composer, and composer
-controls, and it leaves the host page in charge of the browser URL.
+controls, and it leaves the host page in charge of the browser URL. The panel stays on the
+`slotKey` session (or the session a memory-mode pick replaces it with), switching back when
+another session becomes active, so mount one `conversationOnly` panel at a time. Without
+`conversationOnly`, a session the user picks in the rail is shown.
 
 ```tsx
 <ChatPanel slotKey="coder-abc123" conversationOnly />
