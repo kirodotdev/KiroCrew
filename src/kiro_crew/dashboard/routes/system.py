@@ -20,6 +20,7 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import feature_preview_rows
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
@@ -92,6 +93,9 @@ def register(app: web.Application) -> None:
     # The idle check `kirocrew restart --when-idle` asks before restarting.
     # Host-only: a strict internal path, re-asserted by the handler.
     app.router.add_post("/api/restart/when-idle", restart_gate_handlers.api_restart_when_idle)
+    # Config keys behind edition Feature Preview rows (Settings > Developer). Owner-only.
+    app.router.add_get("/api/feature-previews/edition", feature_preview_rows.api_get_edition)
+    app.router.add_put("/api/feature-previews/edition", feature_preview_rows.api_put_edition)
     # Only expose the simulation endpoint in dev/debug environments. Both are local
     # developer switches, which an enterprise build ignores (RFC D3).
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")

@@ -199,6 +199,12 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     /** Pin which file a contested agent name runs (`agent.spec_pins`). Owner-only. */
     setAgentSpecPin: (agent: string, file: string) =>
       put('/api/agent-spec-pins/' + encodeURIComponent(agent), { file }).then(j) as Promise<{ ok: boolean; agent: string; file: string }>,
+    /** The config keys behind edition Feature Preview rows (`/api/feature-previews/edition`).
+     *  Owner-only; `null` is an unset key. */
+    featurePreviewEditionValues: () =>
+      fetch('/api/feature-previews/edition').then(j) as Promise<{ values: Record<string, boolean | null> }>,
+    setFeaturePreviewEditionValue: (configKey: string, enabled: boolean) =>
+      put('/api/feature-previews/edition', { config_key: configKey, enabled }).then(j) as Promise<{ config_key: string; enabled: boolean }>,
     kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
     saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
     patchConfig: (path: string, value: unknown, opts?: { ifUnset?: boolean }) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value, ...(opts?.ifUnset ? { if_unset: true } : {}) }) }).then(j),

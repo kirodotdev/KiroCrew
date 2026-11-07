@@ -878,6 +878,21 @@ class DashboardContributor(Protocol):
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
         ...
 
+    def feature_preview_config_keys(self) -> "Sequence[str]":
+        """Config keys the edition's Feature Preview rows toggle (Default: none).
+
+        The rows themselves are registered in the browser with
+        ``registerFeaturePreviewRows`` (``website/src/pages/settings/
+        featurePreviewRows.ts``); this names the boolean keys they write, e.g.
+        ``"my_feature.enabled"``. The owner-only ``/api/feature-previews/edition``
+        routes (``dashboard/handlers/feature_preview_rows.py``) read and write
+        ONLY these keys, and drop one under a core-owned top-level section. Read
+        through ``getattr`` and ``safe_context_call``, so an edition without the
+        method contributes nothing. v1 method addition (no ``CONTRACT_VERSION``
+        bump).
+        """
+        ...
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         """Edition paths an internal loopback caller may reach (Default: empty).
 
