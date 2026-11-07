@@ -178,18 +178,23 @@ class _PointClock:
 _REAL_BACKSTOP_SECS = 30.0
 
 
-def _request(session_key: str = SESSION):
-    """A request shaped like the MCP tool's own internally-authenticated recall call."""
+def _request(session_key: str = SESSION, *, dashboard_open: bool = True):
+    """A request shaped like the MCP tool's own internally-authenticated recall call.
+
+    The state carries one open owner dashboard socket, or none when *dashboard_open* is
+    False: the boot state, where slots are published before any browser connects.
+    """
     request = MagicMock()
     request.path = "/api/memory/recall"
     store = {"internal_auth": True}
     request.get = lambda key, default=None: store.get(key, default)
     request.query = {"q": QUERY}
     request.headers = {"X-Session-Key": session_key}
+    request.app["state"]._owner_ws_clients = {MagicMock(closed=False)} if dashboard_open else set()
     return request
 
 
-async def _recall(wired, session_key: str = SESSION) -> dict:
+async def _recall(wired, session_key: str = SESSION, *, dashboard_open: bool = True) -> dict:
     """Drive the ROUTE, so the hook is armed by the code that arms it in production.
 
     Only the store resolution and the session recognition are stubbed -- those answer
@@ -199,7 +204,7 @@ async def _recall(wired, session_key: str = SESSION) -> dict:
     """
     from kiro_crew.dashboard.handlers import memory_member as mm
 
-    request = _request(session_key)
+    request = _request(session_key, dashboard_open=dashboard_open)
     with (pytest.MonkeyPatch.context() as patch,):
         patch.setattr(mm, "_recognize_session", AsyncMock(return_value=None))
         patch.setattr(mm, "_blocks_reads_session", lambda *_a, **_kw: False)
@@ -701,29 +706,36 @@ class TestOnlyACommittedRecallLeavesAReceipt:
         assert pending == [], "a decision never made leaves no receipt to commit"
 
     @pytest.mark.asyncio
-    async def test_a_tab_closed_during_the_search_sends_nothing(self, wired, monkeypatch):
+    @pytest.mark.parametrize("closing", ["tab", "dashboard"])
+    async def test_a_tab_closed_during_the_search_sends_nothing(self, wired, monkeypatch, closing):
         """The egress gate is read where the egress happens, not before the search.
 
         `_memory_recall_keep` runs on the event loop before `recall` is dispatched, so
         its membership test is a cheap early refusal. The question it answers can stop
         being true while the search runs: the owner closes the tab and the slot leaves
-        the published set, and a decision built on the earlier answer would still send
-        snippets of their remembered notes. This closes the tab mid-search.
+        the published set, or closes the last owner dashboard, and a decision built on
+        the earlier answer would still send snippets of their remembered notes. This
+        closes the tab, or the last owner dashboard, mid-search.
         """
         from kiro_crew.dashboard.handlers import memory_member as mm
 
         closed: list[int] = []
         real_search = wired.store.search_episodic
+        request = _request()
 
         def _close_the_tab(*args, **kwargs):
             if not closed:
                 closed.append(1)
-                session_surface.set_dashboard_surfaced(set())
+                if closing == "tab":
+                    session_surface.set_dashboard_surfaced(set())
+                else:
+                    # A closed socket stays registered until it is reaped.
+                    for ws in request.app["state"]._owner_ws_clients:
+                        ws.closed = True
             return real_search(*args, **kwargs)
 
         monkeypatch.setattr(wired.store, "search_episodic", _close_the_tab)
 
-        request = _request()
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(mm, "_recognize_session", AsyncMock(return_value=None))
             patch.setattr(mm, "_blocks_reads_session", lambda *_a, **_kw: False)
@@ -817,6 +829,25 @@ class TestTheGatesStillHold:
         assert [r for r in _rows(wired.log_dir) if r.get("point") == "memory.recall"] == []
         ids = {row["id"] for row in payload["retrieval"]["episodes"]}
         assert "mem-two" in ids, "the similarity result must come back whole"
+
+    @pytest.mark.asyncio
+    async def test_a_published_slot_with_no_dashboard_open_is_not_decided_for(self, wired):
+        """A restored slot is published at boot, before any browser connects.
+
+        Its key is in the published set, but no owner socket is open, so nobody can read
+        the strip: nothing may be sent until a dashboard connects, and then it is.
+        """
+        assert SESSION in session_surface.dashboard_surfaced_keys()
+
+        payload = await _recall(wired, dashboard_open=False)
+
+        assert _Oracle.asked == [], "recalled memory left the machine with no viewer"
+        assert [r for r in _rows(wired.log_dir) if r.get("point") == "memory.recall"] == []
+        ids = {row["id"] for row in payload["retrieval"]["episodes"]}
+        assert "mem-two" in ids, "the similarity result must come back whole"
+
+        await _recall(wired)
+        assert len(_Oracle.asked) == 1, "an open dashboard is the audience the gate wants"
 
     @pytest.mark.asyncio
     async def test_no_consent_scope_asks_nothing_and_returns_everything(self, wired, tmp_path):
