@@ -1072,6 +1072,15 @@ async def run(self: GatewayOrchestrator) -> None:
             self._background_tasks.add(_warn_task)
             _warn_task.add_done_callback(self._background_tasks.discard)
 
+        # Same contract: name files another account owns, with the repair line.
+        from kiro_crew.data_home_owner import warn_if_data_home_not_owned
+
+        _owner_task = asyncio.create_task(
+            asyncio.to_thread(warn_if_data_home_not_owned, data_home())
+        )
+        self._background_tasks.add(_owner_task)
+        _owner_task.add_done_callback(self._background_tasks.discard)
+
     # Disable and mark pending any app whose sessionApproval grant was never
     # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
     # the grant is refused on read already, so readiness need not wait.

@@ -6077,6 +6077,11 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "No se pudo comprobar a quién pertenecen los archivos de {{productName}}.",
+      "message": "Algunos archivos de {{productName}} pertenecen a otro usuario, así que {{productName}} no puede leerlos.",
+      "run_this": "Ejecuta este comando en una terminal de este equipo y vuelve a intentarlo."
+    },
     "mateWorkers": {
       "approvals_label": "Aprobaciones de herramientas de las sesiones de este Bot: {{n}}",
       "trust": "Confiar en esta sesión",

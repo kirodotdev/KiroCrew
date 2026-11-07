@@ -13,7 +13,8 @@ import { ALL_UNAVAILABLE } from '../api/sharedCrewUi'
 const caps = vi.hoisted(() => vi.fn())
 vi.mock('../api/client', async importOriginal => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, api: { ...actual.api, sharedCrewCapabilities: caps } }
+  // A status read with nothing to report, so the only alert is the capabilities one.
+  return { ...actual, api: { ...actual.api, sharedCrewCapabilities: caps, status: vi.fn(async () => ({})) } }
 })
 vi.mock('../pages/settings/OverviewPanel', () => ({ OverviewPanel: () => <div data-testid="overview-panel" /> }))
 vi.mock('../pages/settings/PeoplePanel', () => ({ PeoplePanel: () => <div data-testid="people-panel" /> }))

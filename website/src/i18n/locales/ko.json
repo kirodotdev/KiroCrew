@@ -5743,6 +5743,11 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "{{productName}} 파일의 소유자를 확인하지 못했습니다.",
+      "message": "일부 {{productName}} 파일이 다른 사용자 소유라서 {{productName}}이(가) 읽을 수 없습니다.",
+      "run_this": "이 컴퓨터의 터미널에서 이 명령을 실행한 뒤 다시 시도하세요."
+    },
     "mateWorkers": {
       "approvals_label": "이 Bot 세션의 도구 승인: {{n}}",
       "trust": "이 세션 신뢰",

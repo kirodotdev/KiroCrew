@@ -167,6 +167,9 @@ export interface StatusData {
   yolo_duration?: '30m' | '1h' | '6h' | '12h' | '24h' | 'until_shutdown'
   /** Whether enterprise governance currently allows the until_shutdown option. */
   yolo_until_shutdown_permitted?: boolean
+  /** HTTP reply only: whether this account owns the data home's key entries,
+   *  and the gateway's repair line when it does not. Absent on an older gateway. */
+  data_home_access?: { ok: boolean; home: string; foreign: string[]; fix_command: string }
   /** Auto-approve modes forbidden by the `approval_modes` policy scope. Today the
    * scope governs `yolo` only, so this is `['yolo']` or empty; `normal`, `trust`
    * and `trust_reads` are non-deniable and never appear. The approval-mode picker
