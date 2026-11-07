@@ -540,6 +540,14 @@ class TestAnUnreadableMcpIdentityIsDeniedByTheGate:
             assert decision.action != TOOL_DENY, kwargs
 
 
+def _denied_grant():
+    """Built at use time from the gate's own binding, so a module reload in the
+    suite cannot hand the gate a class it does not recognise."""
+    from kiro_crew.hooks import SpecDeniedGrant
+
+    return SpecDeniedGrant(denied_commands=("make clean",))
+
+
 class TestHookGateKwargs:
     """``hook_gate_kwargs`` is the ONE extraction of the event-derived
     ``on_tool_call`` arguments. A dispatcher that hand-copies the fields it
@@ -590,6 +598,7 @@ class TestHookGateKwargs:
         "spec_shell_allowlist": "spec_shell_allowlist",
         "spec_write_allowlist": "spec_write_allowlist",
         "spec_write_cwd": "spec_write_cwd",
+        "spec_denied_grant": "spec_denied_grant",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -620,6 +629,7 @@ class TestHookGateKwargs:
             spec_shell_allowlist=("git log",),
             spec_write_allowlist=("/w/out",),
             spec_write_cwd="/w",
+            spec_denied_grant=_denied_grant(),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -641,6 +651,7 @@ class TestHookGateKwargs:
             "spec_shell_allowlist": ("git log",),
             "spec_write_allowlist": ("/w/out",),
             "spec_write_cwd": "/w",
+            "spec_denied_grant": _denied_grant(),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -675,6 +686,7 @@ class TestHookGateKwargs:
             "spec_shell_allowlist": None,
             "spec_write_allowlist": None,
             "spec_write_cwd": "",
+            "spec_denied_grant": None,
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -776,6 +788,7 @@ class TestHookGateKwargs:
         probe.spec_shell_allowlist = ("<spec_shell_allowlist>",)
         probe.spec_write_allowlist = ("<spec_write_allowlist>",)
         probe.spec_write_cwd = "<spec_write_cwd>"
+        probe.spec_denied_grant = _denied_grant()
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -811,6 +824,8 @@ class TestHookGateKwargs:
                 "spec_write_allowlist",
             ):
                 assert got[kwarg] == (f"<{attr}>",)
+            elif kwarg == "spec_denied_grant":
+                assert got[kwarg] == _denied_grant()
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg
 

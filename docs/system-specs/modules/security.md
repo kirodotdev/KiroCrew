@@ -2605,6 +2605,29 @@ gate's fall-through `allow` carries `COMPOSITION_NOTICE` as its reason and the
 dashboard shows it ahead of the card; under `denyByDefault` the refusal names the
 composition instead of saying no entry matches. The note decides nothing.
 
+**KAS spec grant beside a checked deny** (`spec-denies` row,
+`kas_spec_denies`, `platform/spec_denied_gate`) — a `toolsSettings.shell.deniedCommands`
+or write `deniedPaths` beside a grant no longer keeps that grant at the prompt
+when Crew can read every entry of the deny list itself
+(`allowed_commands.parse_deny`, `allowed_paths.parse`). `parse_deny` refuses an
+entry holding `|`, `\<`, `\>` or `\b{`, which the grant-side reader takes narrower
+than kiro-cli's Rust engine, so such a deny keeps its grant at the prompt. The
+projection then records,
+under the Crew-only `_crewSpecDenies` key, the grants the deny alone held back
+(the shell and write built-ins, and `allowedCommands`) together with the deny
+list; the session handle stamps them on its own agent's requests as ONE value,
+`AcpEvent.spec_denied_grant`, so a surface that drops it drops the grant too.
+The `spec-denies` deny row refuses a call a deny names: a shell command one
+`deniedCommands` entry matches whole or in a leading piece that ends at a word
+(`make clean` refuses `make clean now`, not `make cleanup`), while the grant check
+reads every leading piece, so a mid-word match only asks, or a write whose target, in any spelling, a deny
+covers. `spec-builtin-grant` honours the recorded grant only after the same
+check answers a clear no; an unreadable entry, a command that is not plain, a
+target it cannot read or resolve, or an exhausted match budget grants nothing.
+Any other key beside the deny (`denyByDefault`, `fallbackAction`, an authored
+`ask`) still withholds the grant. The KAS deny rules the translation carries
+are unchanged.
+
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
 `toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
 its usable `allowedCommands` recorded as the agent's shell allowlist

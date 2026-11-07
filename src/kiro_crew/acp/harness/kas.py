@@ -846,6 +846,11 @@ class KasHarness(MembershipHarness):
         handle.kas_spec_write_allowlist = projected_write_allowlist(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
+        from kiro_crew.acp.kas_spec_denies import projected_spec_denies
+
+        handle.kas_spec_denies = projected_spec_denies(
+            custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
+        )
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""

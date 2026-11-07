@@ -33,8 +33,10 @@ if TYPE_CHECKING:
         DEEPSEEK_READ_ONLY_TOOLS,
         KIRO_TOOL_ALIASES,
         TOOL_AUTO_APPROVE,
+        SpecDeniedGrant,
         ToolHookResult,
         _bounded_pattern_search,
+        as_spec_denied_grant,
         logger,
         policy_aliases,
         security,
@@ -197,6 +199,9 @@ class ToolCall:
     #: ``spec-write-allowlist`` tier joins a relative write target to. ``""``
     #: leaves a relative target uncovered.
     spec_write_cwd: str = ""
+    #: ``AcpEvent.spec_denied_grant``: grants that hold only after the
+    #: ``spec-denies`` row finds no deny naming the call. ``None`` grants nothing.
+    spec_denied_grant: SpecDeniedGrant | None = None
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
@@ -266,6 +271,7 @@ class ToolCall:
                 getattr(event, "spec_write_allowlist", None)
             ),
             "spec_write_cwd": _plain_str(getattr(event, "spec_write_cwd", "")),
+            "spec_denied_grant": as_spec_denied_grant(getattr(event, "spec_denied_grant", None)),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
@@ -296,6 +302,7 @@ class ToolCall:
             "spec_shell_allowlist": self.spec_shell_allowlist,
             "spec_write_allowlist": self.spec_write_allowlist,
             "spec_write_cwd": self.spec_write_cwd,
+            "spec_denied_grant": self.spec_denied_grant,
             "harness_builtin_tool": self.harness_builtin_tool,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
