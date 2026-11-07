@@ -341,3 +341,299 @@ def test_a_skill_scope_record_names_what_it_takes_away():
     line = _skill_scope_summary(({"capability": "skill", "match": many, "effect": "deny"},))
     assert line.startswith("45 default-tree skills denied by name: s00, ")
     assert line.endswith("and 5 more")
+
+
+# --- Skills KAS refuses get a fixed copy (P0-26) ---------------------------------------
+
+_KAS_NAME = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+
+
+def _raw_skill(root: Path, dirname: str, text: str) -> Path:
+    path = root / dirname / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _copies(entry: dict) -> dict[str, dict]:
+    """The copies in *entry*'s resources, by name, each with its parsed front matter."""
+    import re
+
+    import yaml
+
+    out = {}
+    for uri in entry.get("resources", []):
+        path = Path(uri[len("skill://") :])
+        if path.parent.parent.name != kas_skill_scope.COPY_DIR_NAME:
+            continue
+        text = path.read_text(encoding="utf-8")
+        _, head, body = text.split("---\n", 2)
+        front = yaml.safe_load(head)
+        # What KAS's ``validateSkillMd`` holds a skill to.
+        assert re.fullmatch(_KAS_NAME, front["name"]) and "--" not in front["name"]
+        assert 1 <= len(front["description"]) <= 1024
+        out[front["name"]] = {**front, "body": body}
+    return out
+
+
+@pytest.mark.asyncio
+async def test_a_default_tree_skill_kas_refuses_loads_as_a_fixed_copy(home):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "No_Front", "# Deploy helper\n\nRun scripts/go.sh\n")
+    _raw_skill(kiro / "skills", "upper", "---\nname: My_Skill\ndescription: d\n---\nbody\n")
+    _raw_skill(
+        kiro / "skills",
+        "colon",
+        "---\nname: colon\ndescription: Three backends: a, b\n---\nbody\n",
+    )
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    entry = await _entry("plain", checkout)
+
+    copies = _copies(entry)
+    assert set(copies) == {"no-front", "my-skill", "colon"}
+    assert copies["no-front"]["description"] == "Deploy helper"
+    assert "Run scripts/go.sh" in copies["no-front"]["body"]
+    assert str(kiro / "skills" / "No_Front") in copies["no-front"]["body"]
+    assert copies["my-skill"]["description"] == "d"
+    assert copies["colon"]["description"] == "body"
+    assert "permissions" not in entry
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_skill_kas_refuses_is_copied_and_kept_in_scope(home):
+    kiro, checkout, package = home
+    path = _raw_skill(package, "nodesc", "---\nname: nodesc\n---\nUse me well\n")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{path}"]})
+
+    entry = await _entry("mapped", checkout)
+
+    assert set(_copies(entry)) == {"nodesc"}
+    assert entry["resources"][0] == f"skill://{path}"
+    rules = entry["permissions"]["rules"]
+    assert not _denied(rules, "nodesc")
+    assert all(_denied(rules, f"global-{i}") for i in range(5))
+
+
+@pytest.mark.asyncio
+async def test_a_copy_takes_a_name_no_loaded_skill_uses(home):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "Global_0", "---\nname: Global-0\ndescription: d\n---\nb\n")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    entry = await _entry("plain", checkout)
+
+    assert set(_copies(entry)) == {"global-0-2"}
+
+
+@pytest.mark.asyncio
+async def test_a_skill_kas_loads_and_one_out_of_scope_get_no_copy(home):
+    kiro, checkout, package = home
+    _raw_skill(kiro / "skills", "No_Front", "no front matter\n")
+    alpha = _skill(package, "alpha")
+    _agent(kiro, "mapped", {"tools": ["*"], "resources": [f"skill://{alpha}"]})
+
+    entry = await _entry("mapped", checkout)
+
+    assert entry["resources"] == [f"skill://{alpha}"]
+
+
+def test_a_long_description_is_cut_to_kas_bound(tmp_path):
+    path = _raw_skill(
+        tmp_path, "long", "---\nname: long\ndescription: " + "x" * 2000 + "\n---\nb\n"
+    )
+    front, body = kas_skill_scope._kas_front_matter(path.read_text(encoding="utf-8"))
+    assert kas_skill_scope._kas_loads(front, native=False)
+    assert not kas_skill_scope._kas_loads(front, native=True)
+    text = kas_skill_scope._copy_text(path, front, body, "long")
+    copy_front, _ = kas_skill_scope._kas_front_matter(text)
+    assert kas_skill_scope._kas_loads(copy_front, native=True)
+    assert len(copy_front["description"]) == 1024
+
+
+def test_a_skill_opening_with_a_rule_and_no_fence_keeps_its_body():
+    front, body = kas_skill_scope._kas_front_matter("---\n# Title\n\nDo the thing\n")
+    assert front is None
+    assert "Do the thing" in body
+
+
+@pytest.mark.parametrize(
+    "extra", ["license: null", "compatibility: 1.0", "metadata: []", "metadata: x"]
+)
+def test_a_field_kas_schema_rejects_counts_as_refused(extra):
+    front, _ = kas_skill_scope._kas_front_matter(f"---\nname: a\ndescription: d\n{extra}\n---\nb\n")
+    assert not kas_skill_scope._kas_loads(front, native=False)
+
+
+@pytest.mark.asyncio
+async def test_two_names_for_one_skill_never_share_a_copy_file(home):
+    kiro, checkout, package = home
+    refused = _raw_skill(kiro / "skills", "Deploy", "no front matter\n")
+    taken = _skill(package, "deploy")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+    _agent(kiro, "both", {"tools": ["*"], "resources": [f"skill://{taken}", f"skill://{refused}"]})
+
+    plain = await _entry("plain", checkout)
+    both = await _entry("both", checkout)
+
+    [plain_uri] = [r for r in plain["resources"] if kas_skill_scope.COPY_DIR_NAME in r]
+    [both_uri] = [r for r in both["resources"] if kas_skill_scope.COPY_DIR_NAME in r]
+    assert set(_copies(plain)) == {"deploy"}
+    assert set(_copies(both)) == {"deploy-2"}
+    assert plain_uri != both_uri
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "name: a\ndescription: d\ndescription: e",
+        "name: a\ndescription: d\nlicense: 1e3",
+    ],
+)
+def test_front_matter_js_yaml_refuses_counts_as_refused(head):
+    front, _ = kas_skill_scope._kas_front_matter(f"---\n{head}\n---\nb\n")
+    assert not kas_skill_scope._kas_loads(front, native=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", ["deny", "ask"])
+async def test_a_skill_the_author_restricts_by_its_own_name_gets_no_renamed_copy(home, effect):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "upper", "---\nname: My_Skill\ndescription: d\n---\nbody\n")
+    _raw_skill(kiro / "skills", "Other_One", "---\nname: Other_One\ndescription: d\n---\nb\n")
+    rule = {"capability": "skill", "match": ["My_Skill"], "effect": effect}
+    _agent(kiro, "plain", {"tools": ["fs_read"], "permissions": {"rules": [rule]}})
+
+    entry = await _entry("plain", checkout)
+
+    # The rule names ``My_Skill``; its copy would be ``my-skill``, which it misses.
+    assert set(_copies(entry)) == {"other-one"}
+
+
+@pytest.mark.asyncio
+async def test_a_number_like_description_stays_a_string_in_the_copy(home):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "Example", '---\nname: Example\ndescription: "1e3"\n---\nb\n')
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    entry = await _entry("plain", checkout)
+
+    [uri] = [r for r in entry["resources"] if kas_skill_scope.COPY_DIR_NAME in r]
+    text = Path(uri[len("skill://") :]).read_text(encoding="utf-8")
+    front, _ = kas_skill_scope._kas_front_matter(text)
+    assert front == {"name": "example", "description": "1e3"}
+    assert kas_skill_scope._kas_loads(front, native=True)
+
+
+@pytest.mark.parametrize(
+    ("name", "valid"),
+    [("a", True), ("a-b-9", True), ("A", False), ("a_b", False), ("-a", False), ("a-", False)]
+    + [("a--b", False), ("", False), ("a" * 64, True), ("a" * 65, False)],
+)
+def test_the_name_rule_is_kas_is_valid_skill_name(name, valid):
+    assert kas_skill_scope._valid_kas_name(name) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "number"),
+    [("1e3", True), (".5", True), ("5.", True), ("+1.5E-3", True), ("e3", False)]
+    + [("1e", False), (".", False), ("1.2.3", False), ("-", False), ("1e3x", False)],
+)
+def test_the_yaml_1_2_float_form(value, number):
+    assert kas_skill_scope._Yaml12Float().match(value) is number
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("front", "rule"),
+    [
+        # Front matter KAS refuses still names the skill for kiro-cli's rules.
+        ("name: My_Skill\ndescription: d\nlicense: null", {"match": ["My_Skill"]}),
+        # ``?`` is literal to KAS, so this exclude does not lift the deny.
+        ("name: My_Skill\ndescription: d", {"match": ["My_Skill"], "exclude": ["My_?kill"]}),
+        # An empty ``match`` is every skill to KAS; only the copy's name is excluded.
+        ("name: My_Skill\ndescription: d", {"match": [], "exclude": ["my-skill"]}),
+    ],
+)
+async def test_a_restricted_skill_gets_no_copy_however_its_rule_reads(home, front, rule):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "upper", f"---\n{front}\n---\nbody\n")
+    rule = {"capability": "skill", "effect": "deny", **rule}
+    _agent(kiro, "plain", {"tools": ["fs_read"], "permissions": {"rules": [rule]}})
+
+    entry = await _entry("plain", checkout)
+
+    assert _copies(entry) == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "pattern", "hit"),
+    [
+        ("My_Skill", "My_Skill", True),
+        ("My_Skill", "My_?kill", False),
+        ("My_Skill", "My*", True),
+        ("My_Skill", "*Skill", True),
+        ("My_Skill", "M*_*l", True),
+        ("My_Skill", "[M]y_Skill", False),
+        ("ab", "a*b*", True),
+        ("a", "a*a", False),
+    ],
+)
+def test_skill_patterns_match_as_cedar_like(text, pattern, hit):
+    assert kas_skill_scope._cedar_like(text, pattern) is hit
+
+
+@pytest.mark.asyncio
+async def test_a_link_planted_at_a_copy_folder_is_never_written_through(home, tmp_path):
+    import hashlib
+
+    kiro, checkout, _package = home
+    path = _raw_skill(kiro / "skills", "No_Front", "no front matter\n")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    key = f"{path.resolve()}\0no-front"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    root = paths_mod.data_home() / kas_skill_scope.COPY_DIR_NAME
+    root.mkdir(parents=True, exist_ok=True)
+    (root / digest).symlink_to(sealed, target_is_directory=True)
+
+    entry = await _entry("plain", checkout)
+
+    assert list(sealed.iterdir()) == []
+    assert _copies(entry) == {}
+
+
+def test_skill_files_past_the_read_bound_are_counted_once(tmp_path, monkeypatch, caplog):
+    import logging
+
+    for i in range(5):
+        _skill(tmp_path, f"s{i}")
+    monkeypatch.setattr(kas_skill_scope, "_MAX_SKILL_FILES", 3)
+
+    with caplog.at_level(logging.WARNING, logger=kas_skill_scope.logger.name):
+        files = kas_skill_scope._matched_files([str(tmp_path / "*" / "SKILL.md")])
+
+    assert len(files) == 3
+    [record] = [r for r in caplog.records if "get no copy" in r.getMessage()]
+    assert record.getMessage().startswith("KAS skill copies: 2 skill files")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["", "json"])
+async def test_one_deeply_nested_skill_does_not_cost_the_other_copies(home, language):
+    kiro, checkout, _package = home
+    depth = 5000
+    if language:
+        nested = (
+            '{"name": "deep", "description": "d", "metadata": ' + "[" * depth + "]" * depth + "}"
+        )
+    else:
+        nested = "name: deep\ndescription: d\nmetadata: " + "[" * depth + "]" * depth
+    _raw_skill(kiro / "skills", "deep", f"---{language}\n{nested}\n---\nb\n")
+    _raw_skill(kiro / "skills", "No_Front", "no front matter\n")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    entry = await _entry("plain", checkout)
+
+    assert "no-front" in _copies(entry)
