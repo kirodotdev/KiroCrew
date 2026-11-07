@@ -339,8 +339,10 @@ verify whether its target is another crew's private copy: crew create
 default-agent write, publish and reset. Its `error` sentence depends on the
 cause, which `_UnverifiableLineage.reason` classifies, because only one cause
 clears by itself:
-`ambiguous_template_name` (two or more spec files resolve to the target; the
-sentence lists their paths and asks to keep one or rename the others),
+`ambiguous_template_name` (two or more spec files resolve to the target and at
+least one resolves under another name, such as a `<target>.json` declaring a
+fork-backed name; the sentence lists their paths and asks to keep one or rename
+the others),
 `ownership_record_unreadable` (the lineage sidecar `agent_model_state.json` is
 not a plain JSON object within the reader's size cap, is symlinked or
 hard-linked, or refuses the read; the sentence names the file and the error,
@@ -348,7 +350,16 @@ asks to restore it, and warns against deleting it, which would make every
 private copy read as a shared template) and `read_failed` (any other read
 error, including a Windows sharing or lock violation while another process
 holds the file open; the sentence keeps the retry hint). The refusal still
-fails closed in every case and writes nothing.
+fails closed in every case and writes nothing. Files that all declare the
+target are not ambiguous to this read: lineage is keyed by the declared name,
+whose strict read already found no record, so none of them is a private copy
+whichever one runs (`_foreign_private_copy_owner`, the spawn gate's verdict
+for the same files). The package twins an installer writes for an agent
+several packages ship (`<Package>-<name>.json`, `local-<Package>-<name>.json`)
+are therefore bound like one file; which file a session runs is the session
+start's question (identical twins start, differing ones need an
+`agent.spec_pins` entry). A recorded private copy with twins is still
+`foreign_private_copy`.
 
 `GET /api/agents/templates` returns every global discovery row, every
 externally controlled string rendered through `_roster_mask` — the control
