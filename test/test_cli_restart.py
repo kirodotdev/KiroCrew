@@ -1411,6 +1411,11 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
+        # The Windows flag values, pinned on every OS so the choice of flags is
+        # checked on POSIX runners too (there the real names resolve to 0).
+        monkeypatch.setattr("kiro_crew.platform_compat.DETACHED_PROCESS", 0x8)
+        monkeypatch.setattr("kiro_crew.platform_compat.CREATE_NEW_PROCESS_GROUP", 0x200)
+        monkeypatch.setattr("kiro_crew.platform_compat._SUBPROCESS_NO_WINDOW", 0x08000000)
         proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
@@ -1426,12 +1431,12 @@ class TestRestart:
         assert argv == ["/usr/local/bin/kirocrew", "gateway"]
         # Must detach from the controlling terminal — otherwise the detached
         # process would die when the calling shell exits. POSIX: start_new_session;
-        # Windows: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP creationflags.
+        # Windows: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP creationflags, and
+        # never DETACHED_PROCESS: a console-less gateway makes every console
+        # child it starts open a visible window.
         kw = mock_popen.call_args.kwargs
+        assert kw["creationflags"] == 0x08000200
         if sys.platform == "win32":
-            flags = kw["creationflags"]
-            assert flags & subprocess.DETACHED_PROCESS
-            assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
             # Passed explicitly as False (mypy-safe explicit flags, not **dict
             # unpack); Windows ignores it, the creationflags do the detaching.
             assert kw.get("start_new_session") is False

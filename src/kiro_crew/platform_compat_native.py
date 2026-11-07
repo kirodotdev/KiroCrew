@@ -65,7 +65,7 @@ DETACHED_PROCESS: int = getattr(subprocess, "DETACHED_PROCESS", 0)
 CREATE_SUSPENDED: int = 0x00000004 if os.name == "nt" else 0
 # For the short-lived helper tools this module shells out to on Windows
 # (whoami / netstat / taskkill / powershell): a console-less parent
-# (gateway respawned with DETACHED_PROCESS, or pythonw) would otherwise
+# (a gateway started with DETACHED_PROCESS, or pythonw) would otherwise
 # allocate a NEW visible console per spawn — a black-window flash on the
 # user's desktop for every status poll / secret write / kill. 0 on POSIX.
 _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -79,8 +79,10 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # matches"). On POSIX start_new_session=True calls setsid (so killpg reaps the
 # group) and creationflags=0 is a no-op; on Windows there is no setsid
 # (start_new_session is silently ignored) and CREATE_NEW_PROCESS_GROUP makes the
-# child tree taskkill /T-reapable. Add DETACHED_PROCESS to the flags for a
-# fully detached, console-less child (e.g. the gateway respawn).
+# child tree taskkill /T-reapable. Add _SUBPROCESS_NO_WINDOW for a detached
+# child that owns a hidden console its own console children inherit (e.g. the
+# gateway respawn); DETACHED_PROCESS leaves it console-less, so each console
+# child it starts opens a visible window.
 
 
 # ---------------------------------------------------------------------------

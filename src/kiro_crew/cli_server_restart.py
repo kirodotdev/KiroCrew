@@ -372,10 +372,11 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     # overload resolution on the build fleet). POSIX: start_new_session=True (own
     # session/group, immune to SIGHUP); creationflags resolves to 0 (no-op).
     # Windows: there is no setsid (start_new_session is silently ignored), so
-    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP gives the child its own
-    # console-less process group that survives the parent. The flags come from
-    # platform_compat (getattr) so referencing them doesn't fail mypy's
-    # [attr-defined] check on Linux where subprocess.* lacks them.
+    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP gives the child its own process
+    # group that survives the parent and a hidden console of its own, which its
+    # console children inherit instead of each opening a visible window. The
+    # flags come from platform_compat (getattr) so referencing them doesn't fail
+    # mypy's [attr-defined] check on Linux where subprocess.* lacks them.
     proc = subprocess.Popen(  # noqa: S603 — argv from trusted sources
         argv,
         stdin=subprocess.DEVNULL,
@@ -384,7 +385,9 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         close_fds=True,
         cwd=str(Path.home()),
         start_new_session=platform_compat.IS_POSIX,
-        creationflags=(platform_compat.DETACHED_PROCESS | platform_compat.CREATE_NEW_PROCESS_GROUP),
+        creationflags=(
+            platform_compat._SUBPROCESS_NO_WINDOW | platform_compat.CREATE_NEW_PROCESS_GROUP
+        ),
     )
     return proc
 
