@@ -16,6 +16,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spawn_test_helpers import unblocked_signals
+
 from kiro_crew.testing.wait import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,16 +90,17 @@ class TestE2eScheduling(unittest.TestCase):
     def start(self, commands, **kwargs):
         env = dict(os.environ)
         env.pop("PYTEST_ADDOPTS", None)
-        proc = subprocess.Popen(
-            self.drive(commands, **kwargs),
-            cwd=self.root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            start_new_session=True,
-        )
+        with unblocked_signals():
+            proc = subprocess.Popen(
+                self.drive(commands, **kwargs),
+                cwd=self.root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                start_new_session=True,
+            )
 
         def cleanup():
             if proc.poll() is None:

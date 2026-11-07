@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from installer_test_helpers import run_bounded
+from spawn_test_helpers import unblocked_signals
 
 from kiro_crew.testing.wait import wait_until
 
@@ -1035,15 +1036,16 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
     )
     # Its own session, so a timed-out run can be reaped as a group in
     # `finally` instead of leaving the sleeps behind.
-    proc = subprocess.Popen(
-        ["sh", "-c", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        cwd=tmp_path,
-        start_new_session=True,
-    )
+    with unblocked_signals():
+        proc = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            start_new_session=True,
+        )
     try:
         # The step owns INT only from its trap takeover to its restore, and the
         # takeover happens before the fork, so the child's pid file is the
