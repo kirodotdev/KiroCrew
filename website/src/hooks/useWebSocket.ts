@@ -60,6 +60,7 @@ import {
   handleSlotFoldMoved,
   handleSourceStatus,
   handleThreadReply,
+  invalidateChatPins,
   invalidateRefreshQueries,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
@@ -372,9 +373,7 @@ export function useWebSocket() {
             // slot_key only — no pin content — so nothing sensitive crosses the
             // WebSocket to any listener.
             const slotKey = (data as { slot_key?: string }).slot_key
-            if (slotKey) {
-              queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
-            }
+            if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
           case 'artifact_update':
