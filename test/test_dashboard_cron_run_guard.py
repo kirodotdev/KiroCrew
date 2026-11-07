@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from functools import partial
 from pathlib import Path
 from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -52,6 +53,10 @@ def _make_state(job: CronJob | None, *, is_running: bool = False):
     state.crons.get_job_async = AsyncMock(return_value=job)
     state.crons.is_running.return_value = is_running
     state.crons.run_job = AsyncMock(return_value=True)
+    # The route claims through the shared CronService.trigger_run; run the real
+    # one against these mocked primitives so the guard, claim and attach pinned
+    # below are the shipped section, not a stub of it.
+    state.crons.trigger_run = partial(CronService.trigger_run, state.crons)
     state.push_refresh = MagicMock()
     return state
 
@@ -66,7 +71,7 @@ class TestApiCronRun:
             data = await resp.json()
         assert data["ok"] is True
         # A run was started and its task handed to the claim run_job took.
-        state.crons.run_job.assert_called_once_with("j1")
+        state.crons.run_job.assert_called_once_with("j1", expected_owner=None)
         state.crons.attach_run_task.assert_called_once()
         assert state.crons.attach_run_task.call_args.args[0] == "j1"
 
@@ -113,7 +118,7 @@ class TestApiCronRun:
             resp = await client.post("/api/crons/just-created/run")
             assert resp.status == 200
         state.crons.get_job_async.assert_awaited_once_with("just-created")
-        state.crons.run_job.assert_called_once_with("just-created")
+        state.crons.run_job.assert_called_once_with("just-created", expected_owner=None)
 
     @pytest.mark.asyncio
     async def test_concurrent_runs_still_yield_one_200_and_one_409(self) -> None:
@@ -131,7 +136,7 @@ class TestApiCronRun:
 
         state = _make_state(_make_job("j1"))
 
-        def _claiming_run_job(job_id: str):
+        def _claiming_run_job(job_id: str, *, expected_owner: str | None):
             # The real run_job claims the job synchronously while the call is
             # evaluated, so the next guard read answers "running".
             state.crons.is_running.return_value = True
@@ -148,7 +153,7 @@ class TestApiCronRun:
         finally:
             gate.set()
         # Exactly one run was started despite both requests passing the lookup.
-        state.crons.run_job.assert_called_once_with("j1")
+        state.crons.run_job.assert_called_once_with("j1", expected_owner=None)
 
 
 async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
