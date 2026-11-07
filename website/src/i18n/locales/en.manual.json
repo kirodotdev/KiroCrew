@@ -4875,6 +4875,7 @@
       "failed_to_run_job": "Failed to run job"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Back (outside text fields)",
       "chats_panel": "Chats panel (outside text fields)",
       "cycle_agent": "Cycle agent",
       "cycle_approval_mode": "Cycle approval mode",
@@ -4882,6 +4883,7 @@
       "cycle_reasoning_effort": "Cycle reasoning effort",
       "focus_pending_approval": "Focus pending approval",
       "focus_text_input": "Focus text input",
+      "forward_outside_text_fields": "Forward (outside text fields)",
       "edit_last_message": "Edit last message",
       "indent_list_line": "Indent list line",
       "outdent_list_line": "Outdent list line",

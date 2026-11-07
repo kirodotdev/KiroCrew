@@ -11122,6 +11122,7 @@
       "failed_to_run_job": "Job konnte nicht ausgeführt werden"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Zurück (außerhalb von Textfeldern)",
       "chats_panel": "Chats-Panel (außerhalb von Textfeldern)",
       "cycle_agent": "Agenten durchschalten",
       "cycle_approval_mode": "Genehmigungsmodus durchschalten",
@@ -11129,6 +11130,7 @@
       "cycle_reasoning_effort": "Denkaufwand durchschalten",
       "focus_pending_approval": "Ausstehende Genehmigung fokussieren",
       "focus_text_input": "Texteingabe fokussieren",
+      "forward_outside_text_fields": "Vorwärts (außerhalb von Textfeldern)",
       "edit_last_message": "Letzte Nachricht bearbeiten",
       "indent_list_line": "Listenzeile einrücken",
       "outdent_list_line": "Listenzeile ausrücken",
