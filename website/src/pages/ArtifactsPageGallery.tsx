@@ -13,7 +13,7 @@ import type { ItemContent } from '@virtuoso.dev/masonry'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
-import { publishNoticeKey } from '../components/PublishHub'
+import { publicationBadgeLabel, usePublicationProviderName } from '../lib/publicationBadge'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { DndDraggable } from '../components/dnd'
 import type { Artifact } from '../types'
@@ -21,6 +21,7 @@ import { KIND_BADGE, isoToTs } from '../components/library/LibraryTable'
 import type { LibraryDrag } from '../components/library/LibraryTable'
 import { WidgetThumb, ContentThumb, ImageThumb, WebAppThumb } from '../components/library/ArtifactThumbs'
 import { LiveSiteLink } from '../components/library/LiveSiteLink'
+import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { guidePick } from '../uiLocations/targetRegistry'
@@ -55,6 +56,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     staleTime: 60_000,
     enabled: !!a.slug,
   })
+  const providerName = usePublicationProviderName(a.publication)
   const deleting = deletingSlug === a.slug
   const hasPreview = a.kind === 'widget' || a.kind === 'html'
   const content = full?.content || ''
@@ -99,16 +101,39 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-text-strong font-medium truncate">{a.name}</span>
               {a.publication && (
-                <Share2
-                  size={12}
-                  className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : a.publication.notice ? i18nT(publishNoticeKey({ rolling_out: 'pages.artifactsPage.published_rolling_out', distribution_disabled: 'pages.artifactsPage.published_distribution_disabled', notice_generic: 'pages.artifactsPage.published_notice_generic' }, a.publication.notice_code)) : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
-                />
+                // `relative z-10` lifts the badge above the card's open button,
+                // which would otherwise take the hover its tooltip needs. The
+                // lift also takes the click, so the badge forwards it to the
+                // same open the button runs: a click anywhere still opens.
+                <span role="presentation" onClick={() => onOpen(a.slug)} className="relative z-10 inline-flex shrink-0" data-testid="publication-badge">
+                  <Share2
+                    size={12}
+                    className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
+                    aria-label={publicationBadgeLabel(a.publication, providerName)}
+                  >
+                    <title>{publicationBadgeLabel(a.publication, providerName)}</title>
+                  </Share2>
+                </span>
               )}
             </div>
             <code className="text-[11px] text-muted">{a.slug}</code>
             {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by_author', { author })}</span>}
             <LiveSiteLink slug={a.slug} />
+            {a.publication?.last_error && (
+              // Lifted above the open button so the hand-off is reachable; its
+              // clicks stay here instead of opening the card.
+              <span role="presentation" className="relative z-10 block mt-1" onClick={(e) => e.stopPropagation()}>
+                {/* The hand-off is on: this list holds no unsaved input. */}
+                <ErrorNotice
+                  variant="inline"
+                  className="whitespace-normal"
+                  title={i18nT('pages.artifactsPage.published_sync_issue')}
+                  message={a.publication.last_error}
+                  askAgent
+                  testId="publication-sync-error"
+                />
+              </span>
+            )}
           </div>
           <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
         </div>
