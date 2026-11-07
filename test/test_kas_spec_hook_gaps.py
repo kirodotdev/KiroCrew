@@ -1984,3 +1984,58 @@ def test_a_kas_task_step_stops_when_a_switch_leaves_its_session_stale(monkeypatc
     monkeypatch.setattr(spec_hooks, "hook_projection_stale", fake_stale)
     rejected, gate, _informational = _task_step(ACP_BACKEND_KAS, monkeypatch, switch_to="b")
     assert rejected == [] and gate == []
+
+
+# An edit call's rendered ``tool_input`` is a unified diff for the approval row,
+# not JSON, so a hook fed only that string saw no ``tool_input`` at all and a
+# guard keyed on the edit's path refused every edit. The gate reads the call's
+# structured params instead whenever the rendering is not a JSON object.
+_EDIT_DIFF = "--- a/tests/x.py\n+++ b/tests/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+_EDIT_PARAMS = {"command": "strReplace", "path": "/w/tests/x.py", "oldStr": "old", "newStr": "new"}
+
+
+def _gate_payload(tmp_path, monkeypatch, tool_input, tool_params):
+    seen: list = []
+
+    async def fake_run(hook, context="", hook_event=None, cwd=None):
+        seen.append(hook_event)
+        return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event, exit_code=0)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    store = ScriptHookStore(config_dir=tmp_path)
+    asyncio.run(
+        hooks_mod.permission_pre_tool_block(
+            store,
+            [_spec_hook("*")],
+            "/w",
+            "Replace in File",
+            tool_input,
+            event_tool_params=tool_params,
+        )
+    )
+    assert len(seen) == 1
+    return seen[0]
+
+
+def test_the_gate_gives_an_edit_hook_the_calls_params_not_its_diff(tmp_path, monkeypatch):
+    payload = _gate_payload(tmp_path, monkeypatch, _EDIT_DIFF, _EDIT_PARAMS)
+    assert payload["tool_input"] == _EDIT_PARAMS
+
+
+def test_the_gate_keeps_a_json_rendering_over_the_params(tmp_path, monkeypatch):
+    rendered = json.dumps({"path": "/w/a.py"})
+    payload = _gate_payload(tmp_path, monkeypatch, rendered, {"path": "/w/other.py"})
+    assert payload["tool_input"] == {"path": "/w/a.py"}
+
+
+def test_the_gate_redacts_the_params_it_falls_back_to(tmp_path, monkeypatch):
+    secret = "AKIA" + "Q" * 16
+    params = {"path": "/w/tests/x.py", "newStr": f"key = '{secret}'"}
+    payload = _gate_payload(tmp_path, monkeypatch, _EDIT_DIFF, params)
+    assert payload["tool_input"]["path"] == "/w/tests/x.py"
+    assert secret not in json.dumps(payload["tool_input"])
+
+
+def test_the_gate_with_neither_json_nor_params_sends_no_tool_input(tmp_path, monkeypatch):
+    payload = _gate_payload(tmp_path, monkeypatch, _EDIT_DIFF, None)
+    assert "tool_input" not in payload

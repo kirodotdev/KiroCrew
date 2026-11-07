@@ -180,6 +180,45 @@ def pre_tool_match_names(
     return every, spec
 
 
+def _redact_leaves(obj: object) -> object:
+    """A copy of *obj* with every string key and leaf credential-redacted."""
+    from kiro_crew import security
+
+    if isinstance(obj, str):
+        return security.redact(obj)
+    if isinstance(obj, list):
+        return [_redact_leaves(item) for item in obj]
+    if isinstance(obj, dict):
+        return {
+            (security.redact(key) if isinstance(key, str) else key): _redact_leaves(value)
+            for key, value in obj.items()
+        }
+    return obj
+
+
+def pre_tool_hook_input(event_tool_input: str | None, event_tool_params: object = None) -> object:
+    """The ``tool_input`` a PreToolUse hook's stdin carries for a permission request.
+
+    The event's ``tool_input`` is the call's RENDERING for the approval row. For
+    most calls that is the redacted JSON arguments, and it is used as before. An
+    edit call's rendering is a unified diff instead, which is not JSON, so a hook
+    fed only that string got no ``tool_input`` at all and a guard keyed on the
+    edit's ``path`` refused every edit. When the rendering is not a JSON object
+    the call's structured params (``AcpEvent.raw_tool_params``) stand in,
+    credential-redacted like the rendering they replace. ``None`` when neither
+    is readable, as before.
+    """
+    parsed = None
+    if event_tool_input:
+        try:
+            parsed = json.loads(event_tool_input)
+        except Exception:
+            parsed = None
+    if isinstance(parsed, dict) or not isinstance(event_tool_params, dict):
+        return parsed
+    return _redact_leaves(dict(event_tool_params))
+
+
 async def permission_pre_tool_block(
     hook_store: ScriptHookStore | None,
     spec_hooks: Sequence[ScriptHook],
@@ -187,6 +226,7 @@ async def permission_pre_tool_block(
     event_title: str,
     event_tool_input: str | None = None,
     *,
+    event_tool_params: object = None,
     tool_identity: str = "",
     mcp_server: str = "",
     harness_tool_id: str = "",
@@ -243,12 +283,7 @@ async def permission_pre_tool_block(
         mcp_server=mcp_server,
         harness_tool_id=harness_tool_id,
     )
-    tool_input = None
-    if event_tool_input:
-        try:
-            tool_input = json.loads(event_tool_input)
-        except Exception:
-            pass
+    tool_input = pre_tool_hook_input(event_tool_input, event_tool_params)
     try:
         results = await hook_store.fire(
             HOOK_EVENT_PRE_TOOL_USE,
