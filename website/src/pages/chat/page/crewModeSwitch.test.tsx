@@ -209,6 +209,32 @@ describe('useCrewModeSwitch entering an Ultra Mode root', () => {
   })
 })
 
+describe('useCrewModeSwitch a new chat created in Ultra Mode', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  it('closes the panel its entry opened when it is turned off before the first message', async () => {
+    const { hook, pending, store } = setup()
+    expect(store.getState().chat.activityOpen).toBe(false)
+    // Born on the conductor (`dashboard.new_chat_crew_mode`): entered, never pressed.
+    hook.rerender({ slot: plain('a', 'kirocrew-conductor') })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    await act(async () => { pending[0].resolve(true) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'])
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('keeps a panel that was already open when it is turned off', async () => {
+    const { hook, pending, store } = setup()
+    act(() => { store.dispatch(openActivityPanel()) })
+    hook.rerender({ slot: plain('a', 'kirocrew-conductor') })
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    await act(async () => { pending[0].resolve(true) })
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+})
+
 describe('useCrewModeSwitch turning Ultra Mode on', () => {
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })

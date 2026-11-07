@@ -146,7 +146,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // Recorded before the state update below re-renders, so every reader of
       // lib/crewMode (the Crew Mode switch, the picker filter) sees this catalog's
       // conductor on the same render as its rows.
-      setCrewModeCatalog(d.crew_mode_agent, d.conductor_agents)
+      setCrewModeCatalog(d.crew_mode_agent, d.conductor_agents, d.default_agent)
       setCrewCatalogKey(crewCatalogIdentity(d.crew_mode_agent, d.conductor_agents))
       // Every `refresh` frame and every session switch refetches the catalog,
       // and the reply is almost always the roster already held. Keeping the

@@ -34,7 +34,7 @@
  *     in its description/keywords/tab.
  */
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
-import { PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, readPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
@@ -176,6 +176,8 @@ export function settingEntryOffered(
   }
   // Display > Explore is drawn only while the Explore preview is on.
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
+  // Chat > Sessions draws Start New Chats in Ultra Mode only while the Ultra Mode preview is on.
+  if (entry.configKey === 'dashboard.new_chat_crew_mode') return readPreviewFlag(PREVIEW_CREW_MODE)
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app

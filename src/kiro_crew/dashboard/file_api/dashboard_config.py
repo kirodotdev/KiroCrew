@@ -83,6 +83,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "restore_window_minutes",
             "merge_queued_messages",
             "default_memory_mode",
+            "new_chat_crew_mode",
             "widget_density",
             "verbosity",
             "quick_send",
@@ -245,6 +246,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["default_memory_mode"] = val
+        if "new_chat_crew_mode" in body:
+            val = body["new_chat_crew_mode"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "new_chat_crew_mode must be a boolean",
+                        "code": "invalid_new_chat_crew_mode",
+                    },
+                    status=400,
+                )
+            updates["new_chat_crew_mode"] = val
         if "widget_density" in body:
             val = body["widget_density"]
             if val not in ("more", "less"):
@@ -710,6 +725,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "restore_window_minutes": cfg.dashboard.restore_window_minutes,
             "merge_queued_messages": cfg.dashboard.merge_queued_messages,
             "default_memory_mode": cfg.dashboard.default_memory_mode,
+            "new_chat_crew_mode": cfg.dashboard.new_chat_crew_mode,
             "widget_density": cfg.dashboard.widget_density,
             "verbosity": cfg.dashboard.verbosity,
             "quick_send": cfg.dashboard.quick_send,

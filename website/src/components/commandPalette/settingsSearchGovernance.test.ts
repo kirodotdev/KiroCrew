@@ -29,7 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
-import { PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -111,6 +111,16 @@ describe('settingEntryOffered', () => {
     // reader on a page without the toggle.
     expect(settingEntryOffered(tipsEntry(), TIPS_OFF)).toBe(false)
     expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
+  })
+
+  it('offers Start New Chats in Ultra Mode only while the Ultra Mode preview draws its row', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.new_chat_crew_mode')
+    if (!entry) throw new Error('dashboard.new_chat_crew_mode missing from the registry')
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    localStorage.removeItem(PREVIEW_CREW_MODE)
   })
 
   it('the two governed answers do not leak into each other', () => {
