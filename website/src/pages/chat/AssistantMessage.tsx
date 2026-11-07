@@ -6,14 +6,14 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
 import { copyRichToClipboard, copyToClipboard } from '../../utils/clipboard'
-import { markdownToCleanHtml } from '../../components/markdown/richTextClipboard'
+import { markdownToCleanHtml, rangeToCleanHtml } from '../../components/markdown/richTextClipboard'
 import { stripKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
-import SelectionToolbar, { useSelectionActions } from '../../components/SelectionToolbar'
+import SelectionToolbar, { selectionTextFrom, useSelectionActions } from '../../components/SelectionToolbar'
 import { useAppSelectionActions } from '../../selectionActions/useAppSelectionActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
@@ -304,7 +304,18 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     }
     setRawMode(!rawMode)
   }
-  const selectionActions = useSelectionActions(onQuote, onAsk)
+  // The selection row's Copy: the plain text it always wrote, plus the selected
+  // part as clean HTML for editors that keep formatting (Outlook, Word). Only
+  // while the live selection is still the one the row took the text from: a
+  // mid-stream re-render can drop it, and a Firefox multi-range selection has
+  // parts one range misses. No HTML means the plain text alone.
+  const copySelection = (text: string) => {
+    const sel = window.getSelection()
+    const root = contentRef.current
+    const html = root && sel?.rangeCount === 1 && selectionTextFrom(sel) === text ? rangeToCleanHtml(root, sel.getRangeAt(0)) : ''
+    return html ? copyRichToClipboard(html, text) : copyToClipboard(text)
+  }
+  const selectionActions = useSelectionActions(onQuote, onAsk, copySelection)
   // App items (`contributes.selectionActions`) read this reply through the typed
   // `chat` source: the text the toolbar snapshotted, never the document selection.
   // They sit in their own toolbar row, so the host row never grows.
