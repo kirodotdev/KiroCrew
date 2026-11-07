@@ -162,3 +162,15 @@ describe('MarkdownPanel — Escape with the find bar open', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
 })
+
+// Lives here rather than in MarkdownPanelCoverage.test.tsx, which sits at the
+// 2,000-line file cap; this file already mounts the find bar.
+describe('MarkdownPanel — find bar case toggle', () => {
+  it('says whether case-matching is on', async () => {
+    await openFind(vi.fn())
+    const toggle = screen.getByRole('button', { name: 'Case sensitive' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  })
+})
