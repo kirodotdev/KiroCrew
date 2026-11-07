@@ -4023,6 +4023,14 @@ Collection steps only build result text. `on_settled` writes the tool's own SEL
 row once the driver accepts that text; cancellation discards a collect result,
 and the audited wrapper writes the tool's terminal invocation row once.
 
+A member's result over `COMPLETION_KEEP_DEFAULT_CHARS` comes back as the
+`spawn_run` summary plus a disk path, and that path is the `result_path` a
+finished run's `GET /api/spawn/{id}` carries, never one the tool builds. The
+gateway spells it with `agent_dir_for_display`; the MCP process runs on the
+resolved data home, so a path built there would name a symlinked
+`KIROCREW_HOME` by its target, not as it was configured. A status read that
+names no `result_path` gets the whole result inline.
+
 **A returned result is delivered once, and a reply that never landed loses nothing.** A
 member the call returns inline still has its completion event, the other way its
 result reaches the parent, and every completion route skips an announce only

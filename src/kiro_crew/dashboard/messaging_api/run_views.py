@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _queued_run_payload,
         _queued_runs,
         _run_belongs_to_caller,
+        agent_dir_for_display,
         classify_persisted_ending,
         internal_memory_scope,
         is_sensitive_path,
@@ -202,6 +203,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 disk_data["outcome"] = outcome
                 disk_data["stopped"] = stopped
                 disk_data["error"] = _redact(error) if error else ""
+                shown_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+                disk_data["result_path"] = str(shown_dir / "result.txt")
                 return web.json_response(disk_data)
         except Exception:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
@@ -246,6 +249,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        # The pointer ``spawn_sub_agents`` gives for a long result, in the
+        # configured home spelling its own MCP process cannot know.
+        data["result_path"] = info.result_path
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)

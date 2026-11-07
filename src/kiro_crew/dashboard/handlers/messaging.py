@@ -372,6 +372,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401
     DISMISSAL_NO_FOLDER,
     PanelRecords,
     _agent_dir,
+    agent_dir_for_display,
     classify_persisted_ending,
     read_panel_records,
     read_state,

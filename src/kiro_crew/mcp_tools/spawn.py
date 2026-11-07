@@ -923,7 +923,6 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         parent_spawn_allowlists,
         visible_agent_names,
     )
-    from kiro_crew.subagent_persistence import agent_dir_for_display  # noqa: F401
     from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
