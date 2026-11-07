@@ -70,6 +70,7 @@ from kiro_crew.platform.guest_paths import (  # noqa: F401 - re-export
 )
 from kiro_crew.platform.tool_paths import (  # noqa: F401 - re-export
     TARGET_PATH_KEYS,
+    _is_anchored,
     edit_target_candidates,
     is_edit_call,
     target_paths,
@@ -1226,6 +1227,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASELINE_REASON,
         _DENY_UNLISTED,
         _PERMIT_NOT_GOVERNED,
+        _anchored_read_target,
+        _every_operation_names_a_path,
         _policy_level,
         _query_level,
         resolve,

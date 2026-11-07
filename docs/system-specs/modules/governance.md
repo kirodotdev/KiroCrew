@@ -2608,9 +2608,21 @@ every surface. The display *title* is backend-variable and cannot reliably carry
 a path or URL, so these scopes are resolved from the tool's **semantic kind +
 real arguments** the ACP event carries:
 
-- A `Reading <path>` title classifies to `filesystem.read` (the read path is in
-  the title); `classify_tool_args` also maps `tool_kind == "read"` +
-  `raw_params["path"]` → `filesystem.read`.
+- A `Reading <rest>` title classifies to `filesystem.read` with the rest of the
+  title as the item; `classify_tool_args` also maps `tool_kind == "read"` +
+  `raw_params["path"]` → `filesystem.read`. When every read target the
+  arguments name is anchored (a local path that `tool_paths._is_anchored`
+  with `require_drive` calls absolute, so with a drive or UNC share on
+  Windows, and spelled so that `~` / `$VAR` / `%VAR%` expansion leaves it
+  unchanged, since the matcher expands it but the reading tool may not; or a
+  guest path its workdir anchors) and every batch `operations` entry names a
+  path (an Image entry's `image_paths` is not scanned, so its title is kept), `gate_decision` judges the read on them and drops the
+  title's pair: the title is display text (`Reading a.ts:10-29`, `Reading
+  listing workspace`), and a relative item is anchored at the gateway's working
+  directory, where an allow-mode `filesystem.read` refuses it. A call whose
+  arguments name no read path, a relative local one, or only a marker (no
+  target, truncated scan) keeps the title's pair beside them, so a title naming
+  a denied file is still refused.
 - `tool_kind == "edit"` + `raw_params["path"]` → `filesystem.write`.
 - `tool_kind == "fetch"` + `raw_params["url"]` → `network.egress` (the host is
   extracted from the URL so the `host` matcher applies).
