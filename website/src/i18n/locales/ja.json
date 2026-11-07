@@ -15307,6 +15307,10 @@
       "installed_apps": "インストール済みのアプリ"
     },
     "logsPage": {
+      "level_debug": "デバッグ",
+      "level_info": "情報",
+      "level_warning": "警告",
+      "level_error": "エラー",
       "filter_logs": "ログをフィルタ",
       "filter_logs_2": "ログをフィルタ…",
       "latest_first": "最新: 最初",

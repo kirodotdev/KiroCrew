@@ -16079,6 +16079,10 @@
       "installed_apps": "Apps instaladas"
     },
     "logsPage": {
+      "level_debug": "Depuración",
+      "level_info": "Info",
+      "level_warning": "Advertencia",
+      "level_error": "Error",
       "filter_logs": "Filtrar registros",
       "filter_logs_2": "Filtrar registros...",
       "latest_first": "Recientes: primero",

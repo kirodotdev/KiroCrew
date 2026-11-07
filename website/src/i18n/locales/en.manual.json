@@ -7231,6 +7231,10 @@
       "installed_apps": "Installed apps"
     },
     "logsPage": {
+      "level_debug": "Debug",
+      "level_info": "Info",
+      "level_warning": "Warning",
+      "level_error": "Error",
       "latest_first": "Latest: first",
       "latest_last": "Latest: last",
       "tail_off": "Tail: off",
