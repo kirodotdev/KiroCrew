@@ -224,6 +224,51 @@ class TestServiceEnvironment:
         assert "KIROCREW_PORT=5477" in unit
         assert "KIROCREW_SERVICE_MANAGED=1" in unit
 
+    def test_propagates_crew_home_only_when_set(self, monkeypatch):
+        """Without KIROCREW_HOME the service starts a new, empty crew in ~/.kiro/crew."""
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        assert "KIROCREW_HOME" not in service_environment("/home/tester")
+        monkeypatch.setenv("KIROCREW_HOME", "")
+        assert "KIROCREW_HOME" not in service_environment("/home/tester")
+        monkeypatch.setenv("KIROCREW_HOME", "/srv/crew-data")
+        assert service_environment("/home/tester")["KIROCREW_HOME"] == "/srv/crew-data"
+        # Not trimmed: config_dir() resolves the raw value, so must the service.
+        monkeypatch.setenv("KIROCREW_HOME", "/srv/crew-data ")
+        assert service_environment("/home/tester")["KIROCREW_HOME"] == "/srv/crew-data "
+
+    def test_relative_crew_home_is_absolutized_and_tilde_kept(self, monkeypatch):
+        # The service runs from another cwd, so a relative home is made absolute.
+        # A "~" is left for config_dir() to expand against the baked HOME.
+        monkeypatch.setenv("KIROCREW_HOME", "crew-data")
+        baked = service_environment("/home/tester")["KIROCREW_HOME"]
+        assert baked == os.path.abspath("crew-data") and os.path.isabs(baked)
+        monkeypatch.setenv("KIROCREW_HOME", "~/crew-data")
+        assert service_environment("/home/tester")["KIROCREW_HOME"] == "~/crew-data"
+
+    def test_crew_home_reaches_both_rendered_service_definitions(self, monkeypatch, tmp_path):
+        """End-to-end through both renderers, with a space that needs quoting."""
+        from kiro_crew.service import linux as svc_linux
+        from kiro_crew.service import macos as svc_macos
+
+        home = str(tmp_path / "crew data")
+        monkeypatch.setenv("KIROCREW_HOME", home)
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "live-gateway")
+        with patch(
+            "kiro_crew.service.common.shutil.which", return_value="/opt/homebrew/bin/kirocrew"
+        ):
+            plist = svc_macos.render_plist()
+        envs = plist.split("<key>EnvironmentVariables</key>", 1)[1].split("</dict>", 1)[0]
+        assert "<key>KIROCREW_HOME</key>" in envs and f"<string>{home}</string>" in envs
+
+        monkeypatch.setenv("USER", "tester")
+        gid = MagicMock(returncode=0, stdout="staff\n", stderr="")
+        with (
+            patch("kiro_crew.service.common.shutil.which", return_value="/usr/local/bin/kirocrew"),
+            patch("kiro_crew.service.linux.subprocess.run", return_value=gid),
+        ):
+            unit = svc_linux.render_unit()
+        assert f'Environment="KIROCREW_HOME={home}"' in unit
+
     def test_propagates_kiro_bin_pin_only_when_set(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
         assert "KIROCREW_KIRO_BIN" not in service_environment("/home/tester")

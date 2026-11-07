@@ -202,6 +202,10 @@ class TestHeadlessApiKeyWarning:
             {self.API_KEY: self.SECRET, "KIROCREW_HOME": "/srv/crew"}
         )
         assert "KIROCREW_HOME" in with_home
+        # service_environment() bakes the home, so the caveat must not claim it
+        # is dropped; it stays because an override file can still replace it.
+        assert "not inherited" not in with_home
+        assert "override file" in with_home
 
     def test_a_sudo_install_checks_and_names_the_service_accounts_dotenv(
         self, monkeypatch, tmp_path
