@@ -426,6 +426,7 @@ async def _cron_stream_with_posttoken_resume(
     message: str,
     *,
     job_name: str,
+    directive_refusals: list[str],
     on_resume: Callable[[], None] | None = None,
     **stream_kwargs: Any,
 ) -> tuple[str, float | None]:
@@ -461,7 +462,42 @@ async def _cron_stream_with_posttoken_resume(
     only before any text streams, and we ASSUME (not enforced) a prompt-busy
     error is raised only at submission, so no chunks from an abandoned attempt
     end up in the text.
+
+    A cron turn is never a person's, and no session applier reads its stream,
+    so a directive only a person's turn may issue (``set_project``, ...) would
+    end with only the tool's own "requested" text. Each one this turn completes
+    is refused instead, audited as the chat path's refusal is, and its refusal
+    is appended to ``directive_refusals`` for the caller to lead the run's
+    result with. The call is named from any of its frames the way the
+    dashboard's out-of-band claim names it (``directive_tool_from_call``), never
+    from the result body, which a harness may reshape (KAS). Nothing is applied,
+    so a forged title buys only a refusal line. Every other directive is left
+    unread.
     """
+    from kiro_crew import session_directive
+    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT as EVENT_TOOL_RESULT
+    from kiro_crew.dashboard.session_directive_apply import refuse_user_origin_directive
+    from kiro_crew.directive_origin import USER_ORIGIN_DIRECTIVES
+
+    session_key = stream_kwargs.get("session_key", "")
+    person_only_calls: dict[str, str] = {}
+
+    async def _refuse_person_only(event: Any) -> None:
+        call_id = event.tool_call_id
+        if not call_id:
+            return
+        if event.kind != EVENT_TOOL_RESULT:
+            tool = session_directive.directive_tool_from_call(
+                event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
+            )
+            if tool in USER_ORIGIN_DIRECTIVES:
+                person_only_calls[call_id] = tool
+            return
+        if event.tool_final and call_id in person_only_calls:
+            directive_refusals.append(
+                refuse_user_origin_directive(session_key, person_only_calls.pop(call_id))
+            )
+
     parts: list[str] = []
     preserved = ""
     carried_credits: float | None = None
@@ -480,6 +516,7 @@ async def _cron_stream_with_posttoken_resume(
                 # inner replay — amplifying the one-shot. The first call keeps
                 # the default (existing pre-token behaviour, unchanged).
                 retry_transient=not _resume_used,
+                on_event=_refuse_person_only,
                 **stream_kwargs,
             )
             return preserved + text, carried_credits

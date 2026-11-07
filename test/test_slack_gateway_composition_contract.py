@@ -205,7 +205,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_cron_stream_with_posttoken_resume",
             "async function",
-            "(client: 'Any', message: 'str', *, job_name: 'str', on_resume: 'Callable[[], None] | None' = None, **stream_kwargs: 'Any') -> 'tuple[str, float | None]'",
+            "(client: 'Any', message: 'str', *, job_name: 'str', directive_refusals: 'list[str]', on_resume: 'Callable[[], None] | None' = None, **stream_kwargs: 'Any') -> 'tuple[str, float | None]'",
         ),
     ),
     "cron_verdict": (
