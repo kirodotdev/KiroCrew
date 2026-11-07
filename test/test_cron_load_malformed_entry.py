@@ -234,11 +234,11 @@ def test_json_shaped_malformations_raise_only_key_or_type_error() -> None:
     assert _job_from_record(_good("ok")).id == "ok"
 
 
-def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path) -> None:
-    """A malformed record is skipped on load and dropped by the next write.
+def test_genuine_bad_data_skips_and_the_next_write_keeps_it(tmp_path) -> None:
+    """A malformed record is skipped on load, and the next write keeps it as written.
 
-    Spec: ``docs/system-specs/modules/learn-cron-dashboard.md``; the load warning is the
-    operator's recovery window.
+    Spec: ``docs/system-specs/modules/learn-cron-dashboard.md``; every writer saves
+    through ``_save``, so the record stays in the store until the operator fixes it.
     """
     mgr = CronService(base_dir=tmp_path)
     bad = {"id": "bad", "message": "m", "schedule": {"kind": "every"}}  # no "name"
@@ -247,10 +247,109 @@ def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path
     mgr._load()
     assert [j.id for j in mgr._jobs] == ["a"]
 
+    mgr.enable_job("a", enabled=False)  # one ordinary write
+
+    reread = json.loads(mgr._path.read_text(encoding="utf-8"))
+    assert [j["id"] for j in reread["jobs"]] == ["a", "bad"]
+    assert reread["jobs"][1] == bad, "the kept record was changed"
+    mgr._load()
+    assert [j.id for j in mgr._jobs] == ["a"], "the kept record must still be skipped"
+
+
+def test_skipped_record_obeys_the_per_record_size_cap() -> None:
+    """Small malformed records are kept, but oversized ones are not."""
+    from kiro_crew.cron_service.store import MAX_UNKNOWN_FIELDS_BYTES, decode_store
+
+    bad = {**_good("bad"), "schedule": {"kind": "every", "every_secs": "60"}}
+    small = decode_store(json.dumps({"jobs": [_good("a"), bad]}).encode("utf-8"))
+    assert small is not None
+    assert [j.id for j in small.jobs] == ["a"]
+    assert small.skipped == (bad,)
+
+    oversized = {**bad, "unknown": "x" * (MAX_UNKNOWN_FIELDS_BYTES + 1)}
+    large = decode_store(json.dumps({"jobs": [_good("a"), oversized]}).encode("utf-8"))
+    assert large is not None
+    assert [j.id for j in large.jobs] == ["a"]
+    assert large.skipped == ()
+
+
+def test_a_record_the_utc_stamp_would_push_past_the_cap_is_not_kept() -> None:
+    """A record kept now must still fit the cap once an older store's save stamps it."""
+    from kiro_crew.cron_service.store import MAX_UNKNOWN_FIELDS_BYTES, decode_store
+
+    bad = {**_good("bad"), "schedule": {"kind": "every", "every_secs": "60"}, "pad": ""}
+    bad["pad"] = "x" * (MAX_UNKNOWN_FIELDS_BYTES - len(json.dumps(bad)))
+    assert len(json.dumps(bad)) == MAX_UNKNOWN_FIELDS_BYTES
+    document = decode_store(json.dumps({"jobs": [_good("a"), bad]}).encode("utf-8"))
+    assert document is not None
+    assert document.skipped == ()
+
+
+def test_a_skipped_record_with_a_non_text_name_is_not_kept() -> None:
+    """A kept record must still let ``restore --mode merge`` read the live store."""
+    from kiro_crew.cron_service.store import decode_store
+
+    no_name = {k: v for k, v in _good("n").items() if k != "name"}
+    records = [no_name, {**_good("x"), "name": None}, {**_good("z"), "name": 5}]
+    document = decode_store(json.dumps({"jobs": [_good("a"), *records]}).encode("utf-8"))
+    assert document is not None
+    assert [j.id for j in document.jobs] == ["a"]
+    assert document.skipped == (no_name,)
+
+
+def test_empty_skipped_records_count_against_the_store_budget(monkeypatch) -> None:
+    """An empty object costs its encoded bytes, so many of them cannot pass the total cap."""
+    from kiro_crew.cron_service import store
+
+    # An empty record is charged as the ``{"timezone": "UTC"}`` an older store's save may write.
+    each = len(json.dumps({"timezone": "UTC"}))
+    monkeypatch.setattr(store, "MAX_UNKNOWN_FIELDS_STORE_BYTES", each * 5)
+    newer = {**_good("a"), "x": 1}
+    document = store.decode_store(json.dumps({"jobs": [{}] * 8 + [newer]}).encode("utf-8"))
+    assert document is not None
+    assert len(document.skipped) == 5
+    # Kept records have their own total: a later job still keeps its newer-build key.
+    assert dict(document.unknown_fields["a"].job) == {"x": 1}
+
+
+def _nested_record(job_id: str, levels: int) -> dict:
+    """A malformed record (no ``name``) whose lists and objects nest *levels* deep."""
+    value: list = []
+    for _ in range(levels - 2):
+        value = [value]
+    return {"id": job_id, "message": "m", "schedule": {"kind": "every"}, "x": value}
+
+
+def test_only_an_entry_a_snapshot_restore_accepts_is_kept(tmp_path, caplog) -> None:
+    """A snapshot restore refuses a non-object job entry and a store nested past
+    ``MAX_DOCUMENT_NESTING``, and ``_save``'s ``indent=2`` encoder raises
+    ``RecursionError`` about a thousand levels down, so only such an entry is dropped."""
+    from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+
+    mgr = CronService(base_dir=tmp_path)
+    records = [
+        _good("a"),
+        _nested_record("at-cap", MAX_DOCUMENT_NESTING - 2),
+        _nested_record("past", MAX_DOCUMENT_NESTING - 1),
+        _nested_record("deep", 1200),
+        "garbage",
+    ]
+    _write_store(mgr._path, records)
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cron"):
+        mgr._load()
     mgr._save()
 
     reread = json.loads(mgr._path.read_text(encoding="utf-8"))
-    assert [j["id"] for j in reread["jobs"]] == ["a"]
+    assert [j["id"] for j in reread["jobs"]] == ["a", "at-cap"]
+    assert not exceeds_nesting(reread), "a snapshot restore would refuse the saved store"
+    messages = [r.getMessage() for r in caplog.records]
+    dropped = [m for m in messages if "dropped from the store" in m]
+    assert [m.split(")")[0] for m in dropped] == [
+        "Skipping malformed cron job entry (id='past'",
+        "Skipping malformed cron job entry (id='deep'",
+        "Skipping malformed cron job entry (id='<not an object>'",
+    ], dropped
 
 
 # --- Corrupted-store resilience: non-string values in string-typed fields must not crash the listing ---
