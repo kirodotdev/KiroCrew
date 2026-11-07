@@ -67,7 +67,7 @@ def _env_pins(path: Path) -> dict[str, str]:
     return pins
 
 
-# ---------------------------------------------------------------- static ---
+# Static checks
 
 
 @pytest.mark.parametrize("name", SHELL_INSTALLERS)
@@ -155,7 +155,7 @@ def test_gateway_plugin_installer_carries_the_same_pins() -> None:
     }
 
 
-# ------------------------------------------------------------ behavioural ---
+# Behavioural checks
 
 
 def _stub_curl(bin_dir: Path, payload: Path) -> None:

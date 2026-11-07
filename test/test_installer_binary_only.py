@@ -70,11 +70,8 @@ NETWORK_LOG = (
     "after connection broken by 'NewConnectionError': /simple/numpy/\n"
     "ERROR: Could not install packages due to an OSError: [Errno 101] Network is unreachable\n"
 )
-# The same two lines when every candidate was dropped before pip built its
-# list: a package whose wheels all target a newer libc or another arch reads
-# exactly like an index that does not carry it (pip counts only candidates
-# that survived its link filter). Under binary-only resolution this IS the
-# ticket's shape for a dependency with no old-glibc wheel at all.
+# The same lines when pip's link filter dropped every candidate: a dependency
+# with no wheel for this libc or arch reads like an index that does not carry it.
 VERSIONS_NONE_LOG = (
     "ERROR: Could not find a version that satisfies the requirement numpy>=1.21,<3 "
     "(from kirocrew) (from versions: none)\n"
@@ -100,17 +97,9 @@ esac
 cp "$FAKE_CDN_ROOT/$rel" "$out"
 """
 
-# Records every argument (one per line) and, when FAKE_PIP_FAIL_WITH names a
-# file, replays that file as pip's output and fails -- the shape of a real pip
-# error reaching the installer's failure branch. Like real pipx: a failed
-# install DELETES the package venv (its install path calls venv.remove_venv()
-# on any exception); a successful --force install writes INTO the existing
-# venv (`--force-reinstall`, no --clear), so whatever else the venv held stays.
-# FAKE_PIPX_STARTED names a file to create when the install begins and
-# FAKE_PIPX_HOLD how long to then sleep -- a slow install a second run can be
-# started against. FAKE_PIPX_WAIT_FOR names a file to wait for before the
-# install proceeds and FAKE_PIPX_DONE one to create once it has finished, so
-# one run's install can be ordered after another's.
+# Records every argument; FAKE_PIP_FAIL_WITH replays a file as pip's output and fails.
+# Like real pipx, a failed install deletes the venv and a --force install writes into it.
+# FAKE_PIPX_STARTED/HOLD/WAIT_FOR/DONE let a test order two concurrent runs.
 _FAKE_PIPX = """#!/bin/sh
 set -eu
 case "$1" in
@@ -365,9 +354,7 @@ def _run_installer(
     return result, recorded
 
 
-# ---------------------------------------------------------------------------
 # The invocation: binary-only reaches pip on both install branches
-# ---------------------------------------------------------------------------
 
 
 def test_pipx_branch_forwards_binary_only_to_pip(tmp_path: Path, signing_key: SigningKey) -> None:
@@ -424,9 +411,7 @@ def test_only_the_literal_one_opts_in(tmp_path: Path, signing_key: SigningKey, v
     assert f"--pip-args={ONLY_BINARY}" in argv, argv
 
 
-# ---------------------------------------------------------------------------
 # The failure report: a missing wheel names the platform and the way out
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("with_pipx", [True, False], ids=["pipx", "venv"])
@@ -860,9 +845,7 @@ def test_pipx_lock_wait_is_the_kernel_lock_not_a_directory() -> None:
     assert "install.lock.d" not in body and 'mkdir "$_PIPX_LOCK"' not in body
 
 
-# ---------------------------------------------------------------------------
 # install.sh: the same policy on the editable install's dependency resolution
-# ---------------------------------------------------------------------------
 
 
 def _install_sh_pip_line() -> str:
