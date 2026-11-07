@@ -1412,6 +1412,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "KAS's own extension verbs behind a person's ``/context``, ``/knowledge`` and "
     "``/code``. The positive test keeps them off every other harness's wire.",
     (
+        "src/kiro_crew/acp/session_handle_dispatch.py",
+        "_dispatch_events",
+    ): "Only kiro-cli answers a cancelled prompt ahead of the ``_kiro.dev/metadata`` frame "
+    "that bills it (live probe, 3.1.0), so only there does the stopped turn read one more "
+    "frame. No other harness sends that frame, and the read would spend its grace on every Stop.",
+    (
         "src/kiro_crew/acp/session_handle_updates.py",
         "_handle_update",
     ): "KAS emits its own notification discriminants. The positive gate restores those "
