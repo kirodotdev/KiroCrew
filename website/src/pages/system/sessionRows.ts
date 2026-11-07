@@ -37,6 +37,8 @@ export interface SessionRow {
   procs: number | null
   mcp: number | null
   credits: number | null
+  /** This row's credits plus every subagent task nested under it. */
+  creditsTotal: number | null
   turns: number | null
   uptimeS: number | null
   pid: number | null
@@ -201,7 +203,8 @@ function taskRow(t: TaskPayloadRow): SessionRow {
     // distinguishes "not measured yet" from zero on its own.
     procs: t.procs ?? null,
     mcp: t.mcp ?? null,
-    credits: null,
+    credits: t.credits ?? null,
+    creditsTotal: t.credits ?? null,
     turns: null,
     uptimeS: t.started_at ? Date.now() / 1000 - t.started_at : null,
     pid: t.pid,
@@ -229,6 +232,7 @@ function sessionRow(s: SessionPayloadRow): SessionRow {
     procs: s.procs,
     mcp: s.mcp,
     credits: s.credits ?? null,
+    creditsTotal: s.credits ?? null,
     turns: s.turns ?? null,
     uptimeS: s.uptime_s,
     pid: s.pid,
@@ -308,17 +312,35 @@ export function buildTree(sessions: SessionPayloadRow[], tasks: TaskPayloadRow[]
     // fan-out's own tree lives.
     const owner = taskRowByKey.get(t.parent)
     if (owner != null && owner !== row && !taskChainLoops(t, taskByKey)) {
+      row.nested = true
       ;(owner.subRows ??= []).push(row)
       continue
     }
     const session = rows.get(t.parent)
     if (session != null) {
+      row.nested = true
       ;(session.subRows ??= []).push(row)
       continue
     }
     orphans.push(row)
   }
+  for (const row of rows.values()) rollUpTaskCredits(row)
+  for (const row of orphans) rollUpTaskCredits(row)
   return orphans.length > 0 ? [...roots, ...orphans] : roots
+}
+
+function rollUpTaskCredits(row: SessionRow): number | null {
+  let total = row.credits
+  let measured = total != null
+  for (const child of row.subRows ?? []) {
+    const childTotal = rollUpTaskCredits(child)
+    if (child.kind === 'task' && childTotal != null) {
+      total = (total ?? 0) + childTotal
+      measured = true
+    }
+  }
+  row.creditsTotal = measured ? total : null
+  return row.creditsTotal
 }
 
 /**

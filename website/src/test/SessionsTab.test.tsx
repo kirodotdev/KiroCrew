@@ -50,7 +50,7 @@ function defaultPayload() {
         mcp: 1,
         cpu_cores: 0.3,
         uptime_s: 3600,
-        credits: 18.4,
+        credits: 18.4 as number | null,
         turns: 7,
       },
       {
@@ -68,7 +68,7 @@ function defaultPayload() {
         mcp: 0,
         cpu_cores: 0.1,
         uptime_s: 600,
-        credits: null,
+        credits: null as number | null,
         turns: null,
       },
     ],
@@ -85,6 +85,7 @@ function defaultPayload() {
         shared: false,
         pid: 1003,
         sampled: true,
+        credits: null as number | null,
       },
     ],
     totals: { rss_mb: 704, runtimes: 2, host_mb: 16384, host_pct: 4.3, rss_is_upper_bound: false, lineage_over_cap: false, lineage_cap: 4096 },
@@ -545,6 +546,65 @@ describe('Credits and Turns columns', () => {
       expect(screen.getByText('Debugging session')).toBeInTheDocument()
     })
     expect(screen.getByText('7')).toBeInTheDocument()
+  })
+
+  it('draws a bar whose width is the row’s share of measured credits', async () => {
+    const payload = defaultPayload()
+    payload.sessions[0].credits = 10
+    payload.sessions[1].credits = 30
+    payload.tasks[0].credits = 10
+    mockSessionsMemory.mockResolvedValue(payload)
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const width = (name: string) => {
+      const row = screen.getByText(name).closest('tr')!
+      return (row.querySelector('[data-testid="credit-bar"] > div') as HTMLElement).style.width
+    }
+    expect(width('Debugging session')).toBe('40%')
+    expect(width('Research subtask')).toBe('20%')
+    expect(width('Daily check')).toBe('60%')
+  })
+
+  it('sorts by total credits, subagent tasks included, from the Credit hungry control', async () => {
+    const payload = defaultPayload()
+    payload.sessions[0].credits = 1
+    payload.sessions[1].credits = 30
+    mockSessionsMemory.mockResolvedValue(payload)
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const btn = screen.getByRole('button', { name: 'Credit hungry' })
+    expect(btn).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(btn)
+    await waitFor(() => {
+      expect(btn).toHaveAttribute('aria-pressed', 'true')
+    })
+    const creditsHeader = screen.getAllByRole('columnheader').find(h => h.textContent === 'Credits')!
+    expect(creditsHeader.getAttribute('aria-sort')).toBe('descending')
+    expect(document.querySelector('tbody tr')?.textContent).toContain('Daily check')
+  })
+
+  it('totals a group header with the subagent tasks nested under its sessions', async () => {
+    const payload = defaultPayload()
+    payload.sessions[0].credits = 5
+    payload.tasks[0].credits = 10
+    mockSessionsMemory.mockResolvedValue(payload)
+    const ref = makePlaneStateRef()
+    ref.current = { sessions: { sorting: [], groupBy: 'agent', filter: '', visibility: {} } }
+    renderWithProviders(<SessionsTab planeStateRef={ref} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const credits = (tr: Element) => {
+      const col = screen.getAllByRole('columnheader').findIndex(h => h.textContent === 'Credits')
+      return tr.querySelectorAll('td')[col]?.querySelector('span')?.textContent
+    }
+    const header = screen.getAllByRole('row').find(tr => tr.querySelector('td')?.textContent?.startsWith('kirocrew'))!
+    expect(credits(screen.getByText('Debugging session').closest('tr')!)).toBe('15.0')
+    expect(credits(header)).toBe('15.0')
   })
 
   it('renders em dash for null credits (not measured, NOT zero)', async () => {
