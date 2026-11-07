@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _assemble_skills_catalog_uncached,
         _catalog_assembly_locks,
         _grant_reviewed_project,
+        _skill_name_too_long,
         api_skills_trust_grant,
         api_skills_trust_revoke,
     )
