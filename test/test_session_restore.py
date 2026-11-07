@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -14,7 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
-from kiro_crew.dashboard.chat import restore_recent_sessions
+from kiro_crew.dashboard.chat import restore_recent_sessions, restore_recent_sessions_async
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 
@@ -139,6 +140,35 @@ class TestRestoreRecentSessions:
         restore_recent_sessions(state, window_minutes=60)
         assert state._slots["trusted"]._trust is False
         assert state._slots["trusted"]._trust_reads is False
+
+    @pytest.mark.parametrize("driver", ["inline", "async"])
+    def test_a_session_that_fails_to_restore_does_not_stop_the_rest(
+        self, driver, tmp_path, monkeypatch
+    ):
+        """A malformed session (a non-string title, a malformed row) is rolled
+        back, slot and the restricted marker it added, and every other recent
+        session restores. A marker that was there before the build stays."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        hi = {"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}
+        _write_session(tmp_path, "dashboard_badtitle", [hi], meta={"title": 42})
+        _write_session(
+            tmp_path,
+            "dashboard_badrow",
+            [{**hi, "variants": 5}],
+            meta={"title": "Bad row", "memory_mode": "temporary"},
+        )
+        _write_session(tmp_path, "dashboard_good", [hi], meta={"title": "Good"})
+        state = _make_state(tmp_path)
+        state._restricted_keys.add("dashboard:badtitle")
+        if driver == "inline":
+            restored = restore_recent_sessions(state, window_minutes=60)
+        else:
+            restored = asyncio.run(restore_recent_sessions_async(state, window_minutes=60))
+        assert restored == 1
+        assert state._slots["good"].title == "Good"
+        assert "badtitle" not in state._slots and "badrow" not in state._slots
+        assert "dashboard:badrow" not in state._restricted_keys
+        assert "dashboard:badtitle" in state._restricted_keys
 
     def test_skips_old_sessions(self, tmp_path, monkeypatch):
         """Sessions older than the window are not restored."""

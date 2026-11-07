@@ -498,6 +498,12 @@ def test_slot_args_take_each_purposes_construction_inputs():
 
 
 @pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
+def test_a_null_origin_reads_as_no_origin(purpose):
+    """A JSON ``null`` origin is no origin, never the string ``"None"``."""
+    assert codec.slot_args({"origin": None}, _purpose(purpose, name="x"))["origin"] == ""
+
+
+@pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
 def test_a_member_pin_keeps_the_bindings_agent_and_mode(purpose, tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     meta = {"agent": "line-agent", "mode": "focus"}
