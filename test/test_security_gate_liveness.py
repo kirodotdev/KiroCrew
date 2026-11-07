@@ -700,7 +700,11 @@ def _url_payload_command(n: int) -> str:
 #: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
 #: it, and the catalog comment on why their call names stand bare (both rows match
 #: exactly what they matched). Nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_802
+#: Raised by 18, from 34,802, for the per-decision payload-walk memo in
+#: ``shell_normalizer._shell_payload_walk`` (one walk of each distinct text per
+#: ``is_denied``) and the paren walk's skip of its second, ``${...}``-aware
+#: pass when the span holds no ``{``. Same verdicts, less work. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_820
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
