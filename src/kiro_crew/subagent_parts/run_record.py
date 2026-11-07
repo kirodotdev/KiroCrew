@@ -708,6 +708,9 @@ class SubagentInfo:
     # Set when the run's lane slot was yielded for a wait and a resume entry
     # is queued in admission; cleared when the slot is granted back.
     _resume_pending: bool = False
+    # Awaited children this run released as deferral-held
+    # (``taskq_release_deferred_async``); no wait of this run awaits them again.
+    _deferred_released: set[str] = field(default_factory=set)
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
     # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).

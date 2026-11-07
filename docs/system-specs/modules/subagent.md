@@ -3536,7 +3536,15 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   or `failed` parent leaves them running. `taskq_expire_waits` (once per second
   on the pump path) fails waits past `deadline_at` and cancels their live runs.
   `spawn_sub_agents`' own blocking wait is this W3 record; its `still_running`
-  return (wait expiry) stays as specified below and cancels nothing.
+  return (wait expiry) stays as specified below and cancels nothing. A member
+  the tool settled because a gate deferral holds it is released explicitly,
+  once, through `POST /api/spawn/{parent}/release-deferred` (callable only by
+  the attested `subagent:<parent>` session itself). `taskq_release_deferred_async`
+  adds the named ids the wait awaits to the run's released set and requests the
+  resume once every other awaited child has ended; a sibling's terminal
+  propagation does the same when only released children remain. The wait
+  record is not edited, and a later wait of the same run never awaits a
+  released child again.
 
 ## Fairness lanes and the child reserve (RFC §6, §13 Q3 / Q5)
 
