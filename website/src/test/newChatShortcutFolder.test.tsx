@@ -7,6 +7,7 @@
  *   - Folder no longer listed: the plain default-folder create.
  *   - Folder a mate manages (its home or inside it): the default-folder create.
  *   - The folder's project directory is gone: the shell notice names the path.
+ *   - Any other failed create: the shell notice shows the create's error.
  *   - Both folder failures (that one and a new chat with no session folder of
  *     its own) show the shell notice as an alert with the agent hand-off.
  */
@@ -151,6 +152,16 @@ describe('Alt+Shift+N in a folder', () => {
     press()
     await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toContain('/repo/app'))
     expect(mocks.chatSlotProject).not.toHaveBeenCalled()
+  })
+
+  it('shows any other failed create in the shell notice as an alert', async () => {
+    mocks.createChatSlot.mockRejectedValue(new ApiError(503, 'zzq gateway unavailable'))
+    harness(undefined)
+    press()
+    await waitFor(() => expect(screen.getByTestId('agent-switch-notice-error')).toBeInTheDocument())
+    expectAlertWithHandoff('zzq gateway unavailable')
+    // The lead says what failed; the raw detail stays the message the hand-off looks up.
+    expectAlertWithHandoff("Couldn't create a new chat.")
   })
 
   it('shows a new chat with no session folder of its own as an alert', () => {

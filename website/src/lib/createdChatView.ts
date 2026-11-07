@@ -1,7 +1,9 @@
 import type { AppDispatch, RootState } from '../store'
-import { createSlot, stageToMainComposer } from '../store/chatSlice'
+import { createSlot, setAgentSwitchNotice, stageToMainComposer } from '../store/chatSlice'
 import type { ChatSlot } from '../types'
 import { isChatPath } from '../hooks/notificationBanner'
+import { errMessage } from '../utils/thunkError'
+import { i18nT } from '../i18n/t'
 import { appPathname } from './basePath'
 
 type CreateSlotArg = Parameters<typeof createSlot>[0]
@@ -87,6 +89,20 @@ export async function createChatForView(
   const settled = (await pending) as { meta?: { prefillStaged?: boolean } } | undefined
   const prefillStaged = settled?.meta?.prefillStaged === true
   return { slot, opened, shown, from, prefillStaged }
+}
+
+/**
+ * Show a failed create on the shell notice, as an error. For a caller with no
+ * surface of its own left when the create settles: the palette has closed by
+ * then, and a keyboard shortcut never had one.
+ */
+export function reportCreateFailure(dispatch: AppDispatch, err: unknown): void {
+  // Lead with what failed: the detail alone (a network error's "Failed to
+  // fetch") does not say it was the new chat. The detail stays the message,
+  // unprefixed, because the agent hand-off looks its journal entry up by it.
+  const failed = i18nT('components.embedTabStrip.new_chat_failed')
+  const detail = errMessage(err)
+  dispatch(setAgentSwitchNotice(detail ? { title: failed, message: detail, error: true } : { message: failed, error: true }))
 }
 
 /**
