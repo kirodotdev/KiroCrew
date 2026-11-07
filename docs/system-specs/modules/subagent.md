@@ -1688,7 +1688,9 @@ Spawn flow (`subagent_manager/admission/gate.py`), first matching rung wins:
 1. **YOLO mode**: skips approval, runs immediately
 2. **Per-spawn `approval_mode="auto"`**: skips approval, runs immediately
 3. **Parent trusted**: parent session has `approval_policy="auto"` (set by
-   dashboard trust toggle) → skips approval, runs immediately
+   dashboard trust toggle) → skips approval, runs immediately. For a sub-agent
+   parent, see `turn_session.approval_policy_of` (step 1 of the `parent_policy`
+   chain below)
 4. **`hooks.auto_approve_subagent_spawn`**: skips approval, runs immediately
 5. **`on_spawn_approval` configured**: enters `_spawn_with_approval`, which
    requests interactive approval through that callback. The wait is the
@@ -1808,6 +1810,13 @@ ladder decides it in strict priority order and answers it on the wire:
 
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
 1. Read from parent session via `get_approval_policy(parent_session_key)`. A
+   `subagent:` parent on its own parent's shared runtime has no stored session:
+   `turn_session.approval_policy_of` then reads `"auto"` only while that run is
+   live, is shared (`_session_sharing`), and its recorded lineage is non-empty,
+   starts at a non-`subagent:` key and has no key revoked since (#28364). A
+   sub-agent's own grant is not passed on to its spawns or their tool calls: that
+   covers a lineage of `()` (from `approval_mode`, yolo or a setting, even when
+   the root's Trust also applied) and a lineage starting at a `subagent:` key. A
    continuation (`conversation_key` set) from a session other than the one that
    started the conversation keeps that `"auto"` only when that founder also reads
    `"auto"`. The founder is the `parent_session` of the first run, found by

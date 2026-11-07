@@ -1598,9 +1598,10 @@ class _GateMixin(ManagerComponent):
                 pass  # no running loop (sync/test context)
 
         # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
+        from kiro_crew.subagent_manager.turn_session import approval_policy_of
+
         parent_trusted = (
-            parent_session_key
-            and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
+            parent_session_key and approval_policy_of(self._manager, parent_session_key) == "auto"
         )
 
         # Shared Crew: each run's runtime starts in its initiator's containment slice.

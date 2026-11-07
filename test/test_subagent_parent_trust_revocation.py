@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from subagent_helpers import _mock_sessions
+from subagent_helpers import _mock_ctx_builder, _mock_sessions
 
 from kiro_crew.execution_context import execution_for_store
 
@@ -164,6 +164,82 @@ async def test_a_grandchild_loses_auto_once_the_root_is_revoked(child_lineage, e
     await _run(manager, info)
 
     assert _answers(provider) == expected
+
+
+def _shared_child(manager, lineage, state: str = "shared") -> None:
+    """The run on ``subagent:kid01``, a child of the root on the root's runtime: its
+    session never enters the store, so only its run holds the trust it read. *state*
+    ``done`` has finished; ``dedicated`` ran on its own process, whose session is gone."""
+    from kiro_crew.subagent import SubagentInfo
+
+    child = SubagentInfo(
+        execution_context=execution_for_store(""), id="kid01", task="t", parent_session_key=ROOT
+    )
+    child._approval_lineage = lineage
+    child._session_sharing = state != "dedicated"
+    child.done = state == "done"
+    manager._agents["kid01"] = child
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("child_lineage", "state", "revoke", "expected"),
+    [
+        (((ROOT, 0),), "shared", False, ([1, 2], [])),
+        (((ROOT, 0),), "shared", True, ([1], [2])),
+        # A grant of a sub-agent's own (its spawn's approval_mode, a setting), here or
+        # on an ancestor on its own process whose session stored it, is not a Trust.
+        ((), "shared", False, ([], [1, 2])),
+        ((("subagent:app01", 0),), "shared", False, ([], [1, 2])),
+        (None, "shared", False, ([], [1, 2])),
+        # Nothing holds the trust any more: the store has no session for it either.
+        (((ROOT, 0),), "done", False, ([], [1, 2])),
+        (((ROOT, 0),), "dedicated", False, ([], [1, 2])),
+    ],
+)
+async def test_a_grandchild_reads_the_trust_its_shared_runtime_parent_run_holds(
+    child_lineage, state, revoke, expected
+) -> None:
+    store = _store(ROOT)
+    manager, info, provider = _child(
+        store, "subagent:kid01", lambda: revoke and store.set_approval_policy(ROOT, "")
+    )
+    _shared_child(manager, child_lineage, state)
+
+    await _run(manager, info)
+
+    assert _answers(provider) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("healthy_host_memory")
+@pytest.mark.parametrize(
+    ("child_lineage", "revoked", "asked"),
+    [(((ROOT, 0),), False, False), (((ROOT, 0),), True, True), (None, False, True)],
+)
+async def test_a_nested_spawn_is_admitted_on_its_shared_runtime_parent_runs_trust(
+    child_lineage, revoked, asked
+) -> None:
+    from kiro_crew.subagent import SubagentManager
+    from kiro_crew.testing.wait import await_until
+
+    store = _store(ROOT)
+    if revoked:
+        store.set_approval_policy(ROOT, "")
+    sessions = _mock_sessions()
+    sessions.get_approval_policy = store.get_approval_policy
+    sessions.approval_revocation = store.approval_revocation
+    approve = AsyncMock(return_value=True)
+    manager = SubagentManager(
+        sessions=sessions, ctx_builder=_mock_ctx_builder(), on_spawn_approval=approve
+    )
+    _shared_child(manager, child_lineage)
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = manager.spawn("nested", parent_session_key="subagent:kid01")
+        await await_until(manager._tasks[info.id], what="the nested run finishes")
+
+    assert approve.await_count == (1 if asked else 0)
 
 
 @pytest.mark.asyncio
