@@ -105,10 +105,7 @@ def view_sidecar(tmp_path, monkeypatch):
     from kiro_crew.acp import skill_projection as projection
 
     agents = tmp_path / "agents"
-    # The legacy records directory (a build before the side files moved): the
-    # resolver still reads it after this home's own.
-    metadata = projection._legacy_metadata_dir(agents)
-    metadata.mkdir(parents=True)
+    metadata = projection._ensure_projection_metadata_directory()
     monkeypatch.setattr(projection, "_VIEW_SOURCES", {})
     monkeypatch.setattr(projection, "kiro_agents_dir", lambda: agents)
     sidecar = metadata / f"{VIEW}.json"

@@ -1419,8 +1419,7 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
         print(f"{render._INDENT}(floors: the census stopped at its retention bound)")
     if unreadable:
         print(
-            f"{render._INDENT}{unreadable} lease record(s) in {lease_dir}/ (or in the legacy"
-            f" .kirocrew-skill-projection-leases/ beside the aliases) cannot be read, and"
+            f"{render._INDENT}{unreadable} lease record(s) in {lease_dir}/ cannot be read, and"
             f" the reclaim keeps every alias while one exists. {stopped[0].upper()}"
             f"{stopped[1:]}, move that directory out of the way; every"
             f" live projection republishes its own lease."

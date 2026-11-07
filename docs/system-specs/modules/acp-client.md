@@ -291,13 +291,13 @@ its responsibility.
 
 | Projection owner | Owns |
 |---|---|
-| `acp/skill_projection_parts/side_files.py` | the side files under this data home and the protocol over them: their layout and legacy locations, the alias-name shape, the bounded publication lock and its two timeouts, the per-process leases with their liveness scan, and the identity-checked unlinks |
+| `acp/skill_projection_parts/side_files.py` | the side files under this data home and the protocol over them: their layout, the alias-name shape, the bounded publication lock and its two timeouts, the per-process leases with their liveness scan, and the identity-checked unlinks |
 | `acp/skill_projection_parts/inheritance_overlay.py` | Crew's overlay on `chat.disableInheritingDefaultResources` in a workspace `cli.json`: its keys, the settings read, the recorded preference behind `inherits_default_resources` and the rollback |
 | `acp/skill_projection_parts/view_publication.py` | what a view hands kiro-cli beyond its authored spec (the bounded display text, the search tool) and the in-place rewrite that makes kiro-cli reload it (`announce_alias`) |
 | `acp/skill_projection_parts/view_ownership.py` | which views are this data home's: ownership records, the home tag, the view identity and digest, sidecar and metadata reads, and whether a published copy is current |
 | `acp/skill_projection_parts/view_sources.py` | which agent a skill-view name projects: the in-process map, the view ledger, the sidecar fallback and the resolvers that raise `RetiredSkillView` |
 | `acp/skill_projection_parts/native_projection.py` | the prepared `NativeSkillProjection` and the registry of live projections a prune must keep |
-| `acp/skill_projection_parts/alias_reclaim.py` | reclaiming unused views and their residue (the per-spawn, end-of-projection and boot prunes, the orphan sweeps, the legacy side-file migration) and the read-only censuses the doctor reports |
+| `acp/skill_projection_parts/alias_reclaim.py` | reclaiming unused views and their residue (the per-spawn, end-of-projection and boot prunes and the orphan sweeps) and the read-only censuses the doctor reports |
 | `acp/skill_projection_parts/preparation.py` | `prepare_native_skill_projection` and its view-count ceiling fallback |
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness
@@ -834,26 +834,9 @@ the lease records (`leases/`) and the ownership sidecars with the view ledger
 entry would pick the agent a resumed conversation runs as) and the file-tool
 write floor refuses. Only the views themselves go into the agents directory, because
 kiro-cli resolves `--agent <name>` there by name and knows no other directory;
-everything else there is a row in the IDE's drop-down. Builds before
-this layout wrote the same three things INTO the agents directory as
-`.kirocrew-skill-projection.lock`, `.kirocrew-skill-projection-leases/` and
-`.kirocrew-skill-projection-metadata/`; those legacy locations are still READ
-for one release cycle -- the lease scan, the ownership lookups, the sweeps, the
-census and `source_agent_name` consult this home's directory first and the legacy
-one second -- and never written. The boot drain migrates them once, under the
-publication lock, moving only what is provably this module's and this home's:
-sidecars whose record names this data home (another home's stay; they are that
-home's to move), the legacy ledger's entries merged into this home's ledger (the
-legacy file itself is shared by every home that published here and names no
-home, so it stays while it holds any entry or cannot be read -- another home's
-stored view names resolve through it until that home's own migration copies
-them -- and only an empty, readable one is removed; its names are copied in as
-this home's OLDEST ledger entries, only where the bound leaves room, so a
-re-import never evicts a mapping recovered from a sidecar), the legacy lease
-directory once the lease scan has reclaimed its residue and it is empty (a live
-lease is never moved), and the legacy lock last, only when both legacy
-directories are gone and nobody holds it. The migration is idempotent and
-bounded per boot. Each sidecar records the alias's
+everything else there is a row in the IDE's drop-down. Builds before `v0.10.0` kept
+these side files in the agents directory; nothing reads, moves or removes them there,
+so such a build sharing the directory is unsupported. Each sidecar records the alias's
 exact byte digest AND the digest of its identity (the view the alias is named by,
 env values out), so a stale or replaced sidecar cannot authorize deletion of a
 different spec, while an alias another program merely re-serialized or
@@ -967,15 +950,6 @@ of non-reentrant lock a dropping thread can hold. Pruning runs ONE bounded lease
 run -- not one scan per candidate, which multiplied the candidate cap by the
 scan cap into a quadratic sweep under the held publication lock -- streaming lease
 records without materializing the directory and stopping at a fixed scan ceiling.
-The scan covers TWO directories under one deadline: this home's own lease
-directory and the legacy one in the agents directory, where an older build
-sharing it still publishes; a lease held in either keeps the aliases it names,
-and uncertainty in either makes the pass uncertain. The legacy directory is
-scanned under the older build's own publication lock (the one it keeps in the
-agents directory, when that file exists): an older publisher writes its lease
-record and then its holder under that lock, so a scan without it could meet the
-pair between the two writes and reclaim a live lease. A lock that cannot be taken
-in the scan's budget is uncertainty.
 That ceiling bounds how many entries are parsed and lock-probed, not how long a
 slow filesystem takes over them, so the scan also reads a between-entry deadline
 (`_PROJECTION_LEASE_SCAN_MAX_SECONDS`, 0.4 s, sized like the candidate walk's
@@ -1028,13 +1002,7 @@ Alias publication and pruning share one cross-process lock file under this
 home's `skill-projection/` directory (it serialises the publishers and pruners
 of THIS home, the only writers of this home's views and side files), with a
 two-second acquisition ceiling instead of the platform lock's general
-five-minute ceiling. An older build sharing the agents directory takes its own
-lock there and is not excluded by this one; what keeps the two from pruning each
-other's live views is the dual-read lease scan above, the home tag, and the
-legacy age floor -- the one window left is an old build reclaiming a new build's
-sidecar-less-looking view after `_LEGACY_RECLAIM_MIN_AGE_SECS`, which the
-re-preparation contract recovers (the next spawn or `set_mode` republishes it).
-A lock file that is a symlink or junction,
+five-minute ceiling. A lock file that is a symlink or junction,
 changes identity while opened or acquired, or is otherwise unverifiable is
 treated as lock failure. Removal revalidates the candidate's identity, bytes and
 digest-bound ownership sidecar under that lock immediately before

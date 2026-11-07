@@ -21,7 +21,6 @@ from typing import Any
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp.skill_projection_parts.side_files import (
     _LEGACY_ALIAS_NAME_RE,
-    _metadata_dirs,
     _projection_metadata_dir,
 )
 from kiro_crew.acp.skill_projection_parts.view_ownership import (
@@ -33,7 +32,6 @@ from kiro_crew.acp.skill_projection_parts.view_ownership import (
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.validation import is_registered_agent_name
 
@@ -167,31 +165,6 @@ def _sidecar_answers_for(metadata_dir: Path, alias: str, agent_name: str) -> boo
     """
     record = _read_json_regular_file(metadata_dir / f"{alias}.json")
     return _managed_marker(record) and record.get(_MANAGED_AGENT) == agent_name
-
-
-def _import_legacy_ledger(metadata_dir: Path, legacy: dict[str, str]) -> None:
-    """Copy *legacy* ledger entries this home's ledger lacks, as its OLDEST entries.
-
-    The destination already holds what this home recorded or recovered, newest
-    last. An import that made the legacy names the newest would evict, past the
-    bound, the very mappings a sidecar-less recovery just wrote there. So only
-    names the destination does not hold are taken, ahead of its own entries, and
-    only as many as the bound leaves room for; the rest stay in the legacy file,
-    which is kept while it holds anything. Nothing is written when there is nothing
-    to add, so a boot that finds the ledger already imported leaves it untouched.
-    """
-    held = _read_view_ledger(metadata_dir)
-    room = _VIEW_SOURCES_MAX - len(held)
-    missing = [(alias, agent) for alias, agent in legacy.items() if alias not in held]
-    taken = missing[-room:] if room > 0 else []
-    if not taken:
-        return
-    merged = {**dict(taken), **held}
-    atomic_write(
-        metadata_dir / _VIEW_LEDGER_NAME,
-        json.dumps(merged, ensure_ascii=False, separators=(",", ":")),
-        restrict_to_owner=True,
-    )
 
 
 def _record_view_ledger_entries(metadata_dir: Path, views: dict[str, str]) -> dict[str, str]:
@@ -369,23 +342,15 @@ def _recorded_view_source(name: str) -> str | None:
     if not _LEGACY_ALIAS_NAME_RE.fullmatch(name):
         return None
     try:
-        metadata_dirs = _metadata_dirs(kiro_agents_dir())
+        metadata_dir = _projection_metadata_dir()
     except (OSError, ValueError, RuntimeError):
         return None
-    # This home's own records first, then the legacy ones in the agents
-    # directory: a name stored before the side files moved may have its record
-    # only there until the boot migration carries it over.
-    for metadata_dir in metadata_dirs:
-        metadata = _read_json_regular_file(metadata_dir / f"{name}.json")
-        if _managed_marker(metadata):
-            agent_name = metadata.get(_MANAGED_AGENT)
-            if _admissible_source_agent(agent_name):
-                return str(agent_name)
-    for metadata_dir in metadata_dirs:
-        source = _read_view_ledger(metadata_dir).get(name)
-        if source is not None:
-            return source
-    return None
+    metadata = _read_json_regular_file(metadata_dir / f"{name}.json")
+    if _managed_marker(metadata):
+        agent_name = metadata.get(_MANAGED_AGENT)
+        if _admissible_source_agent(agent_name):
+            return str(agent_name)
+    return _read_view_ledger(metadata_dir).get(name)
 
 
 def source_agent_name(name: str) -> str:
