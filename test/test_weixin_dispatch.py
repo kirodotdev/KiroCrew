@@ -858,6 +858,24 @@ def test_governance_deny_drops_the_message_before_any_turn(tmp_path, monkeypatch
     assert sessions.successes == 0
 
 
+def test_a_typed_stop_survives_a_governance_deny(tmp_path, monkeypatch):
+    """Weixin has no buttons: a typed /stop is its only off-switch."""
+    import kiro_crew.messaging.dispatch as mod
+
+    provider = FakeProvider()
+    d, client, _ = _make(tmp_path, provider=provider, busy=True)
+
+    async def deny(_channel_type):
+        return False
+
+    monkeypatch.setattr(mod, "channel_inbound_permitted", deny)
+    # A cancel word another channel spells is no stop here: it keeps the gate.
+    asyncio.run(d.handle_message(_msg("!stop")))
+    assert provider.cancelled == [] and client.sent == []
+    asyncio.run(d.handle_message(_msg("/stop")))
+    assert provider.cancelled == [0]
+
+
 def test_governance_permit_allows_the_turn(tmp_path, monkeypatch):
     import kiro_crew.messaging.dispatch as mod
 

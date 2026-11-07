@@ -2706,7 +2706,12 @@ otherwise let a denied channel trigger a download by attaching a file to the one
 word that skips the gate. Both arguments default to the gated behaviour, so a
 caller that does not pass them is unchanged. This matters most where the channel
 has no widgets: with `max_buttons=0` a typed `/stop` is the only cancel
-affordance the operator has.
+affordance the operator has. The Feishu, iMessage, Teams, Webex, WeCom and Weixin
+dispatchers pass `text` only when their own `parse_command` reads the message as
+`stop` (Feishu, Webex and WeCom after removing the bot's @mention; never for a Teams or
+Webex card press, and never for drained turn content), so a cancel word another
+channel spells, such as `!stop`, keeps the strict gate instead of passing into
+the busy path's steer. WhatsApp passes its text as is.
 
 `_CANCEL_ALIASES` is the recognised set, and it is a MIRROR of the per-channel
 command tables (`/stop`, `/cancel`, Discord's `!` bang forms, WeCom's `停止`),
