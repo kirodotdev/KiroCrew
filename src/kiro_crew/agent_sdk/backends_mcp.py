@@ -445,8 +445,8 @@ ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset(
 # shares one entry per model: on kiro-cli that sharing is the engine's own, and Crew
 # reads the file back at construction so its map names the level the engine will
 # run. KAS never opens it -- its level travels as the ``effortLevel`` config option
-# -- so reading it back there ran a new chat at whatever level another chat in the
-# same work dir picked last. A non-member's level comes from the provider factory
+# -- so reading it back there would run a new chat at whatever level another chat in
+# the same work dir picked last. A non-member's level comes from the provider factory
 # (the slot's own pick, persisted per slot, else the crew, role or global default),
 # and the file is neither written, read back, nor cleared for it.
 ACP_BACKENDS_EFFORT_OVERLAY = frozenset({ACP_BACKEND_KIRO})
@@ -462,19 +462,16 @@ ACP_BACKENDS_TOOL_SEARCH_OVERLAY = frozenset({ACP_BACKEND_KIRO})
 # Backends that take feature settings from the ACP ``initialize`` request, under
 # ``clientCapabilities._meta.kiro.settings``. KAS is the only member: it opened
 # that channel (``KAS_CLIENT_CAPABILITIES``), and the runtime fills it at spawn
-# with the settings the harness declares it reads -- today Tool Search, gated on
-# the spawn agent's spec granting the ``tool_search`` loader, because KAS defers
-# every MCP tool not on ``toolSearch.neverDefer`` whatever ``enabled`` says, so a
-# spec without the loader is sent its MCP tools on that list. kiro-cli
-# is not a member: it has no such channel and reads the overlay file instead.
-# Captured live on KAS 0.66.70 (kiro-cli 2.35.1):
-# ``test/fixtures/acp_frames/kas/client-meta-settings-live.jsonl``. The client's
-# initialize carried ``settings.toolSearch.neverDefer=["probe::probe_codeword"]``,
-# and the probe tool's tool_call came back with ``_meta.kiro.toolOrigin: "client"``
-# -- KAS kept it direct because the client's settings named it, not by its own
-# default deferral (a control run with an empty settings object showed the same
-# tool with toolOrigin ``default``). kiro-cli has no capture here because it reads
-# no such channel.
+# with the settings the harness declares it reads: Tool Search, gated on the spawn
+# agent's spec granting the ``tool_search`` loader, because KAS defers every MCP tool
+# not on ``toolSearch.neverDefer`` whatever ``enabled`` says, so a spec without the
+# loader is sent its MCP tools on that list. kiro-cli is not a member: it has no such
+# channel and reads the overlay file instead.
+# LIVE on KAS 0.66.70 (kiro-cli 2.35.1),
+# ``test/fixtures/acp_frames/kas/client-meta-settings-live.jsonl``: an initialize
+# carrying ``settings.toolSearch.neverDefer=["probe::probe_codeword"]`` made the
+# probe tool's tool_call come back with ``_meta.kiro.toolOrigin: "client"``, where a
+# control run with empty settings showed ``default``.
 ACP_BACKENDS_CLIENT_META_SETTINGS = frozenset({ACP_BACKEND_KAS})
 
 # Backends that reconcile an edited agent config into their RUNNING sessions: a
