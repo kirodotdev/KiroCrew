@@ -7,6 +7,8 @@ import { i18nT } from '../../i18n/t'
 import { fmtElapsed } from '../../i18n/format'
 import type { ChatMessage } from '../../types'
 import { GHOST_POSE_ICONS } from '../../components/GhostPoses'
+import { GhostGameLoader, labelStem, pickLoaderChoice, type GhostGame, type LoaderChoice } from '../../components/GhostGames'
+import { IconMotionLoader, pickIconMotion, type IconMotion, type IconMotionChoice } from '../../components/IconLoaderMotions'
 import { getThemeBranding } from '../../themeBranding'
 import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
 import { useOptionalTheme } from '../../hooks/useTheme'
@@ -388,6 +390,54 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // Set when a loader image fails to load; a new theme brings new art, so retry it.
   const [artFailed, setArtFailed] = useState(false)
   useEffect(() => { setArtFailed(false) }, [slug])
+  // One loader per turn: the pose carousel or one of the ghost games, drawn when
+  // the turn starts and held until it ends, so the indicator does not change
+  // scene each time it reappears between streamed segments. Adjusting state
+  // during render (rather than in an effect) lands the new draw on the same
+  // render the turn starts, with no frame of the previous turn's loader.
+  const thinkingLabel = i18nT('pages.chat.chatFooter.thinking')
+  const turnActive = !!regenerating || running
+  const [prevTurnActive, setPrevTurnActive] = useState(turnActive)
+  const [loaderChoice, setLoaderChoice] = useState<LoaderChoice>(() => pickLoaderChoice(thinkingLabel))
+  // A game whose art fails to load falls back to the carousel for the rest of
+  // that turn. It is kept apart from `artFailed`, which hides ALL loader art:
+  // one broken game asset must not take the carousel down on later turns too.
+  const [gameFailed, setGameFailed] = useState(false)
+  // A THEME's icon pool draws the same way, over the carousel and the icon
+  // motions, with the icons the motion shows sampled once for the turn.
+  const iconPoolSize = loader.kind === 'icons' ? loader.icons.length : 0
+  const [iconMotion, setIconMotion] = useState<IconMotionChoice>(() => pickIconMotion())
+  const [iconPicks, setIconPicks] = useState(() => pickDistinct(iconPoolSize))
+  if (turnActive !== prevTurnActive) {
+    setPrevTurnActive(turnActive)
+    if (turnActive) {
+      setLoaderChoice(pickLoaderChoice(thinkingLabel))
+      setGameFailed(false)
+      setIconMotion(pickIconMotion())
+      setIconPicks(pickDistinct(iconPoolSize))
+    }
+  }
+  const reduceMotion = useMemo(prefersReducedMotion, [])
+  // Games replace only the DEFAULT pose pool: a theme's own artwork always wins,
+  // and reduced motion keeps the carousel, which already holds still for it.
+  // `ellipsis` also needs a label that still ends in "…" (a language switch
+  // mid-turn may have changed it), and "Thinking…" itself on screen: while a
+  // remote environment's stage label, or the browser hand-back label, stands in
+  // for it there is no "…" to eat.
+  // Without either it falls back to the carousel.
+  const labelWithoutEllipsis = labelStem(thinkingLabel)
+  const game: GhostGame | null =
+    loader.kind === 'icons' && loader.icons === DEFAULT_ICONS && !reduceMotion && !gameFailed && loaderChoice !== 'carousel'
+      && (loaderChoice !== 'ellipsis' || (labelWithoutEllipsis !== null && !statusLabel && !browserInControl))
+      ? loaderChoice : null
+  // Motions apply to a theme's icon pool only (the default poses have the ghost
+  // games), and never under reduced motion. They are choreographed for four
+  // slots (the spotlight dot's stops, the shuffle's pairs), so a pool of fewer
+  // than four icons keeps the carousel, which already handles a short pool.
+  const iconLoaderMotion: IconMotion | null =
+    loader.kind === 'icons' && loader.icons !== DEFAULT_ICONS && !reduceMotion && iconMotion !== 'carousel'
+      && iconPicks.length >= 4
+      ? iconMotion : null
   // Text is only ACTIVELY streaming while the slot says so AND chunks keep
   // arriving. `lastRole` alone cannot tell the two apart: the trailing
   // 'streaming' message is deliberately left unfinalized across a whole tool
@@ -458,7 +508,10 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
             {/* A throwing theme loader must not reach the route-level boundary and
                 blank the chat; it renders nothing (the label alone then carries
                 the indicator). */}
-            {!artFailed && <span className="contents" onErrorCapture={() => setArtFailed(true)}>
+            {game && game !== 'ellipsis' && <span className="contents" onErrorCapture={() => setGameFailed(true)}>
+              <ErrorBoundary fallback={null}><GhostGameLoader game={game} /></ErrorBoundary>
+            </span>}
+            {!game && !artFailed && <span className="contents" onErrorCapture={() => setArtFailed(true)}>
             <ErrorBoundary fallback={null}>
               {loader.kind === 'custom'
                 // The theme replaced the whole loader — it owns its size and motion.
@@ -474,7 +527,9 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
                       src={loader.src}
                       style={{ width: 14, height: 14, objectFit: 'contain' }}
                     />
-                  : <SwapCarousel icons={loader.icons} />}
+                  : iconLoaderMotion
+                    ? <IconMotionLoader motion={iconLoaderMotion} icons={loader.icons} picks={iconPicks} />
+                    : <SwapCarousel icons={loader.icons} />}
             </ErrorBoundary>
             </span>}
             {/* A starting remote environment names its stage, with the elapsed
@@ -484,7 +539,11 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
               ? <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.browserLiveCard.waiting_for_hand_back')}</span>
               : statusLabel
               ? <span aria-hidden="true" className="text-muted text-[13px] font-mono tabular-nums">{statusLabel.label}</span>
-              : <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>}
+              : <span aria-hidden="true" className="thinking-shimmer text-[13px] font-mono">{game === 'ellipsis' ? labelWithoutEllipsis : thinkingLabel}</span>}
+            {/* The ellipsis game follows the label: it eats the "…" the label just dropped. */}
+            {game === 'ellipsis' && <span className="contents" onErrorCapture={() => setGameFailed(true)}>
+              <ErrorBoundary fallback={null}><GhostGameLoader game="ellipsis" /></ErrorBoundary>
+            </span>}
           </div>
         )}
         {stallSince !== null && <StallNotice since={stallSince} />}
