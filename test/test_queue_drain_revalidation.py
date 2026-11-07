@@ -851,19 +851,19 @@ async def test_restored_parked_send_on_unconstrained_slot_still_runs(tmp_path, m
     assert user_rows and "accepted parked send" in user_rows[-1]["content"]
 
 
-def test_a_restored_entry_loses_its_steer_intent_mark():
+def test_a_restored_entry_loses_its_composer_send_mark():
     """The act-now mark lets an entry drain past the sub-agent hold, so the
     reader drops it with the other authority-bearing keys."""
     from kiro_crew.dashboard.chat_utils_injected_rows import (
-        STEER_INTENT_META,
+        COMPOSER_SEND_META,
         releases_past_subagent_hold,
     )
     from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
 
-    saved = [{"id": "s1", "content": "act now", "meta": {STEER_INTENT_META: True, "sendId": "x"}}]
+    saved = [{"id": "s1", "content": "act now", "meta": {COMPOSER_SEND_META: True, "sendId": "x"}}]
     (restored,) = sanitize_restored_queue(json.loads(json.dumps(saved)))
 
-    assert STEER_INTENT_META not in restored["meta"]
+    assert COMPOSER_SEND_META not in restored["meta"]
     assert restored["meta"]["sendId"] == "x"
     assert not releases_past_subagent_hold(restored)
 
@@ -873,13 +873,13 @@ async def test_a_restored_steer_under_the_subagent_hold_is_not_dispatched(tmp_pa
     """A saved act-now steer, restored onto a slot that is now linked while a
     sub-agent hold is active, must not drain through the hold's system path:
     that path runs no containment sweep. It waits as an ordinary card."""
-    from kiro_crew.dashboard.chat_utils_injected_rows import STEER_INTENT_META
+    from kiro_crew.dashboard.chat_utils_injected_rows import COMPOSER_SEND_META
     from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
 
     state = _make_state(tmp_path)
     state.subagents = None
     slot = _link(state.get_or_create_slot("chat-1"))
-    saved = [{"id": "s1", "content": "act now", "meta": {STEER_INTENT_META: True}}]
+    saved = [{"id": "s1", "content": "act now", "meta": {COMPOSER_SEND_META: True}}]
     slot._queue[:] = sanitize_restored_queue(json.loads(json.dumps(saved)))
     slot._subagent_deliveries_inflight = 1
 
@@ -903,7 +903,7 @@ def test_the_subagent_hold_path_never_drains_an_unchosen_restored_card():
     so the reader's strip does not apply) stays queued on the hold's system path;
     an in-process steer behind it still drains."""
     from kiro_crew.dashboard.chat_utils_injected_rows import (
-        STEER_INTENT_META,
+        COMPOSER_SEND_META,
         _dequeue_next_system_message,
     )
     from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
@@ -913,9 +913,9 @@ def test_the_subagent_hold_path_never_drains_an_unchosen_restored_card():
         "content": "restored steer",
         "kind": "",
         RESTORED_QUEUE_KEY: True,
-        "meta": {STEER_INTENT_META: True},
+        "meta": {COMPOSER_SEND_META: True},
     }
-    live = {"id": "l1", "content": "live steer", "kind": "", "meta": {STEER_INTENT_META: True}}
+    live = {"id": "l1", "content": "live steer", "kind": "", "meta": {COMPOSER_SEND_META: True}}
     slot = MagicMock()
     slot._queue = [restored, live]
     slot.queue_pop = slot._queue.pop
