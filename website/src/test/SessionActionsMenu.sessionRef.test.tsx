@@ -22,7 +22,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// "Copy session ID" copies the bare key through this; stub it so the test
+// "Copy Kiro Crew session ID" copies the bare key through this; stub it so the test
 // asserts the key, not the jsdom clipboard.
 const copyToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 vi.mock('../utils/clipboard', () => ({ copyToClipboard }))
@@ -65,16 +65,16 @@ describe('SessionActionsMenu copy-session-id item', () => {
   // every test so a failed assertion cannot leak it into the next test.
   afterEach(() => { vi.useRealTimers() })
   beforeEach(() => { copyToClipboard.mockClear() })
-  it('always renders Copy session ID and copies the bare key (not a URL)', async () => {
+  it('always renders Copy Kiro Crew session ID and copies the bare key (not a URL)', async () => {
     renderMenu()
-    fireEvent.click(await screen.findByText('Copy session ID'))
+    fireEvent.click(await screen.findByText('Copy Kiro Crew session ID'))
     expect(copyToClipboard).toHaveBeenCalledWith('chat-1')
   })
 
   it('says a refused copy through ErrorNotice that outlives the acknowledgment, and never claims success', async () => {
     copyToClipboard.mockResolvedValueOnce(false)
     renderMenu()
-    const item = await screen.findByText('Copy session ID')
+    const item = await screen.findByText('Copy Kiro Crew session ID')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     await act(async () => { fireEvent.click(item) })
     // Both clipboard layers refused: the failure is said through ErrorNotice
@@ -90,7 +90,7 @@ describe('SessionActionsMenu copy-session-id item', () => {
     act(() => { vi.advanceTimersByTime(5000) })
     expect(screen.getByTestId('session-menu-copy-id-error')).toBeTruthy()
     // ...and clears when the next press succeeds.
-    await act(async () => { fireEvent.click(screen.getByText('Copy session ID')) })
+    await act(async () => { fireEvent.click(screen.getByText('Copy Kiro Crew session ID')) })
     expect(screen.queryByTestId('session-menu-copy-id-error')).toBeNull()
     expect(screen.getByTestId('session-menu-copy-id-label').textContent).toBe('Copied')
   })
@@ -98,13 +98,13 @@ describe('SessionActionsMenu copy-session-id item', () => {
   it('keeps the failure notice when a quick retry also fails', async () => {
     copyToClipboard.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
     renderMenu()
-    const item = await screen.findByText('Copy session ID')
+    const item = await screen.findByText('Copy Kiro Crew session ID')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     await act(async () => { fireEvent.click(item) })
     expect(screen.getByTestId('session-menu-copy-id-error')).toBeTruthy()
     // Retry inside the acknowledgment window: the status stays `failed`.
     act(() => { vi.advanceTimersByTime(500) })
-    await act(async () => { fireEvent.click(screen.getByText('Copy session ID')) })
+    await act(async () => { fireEvent.click(screen.getByText('Copy Kiro Crew session ID')) })
     expect(copyToClipboard).toHaveBeenCalledTimes(2)
     expect(screen.getByTestId('session-menu-copy-id-error')).toBeTruthy()
     // Still there once every acknowledgment timer has run out.
@@ -115,7 +115,7 @@ describe('SessionActionsMenu copy-session-id item', () => {
 
   it('confirms a successful copy in the item itself, then returns to its label', async () => {
     renderMenu()
-    const item = await screen.findByText('Copy session ID')
+    const item = await screen.findByText('Copy Kiro Crew session ID')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     // Settle the clipboard promise inside act so the acknowledgment lands.
     await act(async () => { fireEvent.click(item) })
@@ -127,7 +127,7 @@ describe('SessionActionsMenu copy-session-id item', () => {
     act(() => { vi.advanceTimersByTime(1499) })
     expect(screen.getByTestId('session-menu-copy-id-label').textContent).toBe('Copied')
     act(() => { vi.advanceTimersByTime(1) })
-    expect(screen.getByTestId('session-menu-copy-id-label').textContent).toBe('Copy session ID')
+    expect(screen.getByTestId('session-menu-copy-id-label').textContent).toBe('Copy Kiro Crew session ID')
   })
 })
 

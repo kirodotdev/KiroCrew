@@ -9211,7 +9211,7 @@
       "bring_back_to_main": "Devolver a la ventana principal",
       "close_session": "Cerrar la sesión",
       "copy_link": "Copiar enlace",
-      "copy_session_id": "Copiar ID de sesión",
+      "copy_session_id": "Copiar ID de sesión de {{productName}}",
       "copy_session_id_copied": "Copiado",
       "copy_session_id_failed": "No se pudo copiar el ID de sesión",
       "copy_session_id_failed_detail": "Tu navegador bloqueó el acceso al portapapeles. Cópialo desde el enlace de la sesión o inténtalo de nuevo.",

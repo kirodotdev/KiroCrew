@@ -8989,7 +8989,7 @@
       "bring_back_to_main": "Zurück ins Hauptfenster holen",
       "close_session": "Sitzung schließen",
       "copy_link": "Link kopieren",
-      "copy_session_id": "Sitzungs-ID kopieren",
+      "copy_session_id": "{{productName}}-Sitzungs-ID kopieren",
       "copy_session_id_copied": "Kopiert",
       "copy_session_id_failed": "Sitzungs-ID konnte nicht kopiert werden",
       "copy_session_id_failed_detail": "Dein Browser hat den Zugriff auf die Zwischenablage blockiert. Kopiere sie stattdessen aus dem Sitzungslink oder versuche es erneut.",

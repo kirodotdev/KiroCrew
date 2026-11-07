@@ -9433,7 +9433,7 @@
       "bring_back_to_main": "Вернуть в главное окно",
       "close_session": "Закрыть сеанс",
       "copy_link": "Копировать ссылку",
-      "copy_session_id": "Копировать ID сессии",
+      "copy_session_id": "Копировать ID сессии {{productName}}",
       "copy_session_id_copied": "Скопировано",
       "copy_session_id_failed": "Не удалось скопировать ID сессии",
       "copy_session_id_failed_detail": "Браузер заблокировал доступ к буферу обмена. Скопируй его из ссылки на сессию или повтори попытку.",

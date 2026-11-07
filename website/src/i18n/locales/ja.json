@@ -8767,7 +8767,7 @@
       "bring_back_to_main": "メインに戻す",
       "close_session": "セッションを閉じる",
       "copy_link": "リンクをコピー",
-      "copy_session_id": "セッションIDをコピー",
+      "copy_session_id": "{{productName}} のセッションIDをコピー",
       "copy_session_id_copied": "コピーしました",
       "copy_session_id_failed": "セッションIDをコピーできませんでした",
       "copy_session_id_failed_detail": "ブラウザーがクリップボードへのアクセスをブロックしました。セッションリンクからコピーするか、もう一度お試しください。",
