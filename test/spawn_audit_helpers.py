@@ -1105,13 +1105,21 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "sandbox_argv.py::_ssh_supports_accept_new",
         # The aggregate slice-ceiling apply: `systemctl --user set-property
         # --runtime kirocrew-agents.slice MemoryMax=<N>M MemorySwapMax=0
-        # TasksMax=<N>`. Argv is a fixed verb plus module-constant unit name;
-        # the only variable tokens are integers derived from config/sysconf
+        # TasksMax=<N>`. Argv is a fixed verb plus the module-constant unit name
+        # (inside a pod, its child `kirocrew-agents-<hex token>.slice`, the
+        # token hashed from the data home); the only variable tokens are
+        # integers derived from config/sysconf
         # (type-checked, junk falls back to defaults) — not agent-influenced.
         # Runs once at gateway startup, not from an agent turn. Sandboxing it
         # would be circular: it constructs the cgroup boundary agent spawns
         # are confined by.
         "sandbox_slice.py::ensure_agents_slice_limits",
+        # A pod's fill of the parent from the same startup call: `systemctl
+        # --user show --property=MemoryMax --property=TasksMax
+        # kirocrew-agents.slice`, then `set-property --runtime` on that
+        # constant unit with only the properties shown as `infinity`. Same
+        # trusted systemctl and config-derived integers as the apply above.
+        "sandbox_slice.py::_fill_unset_parent_limits",
         # Shared Crew per-principal slices: `systemctl --user set-property
         # --runtime <slice> CPUQuota=<N>% MemoryMax=<N>M MemorySwapMax=0
         # TasksMax=<N>`, `start|stop <slice>` and `is-active <unit>`. The binary
