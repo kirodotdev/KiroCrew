@@ -4,11 +4,13 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, Lock, X } from 'lucide-react'
 import { api, type MemberRosterRow } from '../api/client'
 import { membersRosterQuery } from '../api/membersQuery'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useArmedDelete } from '../hooks/useArmedDelete'
+import { useIsGuest } from '../hooks/sharedCrew/useSharedCrew'
+import { isOwnerOnlySchedule } from '../lib/ownerOnly'
 import { PageHeader, Card, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton, Input } from '../components/ui'
 import { CodeBlock } from '../components/CodeBlock'
 import SegmentedControl from '../components/SegmentedControl'
@@ -24,6 +26,7 @@ import InfoTip from '../components/InfoTip'
 import type { CronJob } from '../types'
 import { useAgents } from '../hooks/useAgents'
 import { useCronActions } from '../hooks/useCronActions'
+import JobCreator from '../components/JobCreator'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useTableColumnWidths, type TableColumnSpec } from '../hooks/useTableColumnWidths'
 import { useAppSelector, useAppDispatch } from '../store'
@@ -628,20 +631,25 @@ export default function SchedulePage() {
       : sortedScheduleJobs.filter(j => !(j.folder_id && collapsedFolders.has(j.folder_id))),
     [sortedScheduleJobs, filterActive, collapsedFolders],
   )
-  const allVisibleSelected = visibleScheduleJobs.length > 0 && visibleScheduleJobs.every(j => selectedIds.has(j.id))
-  const someVisibleSelected = visibleScheduleJobs.some(j => selectedIds.has(j.id))
+  // A schedule that runs without a person approving each step is the owner's: a guest sees it
+  // and can pause it, and the server refuses everything else (`guest_unattended_refusal`).
+  const guest = useIsGuest()
+  const ownerOnlyFor = useCallback((job: CronJob) => guest && isOwnerOnlySchedule(job), [guest])
+  const selectableJobs = useMemo(() => visibleScheduleJobs.filter(j => !ownerOnlyFor(j)), [visibleScheduleJobs, ownerOnlyFor])
+  const allVisibleSelected = selectableJobs.length > 0 && selectableJobs.every(j => selectedIds.has(j.id))
+  const someVisibleSelected = selectableJobs.some(j => selectedIds.has(j.id))
   const toggleOne = useCallback((id: string) => {
     setSelectedIds(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
   }, [])
   const toggleAllVisible = useCallback(() => {
     setSelectedIds(prev => {
-      const allSel = visibleScheduleJobs.length > 0 && visibleScheduleJobs.every(j => prev.has(j.id))
+      const allSel = selectableJobs.length > 0 && selectableJobs.every(j => prev.has(j.id))
       const n = new Set(prev)
-      if (allSel) visibleScheduleJobs.forEach(j => n.delete(j.id))
-      else visibleScheduleJobs.forEach(j => n.add(j.id))
+      if (allSel) selectableJobs.forEach(j => n.delete(j.id))
+      else selectableJobs.forEach(j => n.add(j.id))
       return n
     })
-  }, [visibleScheduleJobs])
+  }, [selectableJobs])
   const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
   const selectedJobs = useMemo(() => jobs.filter(j => selectedIds.has(j.id)), [jobs, selectedIds])
   // Guide facts: the job table is drawn in the List view only, and a guide's
@@ -1096,6 +1104,8 @@ export default function SchedulePage() {
                     {...guidePickControl('one_job_checked')}
                     className="accent-accent cursor-pointer align-middle"
                     checked={selectedIds.has(j.id)}
+                    disabled={ownerOnlyFor(j)}
+                    title={ownerOnlyFor(j) ? i18nT('components.errorBoundary.owner_only') : undefined}
                     onChange={() => toggleOne(j.id)}
                   />
                 </TableCell>
@@ -1122,6 +1132,8 @@ export default function SchedulePage() {
                   {j.session_key
                     ? <span className="block truncate text-[11px] font-mono font-normal text-muted">{j.session_key}</span>
                     : <span className="block truncate text-[11px] italic font-normal text-muted">{i18nT('pages.schedulePage.no_owning_session')}</span>}
+                  <JobCreator creator={j.creator} />
+                  {ownerOnlyFor(j) && <span data-testid="schedule-owner-only" className="mt-0.5 flex items-center gap-1 text-[11px] font-normal text-muted"><Lock size={11} aria-hidden="true" />{i18nT('components.errorBoundary.owner_only')}</span>}
                 </TableCell>
                 {/* Kind on line 1, its owner on line 2 — mirrors the
                     schedule/timezone pair in the next column. The agent's model
@@ -1222,7 +1234,7 @@ export default function SchedulePage() {
                   <div className="flex items-center gap-1.5">
                     {j.is_running
                       ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>
-                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)} {...uiLocation('schedule.row-run')}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}
+                      : <span title={ownerOnlyFor(j) ? i18nT('components.errorBoundary.owner_only') : j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id) || ownerOnlyFor(j)} {...uiLocation('schedule.row-run')}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}
                     {/* The armed state must explain itself IN THE LABEL: the
                         `title` tooltip below is hover-only, so on touch it does
                         not exist, and a bare "Confirm" gives a phone user no
@@ -1235,8 +1247,8 @@ export default function SchedulePage() {
                         ChatInput's Continue/Send buttons. */}
                     <Btn
                       danger
-                      disabled={isDeleting(j.id)}
-                      title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
+                      disabled={isDeleting(j.id) || ownerOnlyFor(j)}
+                      title={ownerOnlyFor(j) ? i18nT('components.errorBoundary.owner_only') : confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
                       onClick={() => { if (confirmDeleteId === j.id) void confirmDelete(j.id); else armDelete(j.id) }}
                     >{isDeleting(j.id) ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
                     <CronRowActions
@@ -1244,6 +1256,7 @@ export default function SchedulePage() {
                       folders={cronFolders}
                       running={running.has(j.id)}
                       cancelling={cancelling.has(j.id)}
+                      locked={ownerOnlyFor(j)}
                       onRun={() => runNow(j.id)}
                       onCancelRun={() => cancelRun(j.id)}
                       onOpenInChat={() => openInChat(j.id)}
@@ -1293,6 +1306,7 @@ export default function SchedulePage() {
             defaultAgent={defaultAgent}
             rosterFailure={rosterFailure}
             onClose={closeDetail}
+            locked={!creating && !!selected && ownerOnlyFor(selected)}
             onSaved={() => { load(); closeDetail() }}
           />
         )}
@@ -1743,8 +1757,8 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
   )
 }
 
-function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onSaved }: {
-  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onSaved: () => void
+function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onSaved, locked = false }: {
+  locked?: boolean; job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onSaved: () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -1880,7 +1894,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
       </DialogBody>
       <DialogFooter className="justify-between">
         {job ? (
-          <Btn danger onClick={() => setConfirmDelete(true)} {...uiLocation('schedule.delete')}>
+          <Btn danger disabled={locked} title={locked ? i18nT('components.errorBoundary.owner_only') : undefined} onClick={() => setConfirmDelete(true)} {...uiLocation('schedule.delete')}>
             <span className="flex items-center gap-1.5">
               <Trash2 size={14} aria-hidden="true" />
               {i18nT('pages.schedulePage.delete')}
@@ -1889,7 +1903,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
         ) : <div />}
         <div className="flex items-center gap-2">
           <Btn onClick={onClose}>{i18nT('pages.schedulePage.cancel')}</Btn>
-          <SendBtn onClick={() => submitRef.current?.()} disabled={saving}>
+          <SendBtn onClick={() => submitRef.current?.()} disabled={saving || locked} title={locked ? i18nT('components.errorBoundary.owner_only') : undefined}>
             <SaveCreateLabel isEdit={!!job} saving={saving} />
           </SendBtn>
         </div>

@@ -236,6 +236,8 @@ def test_X1_only_the_owners_own_send_to_a_worker_is_a_steer(monkeypatch):
     from kiro_crew.dashboard.handlers import source_providers
 
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
+
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda r: True)
     root = SimpleNamespace(
         key="r",
         agent="kirocrew-conductor",
@@ -256,6 +258,7 @@ def test_X1_only_the_owners_own_send_to_a_worker_is_a_steer(monkeypatch):
     assert chat_send._person_crew_worker_root(object(), state, root, "") == ""  # type: ignore[arg-type]
     assert chat_send._person_crew_worker_root(object(), state, worker, "an-app") == ""  # type: ignore[arg-type]
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: False)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda r: False)
     assert chat_send._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
 
 
@@ -412,6 +415,7 @@ async def test_Y2_the_main_pane_send_to_a_worker_of_a_closed_root_is_refused(mon
     monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
     monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda r: True)
 
     async def boom(*_a, **_k):
         raise AssertionError("a refused send must not be recorded")

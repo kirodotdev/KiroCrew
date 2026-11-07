@@ -329,6 +329,7 @@ async def _slots_get(monkeypatch, query: str = "", internal: bool = False) -> li
 
     monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", _noop)
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda _r: False)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda _r: False)
     app = web.Application()
     app["state"] = state
     req = make_mocked_request("GET", "/api/chat/slots" + query, app=app)

@@ -52,6 +52,7 @@ from kiro_crew.dashboard.token_auth import (
     revoke_access_cookie,
 )
 from kiro_crew.sel import sel as _sel_fn
+from kiro_crew.shared_crew.guest_scope import is_guest_session
 from kiro_crew.shared_crew.identity import viewer_principal
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,9 @@ async def api_auth_me(request: web.Request) -> web.Response:
             # it (``shared_crew.identity``): id, kind and display label only.
             # Unknown when no verified evidence named a person.
             "principal": viewer_principal(request).to_public_dict(),
+            # Whether this session is a Shared Crew guest, so the dashboard
+            # hides the pages only the owner can open.
+            "is_guest": is_guest_session(request),
             # How this request was authenticated: ``tailnet_direct`` when the
             # daemon's whois admitted it on the direct tailnet listener with no
             # token, ``token`` otherwise.

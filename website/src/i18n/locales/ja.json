@@ -7021,7 +7021,9 @@
       "sessions": "セッション"
     },
     "errorBoundary": {
+      "back_to_chat": "チャットに戻る",
       "lazy_page_load_failed": "このページを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
+      "owner_only": "オーナー専用",
       "reload_page": "ページを再読み込み",
       "something_went_wrong": "問題が発生しました",
       "try_again": "もう一度試す"
@@ -17113,6 +17115,7 @@
     },
     "schedulePage": {
       "actions": "アクション",
+      "guest": "ゲスト",
       "owning_session_help": "所有セッションのないジョブはチャットの cron_list に表示されず、このページまたは CLI から管理します。",
       "owning_session_tooltip": "所有セッション：{{key}}",
       "view_calendar": "カレンダー",

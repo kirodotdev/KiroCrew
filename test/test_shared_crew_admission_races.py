@@ -208,7 +208,7 @@ async def test_remote_crew_store_failure_keeps_unavailable_code(unavailable, mon
     from kiro_crew.dashboard.handlers import source_providers
 
     monkeypatch.setattr(handlers_instances, "_guard", lambda _r, _op: None)
-    monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda _r: True)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda _r: True)
     monkeypatch.setattr(handlers_crew_turn, "_crew_turn", AsyncMock())
     request = make_mocked_request("POST", "/api/instances/i/crew-turn", match_info={"id": "i"})
     response = await handlers_crew_turn.api_crew_turn(request)

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _run_path_probe,
         _sel,
         git_command_env,
+        guest_attachment_read,
         is_sensitive_path,
         read_bounded_json,
         redact,
@@ -264,31 +265,50 @@ async def api_file_read(request: web.Request) -> web.Response:
 async def api_file_raw(request: web.Request) -> web.Response:
     """GET /api/file-raw?path=... — serve a file with its native content type (images, etc.)."""
     # A named App Kit app keeps its manifest-scoped path; the owner gate
-    # binds the dashboard-user class, whose reach is the whole host.
+    # binds the dashboard-user class, whose reach is the whole host. A Shared
+    # Crew guest reaches only the chat attachment stores, so the picture a guest
+    # or a collaborator attached previews for them; the rest of the path stays
+    # the owner's.
+    raw_path = request.query.get("path", "")
+    guest_read = None
     if not request.get("app"):
-        owner_denied = await require_owner_dashboard_request(request, "file_raw")
-        if owner_denied is not None:
-            return owner_denied
+        try:
+            guest_read = await guest_attachment_read(
+                request,
+                raw_path,
+                _MAX_UPLOAD_BYTES,
+                run=functools.partial(_run_path_probe, transfer=True, stall_path=raw_path),
+            )
+        except _PathProbeBusy:
+            return _probe_busy_response(resource=raw_path, tool_name="file_raw")
+        if guest_read is None:
+            owner_denied = await require_owner_dashboard_request(request, "file_raw")
+            if owner_denied is not None:
+                return owner_denied
     # Envelope (validate -> sensitive -> nofollow-open -> bounded read) is
     # shared with api_file_download so a hardening change lands on both.
     # Offloaded to a worker thread: the envelope is synchronous file I/O and
     # must not block the event loop (same shape as api_file_stream's _open_media).
-    try:
-        opened = await _run_path_probe(
-            functools.partial(
-                _open_checked,
-                request.query.get("path", ""),
-                tool_name="file_raw",
-                max_bytes=_MAX_UPLOAD_BYTES,
-            ),
-            transfer=True,
-            stall_path=request.query.get("path", ""),
-        )
-    except _PathProbeBusy:
-        return _probe_busy_response(resource=request.query.get("path", ""), tool_name="file_raw")
-    if isinstance(opened, _OpenRefusal):
-        return opened.response
-    path, data = opened.path, opened.data
+    if guest_read is not None:
+        # Read through one descriptor with no second resolution of the name.
+        path, data = guest_read
+    else:
+        try:
+            opened = await _run_path_probe(
+                functools.partial(
+                    _open_checked,
+                    raw_path,
+                    tool_name="file_raw",
+                    max_bytes=_MAX_UPLOAD_BYTES,
+                ),
+                transfer=True,
+                stall_path=raw_path,
+            )
+        except _PathProbeBusy:
+            return _probe_busy_response(resource=raw_path, tool_name="file_raw")
+        if isinstance(opened, _OpenRefusal):
+            return opened.response
+        path, data = opened.path, opened.data
     # SNIFF_BYTES: the shared raster sniffer's documented minimum, and enough
     # for every magic matched below (WebP's form tag ends at byte 12).
     header = data[:SNIFF_BYTES]

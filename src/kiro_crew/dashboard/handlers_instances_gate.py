@@ -18,7 +18,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.instances.registry import (
     MAX_CHAINED_PER_PARENT,
     MAX_VIA_HOPS,
@@ -136,7 +136,7 @@ def _guard(request: web.Request, operation: str) -> web.Response | None:
             {"error": "authentication required (owner-only control plane)"},
             status=401,
         )
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit(operation, "denied", error="non-owner identity rejected")
         return _owner_denial_response(request)
     cfg = KiroCrewConfig.load()

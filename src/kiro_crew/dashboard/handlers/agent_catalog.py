@@ -47,7 +47,7 @@ from kiro_crew.dashboard.handlers.agents import (
     _name_would_be_masked,
     _roster_mask,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.executors import discovery_executor
 from kiro_crew.members import is_member_session_key
@@ -348,7 +348,7 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
 
     # The reset below writes the owner's config, so only the owner's own fetch
     # may run it; anyone else's still gets a freshly scanned template list.
-    owner = state is not None and is_owner_dashboard_request(request)
+    owner = state is not None and is_host_owner_dashboard_request(request)
     try:
         # The picker's fetch is the one moment, after boot, that an agent removed
         # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is

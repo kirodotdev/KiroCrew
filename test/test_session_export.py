@@ -803,7 +803,7 @@ async def test_an_export_carries_layer_b_on_explicit_opt_in(monkeypatch):
         lambda sid: {"sid": sid, "envelope": {}, "events": "{}"} if sid else None,
     )
     # The sensitive payload is available only to the dashboard operator.
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     # Standing permission ON...
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
@@ -834,7 +834,7 @@ async def test_an_export_withholds_layer_b_for_a_non_operator_caller(monkeypatch
         lambda sid: {"sid": sid, "envelope": {}, "events": "{}"} if sid else None,
     )
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: False)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: False)
 
     slot = _slot(MSGS, app="test-app")
     state = _state(MSGS, slots={"slot-1": slot})
@@ -1126,7 +1126,7 @@ async def test_an_export_streams_layer_b_from_its_snapshot_and_removes_it(monkey
         "_read_layer_b",
         lambda sid: {"sid": sid, "envelope": {}, "events": st.LayerBEvents(snap)} if sid else None,
     )
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
     slot = _slot(MSGS)
@@ -1337,7 +1337,7 @@ async def test_a_staging_failure_is_an_audited_coded_500_and_releases_the_snapsh
         "_read_layer_b",
         lambda sid: {"sid": sid, "envelope": {}, "events": st.LayerBEvents(snap)} if sid else None,
     )
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
     def _full(_bundle):
@@ -1450,7 +1450,7 @@ async def test_the_markdown_export_never_reads_layer_b(monkeypatch):
 
     monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *_a, **_k: "a-real-sid")
     monkeypatch.setattr(st, "_read_layer_b", _spy)
-    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "is_host_owner_dashboard_request", lambda *_a, **_k: True)
     monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
 
     slot = _slot(MSGS)

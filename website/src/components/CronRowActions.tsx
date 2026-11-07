@@ -25,7 +25,7 @@ import { i18nT } from '../i18n/t'
  */
 export default function CronRowActions({
   job, folders, running, cancelling, onRun, onCancelRun, onOpenInChat, onToggleEnabled,
-  onToggleStrict, onMove, onNewFolder,
+  onToggleStrict, onMove, onNewFolder, locked = false,
 }: {
   job: CronJob
   folders: CronFolder[]
@@ -38,6 +38,8 @@ export default function CronRowActions({
   onToggleStrict: () => void
   onMove: (folderId: string) => void
   onNewFolder: (moveTo?: boolean) => Promise<string | undefined> | void
+  /** An owner-only schedule seen by a guest: it can be paused, nothing else. */
+  locked?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order)
@@ -72,18 +74,18 @@ export default function CronRowActions({
             <span>{i18nT('pages.schedulePage.cancel_running_execution')}</span>
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem disabled={!job.enabled || running} onSelect={onRun}>
+          <DropdownMenuItem disabled={!job.enabled || running || locked} onSelect={onRun}>
             <Play size={13} className="shrink-0 text-accent" />
             <span>{i18nT('pages.schedulePage.run_now')}</span>
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onSelect={onToggleEnabled}>
+        <DropdownMenuItem disabled={locked && !job.enabled} onSelect={onToggleEnabled}>
           {job.enabled
             ? <><Pause size={13} className="shrink-0 text-muted" /><span>{i18nT('pages.schedulePage.pause')}</span></>
             : <><Play size={13} className="shrink-0 text-muted" /><span>{i18nT('pages.schedulePage.resume')}</span></>}
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={!hasResult}
+          disabled={!hasResult || locked}
           title={hasResult ? undefined : i18nT('pages.schedulePage.no_result')}
           onSelect={onOpenInChat}
         >
@@ -97,6 +99,7 @@ export default function CronRowActions({
           title={job.strict_schedule
             ? i18nT('pages.schedulePage.disable_strict_schedule_allow_jitter')
             : i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')}
+          disabled={locked}
           onSelect={onToggleStrict}
         >
           <Clock size={13} className="shrink-0 text-muted" />
@@ -105,7 +108,7 @@ export default function CronRowActions({
         </DropdownMenuItem>
 
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
+          <DropdownMenuSubTrigger disabled={locked}>
             <Folder size={13} className="shrink-0 text-muted" />
             <span>{i18nT('pages.schedulePage.cronFolders.move_to_folder')}</span>
           </DropdownMenuSubTrigger>

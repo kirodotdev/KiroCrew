@@ -33,7 +33,6 @@
   "effective_request_app",
   "has_grant_row",
   "is_grantable_tag_id",
-  "is_owner_dashboard_request",
   "logger",
   "mint_grant",
   "mint_tags_revision",

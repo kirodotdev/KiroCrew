@@ -34,6 +34,7 @@ import os
 import re
 from pathlib import Path
 
+from kiro_crew.guest_prompt_origin import current as guest_image_source
 from kiro_crew.hooks import (
     is_unc_shape,
     safe_read_file_bytes,
@@ -207,6 +208,7 @@ def build_prompt_blocks(
         marker_count: dict[str, int] = {}
         prompt_b64_bytes = 0
         past_block_cap = 0
+        guest_source = guest_image_source()
         # Literal text (code, indented code, escaped ``\![x](...)``) is ABOUT a
         # path, not an attachment: scan the view with it masked, the same view
         # strip_image_refs reads, so the text stays as written and no block is
@@ -237,6 +239,15 @@ def build_prompt_blocks(
             if raw in seen:
                 continue
             seen.add(raw)
+            # A guest's prompt attaches only a file the attachment-name check admits,
+            # and uses the bytes that check read; any other path stays plain text and
+            # is never probed (kiro_crew.guest_prompt_origin).
+            served_path, preread = raw, None
+            if guest_source is not None:
+                found = guest_source(raw, max_image_bytes) if agent_accepts_image else None
+                if found is None:
+                    continue
+                served_path, preread = found
             # UNC-shaped candidates name a HOST on Windows: gate them before
             # any filesystem call, or is_file() below opens an SMB connection
             # to attacker-controlled text. POSIX has no such semantics (a
@@ -244,7 +255,7 @@ def build_prompt_blocks(
             # is platform-gated anyway. See kiro_crew.hooks.unc_probe_allowed.
             if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
                 continue
-            path = Path(raw)
+            path = Path(served_path)
             suffix = path.suffix.lower()
             suffix_mime = IMAGE_MEDIA_TYPES.get(suffix)
             if suffix_mime is None:
@@ -310,7 +321,7 @@ def build_prompt_blocks(
                 )
                 continue
             try:
-                raw_bytes = safe_read_file_bytes(str(path))
+                raw_bytes = preread if preread is not None else safe_read_file_bytes(str(path))
             except Exception:
                 logger.debug("acp prompt: could not read image %s", raw, exc_info=True)
                 continue

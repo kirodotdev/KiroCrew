@@ -10,7 +10,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.enterprise_gate_middleware import login_screen_required
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
@@ -108,7 +108,7 @@ def _is_dashboard_owner(request: web.Request) -> bool:
     when none is configured) belongs in one place, and a second copy is how the
     two drift apart.
     """
-    return is_owner_dashboard_request(request)
+    return is_host_owner_dashboard_request(request)
 
 
 async def _dashboard_owner_only(request: web.Request) -> web.Response | None:

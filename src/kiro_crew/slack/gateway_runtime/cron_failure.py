@@ -158,8 +158,11 @@ async def _deliver_failure_alert(
     if self.slack and not silent and not channel_delivered:
         try:
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            from kiro_crew.shared_crew.guest_scope import slack_recipient
+
+            recipient = slack_recipient(job.created_by, self._owner_id)
+            if not channel and recipient:
+                channel = await self._open_dm_with_retry(recipient, job.name)
             if channel:
                 await self.slack.post_message(channel, mrkdwn)
                 slack_delivered = True

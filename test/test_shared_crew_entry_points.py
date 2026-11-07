@@ -198,7 +198,7 @@ async def test_remote_crew_turn_refusal_answers_the_coded_envelope(monkeypatch):
         reached.append("x")
 
     monkeypatch.setattr(handlers_instances, "_guard", lambda _r, _op: None)
-    monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda _r: True)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda _r: True)
     monkeypatch.setattr(handlers_crew_turn, "_crew_turn", inner)
     request = make_mocked_request("POST", "/api/instances/i-1/crew-turn", match_info={"id": "i-1"})
     response = await handlers_crew_turn.api_crew_turn(request)

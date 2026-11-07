@@ -7021,7 +7021,9 @@
       "sessions": "세션"
     },
     "errorBoundary": {
+      "back_to_chat": "채팅으로 돌아가기",
       "lazy_page_load_failed": "이 페이지를 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
+      "owner_only": "소유자 전용",
       "reload_page": "페이지 새로 고침",
       "something_went_wrong": "문제가 발생했습니다",
       "try_again": "다시 시도"
@@ -17162,6 +17164,7 @@
       "failed": "실패",
       "failed_to_load_jobs": "작업을 불러오지 못했습니다",
       "filter_jobs": "작업 필터…",
+      "guest": "게스트",
       "h_ago": "{{n}}시간 전",
       "hide_message": "메시지 숨기기",
       "id": "ID",

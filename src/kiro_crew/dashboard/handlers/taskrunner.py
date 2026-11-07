@@ -186,10 +186,14 @@ async def _gate_auto_approve(
     ``claimed_source=None`` means the endpoint carries no source claim (e.g.
     ``/execute`` operates on an existing run) — only the app-context check applies.
     """
+    from kiro_crew.shared_crew.guest_scope import is_guest_session
+
     request_app = request.get("app", "")
     granted = requested
     if requested and (
-        request_app != "" or (claimed_source is not None and claimed_source != "dashboard")
+        request_app != ""
+        or (claimed_source is not None and claimed_source != "dashboard")
+        or is_guest_session(request)
     ):
         granted = False
     if requested:
@@ -272,12 +276,25 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
-def _validate_spec_path(raw: str) -> tuple[str | None, str]:
+def _validate_spec_path(raw: str, *, guest: bool = False) -> tuple[str | None, str]:
     """Resolve and validate a caller-supplied spec path off the event loop.
 
     Returns ``(resolved_path, "")`` on success, or ``(None, code)`` where
     ``code`` is the machine-readable failure identifier the handler maps to
-    its error response (``invalid_spec_path`` or ``access_denied``).
+    its error response (``invalid_spec_path``, ``access_denied`` or ``owner_only``;
+    see :func:`_spec_path_failure_response`).
+
+    A Shared Crew guest (``guest=True``) never reaches the filesystem here: a spec
+    file path would have the gateway read an ordinary host file (its own directory
+    is the containment root) into the run's transcript, and the guest may only
+    send an inline spec. The refusal lives at this seam so every caller gets it.
+    Callers, each of which passes ``guest=is_guest_session(request)``:
+
+    * ``api_taskrunner_start`` -- ``POST /api/taskrunner`` with a ``spec`` path
+    * ``api_taskrunner_plan`` -- ``POST /api/taskrunner/plan`` with ``source=file``
+
+    ``test_every_task_spec_path_caller_refuses_a_guest`` fails when a new caller
+    does not pass ``guest=``.
 
     Canonicalization goes through :func:`hooks.validate_file_path`, the same
     gate the dashboard's file I/O uses: it screens a Windows UNC path AND a
@@ -294,6 +311,8 @@ def _validate_spec_path(raw: str) -> tuple[str | None, str]:
     cannot itself open the SMB connection the screen just refused, and a
     non-sensitive rejection (the laundered/UNC case) stays ``invalid_spec_path``.
     """
+    if guest:
+        return None, "owner_only"
     canonical = validate_file_path(raw)
     if canonical is None:
         anchored = os.path.abspath(os.path.expanduser(raw))
@@ -305,6 +324,19 @@ def _validate_spec_path(raw: str) -> tuple[str | None, str]:
     if is_sensitive_path(canonical):
         return None, "access_denied"
     return canonical, ""
+
+
+def _spec_path_failure_response(failure: str) -> web.Response:
+    """The response for a ``(None, failure)`` from :func:`_validate_spec_path`."""
+    if failure == "owner_only":
+        return web.json_response(
+            {"error": "a spec file path is owner-only", "code": "owner_only"}, status=403
+        )
+    if failure == "access_denied":
+        return web.json_response({"error": "access denied", "code": "access_denied"}, status=403)
+    return web.json_response(
+        {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
+    )
 
 
 def _write_inline_spec(work_dir: str | Path, content: str) -> Path:
@@ -472,15 +504,13 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     # use share one value — no gap where spec_path could differ from what was
     # checked, and the containment guard is visible to static analysis.
     if not spec_path.startswith("__inline__:"):
-        validated, failure = await asyncio.to_thread(_validate_spec_path, spec_path)
+        from kiro_crew.shared_crew.guest_scope import is_guest_session
+
+        validated, failure = await asyncio.to_thread(
+            _validate_spec_path, spec_path, guest=is_guest_session(request)
+        )
         if validated is None:
-            if failure == "access_denied":
-                return web.json_response(
-                    {"error": "access denied", "code": "access_denied"}, status=403
-                )
-            return web.json_response(
-                {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
-            )
+            return _spec_path_failure_response(failure)
         spec_path = validated
 
     # Checked before the inline spec is written, so a refusal leaves nothing behind.
@@ -754,11 +784,36 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": name})
 
 
+def _refuse_guest_plan_write(request: web.Request) -> web.Response | None:
+    """403 ``owner_only`` when a Shared Crew guest rewrites an existing run's plan.
+
+    An owner's auto-approved run executes its plan under a standing grant, so the
+    steps are the owner's to change. Every handler that rewrites a plan calls this
+    before it touches the runner (a guest still creates a new plan):
+
+    * ``api_taskrunner_update_task`` -- ``PATCH /api/taskrunner/{id}/tasks/{index}``
+    * ``api_taskrunner_update_plan`` -- ``PUT /api/taskrunner/{id}/plan``
+    * ``api_taskrunner_from_chat`` -- ``POST /api/taskrunner/from-chat`` with an existing ``task_id``
+
+    ``test_every_task_plan_rewrite_refuses_a_guest`` runs each as a guest, and
+    ``test_every_task_plan_rewrite_checks_for_a_guest`` fails when one stops calling this.
+    """
+    from kiro_crew.shared_crew.guest_scope import is_guest_session
+
+    if not is_guest_session(request):
+        return None
+    return web.json_response(
+        {"error": "editing an existing plan is owner-only", "code": "owner_only"}, status=403
+    )
+
+
 async def api_taskrunner_update_task(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/tasks/{index} — edit a pending task in-place."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_task")
     if owner_denied is not None:
         return owner_denied
+    if (guest_denied := _refuse_guest_plan_write(request)) is not None:
+        return guest_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -1063,15 +1118,13 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     agent = body.get("agent", "")
     workspace_dir = body.get("workspace_dir", "")
     if source == "file":
-        validated, failure = await asyncio.to_thread(_validate_spec_path, spec_path)
+        from kiro_crew.shared_crew.guest_scope import is_guest_session
+
+        validated, failure = await asyncio.to_thread(
+            _validate_spec_path, spec_path, guest=is_guest_session(request)
+        )
         if validated is None:
-            if failure == "access_denied":
-                return web.json_response(
-                    {"error": "access denied", "code": "access_denied"}, status=403
-                )
-            return web.json_response(
-                {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
-            )
+            return _spec_path_failure_response(failure)
         spec_path = validated
     try:
         plan_coro = state.task_runner.plan(
@@ -1163,6 +1216,8 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_plan")
     if owner_denied is not None:
         return owner_denied
+    if (guest_denied := _refuse_guest_plan_write(request)) is not None:
+        return guest_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -1293,6 +1348,8 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     task_id = body.get("task_id", "")
     if not steps or not isinstance(steps, list):
         return web.json_response({"error": "steps array required"}, status=400)
+    if task_id and (guest_denied := _refuse_guest_plan_write(request)) is not None:
+        return guest_denied
     try:
         # This path allocates its own placeholder before calling update_plan.
         state.task_runner._require_workflow_ready()

@@ -53,6 +53,9 @@ export interface CronJob {
    * supplies, so it cannot be used to claim another app's jobs. Absent on an
    * older gateway. */
   app?: string | null
+  /** The Shared Crew guest who created the job: their display name, `''` when no
+   * one has a name for them, or null/absent for any other creator. */
+  creator?: string | null
   /** True only when the USER paused the job; execution never sets it. */
   user_paused?: boolean
   /** Operator-granted vault secrets injected into a script/command job's env at

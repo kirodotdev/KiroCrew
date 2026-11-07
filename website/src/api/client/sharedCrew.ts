@@ -64,6 +64,15 @@ export function createSharedCrewEndpoints({ get, post, put, del, j, jSharedCrewP
       const body = await j(r) as { principal?: PublicPrincipal } | null
       return body?.principal?.id ? body.principal : null
     },
+    /** Whether `/api/auth/me` reports this session as a Shared Crew guest. */
+    sharedCrewIsGuest: async (): Promise<boolean> => {
+      const r = await get('/api/auth/me')
+      // An older gateway has no such route: nobody is a guest there. Any other failure
+      // is an error the caller shows, never a quiet "not a guest".
+      if (r.status === 404) return false
+      const body = await j(r) as { is_guest?: boolean } | null
+      return body?.is_guest === true
+    },
     sharedCrewCapacity: () => read<CapacityResponse>('/api/shared-crew/capacity'),
     sharedCrewWork: (sessionKey: string) =>
       read<WorkListResponse>('/api/shared-crew/work?' + new URLSearchParams({ session_key: sessionKey })),

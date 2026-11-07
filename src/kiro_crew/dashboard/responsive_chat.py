@@ -25,7 +25,7 @@ from kiro_crew.dashboard.chat_delivery import (
     quote_meta,
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.session_lifecycle import compaction_in_flight
@@ -306,7 +306,7 @@ def eligible(request: web.Request, slot: Any, cfg: Any, binding: dict | None) ->
     if (
         request.query.get("ws") != "1"
         or request.get("internal_auth") is True
-        or not is_owner_dashboard_request(request)
+        or not is_host_owner_dashboard_request(request)
         or slot.mode != members.DM_SLOT_MODE
         or slot._app
         or slot.linked_session_key
@@ -457,7 +457,7 @@ def _owner_sent(request: web.Request) -> bool:
     inherits is always the request's own and never a consequence of the gate's
     ordering.
     """
-    return is_owner_dashboard_request(request)
+    return is_host_owner_dashboard_request(request)
 
 
 def observe_user_message(request: web.Request, message: str) -> None:

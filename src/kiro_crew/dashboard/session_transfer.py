@@ -657,6 +657,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _remove_after_save,
         _resolve_agent,
         _validate_bundle,
+        _without_local_images,
         _write_import_prefix,
         api_chat_slot_import,
     )

@@ -25,6 +25,7 @@ import { coversPaneProps } from '../../hooks/paneVisibility'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useLayoutEffect } from 'react'
+import { useShowsOwnerPages } from '../../hooks/sharedCrew/useSharedCrew'
 
 /**
  * The main navigation: the desktop rail, and the phone nav drawer with its scrim,
@@ -46,6 +47,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
   // A docked mate's row is the lit one while its chat is open; lighting the
   // Mates page row too would mark two rows as "you are here".
   const { openIsDocked, ordered: dockedMates } = useDockMates()
+  const guest = !useShowsOwnerPages()
   // With mates docked, the app list shrinks first and can end at its first
   // row with the rest scrolled out of sight under a hidden scrollbar, so it
   // fades its bottom edge while anything is below the fold, as the Mates group
@@ -159,7 +161,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
             over and each scrolls inside its share (see the app list's shrink
             weight below), so neither the apps nor the footer is pushed off. */}
         <DockMatesSection collapsed={effectiveCollapsed} isMobile={isMobile} onNavigate={closeMobileNav} />
-        <div className="shrink-0 flex flex-col gap-0.5 px-2">
+        {!guest && <div className="shrink-0 flex flex-col gap-0.5 px-2">
           {/* Apps section: the old single "Explore" header link split into two
               nav rows — Discover (the storefront, /apps) and Library
               (installed-app management, /apps/library). Expanded keeps the
@@ -228,7 +230,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               />
             </motion.div>
           )}
-        </div>
+        </div>}
 
         {/* Apps list: scrolls in its OWN frame when many apps are enabled —
             the top (menu/mains/header) and bottom sections stay pinned.
@@ -323,9 +325,10 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
         {(() => {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
+          const hideOwnerPages = guest
           return (
             <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
-              {terminalEnabled && (
+              {terminalEnabled && !guest && (
                 <NavItem
                   path="#"
                   label={i18nT('app.terminal')}
@@ -378,7 +381,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   {...uiLocation('shell.menu-search')}
                 />
               )}
-              <div>{renderNavRow(cap)}</div>
+              {!hideOwnerPages && <div>{renderNavRow(cap)}</div>}
               {/* Phone only: the account modal (balance, sign-in state) has no
                   other phone entry -- the readout capsule that opens it on the
                   desktop is not rendered on the phone. Shown on exactly the
@@ -398,7 +401,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   {...uiLocation('shell.kiro-account')}
                 />
               )}
-              <NavItem
+              {!hideOwnerPages && <NavItem
                 path={s.path}
                 label={surfaceLabel(s)}
                 icon={s.icon}
@@ -406,7 +409,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 collapsed={effectiveCollapsed}
                 onClick={closeMobileNav}
                 badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
-              />
+              />}
               <RailCommunityLinks effectiveCollapsed={effectiveCollapsed} setReportProblemOpen={setReportProblemOpen} />
             </div>
           )

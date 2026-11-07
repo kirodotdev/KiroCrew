@@ -1637,9 +1637,9 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # no state to resolve an owner against. The predicate subscripts
     # `app["state"]`, and for a disclosure control "unknown caller" must mean
     # "mask", not "show".
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    redact = request.app.get("state") is None or not is_owner_dashboard_request(request)
+    redact = request.app.get("state") is None or not is_host_owner_dashboard_request(request)
     state: DashboardState | None = request.app.get("state")
 
     # A legacy built-in binding (``builtin``, no member id) is listed once its DM

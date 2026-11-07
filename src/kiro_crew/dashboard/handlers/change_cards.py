@@ -1451,11 +1451,11 @@ def _arm_card_undo_cron_guard(
 
 
 def _is_owner_browser(request: web.Request) -> bool:
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
     if request.get("internal_auth") is True:
         return False
-    return is_owner_dashboard_request(request)
+    return is_host_owner_dashboard_request(request)
 
 
 @web.middleware  # type: ignore[misc]

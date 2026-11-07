@@ -422,6 +422,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     approval_mode = body.get("approval_mode", "")
     if approval_mode not in ("", "auto"):
         return web.json_response({"error": "approval_mode must be '' or 'auto'"}, status=400)
+    # A guest's run must not approve every tool call without the owner, and would
+    # keep doing so after the guest is revoked.
+    from kiro_crew.shared_crew.guest_scope import guest_posture_refusal
+
+    if (guest_denied := guest_posture_refusal(request, approval_mode)) is not None:
+        return guest_denied
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")

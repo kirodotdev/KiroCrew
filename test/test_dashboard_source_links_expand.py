@@ -136,7 +136,7 @@ async def _get(slot_key: str, slots: dict, *, owner: bool = True, app: str = "")
             return_value=None,
         ),
         patch(
-            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
             return_value=owner,
         ),
         patch("kiro_crew.dashboard.chat_handlers.sel"),
@@ -183,7 +183,7 @@ class TestSourceLinksEndpoint:
                 side_effect=RuntimeError("cold"),
             ),
             patch(
-                "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+                "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
                 return_value=False,
             ),
         ):
@@ -237,7 +237,7 @@ class TestAppTokenIsolation:
                 return_value=None,
             ),
             patch(
-                "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+                "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
                 return_value=False,
             ),
         ):
@@ -268,7 +268,7 @@ class TestAppTokenIsolation:
                 return_value=None,
             ),
             patch(
-                "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+                "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
                 return_value=True,
             ),
         ):
