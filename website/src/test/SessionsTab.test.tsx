@@ -921,3 +921,58 @@ describe('Empty state description (finding 7b)', () => {
     expect(state.textContent).toContain('chat')
   })
 })
+
+// ── Footer total: everything the product runs, and its breakdown ──
+
+function withBreakdown() {
+  const payload = defaultPayload()
+  return {
+    ...payload,
+    totals: {
+      ...payload.totals,
+      breakdown: {
+        total_mb: 6930,
+        host_pct: 14.1,
+        partial: false,
+        categories: [
+          { id: 'sessions', mb: 704, procs: 23, top: [{ name: 'node', procs: 1, mb: 235 }] },
+          { id: 'warm_pool', mb: 1430, procs: 46, top: [{ name: 'node', procs: 2, mb: 470 }, { name: 'python3.12', procs: 12, mb: 360 }] },
+          { id: 'gateway', mb: 1360, procs: 1, top: [] },
+          { id: 'desktop', mb: 3436, procs: 6, top: [] },
+        ],
+      },
+    },
+  }
+}
+
+describe('Footer memory total', () => {
+  it('totals everything the product runs, not only the sessions, and says its share of the host', async () => {
+    mockSessionsMemory.mockResolvedValue(withBreakdown())
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    const trigger = await screen.findByRole('button', { name: '6.77 GB. Show the parts of this total' })
+    expect(trigger.textContent).toBe('6.77')
+    // The share follows the whole-product total, not the sessions' 4.3%.
+    expect(screen.getByText('14.1%')).toBeInTheDocument()
+  })
+
+  it('opens the breakdown by part from the total', async () => {
+    mockSessionsMemory.mockResolvedValue(withBreakdown())
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '6.77 GB. Show the parts of this total' }))
+    const pool = await screen.findByTestId('memory-breakdown-warm_pool')
+    expect(pool.textContent).toContain('Warm pool')
+    expect(pool.textContent).toContain('1,430.0MB')
+    expect(pool.textContent).toContain('python3.12 ×12')
+    expect(screen.getByTestId('memory-breakdown-desktop').textContent).toContain('Desktop app')
+    expect(screen.getByText('6.77 GB in total')).toBeInTheDocument()
+  })
+
+  it('falls back to the sessions total, as plain text, for a gateway that sends no breakdown', async () => {
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('0.69')).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('button', { name: /Show the parts of this total/ })).toBeNull()
+    expect(screen.getByText('4.3%')).toBeInTheDocument()
+  })
+})

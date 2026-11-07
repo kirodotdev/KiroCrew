@@ -162,7 +162,12 @@ def test_sampler_pass_over_many_pids_takes_one_snapshot(monkeypatch):
     from kiro_crew.dashboard import session_memory as sm
 
     calls = _counting_ps(monkeypatch)
-    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [pid])
+    # The route without a host parent map, where each row's total comes from the
+    # shared ps snapshot. Pinned here rather than left to the host: on a real Mac
+    # libproc supplies a map and the rows are summed from it with no ps at all
+    # (see the next test), while elsewhere libproc is absent.
+    monkeypatch.setattr(sm, "_host_children", lambda: None)
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid])
     monkeypatch.setattr("kiro_crew.dashboard.handlers.usage.slot_spend", lambda: {})
 
     sampler = sm.SessionMemorySampler()
@@ -171,3 +176,23 @@ def test_sampler_pass_over_many_pids_takes_one_snapshot(monkeypatch):
 
     assert len(out["per_pid"]) == 3
     assert len(calls) == 1, f"one ps snapshot per sampling pass, got {len(calls)}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps branch")
+def test_sampler_pass_over_a_libproc_map_spawns_no_ps(monkeypatch):
+    """With a host parent map, every row is walked and summed from it: N runtime
+    pids cost no ps snapshot at all."""
+    from kiro_crew.dashboard import session_memory as sm
+
+    calls = _counting_ps(monkeypatch)
+    monkeypatch.setattr(sm, "_host_children", lambda: {100: [], 101: [], 200: [201]})
+    monkeypatch.setattr(sm, "_pid_memory_bytes", lambda pid: 1024 * 1024)
+    monkeypatch.setattr(sm, "darwin_process_argv", lambda pid: ["node"])
+    monkeypatch.setattr(sm, "proc_cpu_nanos_for_pid", lambda pid: 0)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.usage.slot_spend", lambda: {})
+
+    out = sm.SessionMemorySampler()._blocking_sample([{"pid": 100}, {"pid": 101}, {"pid": 200}])
+
+    assert out["per_pid"][200]["rss_mb"] == 2.0
+    assert out["per_pid"][200]["procs"] == 2
+    assert calls == [], f"no ps snapshot when the map is libproc's, got {calls}"
