@@ -1333,7 +1333,12 @@ read; the post-loop size comparison is then only reachable for a *short* respons
 which is the common failure and keeps its own message. The staging file comes from
 `tempfile.mkstemp`, written through the descriptor it returns: the name is
 unpredictable and the create is exclusive, so a symlink pre-planted at a guessable
-staging path cannot redirect the write.
+staging path cannot redirect the write. The connection opens through
+`asset_downloader.build_opener` with cross-host redirects allowed, which is that
+module's policy for a url that is a source constant or the operator's environment
+override (the default model host answers with a redirect to its own download host),
+and a hop that leaves https is refused. The ffmpeg decoder fetch shares the same
+streamer (`stream_pinned_payload`) and so the same policy.
 
 A file already on disk is verified against the pin too, on every model LOAD. Not once
 per session, because `WhisperEngine.ensure_loaded` settles residency before asking the store. It is not memoised against size and mtime because

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import socket
 import time
 import urllib.error
@@ -23,6 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from kiro_crew import asset_downloader
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform.wheel_engine_contract import (
     _WHEEL_FETCH_TOTAL_SECS,
@@ -88,16 +90,27 @@ def _read_bounded(
     setting *cancel* shuts the socket down, so neither waits on a silent origin.
     Enforced against received bytes, never Content-Length. An ``OSError`` from
     *sink* itself is raised as :class:`_SinkWriteError`, never as a fetch failure.
+
+    Opened through :func:`kiro_crew.asset_downloader.build_opener`, whose policy
+    replaces urllib's default of following a hop to any host, plaintext included.
+    A redirect stays on the host and port *url* names, since the release CDN serves
+    the manifest and the wheel itself. The exception is the operator's own mirror:
+    every url here is built from ``update_layout.cdn_bases``, so with
+    ``KIROCREW_CDN_BASE`` set it names that mirror, which may hand the transfer to
+    another https host, as asset_downloader allows for a url the operator set in
+    the process environment.
     """
     if not url.startswith("https://"):
         raise WheelUpdateError(f"refusing non-HTTPS URL: {url}")
     _raise_if_cancelled(cancel)
     deadline = time.monotonic() + total_secs
     req = urllib.request.Request(url, headers={"User-Agent": "kirocrew-update/1"})
+    cross_host = bool((os.environ.get("KIROCREW_CDN_BASE") or "").strip())
     received = 0
     undo: Callable[[], None] | None = None
     try:
-        with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
+        opener = asset_downloader.build_opener(allow_cross_host_redirects=cross_host)
+        with opener.open(  # nosemgrep: dynamic-urllib-use-detected
             req, timeout=min(read_timeout, total_secs)
         ) as resp:
             sock = _response_socket(resp)

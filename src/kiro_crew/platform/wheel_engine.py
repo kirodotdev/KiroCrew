@@ -54,6 +54,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from kiro_crew import asset_downloader  # noqa: F401 - re-export
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export

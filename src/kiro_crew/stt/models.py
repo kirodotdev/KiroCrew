@@ -61,12 +61,12 @@ import logging
 import os
 import tempfile
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Callable
 
+from kiro_crew import asset_downloader
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
@@ -118,7 +118,7 @@ _CUSTOM_PATH_MAX_CHARS = 1024
 _STAGING_SUFFIX = ".part"
 
 #: Per-socket-operation ceiling on the model download, NOT a ceiling on the whole
-#: transfer: `urlopen`'s timeout bounds each individual read, so a 1.6 GB model on a
+#: transfer: the connection's timeout bounds each individual read, so a 1.6 GB model on a
 #: slow line still completes while a connection that stops delivering bytes fails
 #: instead of hanging. Without it a stalled TCP connection held its worker for the
 #: life of the process, and the only visible symptom was a download progress bar
@@ -720,6 +720,12 @@ def stream_pinned_payload(
     while streaming, and the size enforced as a CEILING before each write. A
     second copy of this is a second place for one of them to be missing.
 
+    The connection is opened through :func:`kiro_crew.asset_downloader.build_opener`,
+    so a redirect follows that module's policy rather than urllib's default, which
+    also follows a hop down to plaintext. Both urls here are a source constant or
+    the operator's environment override, and both upstreams answer with a redirect
+    to a download host of their own, so a hop may change host but never leave https.
+
     *write* is a callable rather than a path, so the caller owns where the bytes
     land -- an exclusively-created staging descriptor in both cases -- and this
     function never opens or names a file.
@@ -737,8 +743,10 @@ def stream_pinned_payload(
     with (
         # Inside the parentheses, immediately above the call: `nosemgrep` only
         # covers its own line and the next one.
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https enforced above and the payload is sha256-pinned
-        urllib.request.urlopen(url, timeout=_NETWORK_STALL_TIMEOUT_SECS) as response,
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https enforced above and on every redirect, and the payload is sha256-pinned
+        asset_downloader.build_opener(allow_cross_host_redirects=True).open(
+            url, timeout=_NETWORK_STALL_TIMEOUT_SECS
+        ) as response,
     ):
         while True:
             if should_cancel is not None and should_cancel():
