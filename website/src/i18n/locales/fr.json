@@ -8219,6 +8219,7 @@
       "discard_unsaved_comment": "Abandonner le commentaire non enregistré ?",
       "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
       "download": "Télécharger",
+      "print_or_save_as_pdf": "Imprimer ou enregistrer en PDF…",
       "download_failed": "Échec du téléchargement",
       "edit": "Modifier",
       "read_only": "Lecture seule",

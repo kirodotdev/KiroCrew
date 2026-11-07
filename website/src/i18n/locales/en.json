@@ -5140,6 +5140,7 @@
       "diff_view": "Diff view",
       "discard_unsaved_changes": "Discard unsaved changes?",
       "download": "Download",
+      "print_or_save_as_pdf": "Print or save as PDF…",
       "exit_full_screen": "Exit full screen",
       "exit_full_screen_esc": "Exit full screen (Esc)",
       "file_not_found_last_copy": "File not found on disk — nothing else holds its contents; download it or save it elsewhere to keep it.",

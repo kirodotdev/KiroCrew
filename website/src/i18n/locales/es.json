@@ -8219,6 +8219,7 @@
       "discard_unsaved_comment": "¿Descartar el comentario sin guardar?",
       "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
       "download": "Descargar",
+      "print_or_save_as_pdf": "Imprimir o guardar como PDF…",
       "download_failed": "La descarga ha fallado",
       "edit": "Editar",
       "read_only": "Solo lectura",

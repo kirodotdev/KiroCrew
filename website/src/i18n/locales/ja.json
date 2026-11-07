@@ -7809,6 +7809,7 @@
       "discard_unsaved_comment": "保存されていないコメントを破棄しますか？",
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
       "download": "ダウンロード",
+      "print_or_save_as_pdf": "印刷または PDF として保存…",
       "download_failed": "ダウンロードに失敗しました",
       "edit": "編集",
       "read_only": "読み取り専用",

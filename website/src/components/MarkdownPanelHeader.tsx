@@ -280,7 +280,7 @@ function usePathOpenerTarget(): PathOpenerTarget | null {
   return useMemo(() => pathOpenerTarget(apps), [apps])
 }
 
-export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload }: {
+export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload, onPrint }: {
   filePath: string; content: string
   /** Where a failed row action (add to knowledge, promote, snapshot, save,
    *  download, open/reveal, an app-contributed row's dispatch) is reported: the
@@ -291,6 +291,9 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
    *  its buffer download while the file is gone from disk, where the fetch
    *  would only answer 404 for the one file the banner just said to keep. */
   onDownload?: () => void
+  /** Print the rendered preview (or save it as a PDF): passed only while the
+   *  panel shows a markdown file rendered, the one view there is to print. */
+  onPrint?: () => void
   /** View actions folded in from the old header row (side-panel revamp): the
    *  ⋯ menu is the single home for everything that isn't a mode toggle. */
   onRefresh?: () => void; refreshDisabled?: boolean; refreshTitle?: string
@@ -519,6 +522,11 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { if (onDownload) onDownload(); else void downloadFile(filePath, onError); setOpen(false) }}>
             {i18nT('components.markdownPanel.download')}
           </button>
+          {onPrint && (
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { onPrint(); setOpen(false) }}>
+              {i18nT('components.markdownPanel.print_or_save_as_pdf')}
+            </button>
+          )}
           {/* App-contributed rows (`contributes.fileMenuItems`, surface
               'file-overflow'), LAST and in their own group: the core rows above are
               a fixed vocabulary a reader learns, and splicing third-party rows into

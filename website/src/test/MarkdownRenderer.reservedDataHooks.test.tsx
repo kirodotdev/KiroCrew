@@ -67,6 +67,17 @@ describe('MarkdownRenderer reserves the transcript data-message-* hooks', () => 
     expect(chat.container.querySelectorAll('[data-link-preview-scope]')).toHaveLength(1)
   })
 
+  it('drops a content-minted print root, so a reply cannot print inside another file', () => {
+    // The print stylesheet keeps `[data-print-root]` and hides the rest of the
+    // page (markdownPanelPrint.ts); only the printed preview may carry it.
+    const md = '<div data-print-root>a</div> <p data-Print-Root>b</p> <span dataprintroot>c</span>'
+    const { container } = render(<MarkdownRenderer content={md} />)
+    expect(container.textContent).toContain('a')
+    const leaked = Array.from(container.querySelectorAll('*')).flatMap(el =>
+      Array.from(el.attributes).map(a => a.name).filter(n => n.toLowerCase().replace(/-/g, '').startsWith('dataprintroot')))
+    expect(leaked).toEqual([])
+  })
+
   it('still admits an ordinary data-* attribute', () => {
     const { container } = render(<MarkdownRenderer content={'<span data-foo="bar">kept</span>'} />)
     const span = container.querySelector('span[data-foo]')

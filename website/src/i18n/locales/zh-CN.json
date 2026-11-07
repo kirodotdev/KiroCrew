@@ -7809,6 +7809,7 @@
       "discard_unsaved_comment": "放弃未保存的评论？",
       "discard_unsaved_changes": "放弃未保存的更改？",
       "download": "下载",
+      "print_or_save_as_pdf": "打印或另存为 PDF…",
       "download_failed": "下载失败",
       "edit": "编辑",
       "read_only": "只读",

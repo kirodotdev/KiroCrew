@@ -28,6 +28,7 @@ import { isEditableTarget } from '../utils/editableTarget'
 import { codePassagePosition, codeQuoteRange, shadowSelectionRange, watchText } from '../utils/pierreShadow'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
+import { printPreview } from './markdownPanelPrint'
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
 import { useCommentHint } from './useCommentHint'
 import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar, partialReason } from './MarkdownPanelBody'
@@ -1307,6 +1308,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // diff button for it), so while its diff is on, the header carries this chip
   // to show the mode and switch back to the viewer in one click.
   const canToggleRichDiff = isRichType && canTextDiff && !showBinaryCard && !readOnly
+  // Only one of the two preview roots is mounted: full screen unmounts the side panel's body.
+  const onPrint = isMarkdown && !editing && !diffMode && !showBinaryCard ? () => { const root = previewRef.current ?? fullscreenPreviewRef.current; if (root) void printPreview(root, filePath, !!partial) } : undefined
   const richDiffChip = canToggleRichDiff && diffMode ? (
     <button
       type="button"
@@ -1395,7 +1398,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 aria-pressed={!!railOpen}
               ><Folders size={14} /></button>
             )}
-            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined}
+            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined} onPrint={onPrint}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
               onFullscreen={() => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
               onSnapshot={artifactState.existing && !showBinaryCard ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
@@ -1530,7 +1533,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               return <KnowledgeToggleIconButton state={knowledge} />
             })()}
             {editorToolbarButtons}
-            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined}
+            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined} onPrint={onPrint}
               diffView={diffMode} onToggleDiffView={canToggleRichDiff ? toggleDiffMode : undefined}
               {...(compactHeader ? { onRefresh: handleRefresh, refreshDisabled: refreshing || dirty, refreshTitle: dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk') } : {})}
               {...(richSourceShown ? { wordWrap, onToggleWordWrap: () => setWordWrap(!wordWrap), lineNums, onToggleLineNums: () => setLineNums(!lineNums) } : {})} />
