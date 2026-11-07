@@ -355,7 +355,7 @@ def _install_hooks(clone_dir: str, tmp_path: Path, **bodies: str) -> Path:
     hooks.mkdir(exist_ok=True)
     for name, body in bodies.items():
         hook = hooks / name.replace("_", "-")
-        hook.write_text("#!/bin/sh\n" + body)
+        hook.write_text("#!/bin/sh\n" + body, newline="\n")  # LF: sh reads CR as part of a word
         hook.chmod(0o755)
     _git(clone_dir, "config", "core.hooksPath", str(hooks))
     return hooks
