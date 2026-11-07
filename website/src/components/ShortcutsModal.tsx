@@ -333,30 +333,30 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
  * DEFAULT_SHORTCUTS because it is not a renderer chord at all: the desktop
  * shell's main process registers it OS-wide (electron/global-hotkey.js) and it
  * works while the app is in the background. Renders the accelerator as
- * ACTUALLY bound — {@link useGlobalHotkey} returns null in a plain browser and
- * when nothing could be bound, and the whole row is hidden rather than
- * advertising a chord that does not work.
+ * ACTUALLY bound, plus a one-line notice when that is not what the stored
+ * preference asked for. {@link useGlobalHotkey} returns null in a plain
+ * browser, which hides the row. `onHandoff` lets an overlay host (the shortcuts
+ * modal) close itself once the notice hands off to the chat underneath it.
  */
-export function GlobalHotkeyRow() {
+export function GlobalHotkeyRow({ onHandoff }: { onHandoff?: () => void } = {}) {
   const hotkey = useGlobalHotkey()
   if (!hotkey) return null
-  // Unbound on a desktop build (e.g. the opt-out default on a fresh install):
-  // show the row as "Off" with how-to-enable guidance below, rather than
-  // hiding it — a hidden switch cannot be turned back on.
-  if (!hotkey.accelerator) {
-    return (
+  const { accelerator, requested } = hotkey
+  // A requested chord other than the bound one fell back to the default, or
+  // nothing could be registered. An older shell sends no `requested`.
+  const notice = requested && requested !== accelerator
+    ? i18nT(accelerator ? 'components.shortcutsModal.global_hotkey_fell_back' : 'components.shortcutsModal.global_hotkey_unavailable')
+    : null
+  return (
+    <>
+      {/* Unbound shows "Off" rather than hiding: a hidden switch cannot be turned back on. */}
       <ShortcutRow
         label={i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}
-        keys={[]}
-        status={i18nT('components.shortcutsModal.global_hotkey_off')}
+        keys={formatAcceleratorKeys(accelerator, IS_MAC)}
+        status={accelerator ? undefined : i18nT('components.shortcutsModal.global_hotkey_off')}
       />
-    )
-  }
-  return (
-    <ShortcutRow
-      label={i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}
-      keys={formatAcceleratorKeys(hotkey.accelerator, IS_MAC)}
-    />
+      {notice && <ErrorNotice variant="inline" message={notice} askAgent onHandoff={onHandoff} testId="global-hotkey-notice" className="px-2" />}
+    </>
   )
 }
 
@@ -551,7 +551,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
               <div className="mb-5 last:mb-0">
                 <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.desktop_app')}</div>
                 <div className="grid gap-1">
-                  <GlobalHotkeyRow />
+                  <GlobalHotkeyRow onHandoff={onClose} />
                 </div>
                 <div className="text-[11px] text-muted mt-1 px-2">{i18nT(globalHotkey?.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
               </div>

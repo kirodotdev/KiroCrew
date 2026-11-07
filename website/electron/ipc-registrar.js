@@ -11,6 +11,7 @@ const {
   bindGlobalHotkey: bindStoredGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
+  requestedGlobalHotkey,
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { initAutoUpdate } = require("./auto-update");
@@ -235,10 +236,12 @@ function createIpcRegistrar({
       });
     }
 
-    // The shortcuts UI reports what is ACTUALLY bound. Registration may have
-    // fallen back to the default or degraded to no shortcut at all.
+    // The shortcuts UI reports what is ACTUALLY bound beside what was asked
+    // for. Registration may have fallen back to the default or degraded to no
+    // shortcut at all.
     ipcMain.handle("global-hotkey:get", () => ({
       accelerator: currentGlobalHotkey(),
+      requested: requestedGlobalHotkey(),
       default: DEFAULT_GLOBAL_HOTKEY,
     }));
 

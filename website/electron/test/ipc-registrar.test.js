@@ -91,6 +91,7 @@ function fakeStore(initial = {}) {
 function makeHotkeyStub() {
   const state = {
     current: "",
+    requested: "",
     logger: null,
     summonDeps: null,
     summonCalls: 0,
@@ -109,6 +110,7 @@ function makeHotkeyStub() {
       bindGlobalHotkey(saved, handler) {
         state.binds.push({ saved, handler });
         state.current = typeof saved === "string" ? saved : DEFAULT_GLOBAL_HOTKEY;
+        state.requested = state.current;
         return { accelerator: state.current, bound: !!state.current };
       },
       unregisterGlobalHotkey() {
@@ -117,6 +119,9 @@ function makeHotkeyStub() {
       },
       currentGlobalHotkey() {
         return state.current;
+      },
+      requestedGlobalHotkey() {
+        return state.requested;
       },
       setGlobalHotkeyLogger(logger) {
         state.logger = logger;
@@ -631,6 +636,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
   assert.equal(h.store.data.runLocalGateway, false);
   assert.deepEqual(h.handlers.get("global-hotkey:get")(event), {
     accelerator: "",
+    requested: "",
     default: "Test+Shift+K",
   });
 });
@@ -1534,6 +1540,7 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   h.registrar.registerShell();
   assert.deepEqual(h.handlers.get("global-hotkey:get")({}), {
     accelerator: "Ctrl+Alt+Test",
+    requested: "Ctrl+Alt+Test",
     default: "Test+Shift+K",
   });
   h.registrar.unregisterGlobalHotkey();
