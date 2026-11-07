@@ -237,9 +237,9 @@ class TestWrappedSpawnApproval:
         wiring = Path(gateway_mod.__file__).with_name("gateway_runtime") / "subagent_wiring.py"
         src = wiring.read_text(encoding="utf-8")
         consult = src.index("deliver_spawn_approval(")
-        fallback = src.index("return await _approve_spawn_gate(event, parent_session_key)")
+        fallback = src.index("approved = await _approve_spawn_gate(event, parent_session_key)")
         assert consult < fallback, "the channel seam must be consulted before the fallback gate"
-        assert "return await _approve_spawn_gate(event, parent_session_key)" in src
+        assert "approved = await _approve_spawn_gate(event, parent_session_key)" in src
 
 
 # ── (c) the Telegram delivery hook ──────────────────────────────────────────

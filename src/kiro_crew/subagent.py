@@ -291,6 +291,7 @@ from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     NOT_DELIVERY_STATE,
     PARKS_WHEN_SET,
     PARKS_WHEN_UNSET,
+    HostSpawnDecision,
     SpawnApprovalCallback,
     SpawnApprovalUnreachable,
     SubagentEventCallback,

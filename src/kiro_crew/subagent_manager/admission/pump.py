@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _RELEASE_REPUMP_SECS,
         DENY_CAUSE_APPROVAL_UNDELIVERABLE,
         MEMORY_PRESSURE_NEVER_STARTED,
+        HostSpawnDecision,
         SpawnAdmissionCoordinator,
         SpawnApprovalUnreachable,
         Stats,
@@ -1346,16 +1347,19 @@ class _PumpMixin(ManagerComponent):
                     info, approval_id=request_id, reason=f"spawn_run({task_preview})"
                 )
                 try:
-                    approved: bool = await self._manager._on_spawn_approval(
+                    answer = await self._manager._on_spawn_approval(
                         request_id, f"spawn_run({task_preview})", info.parent_session_key
                     )
                 finally:
                     info._awaiting_approval = False
-                # A person answered, at a surface this site cannot name, so the
-                # entry asserts neither who decided nor why.
+                if isinstance(answer, HostSpawnDecision):
+                    # The callback decided on its own, with nobody asked.
+                    approved, _log_by, _log_cause = answer.approved, "host", answer.cause
+                else:
+                    # A person answered, at a surface this site cannot name, so the
+                    # entry asserts neither who decided nor why.
+                    approved, _log_by, _log_cause = answer, "", ""
                 _log_decision = "approved" if approved else "rejected"
-                _log_by = ""
-                _log_cause = ""
             except SpawnApprovalUnreachable as unreachable:
                 # Not a refusal: nobody was there to refuse. Ordered ABOVE the
                 # generic handler below, which would otherwise flatten this into the
