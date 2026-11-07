@@ -64,7 +64,9 @@ class _Session:
     async def __aexit__(self, *exc: object) -> bool:
         return False
 
-    async def post(self, url: str, json: dict | None = None) -> SimpleNamespace:
+    async def post(
+        self, url: str, json: dict | None = None, proxy: str | None = None
+    ) -> SimpleNamespace:
         if self._http.fail:
             raise RuntimeError("response_url unreachable")
         self._http.posts.append((url, json or {}))
