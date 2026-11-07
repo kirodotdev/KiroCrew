@@ -357,6 +357,28 @@ def test_a_clear_pick_clicks_the_chosen_ref_and_says_which(seam, tmp_path):
     assert pick["assets"] is None
 
 
+class _LongPage(FakePage):
+    """The shop page with 150 more links below it."""
+
+    def _walker(self, method: str, args: list) -> Any:
+        if method == "snapshot":
+            links = [
+                {"depth": 0, "role": "link", "name": f"Kettle {i}", "ref": f"e{i}", "state": {}}
+                for i in range(10, 160)
+            ]
+            return {"url": "https://shop.example/", "title": "Shop", "nodes": NODES_BEFORE + links}
+        return super()._walker(method, args)
+
+
+def test_a_long_page_sends_a_pick_laya_accepts(seam, tmp_path):
+    result = _run(
+        "click", {"target": "add the red kettle to the cart"}, _ctx(_LongPage(), tmp=tmp_path)
+    )
+    assert result["ok"] is True and result["ref"] == "e2"
+    choice = seam.provider.calls[0]["questions"][0]
+    assert len(choice.options) == 100
+
+
 @pytest.mark.parametrize(
     "override",
     [{"present": 0.5}, {"pick_p": 0.4}, {"error_shown": 0.9}, {"bot_check": 0.9}],
