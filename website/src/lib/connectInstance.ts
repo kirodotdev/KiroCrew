@@ -39,12 +39,13 @@ import { errMessage } from '../utils/thunkError'
 
 /**
  * Which caller asked. One checked vocabulary for the journal's `via` field, so
- * a log reader learns four names once: `select` (tab click / ⌘-digit chord),
+ * a log reader learns five names once: `select` (tab click / ⌘-digit chord),
  * `auto-connect` (the web-app-load fan-out), `auto-warm` (the viewport
  * pre-mounting already-connected panes after a poll), `retry` (the in-pane
- * error panel's Retry button).
+ * error panel's Retry button), `link` (a `kirocrew://chat?crew=` link asking,
+ * with auto-connect off, whether the crew's tunnel is up).
  */
-export type ConnectVia = 'select' | 'auto-connect' | 'auto-warm' | 'retry'
+export type ConnectVia = 'select' | 'auto-connect' | 'auto-warm' | 'retry' | 'link'
 
 /**
  * `rebuild` asks the gateway to tear the existing tunnel down and spawn a fresh
