@@ -476,6 +476,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 continue
         filtered_events.append(ev)
         if ev.kind == EVENT_TEXT_CHUNK:
+            batch_guard.note_text(getattr(self, "_batch_window", None), ev.text)
             self.last_prompt_stats.text_chunks += 1
             self._stale_eligible = self._no_tool_in_flight()
             self._prompt_or_tool_seen = True
@@ -577,8 +578,16 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 judged_changed = self._tool_tracker.result(
                     liveness_key(ev.tool_call_id or ""), terminal=True
                 )
+                # The raw frame, not the display-cut ``tool_output``: the guard
+                # learns what the model saw, up to its own scan bound.
                 batch_guard.note_settled(
-                    getattr(self, "_batch_window", None), ev.tool_call_id or ""
+                    getattr(self, "_batch_window", None),
+                    ev.tool_call_id or "",
+                    (
+                        batch_guard.update_text(update)
+                        if update.get("toolCallId") == ev.tool_call_id
+                        else ev.tool_output
+                    ),
                 )
                 self._tool_dispatched = not self._no_tool_in_flight()
                 self._stale_eligible = self._no_tool_in_flight()

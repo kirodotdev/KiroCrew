@@ -1,5 +1,5 @@
-"""The batch write guard: refuse a write-class tool call issued in the same
-parallel tool batch as a read-class call.
+"""The batch write guard: refuse a write-class tool call that quotes a value
+only a call of its own parallel tool batch could have produced.
 
 A model that sends a read and a write in ONE batch has not seen the read's
 answer when it writes the write's arguments: the calls run in parallel, so a sha,
@@ -8,15 +8,25 @@ tells the model to send it again once the read has returned. It judges the SET
 of calls, not one command, which is why it is not a ``GATE_TIERS`` row or a
 denied-command rule: the gate judges one call with no session state.
 
-Three parts:
+A write batched with a read is refused only when its argument text carries a
+token (:func:`tokens_of`: a sha, an item, session or artifact id, a PR or run
+number) the session has not seen (:class:`SeenTokens`). A write whose tokens
+were all seen before does not depend on the read and passes. A write that mints
+ids (:func:`is_creator`) counts as a producer like a read, so a ``bind`` quoting
+the item id its batch's ``create`` returns is refused too.
+
+Four parts:
 
 * :func:`classify` -- read, write, or neither, from explicit tables. A tool the
   tables do not name is neither, so the guard never refuses more than it names
   and an unknown peer never causes a refusal.
+* :class:`SeenTokens` -- the tokens the session has seen, fed from prompts,
+  every call's arguments, every result and the model's text.
 * :class:`BatchWindow` -- which calls form one batch, fed by the transport from
   the ``tool_call`` frames and their terminal ``tool_call_update``. A call that
-  arrives while no call is open starts a new batch; one that arrives while any
-  call is open joins it; a member stays a member after it settles, until the
+  arrives while no call is open, more than :data:`GAP_GRACE_SECS` after the last
+  one settled, starts a new batch; one that arrives while any call is open, or
+  within that grace, joins it; a member stays a member after it settles, until the
   next batch starts. A write the window never saw is not judged, and neither is
   a write whose read peers are announced only after its own approval.
 * :func:`screen_approval` -- called by both transports' ``approve_tool`` after
@@ -39,8 +49,12 @@ unchanged.
 
 from __future__ import annotations
 
+import asyncio
+import bisect
+import json
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -48,6 +62,14 @@ from typing import Any
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import (
     MAX_ACTIVE_TOOL_CALLS,
     liveness_key,
+)
+from kiro_crew.acp.batch_guard_tokens import (
+    MAX_SCANNED_TEXT_CHARS,
+    is_hex,
+    is_minted,
+    times_of,
+    token_keys,
+    tokens_of,
 )
 from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
@@ -63,9 +85,14 @@ __all__ = [
     "READ",
     "WRITE",
     "BatchWindow",
+    "SeenTokens",
     "classify",
     "classify_command",
     "guard_settings",
+    "is_creator",
+    "mark_resumed",
+    "note_prompt",
+    "note_text",
     "refusal_outcome",
     "screen_approval",
     "take_client_refusal",
@@ -84,6 +111,12 @@ MAX_CLASSIFIED_COMMAND_CHARS = 8192
 #: still counts; short enough that a lost terminal does not hold the turn's
 #: later writes in a stale batch.
 OPEN_MEMBER_TTL_SECS = 600.0
+
+#: Seconds a batch stays open after its last open member settles. A harness that
+#: announces a model step's calls one at a time, each after the previous one
+#: returned, still shows the step's next call within this grace; a new model step
+#: needs a model round-trip, which takes longer.
+GAP_GRACE_SECS = 0.5
 
 #: SEL row for a batch-guard refusal: its own source, outcome and mechanism, so it
 #: is never read as a security-floor refusal (``permission_floor.audit_refusal``).
@@ -318,6 +351,10 @@ def _prefix_words(extra_write_commands: tuple[str, ...]) -> list[list[str]]:
     return prefixes
 
 
+#: ``aws <service> <op>`` operations whose result carries a new id.
+_AWS_CREATOR_OP_PREFIXES: tuple[str, ...] = ("start-", "create-")
+
+
 def _program_commands(command: str) -> list[list[str]]:
     """Each command *command* runs, as its program's basename and its arguments.
 
@@ -429,16 +466,156 @@ def classify(event: Any, extra_write_commands: tuple[str, ...] = ()) -> str:
     return ""
 
 
+def is_creator(event: Any, extra_write_commands: tuple[str, ...] = ()) -> bool:
+    """Whether *event* is a write whose RESULT carries new ids that a later call
+    may quote: a ledger ``create``, a ``gh pr``/``issue create``, a ``git commit``
+    or ``push``, or an ``aws`` ``start-``/``create-`` operation. Only calls that
+    are write-class already can be creators."""
+    if classify(event, extra_write_commands) != WRITE:
+        return False
+    if _is_shell_call(event):
+        return _shell_creates(_command_of(event))
+    if _tool_identity(event) == ("kirocrew-work", "work_ledger_record"):
+        args = _mcp_arguments(event, "kirocrew-work", "work_ledger_record")
+        return args.get("action") == "create"
+    return False
+
+
+def _mcp_arguments(event: Any, server: str, tool: str) -> dict[str, Any]:
+    """The arguments of an MCP call to *server*/*tool*, read through the
+    envelopes harnesses wrap them in (``{server, tool, arguments}``,
+    ``{tool_id, arguments}``) when the envelope names that same tool."""
+    raw = getattr(event, "raw_tool_params", None)
+    if not isinstance(raw, dict):
+        try:
+            raw = json.loads(str(getattr(event, "tool_input", "") or "") or "{}")
+        except (ValueError, RecursionError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    inner = raw.get("arguments")
+    keys = set(raw) - {"_meta"}
+    if isinstance(inner, dict):
+        if keys == {"server", "tool", "arguments"}:
+            if raw.get("tool") == tool and raw.get("server") in (server, f"@{server}"):
+                return inner
+        elif keys == {"tool_id", "arguments"}:
+            if raw.get("tool_id") == f"{server}::{tool}":
+                return inner
+    return raw
+
+
+def _shell_creates(command: str) -> bool:
+    for words in _program_commands(command[:MAX_CLASSIFIED_COMMAND_CHARS]):
+        program = words[0]
+        if program == "gh":
+            positional = _positionals(words, _GH_VALUED_OPTIONS)
+            if positional[:2] in (["pr", "create"], ["issue", "create"]):
+                return True
+        elif program == "git" and _git_is_write(words):
+            return True
+        elif program == "aws":
+            positional = _positionals(words, _AWS_VALUED_OPTIONS)
+            if len(positional) >= 2 and positional[1].lower().startswith(_AWS_CREATOR_OP_PREFIXES):
+                return True
+    return False
+
+
+# -- Tokens --
+
+#: Tokens (with their sha prefixes) one session keeps. At the bound the oldest are
+#: dropped and the set stops being complete (see :class:`SeenTokens`).
+MAX_SEEN_TOKENS = 65536
+
+#: Tokens one batch member's result, or the model's text since the batch began,
+#: keeps before the batch ends. Past it the rest is dropped and the seen set is
+#: marked incomplete, so a dropped value can never cause a refusal.
+MAX_BATCH_TOKENS = 8192
+
+#: Characters of the model's previous text chunk kept so a token split across
+#: two streamed chunks is still read whole.
+_CHUNK_TAIL_CHARS = 64
+
+_keys = token_keys
+
+
+def _all_tokens(text: Any) -> frozenset[str]:
+    """The tokens and the to-the-second times in *text*."""
+    return frozenset(tokens_of(text) | times_of(text))
+
+
+def _is_time(token: str) -> bool:
+    return len(token) == 8 and token[2] == ":" and token[5] == ":"
+
+
+def _known(token: str, keys: Any) -> bool:
+    """Whether a QUOTED *token* is in *keys* (built with :func:`_keys` from what
+    was seen). One way: the token itself, never its own prefixes."""
+    return token in keys
+
+
+class SeenTokens:
+    """The tokens one session has seen: in a prompt, a call's arguments, a result
+    or the model's own text. Insertion-ordered and bounded by
+    :data:`MAX_SEEN_TOKENS`.
+
+    ``complete`` is False when the set may lack what the model saw: the session
+    was resumed (its history predates this transport) or the bound dropped
+    tokens. A refusal then needs proof (see :meth:`BatchWindow.refusal_for`), so
+    an incomplete set can only make the guard refuse less.
+    """
+
+    def __init__(self) -> None:
+        # Ordered so the oldest key is evicted in constant time.
+        self._keys: OrderedDict[str, None] = OrderedDict()
+        #: The session was loaded with history this transport did not see.
+        self.resumed = False
+        #: The bound dropped tokens.
+        self.dropped = False
+
+    @property
+    def complete(self) -> bool:
+        return not (self.resumed or self.dropped)
+
+    @complete.setter
+    def complete(self, value: bool) -> None:
+        # Marking the set incomplete outside a resume means tokens were dropped.
+        if not value:
+            self.dropped = True
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __contains__(self, token: object) -> bool:
+        return isinstance(token, str) and _known(token, self._keys)
+
+    def add(self, tokens: Any) -> None:
+        keys = self._keys
+        for token in tokens:
+            for key in _keys(token):
+                if key in keys:
+                    keys.move_to_end(key)
+                    continue
+                keys[key] = None
+                if len(keys) > MAX_SEEN_TOKENS:
+                    keys.popitem(last=False)
+                    self.dropped = True
+
+
 # ── Window ──
 
 
 @dataclass
 class _Member:
-    """One call of the batch: its class, and for a shell call its bounded
-    command, so it can be classified again with the operator's prefixes."""
+    """One call of the batch: its class, for a shell call its bounded command (so
+    it can be classified again with the operator's prefixes), the tokens of its
+    arguments, whether it mints ids, and the tokens of its result."""
 
     klass: str
     command: str = ""
+    tokens: frozenset[str] = frozenset()
+    creator: bool = False
+    output: frozenset[str] = frozenset()
 
     def class_with(self, extra_write_commands: tuple[str, ...]) -> str:
         if self.command and extra_write_commands:
@@ -462,12 +639,82 @@ class BatchWindow:
     Expiry only ever ends a batch early, so it can miss a refusal but never adds one.
     """
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic, *, gated: bool = False) -> None:
+        #: A transport's window collects tokens only while ``hooks.batch_write_guard``
+        #: is on, as :func:`refresh_feeding` last read it off the event loop; a
+        #: bare window (tests, tools) always does.
+        self._gated = gated
+        self._feeding: bool | None = None
         self._members: dict[str, _Member] = {}
         #: Open members by key, with the time each was dispatched.
         self._open: dict[str, float] = {}
         self._overflowed = False
         self._clock = clock
+        #: When the batch's last open member settled (``None`` while one is open).
+        self._quiet_since: float | None = None
+        #: What the session has seen. Unlike the members it outlives a turn.
+        self.seen = SeenTokens()
+        #: Tokens of the model's text that belongs to the current batch (written
+        #: while composing it or while its calls run): they join :attr:`seen`
+        #: with the batch's arguments and results when it ends, so a value the
+        #: model writes while composing a batch is not counted by that batch.
+        self._pending: set[str] = set()
+        #: Tokens of text written while no call is open: the model composing its
+        #: next batch. They become that batch's :attr:`_pending` when it starts.
+        self._next: set[str] = set()
+        #: The end of the last text chunk, read again with the next one.
+        self._tail = ""
+        #: Tokens a refusal of this batch named: not learned when it ends.
+        self._guessed: set[str] = set()
+        #: Every token a refusal named, until a result prints it. A prompt that
+        #: echoes it (a refusal-recovery prompt quotes the refused call) does not
+        #: make it seen. Bounded by :data:`MAX_BATCH_TOKENS`, oldest first.
+        self._refused: OrderedDict[str, None] = OrderedDict()
+
+    def _refused_filter(self) -> Callable[[str], bool]:
+        """Whether a token names a refused guess: one a refusal named, or a cut
+        of 7 or more characters of a refused sha (a shortened echo of any
+        length). Matched against the full refused tokens, so a 13-39 character
+        cut is caught too."""
+        names = set(self._refused) | self._guessed
+        if not names:
+            return lambda token: False
+        # Sorted once: the refused shas a token is a cut of start at its insertion
+        # point, so each token costs one lookup, not one scan of the set.
+        shas = sorted(name for name in names if is_hex(name))
+
+        def refused(token: str) -> bool:
+            if token in names:
+                return True
+            if not is_hex(token):
+                return False
+            i = bisect.bisect_left(shas, token)
+            return i < len(shas) and shas[i].startswith(token)
+
+        return refused
+
+    def _tokens(self, text: Any) -> frozenset[str]:
+        """The tokens of *text*, or none while this window does not collect them."""
+        return _all_tokens(text) if self._feeds() else frozenset()
+
+    def _feeds(self) -> bool:
+        """Whether tokens are collected now. A gated window collects only after
+        :func:`refresh_feeding` found the guard on; until then, or while it is
+        off, it keeps none and its seen set is marked incomplete, so a guard
+        switched on later in the session refuses only on proof. Never reads the
+        config itself, so it is safe on the event loop."""
+        if not self._gated:
+            return True
+        if not self._feeding:
+            self.seen.dropped = True
+            return False
+        return True
+
+    def set_feeding(self, enabled: bool) -> None:
+        """Record whether the guard is on (see :func:`refresh_feeding`)."""
+        self._feeding = bool(enabled)
+        if not self._feeding:
+            self.seen.dropped = True
 
     def _expire_open(self) -> None:
         cutoff = self._clock() - OPEN_MEMBER_TTL_SECS
@@ -477,21 +724,50 @@ class BatchWindow:
     def __len__(self) -> int:
         return len(self._members)
 
-    def dispatched(self, call_id: str, klass: str, command: str = "") -> None:
+    def _absorb(self) -> None:
+        """The ending batch's arguments, results and model text become seen."""
+        # A refused write never ran, so the value it guessed is not learned, unless
+        # a result really printed it.
+        printed = {t for member in self._members.values() for t in member.output}
+        for token in printed:
+            self._refused.pop(token, None)
+        self._guessed -= printed
+        refused = self._refused_filter()
+        for member in self._members.values():
+            self.seen.add(t for t in member.tokens if not refused(t))
+            self.seen.add(member.output)
+        self.seen.add(t for t in self._pending if not refused(t))
+        self._pending = self._next
+        self._next = set()
+        self._guessed = set()
+
+    def dispatched(
+        self, call_id: str, klass: str, command: str = "", *, text: str = "", creator: bool = False
+    ) -> None:
         """A ``tool_call`` frame announced *call_id* with class *klass* (and, for a
-        shell call, *command*). A second frame for the same id updates it."""
+        shell call, *command*; *text* is its argument text, the command when not
+        given; *creator* marks a call whose result mints ids). A second frame for
+        the same id updates it."""
         key = liveness_key(call_id)
         if not key:
             return
-        member = _Member(klass, command[:MAX_CLASSIFIED_COMMAND_CHARS])
+        member = _Member(
+            klass,
+            command[:MAX_CLASSIFIED_COMMAND_CHARS],
+            self._tokens(text or command),
+            creator,
+        )
         if key in self._members:
             # A later frame for a call already held (a refinement, a repeat)
             # refreshes what it is, never whether it is still open: a settled
             # read must not reopen the batch.
-            self._members[key] = member
+            self._members[key] = self._merged(self._members[key], member)
             return
         self._expire_open()
-        if not self._open:
+        if not self._open and (
+            self._quiet_since is None or self._clock() - self._quiet_since > GAP_GRACE_SECS
+        ):
+            self._absorb()
             self._members.clear()
             self._overflowed = False
         if len(self._members) >= MAX_ACTIVE_TOOL_CALLS:
@@ -504,52 +780,195 @@ class BatchWindow:
             return
         self._members[key] = member
         self._open[key] = self._clock()
+        self._quiet_since = None
 
-    def refresh(self, call_id: str, klass: str, command: str = "") -> None:
+    @staticmethod
+    def _merged(held: _Member, new: _Member) -> _Member:
+        """*new* in place of *held*, keeping what *new* does not carry: a later
+        frame with no input keeps the arguments' tokens, and the result stays."""
+        return _Member(
+            new.klass,
+            new.command or held.command,
+            new.tokens or held.tokens,
+            new.creator or held.creator,
+            held.output,
+        )
+
+    def refresh(
+        self,
+        call_id: str,
+        klass: str,
+        command: str = "",
+        *,
+        text: str = "",
+        creator: bool = False,
+    ) -> None:
         """Update a held member with what a later event resolved (its permission
         request may name a tool its frame did not). A member the window does not
         hold, or an event that resolves no class, changes nothing; the member's
         open or settled state is never touched."""
         key = liveness_key(call_id)
         if klass and key in self._members:
-            self._members[key] = _Member(klass, command[:MAX_CLASSIFIED_COMMAND_CHARS])
+            new = _Member(
+                klass,
+                command[:MAX_CLASSIFIED_COMMAND_CHARS],
+                self._tokens(text or command),
+                creator,
+            )
+            self._members[key] = self._merged(self._members[key], new)
 
-    def settled(self, call_id: str) -> None:
-        """*call_id* reached a terminal status. It stays a member of its batch."""
-        self._open.pop(liveness_key(call_id), None)
+    def settled(self, call_id: str, output: str = "") -> None:
+        """*call_id* reached a terminal status, with *output* its result text. It
+        stays a member of its batch."""
+        key = liveness_key(call_id)
+        if self._open.pop(key, None) is not None and not self._open:
+            self._quiet_since = self._clock()
+        member = self._members.get(key)
+        if member is not None and output:
+            member.output = self._bounded(member.output | self._tokens(output))
+
+    def note_text(self, text: str) -> None:
+        """The model wrote *text*: seen once the current batch ends."""
+        if not self._feeds():
+            return
+        joined = self._tail + text
+        self._tail = joined[-_CHUNK_TAIL_CHARS:]
+        # Text written while no call is open composes the next batch.
+        bucket = self._pending if self._open else self._next
+        new = _all_tokens(joined) - bucket
+        if new:
+            bucket |= new
+            if len(bucket) > MAX_BATCH_TOKENS:
+                bounded = set(self._bounded(bucket))
+                bucket.clear()
+                bucket |= bounded
+
+    def _bounded(self, tokens: Any) -> frozenset[str]:
+        """*tokens*, cut to :data:`MAX_BATCH_TOKENS`; a cut marks :attr:`seen`
+        incomplete."""
+        if len(tokens) <= MAX_BATCH_TOKENS:
+            return frozenset(tokens)
+        self.seen.complete = False
+        return frozenset(sorted(tokens)[:MAX_BATCH_TOKENS])
+
+    def note_prompt(self, text: str) -> None:
+        """A prompt carried *text*: seen at once, except a token a refusal named
+        that no result has printed since."""
+        if not self._feeds():
+            return
+        refused = self._refused_filter()
+        self.seen.add(t for t in _all_tokens(text) if not refused(t))
+
+    def mark_resumed(self) -> None:
+        """The session's history predates this window: refuse only on proof, or on
+        a minted id the resumed text never showed when a creator is in the batch."""
+        self.seen.resumed = True
 
     def reset(self) -> None:
-        """A new prompt turn: nothing carries over."""
+        """A new prompt turn: no batch carries over; what was seen does."""
+        self._absorb()
+        # The members are absorbed once; a second pass, with none left, learns
+        # the text written after the last batch.
         self._members.clear()
+        self._absorb()
         self._open.clear()
         self._overflowed = False
-
-    def read_peers(self, call_id: str, extra_write_commands: tuple[str, ...] = ()) -> int:
-        """How many OTHER members of *call_id*'s batch are reads (0 when unseen)."""
-        key = liveness_key(call_id)
-        if key not in self._members:
-            return 0
-        return sum(
-            1
-            for k, m in self._members.items()
-            if k != key and m.class_with(extra_write_commands) == READ
-        )
+        self._quiet_since = None
 
     def refusal_for(
         self, call_id: str, klass: str, extra_write_commands: tuple[str, ...] = ()
     ) -> str | None:
-        """The refusal for approving *call_id* (class *klass*), or ``None``."""
+        """The refusal for approving *call_id* (class *klass*), or ``None``.
+
+        Refused when the call's arguments carry a token that neither the session
+        nor the batch's own arguments had shown, and either another member is a
+        read or a creator (with a complete :attr:`seen` set), or a returned peer
+        that is not a plain write printed that token beyond its own arguments
+        (proof). A to-the-second time refuses
+        only on proof. Never raises.
+        """
         if klass != WRITE:
             return None
-        reads = self.read_peers(call_id, extra_write_commands)
-        if not reads:
+        try:
+            return self._refusal(liveness_key(call_id), extra_write_commands)
+        except Exception:
+            logger.debug("batch guard: could not judge a write", exc_info=True)
             return None
+
+    def _refusal(self, key: str, extra_write_commands: tuple[str, ...]) -> str | None:
+        member = self._members.get(key)
+        if member is None:
+            return None
+        peers = [m for k, m in self._members.items() if k != key]
+        if not peers:
+            return None
+        # A value the model passed INTO a non-write peer (the PR a read views) is
+        # its own choice, not a guess; one another write carries is the same guess.
+        written = {
+            k
+            for m in peers
+            if m.class_with(extra_write_commands) != WRITE
+            for t in m.tokens
+            for k in _keys(t)
+        }
+        unseen = sorted(t for t in member.tokens if t not in self.seen and not _known(t, written))
+        # Proof: a returned read, creator or unclassified peer printed the value.
+        # A to-the-second time counts only this way, since a model stamps its
+        # own reports.
+        # Proof comes from what a peer printed beyond its own arguments, and never
+        # from a plain write: a merge printing back the PR it was given is no
+        # source for a comment on that PR.
+        returned = {
+            k
+            for m in peers
+            if m.creator or m.class_with(extra_write_commands) != WRITE
+            for t in m.output - m.tokens
+            for k in _keys(t)
+        }
+        proven = [t for t in unseen if _known(t, returned)]
+        producers = sum(1 for m in peers if m.creator or m.class_with(extra_write_commands) == READ)
+        if self.seen.complete and producers:
+            hits = proven + [t for t in unseen if t not in proven and not _is_time(t)]
+        elif self.seen.resumed and not self.seen.dropped and any(m.creator for m in peers):
+            # A resumed session: any value may come from history this window
+            # lacks, a worker's key or an item id included. A minted id the
+            # resumed text never showed is still a guess next to a creator,
+            # which may be minting that very id.
+            hits = proven + [t for t in unseen if t not in proven and is_minted(t)]
+        else:
+            hits = proven
+        if not hits:
+            return None
+        self._guessed.update(hits)
+        if len(self._guessed) > MAX_BATCH_TOKENS:
+            self._guessed = set(self._bounded(self._guessed))
+        for token in hits:
+            self._refused[token] = None
+            self._refused.move_to_end(token)
+        while len(self._refused) > MAX_BATCH_TOKENS:
+            self._refused.popitem(last=False)
         return (
-            "Blocked by the batch guard: this write-class call was issued in the same "
-            f"parallel tool batch as {reads} read-class call(s), so it may carry a value "
-            "those reads had not returned yet. Nothing ran. Wait for the reads to return, "
-            "check their output, then send this call again on its own in your next step."
+            "Blocked by the batch guard: this write-class call cites "
+            + ", ".join(f"`{t[:12]}`" for t in hits[:3])
+            + ", which no call had returned when it was sent, and it was issued in the same "
+            f"parallel tool batch as {len(peers)} call(s), {producers} of them able to "
+            "return such values. Nothing ran. Wait for those calls to return, check their "
+            "output, then send this call again on its own in your next step."
         )
+
+
+def _input_text(event: Any) -> str:
+    """The argument text of *event*: its raw arguments when the frame carried
+    them, else its tool input, else its shell command. ``tool_input`` can be a
+    rendered edit diff that includes text the arguments never quoted."""
+    raw = getattr(event, "raw_tool_params", None)
+    if isinstance(raw, dict) and raw:
+        try:
+            return json.dumps(raw, ensure_ascii=False, default=str)
+        except (TypeError, ValueError, RecursionError):
+            pass
+    text = getattr(event, "tool_input", "")
+    return text if isinstance(text, str) and text else _command_of(event)
 
 
 def note_dispatched(window: BatchWindow | None, event: Any) -> None:
@@ -558,9 +977,75 @@ def note_dispatched(window: BatchWindow | None, event: Any) -> None:
         return
     try:
         command = _command_of(event) if _is_shell_call(event) else ""
-        window.dispatched(str(getattr(event, "tool_call_id", "") or ""), classify(event), command)
+        window.dispatched(
+            str(getattr(event, "tool_call_id", "") or ""),
+            classify(event),
+            command,
+            text=_input_text(event),
+            creator=is_creator(event),
+        )
     except Exception:
         logger.debug("batch guard: could not classify a tool call", exc_info=True)
+
+
+def note_text(window: BatchWindow | None, text: Any) -> None:
+    """Feed the model's streamed text into *window*. Never raises."""
+    if window is not None and isinstance(text, str) and text:
+        try:
+            window.note_text(text)
+        except Exception:
+            logger.debug("batch guard: could not read model text", exc_info=True)
+
+
+def note_prompt(window: BatchWindow | None, prompt: Any) -> None:
+    """Feed a prompt (a string or ACP content blocks) into *window*. Never raises."""
+    if window is None:
+        return
+    try:
+        if isinstance(prompt, str):
+            window.note_prompt(prompt)
+        elif isinstance(prompt, list):
+            window.note_prompt(
+                "\n".join(
+                    b["text"]
+                    for b in prompt
+                    if isinstance(b, dict) and isinstance(b.get("text"), str)
+                )
+            )
+    except Exception:
+        logger.debug("batch guard: could not read a prompt", exc_info=True)
+
+
+def mark_resumed(window: BatchWindow | None) -> None:
+    """*window*'s session was loaded with history it did not see."""
+    if window is not None:
+        window.mark_resumed()
+
+
+async def refresh_feeding(window: BatchWindow | None) -> None:
+    """Read ``hooks.batch_write_guard`` off the event loop and tell *window*
+    whether to collect tokens. The transports call it before each prompt is
+    sent. Never raises."""
+    if window is None or not window._gated:
+        return
+    try:
+        enabled, _extra = await asyncio.to_thread(guard_settings)
+    except Exception:
+        logger.debug("batch guard: could not read the setting", exc_info=True)
+        enabled = False
+    window.set_feeding(enabled)
+
+
+def update_text(update: Any) -> str:
+    """A ``tool_call_update``'s result text, bounded, for :func:`note_settled`."""
+    if not isinstance(update, dict):
+        return ""
+    body = update.get("content") or update.get("rawOutput") or ""
+    try:
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, default=str)
+    except (TypeError, ValueError, RecursionError):
+        return ""
+    return text[:MAX_SCANNED_TEXT_CHARS]
 
 
 #: Refusal reasons a transport keeps for the caller of ``approve_tool`` to read.
@@ -654,14 +1139,24 @@ def note_refined(window: BatchWindow | None, event: Any) -> None:
         command = _command_of(event) if _is_shell_call(event) else ""
         # ``refresh`` keeps the held member when this update resolves no class
         # (a title-only or kind-only refinement), so a known read is never erased.
-        window.refresh(call_id, classify(event), command)
+        window.refresh(
+            call_id,
+            classify(event),
+            command,
+            text=_input_text(event),
+            creator=is_creator(event),
+        )
     except Exception:
         logger.debug("batch guard: could not refresh a member", exc_info=True)
 
 
-def note_settled(window: BatchWindow | None, call_id: str) -> None:
+def note_settled(window: BatchWindow | None, call_id: str, output: Any = "") -> None:
+    """*call_id* reached a terminal status; *output* is its result text."""
     if window is not None and call_id:
-        window.settled(call_id)
+        try:
+            window.settled(call_id, output if isinstance(output, str) else "")
+        except Exception:
+            logger.debug("batch guard: could not settle a member", exc_info=True)
 
 
 # ── Approval ──
@@ -704,7 +1199,9 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
     # server, and a later write in the batch is judged against that.
     try:
         command = _command_of(event) if _is_shell_call(event) else ""
-        window.refresh(call_id, classify(event), command)
+        window.refresh(
+            call_id, classify(event), command, text=_input_text(event), creator=is_creator(event)
+        )
     except Exception:
         logger.debug("batch guard: could not refresh a member", exc_info=True)
     if len(window) < 2:

@@ -388,7 +388,7 @@ class AcpSessionHandle:
         self._tool_tracker = InFlightToolTracker(max_calls=MAX_ACTIVE_TOOL_CALLS)
         # The current parallel tool batch, for the opt-in batch write guard
         # that ``approve_tool`` consults (``acp.batch_guard``).
-        self._batch_window = batch_guard.BatchWindow()
+        self._batch_window = batch_guard.BatchWindow(gated=True)
         # toolCallIds that streamed output (a non-final tool_call_update with
         # content) this turn. A command that already produced output may have
         # already acted, so a non-interactive retry of it is never ``safe_retry``.

@@ -39,7 +39,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_profile
+from kiro_crew.acp import batch_guard, kas_profile
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -196,6 +196,10 @@ async def prompt(
             self._session_id,
             summarize_prompt_structure(prompt_blocks),
         )
+        # What the model is told is seen by the batch guard (``acp.batch_guard``),
+        # which reads its setting off the event loop first.
+        await batch_guard.refresh_feeding(getattr(self, "_batch_window", None))
+        batch_guard.note_prompt(getattr(self, "_batch_window", None), prompt_blocks)
         params: dict[str, Any] = {
             "sessionId": self._session_id,
             # An image reaches the model ONLY as an image block. Sending a

@@ -734,7 +734,7 @@ class AcpClient:
         self._active_tool_calls = InFlightIdSet()
         # The current parallel tool batch, for the opt-in batch write guard
         # that ``approve_tool`` consults (``acp.batch_guard``).
-        self._batch_window = batch_guard.BatchWindow()
+        self._batch_window = batch_guard.BatchWindow(gated=True)
         # Armed by _handle_compaction_status on a `failed` status and cleared at
         # turn start: gates the _COMPACTION_FAILED_TURN_BUDGET check in
         # _prompt_loop. _compaction_failed_turn records that the check fired, so

@@ -13,7 +13,7 @@ Instance fields written: ``_active_run_id``, ``_cancel_grace_secs``, ``_cancel_t
 ``_permission_options``, ``_steer_answers``, ``_steer_turn``, ``_steering_waiter_map``,
 ``_steers_awaiting_echo``, ``_turn_permission_denied``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_agent_version``, ``_background_launches``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_agent_version``, ``_background_launches``, ``_batch_window``,
 ``_last_stop_reason``, ``_permission_gate_events``, ``_process``, ``_session_id``,
 ``_session_key``, ``_stdin_stalled``, ``_turn_done``, ``_turn_lock``.
 """
@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
-from kiro_crew.acp import launch_tuning, pi_steer_turn, transport_framing
+from kiro_crew.acp import batch_guard, launch_tuning, pi_steer_turn, transport_framing
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_STEERING_MIN_VERSION,
     _adapter_version_at_least,
@@ -540,7 +540,10 @@ async def steer(self: AcpClient, message: str) -> bool:
     if not text or not self._session_id:
         return False
     if self.backend == ACP_BACKEND_PI:
-        return await pi_steer_turn.steer(self, text)
+        sent = await pi_steer_turn.steer(self, text)
+        if sent:
+            batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
+        return sent
     if self._speaks_steering_request:
         return await self._steer_via_request(_CLIENT_STEERING_REQUEST_METHODS[self.backend], text)
     if self.backend in ACP_BACKENDS_STEERING_REQUEST:
@@ -549,6 +552,7 @@ async def steer(self: AcpClient, message: str) -> bool:
         return await self._steer_via_concurrent_prompt(text)
     wrapped = wrap_user_message(text)
     await self._send_request("_session/steer", {"sessionId": self._session_id, "message": wrapped})
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # See AcpSessionHandle.steer for why the stamp is taken at the write.
     self._last_steer_monotonic = time.monotonic()
     return True
@@ -665,6 +669,7 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         unanswered.add(request_id)
 
     turn_done = self._turn_done
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     try:
         await self._send_request(
             METHOD_SESSION_STEERING,
@@ -813,6 +818,7 @@ async def _steer_via_request(self: AcpClient, method: str, text: str) -> bool:
         "expectedRunId": run_id,
         "prompt": [{"type": "text", "text": text}],
     }
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     turn_done = self._turn_done
     ended = asyncio.ensure_future(turn_done.wait())
     try:
@@ -877,6 +883,7 @@ async def _steer_via_concurrent_prompt(self: AcpClient, text: str) -> bool:
         sent.append(rid)
         steers[rid] = wrapped
 
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     try:
         await self._send_request(
             METHOD_PROMPT,

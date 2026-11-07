@@ -33,7 +33,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
-from kiro_crew.acp import disposed_session, launch_tuning, pi_steer_turn
+from kiro_crew.acp import batch_guard, disposed_session, launch_tuning, pi_steer_turn
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
@@ -1495,6 +1495,10 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
             # waits on the turn ending before it raises.
             self._turn_done.set()
             raise AcpError(issue, transient=False, user_worded=True)
+    # What the model is told is seen by the batch guard (``acp.batch_guard``),
+    # which reads its setting off the event loop first.
+    await batch_guard.refresh_feeding(getattr(self, "_batch_window", None))
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), blocks)
     return await self._send_request(
         METHOD_PROMPT,
         {

@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_env_launch
+from kiro_crew.acp import batch_guard, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.mcp_session_report import (
@@ -432,6 +432,8 @@ async def load_session(
     )
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
+    # The restored history predates this handle's batch guard.
+    batch_guard.mark_resumed(handle._batch_window)
     handle.member_dispatch_mounted = member_mounted
     # A fresh handle has no baseline for the restored ledger, whose counter
     # already carries the session's earlier spend.
