@@ -583,15 +583,20 @@ leaf that is precreated, so a sandbox spawned before the first allocation does n
 appear.
 
 `staging` is the large-transfer staging root, `<data home>/staging` (`kiro_crew.staging`):
-snapshot build, snapshot restore and the dashboard state import's EXTRACTION each stage
-hundreds of MB to GB there before producing their final artifact, staged off the system temp
-dir so a tmpfs `/tmp` does not hold the data home in RAM. The import's uploaded
-`.zip` SPOOL is NOT staged here: `dashboard.part_stream` creates and discards it with
-a synchronous `os.open` on the serving event loop under a cancellation-safety
-invariant it shares with two other upload handlers, so pointing it at a data home that may
-be NFS would risk freezing the loop on a stalled metadata op. An off-loop create needs a
-different ownership model in that shared module; this leaf
-stages only the large extraction/build work. Its disposition is `VISIBLE`, and
+snapshot build, snapshot restore and the dashboard state import (its uploaded `.zip` SPOOL
+and its EXTRACTION) each stage hundreds of MB to GB there before producing their final
+artifact, staged off the system temp dir so a tmpfs `/tmp` does not hold the data home in
+RAM. The spool is a per-request `kc_import_*` directory holding one `import.zip`. The data
+home may be NFS, so no call on it runs on the serving event loop:
+`part_stream.stream_part_off_loop` runs the create, every write, the close and the discard
+on one worker thread in submission order, which keeps the shared module's
+cancellation-safety guarantees without the synchronous on-loop create the other two upload
+handlers keep. Because the leaf is agent-writable, the spool directory is created and
+removed through a pin on the staging root and its file is created through the directory's
+descriptor (`dashboard/handlers/portability.py`), so a name swapped for a link is refused
+rather than followed into a hidden leaf. The spool holds
+the same bytes as the extraction beside it, so it adds no exposure the extraction does not
+already have. Its disposition is `VISIBLE`, and
 the disposition is chosen from the destination rather than by default (AGENTS.md: never add
 a mask a task did not ask for). The rule: a staging copy should be no
 more and no less exposed than the artifact it becomes. The destinations these sites

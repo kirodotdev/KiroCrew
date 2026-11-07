@@ -729,8 +729,7 @@ def apply_import_zip(
     # The extraction (up to the uncompressed cap) stages under the data home's
     # ``staging`` leaf, on the install's own disk rather than a RAM-backed tmpfs ``/tmp``.
     # This function runs off the event loop, so ``staging_dir()`` is no on-loop call.
-    # The uploaded ``.zip`` spool stays in the system temp dir, where ``part_stream``
-    # creates it under the handlers' shared cancellation-safety invariant.
+    # The uploaded ``.zip`` spool sits in its own directory of the same leaf.
     with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
         platform_compat.restrict_dir_to_owner(work)
