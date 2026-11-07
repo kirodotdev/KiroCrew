@@ -2280,7 +2280,7 @@
       "terminal_review_at_capacity": "Review the command. Run opens the terminal panel; if it is still full, close an unused tab and try again. Nothing is queued.",
       "terminal_default_directory": "Terminal starting directory",
       "terminal_failed": "Command not sent. Your draft is kept; see the terminal panel.",
-      "terminal_unavailable": "Terminal is turned off. Enable dashboard.terminal.enabled in the server configuration. Remove the leading ! to return to chat.",
+      "terminal_unavailable": "Terminal is turned off (dashboard.terminal.enabled). Turn it on in Settings → Display → Terminal. Remove the leading ! to return to chat.",
       "terminal_limit": "Terminal limit reached. Close an unused terminal tab, then try again.",
       "terminal_main_window": "Open this session in the main window to run terminal commands.",
       "terminal_remote": "Terminal commands are unavailable for sessions on another server. Remove the leading ! to return to chat.",
@@ -2343,7 +2343,8 @@
       "touch_select_done": "Range selected — tap Copy",
       "use_here": "Use terminal here",
       "use_starting_directory": "Use terminal starting directory",
-      "use_starting_directory_hint": "Opens a new shell in the server's configured terminal directory (dashboard.terminal.cwd, otherwise the server's home directory). The failed command is not sent again."
+      "use_starting_directory_hint": "Opens a new shell in the server's configured terminal directory (dashboard.terminal.cwd, otherwise the server's home directory). The failed command is not sent again.",
+      "terminal_off_message": "The Terminal is turned off by configuration (dashboard.terminal.enabled). Turn it on in Settings → Display → Terminal."
     },
     "codeBlock": {
       "add_comment": "Add comment",
@@ -4451,7 +4452,7 @@
       "select_confirm_unseen_job": "This job is already open. Press Next to go on with it, or pick a different job first.",
       "select_open_named": "Open now: “{{name}}”.",
       "gate_setting": "Turn on “{{label}}” in Settings first. The guide goes on by itself once it’s on; it never changes the setting for you.",
-      "gate_terminal_enabled": "The terminal is turned off on this installation. The guide goes on by itself once it’s on.",
+      "gate_terminal_enabled": "The terminal is turned off on this installation (dashboard.terminal.enabled). Turn it on in Settings → Display → Terminal; the guide goes on by itself once it’s on.",
       "title_ui_find": "Find “{{label}}”",
       "step_ui_find_open": "Open the highlighted control: “{{target}}” is inside.",
       "find_not_found": "“{{label}}” isn’t showing on this page. If it’s inside a menu or a section, open that and the guide will point at it.",
@@ -4845,6 +4846,10 @@
         "generic": "Allow for this session: stop blocking any command this rule blocks, until you close this chat (Session options → Close session) or {{productName}} restarts"
       },
       "pill_blocked": "Waiting for approval: {{command}}"
+    },
+    "terminalOffNotice": {
+      "message": "The Terminal is turned off by this dashboard's configuration (dashboard.terminal.enabled), so its tabs cannot connect. Turn it on in Settings → Display → Terminal.",
+      "open_settings": "Open Terminal settings"
     }
   },
   "hooks": {
@@ -8902,7 +8907,16 @@
         "recent_tint_save_failed": "Could not save the recent-session highlight count.",
         "milestones": "Explore",
         "milestones_hint": "Show Explore in the top bar and a Try today card on a new chat.",
-        "milestones_save_failed": "Could not save the Explore setting. Try again."
+        "milestones_save_failed": "Could not save the Explore setting. Try again.",
+        "terminal_enabled": "Terminal panel",
+        "terminal_enabled_desc": "Show the Terminal in this dashboard and let it open shells on this computer. Off hides the Terminal everywhere and ends every running terminal shell. The same setting is dashboard.terminal.enabled in config.json.",
+        "terminal_enabled_save_failed": "Could not save the Terminal panel setting",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled is set in config.local.json, which overrides this switch. Change or remove it there.",
+        "terminal_disable_confirm_title": "Turn the Terminal off?",
+        "terminal_disable_confirm_body_unknown": "Turning the Terminal off ends every running terminal shell, with anything started in it. Turning it back on starts new shells; the ended ones do not come back.",
+        "terminal_disable_confirm_ok": "Turn off and end shells",
+        "terminal_disable_confirm_body_one": "{{count}} terminal shell is running. Turning the Terminal off ends it now, with anything started in it. Turning it back on starts new shells; the ended one does not come back.",
+        "terminal_disable_confirm_body_other": "{{count}} terminal shells are running. Turning the Terminal off ends them now, with anything started in them. Turning it back on starts new shells; the ended ones do not come back."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

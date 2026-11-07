@@ -6659,7 +6659,7 @@
       "terminal_limit": "已达到终端数量上限。请关闭一个未使用的终端标签页，然后重试。",
       "terminal_main_window": "请在主窗口中打开此会话以运行终端命令。",
       "terminal_remote": "其他服务器上的会话不支持终端命令。移除开头的 ! 即可返回聊天。",
-      "terminal_unavailable": "终端已关闭。在服务器配置中启用 dashboard.terminal.enabled。移除开头的 ! 即可返回聊天。",
+      "terminal_unavailable": "终端已关闭（dashboard.terminal.enabled）。请在设置 → 显示 → 终端中开启。移除开头的 ! 即可返回聊天。",
       "terminal_review": "检查并在终端中运行",
       "terminal_force_stop": "停止智能体",
       "terminal_pending": "请等待会话详情加载，或选择其他会话。",
@@ -6725,7 +6725,8 @@
       "touch_select_done": "已选择范围 — 点按复制",
       "use_here": "在此窗口使用终端",
       "use_starting_directory": "使用终端起始目录",
-      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。"
+      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。",
+      "terminal_off_message": "终端已被配置关闭（dashboard.terminal.enabled）。请在设置 → 显示 → 终端中开启。"
     },
     "codeBlock": {
       "add_comment": "添加评论",
@@ -10352,7 +10353,7 @@
       "select_confirm_unseen_job": "这个任务已经打开了。点“下一步”继续，或先换一个任务。",
       "select_open_named": "当前打开的是：“{{name}}”。",
       "gate_setting": "请先在“设置”中打开“{{label}}”。打开后引导会自动继续；它不会替你更改这个设置。",
-      "gate_terminal_enabled": "这个安装上的终端已关闭。终端打开后引导会自动继续。",
+      "gate_terminal_enabled": "此安装中终端已关闭（dashboard.terminal.enabled）。请在设置 → 显示 → 终端中开启；开启后指南会自动继续。",
       "title_ui_find": "查找“{{label}}”",
       "step_ui_find_open": "打开高亮的控件：“{{target}}”就在里面。",
       "find_not_found": "“{{label}}”现在没有显示在这个页面上。如果它在某个菜单或区域里，请先打开那里，引导会指给你看。",
@@ -10724,7 +10725,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "复制失败，请选中命令手动复制。",
-      "no_terminal": "这里不能运行命令，请把它复制到你电脑上的终端应用里。",
+      "no_terminal": "终端已关闭（dashboard.terminal.enabled）。请在设置 → 显示 → 终端中开启，或将命令复制到你电脑上的终端应用中。",
       "reason": "我不能运行这条命令，但你可以。",
       "run_unanswered": "终端没有响应，请把它复制到你电脑上的终端应用里。",
       "title": "请你自己运行"
@@ -10830,6 +10831,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（已暂停）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（已暂停）"
+    },
+    "terminalOffNotice": {
+      "message": "此仪表板的配置已关闭终端（dashboard.terminal.enabled），因此终端标签页无法连接。请在设置 → 显示 → 终端中开启。",
+      "open_settings": "打开终端设置"
     }
   },
   "hooks": {
@@ -18323,7 +18328,15 @@
         "intensity_clear": "清晰",
         "intensity_vivid": "鲜艳",
         "intensity_bold": "浓郁",
-        "intensity_intense": "强烈"
+        "intensity_intense": "强烈",
+        "terminal_enabled": "终端面板",
+        "terminal_enabled_desc": "在此仪表板中显示终端，并允许它在这台计算机上打开 shell。关闭后，终端在所有位置隐藏，并结束每个正在运行的终端 shell。该设置对应 config.json 中的 dashboard.terminal.enabled。",
+        "terminal_enabled_save_failed": "无法保存终端面板设置",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled 已在 config.local.json 中设置，它会覆盖此开关。请在该文件中修改或移除。",
+        "terminal_disable_confirm_title": "关闭终端？",
+        "terminal_disable_confirm_body_unknown": "关闭终端会结束每个正在运行的终端 shell，以及其中启动的所有内容。重新开启会启动新的 shell；已结束的不会恢复。",
+        "terminal_disable_confirm_ok": "关闭并结束 shell",
+        "terminal_disable_confirm_body_other": "有 {{count}} 个终端 shell 正在运行。关闭终端会立即结束它们，以及其中启动的所有内容。重新开启会启动新的 shell；已结束的不会恢复。"
       },
       "importPanel": {
         "agent_data": "代理数据",
@@ -20042,7 +20055,9 @@
       "return": "返回停靠面板",
       "return_to_main_window_and_close_this_popout": "返回主窗口并关闭此弹出窗口",
       "terminal": "终端",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "此仪表板的配置已关闭终端（dashboard.terminal.enabled）。请在主窗口的设置 → 显示 → 终端中开启。",
+      "back_to_dashboard": "返回仪表板"
     },
     "webhooksPage": {
       "0_b": "0 B",

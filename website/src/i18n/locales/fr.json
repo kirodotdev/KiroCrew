@@ -7023,7 +7023,7 @@
       "terminal_limit": "Limite de terminaux atteinte. Ferme un onglet de terminal inutilisé, puis réessaie.",
       "terminal_main_window": "Ouvre cette session dans la fenêtre principale pour exécuter des commandes de terminal.",
       "terminal_remote": "Les commandes de terminal ne sont pas disponibles pour les sessions sur un autre serveur. Supprime le ! initial pour revenir au chat.",
-      "terminal_unavailable": "Le terminal est désactivé. Active dashboard.terminal.enabled dans la configuration du serveur. Supprime le ! initial pour revenir au chat.",
+      "terminal_unavailable": "Le terminal est désactivé (dashboard.terminal.enabled). Active-le dans Paramètres → Affichage → Terminal. Retire le ! initial pour revenir au chat.",
       "terminal_review": "Vérifier et exécuter dans le terminal",
       "terminal_force_stop": "Arrêter l’agent",
       "terminal_pending": "Attends le chargement des détails de la session ou sélectionne une autre session.",
@@ -7089,7 +7089,8 @@
       "touch_select_done": "Plage sélectionnée — touchez Copier",
       "use_here": "Utiliser le terminal ici",
       "use_starting_directory": "Utiliser le répertoire de démarrage du terminal",
-      "use_starting_directory_hint": "Ouvre un nouveau shell dans le répertoire de terminal configuré sur le serveur (dashboard.terminal.cwd, sinon le répertoire personnel du serveur). La commande échouée n’est pas renvoyée."
+      "use_starting_directory_hint": "Ouvre un nouveau shell dans le répertoire de terminal configuré sur le serveur (dashboard.terminal.cwd, sinon le répertoire personnel du serveur). La commande échouée n’est pas renvoyée.",
+      "terminal_off_message": "Le terminal est désactivé par la configuration (dashboard.terminal.enabled). Active-le dans Paramètres → Affichage → Terminal."
     },
     "codeBlock": {
       "add_comment": "Ajouter un commentaire",
@@ -10844,7 +10845,7 @@
       "select_confirm_unseen_job": "Cette tâche est déjà ouverte. Appuie sur Suivant pour continuer avec elle, ou choisis d’abord une autre tâche.",
       "select_open_named": "Ouvert en ce moment : « {{name}} ».",
       "gate_setting": "Active d’abord « {{label}} » dans les Réglages. Le guide continue tout seul une fois l’option activée ; il ne change jamais le réglage à ta place.",
-      "gate_terminal_enabled": "Le terminal est désactivé sur cette installation. Le guide continue tout seul une fois qu’il est activé.",
+      "gate_terminal_enabled": "Le terminal est désactivé sur cette installation (dashboard.terminal.enabled). Active-le dans Paramètres → Affichage → Terminal ; le guide reprend de lui-même une fois qu’il est actif.",
       "title_ui_find": "Trouver « {{label}} »",
       "step_ui_find_open": "Ouvre la commande en surbrillance : « {{target}} » se trouve dedans.",
       "find_not_found": "« {{label}} » n’apparaît pas sur cette page. S’il se trouve dans un menu ou une section, ouvre-le et le guide le montrera.",
@@ -11218,7 +11219,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "Copie impossible, alors sélectionne la commande et copie-la à la main.",
-      "no_terminal": "Impossible d'exécuter des commandes ici, alors copie-la dans l'application Terminal de ton ordinateur.",
+      "no_terminal": "Le terminal est désactivé (dashboard.terminal.enabled). Active-le dans Paramètres → Affichage → Terminal, ou copie la commande dans l’application Terminal de ton ordinateur.",
       "reason": "Je ne peux pas exécuter ceci, mais toi, tu peux.",
       "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
       "title": "À lancer toi-même"
@@ -11324,6 +11325,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (en pause) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (en pause)"
+    },
+    "terminalOffNotice": {
+      "message": "Le terminal est désactivé par la configuration de ce tableau de bord (dashboard.terminal.enabled), donc ses onglets ne peuvent pas se connecter. Active-le dans Paramètres → Affichage → Terminal.",
+      "open_settings": "Ouvrir les paramètres du terminal"
     }
   },
   "hooks": {
@@ -19265,7 +19270,17 @@
         "intensity_clear": "Nette",
         "intensity_vivid": "Vive",
         "intensity_bold": "Marquée",
-        "intensity_intense": "Intense"
+        "intensity_intense": "Intense",
+        "terminal_enabled": "Panneau du terminal",
+        "terminal_enabled_desc": "Affiche le terminal dans ce tableau de bord et lui permet d’ouvrir des shells sur cet ordinateur. Désactivé, il masque le terminal partout et met fin à tous les shells de terminal en cours. Dans config.json, le même réglage est dashboard.terminal.enabled.",
+        "terminal_enabled_save_failed": "Impossible d’enregistrer le réglage du panneau du terminal",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled est défini dans config.local.json, qui prime sur cet interrupteur. Modifie-le ou supprime-le là-bas.",
+        "terminal_disable_confirm_title": "Désactiver le terminal ?",
+        "terminal_disable_confirm_body_unknown": "Désactiver le terminal met fin à tous les shells de terminal en cours, avec tout ce qui y a été lancé. Le réactiver démarre de nouveaux shells ; ceux qui ont été arrêtés ne reviennent pas.",
+        "terminal_disable_confirm_ok": "Désactiver et arrêter les shells",
+        "terminal_disable_confirm_body_one": "{{count}} shell de terminal est en cours. Désactiver le terminal y met fin maintenant, avec tout ce qui y a été lancé. Le réactiver démarre de nouveaux shells ; celui qui a été arrêté ne revient pas.",
+        "terminal_disable_confirm_body_many": "{{count}} shells de terminal sont en cours. Désactiver le terminal y met fin maintenant, avec tout ce qui y a été lancé. Le réactiver démarre de nouveaux shells ; ceux qui ont été arrêtés ne reviennent pas.",
+        "terminal_disable_confirm_body_other": "{{count}} shells de terminal sont en cours. Désactiver le terminal y met fin maintenant, avec tout ce qui y a été lancé. Le réactiver démarre de nouveaux shells ; ceux qui ont été arrêtés ne reviennent pas."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",
@@ -21030,7 +21045,9 @@
       "return": "Revenir au dock",
       "return_to_main_window_and_close_this_popout": "Revenir à la fenêtre principale et fermer cette fenêtre détachée",
       "terminal": "Terminal",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "Le terminal est désactivé par la configuration de ce tableau de bord (dashboard.terminal.enabled). Active-le dans Paramètres → Affichage → Terminal de la fenêtre principale.",
+      "back_to_dashboard": "Retour au tableau de bord"
     },
     "webhooksPage": {
       "0_b": "0 B",

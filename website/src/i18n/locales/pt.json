@@ -7023,7 +7023,7 @@
       "terminal_limit": "Limite de terminais atingido. Feche uma aba de terminal que não esteja usando e tente novamente.",
       "terminal_main_window": "Abra esta sessão na janela principal para executar comandos no terminal.",
       "terminal_remote": "Os comandos de terminal não estão disponíveis para sessões em outro servidor. Remova o ! inicial para voltar ao chat.",
-      "terminal_unavailable": "O terminal está desativado. Ative dashboard.terminal.enabled na configuração do servidor. Remova o ! inicial para voltar ao chat.",
+      "terminal_unavailable": "O terminal está desligado (dashboard.terminal.enabled). Ligue-o em Configurações → Exibição → Terminal. Remova o ! inicial para voltar ao chat.",
       "terminal_review": "Revisar e executar no terminal",
       "terminal_force_stop": "Parar agente",
       "terminal_pending": "Aguarde o carregamento dos detalhes da sessão ou selecione outra sessão.",
@@ -7089,7 +7089,8 @@
       "touch_select_done": "Intervalo selecionado — toque em Copiar",
       "use_here": "Usar o terminal aqui",
       "use_starting_directory": "Usar o diretório inicial do terminal",
-      "use_starting_directory_hint": "Abre um novo shell no diretório de terminal configurado no servidor (dashboard.terminal.cwd ou, se não houver, o diretório pessoal do servidor). O comando que falhou não é reenviado."
+      "use_starting_directory_hint": "Abre um novo shell no diretório de terminal configurado no servidor (dashboard.terminal.cwd ou, se não houver, o diretório pessoal do servidor). O comando que falhou não é reenviado.",
+      "terminal_off_message": "O terminal está desligado por configuração (dashboard.terminal.enabled). Ligue-o em Configurações → Exibição → Terminal."
     },
     "codeBlock": {
       "add_comment": "Adicionar comentário",
@@ -10844,7 +10845,7 @@
       "select_confirm_unseen_job": "Esta tarefa já está aberta. Toque em Avançar para continuar com ela ou escolha antes outra tarefa.",
       "select_open_named": "Aberto agora: “{{name}}”.",
       "gate_setting": "Ative primeiro “{{label}}” nas Configurações. O guia continua sozinho assim que estiver ativado; ele nunca muda a configuração por você.",
-      "gate_terminal_enabled": "O terminal está desativado nesta instalação. O guia continua sozinho assim que ele for ativado.",
+      "gate_terminal_enabled": "O terminal está desligado nesta instalação (dashboard.terminal.enabled). Ligue-o em Configurações → Exibição → Terminal; o guia continua sozinho quando ele estiver ligado.",
       "title_ui_find": "Encontrar “{{label}}”",
       "step_ui_find_open": "Abra o controle destacado: “{{target}}” está dentro dele.",
       "find_not_found": "“{{label}}” não está aparecendo nesta página. Se estiver dentro de um menu ou seção, abra-o e o guia vai apontar para ele.",
@@ -11218,7 +11219,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "Não foi possível copiar, então selecione o comando e copie manualmente.",
-      "no_terminal": "Não dá para executar comandos aqui, então copie para o aplicativo Terminal do seu computador.",
+      "no_terminal": "O terminal está desligado (dashboard.terminal.enabled). Ligue-o em Configurações → Exibição → Terminal ou copie o comando no app Terminal do seu computador.",
       "reason": "Eu não posso executar isto, mas você pode.",
       "run_unanswered": "O terminal não respondeu, então copie para o aplicativo Terminal do seu computador.",
       "title": "Execute você mesmo"
@@ -11324,6 +11325,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (em pausa) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (em pausa)"
+    },
+    "terminalOffNotice": {
+      "message": "O terminal está desligado pela configuração deste painel (dashboard.terminal.enabled), então suas abas não conseguem conectar. Ligue-o em Configurações → Exibição → Terminal.",
+      "open_settings": "Abrir as configurações do terminal"
     }
   },
   "hooks": {
@@ -19265,7 +19270,17 @@
         "intensity_clear": "Nítida",
         "intensity_vivid": "Viva",
         "intensity_bold": "Marcante",
-        "intensity_intense": "Intensa"
+        "intensity_intense": "Intensa",
+        "terminal_enabled": "Painel do terminal",
+        "terminal_enabled_desc": "Mostra o terminal neste painel e permite que ele abra shells neste computador. Desligado, oculta o terminal em todo lugar e encerra todas as shells de terminal em execução. Em config.json, a mesma opção é dashboard.terminal.enabled.",
+        "terminal_enabled_save_failed": "Não foi possível salvar a opção do painel do terminal",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled está definido em config.local.json, que sobrepõe este interruptor. Altere-o ou remova-o lá.",
+        "terminal_disable_confirm_title": "Desligar o terminal?",
+        "terminal_disable_confirm_body_unknown": "Desligar o terminal encerra todas as shells de terminal em execução, com tudo o que foi iniciado nelas. Ligá-lo de novo inicia shells novas; as encerradas não voltam.",
+        "terminal_disable_confirm_ok": "Desligar e encerrar as shells",
+        "terminal_disable_confirm_body_one": "{{count}} shell de terminal está em execução. Desligar o terminal a encerra agora, com tudo o que foi iniciado nela. Ligá-lo de novo inicia shells novas; a encerrada não volta.",
+        "terminal_disable_confirm_body_many": "{{count}} shells de terminal estão em execução. Desligar o terminal as encerra agora, com tudo o que foi iniciado nelas. Ligá-lo de novo inicia shells novas; as encerradas não voltam.",
+        "terminal_disable_confirm_body_other": "{{count}} shells de terminal estão em execução. Desligar o terminal as encerra agora, com tudo o que foi iniciado nelas. Ligá-lo de novo inicia shells novas; as encerradas não voltam."
       },
       "importPanel": {
         "agent_data": "Dados do agente",
@@ -21030,7 +21045,9 @@
       "return": "Voltar ao dock",
       "return_to_main_window_and_close_this_popout": "Retornar à janela principal e fechar esta janela destacada",
       "terminal": "Terminal",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "O terminal está desligado pela configuração deste painel (dashboard.terminal.enabled). Ligue-o em Configurações → Exibição → Terminal na janela principal.",
+      "back_to_dashboard": "Voltar ao painel"
     },
     "webhooksPage": {
       "0_b": "0 B",

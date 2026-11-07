@@ -6659,7 +6659,7 @@
       "terminal_limit": "터미널 개수 제한에 도달했습니다. 사용하지 않는 터미널 탭을 닫은 후 다시 시도하세요.",
       "terminal_main_window": "터미널 명령을 실행하려면 이 세션을 기본 창에서 여세요.",
       "terminal_remote": "다른 서버의 세션에서는 터미널 명령을 사용할 수 없습니다. 채팅으로 돌아가려면 맨 앞의 !를 삭제하세요.",
-      "terminal_unavailable": "터미널이 꺼져 있습니다. 서버 설정에서 dashboard.terminal.enabled 옵션을 켜세요. 채팅으로 돌아가려면 맨 앞의 !를 삭제하세요.",
+      "terminal_unavailable": "터미널이 꺼져 있습니다(dashboard.terminal.enabled). 설정 → 표시 → 터미널에서 켜세요. 채팅으로 돌아가려면 앞의 ! 를 지우세요.",
       "terminal_review": "검토 후 터미널에서 실행",
       "terminal_force_stop": "에이전트 중지",
       "terminal_pending": "세션 정보가 로드될 때까지 기다리거나 다른 세션을 선택하세요.",
@@ -6725,7 +6725,8 @@
       "touch_select_done": "범위 선택됨 — 복사를 탭하세요",
       "use_here": "여기에서 터미널 사용",
       "use_starting_directory": "터미널 시작 디렉터리 사용",
-      "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다."
+      "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다.",
+      "terminal_off_message": "설정에 의해 터미널이 꺼져 있습니다(dashboard.terminal.enabled). 설정 → 표시 → 터미널에서 켜세요."
     },
     "codeBlock": {
       "add_comment": "댓글 추가",
@@ -10352,7 +10353,7 @@
       "select_confirm_unseen_job": "이 작업이 이미 열려 있습니다. ‘다음’을 눌러 계속하거나, 먼저 다른 작업을 고르세요.",
       "select_open_named": "지금 열려 있는 항목: ‘{{name}}’.",
       "gate_setting": "먼저 설정에서 ‘{{label}}’을(를) 켜세요. 켜지면 안내가 저절로 이어지며, 안내가 설정을 대신 바꾸지는 않습니다.",
-      "gate_terminal_enabled": "이 설치에서는 터미널이 꺼져 있습니다. 켜지면 안내가 저절로 이어집니다.",
+      "gate_terminal_enabled": "이 설치에서는 터미널이 꺼져 있습니다(dashboard.terminal.enabled). 설정 → 표시 → 터미널에서 켜세요. 켜지면 가이드가 저절로 이어집니다.",
       "title_ui_find": "‘{{label}}’ 찾기",
       "step_ui_find_open": "강조된 컨트롤을 여세요. ‘{{target}}’이(가) 그 안에 있어요.",
       "find_not_found": "‘{{label}}’이(가) 지금 이 페이지에 보이지 않아요. 메뉴나 섹션 안에 있다면 그곳을 열어 주세요. 가이드가 가리켜 드릴게요.",
@@ -10724,7 +10725,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "복사하지 못했으니 명령을 선택해 직접 복사하세요.",
-      "no_terminal": "여기서는 명령을 실행할 수 없으니 컴퓨터의 터미널 앱에 복사해 붙여 넣으세요.",
+      "no_terminal": "터미널이 꺼져 있습니다(dashboard.terminal.enabled). 설정 → 표시 → 터미널에서 켜거나, 명령을 컴퓨터의 터미널 앱에 복사하세요.",
       "reason": "저는 이걸 실행할 수 없지만, 직접 실행할 수는 있어요.",
       "run_unanswered": "터미널이 응답하지 않았으니 컴퓨터의 터미널 앱에 복사해 붙여 넣으세요.",
       "title": "직접 실행하세요"
@@ -10830,6 +10831,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (일시 중지됨) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (일시 중지됨)"
+    },
+    "terminalOffNotice": {
+      "message": "이 대시보드의 설정에서 터미널이 꺼져 있어(dashboard.terminal.enabled) 탭을 연결할 수 없습니다. 설정 → 표시 → 터미널에서 켜세요.",
+      "open_settings": "터미널 설정 열기"
     }
   },
   "hooks": {
@@ -18323,7 +18328,15 @@
         "intensity_clear": "선명함",
         "intensity_vivid": "생생함",
         "intensity_bold": "진함",
-        "intensity_intense": "강렬함"
+        "intensity_intense": "강렬함",
+        "terminal_enabled": "터미널 패널",
+        "terminal_enabled_desc": "이 대시보드에 터미널을 표시하고 이 컴퓨터에서 셸을 열 수 있게 합니다. 끄면 터미널이 모든 곳에서 숨겨지고 실행 중인 터미널 셸이 모두 종료됩니다. config.json에서는 같은 설정이 dashboard.terminal.enabled입니다.",
+        "terminal_enabled_save_failed": "터미널 패널 설정을 저장할 수 없습니다",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled이(가) config.local.json에 설정되어 있어 이 스위치를 덮어씁니다. 그 파일에서 변경하거나 제거하세요.",
+        "terminal_disable_confirm_title": "터미널을 끌까요?",
+        "terminal_disable_confirm_body_unknown": "터미널을 끄면 실행 중인 모든 터미널 셸과 그 안에서 시작한 모든 것이 종료됩니다. 다시 켜면 새 셸이 시작되며, 종료된 셸은 돌아오지 않습니다.",
+        "terminal_disable_confirm_ok": "끄고 셸 종료",
+        "terminal_disable_confirm_body_other": "터미널 셸 {{count}}개가 실행 중입니다. 터미널을 끄면 그 셸과 그 안에서 시작한 모든 것이 바로 종료됩니다. 다시 켜면 새 셸이 시작되며, 종료된 셸은 돌아오지 않습니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
@@ -20042,7 +20055,9 @@
       "return": "독으로 돌아가기",
       "return_to_main_window_and_close_this_popout": "메인 창으로 돌아가고 이 팝아웃 닫기",
       "terminal": "터미널",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "이 대시보드의 설정에서 터미널이 꺼져 있습니다(dashboard.terminal.enabled). 메인 창의 설정 → 표시 → 터미널에서 켜세요.",
+      "back_to_dashboard": "대시보드로 돌아가기"
     },
     "webhooksPage": {
       "0_b": "0 B",

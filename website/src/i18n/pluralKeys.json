@@ -522,5 +522,6 @@
   "pages.settings.securityPanel.rule_count",
   "pages.mcpManagement.resolve_all_failed",
   "pages.mcpManagement.resolve_ready",
-  "pages.devFleetPage.force_remove_confirm_desc"
+  "pages.devFleetPage.force_remove_confirm_desc",
+  "pages.settings.displayPanel.terminal_disable_confirm_body"
 ]

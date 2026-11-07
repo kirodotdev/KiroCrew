@@ -49,6 +49,16 @@ export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { f
   return useQuery({ queryKey: sharedCrewKeys.people, queryFn: () => api.sharedCrewPeople(), enabled, retry: false, refetchOnMount: fetchOnMount, retryOnMount: fetchOnMount })
 }
 
+/** Whether this tab's viewer is the machine owner: the viewer's own People row
+ *  carries `is_owner`. The route is owner-gated for dashboard callers, so a
+ *  non-owner's 403 reads as not owner. Its own query, with the client's retry
+ *  policy and a finite staleTime, so one refused read does not hide an
+ *  owner-only control until a remount. */
+export function useViewerIsOwner(): boolean {
+  const { data } = useQuery({ queryKey: ['viewer-is-owner'], queryFn: () => api.sharedCrewPeople(), staleTime: 60_000 })
+  return data?.people.some(row => row.is_viewer && row.is_owner) === true
+}
+
 /** Whether this Crew shows who did what (bylines, decision attribution,
  *  presence), decided the way the session list decides it: only with the
  *  Shared Crew preview on and someone besides the owner joined

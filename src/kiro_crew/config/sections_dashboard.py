@@ -663,12 +663,22 @@ class DashboardConfig:
             # (dashboard.terminal.<key>) so Settings controls can reference
             # them by configKey and `kirocrew config set` accepts them on a
             # config that has never written one (the CLI's key check consults
-            # SCHEMA_REGISTRY - see cli_config._declared_entry). `enabled` needs
-            # no declaration for that: it rides on the default_factory below, so
-            # it is always in the document that check walks. The field stays a
+            # SCHEMA_REGISTRY - see cli_config._declared_entry). The field stays a
             # plain dict, so a key added by a future release still round-trips
             # untouched via additionalProperties.
             properties={
+                "enabled": {
+                    "type": "boolean",
+                    "default": True,
+                    "x-meta": {
+                        "label": "Terminal panel",
+                        "help": (
+                            "Show the Terminal in the dashboard and let it open shells on "
+                            "this computer. Off hides the Terminal everywhere and ends every "
+                            "running terminal shell."
+                        ),
+                    },
+                },
                 "shell": {
                     "type": "string",
                     "default": "",

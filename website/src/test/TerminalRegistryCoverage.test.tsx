@@ -25,6 +25,7 @@ import * as bottomTerminal from '../hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import ChatInput from '../components/ChatInput'
 import { expandAll, formatToken } from '../utils/pasteTokens'
+import { api } from '../api/client'
 import { renderWithProviders } from './helpers'
 import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 import {
@@ -147,6 +148,9 @@ describe('terminalRegistry', () => {
     vi.stubGlobal('WebSocket', MockWebSocket)
     // Backoff adds up to 20% jitter; pin it so delays are exact.
     vi.spyOn(Math, 'random').mockReturnValue(0)
+    // A close that never opened is a refused dial and looks at the list route
+    // before redialling; a 500 cannot rule, so the backoff below is unchanged.
+    vi.spyOn(api, 'terminalSessions').mockResolvedValue(new Response(null, { status: 500 }))
   })
 
   afterEach(() => {
@@ -618,7 +622,7 @@ describe('terminalRegistry', () => {
   })
 
   describe('reconnect backoff', () => {
-    it('unregisters and redials with a doubling delay', () => {
+    it('unregisters and redials with a doubling delay', async () => {
       const id = session('backoff')
       vi.useFakeTimers()
       const term = new FakeTerm()
@@ -631,33 +635,33 @@ describe('terminalRegistry', () => {
 
       ws1.simulateClose()
       expect(getTerminalWs(id)).toBeNull()
-      vi.advanceTimersByTime(999)
+      await vi.advanceTimersByTimeAsync(999)
       expect(WS_INSTANCES).toHaveLength(1)
-      vi.advanceTimersByTime(1)
+      await vi.advanceTimersByTimeAsync(1)
       expect(WS_INSTANCES).toHaveLength(2)
 
       // Second drop without an intervening open: the delay doubles.
       WS_INSTANCES[1].simulateClose()
-      vi.advanceTimersByTime(1999)
+      await vi.advanceTimersByTimeAsync(1999)
       expect(WS_INSTANCES).toHaveLength(2)
-      vi.advanceTimersByTime(1)
+      await vi.advanceTimersByTimeAsync(1)
       expect(WS_INSTANCES).toHaveLength(3)
     })
 
-    it('resets the delay after a successful reconnect', () => {
+    it('resets the delay after a successful reconnect', async () => {
       const id = session('backoff-reset')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
 
       WS_INSTANCES[0].simulateClose()
-      vi.advanceTimersByTime(1000)
+      await vi.advanceTimersByTimeAsync(1000)
       WS_INSTANCES[1].simulateOpen()   // retries back to 0
       WS_INSTANCES[1].simulateClose()
-      vi.advanceTimersByTime(1000)
+      await vi.advanceTimersByTimeAsync(1000)
       expect(WS_INSTANCES).toHaveLength(3)
     })
 
-    it('stops redialling at the retry ceiling', () => {
+    it('stops redialling at the retry ceiling', async () => {
       const id = session('ceiling')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -667,7 +671,7 @@ describe('terminalRegistry', () => {
       for (let close = 1; close <= 10; close += 1) {
         const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
         if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
-        vi.advanceTimersByTime(60_000)
+        await vi.advanceTimersByTimeAsync(60_000)
       }
       expect(WS_INSTANCES).toHaveLength(10)
     })
@@ -1202,7 +1206,7 @@ describe('terminalRegistry', () => {
       expect(result.current).toBe('connected')
     })
 
-    it('goes disconnected only after the retry ceiling, and reconnecting on each drop before it', () => {
+    it('goes disconnected only after the retry ceiling, and reconnecting on each drop before it', async () => {
       const id = session('status-ceiling')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -1219,7 +1223,7 @@ describe('terminalRegistry', () => {
           if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
         })
         expect(result.current).toBe('reconnecting')
-        act(() => { vi.advanceTimersByTime(60_000) })
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
       }
       expect(result.current).toBe('disconnected')
       expect(WS_INSTANCES).toHaveLength(10)
@@ -1235,7 +1239,7 @@ describe('terminalRegistry', () => {
   })
 
   describe('retryTerminalConnection', () => {
-    it('re-arms a dead socket at the retry ceiling and dials again', () => {
+    it('re-arms a dead socket at the retry ceiling and dials again', async () => {
       const id = session('retry-dead')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -1245,9 +1249,9 @@ describe('terminalRegistry', () => {
       // redial timer, ends with the ceiling reached and no socket left dialing.
       for (let close = 1; close <= 10; close += 1) {
         const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
-        act(() => {
+        await act(async () => {
           if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
-          vi.advanceTimersByTime(60_000)
+          await vi.advanceTimersByTimeAsync(60_000)
         })
       }
       expect(WS_INSTANCES).toHaveLength(10)
@@ -1282,7 +1286,7 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(1)
     })
 
-    it('defers to the imminent onclose while the socket is CLOSING', () => {
+    it('defers to the imminent onclose while the socket is CLOSING', async () => {
       const id = session('retry-closing')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -1293,9 +1297,9 @@ describe('terminalRegistry', () => {
       // still let that onclose schedule the redial.
       for (let close = 1; close <= 10; close += 1) {
         const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
-        act(() => {
+        await act(async () => {
           if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
-          vi.advanceTimersByTime(60_000)
+          await vi.advanceTimersByTimeAsync(60_000)
         })
       }
       expect(result.current).toBe('disconnected')
@@ -1309,9 +1313,9 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(before)
 
       // The deferred close now fires; the reset budget redials on schedule.
-      act(() => {
+      await act(async () => {
         latest.simulateClose()
-        vi.advanceTimersByTime(60_000)
+        await vi.advanceTimersByTimeAsync(60_000)
       })
       expect(WS_INSTANCES.length).toBeGreaterThan(before)
     })
@@ -1407,7 +1411,7 @@ describe('terminalRegistry', () => {
   })
 
   describe('revive listeners', () => {
-    it('redials a dead session when the tab regains network', () => {
+    it('redials a dead session when the tab regains network', async () => {
       const id = session('revive-online')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -1416,7 +1420,7 @@ describe('terminalRegistry', () => {
       for (let close = 1; close <= 10; close += 1) {
         const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
         if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
-        vi.advanceTimersByTime(60_000)
+        await vi.advanceTimersByTimeAsync(60_000)
       }
       expect(WS_INSTANCES).toHaveLength(10)
 
@@ -1424,7 +1428,7 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES).toHaveLength(11)
     })
 
-    it('redials when a backgrounded tab returns to the foreground', () => {
+    it('redials when a backgrounded tab returns to the foreground', async () => {
       const id = session('revive-visible')
       vi.useFakeTimers()
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -1433,7 +1437,7 @@ describe('terminalRegistry', () => {
       for (let close = 1; close <= 10; close += 1) {
         const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
         if (latest.readyState !== MockWebSocket.CLOSED) latest.simulateClose()
-        vi.advanceTimersByTime(60_000)
+        await vi.advanceTimersByTimeAsync(60_000)
       }
       expect(WS_INSTANCES).toHaveLength(10)
 

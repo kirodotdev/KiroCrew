@@ -6440,7 +6440,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "Couldn't copy, so select the command and copy it by hand.",
-      "no_terminal": "Running commands isn't available here, so copy it into the Terminal app on your computer.",
+      "no_terminal": "The Terminal is turned off (dashboard.terminal.enabled). Turn it on in Settings → Display → Terminal, or copy the command into the Terminal app on your computer.",
       "reason": "I can't run this, but you can.",
       "run_unanswered": "The terminal didn't respond, so copy it into the Terminal app on your computer.",
       "title": "Run this yourself"
@@ -11452,7 +11452,9 @@
       "return": "Return to dock",
       "return_to_main_window_and_close_this_popout": "Return to main window and close this popout",
       "terminal": "Terminal",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "The Terminal is turned off by this dashboard's configuration (dashboard.terminal.enabled). Turn it on in Settings → Display → Terminal in the main window.",
+      "back_to_dashboard": "Back to the dashboard"
     },
     "webhooksPage": {
       "0_b": "0 B",

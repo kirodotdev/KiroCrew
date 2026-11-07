@@ -6841,7 +6841,7 @@
       "terminal_limit": "Terminal-Limit erreicht. Schließe einen ungenutzten Terminal-Tab und versuche es erneut.",
       "terminal_main_window": "Öffne diese Sitzung im Hauptfenster, um Terminalbefehle auszuführen.",
       "terminal_remote": "Terminalbefehle sind für Sitzungen auf einem anderen Server nicht verfügbar. Entferne das führende !, um zum Chat zurückzukehren.",
-      "terminal_unavailable": "Das Terminal ist ausgeschaltet. Aktiviere dashboard.terminal.enabled in der Serverkonfiguration. Entferne das führende !, um zum Chat zurückzukehren.",
+      "terminal_unavailable": "Das Terminal ist ausgeschaltet (dashboard.terminal.enabled). Schalte es unter Einstellungen → Anzeige → Terminal ein. Entferne das führende !, um zum Chat zurückzukehren.",
       "terminal_review": "Prüfen und im Terminal ausführen",
       "terminal_force_stop": "Agent stoppen",
       "terminal_pending": "Warte, bis die Sitzungsdetails geladen sind, oder wähle eine andere Sitzung.",
@@ -6907,7 +6907,8 @@
       "touch_select_done": "Bereich ausgewählt — tippe auf Kopieren",
       "use_here": "Terminal hier verwenden",
       "use_starting_directory": "Startverzeichnis des Terminals verwenden",
-      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet."
+      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet.",
+      "terminal_off_message": "Das Terminal ist per Konfiguration ausgeschaltet (dashboard.terminal.enabled). Schalte es unter Einstellungen → Anzeige → Terminal ein."
     },
     "codeBlock": {
       "add_comment": "Kommentar hinzufügen",
@@ -10598,7 +10599,7 @@
       "select_confirm_unseen_job": "Dieser Job ist schon geöffnet. Drück auf „Weiter“, um mit ihm fortzufahren, oder wähle vorher einen anderen Job.",
       "select_open_named": "Gerade geöffnet: „{{name}}“.",
       "gate_setting": "Schalte zuerst „{{label}}“ in den Einstellungen ein. Danach geht die Anleitung von selbst weiter; sie ändert die Einstellung nie für dich.",
-      "gate_terminal_enabled": "Das Terminal ist in dieser Installation ausgeschaltet. Sobald es eingeschaltet ist, geht die Anleitung von selbst weiter.",
+      "gate_terminal_enabled": "Das Terminal ist in dieser Installation ausgeschaltet (dashboard.terminal.enabled). Schalte es unter Einstellungen → Anzeige → Terminal ein; sobald es eingeschaltet ist, geht die Anleitung von selbst weiter.",
       "title_ui_find": "„{{label}}“ finden",
       "step_ui_find_open": "Öffne das hervorgehobene Element: „{{target}}“ ist darin.",
       "find_not_found": "„{{label}}“ ist auf dieser Seite gerade nicht zu sehen. Liegt es in einem Menü oder Abschnitt, öffne diesen, dann zeigt die Anleitung darauf.",
@@ -10971,7 +10972,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "Kopieren ging nicht, also markiere den Befehl und kopiere ihn von Hand.",
-      "no_terminal": "Hier lassen sich keine Befehle ausführen, also kopiere ihn in die Terminal-App auf deinem Computer.",
+      "no_terminal": "Das Terminal ist ausgeschaltet (dashboard.terminal.enabled). Schalte es unter Einstellungen → Anzeige → Terminal ein oder kopiere den Befehl in die Terminal-App auf deinem Computer.",
       "reason": "Ich kann das nicht ausführen, du aber schon.",
       "run_unanswered": "Das Terminal hat nicht geantwortet, also kopiere ihn in die Terminal-App auf deinem Computer.",
       "title": "Selbst ausführen"
@@ -11077,6 +11078,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (pausiert) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (pausiert)"
+    },
+    "terminalOffNotice": {
+      "message": "Das Terminal ist durch die Konfiguration dieses Dashboards ausgeschaltet (dashboard.terminal.enabled), deshalb können sich seine Tabs nicht verbinden. Schalte es unter Einstellungen → Anzeige → Terminal ein.",
+      "open_settings": "Terminal-Einstellungen öffnen"
     }
   },
   "hooks": {
@@ -18794,7 +18799,16 @@
         "intensity_clear": "Klar",
         "intensity_vivid": "Lebhaft",
         "intensity_bold": "Kräftig",
-        "intensity_intense": "Intensiv"
+        "intensity_intense": "Intensiv",
+        "terminal_enabled": "Terminal-Panel",
+        "terminal_enabled_desc": "Zeigt das Terminal in diesem Dashboard an und lässt es Shells auf diesem Computer öffnen. Ausgeschaltet versteckt es das Terminal überall und beendet jede laufende Terminal-Shell. In config.json heißt dieselbe Einstellung dashboard.terminal.enabled.",
+        "terminal_enabled_save_failed": "Die Einstellung für das Terminal-Panel konnte nicht gespeichert werden",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled ist in config.local.json gesetzt und überschreibt diesen Schalter. Ändere oder entferne es dort.",
+        "terminal_disable_confirm_title": "Terminal ausschalten?",
+        "terminal_disable_confirm_body_unknown": "Das Ausschalten des Terminals beendet jede laufende Terminal-Shell mit allem, was darin gestartet wurde. Das Wiedereinschalten startet neue Shells; die beendeten kommen nicht zurück.",
+        "terminal_disable_confirm_ok": "Ausschalten und Shells beenden",
+        "terminal_disable_confirm_body_one": "{{count}} Terminal-Shell läuft. Das Ausschalten des Terminals beendet sie jetzt mit allem, was darin gestartet wurde. Das Wiedereinschalten startet neue Shells; die beendete kommt nicht zurück.",
+        "terminal_disable_confirm_body_other": "{{count}} Terminal-Shells laufen. Das Ausschalten des Terminals beendet sie jetzt mit allem, was darin gestartet wurde. Das Wiedereinschalten startet neue Shells; die beendeten kommen nicht zurück."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",
@@ -20536,7 +20550,9 @@
       "return": "Zurück zum Dock",
       "return_to_main_window_and_close_this_popout": "Zum Hauptfenster zurückkehren und dieses ausgekoppelte Fenster schließen",
       "terminal": "Terminal",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "Das Terminal ist durch die Konfiguration dieses Dashboards ausgeschaltet (dashboard.terminal.enabled). Schalte es im Hauptfenster unter Einstellungen → Anzeige → Terminal ein.",
+      "back_to_dashboard": "Zurück zum Dashboard"
     },
     "webhooksPage": {
       "0_b": "0 B",
