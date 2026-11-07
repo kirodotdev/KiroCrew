@@ -229,12 +229,11 @@ MAX_UNCLIPPED_SCAN_CHARS = 8192
 #: here because ``credential_patterns`` exports pattern SOURCE strings. This is the
 #: scrubber-side AWS spelling, not the wider redaction one, and not the whole of
 #: the scrub: ``VENDOR_TOKEN_PATTERNS`` carries a generic ``sk-`` form that
-#: ``redact_credentials`` does not, which is why both run.
+#: ``redact_credentials`` does not, which is why both run. The shape-only JWT
+#: spelling is left to ``redact_credentials``, which counts a hit only when its
+#: header is a JSON object, so a state naming ``honeyJar.atlassian.net`` passes.
 _CREDENTIAL_RE = re.compile(
-    "|".join(
-        [_cred.AWS_KEY_ID, _cred.JWT_MULTI_SEGMENT]
-        + [frag for _label, frag in _cred.VENDOR_TOKEN_PATTERNS]
-    )
+    "|".join([_cred.AWS_KEY_ID] + [frag for _label, frag in _cred.VENDOR_TOKEN_PATTERNS])
 )
 
 

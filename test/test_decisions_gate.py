@@ -790,6 +790,14 @@ class TestScrub:
         assert row["error"] in gate_mod.SCRUB_ERRORS
         assert row["answers"] is None
 
+    def test_a_host_holding_eyj_is_not_a_credential(self):
+        """A JWT-shaped hit refuses only when its header decodes to a JSON object."""
+        jws = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JzdWIiOiIxIn0.sig"
+        assert gate_mod.scrub_reason("see https://honeyJar.atlassian.net/wiki/x", QUESTIONS) is None
+        assert (
+            gate_mod.scrub_reason(f"token {jws}", QUESTIONS) == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+        )
+
     def test_a_credential_the_point_clipped_in_half_still_refuses(self, install_impl, log_home):
         """The clipped state alone carries a fragment no pattern matches."""
         message = "w " * 995 + "sk-" + "a" * 32

@@ -78,7 +78,6 @@ from .redaction_entropy import (  # noqa: F401
     _plantuml_source,
     _text_contains_bare_secret,
 )
-from .redaction_patterns import _is_json_object_segment  # noqa: F401
 from .redaction_patterns import _credential_matches, _might_contain_credential
 
 
@@ -1491,4 +1490,7 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
     import kiro_crew.security.pem_scan as pem_scan  # noqa: F401
     from kiro_crew.credential_patterns import (  # noqa: F401
         JWT_MULTI_SEGMENT,
+    )
+    from kiro_crew.jwt_header import (  # noqa: F401
+        is_jwt_header,
     )

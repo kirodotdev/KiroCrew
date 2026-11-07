@@ -105,6 +105,14 @@ class TestSecretRedactionFilter:
         result = filt.redact(f"token: {jwe}")
         assert "eyJhbGciOiJkaXIifQ" not in result
 
+    def test_hostname_holding_eyj_is_not_a_jwt(self) -> None:
+        """A host label holding ``eyJ`` stays intact; a real JWS, even glued to one, does not."""
+        filt = SecretRedactionFilter([])
+        jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig"
+        url = "https://honeyJar.atlassian.net/wiki/spaces/ABC"
+        assert filt.redact(f"GET {url}") == f"GET {url}"
+        assert filt.redact(f"GET https://honeyJar.{jws}/x") == "GET https://honeyJar.[REDACTED]/x"
+
     def test_token_url_parameter_value_redacted(self) -> None:
         """A ``?token=`` / ``&token=`` value is masked and the parameter name kept."""
         filt = SecretRedactionFilter([])
