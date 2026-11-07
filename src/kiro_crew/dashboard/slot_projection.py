@@ -573,6 +573,9 @@ class SlotProjection:
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,
             "created": slot.created_at,
+            # The slot object's never-persisted id: a failed close's restore keeps
+            # it, a reopen under the same key builds a new object with a new one.
+            "incarnation": slot._dashboard_card_identity,
             "last_ts": last_ts,
             "last_turn_ts": last_turn_ts,
             "last_message": last_msg,

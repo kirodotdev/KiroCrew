@@ -283,6 +283,10 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Transcript session key this slot reads and writes, from the backend
    *  `slot_history_key` rule; what the resume endpoint reads. Absent on an older payload. */
   history_key?: string
+  /** Opaque id of the server's slot object, new each time a session is opened
+   *  under this key. A failed close's restore keeps it; a reopen elsewhere does not.
+   *  Absent on an older payload. */
+  incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */

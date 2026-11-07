@@ -69,6 +69,9 @@ _TO_DICT_KEYS = (
     "stop_state",
     "wait_state",
     "created",
+    # This slot object's id, new on every build under a key: a failed close's
+    # restore keeps it, a reopen elsewhere does not.
+    "incarnation",
     "last_ts",
     "last_turn_ts",
     "last_message",
