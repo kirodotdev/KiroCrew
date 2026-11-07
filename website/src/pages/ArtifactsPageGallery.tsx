@@ -13,7 +13,7 @@ import type { ItemContent } from '@virtuoso.dev/masonry'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
-import { publishNoticeKey } from '../components/PublishHub'
+import { publicationBadgeLabel, usePublicationProviderName } from '../lib/publicationBadge'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { DndDraggable } from '../components/dnd'
 import type { Artifact } from '../types'
@@ -54,6 +54,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     staleTime: 60_000,
     enabled: !!a.slug,
   })
+  const providerName = usePublicationProviderName(a.publication)
   const deleting = deletingSlug === a.slug
   const hasPreview = a.kind === 'widget' || a.kind === 'html'
   const content = full?.content || ''
@@ -98,11 +99,17 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
             <div className="flex items-center gap-1.5">
               <span className="text-sm text-text-strong font-medium truncate">{a.name}</span>
               {a.publication && (
-                <Share2
-                  size={12}
-                  className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : a.publication.notice ? i18nT(publishNoticeKey({ rolling_out: 'pages.artifactsPage.published_rolling_out', distribution_disabled: 'pages.artifactsPage.published_distribution_disabled', notice_generic: 'pages.artifactsPage.published_notice_generic' }, a.publication.notice_code)) : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
-                />
+                // `relative z-10` lifts the badge above the card's open button,
+                // which would otherwise take the hover its tooltip needs.
+                <span className="relative z-10 inline-flex shrink-0" data-testid="publication-badge">
+                  <Share2
+                    size={12}
+                    className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
+                    aria-label={publicationBadgeLabel(a.publication, providerName)}
+                  >
+                    <title>{publicationBadgeLabel(a.publication, providerName)}</title>
+                  </Share2>
+                </span>
               )}
             </div>
             <code className="text-[11px] text-muted">{a.slug}</code>

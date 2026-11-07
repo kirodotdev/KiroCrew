@@ -16,7 +16,7 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { i18nT } from '../../i18n/t'
-import { publishNoticeKey } from '../PublishHub'
+import { publicationBadgeLabel, usePublicationProviderName } from '../../lib/publicationBadge'
 import ErrorNotice from '../ErrorNotice'
 import { useOpenInEditor } from '../FilePathMenu'
 import { canOpenFileInEditor, editorAcceptsPath } from '../../lib/electron'
@@ -433,6 +433,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
 }) {
   // The row's own writes go to the gateway, so they gate like every other sink.
   const rowConnected = useConnected()
+  const providerName = usePublicationProviderName(a.publication)
   const inner = (setDropRef?: (el: HTMLElement | null) => void) => (
     <DndDraggable id={`artifact-row:${a.slug}`} data={{ type: 'artifact', slug: a.slug, name: a.name, folderId: a.folder_id || '' } satisfies LibraryDrag}>
       {({ setNodeRef, listeners, isDragging }) => (
@@ -470,8 +471,10 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
                 <Share2
                   size={12}
                   className={a.publication.last_error ? 'text-danger' : a.publication.notice ? 'text-warn' : 'text-ok'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : a.publication.notice ? i18nT(publishNoticeKey({ rolling_out: 'pages.artifactsPage.published_rolling_out', distribution_disabled: 'pages.artifactsPage.published_distribution_disabled', notice_generic: 'pages.artifactsPage.published_notice_generic' }, a.publication.notice_code)) : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
-                />
+                  aria-label={publicationBadgeLabel(a.publication, providerName)}
+                >
+                  <title>{publicationBadgeLabel(a.publication, providerName)}</title>
+                </Share2>
               )}
             </div>
             {a.description && <div className="text-[12px] text-muted truncate max-w-[400px]">{a.description}</div>}

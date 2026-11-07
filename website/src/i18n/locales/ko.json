@@ -11715,6 +11715,7 @@
       "promote_slug_taken_open": "‘{{slug}}’ 열기",
       "promote_slug_taken_open_older": "이전 ‘{{taken}}’ 열기",
       "published": "게시됨 ({{visibility}})",
+      "published_on_provider": "{{provider}}에 게시됨 ({{visibility}})",
       "published_sync_issue": "게시됨 (동기화 문제)",
       "published_rolling_out": "게시됨 — 아직 배포 중",
       "published_distribution_disabled": "게시됨 — 전송 네트워크 비활성화됨",

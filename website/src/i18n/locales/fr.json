@@ -12231,6 +12231,7 @@
       "promote_slug_taken_open": "Ouvrir « {{slug}} »",
       "promote_slug_taken_open_older": "Ouvrir l’ancien « {{taken}} »",
       "published": "Publié ({{visibility}})",
+      "published_on_provider": "Publié sur {{provider}} ({{visibility}})",
       "published_sync_issue": "Publié (problème de synchronisation)",
       "published_rolling_out": "Publié — déploiement en cours",
       "published_distribution_disabled": "Publié — réseau de diffusion désactivé",
