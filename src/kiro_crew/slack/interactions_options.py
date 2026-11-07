@@ -253,6 +253,10 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     """Fetch a Slack thread, redact messages, and import into a new dashboard slot."""
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
     from kiro_crew.slack.handler import (
+        _SLACK_TS_META,
+        _THINKING,
+        _THINKING_PLACEHOLDER,
+        _WORKING,
         channel_agent_mismatch,
         channel_pinned_agent,
         link_agent_mismatch,
@@ -288,11 +292,18 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     msgs = await slack.fetch_thread_replies(channel, thread_ts)
     if not msgs:
         return None
-    # Pre-filter: drop empty text and !link-to-dashboard messages
+    bot_id = getattr(ds, "_self_bot_id", None) or ""
+    # Pre-filter: drop empty text and !link-to-dashboard messages, and the
+    # placeholders of a turn still running (it replaces or removes them as it ends).
     msgs = [
         m
         for m in msgs
-        if m.get("text", "").strip() and not m.get("text", "").startswith("!link-to-dashboard")
+        if m.get("text", "").strip()
+        and not m.get("text", "").startswith("!link-to-dashboard")
+        and not (
+            m.get("text") in (_WORKING, _THINKING, _THINKING_PLACEHOLDER)
+            and (m.get("bot_id") or m.get("user") == bot_id)
+        )
     ]
     if not msgs:
         return None
@@ -312,14 +323,20 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
         slot.agent = pinned
         slot.agent_kind = "template"
     slot.title = f"Slack thread {thread_ts[:10]}" + (" (truncated)" if truncated else "")
-    bot_id = getattr(ds, "_self_bot_id", None) or ""
     for m in msgs:
         is_bot = bool(m.get("bot_id")) or m.get("user") == bot_id
         role = "assistant" if is_bot else "user"
         text_content = m.get("text", "")
         text_content, _ = redact_exfiltration_urls(text_content)
         text_content, _ = redact_credentials(text_content)
-        slot.append(role, text_content, f"msg msg-{'a' if is_bot else 'u'}")
+        # Each row names its Slack message, so a turn still running when the thread
+        # was read can give the slot its answer (``_backfill_late_link``).
+        slot.append(
+            role,
+            text_content,
+            f"msg msg-{'a' if is_bot else 'u'}",
+            meta={_SLACK_TS_META: m.get("ts", "")},
+        )
     ds.link_slack(slot.key, thread_ts, channel)
     await save_slot_off_loop(ds, slot)
     ds.push_slots_update()
