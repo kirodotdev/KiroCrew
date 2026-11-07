@@ -273,6 +273,40 @@ class TestFirstPrinciplesOneStatementPerProblem:
         assert shape.index("`Subtraction: <") < shape.index("`Clears when: <")
         assert "so no line may follow it" in " ".join(contract.split())
 
+    def test_a_not_checked_line_changes_nothing_the_local_loop_reads(self) -> None:
+        # A PASS had nowhere to name a premise the reviewer could not read. The
+        # line sits a paragraph below the REASON, so the loop's verdict,
+        # punchline and Blockers reads are the same with or without it.
+        flat = " ".join(_fp_contract().split())
+        assert "a blank line (without it the loop reads this line as part of the REASON)" in flat
+        assert "counted in the ~180" in flat
+        assert "When BLOCK case (a) fires, the premise is a Blocker, not this line" in flat
+        shape = flat.split("Output EXACTLY this shape")[1]
+        assert (
+            shape.index("ONE bold REASON") < shape.index("`Not checked:") < shape.index("### Notes")
+        )
+        mod = _review_contract_module()
+        head = "a" * 40
+        bindings = dict(mod.DEFAULT_MARKER_BINDINGS)
+
+        def read(body: str) -> tuple:
+            comments = [{"body": body}]
+            return (
+                mod.design_lane_verdicts(comments, head, bindings),
+                mod.design_lane_punchlines(comments, head, bindings),
+                list(mod.extract_design_items(comments, head, bindings)),
+            )
+
+        reason = "**Item 2 duplicates a helper.**\n\n"
+        plain = (
+            "<!-- first-principles-review -->\nFirst-Principles-Verdict: BLOCK\n\n"
+            f"{reason}### Blockers\n- Item 2 — duplicate.\n  Trigger: t.\n  Outcome: o.\n\n"
+            f"[FIRST-PRINCIPLES-REVIEWED] {head}\n"
+        )
+        noted = plain.replace(reason, reason + "Not checked: what kiro-cli does on Windows.\n\n")
+        assert read(plain)[0] == {"FIRST-PRINCIPLES": "BLOCK"}
+        assert read(noted) == read(plain)
+
 
 class TestFirstPrinciplesExistenceLadder:
     """A grep of this repository cannot see work the standard library, the
