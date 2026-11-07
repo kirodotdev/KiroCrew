@@ -29,7 +29,10 @@ vi.mock('../api/client', () => ({
 }))
 // The default memory mode resolves through the dashboard-config query; keep it
 // synchronous and off the network.
-vi.mock('../api/queryClient', () => ({ resolveDefaultMemoryMode: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../api/queryClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/queryClient')>()),
+  resolveDefaultMemoryMode: vi.fn().mockResolvedValue(undefined),
+}))
 
 const ORIGIN = 's1'
 const NEW_KEY = 'chat-new-1'
