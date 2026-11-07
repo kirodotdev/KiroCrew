@@ -1033,6 +1033,12 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
     # in v1 and Stop-suppressed cycles never swap (both guarded in
     # _run_chat's elif condition before the side-effecting swap runs).
     slot.purge_chunks()
+    if len(slot._fallback_walked) == 1:
+        # The walk's first swap: `exc` is the SELECTED model's own error. Record
+        # whether it was a capacity/rollout refusal, so a card the walk ends on
+        # is judged by that model (a Resume returns to it) and not by the last
+        # candidate's error (see `_on_acp_error_card`).
+        slot._fallback_walk_refused = getattr(exc, "model_unavailable", False) is True
     _fb_primary_safe, _ = redact_exfiltration_urls(
         slot._fallback_primary_model or "the selected model"
     )

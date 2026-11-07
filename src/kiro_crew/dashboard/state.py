@@ -374,6 +374,7 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (  # noqa: E402,F401
     chat_message_frame,
     chat_message_note,
     durable_row_count,
+    is_model_unavailable_row,
     is_quiet_end_row,
     is_stop_event_row,
     is_turn_interrupted,

@@ -1664,6 +1664,12 @@ against sweep completeness, and are torn down at `close_all`.
   call carries the identity and no flag. And only when it is the turn's LAST
   tool row: a tool row later than it means the model kept working past the
   directive, and a gateway that died in that work must not hide behind it.
+  The same scan treats the terminal card a spent retry ladder leaves on a model
+  the backend refused for capacity or a rollout (`meta.kind =
+  "model_unavailable"`, `is_model_unavailable_row` / `isModelUnavailable`) as a
+  terminator: Resume would send the turn back to the refused model, so the card
+  offers the model picker instead. It settles only its own turn: a newer opener,
+  a drained sub-agent completion (`role="subagent"`) included, is judged as before.
   `test_nothing_to_do_directive.py` pins the two constants against the
   selectors mirror. The Bot chat draws nothing for it: tool rows are
   machinery there
