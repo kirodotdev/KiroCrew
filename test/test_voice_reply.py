@@ -125,6 +125,7 @@ class TestStripMarkdown:
         # shared with the frontend recognizer. Stacked tags all go.
         assert strip_markdown("report body\n<!-- keep-visible -->") == "report body"
         assert strip_markdown("done\n<!-- deliver:dashboard -->") == "done"
+        assert strip_markdown("done\n<!-- option-action:close=Done -->") == "done"
         assert (
             strip_markdown("report\n<!-- keep-visible -->\n<!-- deliver:slack -->") == "report"
         )

@@ -1058,10 +1058,11 @@ def relocate_glued_tail_marker(text: str) -> str:
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown
 # pipeline renders as nothing (rehype-raw emits comment nodes the react
-# renderer skips). Three families exist in ``src/``:
+# renderer skips). Four families exist in ``src/``:
 #   * ``<!-- keep-visible -->``       — collapse-all exemption
 #   * ``<!-- deliver:<route> -->``    — heartbeat routing
 #   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
+#   * ``<!-- option-action:close=<label> -->`` — dashboard close-session chip
 #
 # ONE GRAMMAR, TAIL-ANCHORED + FENCE-GUARDED, case-insensitive, both
 # recognizers (this regex and ``website/src/app-sdk/protocol/
@@ -1087,7 +1088,8 @@ def relocate_glued_tail_marker(text: str) -> str:
 # end-of-text on a missing ``-->`` silently deletes visible prose. A tag
 # body over the bound is not a real control tag and stays visible.
 _CONTROL_TAG_BODY = (
-    r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
+    r"<!--(?:\s{0,16}keep-visible\s{0,16}"
+    r"|\s{0,16}(?:deliver|plan_task_id|option-action):[^>\n]{0,256})-->"
 )
 _TRAILING_CONTROL_LINES_RE = re.compile(
     r"(?:(?:^|\n)[ \t]{0,3}" + _CONTROL_TAG_BODY + r"[ \t]{0,16})+\s{0,16}\Z",
@@ -1122,8 +1124,8 @@ def _prefix_closure(literal: str, tail: str = "") -> str:
 # Admits only what can still extend into a complete tag: line-leading (≤3
 # indent), ``<`` ``<!`` ``<!-`` ``<!--``, then bounded whitespace, then a
 # prefix of one family literal -- ``keep-visible`` (then optional whitespace
-# and up to two dashes), ``deliver:`` / ``plan_task_id:`` (then a bounded
-# ``>``-free body, which already covers the closing dashes). The moment a byte
+# and up to two dashes), ``deliver:`` / ``plan_task_id:`` / ``option-action:``
+# (then a bounded ``>``-free body, which covers the closing dashes). The moment a byte
 # diverges (``<!-- ordin``, ``<div``) the tail is prose or an ordinary comment
 # and is NOT held. A complete tag is not a prefix: ``>`` never appears here, so
 # the complete grammar and this one are disjoint by construction and the
@@ -1136,6 +1138,8 @@ _PARTIAL_CONTROL_LINE_RE = re.compile(
     + _prefix_closure("deliver:", r"[^>\n]{0,258}")
     + "|"
     + _prefix_closure("plan_task_id:", r"[^>\n]{0,258}")
+    + "|"
+    + _prefix_closure("option-action:", r"[^>\n]{0,258}")
     + r"))?)?)?)?\Z",
     re.IGNORECASE,
 )

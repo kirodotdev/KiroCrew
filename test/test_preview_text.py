@@ -94,6 +94,9 @@ class TestStripMarkdownPreview:
         # as deliver: routing tags; covered by the shared constant.
         assert strip_markdown_preview("plan ready\n<!-- plan_task_id:abc123 -->") == "plan ready"
 
+    def test_option_action_tag_is_stripped(self):
+        assert strip_markdown_preview("all done\n<!-- option-action:close=Done -->") == "all done"
+
     def test_link_keeps_label(self):
         assert strip_markdown_preview("see [the docs](https://x.y/z)") == "see the docs"
 
