@@ -16186,6 +16186,7 @@
         "kiro_requests_left": "~{{calls}} richieste Kiro per completare",
         "knowledge_base_ids": "ID della base di conoscenza",
         "max_file_size": "Massimo {{max}} MB per file.",
+        "file_too_large": "File troppo grande: {{name}} (massimo {{max}} MB)",
         "max_file_size_unavailable": "Impossibile caricare il limite di dimensione. Puoi comunque caricare; il server controlla ogni file.",
         "manual": "○ manuale",
         "name_optional": "Nome (facoltativo)",
