@@ -599,20 +599,28 @@ describe('SteeringTab', () => {
     // runs its name says it is busy instead.
     renderTab()
     const idle = await screen.findByRole('button', { name: 'Refresh steering files' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
+    idle.focus()
 
     let release: (v: typeof FILES) => void = () => {}
     mockApi.steeringFiles.mockReturnValue(new Promise(resolve => { release = resolve }))
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing steering files…' })
-    expect(busy).toBeDisabled()
+    // Unavailable but still focusable, so a keyboard user keeps their place,
+    // and a second press while it runs starts no second read.
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toHaveFocus()
+    const reads = mockApi.steeringFiles.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.steeringFiles.mock.calls.length).toBe(reads)
     expect(screen.queryByRole('button', { name: 'Refresh steering files' })).toBeNull()
 
     await act(async () => { release(FILES) })
 
     const back = await screen.findByRole('button', { name: 'Refresh steering files' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+    expect(back).toHaveFocus()
   })
 
   it('shows an empty state naming both search roots when nothing is found', async () => {

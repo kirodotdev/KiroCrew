@@ -109,20 +109,28 @@ describe('SkillsTab', () => {
     mockApi.skills.mockResolvedValue(rows)
     renderWithQuery()
     const idle = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
+    idle.focus()
 
     let release: (v: typeof rows) => void = () => {}
     mockApi.skills.mockReturnValue(new Promise(resolve => { release = resolve }))
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing skills…' })
-    expect(busy).toBeDisabled()
+    // Unavailable but still focusable, so a keyboard user keeps their place,
+    // and a second press while it runs starts no second read.
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toHaveFocus()
+    const reads = mockApi.skills.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.skills.mock.calls.length).toBe(reads)
     expect(screen.queryByRole('button', { name: 'Refresh skills' })).toBeNull()
 
     await act(async () => { release(rows) })
 
     const back = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+    expect(back).toHaveFocus()
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {
