@@ -1070,6 +1070,16 @@ value back.
 | `-v` | INFO | Session lifecycle, context %, compaction |
 | `-vv` | DEBUG | ACP events, message updates, full traces |
 
+Once logging is set up, every record at the `kiro_crew` logger's level goes to
+`gateway.log`, and a command run from a terminal echoes it there too.
+`kirocrew chat` without `-v` is the exception, whatever `agent.log_level` says:
+its terminal is the conversation, so it echoes only `kiro_crew` records at ERROR
+and above, `kiro_crew.cli_chat`'s own warnings (they explain a refusal its notice
+tells the user to fix), every `SECURITY:` warning (a lost isolation or ceiling
+stays loud, SEC-009), and third-party warnings, which reach no file
+(`cli_logging._chat_console_filter`). If the log file cannot be opened, chat
+echoes every record.
+
 ## Interactive Mode
 
 - Prompt: `you> `
