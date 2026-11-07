@@ -955,9 +955,14 @@ async def _finish_create_session(
         )
     handle.native_context_documents.update(projected_sources)
     # Inline prompt bytes and file resources come from the same activated
-    # wire definition. Conditional and indexed resources remain native.
+    # wire definition. Conditional and indexed resources remain native. Only a
+    # KAS known to apply a custom agent's prompt holds it; an old one drops it.
     for definition in kas_agents or ():
-        if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
+        if (
+            definition.get("id") == active_agent
+            and isinstance(definition.get("prompt"), str)
+            and handle.kas_agent_prompt_applied
+        ):
             handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
                 "prompt"
             ]

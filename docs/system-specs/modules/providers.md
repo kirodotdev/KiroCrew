@@ -1164,8 +1164,12 @@ KAS inline prompts and file resources come from the actual `customAgents`
 definition sent by `session/new`. File expansion uses that definition, not a
 reread of a possibly different project template. Successful activation publishes
 those source versions to the direct `AcpSessionProvider`; other agents' definitions
-cannot supply its ownership. Resource URIs and their order remain unchanged on
-the wire, and conditional, skill and knowledge resources keep native selection.
+cannot supply its ownership. The inline prompt is published (as
+`template://<agent>#prompt`) only when the session's KAS is known to apply it, a
+relay kiro-cli at or above `KAS_AGENT_PROMPT_MIN_KIRO_CLI`; Crew's bundled engine
+and an unknown release publish none. The session-start `[AGENT SYSTEM PROMPT]`
+block is left out when it equals that published prompt word for word. Resource
+URIs and their order remain unchanged on the wire, and conditional, skill and knowledge resources keep native selection.
 Exact template and body matches omit initial manual copies. The complete-envelope
 budget is checked BEFORE omission: 64,000 characters including wrappers, with
 whole guides left out and named when it is exceeded

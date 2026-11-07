@@ -496,9 +496,16 @@ once shipped: forks carry it verbatim on disk and `is_managed_prompt` matches
 by equality, so a respelled stub would leave every existing fork with the old
 stub text as a custom persona. A retired spelling therefore joins
 `_SUPERSEDED_NATIVE_PROMPT_STUBS`: the readers still treat it as the managed
-contract and the fork heal rewrites it to the current stub. An agent whose `prompt` names its OWN persona
-file is out of scope: it still receives that persona both natively and through
-the injection.
+contract and the fork heal rewrites it to the current stub. An agent that sets its
+OWN persona (inline, or a `file://` naming its own file) receives it once at session
+start on KAS through kiro-cli 2.33.1 or later: the runtime records the prompt it put
+on the wire definition (`template://<agent>#prompt`), and the session-start block is
+left out when it is that text word for word. Any other text keeps the block: a
+persona with Crew's placeholders, a remote-workspace session (whose wire prompt
+carries an added notice), an older or unreadable kiro-cli, and Crew's bundled
+engine, where no capture shows the prompt applied. The turn after a compaction
+re-sends the block on every backend. On kiro-cli the persona still arrives both
+natively and through the injection (#13305).
 
 The reader also recognizes an older managed `file://` pointer under a Crew data
 home or installed package. A desktop update or fallback gateway can leave that
