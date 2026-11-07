@@ -217,6 +217,10 @@ export function useHeightOwner<T>(ctx: {
     // the tree through the owner (setEstimate above) rather than this closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heightIndex, itemCount, estimatedHeight])
+  // The memo mutates the shared tree in render, and the transcript arrives through
+  // a deferred value, so React can sync the tree to a list it then throws away
+  // while the next render reuses the memo. Re-sync to this render's count.
+  if (heightIndex.syncedCount() !== itemCount) heightIndex.sync(itemCount)
 
   // NOTE: geometry invalidation is NOT a piece of state here. It lives on the
   // height owner, which announces a change in the same call that mutates the
