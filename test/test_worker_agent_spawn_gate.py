@@ -691,7 +691,10 @@ def test_the_kas_projection_reads_nothing_after_the_gate(tmp_path, monkeypatch):
     assert extras.custom_agents
     assert reads == [], f"the harness re-read the spec after the gate: {reads}"
     snap = agent.require_fresh_derived_spec("kirocrew-worker", str(tmp_path / "wd"))
-    assert snap is not None and projected == [snap.spec]
+    from kiro_crew.acp.kas_steering import with_kas_steering
+
+    # The gate's object, with only the steering entries KAS loads itself dropped.
+    assert snap is not None and projected == [with_kas_steering(snap.spec, str(tmp_path / "wd"))]
 
 
 def test_the_kas_projection_cannot_be_called_without_a_verified_spec():
