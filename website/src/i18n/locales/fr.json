@@ -2185,10 +2185,10 @@
         "highlight_4": "« Élaguer les worktrees fusionnés » refuse de supprimer un worktree contenant du travail non commité ou non suivi, au lieu de le jeter",
         "highlight_5": "Diffuse les journaux d’un pod et génère des jetons d’accès au pod depuis l’interface",
         "highlight_6": "Conçu pour les personnes qui développent Kiro Crew lui-même — inutile pour un usage quotidien",
-        "highlight_7": "Les pods tournent sur Linux (systemd --user) et macOS (launchd) — mais le pod macOS n’a aucun plafond mémoire/CPU imposé ; « Mettre en service » prépare le pointeur sur toutes les plateformes, et le redémarrage automatique exige une unité systemd --user ou un LaunchAgent macOS ; la vue de flotte, l’état des PR, la synchronisation, le rebase et l’élagage fonctionnent sur toutes les plateformes",
+        "highlight_7": "Les pods tournent sur Linux (systemd --user), macOS (launchd) et Windows (Planificateur de tâches) — mais le pod macOS n’a aucun plafond mémoire/CPU imposé ; « Mettre en service » prépare le pointeur sur toutes les plateformes, et le redémarrage automatique exige une unité systemd --user ou un LaunchAgent macOS ; la vue de flotte, l’état des PR, la synchronisation, le rebase et l’élagage fonctionnent sur toutes les plateformes",
         "page_label": "Dev Fleet",
         "use_case_1": "Gère les worktrees de fonctionnalités de Kiro Crew et des pods de prévisualisation isolés sans toucher à la passerelle en production.",
-        "configuration_1": "Indique à l'app un checkout Kiro Crew ; les actions sur les PR nécessitent une CLI gh authentifiée, tandis que les pods exigent systemd --user sous Linux ou launchd sous macOS et doivent d'abord être provisionnés."
+        "configuration_1": "Indique à l'app un checkout Kiro Crew ; les actions sur les PR nécessitent une CLI gh authentifiée, tandis que les pods exigent systemd --user sous Linux, launchd sous macOS ou le Planificateur de tâches sous Windows et doivent d'abord être provisionnés."
       }
     },
     "fileExplorer": {

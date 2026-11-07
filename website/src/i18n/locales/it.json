@@ -1954,10 +1954,10 @@
         "highlight_4": "«Elimina i worktree uniti» si rifiuta di cancellare un worktree con lavoro non committato o non tracciato, invece di buttarlo via",
         "highlight_5": "Segui i log dei pod e genera le chiavi di accesso ai pod dall’interfaccia",
         "highlight_6": "Pensata per chi sviluppa Kiro Crew stesso — non serve per l’uso quotidiano",
-        "highlight_7": "I pod funzionano su Linux (systemd --user) e macOS (launchd) — ma il pod su macOS non ha un limite di memoria/CPU imposto; Make Live prepara il puntatore su ogni piattaforma, e il riavvio automatico richiede un’unità systemd --user o un LaunchAgent di macOS; vista della flotta, stato della PR, sincronizzazione, rebase ed eliminazione funzionano su qualsiasi piattaforma",
+        "highlight_7": "I pod funzionano su Linux (systemd --user), macOS (launchd) e Windows (Utilità di pianificazione) — ma il pod su macOS non ha un limite di memoria/CPU imposto; Make Live prepara il puntatore su ogni piattaforma, e il riavvio automatico richiede un’unità systemd --user o un LaunchAgent di macOS; vista della flotta, stato della PR, sincronizzazione, rebase ed eliminazione funzionano su qualsiasi piattaforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Gestisci i worktree delle funzionalità di Kiro Crew e pod di anteprima isolati senza modificare il gateway live.",
-        "configuration_1": "Indica all'app un checkout di Kiro Crew; le azioni sulle PR richiedono gh autenticato, mentre i pod richiedono systemd --user su Linux o launchd su macOS e devono prima essere predisposti."
+        "configuration_1": "Indica all'app un checkout di Kiro Crew; le azioni sulle PR richiedono gh autenticato, mentre i pod richiedono systemd --user su Linux, launchd su macOS o l'Utilità di pianificazione su Windows e devono prima essere predisposti."
       }
     },
     "designTweak": {

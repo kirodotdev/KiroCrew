@@ -1795,7 +1795,7 @@
     "devFleet": {
       "manifest": {
         "use_case_1": "在不影响线上网关的情况下，管理 Kiro Crew 功能工作树和隔离的预览 Pod。",
-        "configuration_1": "将应用指向 Kiro Crew 检出目录；PR 操作需认证 gh，Pod 需 Linux systemd --user 或 macOS launchd，并先完成配置。",
+        "configuration_1": "将应用指向 Kiro Crew 检出目录；PR 操作需认证 gh，Pod 需 Linux systemd --user、macOS launchd 或 Windows 任务计划程序，并先完成配置。",
         "description": "开发 Kiro Crew 本身用的控制面板。列出每个功能工作树及其拉取请求状态、提交数和磁盘用量，还能把其中任意一个拉起为 Pod。Pod 是一套完整预览实例，占用独立端口和独立数据目录，于是你可以点开未做完的改动，而不影响正在运行的网关。周边杂活它也一并处理 — 拉取 main 并重新构建、给分支变基、流式查看 Pod 日志，以及清理工作已合并的工作树。",
         "display_name": "Dev Fleet",
         "highlight_1": "把任意工作树拉起为独立 Pod，占用自己的端口和数据目录，正在运行的网关毫不受影响",
@@ -1804,7 +1804,7 @@
         "highlight_4": "“Prune merged”不会删除仍有未提交或未跟踪改动的工作树，而是拒绝操作",
         "highlight_5": "在界面上流式查看 Pod 日志，并签发 Pod 访问令牌",
         "highlight_6": "给开发 Kiro Crew 本身的人用 — 日常使用并不需要它",
-        "highlight_7": "Pod 可以跑在 Linux（systemd --user）和 macOS（launchd）上 — 但 macOS 上的 Pod 没有强制的内存/CPU 上限；Make Live 在所有平台都会暂存指针，自动重启需要 systemd --user 单元或 macOS LaunchAgent；机群视图、PR 状态、同步、变基和清理在任何平台都可用",
+        "highlight_7": "Pod 可以跑在 Linux（systemd --user）、macOS（launchd）和 Windows（任务计划程序）上 — 但 macOS 上的 Pod 没有强制的内存/CPU 上限；Make Live 在所有平台都会暂存指针，自动重启需要 systemd --user 单元或 macOS LaunchAgent；机群视图、PR 状态、同步、变基和清理在任何平台都可用",
         "page_label": "Dev Fleet"
       }
     },

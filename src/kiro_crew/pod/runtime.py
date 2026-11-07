@@ -847,6 +847,10 @@ def require_backend() -> None:
     if IS_WINDOWS:
         try:
             win_backend.require_backend()
+        except win_backend.WindowsTaskCreateRefused as exc:
+            # The scheduler answered and refused: like systemd with no user
+            # session, pods cannot exist here, so callers take the absent path.
+            raise PodBackendAbsent(str(exc)) from exc
         except win_backend.WindowsTaskError as exc:  # translate to the pod error type
             raise PodError(str(exc)) from exc
         return

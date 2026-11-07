@@ -2024,7 +2024,7 @@
     "devFleet": {
       "manifest": {
         "use_case_1": "실행 중인 게이트웨이는 그대로 둔 채 Kiro Crew 기능 워크트리와 격리된 미리 보기 포드를 운영합니다.",
-        "configuration_1": "앱에 Kiro Crew 체크아웃 경로를 지정하세요. PR 작업에는 인증된 gh가 필요합니다. 포드에는 Linux의 systemd --user 또는 macOS의 launchd가 필요하며 먼저 프로비저닝해야 합니다.",
+        "configuration_1": "앱에 Kiro Crew 체크아웃 경로를 지정하세요. PR 작업에는 인증된 gh가 필요합니다. 포드에는 Linux의 systemd --user, macOS의 launchd 또는 Windows의 작업 스케줄러가 필요하며 먼저 프로비저닝해야 합니다.",
         "description": "Kiro Crew 자체를 개발하기 위한 제어판입니다. 모든 기능 워크트리를 풀 리퀘스트 상태, 커밋 수, 디스크 사용량과 함께 나열하고, 그중 어느 것이든 포드로 띄울 수 있습니다. 포드는 자체 포트와 자체 데이터 디렉터리를 갖는 완전한 미리 보기 인스턴스이므로, 실행 중인 게이트웨이를 건드리지 않고 완성되지 않은 변경을 직접 눌러 볼 수 있습니다. main 풀 및 재빌드, 브랜치 리베이스, 포드 로그 스트리밍, 이미 병합된 워크트리 정리 같은 주변 작업도 함께 처리합니다.",
         "display_name": "Dev Fleet",
         "highlight_1": "어떤 워크트리든 자체 포트와 데이터 디렉터리를 쓰는 격리된 포드로 띄워, 실행 중인 게이트웨이는 그대로 둡니다",
@@ -2033,7 +2033,7 @@
         "highlight_4": "‘병합된 항목 정리’는 커밋되지 않았거나 추적되지 않는 작업이 있는 워크트리를 버리지 않고 삭제를 거부합니다",
         "highlight_5": "UI에서 포드 로그를 스트리밍하고 포드 액세스 토큰을 발급",
         "highlight_6": "Kiro Crew 자체를 개발하는 사람을 위해 만들었습니다 — 일상적인 사용에는 필요하지 않습니다",
-        "highlight_7": "포드는 Linux(systemd --user)와 macOS(launchd)에서 실행됩니다 — 다만 macOS 포드에는 메모리/CPU 상한이 적용되지 않습니다. Make Live는 모든 플랫폼에서 포인터를 준비하고, 자동 재시작에는 systemd --user 유닛이나 macOS LaunchAgent가 필요하며, 플릿 화면, PR 상태, 동기화, 리베이스, 정리는 모든 플랫폼에서 동작합니다",
+        "highlight_7": "포드는 Linux(systemd --user), macOS(launchd), Windows(작업 스케줄러)에서 실행됩니다 — 다만 macOS 포드에는 메모리/CPU 상한이 적용되지 않습니다. Make Live는 모든 플랫폼에서 포인터를 준비하고, 자동 재시작에는 systemd --user 유닛이나 macOS LaunchAgent가 필요하며, 플릿 화면, PR 상태, 동기화, 리베이스, 정리는 모든 플랫폼에서 동작합니다",
         "page_label": "Dev Fleet"
       }
     },

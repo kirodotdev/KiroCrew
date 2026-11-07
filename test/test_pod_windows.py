@@ -56,6 +56,10 @@ def cfg(tmp_path, monkeypatch) -> PodConfig:
     return c
 
 
+#: The real gate, kept before the autouse fixture below stubs it out.
+_REAL_REQUIRE_BACKEND = win.require_backend
+
+
 @pytest.fixture(autouse=True)
 def _no_real_schtasks(monkeypatch):
     """Never shell out to a real schtasks, and let the gate pass.
@@ -239,6 +243,28 @@ def test_unit_state_derives_failed_from_a_nonzero_result_and_a_dead_pid(cfg):
 def test_unit_state_is_inactive_on_a_clean_exit(cfg):
     win.result_path(cfg, "smoke").write_text("0\n")
     assert win.unit_state(cfg, "smoke") == ("inactive", 0)
+
+
+def test_unit_state_is_active_while_a_boot_producer_lives_before_its_gateway(cfg, monkeypatch):
+    """Worktree removal refuses only an active pod, and a boot is using its
+    checkout before any gateway pid exists. A dead producer is not a boot."""
+    record = {"state": "preparing", "publisher": [4242, "77"]}
+    monkeypatch.setattr(win.runs, "read", lambda c, n: record)
+    monkeypatch.setattr(win.jobs, "close_identity", lambda handle: None)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda pid, token: 9)
+    assert win.unit_state(cfg, "smoke") == ("active", 0)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda pid, token: None)
+    assert win.unit_state(cfg, "smoke") == ("inactive", 0)
+    record["state"] = "finished"
+    monkeypatch.setattr(win.jobs, "open_identity", lambda pid, token: pytest.fail("not a boot"))
+    assert win.unit_state(cfg, "smoke") == ("inactive", 0)
+    # The producer writes the pid before `ready`, so the run must be read FIRST:
+    # a read that then misses `preparing` still finds the pid.
+    order: list[str] = []
+    monkeypatch.setattr(win.runs, "read", lambda c, n: order.append("run") or record)
+    monkeypatch.setattr(win, "supervised_pid", lambda c, n: order.append("pid"))
+    win.unit_state(cfg, "smoke")
+    assert order == ["run", "pid"]
 
 
 def test_unit_state_is_inactive_when_nothing_was_ever_recorded(cfg):
@@ -653,6 +679,25 @@ def test_require_backend_translates_the_windows_error_to_a_pod_error(monkeypatch
     )
     with pytest.raises(rt.PodError, match="no schtasks"):
         rt.require_backend()
+
+
+def test_a_refused_task_create_means_the_pod_backend_is_absent(monkeypatch):
+    """Only the scheduler's own refusal is "absent"; a missing schtasks stays a PodError."""
+    monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    monkeypatch.setattr(win, "require_backend", _REAL_REQUIRE_BACKEND)
+    monkeypatch.setattr(win, "IS_WINDOWS", True)
+    monkeypatch.setattr(win, "_PROBE_OK", False)
+    monkeypatch.setattr(win, "schtasks_bin", lambda: r"C:\Windows\System32\schtasks.exe")
+    monkeypatch.setattr(
+        win, "_schtasks_raw", lambda *a: _cp(returncode=1, stderr="Access is denied.")
+    )
+    with pytest.raises(rt.PodBackendAbsent, match="Access is denied"):
+        rt.require_backend()
+    monkeypatch.setattr(win, "schtasks_bin", lambda: None)
+    with pytest.raises(rt.PodError) as exc:
+        rt.require_backend()
+    assert not isinstance(exc.value, rt.PodBackendAbsent)
 
 
 def test_install_backend_writes_nothing_on_windows(cfg, monkeypatch):
