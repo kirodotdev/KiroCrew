@@ -36,7 +36,6 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
         # separate open PR; remove these entries once those jobs are migrated.
         ("code-review.yml", "autosde-rules"),
         ("code-review.yml", "inclusive-language"),
-        ("code-review.yml", "pr-hygiene"),
     }
 )
 

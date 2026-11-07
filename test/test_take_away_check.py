@@ -22,7 +22,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "take_away_check.py"
 FIXTURES = ROOT / "test" / "fixtures" / "take_away"
-WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "pr-hygiene.yml"
 TEMPLATE = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
 
 READER = "Reader: src/kiro_crew/cron_script.py:run_script -- cron -- test_app_cron_imports_own_src"

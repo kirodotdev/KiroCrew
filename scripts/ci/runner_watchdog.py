@@ -250,6 +250,7 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "macos-on-demand.yml",
     "main-ratchet-audit.yml",
     "pages.yml",
+    "pr-hygiene.yml",
     "pr-merge-conflict-label.yml",
     "pr-policy.yml",
     "pr-readiness.yml",
@@ -327,6 +328,7 @@ HEAL_SAFE_PULL_REQUEST_WORKFLOWS: frozenset[str] = frozenset(
     {
         "code-review.yml",
         "dependency-review.yml",
+        "pr-hygiene.yml",
         "pr-policy.yml",
     }
 )

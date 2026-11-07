@@ -2,11 +2,11 @@
 # Fetch the git objects Code Review's jobs read, and resolve their diff base.
 #
 # Run by the "Resolve diff base (merge-base)" step of every job in
-# code-review.yml, right after `actions/checkout` with `fetch-depth: 2`: the
-# merge commit and its two parents (the base tip and the PR head), each with
-# its whole tree. A full-history checkout instead downloads every branch with
-# every blob ever committed, about 3 GB, and on a slow runner that fetch alone
-# outlasts the job's timeout.
+# code-review.yml and pr-hygiene.yml, right after `actions/checkout` with
+# `fetch-depth: 2`: the merge commit and its two parents (the base tip and the
+# PR head), each with its whole tree. A full-history checkout instead downloads
+# every branch with every blob ever committed, about 3 GB, and on a slow runner
+# that fetch alone outlasts the job's timeout.
 #
 # This script adds the two things the jobs read beyond those three commits:
 #

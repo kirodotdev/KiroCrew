@@ -33,7 +33,7 @@ name: Fork PR Description
 # script.
 #
 # Fork-only check-run: same-repo PRs get the same rules from the same script
-# through PR Hygiene in code-review.yml, which also blocks PR Readiness for
+# through PR Hygiene in pr-hygiene.yml, which also blocks PR Readiness for
 # forks once their runs are approved. No check-run is created for them here.
 #
 # LIMIT, stated plainly: this verifies that the required parts are present,
