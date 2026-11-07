@@ -2152,7 +2152,7 @@ tables is DENIED, so a new event name is a silent loss of function for apps unti
 it is classified — `test_ws_event_scoping_frames.py` fails the build on an unclassified
 broadcast name rather than letting it reach production.
 
-Three tiers. Tier 0 (`dashboard`, `refresh`, `update_progress`) carries no
+Three tiers. Tier 0 (`dashboard`, `refresh`, `update_progress`, `models_changed`) carries no
 sensitive payload and always delivers — and that classification is a claim about
 CONTENT, so it has to be maintained: `_push_status` writes the `dashboard` frame
 straight to each socket every few seconds, and its payload is deliberately
