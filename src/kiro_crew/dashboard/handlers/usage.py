@@ -560,7 +560,7 @@ async def persist_token_record_async(
             # The harness is read off model_source, the live provider every
             # surface already hands in to name the model that ran: it is the one
             # object here that knows the session's EFFECTIVE backend, overrides
-            # included. Not written to the row; it labels the latency sample only.
+            # included. Not written to the row; it labels the turn samples only.
             _emit_turn_histogram(
                 record,
                 slot_key,
@@ -633,6 +633,7 @@ def _emit_turn_histogram(
         cost_usd=record.get("cost"),
         model=model,
         provider=provider,
+        harness=harness,
     )
 
 

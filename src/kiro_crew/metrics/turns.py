@@ -202,8 +202,8 @@ def emit_turn_duration(
     :data:`~kiro_crew.metrics.harness.HARNESS_VALUES`, so the set stays closed
     without a second check here. ``provider``
     cannot answer "which harness" (``acp`` covers kiro-cli, Codex and others),
-    which is why this is a separate attribute. Only this instrument carries it
-    for now; the usage family below does not.
+    which is why this is a separate attribute. The usage family below carries
+    the same value from the same caller.
 
     ``duration_ms`` is the provider-reported duration and ``elapsed_ms`` the
     locally measured wall clock; the first non-zero wins. Both are needed
@@ -314,6 +314,7 @@ def emit_turn_usage(
     cost_usd: object = 0.0,
     model: str = "",
     provider: str = "",
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Emit this turn's token / billing samples (best-effort, never raises).
 
@@ -333,10 +334,13 @@ def emit_turn_usage(
     moves a token. An absent series reads as absent, which is the truth.
 
     Attributes are deliberately just ``direction`` (tokens only) plus
-    ``model``/``provider``. ``outcome`` and ``session_source`` are NOT carried:
-    they exist on ``kirocrew.turn.duration``, which samples the same turns, so
-    adding them here would multiply these series by two more dimensions to answer
-    a question the duration instrument already answers.
+    ``model``/``provider`` and ``harness``, the value :func:`emit_turn_duration`
+    documents. ``harness`` is here because spend per harness is a question the
+    duration instrument cannot answer, and it mostly follows ``model``, so it adds
+    few series. ``outcome`` and ``session_source`` are NOT carried: they exist on
+    ``kirocrew.turn.duration``, which samples the same turns, so adding them here
+    would multiply these series by two more dimensions to answer a question the
+    duration instrument already answers.
 
     The four emits are written out rather than looped over a table of
     (name, value, unit) tuples. A loop reads shorter but hides each instrument's
@@ -345,7 +349,7 @@ def emit_turn_usage(
     first argument of every ``histogram(...)`` call — a loop variable there is
     exactly how an unregistered histogram slips onto OTEL's default buckets.
     """
-    attrs = _model_attrs(model, provider)
+    attrs = {**_model_attrs(model, provider), ATTR_HARNESS: harness}
     tokens_in = _positive(input_tokens)
     tokens_out = _positive(output_tokens)
     credit_amount = _positive(credits)
