@@ -191,6 +191,7 @@ class ChannelTurnHooks:
                 getattr(event, "tool_input", None),
                 session_key=self.turn.session_key,
                 tool_match_names=self._match_names(call_id, _title(event))[0],
+                raw_tool_params=getattr(event, "raw_tool_params", None),
             )
 
     def _match_names(
@@ -240,6 +241,7 @@ class ChannelTurnHooks:
             harness_tool_id=str(getattr(event, "harness_tool_id", "") or ""),
             session_key=self.turn.session_key,
             acp_session_id=sid if self.spec.hooks and sid else None,
+            raw_tool_params=getattr(event, "raw_tool_params", None),
         )
 
     async def on_tool_result(self, event: Any) -> None:

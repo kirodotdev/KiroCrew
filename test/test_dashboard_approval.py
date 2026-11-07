@@ -1057,6 +1057,141 @@ class TestDenyRowTitleRedaction:
         assert source.count('f"🚫 {title} (hook error)"') == 1
 
 
+# ── Hook tool_input built from the structured params ──
+
+
+class TestHookToolInputFromRawParams:
+    """A PreToolUse hook on the dashboard permission path reads ``tool_input`` built
+    from the call's ``raw_tool_params``, not parsed out of the scrubbed display text.
+
+    Parsed out of the display text, the scrubber's tag for a URL inside an escaped
+    ``\\"`` consumes the backslash, the JSON does not parse, and the payload goes out
+    with no ``tool_input`` at all. The URL's 64-character query value is what flags it;
+    the hook sees the tag, never the URL (hook inputs are redacted by design).
+
+    The permission arm fires the hooks at four sites -- under a context builder's
+    auto-approve, under its allow verdict before the interactive card, on the card's
+    own approve (``permission_prompt``), and on a trusted slot with no context builder
+    -- and every one is driven here (``allow_then_card`` reaches the middle two).
+    """
+
+    _QUERY = "a1b2c3d4" * 8
+    _URL = "https://example.com/a?id=" + _QUERY
+    _TAG = "[REDACTED: suspicious URL to example.com]"
+
+    def _event(self, command: str) -> LLMEvent:
+        from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
+
+        display = redact_text(json.dumps({"command": command}, indent=2))
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Running: curl",
+            tool_kind="execute",
+            request_id="req-1",
+            tool_input=display,
+            raw_tool_params={"command": command},
+            raw_params_trusted=True,
+            is_shell=True,
+            shell_classified=True,
+        )
+
+    async def _pre_fire_inputs(self, tmp_path, command: str, *, site: str) -> list:
+        """Every ``tool_input`` the PreToolUse fires of one turn carried; the tool
+        was approved."""
+        if site == "auto_approve":
+            cb, trust, answer = _context_builder(ToolHookResult.auto_approve()), False, False
+        elif site == "allow_then_card":
+            cb, trust, answer = _context_builder(ToolHookResult.allow()), False, True
+        else:
+            assert site == "trusted_slot"
+            cb, trust, answer = None, True, False
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot(trust=trust)
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client._client = client
+        client.last_prompt_stats = None
+        calls = {"n": 0}
+
+        def _stream(*args, **kwargs):
+            # Only the first stream carries the request, so a recovery
+            # continuation completes instead of asking again.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _async_iter([self._event(command), _complete_event()])
+            return _async_iter([_complete_event()])
+
+        client.stream = MagicMock(side_effect=_stream)
+        answerer = None
+        if answer:
+
+            async def _approve() -> None:
+                await _answer_approval(slot, "req-1", "approved")
+
+            answerer = asyncio.get_running_loop().create_task(_approve())
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+            if slot.task:
+                await slot.task
+        if answerer is not None:
+            await _drain(answerer)
+        pre = [
+            c
+            for c in state._hook_store.fire.call_args_list
+            if c.args and c.args[0] == HOOK_EVENT_PRE_TOOL_USE
+        ]
+        assert pre, state._hook_store.fire.call_args_list
+        client.approve_tool.assert_called()
+        return [c.kwargs["tool_input"] for c in pre]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("site", ["auto_approve", "allow_then_card", "trusted_slot"])
+    async def test_double_quoted_url_still_hands_the_hook_a_command(self, tmp_path, site):
+        command = f'curl -s --url "{self._URL}"'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(self._event(command).tool_input)  # the display text alone
+        inputs = await self._pre_fire_inputs(tmp_path, command, site=site)
+        assert inputs == [{"command": f'curl -s --url "{self._TAG}"'}] * len(inputs)
+
+    @pytest.mark.asyncio
+    async def test_single_quoted_url_hands_the_hook_the_redacted_command(self, tmp_path):
+        command = f"curl -s --url '{self._URL}'"
+        inputs = await self._pre_fire_inputs(tmp_path, command, site="auto_approve")
+        assert inputs == [{"command": f"curl -s --url '{self._TAG}'"}]
+        assert self._QUERY not in json.dumps(inputs)
+
+    @pytest.mark.asyncio
+    async def test_the_tool_call_frames_informational_fire_carries_the_params(
+        self, tmp_path, monkeypatch
+    ):
+        """The tool-call frame's own fire (``tool_rows``) hands over the structured
+        params too, so a hook that runs there reads the same ``tool_input``."""
+        from kiro_crew.providers.base import EVENT_TOOL_CALL
+
+        fire = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", fire)
+        state, client = _make_state(tmp_path)
+        slot = _make_slot()
+        command = f'curl -s --url "{self._URL}"'
+        _set_stream(
+            client,
+            [
+                LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="Running: curl",
+                    tool_kind="execute",
+                    tool_call_id="tc-1",
+                    tool_input="{",
+                    raw_tool_params={"command": command},
+                ),
+                _complete_event(),
+            ],
+        )
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+        assert fire.await_count == 1
+        assert fire.await_args.kwargs["raw_tool_params"] == {"command": command}
+
+
 # ── Long read titles carrying a canonical identity ──
 
 

@@ -1369,6 +1369,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # via to_dict() — already a registered sink.
         "hooks.py",
         "hook_runtime/script_hooks.py",
+        # Helper, not a boundary: ``hook_tool_input`` redacts each string value of a
+        # tool call's structured params to build the ``tool_input`` of the PreToolUse
+        # stdin payload. The callers that hand that payload to a hook process
+        # (``acp/client_tool_events.py``, ``dashboard/chat_turn/tool_approval.py``,
+        # ``subagent_manager/run_turn.py``, ``task_executor.py``) are already listed,
+        # and the hook process itself is the audience ``script_hooks.py`` serves, so
+        # the helper adds no transport or audience.
+        "hook_runtime/hook_dispatch.py",
         # Helper, not a boundary: `redact_oauth_client_secrets` /
         # `restore_redacted_oauth_client_secrets` are pure functions over an agent
         # spec dict that mask (and, on the write-back, un-mask) a pre-registered

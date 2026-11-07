@@ -6573,7 +6573,7 @@ wedged owner frame still reads as a gate stall.
 | `internal_reads` | The edition registration seam, the fixed-path sensitive read and the two SEL audit entry points |
 | `script_validation` | The fail-soft timeout normalization and the raising field validator both store write paths share |
 | `stream_caps` | A hook's bounded output drain, the truncation-marking decode and the concurrent stdin/stdout/stderr exchange |
-| `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses (a snapshot, so its fires never write their status back over a newer save), the informational tool-call fire, and the PreToolUse block gate with the names a matcher meets |
+| `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses (a snapshot, so its fires never write their status back over a newer save), the informational tool-call fire, the PreToolUse block gate with the names a matcher meets, and `hook_tool_input`, the one builder of the `tool_input` a PreToolUse payload carries |
 | `hook_types` | The pipeline's value types: `HookResult`, the tool gate's verdict `ToolHookResult` (its constructors emit the approval-decision counter, which `test/metrics/test_business_counters.py` reads in this file), the rule dataclasses, `UserDeniedPattern`, and `HooksConfig` with its defensive parse of the `hooks` section |
 | `script_hooks` | Running script hooks: a hook process's environment (`_hook_subprocess_env`, the one reader of `_HOOK_BASE_ENV_KEYS`), one hook's sandboxed run (`run_script_hook`) and its `ScriptHookResult`, and `ScriptHookStore`, which persists the Hooks page's hooks, validates every edit and fires the hooks an event matches; it parses `hooks.json` from its bytes (as do the strict read in `hook_dispatch` and the import sanitizer), so UTF-8 with or without a byte-order mark, UTF-16 (Windows PowerShell 5.1's default) and UTF-32 all load, and bytes none of those decode are a failed load; a store whose load could not read or represent `hooks.json` reloads from disk at its next edit and, while the file still cannot be loaded, refuses every save with `WebhookStoreUnreadable` (503 at the hooks routes) rather than writing its empty in-memory list over the file; `fire` sits beside `run_script_hook`, and `test_hook_events_kas_triggers` reads its source through the object |
 
@@ -6750,6 +6750,28 @@ Kiro CLI harness goes with it
 The user-facing statement and its remedies (a Hooks-page hook, or `kiro-cli update`
 so a Kiro CLI choice runs on KAS) are in
 [steering-and-hooks](../../../src/kiro_crew/docs/steering-and-hooks.md#kiro-cli-hooks-that-survive-an-update).
+
+**`tool_input` is the call's structured params, redacted value by value.** Every
+PreToolUse fire -- the dashboard permission arm (`tool_approval.py` and the card's
+own approve in `permission_prompt.py`), the informational tool-call fire
+(`hook_dispatch.fire_tool_hooks`, the channel turn's `messaging/tool_hooks.py` included)
+and the subagent, task-runner, channel, CLI-chat and cron gate (`hook_dispatch.permission_pre_tool_block`)
+-- builds it through
+`hook_dispatch.hook_tool_input` from the event's `raw_tool_params` dict, the same
+source the built-in tool policy judges (`AcpEvent.shell_command`), with every string
+value run through `redact_via_context` on its own and the keys left as they are. Hook
+scripts therefore see redacted input, as they always did (`test_acp_client_tool_hooks.py::
+test_pre_fire_redacts_credential_in_tool_input` pins it): a credential or a flagged URL
+in a command arrives as its `[REDACTED: …]` tag, never as the raw value. What changed
+is the shape the redaction runs on. It used to run on the rendered display JSON and the
+result was parsed back, so a tag replacing a URL inside an escaped `\"` consumed the
+backslash, the text no longer parsed, the error was swallowed and the payload went out
+with no `tool_input` key, which made a fail-closed hook refuse a harmless read
+(#32388); a value redacted on its own cannot break the JSON around it. Only an event
+with no `raw_tool_params` falls back to parsing the already-redacted display text, and
+text that does not parse is logged at warning on `kiro_crew.hooks` rather than dropped
+silently. Pinned by `TestHookToolInput` (`test_fire_tool_hooks.py`) and
+`TestHookToolInputFromRawParams` (`test_dashboard_approval.py`).
 
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
