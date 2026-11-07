@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         _kick_connections_warm_scavenge,
         _kick_display_verdicts,
         _kick_local_decision_model,
+        _kick_market_staging_sweep,
         _kick_owner_only_sweep,
         _kick_pinned_order_load,
         _kick_session_search_index,
@@ -485,6 +486,7 @@ async def start_api_server(
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
     _kick_owner_only_sweep(state)
+    _kick_market_staging_sweep(state)
     _kick_display_verdicts(state)
     # Parity with start_dashboard's post-bind restore: build fair admission's
     # service (and probe containment) before any channel turn can arrive, so a

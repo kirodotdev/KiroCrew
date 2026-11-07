@@ -34,6 +34,24 @@ export interface MarketPlan {
   planDigest: string
 }
 
+/** What a prepared marketplace app shows before the yes (`/market/apply` answers 202 with it). */
+export interface MarketAppConfirm {
+  inFolder: { crons: string[]; mcpServers: string[]; agents: string[] }
+  app: { ref: string; version: number; appVersion: string; publisher: string; sha256Prefix: string }
+  components: { kind: string; name: string; sha256Prefix: string }[]
+  permissions: { notice: string; commands: string[]; network: string[]; files: string[]; background: string[]; mcpServers: string[]; agents: string[] }
+  planPermissions: MarketPlan['permissions']
+  trustLabel: string
+}
+
+/** `/market/apply` for an app: verified and unpacked, NOT installed, waiting for the yes. */
+export interface MarketAppPending {
+  needsConfirm: true
+  ref: string
+  token: string
+  confirm: MarketAppConfirm
+}
+
 export function createCapabilityManagerEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const catalog = {
     // Graceful no-ops on a public install, where AIM is stubbed; the panels
@@ -59,6 +77,9 @@ export function createCapabilityManagerEndpoints({ post, j, jfetch: fetch }: Cli
     capabilityMarketPlan: (ref: string): Promise<MarketPlan> => post('/api/capability/market/plan', { ref }).then(j),
     capabilityMarketApply: (ref: string, planDigest: string) =>
       post('/api/capability/market/apply', { ref, plan_digest: planDigest }).then(j),
+    // The yes for a prepared app: installs it disabled, registering nothing.
+    capabilityMarketConfirm: (ref: string, planDigest: string, token: string) =>
+      post('/api/capability/market/confirm', { ref, plan_digest: planDigest, token, confirmed: true }).then(j),
   }
 
   return { catalog }

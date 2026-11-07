@@ -817,7 +817,7 @@ _DASHBOARD_BOOT = tuple("""
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
     _kick_local_decision_model _kick_knowledge_orphan_reclaim _kick_owner_only_sweep
-    _kick_display_verdicts _kick_otel_crew_log_subscriber
+    _kick_market_staging_sweep _kick_display_verdicts _kick_otel_crew_log_subscriber
     load_loop_stall_exit_after
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
@@ -882,7 +882,8 @@ _API_BOOT = tuple("""
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
-    _kick_local_decision_model _kick_owner_only_sweep _kick_display_verdicts
+    _kick_local_decision_model _kick_owner_only_sweep _kick_market_staging_sweep
+    _kick_display_verdicts
     _arm_prevent_sleep_poll
     register_pre_exec_stop record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())

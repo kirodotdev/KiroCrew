@@ -558,6 +558,17 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
 
+  it('has an Install apps from Discover switch, off by default, that writes its preview key', async () => {
+    // The gateway reads this one (dashboard.feature_previews.marketplace_apps):
+    // off, an app listing is refused at plan, apply and confirm.
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^install apps from discover$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    await act(async () => { toggle().click() })
+    expect(localStorage.getItem('mc-preview-marketplace-apps')).toBe('1')
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+  })
+
   it('has one Chat on a crew switch for both crew halves, and no second card', async () => {
     // The crew groups in the sidebar and "New chat on crew" were two switches;
     // one on and one off let a user open a chat on a crew with no group to

@@ -9995,6 +9995,8 @@
         "explore": "Explore",
         "explore_desc": "Adds Explore to the top bar: features to try, your progress, and a Try today card on a new chat.",
         "explore_desc_summary": "Features to try, in the top bar.",
+        "marketplace_apps": "Install apps from Discover",
+        "marketplace_apps_desc": "Lets Discover install an app listing. You see what the app contains first, and it is installed turned off only after you confirm.",
         "remote_dispatch": "Remote dispatch",
         "remote_dispatch_desc": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
         "remote_dispatch_desc_summary": "Runs Ultra Mode tasks on connected machines.",
