@@ -384,6 +384,9 @@ class _SettlingManager:
     def published_queued_depths(self) -> dict[str, int]:
         return {}
 
+    def published_queued_labels(self) -> dict[str, dict]:
+        return {}
+
 
 @pytest.fixture
 def _slots_window_always_open(monkeypatch):

@@ -789,7 +789,9 @@ async def _fire_event_impl(
     # Recorded before the frame goes out, so a slots push serialized after
     # this frame can never carry an older depth than the frame did.
     if etype == "subagent_queued":
-        self._manager._published_depths.record(info.parent_session_key, (extra or {}).get("queued"))
+        frame = extra or {}
+        label = {k: v for k, v in frame.items() if k != "queued"} if "reason" in frame else None
+        self._manager._published_depths.record(info.parent_session_key, frame.get("queued"), label)
     if self._manager._on_event:
         try:
             await self._manager._on_event(etype, info, extra or {})
