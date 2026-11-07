@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Coins, Info, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { isAccountOnly, parseKiroUsagePayload, kiroUsageRefetchInterval, type KiroUsageState } from '../../api/kiroUsage'
-import { isKiroBackend, type AcpBackendConfig } from '../../api/acpBackend'
+import { isKiroHarness, type AcpBackendConfig } from '../../api/acpBackend'
 import type { KiroAccountUsage } from '../../components/KiroAccountModal'
 import { fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
@@ -49,18 +49,18 @@ export function useKiroUsageReadout() {
   // drill-in can never report a different state from the pill that opened it —
   // the modal spinning on "checking account" behind a pill that already says
   // "unavailable" is the same falsy-collapse defect one level down.
-  // The `none` dash is a Kiro-backend surface: it says "kiro-cli holds no
-  // reading yet; open to refresh", and that refresh is a kiro-cli read. On any
-  // other harness the same `available: false` means kiro-cli is not what runs
-  // agents here, so there is no balance to read and the segment stays hidden.
-  // Read POSITIVELY off the selected backend (the gateway's `is_kiro_backend`),
-  // never as "not claude": an unloaded config renders no dash.
+  // The `none` dash is a Kiro-harness surface: kiro-cli and its KAS relay both
+  // run on the Kiro account, so "no reading yet; open to refresh" has a
+  // balance behind it. On any other harness the same `available: false` means
+  // no Kiro account runs agents here, so there is no balance to read and the
+  // segment stays hidden. Read POSITIVELY off the selected backend, never as
+  // "not claude": an unloaded config renders no dash.
   const kirocrewCfgQuery = useQuery<AcpBackendConfig>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
   const { data: kirocrewCfg, isSuccess: kirocrewCfgLoaded } = kirocrewCfgQuery
-  const kiroCreditSurface = isKiroBackend(kirocrewCfg)
+  const kiroCreditSurface = isKiroHarness(kirocrewCfg)
   // "The config read failed" must survive its own retry: a data-less errored
   // query goes back to `pending` (error cleared) for the whole refetch, and
   // reading `isError` alone would drop the segment to the hidden non-Kiro shape
@@ -69,8 +69,8 @@ export function useKiroUsageReadout() {
   // read is failed, in flight or not.
   const kirocrewCfgFailed = failedWithNoData(kirocrewCfgQuery)
   // `config-unreadable`: the gateway holds no reading AND the config read that
-  // decides whether this is the Kiro backend FAILED. Neither "no plan" nor "not
-  // the kiro harness" is established, so the segment must not collapse into the
+  // decides whether this is a Kiro harness FAILED. Neither "no plan" nor "not
+  // a Kiro harness" is established, so the segment must not collapse into the
   // hidden non-Kiro case (that is a verdict; this is a failed read): it renders
   // its own dash, and the modal behind it retries the config read.
   const kiroUsageState: KiroAccountUsage = kiroUsageFailed && !kiroUsage
@@ -79,12 +79,12 @@ export function useKiroUsageReadout() {
       ? 'config-unreadable'
       : (kiroUsage ?? null)
   // The states with NOTHING TRUE TO SHOW: a usage read that produced no
-  // reading, on a harness that does not resolve to kiro-cli. Whether this
+  // reading, on a harness that does not run on the Kiro account. Whether this
   // surface EXISTS is the HARNESS's verdict; the reading only decides what it
   // shows -- so a read that produced nothing must not resurrect a segment the
   // harness has already ruled out.
   //
-  // `failed` belongs here with `none`. On a non-kiro harness the read fails BY
+  // `failed` belongs here with `none`. On a non-Kiro harness the read fails BY
   // CONSTRUCTION: `GET /api/sessions/usage` is refused with 503
   // `kiro_prerequisite_required` whenever the kiro-cli readiness latch is not
   // verified-ready, which is the STANDING state of an install that runs another
@@ -92,11 +92,11 @@ export function useKiroUsageReadout() {
   // answer `available: false`, so the state is always `failed`, never `none`.
   //
   // `config-unreadable` is deliberately NOT one of these: the config read itself
-  // failed, so "not the kiro harness" was never established.
+  // failed, so "not a Kiro harness" was never established.
   //
   // The two no-reading states need DIFFERENT evidence, which is why this is not
   // one `||`. `none` is a payload the gateway sent, so an unloaded config
-  // already hides it (`isKiroBackend(undefined)` is false). `failed` is the
+  // already hides it (`isKiroHarness(undefined)` is false). `failed` is the
   // absence of an answer, so hiding it demands a SETTLED verdict: while the
   // config is unread, a dash the user can open beats silently dropping the only
   // surface that reports the failure.
@@ -116,7 +116,7 @@ export function useKiroUsageReadout() {
   // Phone drawers: the Kiro Account row (nav drawer) and tile (the chat
   // drawer's rail) are the phone's only way to the account modal -- the readout
   // capsule that carries the desktop credits segment is not rendered on the
-  // phone (docs/narrow-viewport.md). On the Kiro backend it is always there
+  // phone (docs/narrow-viewport.md). On a Kiro harness it is always there
   // (the modal's Refresh is how an empty reading gets filled). On any other
   // harness it appears only for a reading the desktop segment would show
   // (`pillHidden` is the segment's own derivation) and never for the warming
@@ -143,8 +143,8 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
   if (usageSegmentHidden) return null
   // Usage segment — Kiro credit plan from Kiro Crew's own usage
   // cache. Spinner while the cache warms, a dash when the fetch
-  // failed or when the gateway holds no reading. On the Kiro
-  // backend every state keeps the segment on screen: the account
+  // failed or when the gateway holds no reading. On a Kiro
+  // harness every state keeps the segment on screen: the account
   // modal it opens is where the user refreshes, so a hidden segment
   // would make the one recovery path unreachable.
   if (kiroUsageState === 'none') {
