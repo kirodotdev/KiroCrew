@@ -37,6 +37,7 @@ const view = (over: Partial<CrewmateExportPreview> = {}): CrewmateExportPreview 
   filename: 'Scout.kirobot',
   description: 'Watches release branches.',
   model: 'claude-sonnet',
+  reasoning_effort: 'high',
   dashboard: '',
   avatar: 'ghost',
   avatar_digest: 'avatar-shown',

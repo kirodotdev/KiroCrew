@@ -821,6 +821,26 @@ def test_avatar_content_changes_the_plan_fingerprint(kind: str) -> None:
     assert len(ex.preview(first)["avatar_digest"]) == 64
 
 
+def test_reasoning_effort_in_the_file_is_in_the_preview_and_fingerprint() -> None:
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    low, high = [
+        ex.plan_export(
+            _sources(model="claude-sonnet", reasoning_effort=effort),
+            MEMBER,
+            ex.ExportChoices(),
+            now=now,
+        )
+        for effort in ("low", "high")
+    ]
+    assert json.loads(_zip(ex.write_bundle(low))["kirobot.json"])["reasoningEffortHint"] == "low"
+    assert ex.plan_fingerprint(low) != ex.plan_fingerprint(high)
+    assert ex.preview(low).get("reasoning_effort") == "low"
+    assert ex.preview(high).get("reasoning_effort") == "high"
+    assert ex.preview(_build(_sources())[0]).get("reasoning_effort") == ""
+
+
 def test_avatar_digest_uses_exported_content_and_canonical_traits() -> None:
     first, _ = _build(_sources(avatar={"kind": "image"}, avatar_image=_png()))
     metadata, _ = _build(
