@@ -34,7 +34,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
 BABYSIT_SKILL_DIR = CONFIG.parent / "builtin_skills" / "kirocrew-dev" / "babysit"
-PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_683}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 
