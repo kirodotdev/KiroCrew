@@ -17006,6 +17006,7 @@
       "generating_execution_plan": "एक्ज़ीक्यूशन प्लान बनाया जा रहा है",
       "go_to_task": "कार्य पर जाएँ →",
       "idea": "आइडिया",
+      "layout_label": "कार्य लेआउट",
       "no_idea_or_spec_content_available": "कोई आइडिया या स्पेक सामग्री उपलब्ध नहीं।",
       "phased": "चरणबद्ध",
       "task_is_waiting_for_your_decision": "कार्य {{index}} \"{{title}}\" आपके निर्णय की प्रतीक्षा कर रहा है",
