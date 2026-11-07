@@ -531,6 +531,86 @@ def test_a_record_written_under_the_caller_key_keeps_reading():
     assert state["next"] == "written canonically"
 
 
+def test_a_channel_key_read_without_a_session_finds_the_units_its_writer_used():
+    """A nudge cycle reads a Slack loop's ledger by ``slack:<ts>`` with no live session.
+
+    Both writers of a channel conversation head its unit with the key folded to the
+    filename charset (``slack_<ts>``), so a read of the raw key found only units an
+    older build headed ``slack:<ts>`` and injected that stale snapshot every cycle.
+    """
+    key = "slack:1785370133.085469"
+    _unit(SESSION, slot=key)  # an older build's header spelling
+    sl.record(key, session_id=SESSION, goal="old goal")
+    crew_log.forget_slot_folds()
+    _unit(LATER_SESSION, slot="slack_1785370133.085469")  # what writers record now
+    sl.record(key, session_id=LATER_SESSION, goal="current goal")
+    crew_log.forget_slot_folds()
+
+    assert sl.read_state(key)["goal"] == "current goal"
+    assert "current goal" in sl.render_snapshot(key)
+    assert sl.canonical_slot(key, "") == "slack_1785370133.085469"
+    # A key that is not a channel session keeps its own spelling.
+    assert sl.canonical_slot("cron:42", "") == "cron:42"
+
+    # A delete excludes each unit under the slot its header names; the alias unit's
+    # exclusion must still hold once the read is keyed by the folded spelling.
+    sl.exclude_units(key, (SESSION,))
+    sl.exclude_units("slack_1785370133.085469", (LATER_SESSION,))
+    crew_log.forget_slot_folds()
+    assert sl.read_state(key)["goal"] == ""
+
+
+CHANNEL_KEY = "slack:1785370133.085469"
+CHANNEL_FOLD = "slack_1785370133.085469"
+
+
+def _carries() -> int:
+    return sum(
+        1
+        for e in _entries(LATER_SESSION)
+        if e.type == sl.LEDGER_ENTRY_TYPE and "carried forward" in e.data.get("event", "")
+    )
+
+
+def test_a_channel_key_previews_the_document_its_raw_spelling_wrote():
+    """A pre-fold document sits under ``slack:<ts>``; the read is keyed by the fold."""
+    _legacy_document(CHANNEL_KEY, goal="pre-fold goal", phase="implementing")
+
+    state = sl.read_state(CHANNEL_KEY)
+    assert state["goal"] == "pre-fold goal"
+    assert state["phase"] == "implementing"
+
+
+def test_a_channel_key_carries_the_raw_spelling_document_once():
+    """The carry claims the raw key's document and names the folded slot."""
+    _legacy_document(CHANNEL_KEY, goal="pre-fold goal")
+    _unit(LATER_SESSION, slot=CHANNEL_FOLD)
+    sl.record(CHANNEL_KEY, session_id=LATER_SESSION, next_step="one")
+    sl.record(CHANNEL_KEY, session_id=LATER_SESSION, next_step="two")
+
+    assert _carries() == 1
+    carried = [e for e in _entries(LATER_SESSION) if "carried forward" in e.data.get("event", "")]
+    assert carried[0].data["slot"] == CHANNEL_FOLD
+    crew_log.forget_slot_folds()
+    state = sl.read_state(CHANNEL_KEY)
+    assert state["goal"] == "pre-fold goal"
+    assert state["next"] == "two"
+
+
+@pytest.mark.parametrize("deleted_under", [CHANNEL_KEY, CHANNEL_FOLD])
+def test_a_deleted_channel_conversation_never_previews_or_carries_its_raw_document(
+    deleted_under,
+):
+    """A delete tombstones one spelling; neither spelling may bring the document back."""
+    _legacy_document(CHANNEL_KEY, goal="deleted conversation")
+    assert sl.exclude_units(deleted_under, ()).carry_tombstoned is True
+
+    assert sl.read_state(CHANNEL_KEY)["goal"] == ""
+    _unit(LATER_SESSION, slot=CHANNEL_FOLD)
+    assert sl.record(CHANNEL_KEY, session_id=LATER_SESSION, next_step="n")["goal"] == ""
+    assert _carries() == 0
+
+
 def test_a_caller_that_is_not_the_carrier_refuses_instead_of_recording_first():
     """Recording past someone else's live carry lets the legacy state apply LAST.
 

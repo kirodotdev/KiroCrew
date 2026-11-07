@@ -374,19 +374,33 @@ def canonical_slot(slot_key: str, session_id: str) -> str:
     slot key and every later read looks up the caller's key, finds no unit, and
     answers with an empty record.
 
-    Falls back to *slot_key* whenever the header cannot be proved, so a slot with no
-    unit yet, a crew log that is off, and an unreadable header all behave as before.
+    Falls back whenever the header cannot be proved, so a slot with no unit yet, a
+    crew log that is off, and an unreadable header all behave as before -- with one
+    exception: a messaging-channel key (``slack:<ts>``) falls back to its filename
+    fold (``slack_<ts>``), because that fold is what both of its writers record in
+    a unit header (the channel dispatcher's ``transcript_stem`` and the dashboard
+    tab's slot name). A reader with no live session (a nudge cycle's snapshot)
+    otherwise found only units an older build headed with the raw key.
     """
+    # Function-local: this module is on the gateway boot path, and these owners load
+    # config and channel vocabulary that a non-channel ledger read never needs.
+    from kiro_crew.messaging.link import is_channel_session_key
+
+    fallback = slot_key
+    if ":" in slot_key and is_channel_session_key(slot_key):
+        from kiro_crew.history_files import transcript_stem
+
+        fallback = transcript_stem(slot_key)
     if not session_id:
-        return slot_key
+        return fallback
     try:
         from kiro_crew.crew_log import KIND_SESSION
         from kiro_crew.crew_log.store import unit_header_slot
 
         header = unit_header_slot(KIND_SESSION, session_id)
     except Exception:
-        return slot_key
-    return header or slot_key
+        return fallback
+    return header or fallback
 
 
 def _clamp(value: Any, limit: int = _MAX_TEXT) -> str:
