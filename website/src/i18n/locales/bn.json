@@ -8115,6 +8115,7 @@
       "remote_media_site": "সাইট: <host/>",
       "remote_media_sites": "সাইটগুলো: <host/>",
       "remote_media_gateway_refused": "মিডিয়া লোড হয়নি: এর ঠিকানা এই ড্যাশবোর্ডের নিজের সার্ভারের মধ্য দিয়ে যায়, তাই এটি কোন সাইটে পৌঁছাবে তা দেখানো যায় না।",
+      "refused_link_destination": "লিঙ্কটি সক্রিয় নয়: এর গন্তব্য এখানে খোলা যায় না।",
       "couldnt_copy_select_the_text_to_copy_it_manually": "কপি করা যায়নি — টেক্সট নির্বাচন করে ম্যানুয়ালি কপি করো",
       "couldnt_copy_the_full_session_id_for_label": "কপি করা যায়নি: {{label}}-এর পূর্ণ সেশন আইডি",
       "couldnt_copy_the_session_id_label": "কপি করা যায়নি: সেশন আইডি {{label}}",
