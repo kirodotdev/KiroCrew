@@ -382,6 +382,15 @@ def _update_config_list(
     changed = ""
     bad_shape = ""
 
+    def _matches(entry: dict) -> bool:
+        # allowed_users also keeps a ``user_id`` key standing in for an unusable
+        # ``slack_id``, which the loader (``config/sections_slack.py``) reads as
+        # that user, so a remove must find it too.
+        own = entry.get(id_field)
+        if id_field == "slack_id" and not (isinstance(own, str) and own):
+            return entry.get("user_id") == target_id
+        return own == target_id
+
     def _apply(data: dict) -> dict | None:
         nonlocal changed, bad_shape
         # A wrong-shaped entry is kept as written and nothing is saved:
@@ -396,13 +405,13 @@ def _update_config_list(
             bad_shape = f"'slack.{section_key}' is not a list"
             return None
         if remove:
-            filtered = [e for e in entries if e.get(id_field) != target_id]
+            filtered = [e for e in entries if not _matches(e)]
             if len(filtered) == len(entries):
                 return None  # wasn't there — no-op, no write
             slack_cfg[section_key] = filtered
             changed = "Removed"
             return data
-        if any(e.get(id_field) == target_id for e in entries):
+        if any(_matches(e) for e in entries):
             return None  # already present — no-op, no write
         entry: dict[str, str] = {id_field: target_id}
         if name:
