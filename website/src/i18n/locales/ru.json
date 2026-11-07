@@ -14056,6 +14056,8 @@
         "steer_rate_label": "Этот выбор",
         "steer_chose_queue": "Jev выбрал: выполнить после этого хода",
         "steer_chose_steer": "Jev выбрал: прервать этот ход",
+        "steer_chose_steer_requeued": "Jev выбрал прервать",
+        "steer_chose_steer_own_message": "Jev выбрал прервать, но это сообщение выполняется отдельно",
         "steer_rate_right": "Jev выбрал верно",
         "steer_rate_wrong": "Jev выбрал неверно",
         "agreed": "Оба выбрали одни и те же навыки",

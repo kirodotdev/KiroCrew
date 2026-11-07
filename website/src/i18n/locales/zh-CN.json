@@ -13108,6 +13108,8 @@
         "steer_rate_label": "此判断",
         "steer_chose_queue": "Jev 的选择：本轮结束后执行",
         "steer_chose_steer": "Jev 的选择：打断本轮",
+        "steer_chose_steer_requeued": "Jev 选择了打断",
+        "steer_chose_steer_own_message": "Jev 选择了打断，但此消息作为独立消息运行",
         "steer_rate_right": "Jev 判断正确",
         "steer_rate_wrong": "Jev 判断错误",
         "agreed": "两边选出的技能相同",
