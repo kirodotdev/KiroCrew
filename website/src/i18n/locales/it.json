@@ -19628,6 +19628,7 @@
         "recordMetricsOverlayPinned": "Una voce in config.local.json sta fissando questa impostazione: rimuovila per modificarla qui.",
         "recordMetricsEgressOff": "Sono configurati dei collector, quindi la registrazione invierebbe le metriche anche fuori da questa macchina. Attivala nel file config.json se è ciò che desideri.",
         "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, ai collector elencati sotto.",
+        "recordMetricsEgressWaiting": "Sono configurati dei collettori di metriche, ma non viene inviato nulla finché telemetry.enabled: true non è scritto in config.json.",
         "recordMetricsEgressDestinations": "Collector: {{names}}",
         "recordMetricsEgressLockedName": "{{name}} (incluso in questa build; disattivare «Registra le metriche» ferma anche questo)",
         "recordMetricsEgressLockedNameOff": "{{name}} (incluso in questa build)",
@@ -21923,7 +21924,7 @@
     "installReceiptBody": "Dopo un’installazione o un aggiornamento riuscito dal catalogo ufficiale di Kiro Crew, viene inviata una ricevuta anonima. Registri esterni, app locali e app autoregistrate non vengono mai segnalati.",
     "installReceiptFields": "slug dell’app ufficiale · token anonimo per app (non collegabile tra app) · nuova installazione/aggiornamento · versione di Kiro Crew",
     "installReceiptTitle": "Ricevute di installazione delle app ufficiali",
-    "localDataBody": "Registri di utilizzo e contesto. Le metriche di prestazione sono disattivate per impostazione predefinita.",
+    "localDataBody": "Le metriche sulle prestazioni vengono registrate su questo dispositivo per impostazione predefinita. L'interruttore «Registra le metriche» in Impostazioni > Privacy mostra se sono attive adesso.",
     "localDataTitle": "Resta sul tuo dispositivo",
     "notSendingAlreadySentToday": "Il segnale di oggi è già stato inviato.",
     "notSendingAwaitingAck": "Non è stato ancora inviato nulla. Il primo segnale attende che tu abbia visto questa pagina.",
@@ -21942,7 +21943,10 @@
     "toggleDescription": "Salvato per i prossimi avvii.",
     "toggleLabel": "Invia segnale di utilizzo anonimo",
     "toggleSaveFailed": "Non è stato possibile salvare la tua scelta sulla telemetria. Riprova.",
-    "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui."
+    "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui.",
+    "localDataBodyOn": "Le metriche sulle prestazioni vengono registrate adesso su questo dispositivo.",
+    "localDataBodyOff": "Le metriche sulle prestazioni non vengono registrate adesso su questo dispositivo.",
+    "doNotTrackCaption": "Impostare DO_NOT_TRACK=1 disattiva le metriche sulle prestazioni e il segnale."
   },
   "settings": {
     "chat": {

@@ -696,6 +696,9 @@ class TestRecheckFollowsTheList:
             return _Tracked(dest.name)
 
         monkeypatch.setattr(pm, "_build_otlp_reader", fake_reader)
+        # An in-memory enabled=True stands for an explicit opt-in here, which is
+        # what lets the destinations attach (``outbound_consented``).
+        monkeypatch.setattr(pm, "outbound_consented", lambda cfg: True)
         holder = {}
 
         def set_entries(rows):

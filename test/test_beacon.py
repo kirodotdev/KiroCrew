@@ -1248,11 +1248,12 @@ class TestConfigDefaults:
         ):
             assert TelemetryConfig(beacon_endpoint=bad).beacon_endpoint == "", bad
 
-    def test_local_metrics_switch_stays_off(self):
-        """The beacon must not ride the local-only telemetry.enabled switch."""
+    def test_local_metrics_switch_is_on_by_default_and_independent(self):
+        """Local recording defaults on; the beacon keeps its own switch."""
         from kiro_crew.config.loader import TelemetryConfig
 
-        assert TelemetryConfig().enabled is False
+        assert TelemetryConfig().enabled is True
+        assert TelemetryConfig(enabled=False).beacon_enabled is True
 
 
 def _fake_urlopen(calls: list | None = None):

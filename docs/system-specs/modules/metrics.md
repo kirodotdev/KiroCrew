@@ -4,10 +4,32 @@
 
 Local-first metrics telemetry built on the OpenTelemetry SDK (Apache-2.0 / CNCF).
 The trunk is designed so future work is purely adding instrument calls at call
-sites — never changing this plumbing. **Default OFF** (`telemetry.enabled:
-false`): all metric call sites are cheap no-ops and nothing is written or
-exported, byte-identical to no telemetry (mirrors the `mcp_gateway.enabled` /
-`skills.lazy_load` opt-in convention). Any instrument that needs durable state to
+sites, never changing this plumbing. **Local recording is on by default**
+(`telemetry.enabled: true`), bounded on disk by `retention_days` (default 30)
+and `max_total_mb` (default 100). Every user is told: the dashboard's first-run
+Privacy chapter (see "In-product privacy disclosure" below), or on a CLI or headless start
+the one-line stderr notice from `metrics/notice.py`, printed once per install
+(stamp file `usage_notice_shown` under the data home) while no notice version is
+acknowledged and recording is on. Export never follows from the default: it
+needs recording turned on explicitly (see "Export needs an explicit opt-in"
+below). A value written in either config file wins over the default; the
+heartbeat-off load rule keeps an install that turned the heartbeat off without
+setting `telemetry.enabled` off, and `KIROCREW_TELEMETRY_DISABLED`, the old
+heartbeat env opt-out, also holds the default recording off until
+`telemetry.enabled` is written (`env_pin()` answers off and names it, and
+`env_pin_is_soft()` marks it as a hold that a written value lifts, so the
+collection route reports `env_pinned: false`, the Settings switch stays usable,
+and `kirocrew telemetry status` says "Held off by" instead of "Pinned by"). Older
+builds' first boot saved the whole `telemetry` section at its old defaults
+(`enabled: false`, both caps `0`). That section loads as written: recording
+stays off (it may be the user's off), and the caps stay `0`, because `0` is the
+documented "no limit" and a stored `0` cannot be told apart from a chosen one.
+Reading them as the new caps would delete metric shards the user kept. Both caps
+are report-only rows in the superseded-defaults registry (see `config.md`), so
+`kirocrew doctor` and `kirocrew config defaults` name them and the user can adopt
+30 days / 100 MB. When off,
+all metric call sites are cheap no-ops and nothing is written or exported,
+byte-identical to no telemetry. Any instrument that needs durable state to
 survive a process death — currently only the session-lifetime breadcrumb — must
 gate that state on the same consent, and fail closed when consent cannot be
 read, so this sentence stays literally true.
@@ -25,6 +47,7 @@ list here as the inventory. Tests: `test/metrics/`.
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
 | `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. `get_recorder()` serves a memoized recorder and re-resolves the `telemetry.enabled` consent value every `_CONSENT_RECHECK_SECS` (30s), rebuilding when it moved — see "Recorder lifecycle & threading" below. Public consent surface: `env_pin()` / `TELEMETRY_ENV_VAR`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `histogram_bounds()` (`_HISTOGRAM_BUCKETS_MS` for millisecond instruments plus `_HISTOGRAM_BUCKETS_BY_UNIT` for the non-ms ones), each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
+| `consent_pins.py` | The env-var pins and the export opt-in, re-exported by `provider.py` (still the import path and patch seam): `env_pin()` (`DO_NOT_TRACK`, `KIROCREW_TELEMETRY`, and `KIROCREW_TELEMETRY_DISABLED` holding the default off while `telemetry.enabled` is unwritten), `env_pin_is_soft()`, `pin_env_var()`, and `outbound_consented()` (see "Export needs an explicit opt-in"). |
 | `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs; the map itself lives in `metrics/temporality.py`, which owns it for the OTLP leg too (declaring it inline here is what let that leg ship CUMULATIVE for the same instruments with nothing failing). Observable counters are deliberately NOT mapped and would export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild. Nothing registers an observable counter today — the process CPU/GC readings and the inventory probe-failure count are lifetime-total GAUGES, which is what removed the last cumulative series — so the entry guards the next one; the aggregator still reduces cumulative streams window-relative (deterministic identity boundary + time-ordered legacy reset detection + first-in-window baseline) for the shards written before that switch. **Process identity:** each record is stamped once at resource level with `kirocrew.process.start_time` (`schema.RESOURCE_ATTR_PROCESS_START_TIME`) — the writing process's OS start-time token from `platform_compat.own_process_start_time()`, module-cached so provider rebuilds inside one process stamp the SAME value, and reboot-unique (Linux start ticks + boot UUID; macOS microsecond `proc_pidinfo` instant; Windows creation FILETIME). A read that cannot honor one-token-one-process (unreadable boot UUID, no `libproc`, 1s-only sources) emits NO token rather than an aliasable coarse one — a degraded token would merge lifetimes AND mute the reset heuristic that catches merges. The shard-filename PID plus this token identify a process beyond PID reuse, making the aggregator's cumulative reset detection deterministic. The stamp lands on the serialized JSONL line, never on the SDK `Resource` — that `Resource` also feeds the opt-in OTLP reader, and this host-local token must not egress. Fail-soft: when the platform read is unavailable the field is absent and the aggregator's legacy value heuristic applies. Resource level, not a metric attribute, so it never multiplies series cardinality. |
 | `temporality.py` | Single owner of the instrument-kind -> temporality map, for the local sink AND the opt-in OTLP leg. `delta_preference()` returns a fresh DELTA map for Counter/UpDownCounter/Histogram (ObservableCounter deliberately absent, gauges never applicable); `otlp_preference()` returns it, or `None` to stand aside when `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` is set. Exists because the map lived inline in `local_exporter.__init__` while `_build_otlp_reader` passed nothing, so the two destinations reported the same instruments DELTA on disk and CUMULATIVE on the wire with nothing failing. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
@@ -136,11 +159,11 @@ worst case is one dropped export cycle rather than a corrupt shard.
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `enabled` | `false` | Main switch. Off = no-op recorder, nothing written. Editable from the dashboard (Settings → Privacy) as well as the config file, `kirocrew config set`, and the env var; re-resolved live, so a change takes effect without a restart. |
+| `enabled` | `true` | Main switch for local recording. Off = no-op recorder, nothing written. Editable from the dashboard (Settings → Privacy) as well as the config file, `kirocrew config set`, and the env var; re-resolved live, so a change takes effect without a restart. |
 | `local_dir` | `""` | JSONL shard dir; empty = `~/.kiro/crew/metrics`. `~` expansion supported. |
 | `export_interval_seconds` | `60` | Flush interval (floored to 1). |
-| `retention_days` | `0` | Age pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive day window to opt in (rec #14). |
-| `max_total_mb` | `0` | Size pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive opportunistic directory budget to opt in; protected active writers can temporarily exceed it (rec #14). |
+| `retention_days` | `30` | Prune shards older than this many days. `0` disables age pruning; an upgraded install that stored `0` keeps it (reported by `doctor` as a superseded default) (rec #14). |
+| `max_total_mb` | `100` | Opportunistic directory budget; protected active writers can temporarily exceed it. `0` disables the size cap; an upgraded install that stored `0` keeps it (reported by `doctor` as a superseded default) (rec #14). |
 | `otlp_endpoint` | `""` | Opt-in OTLP/HTTP metrics endpoint (e.g. `http://localhost:4318/v1/metrics`). **Empty = no network egress (default).** When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires `pip install "opentelemetry-exporter-otlp-proto-http==1.44.0"` (rec #1). Metrics signal only: no spans or log records exist, so `_build_otlp_reader` logs a WARNING (destination name only, never the URL) when the endpoint path ends in `/v1/traces` or `/v1/logs`, and still builds the reader. |
 
 Field validation (`TelemetryConfig.__post_init__`): `export_interval_seconds`
@@ -149,11 +172,12 @@ to `0` (cap disabled) rather than being interpreted as "prune everything".
 
 ## Opt-in, retention bounds & egress (rec #14 / rec #1)
 
-**Default posture — nothing collected, nothing leaves the host.**
-`telemetry.enabled` defaults `false`, so every metric call site is a cheap no-op
-and no file is written — including the session-lifetime breadcrumb, which is
-gated on the same consent and fails closed. Even once local collection is
-enabled, `otlp_endpoint` defaults empty and `otlp_endpoints` defaults to an
+**Default posture — recorded locally, nothing leaves the host.**
+`telemetry.enabled` defaults `true`, so metrics are recorded to the local JSONL
+sink, capped at 30 days / 100 MB. With it off every metric call site is a cheap
+no-op and no file is written — including the session-lifetime breadcrumb, which
+is gated on the same consent and fails closed. Export needs an explicit opt-in
+(see "Export needs an explicit opt-in"), and `otlp_endpoint` defaults empty and `otlp_endpoints` defaults to an
 empty list, so **no data ever leaves the machine unless the operator explicitly
 sets an OTLP endpoint** (or the build ships a collector of its own).
 
@@ -805,7 +829,7 @@ not re-pay an expensive failing probe every cycle.
 
 Scope of the `kirocrew.inventory.*` family, stated here because the names invite
 the opposite reading: it is OPERATOR-fleet telemetry, not project-wide adoption
-analytics. Collection is off by default, egress is a second opt-in, and OTLP needs
+analytics. Collection is local by default, egress is a second opt-in, and OTLP needs
 the `kirocrew[otlp]` extra, so any aggregate describes one operator's opted-in
 machines. Adoption data structurally cannot ride this trunk — see "Why it is NOT
 part of the OTEL trunk" below, whose four reasons apply to these instruments
@@ -2261,16 +2285,26 @@ consent flow:
   surfaces, so the first-run explanation and the durable panel cannot drift. The
   heartbeat switch (`TelemetryToggle`) lives in Settings > Privacy; the chapter's
   two buttons replace it there.
+- **Export needs an explicit opt-in.** `_build_recorder` attaches an OTLP reader
+  only when `provider.outbound_consented(cfg)` holds: recording was turned on
+  explicitly (`KIROCREW_TELEMETRY` truthy, or `telemetry.enabled: true` written in
+  a config file, read through `config.loader._stored_agent_value` with
+  `section="telemetry"`). A recording default alone never permits export, and neither does the Privacy chapter's
+  acknowledgement, whose text says recorded data stays on this machine. The check
+  runs only when a destination exists, so a local-only host reads nothing extra.
 - **`DO_NOT_TRACK`.** A truthy value (`1`, `true`, `yes`, `on`) acts like
   `KIROCREW_TELEMETRY=0` plus `KIROCREW_TELEMETRY_DISABLED=1`: `env_pin()`
   answers False before reading `KIROCREW_TELEMETRY` (off wins) and
   `telemetry_permitted` refuses with `do_not_track`. `pin_env_var()` /
   `beacon.opt_out_env_var()` name it, so both Settings switches show it as the
   pin to unset.
+- **Heartbeat-off load rule.** A config that writes `telemetry.beacon_enabled:
+  false` and never sets `telemetry.enabled` loads with recording off, whatever
+  the field default. No file is rewritten.
 - The durable surface distinguishes local usage/context records from optional
-  performance metrics. Performance metrics are off by default and remain local
+  performance metrics. Performance metrics are on by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
-  configures an OTLP endpoint. It also carries the **recording switch** over
+  configures an OTLP endpoint and turned recording on explicitly. It also carries the **recording switch** over
   `telemetry.enabled` — a second, independent control from the beacon toggle above
   — fed by `GET /api/telemetry/collection` and disabled when an env var, a
   `config.local.json` overlay, or a configured OTLP endpoint means the write

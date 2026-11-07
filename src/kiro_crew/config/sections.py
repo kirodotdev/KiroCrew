@@ -476,6 +476,8 @@ from kiro_crew.config.sections_telegram import (  # noqa: F401
 )
 from kiro_crew.config.sections_telemetry import (  # noqa: F401
     _DEFAULT_BEACON_ENDPOINT,
+    DEFAULT_METRICS_MAX_TOTAL_MB,
+    DEFAULT_METRICS_RETENTION_DAYS,
     TelemetryConfig,
     WakaTimeConfig,
 )

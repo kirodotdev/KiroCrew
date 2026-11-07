@@ -409,6 +409,18 @@ describe('PrivacyChapter', () => {
     expect(await screen.findByText(/also sent to the metrics destination set up for it. No heartbeat is sent./)).toBeInTheDocument()
   })
 
+  it('says metrics stay local while export waits for an explicit opt-in', async () => {
+    // On by default only: the provider attaches no export reader until
+    // telemetry.enabled: true is written, so nothing is sent yet.
+    collectionStatus.mockImplementation(async () => ({
+      enabled: true, env_pinned: false, otlp_configured: true, export_permitted: false,
+    }))
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+
+    expect(await screen.findByText(/Performance metrics stay on this machine. Once a day/)).toBeInTheDocument()
+    expect(screen.queryByText(/also sent to the metrics destination/)).not.toBeInTheDocument()
+  })
+
   it('uses the same left panel copy as the Import setup chapter', () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
 
