@@ -15,8 +15,7 @@ The gateway runs the OAuth chain itself instead of handing it to the harness
   access token is used, and a failed refresh never deletes the stored pair.
 * :func:`disconnect` revokes upstream (best effort) and deletes the entry.
 
-Off by default. With the flag off (or on Windows, where the attested Unix-socket
-channel the proxy needs does not exist) :func:`manages` is False everywhere and
+Off by default. With the flag off :func:`manages` is False everywhere and
 nothing in this module runs. Standard library + aiohttp only; imported lazily.
 """
 
@@ -30,8 +29,6 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any
-
-from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +68,7 @@ class CrewOAuthError(Exception):
 
 
 def enabled() -> bool:
-    """Whether ``connections.crew_oauth`` is ``true`` on a POSIX gateway. Blocking."""
-    if platform_compat.IS_WINDOWS:
-        return False
+    """Whether ``connections.crew_oauth`` is ``true``. Blocking."""
     from kiro_crew.config.loader import read_config_for_update
 
     try:

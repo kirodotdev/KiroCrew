@@ -11,6 +11,8 @@ import asyncio
 import io
 import json
 import types
+import urllib.error
+import urllib.request
 
 import pytest
 from aiohttp import web
@@ -74,7 +76,6 @@ def test_an_unreadable_config_keeps_todays_custody(monkeypatch):
         raise ValueError("bad json")
 
     monkeypatch.setattr(loader, "read_config_for_update", _bad)
-    monkeypatch.setattr(crew_oauth.platform_compat, "IS_WINDOWS", False)
     assert crew_oauth.enabled() is False
 
 
@@ -384,13 +385,18 @@ async def test_a_superseded_row_is_left_alone(monkeypatch, github_on_port_zero):
 # --- the in-session bridge's transport --------------------------------------
 
 
-def test_the_bridge_talks_to_the_gateway_socket_only(monkeypatch, tmp_path):
-    import kiro_crew.config.loader as loader
-    import kiro_crew.dashboard.urls as urls
-    import kiro_crew.loopback_http as loopback_http
-    from kiro_crew import kas_connection_bridge
+def _no_tcp(*_a, **_k):
+    raise AssertionError("POSIX never sends to the proxy over TCP")
 
-    monkeypatch.setattr(loader, "read_local_secret", lambda port: "s3cret")
+
+def test_the_bridge_talks_to_the_gateway_socket_only(monkeypatch, tmp_path):
+    import kiro_crew.config.loader_locations as loader_locations
+    import kiro_crew.config.paths as paths
+    import kiro_crew.loopback_http as loopback_http
+    from kiro_crew import kas_connection_bridge, platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(loader_locations, "read_local_secret", lambda port: "s3cret")
     calls: list = []
 
     def _urlopen(request, timeout, *, socket_path, verify_peer):
@@ -398,7 +404,9 @@ def test_the_bridge_talks_to_the_gateway_socket_only(monkeypatch, tmp_path):
         return io.BytesIO(b"")
 
     monkeypatch.setattr(loopback_http, "unix_socket_urlopen", _urlopen)
-    monkeypatch.setattr(urls, "dashboard_socket_path", lambda port: tmp_path / f"d-{port}.sock")
+    # No socket file exists under this home: still the socket, never TCP.
+    monkeypatch.setattr(loopback_http, "tcp_verified_urlopen", _no_tcp)
+    monkeypatch.setattr(paths, "config_dir", lambda: tmp_path)
     doc = {"port": 8123, "version": "v1", "bridge_token": "tok", "connection": "github"}
     bridge = kas_connection_bridge.build_bridge(
         doc, server="github", out=io.BytesIO(), err=io.StringIO()
@@ -408,17 +416,47 @@ def test_the_bridge_talks_to_the_gateway_socket_only(monkeypatch, tmp_path):
         5,
     )
     url, _headers, path = calls[0]
-    assert url.endswith("/api/connection-proxy") and path.endswith("d-8123.sock")
+    assert url.endswith("/api/connection-proxy") and path == str(tmp_path / "dashboard-8123.sock")
     sent = bridge._request_headers()
     assert sent["X-Crew-Bridge"] == "v1" and sent["X-Crew-Bridge-Token"] == "tok"
     assert sent["X-Internal-Secret"] == "s3cret" and "Authorization" not in sent
 
 
+def test_the_bridge_on_windows_talks_to_the_gateway_over_verified_tcp(monkeypatch):
+    import kiro_crew.cli_server_peer as cli_server_peer
+    import kiro_crew.loopback_http as loopback_http
+    from kiro_crew import kas_connection_bridge, platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(loopback_http, "unix_socket_urlopen", _no_tcp)
+    calls: list = []
+
+    def _tcp(request, timeout, *, verify_peer):
+        calls.append(request.full_url)
+        return io.BytesIO(b"")
+
+    monkeypatch.setattr(loopback_http, "tcp_verified_urlopen", _tcp)
+    opener = kas_connection_bridge._GatewayOpener(8123)
+    opener.open(urllib.request.Request("http://127.0.0.1:8123/api/connection-proxy"), 5)
+    assert calls == ["http://127.0.0.1:8123/api/connection-proxy"]
+    verdict = cli_server_peer._ConnectedPeerVerdict
+    denied: list = []
+    monkeypatch.setattr(cli_server_peer, "_audit_peer_denied", lambda *a: denied.append(a))
+    monkeypatch.setattr(cli_server_peer, "_connected_peer_verdict", lambda sock: verdict.MISMATCH)
+    with pytest.raises(PermissionError):
+        opener._verify_peer(object())
+    assert [a[:2] for a in denied] == [("connection_bridge", 8123)]
+    monkeypatch.setattr(cli_server_peer, "_connected_peer_verdict", lambda sock: verdict.MATCH)
+    opener._verify_peer(object())
+    assert len(denied) == 1
+
+
 def test_the_bridge_refuses_a_socket_not_answered_by_the_gateway(monkeypatch):
     import kiro_crew.cli_server_peer as cli_server_peer
     import kiro_crew.mcp_gateway.socketsec as socketsec
-    from kiro_crew import kas_connection_bridge
+    from kiro_crew import kas_connection_bridge, platform_compat
 
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     opener = kas_connection_bridge._GatewayOpener(8123)
     monkeypatch.setattr(
         socketsec, "check_peer_is_self", lambda sock: socketsec.PeerCredResult.MISMATCH
@@ -481,6 +519,53 @@ async def test_the_route_handler_refuses_a_non_internal_caller():
         resp = await client.post("/api/connection-proxy", data=json.dumps({}))
         assert resp.status == 403
         assert (await resp.json())["code"] == "internal_unix_required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("windows", [False, True])
+async def test_an_internal_tcp_caller_is_taken_on_windows_only(monkeypatch, windows):
+    """POSIX keeps the Unix socket as the only way in; Windows takes loopback TCP,
+    with the peer pid from the kernel table, and pins it like the Unix arm."""
+    import os
+
+    import kiro_crew.member_memory_auth as member_memory_auth
+    from kiro_crew import platform_compat
+    from kiro_crew.connections import crew_oauth_proxy
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+    monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: os.getpid())
+    monkeypatch.setattr(crew_oauth, "manages", lambda slug: False)
+    monkeypatch.setattr(crew_oauth_proxy, "_bridges", {})
+    crew_oauth_proxy.register_bridge(
+        version="v1",
+        token="tok",
+        session_key="s",
+        server="github",
+        slug="github",
+        mcp_url="http://127.0.0.1:1/mcp",
+    )
+
+    @web.middleware
+    async def _auth(request, handler):
+        request["internal_auth"] = True
+        return await handler(request)
+
+    app = web.Application(middlewares=[_auth])
+    app.router.add_post(crew_oauth_proxy.PROXY_PATH, crew_oauth_proxy.handle)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            crew_oauth_proxy.PROXY_PATH,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={
+                crew_oauth_proxy.BRIDGE_HEADER: "v1",
+                crew_oauth_proxy.BRIDGE_TOKEN_HEADER: "tok",
+            },
+        )
+        # Admitted on Windows (then stopped by the switched-off Connection).
+        expected = "crew_oauth_off" if windows else "internal_unix_required"
+        assert (await resp.json())["code"] == expected
+    if windows:
+        assert crew_oauth_proxy._bridges["v1"].pid == os.getpid()
 
 
 @pytest.mark.asyncio

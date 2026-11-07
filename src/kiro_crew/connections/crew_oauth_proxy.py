@@ -412,17 +412,30 @@ async def handle(request: Any) -> Any:
     import aiohttp
     from aiohttp import web
 
+    from kiro_crew import platform_compat
     from kiro_crew.connections import crew_oauth
     from kiro_crew.dashboard.origin import request_is_unix_socket
     from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 
-    if request.get("internal_auth") is not True or not request_is_unix_socket(request):
+    unix = request_is_unix_socket(request)
+    # POSIX: the owner-only Unix socket only. Windows has none, so a loopback TCP
+    # peer is taken there, and its pid comes from the kernel's table for this
+    # exact connection, owned by this user (``_request_peer_pid``).
+    if request.get("internal_auth") is not True or not (unix or platform_compat.IS_WINDOWS):
         _audit("connections_proxy", "denied", "unknown", "not an internal unix-socket caller")
         return _refuse(403, "internal unix-socket caller required", "internal_unix_required")
-    try:
-        peer_pid = get_peer_pid(request.transport.get_extra_info("socket"))
-    except Exception:  # noqa: BLE001
-        peer_pid = None
+    if unix:
+        try:
+            peer_pid = get_peer_pid(request.transport.get_extra_info("socket"))
+        except Exception:  # noqa: BLE001
+            peer_pid = None
+    else:
+        from kiro_crew.member_memory_auth import _request_peer_pid
+
+        try:
+            peer_pid = await asyncio.to_thread(_request_peer_pid, request)
+        except Exception:  # noqa: BLE001
+            peer_pid = None
     bridge, reason = admit_bridge(
         request.headers.get(BRIDGE_HEADER, ""),
         request.headers.get(BRIDGE_TOKEN_HEADER, ""),

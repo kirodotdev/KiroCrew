@@ -846,7 +846,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_secrets_authorize,
         _publish_secret_request_policy,
         _spawn_precreates_policy_directory,
-        _windows_authorize_unavailable,
     )
     from kiro_crew.cli_commands_security import (  # noqa: F401
         _TIME_SELECTOR_RE,

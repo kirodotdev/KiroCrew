@@ -339,8 +339,19 @@ def _request_peer_pid(request: Any) -> int | None:
         if cached is not None and platform_compat.get_process_start_id(cached[0]) == cached[1]:
             return cached[0]
         pid = resolve_tcp(server[:2], client[:2])
-        if isinstance(pid, int) and not isinstance(pid, bool):
-            start_id = platform_compat.get_process_start_id(pid)
-            if start_id:
-                _TCP_PEER_BY_TRANSPORT[transport] = (pid, start_id)
+        if not (isinstance(pid, int) and not isinstance(pid, bool)):
+            return None
+        # The Unix arm's same-user check, in the form each OS has: the loopback
+        # port is open to every local account, so a peer run by another one is
+        # refused here. Unresolvable ownership refuses too.
+        if platform_compat.IS_POSIX:
+            if platform_compat.process_owner_uid(pid) != os.getuid():
+                return None
+        else:
+            me = platform_compat.current_user_sid()
+            if me is None or platform_compat.process_owner_sid(pid) != me:
+                return None
+        start_id = platform_compat.get_process_start_id(pid)
+        if start_id:
+            _TCP_PEER_BY_TRANSPORT[transport] = (pid, start_id)
     return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
