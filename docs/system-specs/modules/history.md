@@ -311,6 +311,11 @@ It preserves the legacy exact `total`, `before`, `next_before`, and `has_more`
 fields. The no-limit route and callers requiring complete history remain on
 `read_messages_chained`. Display redaction remains at `_prepare_messages`; neither
 the sparse index nor page projection stores a redacted or alternate transcript.
+When every row of the disk suffix carries a `meta.mid`, a row the window holds
+under an id that appears once there is served as the window's copy, as the
+no-limit route serves it, so an in-place edit not yet flushed (a variant switch)
+does not repaint the text it replaced. A suffix row no window row matches (another
+writer's append) is served from disk where it sits.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
 its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
