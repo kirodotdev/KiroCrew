@@ -232,7 +232,7 @@ with without the label.
 | `every` | number | Interval in seconds (mutually exclusive with `cron_expr`) |
 | `cron_expr` | string | Cron expression (mutually exclusive with `every`) |
 | `message` | string | Prompt sent to the agent on each run |
-| `agent` | string | Agent to run (optional, uses default if omitted) |
+| `agent` | string | Agent template to run (optional, uses default if omitted). Name a template, never a Bot: an app cron is never bound to a Bot, so naming one runs that Bot's agent and workspace on the default memory store, not the Bot's own. Only the owner can give a Bot a schedule: `kirocrew cron add NAME MESSAGE --every SECONDS --agent <bot-key>`, or **New schedule** on the Bot's **Schedules** tab |
 | `agent_sequence` | string[] | Ordered agents to run |
 | `command` | string | Shell command executed without a model call; mutually exclusive with `script`. A present non-string value is rejected rather than treated as absent |
 | `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent. The path resolves against the app's own bundle, must stay inside it, must name a `.py` file, and is stored as an absolute path; re-enable the app after its bundle moves |
