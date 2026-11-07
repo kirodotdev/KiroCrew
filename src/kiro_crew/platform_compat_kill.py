@@ -405,6 +405,34 @@ def _shares_own_process_group(pid: int) -> bool:
         return False
 
 
+def kill_escaped_child_pid(pid: int, sig: int = SIGKILL) -> None:
+    """Send *sig* to a child that survived the initial group kill.
+
+    Used by callers that have already verified the child is their own (e.g. via
+    :func:`~kiro_crew.acp.runtime_process_tree._is_our_child`) and must now
+    signal it directly because it reparented out of the original process group.
+    Silently drops ``ProcessLookupError`` and ``OSError`` (the child may have
+    exited between the liveness check and this call).  Does not suppress
+    ``PermissionError``: a permission failure on a verified child is unexpected
+    and the caller can decide what to do with it.
+    """
+    try:
+        kill_pid(pid, sig)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def kill_gateway_pid_tree(pid: int, sig: int = SIGTERM) -> bool:
+    """Signal the process group of a gateway process identified by its pid.
+
+    Wraps :func:`kill_process_tree` for callers that hold a pid rather than a
+    :class:`subprocess.Popen` object and want the tree-kill contract.  The
+    caller is responsible for exception handling (``ProcessLookupError``,
+    ``PermissionError``, ``OSError``).
+    """
+    return kill_process_tree(pid, sig)
+
+
 def kill_popen_tree(proc: subprocess.Popen[Any]) -> None:
     """Kill a ``Popen`` child and its descendants; never raises.
 

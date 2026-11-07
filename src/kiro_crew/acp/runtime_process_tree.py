@@ -474,7 +474,7 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
             ):
                 logger.debug("Skipping PID %d — not our process (recycled?)", cpid)
                 continue
-            platform_compat.kill_pid(cpid, platform_compat.SIGKILL)
+            platform_compat.kill_escaped_child_pid(cpid, platform_compat.SIGKILL)
             logger.debug("Killed escaped child PID %d", cpid)
         except (ProcessLookupError, OSError):
             pass

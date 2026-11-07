@@ -349,6 +349,8 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _run_cleanup_shielded,
         _shares_own_process_group,
         kill_and_reap,
+        kill_escaped_child_pid,
+        kill_gateway_pid_tree,
         kill_pid_async,
         kill_pid_pinned,
         kill_popen_tree,
