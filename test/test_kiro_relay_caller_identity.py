@@ -257,9 +257,9 @@ def test_the_gateway_builds_its_ingress_from_the_relay_switch() -> None:
     ]
     assert len(calls) == 1
     (enabled,) = [kw.value for kw in calls[0].keywords if kw.arg == "enabled"]
-    assert ast.unparse(enabled) == (
-        "_cfg.tunnel.relay_enabled is True and (not local_enable_locked('tunnel'))"
-    )
+    # The switch's rule, the JSON boolean ``true`` and the enterprise lock, is
+    # ``edition_locks.relay_selected``; test_relay_client_selection pins it.
+    assert ast.unparse(enabled) == "relay_selected(_cfg)"
 
 
 # ---------------------------------------------------------------------------

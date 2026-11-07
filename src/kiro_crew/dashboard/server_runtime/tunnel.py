@@ -101,9 +101,9 @@ async def _start_aea_tunnel(
     app: web.Application, state: DashboardState, cfg: KiroCrewConfig, port: int
 ) -> None:
     """Start the tunnel when the config or the active ``TunnelProvider`` enables it."""
-    from kiro_crew.edition_locks import local_enable_locked
+    from kiro_crew.edition_locks import local_enable_locked, relay_selected
 
-    if cfg.tunnel.relay_enabled is True and not local_enable_locked("tunnel"):
+    if relay_selected(cfg):
         from kiro_crew.dashboard.kiro_relay.ingress import RELAY_INGRESS_APP_KEY
         from kiro_crew.relay_client.provider import publish_gateway_ingress
 

@@ -1004,10 +1004,7 @@ def _cfg(**tunnel: Any) -> SimpleNamespace:
     return SimpleNamespace(tunnel=SimpleNamespace(**values))
 
 
-async def test_the_lease_client_is_the_source_only_when_a_lease_service_is_set(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("kiro_crew.edition_locks.local_enable_locked", lambda _section: False)
+async def test_the_lease_client_is_the_source_only_when_a_lease_service_is_set() -> None:
     assert isinstance(public_tunnel_provider(_cfg())._tokens, UnavailableHostTokenSource)
     provider = public_tunnel_provider(
         _cfg(lease_url="http://127.0.0.1:8790", lease_credential="/run/lease-credential")
@@ -1381,10 +1378,7 @@ async def test_the_token_type_setting_names_the_lease_calls_header(
     assert lease.requests[0]["token_type"] == (token_type or None)
 
 
-async def test_an_unknown_token_type_setting_keeps_the_relay_from_starting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("kiro_crew.edition_locks.local_enable_locked", lambda _section: False)
+async def test_an_unknown_token_type_setting_keeps_the_relay_from_starting() -> None:
     # KIRO_MACHINE_TOKEN: the lease service refuses it with a crew key.
     for refused in ("KIRO_MACHINE_TOKEN", "SSO_OIDC", "api_key", "kiro_machine_token", CREDENTIAL):
         cfg = _cfg(

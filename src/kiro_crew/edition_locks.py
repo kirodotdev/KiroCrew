@@ -78,6 +78,21 @@ def local_enable_locked(control: str) -> bool:
     return True
 
 
+def relay_selected(cfg: Any) -> bool:
+    """Whether ``tunnel.relay_enabled`` turns the Kiro relay path on in this build.
+
+    The one rule for the relay switch: the public composition's tunnel slot, the
+    dashboard app's relay ingress and the gateway's ingress publish all ask it. Only
+    the boolean ``True`` reads as on, because a stand-in config object answers any
+    attribute truthily, and an enterprise build ignores the switch with the rest of
+    the ``tunnel`` control (RFC D3). It imports nothing from ``kiro_crew.relay_client``,
+    so a process that asks it with the relay off never loads that package.
+    """
+    if getattr(getattr(cfg, "tunnel", None), "relay_enabled", False) is not True:
+        return False
+    return not local_enable_locked("tunnel")
+
+
 def locked_controls() -> "tuple[str, ...]":
     """Every control this build locks, for a setting API to report. Empty on oss."""
     from kiro_crew.edition import is_enterprise
