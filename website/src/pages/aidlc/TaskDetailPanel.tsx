@@ -6,7 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice';
 import type { TaskDetail } from '../../types';
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
+import { fmtDateFields, fmtDuration as fmtDurationParts, fmtList, fmtUnit } from '../../i18n/format'
 interface Props {
   task: TaskDetail;
   allTasks?: TaskDetail[];
@@ -181,7 +181,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
             </div>
           ) : (
             <div className="text-[12px] text-muted">
-              {i18nT('pages.aidlc.taskDetailPanel.depends_on_2')} {deps.map(d => i18nT('pages.aidlc.taskDetailPanel.task_with_title', { n: d.index, title: d.title })).join(', ')}
+              {i18nT('pages.aidlc.taskDetailPanel.depends_on_2')} {fmtList(deps.map(d => i18nT('pages.aidlc.taskDetailPanel.task_with_title', { n: d.index, title: d.title })))}
             </div>
           )
         })()}
