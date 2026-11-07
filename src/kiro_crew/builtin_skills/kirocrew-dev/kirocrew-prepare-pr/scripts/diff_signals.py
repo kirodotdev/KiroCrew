@@ -81,6 +81,7 @@ Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too l
 import argparse
 import importlib.machinery
 import importlib.util
+import ntpath
 import os
 import re
 import shutil
@@ -129,6 +130,8 @@ BODY_FILENAME = "prepare-pr-body.md"
 
 # CI's template check, read from origin/<base> by --check-body.
 TEMPLATE_CHECK = ".github/scripts/pr-description-check.sh"
+# Windows, where the ``bash`` on PATH may be the WSL launcher instead of a shell.
+IS_WINDOWS = os.name == "nt"
 
 # CI's Sibling sweep check, read from origin/<base> by --check-body.
 SIBLING_CHECK = ".github/scripts/sibling_list_check.py"
@@ -491,6 +494,27 @@ def template_check(body, base):
     if rc != 0:
         return 0
     bash = shutil.which("bash")
+    if bash and IS_WINDOWS:
+        # System32 and WindowsApps hold the WSL launcher, which is not a shell.
+        launcher_dirs = {
+            ntpath.normcase(ntpath.normpath(d))
+            for d in (
+                ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"),
+                ntpath.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WindowsApps"),
+            )
+        }
+        dirs = os.environ.get("PATH", "").split(";")
+        bash = shutil.which(
+            "bash",
+            path=";".join(
+                d for d in dirs if d and ntpath.normcase(ntpath.normpath(d)) not in launcher_dirs
+            ),
+        )
+        if not bash:
+            print(
+                "WARN: only the WSL bash launcher is on PATH - template check skipped; CI still runs it"
+            )
+            return 0
     if not bash:
         print("WARN: bash not found - template check skipped; CI still runs it")
         return 0
