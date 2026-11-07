@@ -891,6 +891,11 @@ async def _restart_after_update_claimed(
             self._update_apply_deferred = True
             logger.warning("Update restart fence lost to real shutdown; deferring restart")
             return
+        # A planned restart: the turns close_all() cuts resume on the next boot.
+        # Already loaded by ``updates_apply``, so a replaced tree cannot fail it.
+        from kiro_crew.dashboard import restart_resume
+
+        await restart_resume.record_running_slots(self.dashboard_state)
         await sessions.close_all()
         # close_all() cut every dashboard turn that was mid-reply, and each one
         # saves the text its user watched stream as it unwinds, after the save

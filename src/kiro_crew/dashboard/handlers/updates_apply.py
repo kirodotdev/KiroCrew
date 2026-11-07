@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew import dep_sync, platform_compat, shutdown_event, update_ownership
+from kiro_crew.dashboard import restart_resume
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
@@ -301,6 +302,10 @@ async def _restart_gateway(
         # into an applied update is over. Not at entry: a restart that coalesces
         # or finds a broken launcher above leaves the deferral it found in place.
         update_ownership.restart_committed()
+        # A planned restart: the turns close_all() cuts resume on the next boot.
+        # Imported at module load, before an apply can remove this tree; that
+        # also preloads it for the gateway's update restart.
+        await restart_resume.record_running_slots(state)
         try:
             await state.sessions.close_all()
         except Exception:
