@@ -395,10 +395,11 @@ def run_script_sandboxed(
         # says so and names the sandbox as the runtime control), so the two
         # cron spawn paths are aligned on ``cc`` here. ``cc`` hides ``~/.aws``
         # on both Linux and macOS and keeps only ``~/.aws/config`` readable,
-        # so ``credential_process`` auth still resolves. A script that needs a host credential takes
-        # the existing route an operator already approves per job: a vault
-        # secret_env grant, which runs ``strict`` and injects the one approved
-        # secret instead of exposing a store.
+        # so ``credential_process`` auth still resolves. A vault secret_env
+        # grant runs ``strict`` and injects each approved secret as an env
+        # string, so it restores no credential FILE these tiers hide (an SSO
+        # cookie jar, say). Nor does ``ctx.call_tool``: the MCP server it
+        # starts runs inside this same sandbox.
         sandbox_mode = "strict" if stdin_payload is not None else "cc"
         # ``seal_hidden_dirs=hidden``: a granted script has no business WRITING into
         # the crons dir or its own parent -- they are hidden so it cannot read a mutable
