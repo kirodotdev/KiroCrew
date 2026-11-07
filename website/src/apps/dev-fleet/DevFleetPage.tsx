@@ -31,7 +31,7 @@ import { ApiError, api as gatewayApi } from '../../api/client'
 import { restartExhaustedNotice } from '../../utils/backendStatus'
 
 import { i18nT } from '../../i18n/t'
-import { compareText, fmtRelative, fmtUnit } from '../../i18n/format'
+import { compareText, fmtNumber, fmtRelative, fmtUnit } from '../../i18n/format'
 import {
   readDismissedUndoKey, persistDismissedUndoKey, POLL_MS, sleep, filterStepMarkers, syncFailureTail,
   _activeSyncPolls, awaitGatewayBackGlobal, type Worktree, type UndoTarget, type FleetData, type SyncRun,
@@ -1401,7 +1401,7 @@ export default function DevFleetPage() {
                 <div className="flex-1 min-w-[140px]">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
                 </div>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? others.length + ' / ' : ''}{wts.length} {i18nT('pages.devFleetPage.rows')}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? i18nT('pages.devFleetPage.rows_filtered_count', { count: wts.length, shown: fmtNumber(others.length), n: fmtNumber(wts.length) }) : i18nT('pages.devFleetPage.rows_count', { count: wts.length, n: fmtNumber(wts.length) })}</span>
                 <SimpleSelect
                   options={['status', 'recent', 'name', 'behind']}
                   optionLabels={[
