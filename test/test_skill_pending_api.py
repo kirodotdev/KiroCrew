@@ -600,8 +600,6 @@ def test_non_pinned_verdict_returns_before_any_candidate_inspection(
     loader, monkeypatch, candidate_layout
 ):
     """Windows loses the badge entirely, not only for already-detected links."""
-    import os
-
     pdir = loader._pending_root() / "deploy-helper"
     if candidate_layout == "scripts":
         (pdir / "scripts").mkdir()
@@ -613,9 +611,21 @@ def test_non_pinned_verdict_returns_before_any_candidate_inspection(
     def unexpected_inspection(*args, **kwargs):
         pytest.fail("non-pinned verdict attempted candidate inspection")
 
+    def candidate_only(operation):
+        def check(path=".", *args, **kwargs):
+            if not isinstance(path, int):
+                inspected = Path(os.fsdecode(path))
+                if inspected.is_relative_to(pdir):
+                    unexpected_inspection()
+            return operation(path, *args, **kwargs)
+
+        return check
+
+    # Coverage can stat source files when it first traces the verdict.
     with monkeypatch.context() as scoped:
-        scoped.setattr(os, "scandir", unexpected_inspection)
-        scoped.setattr(os, "lstat", unexpected_inspection)
+        scoped.setattr(os, "scandir", candidate_only(os.scandir))
+        scoped.setattr(os, "lstat", candidate_only(os.lstat))
+        scoped.setattr(pinned_fs, "open_dir_pinned", unexpected_inspection)
         scoped.setattr(skills_mod, "is_link_or_junction", unexpected_inspection)
         assert loader._pending_scripts_verdict(pdir) is None
 
