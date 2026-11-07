@@ -7364,6 +7364,25 @@
       "unreachable": "连不上",
       "unreachable_via": "连不上 — {{via}} 挂了"
     },
+    "relayCrews": {
+      "title": "中继 Crew",
+      "list_label": "可通过中继打开的远程 Crew",
+      "type_personal": "个人",
+      "type_team": "团队",
+      "online": "在线",
+      "offline": "离线",
+      "open": "打开",
+      "open_crew": "打开 {{name}}",
+      "empty": "没有可打开的远程 Crew。",
+      "refusal_not_granted": "你已无权访问此 Crew。",
+      "refusal_remote_access_off": "此账户已关闭远程访问。",
+      "refusal_offline": "此 Crew 已离线。",
+      "refusal_throttled": "请求过多，请一分钟后重试。",
+      "refusal_signed_out": "登录 Kiro 以查看你的远程 Crew。",
+      "refusal_not_configured": "尚未设置通过中继访问远程 Crew。",
+      "refusal_generic": "无法打开此 Crew。",
+      "refusal_list_generic": "无法加载你的远程 Crew。"
+    },
     "instancesViewport": {
       "connecting": "正在连接…",
       "connection_error": "连接错误",

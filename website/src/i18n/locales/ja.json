@@ -7364,6 +7364,25 @@
       "unreachable": "到達不可",
       "unreachable_via": "到達不可 — {{via}} が停止中"
     },
+    "relayCrews": {
+      "title": "リレー経由のクルー",
+      "list_label": "リレー経由で開けるリモートクルー",
+      "type_personal": "個人",
+      "type_team": "チーム",
+      "online": "オンライン",
+      "offline": "オフライン",
+      "open": "開く",
+      "open_crew": "{{name}} を開く",
+      "empty": "開けるリモートクルーはありません。",
+      "refusal_not_granted": "このクルーへのアクセス権がなくなりました。",
+      "refusal_remote_access_off": "このアカウントではリモートアクセスがオフになっています。",
+      "refusal_offline": "このクルーはオフラインです。",
+      "refusal_throttled": "リクエストが多すぎます。1 分後にもう一度お試しください。",
+      "refusal_signed_out": "リモートクルーを表示するには Kiro にサインインしてください。",
+      "refusal_not_configured": "リレー経由のリモートクルーは設定されていません。",
+      "refusal_generic": "このクルーを開けませんでした。",
+      "refusal_list_generic": "リモートクルーを読み込めませんでした。"
+    },
     "instancesViewport": {
       "connecting": "接続中…",
       "connection_error": "接続エラー",
