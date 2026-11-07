@@ -13847,7 +13847,7 @@
         "annotation_note": "apenas um aviso, não permitiu nem bloqueou nada",
         "confidence_title": "A confiança do Jev na própria resposta, de 0 a 1",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "Apenas feedback",
         "rate_right_jev": "O Jev avaliou o risco corretamente",
         "rate_wrong_jev": "O Jev avaliou o risco de forma errada",
         "tier_caution": "vale uma olhada",
