@@ -426,10 +426,17 @@ def peek() -> list[Signal]:
         return list(_queue)
 
 
-def ack(signal_ids: set[str]) -> int:
+def ack(signal_ids: set[str], *, observed: list[Signal] | None = None) -> int:
     """Drop delivered signals the caller has taken durable ownership of. Returns the count.
 
-    Called by ``dispatch.run_cycle`` with the ids it actually claimed (an incident on disk).
+    ``observed``: when given, only entries that are in that list (the same objects a
+    ``peek`` handed out) are dropped. A delivery that arrived for an acked id after the
+    caller's poll stays spooled: the caller decided on a snapshot that did not hold it, so
+    a new ``firing`` after a cleared event is still there for the next cycle.
+
+    Called by ``dispatch.run_cycle`` with the ids it actually claimed (an incident on disk),
+    the ids an open incident owns, and the observed ids no open incident can use (no firing
+    entry, no open incident), always with ``observed``.
     Anything not acked stays spooled for the next cycle, which is what makes the per-cycle
     claim cap safe. ``maxlen`` still bounds the spool, so a sender that outruns the heartbeat
     forever drops OLDEST-first rather than growing memory — the same trade as before, just no
@@ -455,6 +462,8 @@ def ack(signal_ids: set[str]) -> int:
     """
     if not signal_ids:
         return 0
+    # By identity, not equality: two deliveries of one alert compare equal (frozen dataclass).
+    seen = None if observed is None else {id(signal) for signal in observed}
     removed = 0
     with _queue_lock:
         for _ in range(len(_queue)):
@@ -462,7 +471,7 @@ def ack(signal_ids: set[str]) -> int:
                 signal = _queue.popleft()
             except IndexError:  # pragma: no cover — another consumer drained it
                 break
-            if signal.id in signal_ids:
+            if signal.id in signal_ids and (seen is None or id(signal) in seen):
                 removed += 1
             else:
                 _queue.append(signal)
