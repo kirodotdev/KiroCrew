@@ -63,6 +63,8 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, send
         session_key?: string
         rss_mb: number; peak_rss_mb: number; cpu_cores: number
         procs: number | null; mcp: number | null
+        /** Credits the live run has burned so far; null while none. Absent from an older gateway. */
+        credits?: number | null
         started_at: number; shared: boolean; pid: number | null; sampled: boolean
       }[]
       totals: {

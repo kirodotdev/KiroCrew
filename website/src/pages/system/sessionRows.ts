@@ -37,6 +37,8 @@ export interface SessionRow {
   procs: number | null
   mcp: number | null
   credits: number | null
+  /** The Credits figure: `credits` plus its tasks' figures, at any depth; a created session under it adds nothing. */
+  creditsTotal: number | null
   turns: number | null
   uptimeS: number | null
   pid: number | null
@@ -201,7 +203,8 @@ function taskRow(t: TaskPayloadRow): SessionRow {
     // distinguishes "not measured yet" from zero on its own.
     procs: t.procs ?? null,
     mcp: t.mcp ?? null,
-    credits: null,
+    credits: t.credits ?? null,
+    creditsTotal: null,
     turns: null,
     uptimeS: t.started_at ? Date.now() / 1000 - t.started_at : null,
     pid: t.pid,
@@ -229,6 +232,7 @@ function sessionRow(s: SessionPayloadRow): SessionRow {
     procs: s.procs,
     mcp: s.mcp,
     credits: s.credits ?? null,
+    creditsTotal: null,
     turns: s.turns ?? null,
     uptimeS: s.uptime_s,
     pid: s.pid,
@@ -318,7 +322,37 @@ export function buildTree(sessions: SessionPayloadRow[], tasks: TaskPayloadRow[]
     }
     orphans.push(row)
   }
-  return orphans.length > 0 ? [...roots, ...orphans] : roots
+  const tree = orphans.length > 0 ? [...roots, ...orphans] : roots
+  for (const row of tree) rollUpTaskCredits(row)
+  return tree
+}
+
+interface CreditRow {
+  original: SessionRow
+  subRows: CreditRow[]
+}
+
+/**
+ * A group's Credits figure: the figure of every row the table still shows in it,
+ * a created session nested at any depth included. Walks the table's own (filtered)
+ * rows; a task's spend is already in its owner's figure, so it adds nothing here.
+ */
+export function sumGroupCredits(rows: CreditRow[]): number {
+  const below = (r: CreditRow): number =>
+    r.subRows.reduce((s, c) => s + (c.original.kind === 'session' ? figure(c) : below(c)), 0)
+  const figure = (r: CreditRow): number => (r.original.creditsTotal ?? 0) + below(r)
+  return rows.reduce((s, r) => s + figure(r), 0)
+}
+
+/** Fills {@link SessionRow.creditsTotal} for `row` and everything under it. */
+function rollUpTaskCredits(row: SessionRow): number | null {
+  let total = row.credits
+  for (const child of row.subRows ?? []) {
+    const childTotal = rollUpTaskCredits(child)
+    if (child.kind === 'task' && childTotal != null) total = (total ?? 0) + childTotal
+  }
+  row.creditsTotal = total
+  return total
 }
 
 /**

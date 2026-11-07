@@ -16,6 +16,7 @@ import {
   sparklineBars,
   sumOncePerRuntime,
   type SessionPayloadRow,
+  type SessionRow,
   type TaskPayloadRow,
 } from '../pages/system/sessionRows'
 
@@ -441,6 +442,32 @@ describe('buildTree', () => {
     expect(rows[0].nested).toBe(false)
     expect(rows[0].parent?.slot).toBe('gone')
     expect(rows[0].subRows).toBeUndefined()
+  })
+
+  it('totals a session with the tasks under it at any depth, but not a session it created', () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:conductor', credits: 5 }),
+        session({ key: 'dashboard:worker', credits: 7, parent: createdBy('dashboard:conductor') }),
+        session({ key: 'dashboard:idle', credits: null }),
+      ],
+      [
+        task({ id: 't1', parent: 'dashboard:conductor', credits: 2, session_key: 'subagent:t1' }),
+        task({ id: 't2', parent: 'subagent:t1', credits: 3 }),
+        task({ id: 't3', parent: 'dashboard:worker', credits: 1 }),
+        task({ id: 't4', parent: 'dashboard:idle', credits: null }),
+      ],
+    )
+    const byId = new Map<string, SessionRow>()
+    const index = (r: SessionRow): void => {
+      byId.set(r.id, r)
+      r.subRows?.forEach(index)
+    }
+    rows.forEach(index)
+    expect(byId.get('dashboard:conductor')?.creditsTotal).toBe(10)
+    expect(byId.get('t1')?.creditsTotal).toBe(5)
+    expect(byId.get('dashboard:worker')?.creditsTotal).toBe(8)
+    expect(byId.get('dashboard:idle')?.creditsTotal).toBeNull()
   })
 
   it('does not follow a parent key that names no row in this payload', () => {
