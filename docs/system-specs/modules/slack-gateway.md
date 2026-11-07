@@ -1143,6 +1143,9 @@ Command name configurable via `slack.command` in config (default: `kirocrew`).
 #### Owner-Only `!` Commands (`handler.py`)
 
 Only the owner may use the bot over Slack. Restricted to `KIROCREW_OWNER_ID`.
+With `slack.shared_access` on, a listed person Slack confirms may also drive
+work as the owner, but of these commands only `!stop`, `!title` and `!compact`;
+the rest stay the owner's (`docs/request-for-change/rfc-slack-shared-access.md`).
 Processed before keyword commands. Each `!` command is one coroutine in
 `slack/handler_runtime/commands.py` (`_bang_<name>`), dispatched by
 `_handle_slash_command`; the sender gate in front of it is `_route_bang_command`,
@@ -1901,6 +1904,7 @@ Config example (remote access via URL):
 ## Security
 
 - Owner-locked via `KIROCREW_OWNER_ID` in `.env` (supports W/U prefix cross-matching)
+- **Shared access** (`slack.shared_access`, off by default; `slack/shared_access.py`): the owner may list Slack member IDs that then act as the owner. An ID counts only once `users.info` confirms it against `auth.test` (same workspace, a person, not deactivated, not the owner); a pass is cached 10 minutes, a refusal 1 minute. `is_allowed_user` stays owner-only; the sites that admit a shared user ask `is_allowed_user(x) or is_shared_user(x)` on purpose (message routing, own tool prompts and review drafts, question cards, Stop, the queued re-check, linked threads), pinned by `test_only_the_named_sites_admit_a_shared_user`, so every other reader refuses shared users by default. Gates that keep shared users out test `is_shared_listed` (listed, or admitted as a shared user earlier in this process), which needs no fresh confirmation and survives a removal, so neither a confirmation ageing out nor the owner removing the person mid-message lets that message past them. Tool prompts carry their requester: a shared user answers only their own and never grants Trust. `SlackTransport.authorize` (spool replay) stays owner-only.
 - **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
   1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, and, when `slack.allowed_enterprise_ids` is set, verifies the workspace's `enterprise_id` (or `team_id`) is on it; with no list configured it is default-open. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
   2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.

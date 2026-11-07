@@ -51,6 +51,7 @@ from kiro_crew.slack.interactions_context import (
     _probe_tracked_channel_scope,
     register_view_handler,
 )
+from kiro_crew.slack.shared_access import prime_shared_user
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger("kiro_crew.slack.interactions")
@@ -72,6 +73,9 @@ async def handle_view_submission(payload: dict) -> None:
     if handler is None:
         logger.warning("No view handler registered for callback_id=%s", callback_id)
         return
+    # A modal can outlive a shared user's Slack confirmation (slack.shared_access):
+    # ask Slack again before the handler's own sender check reads it.
+    await prime_shared_user(payload.get("user", {}).get("id", ""), _orch)
     try:
         await handler(payload)  # type: ignore[misc]
     except Exception:
@@ -229,6 +233,7 @@ async def _handle_message_shortcut(payload: dict) -> None:
         return
 
     user_id = payload.get("user", {}).get("id", "")
+    # Owner-only: a shared user (slack.shared_access) forwards nothing.
     if not is_allowed_user(user_id):
         logger.warning("Message shortcut rejected: unauthorized user %s", user_id)
         sel().log_api_access(

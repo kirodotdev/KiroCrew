@@ -341,6 +341,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { Input: 1 },
     reason: "TagListEditor's internal draft input — part of a composite the extractor indexes whole",
   },
+  'SlackSharedAccess.tsx': {
+    counts: { Input: 1 },
+    reason:
+      'the member-ID draft input of the People with access list: an input to the Add ' +
+      'action, whose list (slack.shared_access.user_ids) is indexed through the section',
+  },
   'SsmInvite.tsx': {
     counts: { Input: 1 },
     reason:

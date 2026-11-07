@@ -400,6 +400,14 @@
       "hint": "Which service outbound replies use. Inbound is unaffected — messages are accepted whichever service they arrive over."
     },
     {
+      "id": "channels.share-slack-access-slack",
+      "label": "Share Slack access (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.shared_access.enabled",
+      "description": "Let the people listed below use this Crew from Slack.",
+      "configKey": "slack.shared_access.enabled"
+    },
+    {
       "id": "channels.show-thinking-slack",
       "label": "Show thinking (Slack)",
       "tab": "channels",

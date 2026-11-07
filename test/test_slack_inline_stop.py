@@ -587,3 +587,27 @@ class TestWorkingBlockDashboardLinkGate:
         assert _link_ids(working), working
         assert footers, "footer not posted"
         assert not any(_link_ids(f) for f in footers), footers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outside_code_channel", [True, False])
+async def test_a_shared_user_stops_their_turn_outside_a_code_channel_only(
+    setup_interactions, mock_orch, outside_code_channel: bool
+) -> None:
+    """slack.shared_access: an admitted shared user's Stop works, except in a code channel."""
+    interactions = setup_interactions
+    mock_orch.sessions.stop_turn = AsyncMock(return_value="soft")
+    with (
+        patch("kiro_crew.slack.interactions.is_allowed_user", return_value=True),
+        patch(
+            "kiro_crew.slack.interactions_sessions._outside_code_channel",
+            AsyncMock(return_value=outside_code_channel),
+        ),
+        patch("kiro_crew.slack.interactions.sel") as mock_sel,
+    ):
+        mock_sel.return_value.log_api_access = MagicMock()
+        mock_sel.return_value.log_tool_invocation = MagicMock()
+        await interactions._handle_inline_stop(
+            {"user": {"id": "U_SHARED"}}, {"value": "sess-k"}, "C1", "ts1", "U_SHARED"
+        )
+    assert mock_orch.sessions.stop_turn.await_count == (1 if outside_code_channel else 0)

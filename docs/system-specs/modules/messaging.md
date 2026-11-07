@@ -3727,7 +3727,9 @@ dashboard token auth.
   `/kirocrew`, which the default `slack.command` answers.
 
 `allowed_users` / `open_channels` are intentionally not exposed while the
-runtime enforces owner-only access.
+runtime enforces owner-only access. Sharing the Slack bot is a separate,
+owner-only grant, `slack.shared_access`, with its own routes
+(`/api/slack/shared-access`); see `slack-gateway.md` Security.
 
 ## Discord channel
 

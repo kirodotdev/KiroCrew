@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard import handlers, slack_shared_access
 
 
 def register(app: web.Application) -> None:
@@ -25,6 +25,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
     app.router.add_get("/api/slack/manifest/status", handlers.api_slack_manifest_status)
     app.router.add_get("/api/slack/code-channel-agents", handlers.api_slack_code_channel_agents)
+    slack_shared_access.register(app)
     app.router.add_get("/api/discord/config", handlers.api_discord_config_get)
     app.router.add_put("/api/discord/config", handlers.api_discord_config_save)
     app.router.add_get("/api/telegram/config", handlers.api_telegram_config_get)

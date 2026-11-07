@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
         HOOK_REPLY,
+        SHARED_OWNER_ONLY_TEXT,
         ConversationLog,
         CronService,
         DashboardState,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
         get_dashboard_state,
         is_allowed_user,
         is_owner,
+        is_shared_listed,
         logger,
         maybe_apply_privacy_modifiers,
         maybe_route_linked_thread,
@@ -60,6 +62,7 @@ if TYPE_CHECKING:
         save_conversation_turn_off_loop,
         sel,
         sessions_include_ended,
+        shared_command_refused,
         slack_cfg,
     )
 
@@ -118,6 +121,21 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # Resolve agent early so ALL persist paths (hook auto-reply, command
     # intercepts, review-mode drafts, main LLM path) can forward it.
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
+
+    # ── Shared users (slack.shared_access) send no harness `/` command and no
+    #    privacy modifier: both are the owner's. Before the linked-thread hand-off,
+    #    which would carry a `/` command into the owner's dashboard chat. ──
+    if shared_command_refused(user_id, text):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources=channel,
+            error="shared user command",
+        )
+        await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
+        return False
 
     # ── Linked thread intercept: route to dashboard slot if linked ──
     # Resolved from the NAME captured when the answer was accepted, not from the
@@ -214,6 +232,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
 
     # ── Sessions keyword: list recent sessions ──
     if interpret_commands and _is_sessions_keyword(text):
+        # Owner-only: the list names every session (slack.shared_access).
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -378,6 +397,7 @@ async def maybe_handle_keyword_command(
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
     # ── Sessions keyword: list recent sessions (owner/allowed only) ──
     if handle_sessions and _is_sessions_keyword(text):
+        # Owner-only: the list names every session (slack.shared_access).
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -430,8 +450,9 @@ async def maybe_handle_keyword_command(
                 )
             return True
 
-    # ── Task runner: "run <spec-path>" ──
-    if task_runner:
+    # ── Task runner: "run <spec-path>" (owner-only: a shared user's words go to
+    #    the model like any other message) ──
+    if task_runner and not is_shared_listed(user_id):
         run_reply = await _handle_run_command(
             text, task_runner, slack, channel, reply_ts, session_key=session_key
         )
@@ -449,8 +470,8 @@ async def maybe_handle_keyword_command(
                 )
             return True
 
-    # ── Natural language cron: intercept wakeup patterns ──
-    if cron_service:
+    # ── Natural language cron: intercept wakeup patterns (owner-only, as above) ──
+    if cron_service and not is_shared_listed(user_id):
         cron_reply = await _handle_cron_command(
             text, cron_service, channel, reply_ts, user_id=user_id
         )

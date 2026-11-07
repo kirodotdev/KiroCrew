@@ -129,6 +129,26 @@ export interface SlackManifestStatus {
   app_manifest_url: string | null
 }
 
+/** One person on `slack.shared_access.user_ids`, as Slack answered for them. */
+export interface SlackSharedUser {
+  user_id: string
+  /** Slack display or real name; "" when Slack gave none. */
+  name: string
+  /** Slack confirmed the id: same workspace, a person, not deactivated, not the owner. */
+  confirmed: boolean
+  /** "ok" | "user_not_found" | "bot_user" | "deactivated" | "other_workspace" |
+   *  "owner" | "unverifiable" | "malformed_id" */
+  reason: string
+}
+
+/** GET /api/slack/shared-access. */
+export interface SlackSharedAccessData {
+  enabled: boolean
+  users: SlackSharedUser[]
+  /** True on a remote session: writes are accepted from this machine only. */
+  read_only: boolean
+}
+
 /** Writable Slack config fields sent to PUT /api/slack/config. Each registered
  *  Slack Code switch is sent under its own `slack.<key>` key. */
 export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, boolean>> {
@@ -528,7 +548,7 @@ export interface WhatsAppConfigSave {
   session_folder?: string
 }
 
-export function createMessagingEndpoints({ get, post, put, j }: ClientTransport) {
+export function createMessagingEndpoints({ get, post, put, del, j }: ClientTransport) {
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
@@ -537,6 +557,10 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     /** The agents a defaults save accepts with default folder *folder* ('' = the auto folder). */
     getSlackCodeChannelAgents: (folder: string) => get(`/api/slack/code-channel-agents?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{ agents: string[] | null }>,
     saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    getSlackSharedAccess: () => get('/api/slack/shared-access').then(j) as Promise<SlackSharedAccessData>,
+    setSlackSharedAccess: (enabled: boolean) => put('/api/slack/shared-access', { enabled, confirm: enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
+    addSlackSharedUser: (userId: string) => post('/api/slack/shared-access/users', { user_id: userId }).then(j) as Promise<{ ok: boolean; user: SlackSharedUser }>,
+    removeSlackSharedUser: (userId: string) => del('/api/slack/shared-access/users/' + encodeURIComponent(userId)).then(j) as Promise<{ ok: boolean }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
     saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

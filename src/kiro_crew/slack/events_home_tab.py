@@ -28,7 +28,12 @@ from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.blocks import command_hint_block
 from kiro_crew.slack.events_slash import SLASH_REGISTRY
-from kiro_crew.slack.handler import is_allowed_user, is_owner, is_yolo_mode, slack_cfg
+from kiro_crew.slack.handler import (
+    is_allowed_user,
+    is_owner,
+    is_yolo_mode,
+    slack_cfg,
+)
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
     _SESSION_KIND_DASHBOARD,
