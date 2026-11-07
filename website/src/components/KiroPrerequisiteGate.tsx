@@ -1546,9 +1546,19 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // long as the gateway's two kiro-cli subprocesses take to answer.
   // Only an admission from a resolved status counts: the app also renders while
   // the status is still unknown, and a lock found then must not leave it mounted.
+  // With Kiro Crew's own engine switched on (`crew_sign_in`), a session has no
+  // credential until someone signs in here, so every admission goes through
+  // Crew's sign-in screen first; it renders the app as soon as a sign-in is held. Only a
+  // resolved owner status turns it on, and an enterprise gate has its own screen.
+  const crewSignIn = statusQuery.data?.crew_sign_in === true
+    && statusQuery.data.setup_allowed !== false
+    && !enterpriseLocked
+    && !signInOnly
+  // The gate stays mounted with the hold off for everyone else, so the app keeps
+  // its place in the tree when a status that turns the hold on arrives.
   const app = (extra?: ReactNode) => {
     if (statusQuery.data) appShown.current = true
-    return <>{children}{extra}</>
+    return <KasLoginGate hold={crewSignIn}>{children}{extra}</KasLoginGate>
   }
   if (statusQuery.isPending) {
     return app()
@@ -1561,17 +1571,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // A relock of an app already in use keeps that app mounted and visible, and
   // tells the user to sign in again beside it.
   const relockStatus = enterpriseLocked && appShown.current ? statusQuery.data : undefined
+  // Through `app`, so the app keeps the tree position it had before the relock.
   const unlessRelocked = (screen: ReactNode) => (relockStatus
-    ? (
-      <>
-        {children}
-        <RelockNotice
-          owner={relockStatus.setup_allowed !== false}
-          command={relockStatus.enterprise_sign_in_command}
-          exactCommandElsewhere={relockStatus.bundled_cli === true
-            || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
-        />
-      </>
+    ? app(
+      <RelockNotice
+        owner={relockStatus.setup_allowed !== false}
+        command={relockStatus.enterprise_sign_in_command}
+        exactCommandElsewhere={relockStatus.bundled_cli === true
+          || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
+      />,
     )
     : <>{screen}</>)
   const prerequisite = statusQuery.data
