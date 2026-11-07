@@ -78,6 +78,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
         # display battery in.
         "crew_timeline.py",
+        # Pure helper: `redact` returns the redacted string and emits nothing. Its
+        # only caller is `dashboard/warm_task_brief.py`, the registered sink that
+        # posts the result.
+        "dashboard/warm_task_brief_inputs.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).

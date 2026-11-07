@@ -47,12 +47,13 @@ from kiro_crew.dashboard.warm_task_brief_check import (
     _tagged_re,
     _unbacked_facts,
 )
+from kiro_crew.dashboard.warm_task_brief_checking import checking_text
 from kiro_crew.dashboard.warm_task_brief_inputs import language_of as _language_of
 from kiro_crew.dashboard.warm_task_brief_inputs import parse_epoch as _parse_epoch
+from kiro_crew.dashboard.warm_task_brief_inputs import redact as _redact
 from kiro_crew.dashboard.warm_task_brief_inputs import row_epoch as _row_epoch
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_ledger import TERMINAL_PHASES, read_state
 from kiro_crew.session_summary import (
     MAX_USER_CHARS,
@@ -1607,12 +1608,6 @@ def _gateway_only(brief: "Brief", language: str) -> "Brief":
     )
 
 
-def _redact(text: str) -> str:
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
-
-
 # What `content` must never carry live: a widget block (an unclosed one runs
 # to the end), a markdown link or image, and a bare web address.
 _CONTENT_WIDGET_RE = re.compile(r"<mcwidget\b[\s\S]*?(?:</mcwidget\s*>|$)", re.IGNORECASE)
@@ -1883,7 +1878,12 @@ async def _run_warm_task_brief(
     if digest == fresh.previous_facts and not inputs.assistant_spoke_since(fresh.turns, anchor):
         return _skip(slot.key, "unchanged")
     # The indicator marks no turn (the deferral reads ``slot.running``).
-    indicator.enter_context(preparing_message(state, slot))
+    # Its caption names what the brief checks; the goal is redacted whole, before the cut.
+    open_items = inputs.open_item_entries(fresh.work_items, anchor, work_item_is_terminal)
+    goal = _redact(_goal(fresh))
+    prs = sum(1 for pr in live if pr.get("checked") is not False)  # a failed read is not one
+    caption = checking_text(language, goal, prs, len(open_items), fresh.running_workers)
+    indicator.enter_context(preparing_message(state, slot, caption, language))
     # Leaving now keeps the brief: only a typed row, a reset or a close cancels it.
     opened = getattr(state, "_warm_task_brief_opened", None)
     if isinstance(opened, set):

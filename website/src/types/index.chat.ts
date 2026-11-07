@@ -411,6 +411,13 @@ export interface ChatSlot extends TurnIdentityFields {
    * Not a turn: `running` stays false, so sends and queueing are unchanged;
    * only the chat's working indicator reads it. Absent from an older gateway. */
   preparing?: boolean
+  /** What is being prepared, built by the gateway (the warm catch-up names
+   * what it checks and its goal). Empty or absent: the client's own generic
+   * caption. */
+  preparing_text?: string
+  /** The language `preparing_text` is written in (`en`, `zh`, ...). The client
+   * shows the text only when this is its UI language. */
+  preparing_lang?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean

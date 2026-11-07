@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from kiro_crew.history_schema import transcript_sort_key
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_summary import TranscriptTurn
 
 logger = logging.getLogger(__name__)
@@ -586,3 +587,10 @@ def language_of(text: str) -> str:
         return "ja"
     best = max(counts, key=lambda lang: counts[lang])
     return best if counts[best] else "en"
+
+
+def redact(text: str) -> str:
+    """*text* with exfiltration URLs and credentials redacted, as every posted field is."""
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text

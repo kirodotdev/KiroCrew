@@ -54,6 +54,8 @@ _TO_DICT_KEYS = (
     "turn_gen",
     "compacting",
     "preparing",
+    "preparing_text",
+    "preparing_lang",
     "stop_declined",
     "queue_depth",
     "stopping",
