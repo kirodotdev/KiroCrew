@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import string
 import struct
 import zlib
 from types import SimpleNamespace
@@ -587,6 +588,39 @@ def test_a_later_decision_that_fails_ends_with_a_summary(seam, tmp_path):
 def test_a_malformed_call_is_refused(args, code):
     refused = reflex.parse(args)
     assert isinstance(refused, dict) and refused["code"] == code
+
+
+class _LongForm(Game):
+    """The walker's 250-row table: text fields, and dropdowns of 49 options (two fit in 100,
+    a third does not)."""
+
+    def elements(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for i in range(1, 251):
+            row = {"ref": f"e{i}", "name": f"Field {i}", "g": f"g{i}"}
+            if i % 2:
+                options = [{"i": j, "label": f"Option {j}"} for j in range(49)]
+                rows.append({**row, "role": "combobox", "ops": ["select"], "options": options})
+            else:
+                rows.append({**row, "role": "textbox", "ops": ["click", "hover", "type"]})
+        return rows
+
+
+def test_the_largest_request_keeps_within_laya_s_option_limits(seam, tmp_path):
+    values = [f"value {i}" for i in range(20)]
+    seam.provider = Provider(judge(done_after=0))
+    args = {
+        "goal": "Fill the form",
+        # Every move the call may name, each its own option (case folds "a" and "A").
+        "keys": list((string.digits + string.ascii_lowercase + ",./;")[: reflex.MAX_ACTIONS]),
+        "wait": True,
+        "targets": ["click", "hover", "type", "select"],
+        "values": values,
+        "facts": [", ".join(values)],
+    }
+    assert _run(args, _ctx(_LongForm(), tmp_path)[0])["stop"] == "done"
+    sizes = [len(q.options) for q in seam.provider.calls[0]["questions"] if isinstance(q, Choice)]
+    assert len(sizes) == 6 and max(sizes) <= 100 and sum(sizes) <= 512
 
 
 def test_arrange_fills_slots_from_items_and_keeps_the_bigger_of_a_merge():
