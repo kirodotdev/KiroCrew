@@ -66,6 +66,21 @@ async def _report_consumed(turn, consumed: bool = True, *, irreversible: bool = 
                 logger.debug("consumption report failed for slot %s", slot.key, exc_info=True)
 
 
+def _strip_merge_cards(turn, content: str, *, keep_merge_cards: bool = False) -> str:
+    """The one step that takes a requeue's merge-card frames off.
+
+    A verbatim requeue of this turn's ``message`` goes out as
+    ``_message_without_merge_cards``: a turn that does not land puts its
+    merge-card contexts back on the queue in the finally, and the replay turn
+    drains them, so a replay still carrying a card's frame would hand the model
+    the same card twice in one prompt. Any other text is runner-written and
+    carries no frame. ``_queue_recovery`` runs this before it queues.
+    """
+    if content == turn.message and not keep_merge_cards:
+        return turn._message_without_merge_cards
+    return content
+
+
 def _queue_recovery(
     turn,
     index: int,
@@ -78,13 +93,9 @@ def _queue_recovery(
 ) -> str:
     """Queue a retry without losing a producer's consumption settlement.
 
-    A verbatim requeue of this turn's ``message`` goes out as
-    ``_message_without_merge_cards``: a turn that does not land puts its
-    merge-card contexts back on the queue in the finally, and the replay
-    turn drains them, so a replay still carrying the card's frame would
-    hand the model the same card twice in one prompt. The thinking-binding
-    rebuild passes ``message``, so this substitution is what strips its
-    frame. The other arms pass ``_message_without_merge_cards`` themselves
+    Every requeue takes its merge-card frames off in ``_strip_merge_cards``.
+    The thinking-binding rebuild passes ``message``, so that step is what
+    strips its frame. The other arms pass ``_message_without_merge_cards`` themselves
     (the false-tool-blocker replay passes the pre-enrichment
     ``_incoming_message``, which carries no frame either; the auth-retry
     helper must, because it compares the text it is handed with the queue
@@ -150,8 +161,7 @@ def _queue_recovery(
         containment_meta,
     )
 
-    if content == turn.message and not keep_merge_cards:
-        content = turn._message_without_merge_cards
+    content = _strip_merge_cards(turn, content, keep_merge_cards=keep_merge_cards)
     _address_keys = (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY)
     _recovery_meta = containment_meta(state, slot)
     # A caller's extra meta can be the handed row's whole meta, so its
