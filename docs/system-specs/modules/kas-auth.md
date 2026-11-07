@@ -256,6 +256,16 @@ auth-service failure): its message says to use the access portal URL when AWS na
 the start URL, and to check the Region field otherwise, since a portal looked up in
 the wrong region answers a bare `Invalid request`.
 
+An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
+control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
+Center region does not name the control plane that serves the profile (a `us-east-1`
+instance can hold an `eu-central-1` profile, #28904), so the call asks every host in
+`_CPS_ENDPOINTS`, the login region's own first, and keeps the first answer that lists
+a profile. A host that refuses or sends an unreadable answer is logged and skipped.
+The poll ends as `error`, with nothing stored, when every host refused or none lists
+a profile (`no available Kiro profiles`); a connection failure is not skipped and
+raises out of the poll, since this leg has no transport budget (above).
+
 ### External IdP (enterprise SSO) — independent
 
 Portal returns IdP metadata (`issuer_url`, `client_id`, `scopes`, `login_hint`,

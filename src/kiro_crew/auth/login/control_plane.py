@@ -46,8 +46,7 @@ _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 # us-east-1, which is also what kiro-cli's ``DEFAULT_ENDPOINT`` resolves to.
 # eu-west-1 has no CPS host of its own (the name does not resolve); its
 # profiles are served by the Frankfurt control plane, which is where kiro-cli
-# sends EU regions — the us-east-1 fallback would answer zero profiles for
-# them and sign-in would stall with "no available Kiro profiles".
+# sends EU regions. Sign-in asks every host here, the login region's first.
 _CPS_ENDPOINTS = {
     "us-east-1": "https://management.us-east-1.kiro.dev/",
     "eu-central-1": "https://management.eu-central-1.kiro.dev/",
@@ -109,13 +108,38 @@ def cps_headers(target: str, access_token: str, *, token_type: str = "") -> dict
 async def list_available_profiles(
     access_token: str, *, region: str, session: aiohttp.ClientSession
 ) -> list[KiroProfile]:
-    """Return the caller's Kiro profiles, first page only.
+    """Return the caller's Kiro profiles from the first control plane that has any.
 
-    Raises ControlPlaneError on any non-200 or malformed body: an IdC login without
-    a resolvable profile ARN is unusable, so failures must be loud, not stored.
+    Every CPS host is asked, *region*'s own first, because the Identity Center region
+    does not name the control plane serving the profile (a us-east-1 instance can
+    hold an eu-central-1 profile). A host that refuses or answers malformed is skipped;
+    ControlPlaneError is raised only when every host did, since an IdC login without a
+    resolvable profile ARN is unusable. A transport error is not caught here.
+    """
+    urls = dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()])
+    errors: list[ControlPlaneError] = []
+    for url in urls:
+        try:
+            profiles = await _list_profiles_at(url, access_token, session)
+        except ControlPlaneError as err:
+            logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
+            errors.append(err)
+            continue
+        if profiles:
+            return profiles
+    if len(errors) == len(urls):
+        raise errors[0]
+    return []
+
+
+async def _list_profiles_at(
+    url: str, access_token: str, session: aiohttp.ClientSession
+) -> list[KiroProfile]:
+    """One ``ListAvailableProfiles`` call to the CPS host *url*, first page only.
+
+    Raises ControlPlaneError on any non-200 or malformed body.
     """
     headers = cps_headers(_TARGET, access_token)
-    url = control_plane_url(region)
     async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
         if resp.status != 200:
             body = await resp.text()
