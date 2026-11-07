@@ -968,6 +968,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
                 <button onClick={() => toggleExpandedSource(s.id, isExpanded)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
+                  aria-expanded={isExpanded}
                   aria-label={isExpanded ? i18nT('pages.knowledge.sourcesList.collapse_folder_details') : i18nT('pages.knowledge.sourcesList.expand_folder_details')}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
@@ -1025,6 +1026,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   {failedCount > 0 && (
                     isFolderType ? (
                       <button type="button" onClick={() => toggleExpandedSource(s.id, isExpanded)}
+                        aria-expanded={isExpanded}
                         title={i18nT('pages.knowledge.sourcesList.show_failed_files')}
                         className="text-[11px] text-danger whitespace-nowrap shrink-0 underline decoration-dotted underline-offset-2 hover:decoration-solid">
                         {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failedCount })}

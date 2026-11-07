@@ -149,6 +149,19 @@ describe('SourcesList — inline folder scan panel', () => {
     expect(screen.getByLabelText('Expand folder details')).toBeTruthy()
   })
 
+  it('marks the folder disclosure button with aria-expanded', async () => {
+    // A screen reader has to hear whether the folder row is open or closed; the
+    // flipped chevron and the label swap alone do not convey disclosure state.
+    routeScan(filesResp({ total: 4, done: 1, failed: 1, files: scanFiles }))
+    renderList()
+    await screen.findByText('Notes folder')
+
+    expect(screen.getByLabelText('Expand folder details').getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(screen.getByLabelText('Expand folder details'))
+    await screen.findByText('1/4 (25%)')
+    expect(screen.getByLabelText('Collapse folder details').getAttribute('aria-expanded')).toBe('true')
+  })
+
   it('renders nothing for a folder the gateway has no files for', async () => {
     routeScan(filesResp())
     await expandFolder()
