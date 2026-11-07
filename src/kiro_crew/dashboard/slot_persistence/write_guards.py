@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -325,7 +326,9 @@ def session_transcript_remains(state: DashboardState, slot: _ChatSlot) -> bool:
     That probe answers "may I republish this slot's content", and collapses three
     outcomes into ``True``: the file is GONE, the file belongs to a NEW
     incarnation, and existence is UNVERIFIABLE. Collapsing them is right there,
-    because all three refuse the copy.
+    because all three refuse the copy. :func:`session_delete_witness` keeps the
+    third apart for a caller that has already written and must know whether its
+    write went with the session.
 
     A caller that has already written a transcript and is now refusing needs the
     distinction, because it decides what it may TRUTHFULLY say. Only "gone" lets
@@ -464,6 +467,37 @@ def _session_delete_evidence(state: DashboardState, slot: _ChatSlot) -> SessionD
     return "present"
 
 
+class DeleteWitness(Enum):
+    """What :func:`session_delete_witness` can tell about a slot's transcript."""
+
+    PRESENT = "present"
+    DELETED = "deleted"
+    UNVERIFIABLE = "unverifiable"
+
+
+def session_delete_witness(state: DashboardState, slot: _ChatSlot) -> DeleteWitness:
+    """Whether this slot's session was permanently deleted out from under it.
+
+    :func:`_session_delete_evidence` as three answers, which
+    :func:`session_was_deleted` collapses for republishers. A caller that has
+    already WRITTEN into the transcript and is now deciding what to say needs
+    ``deleted`` and ``unverifiable`` apart, because only ``DELETED`` means its
+    write went with the session. Merge-back is that caller: its card is in the
+    parent's durable hold before it asks, and the hold writer never merges into a
+    metadata line whose identity is not the one its slot observed, so after a
+    committed write only a delete proven since says the card is lost. An
+    unverifiable read is no evidence of one, and answering "deleted" for it would
+    deny a merge that landed. ``present`` and ``unobserved`` are ``PRESENT``: a
+    slot that never observed its file cannot witness a delete.
+    """
+    evidence = _session_delete_evidence(state, slot)
+    if evidence == "deleted":
+        return DeleteWitness.DELETED
+    if evidence == "unverifiable":
+        return DeleteWitness.UNVERIFIABLE
+    return DeleteWitness.PRESENT
+
+
 def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     """True when this slot's session was permanently deleted out from under it.
 
@@ -475,14 +509,15 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     would copy from the in-memory window. This probe answers directly, however
     the flush ordering fell out.
 
-    The protective mapping of :func:`_session_delete_evidence`: ``deleted`` is
-    True, and so is ``unverifiable`` -- identity or existence that cannot be
+    The protective mapping of :func:`_session_delete_evidence`, read through
+    :func:`session_delete_witness`: ``deleted`` is True, and so is
+    ``unverifiable`` -- identity or existence that cannot be
     checked refuses the copy (fork 409 / transfer ``SnapshotUnstable``, both
     retryable) rather than republishing what may be a deleted conversation
     from the surviving in-memory window. ``present`` and ``unobserved`` are
     False.
     """
-    return _session_delete_evidence(state, slot) in ("deleted", "unverifiable")
+    return session_delete_witness(state, slot) is not DeleteWitness.PRESENT
 
 
 def session_deletion_confirmed(state: DashboardState, slot: _ChatSlot) -> bool:
