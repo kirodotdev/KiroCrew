@@ -2562,6 +2562,9 @@
       "defaultValue": {
         "embedding_provider": "llama_cpp",
         "embedding_dim": 1024,
+        "ollama_url": "http://127.0.0.1:11434",
+        "ollama_model": "",
+        "ollama_allow_remote": false,
         "embedding_threads": 4,
         "embedding_bulk_threads": 1,
         "embedding_bulk_duty": 0.2,
@@ -2610,12 +2613,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Provider",
-      "help": "Vector embedding backend (always-on). In-process via vendored llama-cpp-python. Legacy configs with 'ollama' or 'none' are auto-migrated to 'llama_cpp'.",
+      "help": "Vector embedding backend (always-on). 'llama_cpp' runs the model in-process via vendored llama-cpp-python. 'ollama_http' sends memory and knowledge text to the Ollama server at memory.ollama_url; set memory.ollama_model and memory.embedding_dim to match its model. Legacy configs with 'ollama' or 'none' are auto-migrated to 'llama_cpp'. Switching changes the vector space, so stored embeddings are regenerated in the background.",
       "hasChildren": false,
       "enumValues": [
-        "llama_cpp"
+        "llama_cpp",
+        "ollama_http"
       ],
-      "defaultValue": "llama_cpp"
+      "defaultValue": "llama_cpp",
+      "requiresRestart": true
     },
     {
       "path": "memory.embedding_dim",
@@ -2630,6 +2635,51 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1024,
+      "requiresRestart": true
+    },
+    {
+      "path": "memory.ollama_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Ollama URL",
+      "help": "Base URL of the Ollama server used when embedding_provider is 'ollama_http'. A loopback address keeps text on this machine; any other host needs ollama_allow_remote and an https:// URL. Credentials, query strings and redirects are refused.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "http://127.0.0.1:11434",
+      "requiresRestart": true
+    },
+    {
+      "path": "memory.ollama_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Ollama Embedding Model",
+      "help": "Name of the embedding model the Ollama server serves, as listed by its /api/tags (for example 'nomic-embed-text'). Required for 'ollama_http'. It names the vector space, so changing it regenerates stored embeddings.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "memory.ollama_allow_remote",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Allow Remote Ollama Server",
+      "help": "Permit a non-loopback memory.ollama_url. Memory and knowledge text then leaves this machine, so it is off by default and the URL must use https://.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
       "requiresRestart": true
     },
     {

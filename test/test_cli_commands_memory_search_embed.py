@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import cli_commands as cc
+from kiro_crew import embeddings as emb
 from kiro_crew.config.loader import KiroCrewConfig
 
 _QUERY_VECTOR = [0.25, 0.5, 0.75, 1.0]
@@ -91,6 +92,7 @@ class _Harness:
         model_present: bool = True,
         stale_space: bool = False,
         embedder: _ReadyEmbedder | None = None,
+        ollama: bool = False,
     ) -> None:
         self.store = _RecordingStore()
         self.embedder = embedder if embedder is not None else _ReadyEmbedder()
@@ -100,6 +102,7 @@ class _Harness:
             patch.object(cc, "declared_store", lambda *a, **k: self.store),
             patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),
             patch.object(cc, "model_file_present", lambda *a, **k: model_present),
+            patch.object(emb, "ollama_backend_selected", lambda *a, **k: ollama),
             patch.object(cc, "store_embedding_space_is_stale", lambda _s: stale_space),
             patch.object(cc, "get_shared_embedder", self._get_embedder),
             patch.object(cc, "make_sync_embed_fn", self._make_embed_fn),
@@ -153,6 +156,12 @@ class TestMemorySearchQueryEmbedding:
         assert h.store.kwargs["query_embedding"] is None
         assert h.embedder_lookups == 0 and h.embed_fn_builds == 0
         assert cc._SEARCH_KEYWORD_ONLY_NO_MODEL in capsys.readouterr().err
+
+    def test_an_ollama_server_embeds_without_a_model_file(self) -> None:
+        """With ``memory.embedding_provider = "ollama_http"`` no GGUF is ever on disk."""
+        with _Harness(model_present=False, ollama=True) as h:
+            cc._memory_cmd(_search_args())
+        assert h.store.kwargs["query_embedding"] == _QUERY_VECTOR
 
     def test_stale_vector_space_degrades_to_keyword(
         self, capsys: pytest.CaptureFixture[str]

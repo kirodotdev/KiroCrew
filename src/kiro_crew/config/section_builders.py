@@ -45,6 +45,7 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    _safe_str,
     field_default,
 )
 from kiro_crew.config.integration_sections import (
@@ -289,6 +290,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
     return MemoryConfig(
         embedding_provider=_coerce_embedding_provider(section.get("embedding_provider")),
         embedding_dim=section.get("embedding_dim"),
+        ollama_url=section.read("ollama_url", _safe_str),
+        ollama_model=section.read("ollama_model", _safe_str),
+        ollama_allow_remote=section.read("ollama_allow_remote", _safe_bool),
         embedding_threads=section.read("embedding_threads", _safe_int, 1, 256),
         # 0 is the documented "inherit embedding_threads" sentinel, so the
         # floor is 0 rather than 1 — clamping it to 1 would erase a

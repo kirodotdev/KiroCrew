@@ -1544,6 +1544,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _embedding_setup_status,
         _ensure_pip_available,
         _faiss_install_lock,
+        _ollama_provider_refusal,
         _probe_model_path,
         _redact_pip_stderr,
         _store_progress_adapter,
@@ -1600,10 +1601,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         legacy_embedding_ids,
         model_download_manager,
         model_file_present,
+        ollama_backend_selected,
         reconcile_store_embedding_space,
         reembed_progress,
         reset_shared_embedder,
         resolve_custom_model,
+        resolve_ollama_settings,
         validate_custom_model_path,
     )
     from kiro_crew.executors import (  # noqa: F401
