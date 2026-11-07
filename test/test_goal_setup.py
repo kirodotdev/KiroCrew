@@ -114,6 +114,20 @@ GOAL_A = {"id": "g00000001", "text": "Keep the release notes current"}
 GOAL_B = {"id": "g00000002", "text": "Cut the build time in half"}
 
 
+def test_with_the_ledger_the_kickoff_tracks_the_research_worker_as_an_item() -> None:
+    rec = {"goals": [GOAL_A], "key_results": [], "schedules": {}}
+    text = goal_setup.kickoff_prompt(rec, GOAL_A["id"], ledger=True)
+    assert text is not None
+    # Create, session_create, bind, then seed; no goal for a single item.
+    order = [
+        text.index(w) for w in ("create the item", "session_create", "bind it", "session_send")
+    ]
+    assert order == sorted(order)
+    assert "no goal recorded" in text and "Close the item" in text
+    assert "`message`" not in text
+    assert "[Worker report]" in text
+
+
 def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     rec = {
         "goals": [GOAL_A],

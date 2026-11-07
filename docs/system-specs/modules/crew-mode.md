@@ -4047,19 +4047,24 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   member working protocol (`context_assembly.member._MEMBER_HOW_YOU_WORK_COMMON`)
   hand research and long work to a worker session for the same reason, and
   they, the operating-mode block (`operating_mode_block`) and the heartbeat
-  prompt all dispatch and END the turn rather than waiting or polling: for a
-  quick single task the worker's report wakes the thread, and no monitor loop is
+  prompt all dispatch and END the turn rather than waiting or polling: without
+  the ledger the worker's report wakes the thread, and no monitor loop is
   armed. **Ledger-tracked work is the one exception**, and only where the
   conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
   after the governance ceiling
   (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
   names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
   in place of `conductor.tracking`), and the operating-mode block appends
-  `conductor.patrol`. That piece teaches the dispatch for work with more than one
-  item, or work the user asked to track. It opens by sending the Bot to the
+  `conductor.patrol`. There every task the Bot hands to a worker is tracked, a
+  single task too, as on the Ultra Mode conductor, and so is work the user asked
+  to track; the tracking sentence says the same, and the goal-setup nudge
+  (`goal_setup.kickoff_step2_ledger`) and the heartbeat hand-off
+  (`goal_reminder._HEARTBEAT_WORKERS_LEDGER`) track their worker as an item too
+  (`member_mate_tools.member_has_ledger_tools`). It opens by sending the Bot to the
   `goal-conductor` skill before planning such work, and to follow it for
   dispatch, patrol, verdicts and worker debate, as the conductor's own charter
-  does. Then: record the goal, then per item
+  does. Then: record the goal for work with more than one item (a single task
+  records none), then per item
   `work_ledger_record action=create`, `session_create`, `work_ledger_record
   action=bind`, `session_send`, binding before the seed. It also teaches the
   patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
@@ -4101,7 +4106,9 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   worker lacks" below). It mounts `kirocrew-work` the same way as the
   conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
   `work_brief`, `work_report`), so a worker bound to an item in its
-  Bot's ledger can read its brief and report on it; it is a base server,
+  Bot's ledger can read its brief and report on it (`worker.principles` tells
+  it to call `work_brief` first and to report on the item it names with
+  `work_report`); it is a base server,
   so a Bot's file cannot replace its entry (a switch-off is still a
   restriction, below). Each server an edition contributes
   (`McpToolingProvider.extra_mcp_servers()`) that the worker mounts gets an

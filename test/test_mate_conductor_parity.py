@@ -52,7 +52,7 @@ from kiro_crew.config import paths as paths_mod
 ALLOWLIST: dict[str, str] = {
     # -- prompt sections of the root charter --
     "prompt:role": "names kirocrew-conductor and its round loop; the crewmate's identity comes from its member section",
-    "prompt:reports_as_data": "a crewmate's untracked task still reports through [Worker report] turns; conductor.patrol says which work reports through the ledger",
+    "prompt:reports_as_data": "a crewmate's worker also wakes its thread with [Worker report] turns (page line, capability gaps, Bots without the ledger); conductor.patrol puts every dispatched task in the ledger",
     "prompt:never_do_work": "a crewmate may do a quick command or small edit itself (conductor.operating_mode), so it keeps the default built-ins",
     "prompt:shell_scope": "states why the root conductor's shell exists; a crewmate's conductor has the default shell for any work",
     "prompt:dispatch_in_one_call": "work_dispatch requires `agent`, which a crewmate's session_create overrides to kirocrew-mate-worker; the crewmate runs the four calls",

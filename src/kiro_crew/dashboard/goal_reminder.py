@@ -529,6 +529,17 @@ _HEARTBEAT_WORKERS_V2 = (
     "thread on its own as a [Worker report] turn, and that turn or a later wake "
     "picks the work up from there rather than starting it again. "
 )
+#: The same hand-off for a crewmate whose chat mounts the work ledger
+#: (``member_mate_tools.member_has_ledger_tools``): every task it hands off is an item.
+_HEARTBEAT_WORKERS_LEDGER = (
+    "Long or heavy work belongs to your worker, not this thread: track it as an "
+    "item in your work ledger, open the worker with session_create, bind it to "
+    "the item, then give it a self-contained brief with session_send, so this "
+    "thread stays free and the user can see the work in the sidebar and take it "
+    "over. Then end this wake: the worker reports on its item, its report comes "
+    "back to this thread on its own as a [Worker report] turn, and that turn or "
+    "a later wake picks the work up from there rather than starting it again. "
+)
 _HEARTBEAT_SMALL_STEPS = (
     "Long or heavy work goes in small steps, one piece per wake, so this thread "
     "stays free between them; note in your work ledger where you stopped, so the "
@@ -554,13 +565,17 @@ _HEARTBEAT_MILESTONES_WAITING = (
 )
 
 
-def _heartbeat_handoff() -> str:
+def _heartbeat_handoff(ledger: bool = False) -> str:
     """The hand-off line for a thread with the ``session_*`` tools."""
-    return _HEARTBEAT_WORKERS_V2
+    return _HEARTBEAT_WORKERS_LEDGER if ledger else _HEARTBEAT_WORKERS_V2
 
 
 def heartbeat_prompt(
-    rec: dict[str, Any], *, has_session_tools: bool, milestones_waiting: bool = False
+    rec: dict[str, Any],
+    *,
+    has_session_tools: bool,
+    milestones_waiting: bool = False,
+    ledger: bool = False,
 ) -> str:
     """The hidden turn of one heartbeat wake, built from the current goal record.
 
@@ -570,7 +585,9 @@ def heartbeat_prompt(
     knowing now. *has_session_tools* picks how long work is handed off
     (:func:`member_has_session_tools`). *milestones_waiting* (a milestones card
     of the crewmate's still waits on the user, :func:`milestones_card_waiting`)
-    drops new milestones from the next steps and says why.
+    drops new milestones from the next steps and says why. *ledger*
+    (:func:`kiro_crew.member_mate_tools.member_has_ledger_tools`) tracks a
+    hand-off as a work-ledger item.
     """
     every = member_goals.interval_label(heartbeat_interval(rec["schedules"]))
     new_milestones = "" if milestones_waiting else _HEARTBEAT_NEW_MILESTONES
@@ -592,7 +609,7 @@ def heartbeat_prompt(
         "cannot be undone or that reaches outside (a push, a merge, a release, a "
         "message to someone else) waits for the user, recorded on your Dashboard "
         "tab. "
-        + (_heartbeat_handoff() if has_session_tools else _HEARTBEAT_SMALL_STEPS)
+        + (_heartbeat_handoff(ledger) if has_session_tools else _HEARTBEAT_SMALL_STEPS)
         + _HEARTBEAT_PATROL
         + "Record what you did where the user looks: a tracked item's progress "
         "in your work ledger, the fields your Dashboard tab asks you to fill with "
@@ -776,6 +793,9 @@ async def fire(state: Any, job: Any) -> str:
             return "skipped: the Bot's thread is not open"
     if cadence == member_goals.CADENCE_HEARTBEAT:
         has_tools = await asyncio.to_thread(member_has_session_tools, member)
+        from kiro_crew.member_mate_tools import member_has_ledger_tools
+
+        ledger = await asyncio.to_thread(member_has_ledger_tools, member)
         waiting = await milestones_card_waiting(state, slot_key)
         # The cron timer stops firing once the gateway stops; this one check
         # covers a stop that began during the reads above, as does the thread's.
@@ -788,7 +808,9 @@ async def fire(state: Any, job: Any) -> str:
             return "skipped: the Bot's thread is not open"
         if _monitor_loop_drives(slot_key):
             return LOOP_SKIP
-        prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones_waiting=waiting)
+        prompt = heartbeat_prompt(
+            rec, has_session_tools=has_tools, milestones_waiting=waiting, ledger=ledger
+        )
     else:
         prompt = reminder_prompt(
             rec, cadence, finished=finished, dashboard=dashboard, page_tools=page_tools
