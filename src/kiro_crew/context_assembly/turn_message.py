@@ -367,7 +367,9 @@ def build_message(
                 session_start=True,
             )
         )
-        if agent_prompt:
+        # Not when the harness holds this exact text as the agent's own prompt
+        # (recorded from KAS's wire definition); a compaction re-sends the block.
+        if agent_prompt and agent_prompt != native_documents.get(f"template://{agent}#prompt"):
             parts.append(f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
         with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
