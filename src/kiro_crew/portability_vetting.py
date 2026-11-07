@@ -188,10 +188,10 @@ def _sanitize_imported_crons(
     Three rules, each closing a different way an archive can act on the host:
 
     1. A job that is not an object, or whose ``schedule`` is not one, is DROPPED.
-       ``CronService._load`` skips such a record with a warning and it is then
-       silently dropped from the store on the next write — dead weight with an
-       invisible deadline. Dropping it at import, with the drop REPORTED to the
-       user, is the honest version of the same outcome.
+       ``CronService._load`` skips such a record with a warning on every load and
+       the store keeps it, never running — dead weight only the log mentions.
+       Dropping it at import, with the drop REPORTED to the user, keeps an
+       archive from planting one.
 
     2. A ``command`` is vetted with ``mcp_cron._vet_shell_command``, so it is
        judged exactly as the same command would be at ``cron_add`` (deny-list,
@@ -325,9 +325,9 @@ def _sanitize_cron_text(
         # Rule 1: a shape unfit for the store must not survive the import. This
         # predicate is deliberately STRICTER than the loader's (it also demands
         # str-typed id/name/message, which `_job_from_record` would accept
-        # untyped): the loader skips a bad record with a warning and the next
-        # write drops it for good, so importing anything questionable only
-        # manufactures dead weight with an invisible deadline. Dropping it here,
+        # untyped): the loader skips a bad record with a warning on every load
+        # and the store keeps it unrun, so importing anything questionable
+        # manufactures dead weight that only the log mentions. Dropping it here,
         # reported in the import summary, tells the user it happened.
         if not drop_malformed and not isinstance(job, dict):
             kept.append(job)
