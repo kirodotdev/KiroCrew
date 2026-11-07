@@ -30,7 +30,8 @@ entries, else the inherited trees for a spec that may inherit them) -- the rules
 ``agent_discovery.agent_skill_globs`` applies on kiro-cli -- plus every default-tree
 skill the spec's own ``permissions`` allow by name: KAS loads those trees anyway,
 and denying a skill the agent's author explicitly allows would override the
-author. Skill files are read through ``hooks.safe_read_prefix``.
+author. Skill files are read through ``hooks.safe_read_prefix``; a skill whose
+opened file ``kas_prompt_paths.is_unsafe_prompt_path`` refuses is never copied.
 
 KAS also refuses a SKILL.md kiro-cli loads (:func:`refused_skill_copies`): one with no
 front matter, no ``name`` or ``description``, or front matter its YAML parser rejects,
@@ -655,6 +656,13 @@ def _matched_files(globs: list[str]) -> list[Path]:
     return files
 
 
+def _unsafe_to_copy(opened: str) -> bool:
+    """Whether the kernel path of an opened skill file is one a prompt may not carry."""
+    from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path
+
+    return is_unsafe_prompt_path(Path(opened))
+
+
 def refused_skill_copies(
     agent: str,
     spec: dict[str, Any],
@@ -685,7 +693,9 @@ def refused_skill_copies(
     taken: set[str] = set()
     refused: list[tuple[Path, dict[str, Any] | None, str, str]] = []
     for path in sorted(native | resource | set(in_scope)):
-        raw = safe_read_prefix(str(path), _MAX_COPY_BYTES + 1)
+        # A copy's text reaches the model, as a file:// prompt does, so the
+        # file actually opened must pass the prompt fence too.
+        raw = safe_read_prefix(str(path), _MAX_COPY_BYTES + 1, refuse=_unsafe_to_copy)
         if raw is None:
             continue
         text = raw.decode("utf-8", errors="replace")
