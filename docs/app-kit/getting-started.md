@@ -252,6 +252,10 @@ The field reads the same on every surface your app mounts on — a routed `ui.pa
 page and a `contributes.panelTabs` side-panel tab both get it — so you write the
 banner once.
 
+`latestVersion` comes from the source your app was installed from, the one its
+Update installs from. Another registry that publishes an app under the same name
+never answers for yours.
+
 The field is advisory. It tells you what to display, not what to do: your app cannot
 update itself from it, and the gateway re-resolves the app's source when an update is
 actually applied.
