@@ -9,8 +9,10 @@
  *                    saying what the new chat holds and that this chat is left as it was; the later
  *                    entry's line opens by saying this message is left out
  *   setting-on-light the same menu in the light theme
- *   setting-off      Tail-only Fork off: the menu is unchanged, "Fork conversation from here" only,
- *                    with no description line
+ *   setting-off      Tail-only Fork off: fork is a row button, "Fork conversation from here", after
+ *                    Regenerate and Copy on the newest reply, and More lists no fork entry
+ *   setting-off-older  the same on an older reply: Fork takes the first seat, Copy follows it
+ *   setting-off-light  the newest reply's row in the light theme
  *   fork-in-flight   after choosing Fork with earlier messages: the spinner takes that entry's icon
  *                    slot so its label keeps its column, both entries are dimmed, the plain entry
  *                    shows no spinner, and clicking either entry starts no second fork
@@ -25,6 +27,7 @@
  * Also asserted with hit-tested clicks (elementFromPoint at the item centre, then a real mouse click):
  *   plain entry -> onFork(1, 'm2')   history entry -> onFork(1, 'm2', 'head')
  * And, with the setting off, that no menu entry wraps onto a second line at 320 px, 390 px or 760 px.
+ * With the setting on, the row draws no fork button: the direction is chosen in More.
  *
  * Usage (website/ is the vite root):
  *   npx vite --host 127.0.0.1 --port 6874 --strictPort
@@ -54,7 +57,6 @@ async function open(query, size = { width: 760, height: 600 }) {
 const forkIds = page => page.getByRole('menuitem').evaluateAll(els => els.map(e => e.getAttribute('data-testid')).filter(id => id && id.startsWith('fork-')))
 const text = (page, id) => page.getByTestId(id).evaluate(el => (el.querySelector('[data-testid$="-label"]') ?? el.firstElementChild).innerText.trim())
 const hintOf = (page, id) => page.getByTestId(id).innerText().then(t => t.trim())
-const present = (page, id) => page.getByTestId(id).count().then(n => n > 0)
 const hasIcon = (page, id, name) => page.getByTestId(id).evaluate((el, n) => !!el.querySelector(`svg.lucide-${n}`), name)
 /** Left edge of an entry's label text, so a spinner that pushes the label is caught. */
 const labelLeft = (page, id) => page.getByTestId(id).evaluate(el => (el.querySelector('[data-testid$="-label"]') ?? el.firstElementChild).lastElementChild.getBoundingClientRect().left)
@@ -71,10 +73,17 @@ async function hitTested(page, testId) {
   return page.evaluate(([px, py, id]) => !!document.elementFromPoint(px, py)?.closest(`[data-testid="${id}"]`), [x, y, testId])
 }
 const calls = page => page.evaluate(() => window.__forkCalls)
+/** The reply's action row, as the aria-labels of its direct buttons, in order. */
+async function rowLabels(page) {
+  const reply = page.locator('[data-role="assistant"]').first()
+  await reply.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(800)
+  return reply.getByTestId('assistant-more-actions').locator('..').locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')))
+}
 
 // 1 setting on
 {
   const { ctx, page, errors } = await open('theme=dark&choice=on')
+  check('[on] the row draws no fork button', JSON.stringify(await rowLabels(page)) === JSON.stringify(['Regenerate response', 'Copy', 'More actions']))
   await openMore(page)
   check('[on] fork entries = plain, then Fork with earlier messages', JSON.stringify(await forkIds(page)) === JSON.stringify(['fork-from-here', 'fork-with-history']))
   check('[on] the plain entry names what the new chat holds', (await text(page, 'fork-from-here')) === 'Fork with later messages only')
@@ -100,16 +109,23 @@ const calls = page => page.evaluate(() => window.__forkCalls)
   await page.screenshot({ path: resolve(OUT, 'fork-menu-setting-on-light.png') })
   check('[light] no page errors', errors.length === 0); await ctx.close()
 }
-// 2 setting off
-{
-  const { ctx, page, errors } = await open('theme=dark&choice=off')
+// 2 setting off: fork is a row button
+for (const [label, query, expected, file] of [
+  ['off', 'theme=dark&choice=off', ['Regenerate response', 'Copy', 'Fork conversation from here', 'More actions'], 'fork-row-setting-off.png'],
+  ['off-older', 'theme=dark&choice=off&regen=0', ['Fork conversation from here', 'Copy', 'More actions'], 'fork-row-setting-off-older.png'],
+  ['off-light', 'theme=light&choice=off', ['Regenerate response', 'Copy', 'Fork conversation from here', 'More actions'], 'fork-row-setting-off-light.png'],
+]) {
+  const { ctx, page, errors } = await open(query)
+  check(`[${label}] the row reads ${expected.join(', ')}`, JSON.stringify(await rowLabels(page)) === JSON.stringify(expected))
+  const fork = page.locator('[data-role="assistant"]').first().getByTestId('fork-from-here')
+  check(`[${label}] the row button draws the fork icon`, await hasIcon(page, 'fork-from-here', 'git-fork'))
+  check(`[${label}] the row button is hit-tested`, await hitTested(page, 'fork-from-here'))
+  await page.screenshot({ path: resolve(OUT, file) })
+  await fork.click(); await page.waitForTimeout(300)
+  check(`[${label}] the row button calls onFork(1, m2)`, JSON.stringify(await calls(page)) === JSON.stringify([[1, 'm2']]))
   await openMore(page)
-  check('[off] fork entries = the plain entry only', JSON.stringify(await forkIds(page)) === JSON.stringify(['fork-from-here']))
-  check('[off] the plain entry keeps its label', (await text(page, 'fork-from-here')) === 'Fork conversation from here')
-  check('[off] the plain entry keeps the fork icon', await hasIcon(page, 'fork-from-here', 'git-fork'))
-  check('[off] the menu gains no description line', !(await present(page, 'fork-hint')) && !(await present(page, 'fork-with-history-hint')))
-  await page.screenshot({ path: resolve(OUT, 'fork-menu-setting-off.png') })
-  check('[off] no page errors', errors.length === 0); await ctx.close()
+  check(`[${label}] More lists no fork entry`, (await forkIds(page)).length === 0)
+  check(`[${label}] no page errors`, errors.length === 0); await ctx.close()
 }
 // 3 fork in flight
 {
@@ -196,7 +212,7 @@ for (const width of [320, 390, 760]) {
     return out
   }))
   console.log(`[off-w${width}] ${rows.map(r => `${r.id}/${r.part} ${r.height.toFixed(1)}/${r.lineHeight}`).join(', ')}`)
-  check(`[off-w${width}] the menu lists Speak and Share beside the fork entry`, ['speak-message', 'share-message', 'fork-from-here'].every(id => rows.some(r => r.id === id)))
+  check(`[off-w${width}] the menu lists Speak and Share and no fork entry`, ['speak-message', 'share-message'].every(id => rows.some(r => r.id === id)) && !rows.some(r => r.id?.startsWith('fork-')))
   check(`[off-w${width}] no entry's label or line wraps`, rows.every(r => r.height < r.lineHeight * 1.5))
   check(`[off-w${width}] no page errors`, errors.length === 0); await ctx.close()
 }
