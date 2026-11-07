@@ -660,7 +660,10 @@ from kiro_crew.security import (  # noqa: F401
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import (  # noqa: F401
+    KAS_DEFAULT_STAND_IN,
+    KAS_STAND_IN_WARNING,
     SelectionChange,
+    kas_pick_stand_in,
     record_agent_selection,
     resolve_session_agent_bindings,
     restore_agent_selection,

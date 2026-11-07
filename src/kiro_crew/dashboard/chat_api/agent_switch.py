@@ -15,6 +15,8 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
+        KAS_DEFAULT_STAND_IN,
+        KAS_STAND_IN_WARNING,
         SESSION_SWITCH_KIND,
         DashboardState,
         KiroCrewConfig,
@@ -40,6 +42,7 @@ if TYPE_CHECKING:
         drained_to_thread,
         effective_session_key,
         is_registered_agent_name,
+        kas_pick_stand_in,
         load_window_off_loop,
         logger,
         members_mod,
@@ -427,6 +430,24 @@ async def switch_slot_agent(
             logger.warning("Failed to load config for the default template", exc_info=True)
             agent_name = default_template(KiroCrewConfig())
         agent_kind = "template"
+    stand_in_warning = ""
+    if agent_name == KAS_DEFAULT_STAND_IN and agent_kind != "member":
+        # On KAS the pick itself becomes Crew's default template, so the record,
+        # the chip and every reader of either name the agent that runs.
+        try:
+            picked = await asyncio.to_thread(
+                kas_pick_stand_in,
+                KiroCrewConfig.load(),
+                effective_session_key(slot),
+                agent_name,
+                slot.project or None,
+            )
+        except Exception:  # noqa: BLE001 - no mapping: the KAS start refuses the name
+            logger.warning("Failed to map %r for slot %s", agent_name, name, exc_info=True)
+            picked = agent_name
+        if picked != agent_name:
+            stand_in_warning = KAS_STAND_IN_WARNING.format(agent=picked)
+            agent_name, agent_kind = picked, "template"
     if slot.mode == "member" and (agent_name != slot.agent or agent_kind == "template"):
         # Member DM threads are pinned to their crew: refuse the switch before
         # any state is touched. A same-name "switch" stays allowed — it is a
@@ -1480,8 +1501,11 @@ async def switch_slot_agent(
         "agent_kind": slot.agent_kind,
         "workspace": workspace,
     }
+    warnings = [stand_in_warning] if stand_in_warning else []
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response
         # carries the committed state the acting tab writes optimistically.
-        resp_body["warning"] = _TEARDOWN_INCOMPLETE_WARNING
+        warnings.append(_TEARDOWN_INCOMPLETE_WARNING)
+    if warnings:
+        resp_body["warning"] = " ".join(warnings)
     return web.json_response(resp_body)

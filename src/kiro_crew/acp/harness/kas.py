@@ -497,6 +497,23 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     )
 
 
+def kas_spec_declares(agent: str, work_dir: str | Path | None) -> bool:
+    """Whether a spec KAS would project declares *agent* (:func:`resolve_projected_spec`).
+
+    False only when no spec of that name exists at any level, the case the
+    projection refuses with ``KasAgentSpecAbsent``. A spec that exists but cannot
+    be read answers True: it is still the user's agent of that name. Blocking
+    file I/O; call it off the event loop.
+    """
+    try:
+        resolve_projected_spec(paths_mod.kiro_agents_dir(), agent, work_dir)
+    except kas_agents_mod.KasAgentSpecAbsent:
+        return False
+    except Exception:  # noqa: BLE001 - unreadable is not absent
+        logger.debug("spec probe for %r failed; treating it as declared", agent, exc_info=True)
+    return True
+
+
 def _kiro_cli_builtin_reason(agent: str) -> str:
     """Why kiro-cli's built-in *agent* does not start on KAS, naming what to pick instead.
 

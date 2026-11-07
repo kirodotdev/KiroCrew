@@ -193,3 +193,14 @@ def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, b
     from kiro_crew.acp._dispatch import _workspace_call_arguments
 
     return _workspace_call_arguments(params, server, tool)
+
+
+def kas_spec_declares(agent: str, work_dir: str | Path | None) -> bool:
+    """Whether a spec the KAS projection would read declares *agent*.
+
+    False only when no spec of that name exists at any level; an unreadable one
+    still counts as declared. Blocking file I/O; call it off the event loop.
+    """
+    from kiro_crew.acp.harness.kas import kas_spec_declares as _declares
+
+    return _declares(agent, work_dir)

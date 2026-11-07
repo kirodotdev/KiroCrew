@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import replace as dataclass_replace
 from typing import Any, NamedTuple
@@ -23,6 +24,8 @@ from kiro_crew.execution_context import (
     resolve_member_execution,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
+
+logger = logging.getLogger(__name__)
 
 _LEGACY_BINDING_FIELDS = ("memory_store", "memory_mode")
 
@@ -198,6 +201,77 @@ def resolve_session_agent_bindings(
         bindings.execution_context = execution
     bindings.selection_revision = _revision(execution)
     return bindings
+
+
+#: kiro-cli's built-in agent a KAS pick switches to Crew's default agent.
+#: ``kiro_planner`` and ``kiro_guide`` have no Crew agent that does their job, so
+#: the KAS harness keeps refusing them (``acp.harness.kas._kiro_cli_builtin_reason``).
+KAS_DEFAULT_STAND_IN = "kiro_default"
+#: The line a mapped pick shows the user, naming the agent it selected.
+KAS_STAND_IN_WARNING = "kiro_default runs as Kiro Crew's default agent ({agent}) on KAS."
+
+
+def kas_pick_stand_in(config, session_key: str, agent_name: str, project_dir) -> str:
+    """The agent a pick of *agent_name* selects: Crew's default for ``kiro_default`` on KAS.
+
+    kiro-cli runs ``kiro_default`` from its own binary, but KAS has no definition
+    of it, and KAS's own closest mode decides some tool calls without asking Crew.
+    So a pick of it on KAS selects Crew's default template instead, before the
+    choice is recorded: the selection, the template every record reader sees
+    (spawn allowlist, spec hooks, the KAS projection, the permission floor) and
+    the chip all name that template. Any other harness, a spec or an installed
+    app that declares the name, and every other agent keep *agent_name*. Blocking
+    file I/O on the ``kiro_default`` path only; call it off the event loop.
+    """
+    # A crewmate of the name keeps the resolver's member-first lookup.
+    if agent_name != KAS_DEFAULT_STAND_IN or agent_name in config.agents:
+        return agent_name
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+    from kiro_crew.members import select_provider_backend
+
+    try:
+        backend = select_provider_backend(
+            session_key,
+            config.agent.member_acp_backend,
+            config.agent.acp_backend,
+            crew_backend=crewmate_backend_pin(config, session_key),
+        )
+    except Exception:  # noqa: BLE001 - no harness read, no stand-in: KAS still refuses
+        # A crewmate pinned to a harness that cannot start raises here; its
+        # session is refused on its own.
+        logger.debug("no harness read for %s; keeping %r", session_key, agent_name, exc_info=True)
+        return agent_name
+    return (
+        _kas_default_stand_in(config, agent_name, project_dir)
+        if backend == ACP_BACKEND_KAS
+        else agent_name
+    )
+
+
+def _kas_default_stand_in(config, agent_name: str, project_dir) -> str:
+    """Crew's default template for a KAS ``kiro_default`` pick, unless one is declared."""
+    from kiro_crew.agent_sdk.agent_specs import kas_spec_declares
+    from kiro_crew.apps.manager import owning_app_for_agent
+
+    # An app that declares the name keeps its app-aware refusal, and a user's own
+    # spec of the name runs as itself (the checks the KAS refusal makes).
+    if owning_app_for_agent(agent_name) is not None or kas_spec_declares(agent_name, project_dir):
+        return agent_name
+    from kiro_crew.config.loader_snapshots import (
+        DEFAULT_KIRO_TEMPLATE,
+        KIRO_CLI_BUILTIN_AGENTS,
+        default_template,
+        dispatch_kiro_agent,
+    )
+
+    default = default_template(config)
+    # A default that is itself a built-in is no stand-in: the managed one is.
+    return (
+        DEFAULT_KIRO_TEMPLATE
+        if default in KIRO_CLI_BUILTIN_AGENTS
+        else dispatch_kiro_agent(default)
+    )
 
 
 def record_provider_agent_switch(config, session_key, prior_agent, new_agent, project_dir):

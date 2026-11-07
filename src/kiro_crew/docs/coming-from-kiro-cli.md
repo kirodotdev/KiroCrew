@@ -47,15 +47,19 @@ To work with a CLI-style agent instead:
 - **Your own agent.** Pick any agent from `~/.kiro/agents/` with the agent chip
   under the message box, or type `/agent <name>`. A JSON agent works on both
   Kiro harnesses.
-- **kiro-cli's built-in `kiro_default`.** `/agent kiro_default` works when the
-  harness is **Kiro CLI**: choose it under **Settings → Agent Harness**, or run
-  `kirocrew config set agent.acp_backend kiro`. The default harness, KAS
-  (kiro-cli's v3 engine), has no safe match for kiro-cli's built-in agents
-  (`kiro_default`, `kiro_planner`, `kiro_guide`): a chat that picks one there
-  does not start, and the message names Kiro Crew's default agent to pick
-  instead. A Kiro CLI pick runs on KAS once your kiro-cli supports v3, so to
-  use a built-in agent there, run `kiro-cli --agent <name>` in a chat's
-  **Terminal** tab (below), or use your own agent.
+- **kiro-cli's built-in `kiro_default`.** On the **Kiro CLI** harness,
+  `/agent kiro_default` runs kiro-cli's own built-in: choose it under
+  **Settings → Agent Harness**, or run
+  `kirocrew config set agent.acp_backend kiro`. On the default harness, KAS
+  (kiro-cli's v3 engine), `/agent kiro_default` switches the chat to Kiro
+  Crew's default agent, with that agent's hooks and all of Crew's checks,
+  unless your own agent of that name exists; the chat says so, and it stays on
+  that agent if you later change harness. KAS has no safe match for
+  `kiro_planner` or `kiro_guide`: a chat that picks one there does not start,
+  and the message names Kiro Crew's default agent to pick instead. A Kiro CLI
+  pick runs on KAS once your kiro-cli supports v3, so to use a built-in agent
+  there, run `kiro-cli --agent <name>` in a chat's **Terminal** tab (below), or
+  use your own agent.
 - **Make it the default for new chats.** Open **Customize → Custom agents** and
   pick it in **New sessions use**. This writes `agent.default_agent`. The picker
   offers agents in `~/.kiro/agents/`, not a project's `.kiro/agents/` and not
