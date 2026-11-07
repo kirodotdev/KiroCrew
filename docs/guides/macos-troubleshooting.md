@@ -126,6 +126,56 @@ app once if a command is still missing.
 
 ---
 
+## An MCP server's `${VAR}` works from Terminal but not from the app
+
+**Symptoms:** an MCP server whose `env` uses a reference, such as
+`"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PAT}"`, works when the app or gateway is
+started from Terminal. When the app is opened from Finder or the Dock, the server
+still starts, but every call fails, typically with an authorization error such as
+`401 Bad credentials`.
+
+### Why this happens
+
+An app opened from Finder or the Dock inherits launchd's environment, as above, and
+it does not run your shell profile (`~/.zprofile`, `~/.zshrc`). A variable you
+export there is not set in the gateway, so `${GITHUB_PAT}` stays the literal text
+and the server receives `${GITHUB_PAT}` as its token. Running `open` from Terminal
+is not a test of this: it passes that Terminal's environment to the app.
+
+### How to tell
+
+At the start of each session the gateway log (`~/.kiro/crew/gateway.log`) names
+the server and the variable, never a value:
+
+```
+stdio MCP server env references a variable that is not set: ... servers=github ('GITHUB_PAT'). ...
+```
+
+The session's MCP problem summary carries the same entry, so the log line for a
+run nobody is watching (a task step, a webhook run, a subagent) names it too.
+
+### The fix
+
+Supply the value in a way that does not depend on how the app was started, then
+quit the app fully and open it again:
+
+- **The encrypted vault (recommended for a credential).** Store the value in
+  **Settings → Secrets** (here as `GITHUB_PAT`), change the server's value to
+  `"secret://GITHUB_PAT"`, and turn routing on for the server in
+  **Customize → Connections → MCP Servers**. Routing is required: an unrouted
+  server with a `secret://` value is not started. Changing the value changes what
+  the server launches, so approve the launch again on that page when it asks. The
+  secret reaches that server's environment alone. See
+  [secrets-env.md](secrets-env.md).
+- **The data home's `.env` file.** A line `GITHUB_PAT=...` in `~/.kiro/crew/.env`
+  (mode `600`) is loaded into the gateway's environment at start, so `${GITHUB_PAT}`
+  resolves whether the server is routed or not. The log then warns that the key is
+  not a recognised credential: it reaches every process the gateway starts, the
+  agent included, which is why the vault is the better home for a token. See
+  [Credentials](../../src/kiro_crew/docs/configuration.md#credentials).
+
+---
+
 ## The gateway does not start after a reboot until someone logs in
 
 **Symptoms:** on a Mac with automatic login off (a headless Mac mini reached
