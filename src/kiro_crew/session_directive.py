@@ -559,7 +559,8 @@ def deferred_call_arguments(raw_args: Any) -> dict | None:
 
     A backend that defers a tool runs it through its ``tool_call`` meta-tool, so
     the frame's input is ``{"tool_id": "<server>::<tool>", "arguments": {...}}``
-    while the server receives only ``{...}`` (measured on KAS, kiro-cli 2.27.1).
+    (``tool::<server>::<tool>`` under a resource-v2 tool loader) while the server
+    receives only ``{...}`` (measured on KAS, kiro-cli 2.27.1).
     Only an envelope carrying nothing else besides ``_meta``, with an object
     ``arguments``, counts. ``tool_id`` is no proof of which tool runs: a caller
     that needs identity compares it with the call it resolved on its own.
@@ -583,7 +584,8 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
       when both match the independently attributed call.
     - A Tool Search deferred call (:func:`deferred_call_arguments`): unwrap only
       when ``tool_id`` names the core server and the very directive *tool* this
-      call already resolved to. Its KAS frame carries no ``_meta.kiro``
+      call already resolved to, as ``kirocrew-core::<tool>`` or the resource-v2
+      ``tool::kirocrew-core::<tool>``. Its KAS frame carries no ``_meta.kiro``
       identity, so this branch is keyed on the envelope and *tool*, not on
       *server*/*name*, and holds for any provider that emits the same envelope.
 
@@ -601,7 +603,8 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
         raw_args = raw_args["arguments"]
     else:
         inner = deferred_call_arguments(raw_args)
-        if inner is not None and raw_args["tool_id"] == f"{CORE_MCP_SERVER}::{tool}":
+        core_id = f"{CORE_MCP_SERVER}::{tool}"
+        if inner is not None and raw_args["tool_id"] in (core_id, f"tool::{core_id}"):
             raw_args = inner
     return call_input_digest(tool, raw_args)
 
