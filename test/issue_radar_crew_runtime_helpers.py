@@ -255,3 +255,30 @@ def _item(root, crew_id, number, **patch) -> dict[str, Any]:
         root=root,
         session_id=_unit_for(crew_id),
     )["item"]
+
+
+class _FakeClient:
+    """The gh layer, stubbed. Counts calls so the sweep's API cost is assertable."""
+
+    def __init__(self, issue=None, pr=None, timeline=None, enriched=None):
+        self.issue = issue or {"comments": 0, "state": "open"}
+        self.pr = pr or {}
+        self.timeline = timeline or []
+        self.enriched = enriched or []
+        self.calls: list[str] = []
+
+    def get_issue_detail(self, owner, repo, number, **kw):
+        self.calls.append(f"issue:{number}")
+        return dict(self.issue)
+
+    def get_pr_detail(self, owner, repo, number, **kw):
+        self.calls.append(f"pr:{number}")
+        return dict(self.pr)
+
+    def list_issue_timeline(self, owner, repo, number, **kw):
+        self.calls.append(f"timeline:{number}")
+        return list(self.timeline)
+
+    def enrich_pulls_by_number(self, owner, repo, pulls, **kw):
+        self.calls.append("enrich")
+        return list(self.enriched)

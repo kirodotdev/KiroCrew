@@ -219,7 +219,11 @@ gateway's CLI login as a dedicated crew account (a machine user on GitHub, a pro
 or group access token's bot user on GitLab) with write access to the repository, and
 answer from your own account; or keep your own login on the gateway and answer from
 another account (#22527 tracks separating the agent and operator identities inside
-the gateway). A comment alone is not an answer. Every other scope
+the gateway). The same login is what a mention wake (`#N asked <id>`) matches, so
+those wakes stay off unless the repo setting `crew_answer_mentions` is on, and it
+assumes that dedicated crew account: on a person's own login a crew would answer, in
+public and in that person's name, a question someone asked them. A comment alone is
+not an answer. Every other scope
 (`duplicate`, `already-fixed`, `not-reproducible`, `wrong-root-cause`,
 `gate-config`, `other`) is a finding about the issue and stays skipped. The gateway's sweep (`crew_runtime.detect_human_answers`) finds it
 with no LLM: only numbers whose standing pass has an answerable scope, whose issue
