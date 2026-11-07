@@ -49,6 +49,9 @@ declare global {
     onBootReady: (cb: () => void) => () => void
     bootComplete: () => void
     setThemeAccent: (hex: string) => void
+    /** Hand the shell the active theme pack's boot-splash art, or null when it
+     *  ships none. Optional: absent on a shell older than the feature. */
+    setThemeSplash?: (image: { type: string; bytes: Uint8Array } | null) => void
     setThemeMode: (pref: string) => void
     setTitleBarOverlayTheme: (mode: string) => void
     setFocusModeChrome: (visible: boolean) => void

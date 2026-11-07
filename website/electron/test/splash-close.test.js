@@ -411,13 +411,15 @@ describe("the supervisor marks the main window's splash as primary", () => {
     .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
 
-  // splashQuery evaluated as written, with mainWindow() and the two query
-  // constants supplied, so the assertions are about its behaviour.
-  function splashQueryFn(mainWin) {
+  // splashQuery evaluated as written, with mainWindow(), the stored theme
+  // splash art and the two query constants supplied, so the assertions are
+  // about its behaviour.
+  function splashQueryFn(mainWin, splashArt = "") {
     const m = SUPERVISOR_JS.match(/function splashQuery\(window[\s\S]*?\n  \}/);
     assert.ok(m, "gateway-supervisor.js must define splashQuery");
     const context = {
       mainWindow: () => mainWin,
+      currentThemeSplash: () => splashArt,
       SPLASH_RECONNECT_QUERY: Object.freeze({ reconnect: "1" }),
       SPLASH_PRIMARY_QUERY: Object.freeze({ primary: "1" }),
     };
@@ -449,6 +451,19 @@ describe("the supervisor marks the main window's splash as primary", () => {
   it("stamps nothing as primary when there is no main window", () => {
     const splashQuery = splashQueryFn(null);
     assert.deepEqual(splashQuery({ id: "w" }, { reconnect: true }), { reconnect: "1" });
+  });
+
+  // Every painter goes through splashQuery, so a reconnect paint shows the
+  // theme pack's art as surely as the cold boot does.
+  it("carries the stored theme splash art on every paint, and nothing without it", () => {
+    const main = { id: "main" };
+    const art = "file:///userData/theme-splash.png";
+    assert.deepEqual(
+      splashQueryFn(main, art)({ id: "conn" }, { reconnect: true }),
+      { splash: art, reconnect: "1" },
+    );
+    assert.deepEqual(splashQueryFn(main, art)(main, {}), { splash: art, primary: "1" });
+    assert.deepEqual(splashQueryFn(main)(main, {}), { primary: "1" });
   });
 });
 

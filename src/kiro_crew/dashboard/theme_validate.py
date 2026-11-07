@@ -351,6 +351,8 @@ _THEME_FILE_CAPS = {
     "wordmark": 100 * 1024,
     # Loader-art headroom: the welcome image may be an animated WebP/GIF.
     "welcome": 256 * 1024,
+    # The desktop boot splash art fills the window, so it gets the preview's room.
+    "splash": 512 * 1024,
     "preview": 512 * 1024,
     "overlay": 200 * 1024,
     "topbar": 100 * 1024,
@@ -567,6 +569,8 @@ def _classify_theme_file(rel: str) -> tuple[str | None, int]:
             return "wordmark", 1
         if stem == "welcome" and ext in ("svg", "png", "webp", "gif"):
             return "welcome", 1
+        if stem == "splash" and ext in ("svg", "png"):
+            return "splash", 1
         if stem == "preview" and ext in ("png", "webp"):
             return "preview", 1
     if top == "overlays" and len(parts) == 2 and ext == "html":
@@ -1505,7 +1509,7 @@ def _theme_asset_descriptor(
     if level < 1:
         return desc
 
-    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome by file presence.
+    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome/splash by file presence.
     branding = manifest.get("branding")
     branding = branding if isinstance(branding, dict) else {}
     bres: dict[str, str] = {}
@@ -1519,6 +1523,7 @@ def _theme_asset_descriptor(
         ("favicon", ("ico", "png", "svg")),
         ("wordmark", ("svg", "png")),
         ("welcome", ("svg", "png", "webp", "gif")),
+        ("splash", ("svg", "png")),
     ):
         for ext in exts:
             rel = f"branding/{role}.{ext}"
