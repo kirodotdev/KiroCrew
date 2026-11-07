@@ -35,7 +35,7 @@ import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../../lib/splitOnPlaceholder'
-import { sliceCodePoints } from '../../../components/CommentOverlay'
+import { sliceCodePoints } from '../../../utils/codePoints'
 import { CopyCommandButton } from '../../../components/settingRef/CopyCommandButton'
 
 /** The theme token a node state paints with. `open`/`done` are drawn muted. */

@@ -22,7 +22,7 @@
 
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { parseCssColor, relativeLuminance } from '../lib/iconContrast'
-import { sliceCodePoints } from '../components/CommentOverlay'
+import { sliceCodePoints } from '../utils/codePoints'
 import type { CustomThemeData } from './useTheme'
 
 // Allowlist of allowed CSS custom property names for themes.
