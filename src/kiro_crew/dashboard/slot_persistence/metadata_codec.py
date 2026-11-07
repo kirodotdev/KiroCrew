@@ -217,6 +217,8 @@ class SaveFolds:
     # clears the session's limit): ``None`` here means "nothing staged, read the
     # live slot", ``(value,)`` means "write *value*".
     turn_timeout_secs: tuple[int | None] | None = None
+    # Staged ``autocompact_pct`` for the threshold endpoint, the same shape.
+    autocompact_pct: tuple[float | None] | None = None
 
 
 @dataclass
@@ -423,9 +425,19 @@ def _read_model(r: _Read) -> None:
 
 def _read_autocompact_pct(r: _Read) -> None:
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.dashboard.transcript_binding import seed_autocompact_from_disk
 
-    if r.meta.get("autocompact_pct") is not None:
-        r.slot.autocompact_pct = cp._validate_autocompact_pct(r.meta["autocompact_pct"])
+    seed_autocompact_from_disk(
+        r.state, r.slot, cp._validate_autocompact_pct(r.meta.get("autocompact_pct"))
+    )
+
+
+def _staged_autocompact(slot: Any, folds: SaveFolds) -> float | None:
+    """The threshold a save writes: the endpoint's staged value, else the slot's."""
+    if folds.autocompact_pct is not None:
+        return folds.autocompact_pct[0]
+    value: float | None = slot.autocompact_pct
+    return value
 
 
 def _read_turn_timeout_secs(r: _Read) -> None:
@@ -872,8 +884,8 @@ FIELDS: tuple[Field, ...] = (
         "autocompact_pct",
         _ALL,
         attr="autocompact_pct",
-        line=_always(lambda s: s.autocompact_pct),
-        merge=_always(lambda s: s.autocompact_pct),
+        line=_staged_autocompact,
+        merge=_staged_autocompact,
         read=_read_autocompact_pct,
     ),
     Field(
