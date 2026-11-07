@@ -47,6 +47,7 @@ Exit:   0 PROVEN | 20 NOT_PROVEN | 21 INCONCLUSIVE | 10 NOTHING_TO_PROVE
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -56,6 +57,21 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
+
+# argv[0] resolution and the batch-launcher guard every git call applies, from
+# _tool_argv.py beside this script, by path and without writing bytecode.
+_SPEC = importlib.util.spec_from_file_location(
+    "_prepare_pr_prove_tool_argv",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
+    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
+_tool_argv = importlib.util.module_from_spec(_SPEC)
+_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    _SPEC.loader.exec_module(_tool_argv)
+finally:
+    sys.dont_write_bytecode = _WRITES_BYTECODE
 
 # Emitted into the temp dir and put on PYTHONPATH so pytest reports its own
 # counts.  Reading pytest's report objects is both safer and more precise than
@@ -185,7 +201,11 @@ GIT_PINS = ("-c", "core.hooksPath=" + os.devnull, "-c", "core.fsmonitor=false")
 
 
 def _git_argv(args: list[str]) -> list[str]:
-    return ["git", *GIT_PINS, *args]
+    """git resolved by ``_tool_argv.resolve``, then the pins; OSError when it must not run."""
+    argv, refused = _tool_argv.resolve(["git", *GIT_PINS, *args])
+    if refused:
+        raise OSError(refused[2])
+    return argv
 
 
 def _git_env() -> dict[str, str]:
@@ -492,8 +512,8 @@ def pin_commit(repo: Path) -> tuple[str, str]:
     still judged the commit it started from, so that commit's ids, not HEAD's at
     the end, go into the printed line and the record.
     """
-    commit = _git_ok(["rev-parse", "--verify", "HEAD^{commit}"], repo).strip()
-    tree = _git_ok(["rev-parse", "--verify", commit + "^{tree}"], repo).strip()
+    commit = _git_ok(["rev-parse", "--verify", "HEAD"], repo).strip()
+    tree = _git_ok(["rev-parse", "--verify", commit + ":"], repo).strip()
     return commit, tree
 
 
@@ -710,7 +730,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if not shutil.which("git"):
+    if not _tool_argv.which("git"):
         print("prove: git not found on PATH", file=sys.stderr)
         return EXIT_ENV
 
