@@ -60,10 +60,11 @@ class ManagerComponent:
         would leave the closer with nothing to file itself under.
 
         ``by`` names WHO decided, and only the host can be named with certainty.
-        An answer that came back through an approval future or callback was given
-        by a person at a surface no call site can see, so it omits the field
-        rather than asserting ``user`` for something it did not observe. The host
-        IS named for the exits no answer reached.
+        An answer that came back through an approval future or callback, and that
+        the callback did not report as its own, was given by a person at a surface
+        no call site can see, so it omits the field rather than asserting ``user``
+        for something it did not observe. The host IS named for the exits no
+        answer reached and for an answer the callback reports as the host's.
 
         ``cause`` is WHY, and only a host decline has one: a reason code for
         deciding without a human. It rides in its own field instead of replacing
