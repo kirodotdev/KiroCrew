@@ -20512,6 +20512,7 @@
       "turn_faults_one": "{{n}} Fehler von {{turns}}",
       "turn_faults_other": "{{n}} Fehler von {{turns}}",
       "turn_latency_p50": "Zuglatenz (p50)",
+      "turn_no_reply": "keine Antwort",
       "turns_col": "Züge",
       "turns_empty": "Keine Nutzung pro Zug in diesem Zeitraum erfasst.",
       "turns_error": "Züge konnten nicht geladen werden.",

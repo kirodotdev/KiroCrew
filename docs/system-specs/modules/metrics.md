@@ -1275,6 +1275,7 @@ Each row (`_build_token_record`) carries:
 | `context_window` | int | served context-window size in tokens (int-coerced) |
 | `context_sum` | int | the context-window occupancy after each of the turn's model calls, added up (`TurnUsage.context_sum_tokens`): the volume of context the turn's calls carried, cached or not. Measured per call on kiro-cli; `0` when the window is unknown or the provider reports no per-call reading. Not a billed token count |
 | `stop_reason` | str | the turn's terminal stop reason read off the EVENT_COMPLETE event, or a synthetic reason on a dashboard turn that ended without one (`_persist_abnormal_turn_usage`: the caller's reason, else `cancelled`); `""` when the producer has none, e.g. a bare `TurnUsage` from `provider_last_turn_usage`. Free-form is fine HERE (the row store has no cardinality limit, unlike OTel attrs) — this is where per-agent stall analysis happens: joining `stop_reason` (`error: tool stall` / `stale_recover`) against the row's `agent` field attributes watchdog outcomes to free-form agent names retroactively |
+| `delivered` | bool | whether the turn streamed any reply text (`_saw_text_chunk` at EVENT_COMPLETE), so a billed tool-only turn reads apart from one that answered. A backend control notice streamed as text (the claude adapter's `Compacting...`) counts as text; a quiet end on a terminal directive records `false`. Written only by the dashboard's complete path (`turn_stats._on_complete`); every other writer, and the abnormal-end seam, leaves the key off, which means unknown, not undelivered |
 
 The `surface` / `agent` / `context_used` / `context_window` / `context_sum` fields and
 `stop_reason` are all **additive** — every field defaults (`""` / `0`) so existing
@@ -1611,8 +1612,10 @@ oversized int; a non-finite float is dropped).
 the per-turn drill-down under `slot_spend`'s aggregate: one row per turn with
 `ts`, `model`, and the numeric fields named by `usage.TURN_USAGE_FIELDS`
 (tokens in/out, cache create/read, `credits`, `cost`, `duration_ms`, and the
-context meter pair). A non-numeric or non-finite field is dropped from its row,
-never the row itself. `handlers/telemetry.py::api_usage_turns` serves it as
+context meter pair), plus `delivered` when the row carries a boolean one (the
+Spend drill-down marks a `false` turn "no reply"). A non-numeric or non-finite
+field is dropped from its row, never the row itself.
+`handlers/telemetry.py::api_usage_turns` serves it as
 `GET /api/usage/turns?slot=<session key>[&days=N | &since=&until=]` (`400` on a
 missing slot; the window is read by the same `resolve_window` as the panel, so the
 Spend table's drill-down lists the turns of the range its row summed, defaults to

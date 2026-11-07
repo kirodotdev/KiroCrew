@@ -21002,6 +21002,7 @@
       "turn_faults_one": "{{n}} erreur sur {{turns}}",
       "turn_faults_other": "{{n}} erreurs sur {{turns}}",
       "turn_latency_p50": "Latence de tour (p50)",
+      "turn_no_reply": "sans réponse",
       "turns_col": "Tours",
       "turns_empty": "Aucune utilisation par tour enregistrée dans cette fenêtre.",
       "turns_error": "Impossible de charger les tours.",

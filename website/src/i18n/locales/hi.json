@@ -20512,6 +20512,7 @@
       "turn_faults_one": "{{turns}} में से {{n}} विफलता",
       "turn_faults_other": "{{turns}} में से {{n}} विफलताएँ",
       "turn_latency_p50": "टर्न लेटेंसी (p50)",
+      "turn_no_reply": "कोई जवाब नहीं",
       "turns_col": "टर्न",
       "turns_empty": "इस विंडो में प्रति टर्न उपयोग दर्ज नहीं है।",
       "turns_error": "टर्न लोड नहीं हो सके।",

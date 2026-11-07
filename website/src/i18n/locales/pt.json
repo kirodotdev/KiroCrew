@@ -21002,6 +21002,7 @@
       "turn_faults_one": "{{n}} falha de {{turns}}",
       "turn_faults_other": "{{n}} falhas de {{turns}}",
       "turn_latency_p50": "Latência do turno (p50)",
+      "turn_no_reply": "sem resposta",
       "turns_col": "Turnos",
       "turns_empty": "Nenhum uso por turno registrado nesta janela.",
       "turns_error": "Não foi possível carregar os turnos.",
