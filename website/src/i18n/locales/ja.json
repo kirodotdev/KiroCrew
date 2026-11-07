@@ -5736,6 +5736,11 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "{{productName}} のファイルの所有者を確認できませんでした。",
+      "message": "一部の {{productName}} のファイルが別のユーザーのものになっているため、{{productName}} が読み込めません。",
+      "run_this": "このコンピューターのターミナルでこのコマンドを実行してから、もう一度お試しください。"
+    },
     "mateWorkers": {
       "approvals_label": "このクルーメイトのセッションからのツール承認: {{n}}",
       "trust": "このセッションを信頼",

@@ -27,7 +27,7 @@ from aiohttp import web
 import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, data_home
 from kiro_crew.dashboard import system_windows_probes
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -251,6 +251,11 @@ async def api_status(request: web.Request) -> web.Response:
     # Off-loop for the same reason: the RSS read is procfs I/O on Linux and the
     # ceiling is a config read.
     gateway_rss_mb, watchdog_rss_max_mb = await asyncio.to_thread(_gateway_memory_fields)
+    # Off-loop: a few stat calls under the data home. The Settings page and the
+    # New Bot dialog read it to say when another account owns the files.
+    from kiro_crew.data_home_owner import check_data_home
+
+    data_home_access = (await asyncio.to_thread(check_data_home, data_home())).to_json()
     data.update(
         {
             "uptime_secs": int(uptime),
@@ -267,6 +272,7 @@ async def api_status(request: web.Request) -> web.Response:
             # operator opening the System page.
             "gateway_rss_mb": gateway_rss_mb,
             "watchdog_rss_max_mb": watchdog_rss_max_mb,
+            "data_home_access": data_home_access,
             **yolo_grant_fields(),
             # The configured ad-hoc duration, and whether policy allows the
             # no-timed-expiry option — the Settings card lock-badges it when not.

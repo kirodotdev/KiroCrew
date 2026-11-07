@@ -6068,6 +6068,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "Impossibile controllare a chi appartengono i file di {{productName}}.",
+      "message": "Alcuni file di {{productName}} appartengono a un altro utente, quindi {{productName}} non riesce a leggerli.",
+      "run_this": "Esegui questo comando in un terminale su questo computer, poi riprova."
+    },
     "mateWorkers": {
       "approvals_label": "Approvazioni degli strumenti dalle sessioni di questo compagno: {{n}}",
       "trust": "Fidati di questa sessione",

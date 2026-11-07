@@ -5902,6 +5902,11 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "Konnte nicht prüfen, wem die {{productName}}-Dateien gehören.",
+      "message": "Einige {{productName}}-Dateien gehören einem anderen Benutzer, deshalb kann {{productName}} sie nicht lesen.",
+      "run_this": "Führ diesen Befehl in einem Terminal auf diesem Computer aus und versuch es dann noch einmal."
+    },
     "mateWorkers": {
       "approvals_label": "Tool-Freigaben aus den Sitzungen dieses Crewmates: {{n}}",
       "trust": "Dieser Sitzung vertrauen",
