@@ -128,7 +128,7 @@ describe('ChatPage switches and the user open (#23564)', () => {
     // ChatPage mounted on the same chat: no second, plain fetch replaced the open.
     expect(vi.mocked(api.chatSlotDetail)).toHaveBeenCalledTimes(1)
     await act(async () => { land({ messages: [], has_more: false, total: 0 }); await Promise.resolve() })
-    expect(store.getState().chat.userOpen?.key).toBe(CRON)
+    expect(store.getState().chat.userOpen).toMatchObject({ key: CRON, landed: true })
   })
 
   it('a ?sid= link resolved late by the page lands its chat and records no user open', async () => {

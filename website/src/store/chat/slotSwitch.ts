@@ -68,7 +68,7 @@ import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
  *    the fork still opens, and one clicked before it does not take the view
  *    back (see `forkMayOpen`).
  *  - `gesture`: the user opened this session themselves, by a click, a key or
- *    a palette pick in this window. Only then does the landing record
+ *    a palette pick in this window. Only then does the switch record
  *    `ChatState.userOpen`, which reads that chat's cron notes (#23564).
  *    Opt-IN and separate from `announceOnMissing`: some announced switches
  *    are the page's own (a late `?sid=` recovery, a forwarded nav intent), and
@@ -490,6 +490,9 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const openedBy = typeof switchArg?.requestSeq === 'number' ? switchArg.requestSeq : null
       enterActiveSlot(state, target, switchArg?.automatic === true ? true : openedBy !== null ? 'request' : false)
       if (openedBy !== null) state.activatedRequestSeq = Math.max(state.activatedRequestSeq ?? 0, openedBy)
+      // The user's open is recorded when it starts, so a leave while its
+      // transcript is still loading drops it as well (#24080).
+      if (switchArg?.gesture === true) state.userOpen = { key: target, seq: (state.userOpen?.seq ?? 0) + 1, landed: false }
       if (target !== outgoingSlot) {
         state.lastChunkSeq = runs[safeKey(target)]?.lastChunkSeq
         state.lastChunkGen = runs[safeKey(target)]?.lastChunkGen
@@ -540,10 +543,11 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
-      // A user's open of this session has landed (see `ChatState.userOpen`).
+      // The user's open of this session has landed (see `ChatState.userOpen`):
+      // only its own gesture load, never a plain switch that superseded it.
       const openArg = action.meta?.arg
-      if (typeof openArg === 'object' && openArg !== null && openArg.gesture === true) {
-        state.userOpen = { key, seq: (state.userOpen?.seq ?? 0) + 1 }
+      if (typeof openArg === 'object' && openArg !== null && openArg.gesture === true && state.userOpen?.key === key) {
+        state.userOpen.landed = true
       }
       // A persisted row carrying a send's id proves that send was delivered.
       pruneDeliveredAttempts(state, key, persistedSendIds(fetchedMessages))

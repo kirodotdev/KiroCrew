@@ -77,6 +77,11 @@ interface NotificationsState {
    *  merge drops a row withdrawn after its request began, so a stale snapshot
    *  cannot bring it back. Bounded to the newest `NOTIFICATIONS_RING_CAP` entries. */
   withdrawnAtByTs?: Record<string, number>
+  /** True once a fetch has landed in this tab. Until then `items` holds only
+   *  live arrivals, not the notes the server already has, so it cannot say
+   *  which of a chat's cron notes are unread (`useAckCronNotesInView`, #24080).
+   *  A failed fetch leaves it as it was. */
+  loaded?: boolean
 }
 
 /** Why a listed approval row can no longer be decided (`retiredApprovals`). */
@@ -571,6 +576,8 @@ const notificationsSlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(fetchNotifications.fulfilled, (state, action) => {
+        // Also when stale: the clear that made it stale emptied the server's list too.
+        state.loaded = true
         // Stale response: a clear landed while this fetch was in flight, so
         // its payload predates the clear. Applying it would restore the rows
         // and the badge with them.
