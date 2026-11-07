@@ -722,9 +722,10 @@ async def _retry_failed_run(
             app=execution.app,
             _memory_mode=execution.memory_mode,
             _execution_context=execution.to_record(),
-            # The replacement sits where the failed run sat in its tree, even when
+            # The replacement keeps its tree position and root chat's panel even when
             # the parent's record is gone and admission cannot read it.
             _depth=getattr(old, "depth", None),
+            _root_session_key=getattr(old, "root_session_key", None),
             **({"_preassigned_id": run_id} if run_id else {}),
         )
         import contextlib

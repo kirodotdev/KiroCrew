@@ -777,6 +777,11 @@ class ContinuationCoordinator(ManagerComponent):
             memory_store=memory_store,
             _memory_mode=_memory_mode,
             _depth=run_depth,
+            _root_session_key=(
+                original.root_session_key
+                if original is not None and original.parent_session_key == parent_session_key
+                else None
+            ),
             app=app,
             **(
                 {"_execution_context": _execution_context.to_record()}
