@@ -160,6 +160,7 @@ from kiro_crew.session_storage_parts.pinned_delete import (  # noqa: F401
     _rename_back,
     _scan_tree,
     _stage_batch_by_name,
+    _sweep_staged,
     _unlink_debris,
 )
 from kiro_crew.session_storage_parts.store_inventory import (  # noqa: F401
