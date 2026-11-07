@@ -585,9 +585,8 @@ helped by a longer wait: run `kirocrew logs -f` to see its startup.
 
 The desktop app started this gateway and starts it again when it goes away, so
 the CLI does not kill it: a stop would be undone and a restart would race the
-app. Nothing is signalled. Restart it from the app (Settings → About → Restart
-gateway), or quit the app to stop it. After the app has quit, both commands work
-as usual.
+app. Quit the desktop app to stop its gateway. To restart the gateway, quit the
+app and open it again. Closing the window may leave the app running.
 
 ### "Refusing to start: the Python standard library is shadowed."
 

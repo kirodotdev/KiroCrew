@@ -23,8 +23,10 @@ takes a restart:
 
 ```bash
 kirocrew config set instances.enabled true
-kirocrew restart
 ```
+
+If you use the desktop app, quit it and open it again. If you started the
+gateway from the CLI, run `kirocrew restart`.
 
 **Settings → Remote Crew** has the same toggle and then tells you a restart
 is still pending. With the flag off, that page shows an opt-in card and the
