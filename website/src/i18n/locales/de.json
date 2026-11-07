@@ -17370,6 +17370,7 @@
       "generating_execution_plan": "Ausführungsplan wird erstellt",
       "go_to_task": "Zur Aufgabe →",
       "idea": "Idee",
+      "layout_label": "Aufgabenlayout",
       "no_idea_or_spec_content_available": "Kein Ideen- oder Spezifikationsinhalt verfügbar.",
       "phased": "Phasenweise",
       "task_is_waiting_for_your_decision": "Aufgabe {{index}} „{{title}}“ wartet auf Ihre Entscheidung",

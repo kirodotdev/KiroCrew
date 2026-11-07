@@ -16924,6 +16924,7 @@
       "generating_execution_plan": "正在生成执行计划",
       "go_to_task": "前往任务 →",
       "idea": "想法",
+      "layout_label": "任务布局",
       "no_idea_or_spec_content_available": "没有可用的想法或规格内容。",
       "phased": "分阶段",
       "task_is_waiting_for_your_decision": "任务 {{index}}“{{title}}”正在等待你的决定",

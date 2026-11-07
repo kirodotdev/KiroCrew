@@ -17816,6 +17816,7 @@
       "generating_execution_plan": "Generazione del piano di esecuzione",
       "go_to_task": "Vai all'attività →",
       "idea": "Idea",
+      "layout_label": "Layout delle attività",
       "no_idea_or_spec_content_available": "Nessun contenuto di idea o specifica disponibile.",
       "phased": "A fasi",
       "task_is_waiting_for_your_decision": "Attività {{index}} \"{{title}}\" è in attesa della tua decisione",

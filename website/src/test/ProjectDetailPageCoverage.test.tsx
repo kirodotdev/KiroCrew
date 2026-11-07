@@ -512,7 +512,7 @@ describe('ProjectDetailPage pending edits and selection', () => {
     await waitFor(() => expect(dag()).toHaveAttribute('data-pending', '2'), { timeout: 5_000 })
     expect(screen.getByTestId('task-panel')).toHaveAttribute('data-pending', '2')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Phased' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Phased' }))
     expect(screen.getByTestId('phased-view')).toHaveAttribute('data-pending', '2')
 
     fireEvent.click(screen.getByRole('button', { name: 'panel-unedit' }))
@@ -521,7 +521,7 @@ describe('ProjectDetailPage pending edits and selection', () => {
 
   it('selects from the phased view and closes from the panel', async () => {
     renderWithProviders(<ProjectDetailPage run={mockRun()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Phased' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Phased' }))
     fireEvent.click(screen.getByRole('button', { name: 'phase-pick-3' }))
     expect(await screen.findByText('panel-task:3:Verify', undefined, { timeout: 5_000 })).toBeInTheDocument()
     expect(screen.getByTestId('phased-view')).toHaveAttribute('data-selected', '3')
@@ -558,8 +558,8 @@ describe('ProjectDetailPage idea tab and export', () => {
 
   it('returns from the idea tab to the DAG after a detour through the phased view', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Phased' }))
-    fireEvent.click(screen.getByRole('button', { name: 'DAG' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Phased' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'DAG' }))
     expect(screen.getByTestId('dag-view')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Idea' }))
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }))
@@ -584,7 +584,7 @@ describe('ProjectDetailPage planning overlay', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun({ status: 'planning' })} />)
     const line = screen.getByText(/Generating execution plan/)
     expect(line.textContent).toBe('Generating execution plan')
-    expect(screen.queryByRole('button', { name: 'DAG' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'DAG' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Export YAML/ })).not.toBeInTheDocument()
 
     await act(async () => { await vi.advanceTimersByTimeAsync(600) })

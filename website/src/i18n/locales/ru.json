@@ -18262,6 +18262,7 @@
       "generating_execution_plan": "Формирование плана выполнения",
       "go_to_task": "Перейти к задаче →",
       "idea": "Идея",
+      "layout_label": "Макет задач",
       "no_idea_or_spec_content_available": "Нет содержимого идеи или спецификации.",
       "phased": "По этапам",
       "task_is_waiting_for_your_decision": "Задача {{index}} «{{title}}» ожидает вашего решения",
