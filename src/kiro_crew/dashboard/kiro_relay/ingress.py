@@ -23,7 +23,9 @@ things:
   as the ordinary local, tailnet or tunnel request it is;
 * a handover that does not verify, arrives on any transport but loopback TCP, names
   no valid person, or names someone this Crew does not honor: refuse it, typed;
-* a verified handover: apply the remote limits, then serve a copy of the request
+* a verified handover: apply the remote limits, send a plain page load of the bare
+  root to ``/chat`` (the relay root is the Crew address the control plane hands
+  out), and otherwise serve a copy of the request
   with every relay header removed, ``request.remote`` set to
   :data:`~.caller.RELAY_REMOTE`, and the caller published under
   :data:`~.caller.RELAY_CALLER_KEY` for token auth.
@@ -249,6 +251,25 @@ def _display_labels(request: web.Request) -> dict[str, str]:
     }
 
 
+#: Where a relayed request for the bare root is sent: the dashboard's home page.
+RELAY_ROOT_REDIRECT = "/chat"
+
+
+def _is_bare_root_page_request(request: web.Request) -> bool:
+    """Whether *request* is a plain page load of ``/``: GET or HEAD, no query, no upgrade.
+
+    Only this one shape is redirected. ``raw_path`` carries the query, so ``/?x`` is
+    left to the dashboard as before, rather than this layer deciding whether a
+    redirect should carry the query. A WebSocket upgrade is never answered with a
+    redirect.
+    """
+    return (
+        request.method in ("GET", "HEAD")
+        and request.raw_path == "/"
+        and "Upgrade" not in request.headers
+    )
+
+
 async def _serve_handover(
     request: web.Request,
     handler: _Handler,
@@ -281,6 +302,11 @@ async def _serve_handover(
     relayed = _clone(request, remote=RELAY_REMOTE)
     if relayed is None:
         return _refuse(request, caller.audit_label, HEADER_INVALID, status=400)
+    if _is_bare_root_page_request(relayed):
+        # The address the control plane hands out for a Crew is its relay root, and
+        # the dashboard's home is /chat. Relative, so the browser stays on the relay
+        # host.
+        raise web.HTTPFound(location=RELAY_ROOT_REDIRECT)
     relayed[RELAY_CALLER_KEY] = caller
     return await handler(relayed)
 
