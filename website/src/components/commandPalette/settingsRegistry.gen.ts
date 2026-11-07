@@ -1586,6 +1586,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.show-optimize-prompt",
+    "label": "Show Optimize Prompt",
+    "labelKey": "pages.settings.chatPanel.show_optimize_prompt",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.show-pasted-text-in-full",
     "label": "Show Pasted Text in Full",
     "labelKey": "pages.settings.chatPanel.show_pasted_text_in_full",

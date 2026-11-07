@@ -23,7 +23,7 @@ import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { motion, AnimatePresence } from 'framer-motion'
-import { COMPOSER_ROW_SPRING, ComposerSizer, SHAPE_FLIP_WINDOW_MS } from './chat-input/ComposerSizer'
+import { COMPOSER_ROW_SPRING, ComposerSizer, ONE_ROW_TEXT_PULL_PX, SHAPE_FLIP_WINDOW_MS } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
@@ -83,7 +83,7 @@ import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DRAG_MIN_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
-import { useOptimizeBeforeSend, usePromptOptimizer } from './chat-input/optimizer'
+import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
@@ -136,11 +136,6 @@ const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--c
 // The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
 // gives up besides the clusters themselves.
 const ONE_ROW_CLUSTER_PAD_PX = 12
-// How far the one-row text column tucks under the attach cluster (`-ml-2.5`).
-// The text keeps its own px-4 (the paste-highlight layer is drawn at that
-// same inset), so the column moves instead: without the pull the caret sits
-// 18px past the attach button, twice the send side's gap.
-const ONE_ROW_TEXT_PULL_PX = 10
 // The glass rim is a slice of the pane's smaller side. A one-row composer
 // would get half the rim of a two-row one, so the rim is sized from the
 // two-row height (one wrapped line of text plus the toolbar) in both shapes.
@@ -285,7 +280,7 @@ function ChatInput({
   typedCommandMenus = true,
   hiddenCommands,
   slotApprovalChrome = true,
-  promptOptimizer = true,
+  promptOptimizer: promptOptimizerProp = true,
   inlineToolbarWhileFits = false,
   collapsible = false,
   connected = true,
@@ -391,6 +386,7 @@ function ChatInput({
   // render site of this component honours it and none can forget to pass it.
   const spellCheck = useComposerSpellcheck()
   const inlineMarkdown = useComposerInlineMarkdown()
+  const promptOptimizer = usePromptOptimizerEnabled(promptOptimizerProp)
   // ↑/↓ recall off: no composer engine gets the sent prompts, so the keys only move the caret.
   const sentMessages = useComposerArrowKeyHistory() ? sentMessagesProp : undefined
   // Live markdown styling needs rich text, which a textarea cannot draw, so the

@@ -18159,6 +18159,8 @@
         "inline_markdown_input_desc": "在消息输入框中边输入边显示粗体、斜体、删除线和行内代码。开启后，消息输入框还会切换到仍处于测试阶段的富文本编辑器。关闭即可恢复为普通输入框。Markdown 标记仍然可见，发送的消息不会改变。",
         "optimize_before_sending": "发送前优化提示词",
         "optimize_before_sending_desc": "按发送时先运行“优化提示词”，并把改写结果留在消息输入框中。检查或修改后，再按一次发送即可发出；按 {{chord}} 可恢复你输入的原文。斜杠命令、语音发送的消息和代理工作时发送的消息会按原样发出。每条消息会多调用一次优化器。",
+        "show_optimize_prompt": "显示优化提示词",
+        "show_optimize_prompt_desc": "在消息输入框中显示“优化提示词”按钮和 + 菜单中的对应项，并让 {{chord}} 优化你输入的内容。关闭后会隐藏它们，“发送前优化提示词”也随之停用。",
         "show_pasted_text_in_full": "完整显示粘贴内容",
         "show_pasted_text_in_full_desc": "在消息输入框中把长内容保持为可编辑的文本，而不是折叠成一个粘贴块。关闭时 {{chord}} 仍可对单次粘贴这样做。粘贴内容非常大时输入可能变慢。",
         "show_pasted_text_in_full_desc_summary": "粘贴的内容很大时，输入框可能变慢。",
