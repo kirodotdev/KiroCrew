@@ -1448,6 +1448,7 @@ async def _run_inner_impl(
                     subagent_id=info.id,
                     parent_session_key=info.parent_session_key or None,
                     agent_role=info.agent or None,
+                    raw_tool_params=event.raw_tool_params,
                 )
         elif event.kind == EVENT_TOOL_CALL_UPDATE:
             self._manager._note_tool_update(info, event)

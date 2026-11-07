@@ -19,6 +19,8 @@ from kiro_crew.hooks import (
     ScriptHookStore,
     fire_tool_hooks,
     get_global_hook_store,
+    hook_tool_input,
+    permission_pre_tool_block,
     run_script_hook,
     set_global_hook_store,
 )
@@ -206,6 +208,159 @@ class TestFireToolHooks:
             "parent_session_key": "dashboard:slot-1",
             "agent_role": "utility",
         }
+
+
+class TestHookToolInput:
+    """``hook_tool_input`` builds the payload's ``tool_input`` from the call's
+    structured params, redacting value by value.
+
+    The URL below carries a 64-character query value, which the exfiltration
+    scrubber flags; built from parts so no scrubber-shaped literal sits in the
+    source as one token.
+    """
+
+    _QUERY = "a1b2c3d4" * 8
+    _URL = "https://example.com/a?id=" + _QUERY
+    _TAG = "[REDACTED: suspicious URL to example.com]"
+
+    @classmethod
+    def _display_json(cls, command: str) -> str:
+        """The rendered display text as the tool_call parser produces it: the
+        params dumped as JSON, then run through the scrubber."""
+        from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
+
+        return redact_text(json.dumps({"command": command}, indent=2))
+
+    def test_the_double_quoted_url_repro_breaks_the_display_json(self):
+        """Parsed display text: a tag replacing a URL inside an escaped ``\\"`` eats the backslash."""
+        rendered = self._display_json(f'curl -s --url "{self._URL}"')
+        assert self._TAG in rendered
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(rendered)
+
+    def test_double_quoted_url_yields_a_command_with_the_url_redacted(self):
+        command = f'curl -s --url "{self._URL}"'
+        got = hook_tool_input({"command": command}, self._display_json(command))
+        assert got == {"command": f'curl -s --url "{self._TAG}"'}
+        assert self._QUERY not in json.dumps(got)
+        json.loads(json.dumps(got))  # the payload a hook reads is JSON
+
+    def test_single_quoted_url_yields_the_same_redacted_command(self):
+        command = f"curl -s --url '{self._URL}'"
+        got = hook_tool_input({"command": command}, self._display_json(command))
+        assert got == {"command": f"curl -s --url '{self._TAG}'"}
+
+    def test_redaction_recurses_into_nested_values_and_keeps_keys(self):
+        params = {
+            "headers": {"X-Note": "aws key AKIAIOSFODNN7EXAMPLE"},
+            "urls": [self._URL],
+            "n": 3,
+        }
+        got = hook_tool_input(params, None)
+        assert isinstance(got, dict)
+        assert set(got) == {"headers", "urls", "n"}
+        assert got["n"] == 3
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(got)
+        assert "[REDACTED: credential]" in got["headers"]["X-Note"]
+        assert got["urls"] == [self._TAG]
+        assert params == {
+            "headers": {"X-Note": "aws key AKIAIOSFODNN7EXAMPLE"},
+            "urls": [self._URL],
+            "n": 3,
+        }  # the caller's dict is not rewritten
+
+    def test_structured_params_win_over_display_text(self):
+        got = hook_tool_input({"command": "ls"}, json.dumps({"command": "other"}))
+        assert got == {"command": "ls"}
+
+    def test_without_params_the_display_text_is_parsed(self):
+        assert hook_tool_input(None, json.dumps({"path": "/x"})) == {"path": "/x"}
+        assert hook_tool_input(None, None) is None
+        assert hook_tool_input(None, "") is None
+
+    def test_unparseable_display_text_is_logged_not_swallowed(self, caplog):
+        caplog.set_level(logging.WARNING, logger="kiro_crew.hooks")
+        assert hook_tool_input(None, self._display_json(f'curl "{self._URL}"')) is None
+        logged = [
+            r
+            for r in caplog.records
+            if r.name == "kiro_crew.hooks" and "not JSON after redaction" in r.getMessage()
+        ]
+        assert len(logged) == 1
+        assert logged[0].exc_info is not None
+        assert isinstance(logged[0].exc_info[1], json.JSONDecodeError)
+
+    @pytest.mark.asyncio
+    async def test_fire_tool_hooks_hands_the_hook_the_structured_input(self, probe):
+        """The end-to-end repro on the informational fire: the hook process gets
+        ``tool_input.command`` for the double-quoted URL, with the URL redacted."""
+        store, read = probe
+        command = f'curl -s --url "{self._URL}"'
+        await fire_tool_hooks(
+            store,
+            "Running: execute_bash",
+            self._display_json(command),
+            raw_tool_params={"command": command},
+        )
+        event = read()
+        assert event["tool_input"] == {"command": f'curl -s --url "{self._TAG}"'}
+        assert self._QUERY not in json.dumps(event["tool_input"])
+
+    @pytest.mark.asyncio
+    async def test_fire_tool_hooks_without_params_still_fires_and_logs(self, probe, caplog):
+        caplog.set_level(logging.WARNING, logger="kiro_crew.hooks")
+        store, read = probe
+        command = f'curl -s --url "{self._URL}"'
+        await fire_tool_hooks(store, "ReadFile", self._display_json(command))
+        event = read()
+        assert "tool_input" not in event
+        assert any("not JSON after redaction" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_the_permission_gate_hands_the_hook_the_structured_input(self, probe):
+        """The subagent and task-runner gate builds ``tool_input`` the same way."""
+        store, read = probe
+        command = f'curl -s --url "{self._URL}"'
+        reason = await permission_pre_tool_block(
+            store,
+            [],
+            None,
+            "Running: execute_bash",
+            self._display_json(command),
+            raw_tool_params={"command": command},
+        )
+        assert reason is None
+        event = read()
+        assert event["tool_input"] == {"command": f'curl -s --url "{self._TAG}"'}
+
+    def test_every_caller_outside_the_dashboard_turn_passes_the_params(self):
+        """Each production call of the two fires outside the dashboard turn hands over
+        ``raw_tool_params=<event>.raw_tool_params``, so no PreToolUse fire is left
+        building ``tool_input`` from the display text alone. The turn's own callers
+        are driven through ``test_dashboard_approval.py`` instead of read here."""
+        import re
+
+        src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        callers = {
+            "acp/client_tool_events.py": "fire_tool_hooks(",
+            "llm_helpers_parts/turn_stream.py": "fire_tool_hooks(",
+            "subagent_manager/run_turn.py": "fire_tool_hooks(",
+            "task_executor.py": "fire_tool_hooks(",
+            "tool_permission.py": "self._pre_tool(",
+        }
+        for rel, opener in callers.items():
+            text = (src / rel).read_text(encoding="utf-8")
+            calls = [m.start() for m in re.finditer(re.escape(opener), text)]
+            assert calls, rel
+            for start in calls:
+                depth, i = 0, start + len(opener) - 1
+                while True:
+                    depth += {"(": 1, ")": -1}.get(text[i], 0)
+                    if depth == 0:
+                        break
+                    i += 1
+                call = text[start:i]
+                assert re.search(r"raw_tool_params=\w+\.raw_tool_params", call), (rel, call)
 
 
 class TestScriptHookStoreFire:

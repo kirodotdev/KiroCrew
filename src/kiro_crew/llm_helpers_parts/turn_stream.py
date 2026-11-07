@@ -410,6 +410,7 @@ async def stream_and_collect(
                         get_global_hook_store(),
                         event.title,
                         event.tool_input,
+                        raw_tool_params=event.raw_tool_params,
                     )
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")
