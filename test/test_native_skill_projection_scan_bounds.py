@@ -908,7 +908,7 @@ def test_a_refused_lease_unlink_reports_through_the_same_throttle(native_tree, m
     monkeypatch.setattr(projection.pinned_fs, "supports_pinned_walk", lambda: True)
     monkeypatch.setattr(projection.os, "supports_dir_fd", {projection.os.unlink})
     # Off the prune's walk, so the count below is exactly the alias refusals.
-    lease_dir = agents.parent / "elsewhere" / projection._PROJECTION_LEASE_DIR_NAME
+    lease_dir = agents.parent / "elsewhere" / projection._PROJECTION_SIDE_LEASE_DIR_NAME
     lease_dir.mkdir(parents=True)
     record = lease_dir / f"1-{'ab' * 16}{projection._PROJECTION_LEASE_RECORD_SUFFIX}"
     record.write_text('{"aliases":[]}')
