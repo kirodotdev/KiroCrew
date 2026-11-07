@@ -20013,6 +20013,7 @@
       "turn_col": "턴",
       "turn_faults_other": "{{turns}}턴 중 장애 {{n}}건",
       "turn_latency_p50": "턴 지연 시간(p50)",
+      "turn_no_reply": "답변 없음",
       "turns_col": "턴",
       "turns_empty": "이 기간에 턴별 사용량 기록이 없습니다.",
       "turns_error": "턴을 불러오지 못했습니다.",

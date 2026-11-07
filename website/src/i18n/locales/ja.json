@@ -20013,6 +20013,7 @@
       "turn_col": "ターン",
       "turn_faults_other": "{{n}} / {{turns}} の障害",
       "turn_latency_p50": "ターンレイテンシ (p50)",
+      "turn_no_reply": "返信なし",
       "turns_col": "ターン",
       "turns_empty": "この期間にターンごとの使用量の記録はありません。",
       "turns_error": "ターンを読み込めませんでした。",

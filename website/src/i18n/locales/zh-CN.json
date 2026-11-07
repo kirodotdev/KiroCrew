@@ -20013,6 +20013,7 @@
       "turn_col": "轮次",
       "turn_faults_other": "{{turns}} 轮中 {{n}} 次故障",
       "turn_latency_p50": "轮次延迟（p50）",
+      "turn_no_reply": "无回复",
       "turns_col": "轮次",
       "turns_empty": "此窗口内没有逐轮次用量记录。",
       "turns_error": "轮次加载失败。",

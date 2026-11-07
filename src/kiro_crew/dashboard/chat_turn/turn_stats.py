@@ -921,6 +921,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 # effective session key reach the histogram; this call
                 # must not also sample, so it opts out.
                 emit_metric=False,
+                # Final: no text chunk can arrive after the terminal event.
+                delivered=turn._saw_text_chunk,
             )
         )
     # The turn's crew log closers are STASHED, not emitted here. This
