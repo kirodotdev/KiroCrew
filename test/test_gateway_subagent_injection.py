@@ -289,6 +289,40 @@ async def test_a_tab_still_busy_after_the_wait_queues_and_counts_one_turn(
     assert slot._subagent_deliveries_inflight == 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last", [True, False], ids=["last-result", "sibling-running"])
+async def test_only_the_completion_that_arms_the_synthesis_carries_the_final_note(
+    done: _Done, last: bool
+) -> None:
+    """The batch's last result tells the model so, letting that turn write the
+    consolidated report the fire gate then counts as the synthesis."""
+    from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+    slot = done.tab("main")
+    slot.running = True
+    if not last:
+        done.mgr.running_agents_for = MagicMock(return_value=["b1"])
+
+    await done.done(make_info())
+
+    ((text, _kind, _meta),) = slot.queued
+    assert text.startswith(gw_mod.SUBAGENT_COMPLETION_PREFIX)
+    assert text.endswith(f"\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}") is last
+    assert slot._pending_synthesis is last
+
+
+def test_the_final_note_is_conditional_and_promises_no_end_of_batch() -> None:
+    """The arm sees in-memory state only, so a sibling queued in the store may
+    still be out: the note must not tell the model the batch is finished."""
+    from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+    note = SUBAGENT_FINAL_COMPLETION_NOTE.lower()
+    assert "may be the last" in note
+    assert "if no other sub-agent of this batch is still queued or running" in note
+    assert "this is the last" not in note
+    assert "no separate synthesis" not in note
+
+
 # ── the tab: the turn ────────────────────────────────────────────────────────
 
 

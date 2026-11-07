@@ -671,6 +671,13 @@ async def _route_subagent_to_tab(
                 _injection_slot._synthesis_armers.clear()
             _injection_slot._pending_synthesis = True
             _injection_slot._synthesis_armers.add(info.id)
+            # Tell the model this may be the batch's last result (a sibling
+            # queued in the store is not visible here), so the turn that takes
+            # it can write the consolidated report (read at its end by
+            # `_turn_record_outcome`).
+            from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+            announce = f"{announce}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
 
         # ── Skip injection for blocking-tool-collected results ──
         # spawn_sub_agents (blocking MCP tool) already delivered

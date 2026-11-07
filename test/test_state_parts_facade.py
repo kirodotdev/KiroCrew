@@ -618,6 +618,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_swap_in_flight": ("value", "False"),
     "_synthesis_armers": ("value", "set()"),
     "_synthesis_completion_turns": ("value", "0"),
+    "_synthesis_final_turn_ran": ("value", "False"),
     "_synthesis_inflight": ("value", "False"),
     "_synthesis_recheck": ("value", "None"),
     "_synthesis_rechecks": ("value", "0"),
