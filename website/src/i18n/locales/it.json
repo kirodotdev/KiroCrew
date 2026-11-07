@@ -19224,6 +19224,7 @@
         "default_priority": "Priorità predefinita: {{priority}}",
         "failed_to_load_channels": "Impossibile caricare i canali",
         "mute_notification_sources_or_override_their_prio": "Silenzia le origini delle notifiche o modificane la priorità. Le notifiche silenziate restano nella cronologia ma non generano mai badge, suoni o banner.",
+        "mute_notification_sources_or_override_their_prio_summary": "Le notifiche silenziate restano nella cronologia ma non generano mai badge, suoni o banner.",
         "notifications_for": "Notifiche per {{name}}",
         "per_category_sounds": "Suoni per categoria",
         "play_sound_on_new_notifications": "Riproduci un suono per le nuove notifiche",

@@ -81,6 +81,14 @@ describe('NotificationsPanel channels section', () => {
     expect(screen.queryByText('turn')).toBeNull()
   })
 
+  it('keeps only the mute consequence under the Sources heading; what the section is sits in its tip', async () => {
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    expect(screen.getByText('Muted notifications stay in history but never badge, sound, or banner.')).toBeTruthy()
+    expect(screen.queryByText(/Mute notification sources or override their priority/)).toBeNull()
+    expect(screen.getByTitle(/^Mute notification sources or override their priority\./)).toBeTruthy()
+  })
+
   it('renders protected channels locked without controls', async () => {
     renderPanel()
     await waitFor(() => expect(screen.getByText('approval')).toBeTruthy())
