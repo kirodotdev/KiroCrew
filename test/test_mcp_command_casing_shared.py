@@ -485,3 +485,28 @@ class TestHealedCommandKeepsItsProvenance:
         )["mcpServers"]
         assert second["demo"]["command"] == actual
         assert second["demo"][DERIVED_KEY] == {"from": "demo-mcp", "emitted": actual}
+
+
+class TestEditionContributedCommand:
+    """An edition adapter's absolute command is healed where every spec writer reads it."""
+
+    @pytest.mark.parametrize(
+        "contributed, expected",
+        [("demo-mcp.EXE", "demo-mcp.exe"), ("DEMO-MCP.EXE", "DEMO-MCP.EXE")],
+    )
+    def test_extra_mcp_servers_heals_only_a_pathext_extension(
+        self, tmp_path: Path, monkeypatch, contributed: str, expected: str
+    ) -> None:
+        from kiro_crew import agent
+
+        _saved_launcher(tmp_path)
+        command = str(tmp_path / "bin" / contributed)
+        returned = {"demo": {"command": command, "args": ["--stdio"]}}
+        tooling = SimpleNamespace(extra_mcp_servers=lambda: returned)
+        monkeypatch.setattr(agent, "current_context", lambda: SimpleNamespace(mcp_tooling=tooling))
+        monkeypatch.setattr("kiro_crew.agent.saved_command_casing", _windows_saved)
+
+        extra = agent._extra_mcp_servers()
+
+        assert extra["demo"] == {"command": str(tmp_path / "bin" / expected), "args": ["--stdio"]}
+        assert returned["demo"]["command"] == command, "the adapter's own dict was mutated"
