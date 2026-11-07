@@ -1288,6 +1288,8 @@
     "components.notifications.systemNote.turn_limit_body": "Body of the same bell notification. {{surface}} is the lowercase id of the messaging channel the conversation is in (such as discord or telegram), or the English word channel when it is unknown; keep it as written.",
     "components.notifications.systemNote.default_model_failed_body": "Body of a bell notification: the default model the user saved could not be put into use yet. {{productName}} is the product name; gateway is the background service the dashboard talks to, so use the word this catalog already uses for it.",
     "components.notifications.systemNote.chat_stopped_title": "Title of a bell notification: a chat session ended with an error and needs the user to open it. Keep the warning sign first.",
-    "components.notifications.systemNote.chat_stopped_agent_restarting_body": "Body of the chat-stopped bell notification. \"Turn\" is one reply from the agent to a message, not a rotation; use the word this catalog already uses for it."
+    "components.notifications.systemNote.chat_stopped_agent_restarting_body": "Body of the chat-stopped bell notification. \"Turn\" is one reply from the agent to a message, not a rotation; use the word this catalog already uses for it.",
+    "pages.settings.chatPanel.session_card_message_preview": "Settings → Chat → Sessions toggle for last-message snippets on session cards in the sidebar and board; preview is message text, not a separate preview window.",
+    "pages.settings.chatPanel.session_card_message_preview_desc": "Description of the session-card message-preview toggle: hiding snippets keeps unread markers and live activity indicators visible."
   }
 }
