@@ -340,6 +340,27 @@ class TestBuildConfig:
 
 
 class TestReadConfigDocument:
+    @pytest.mark.parametrize("agents", [None, {"kept": {}, "dropped": 1}])
+    def test_dropping_an_agents_value_or_entry_marks_agents_degraded(self, config_home, agents):
+        """The resolver reads a crewmate missing from a degraded roster as unknown, not deleted."""
+        _write(config_home / "config.json", {"agents": agents})
+        cfg = loader.build_config(loader.read_config_document())
+        assert "agents" in cfg.degraded_sections
+        assert "dropped" not in cfg.agents
+        if agents is not None:
+            assert "kept" in cfg.agents
+        # A cache hit reports the same repair.
+        assert "agents" in loader.build_config(loader.read_config_document()).degraded_sections
+
+    def test_a_fixed_roster_is_no_longer_marked_degraded(self, config_home):
+        """The agents mark is per load, so it does not freeze later live applies."""
+        _write(config_home / "config.json", {"agents": {"bot": "reviewer"}})
+        assert "agents" in loader.build_config(loader.read_config_document()).degraded_sections
+        _write(config_home / "config.json", {"agents": {"bot": {"description": "fixed"}}})
+        cfg = loader.build_config(loader.read_config_document())
+        assert "agents" not in cfg.degraded_sections
+        assert "bot" in cfg.agents
+
     def test_no_files_reads_an_unloaded_document_and_creates_nothing(self, config_home):
         doc = loader.read_config_document()
         assert doc.loaded is False

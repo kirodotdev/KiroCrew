@@ -248,6 +248,11 @@ class DashboardState:
     # unreadable or remote-only seed is not. Same frozenset baseline as above.
     deferred_member_slot_keys: "frozenset[str] | set[str]" = frozenset()
 
+    # Those deferred keys as the restore reported them, kept after the retry empties
+    # the set above: ``slot_list_held_keys`` holds each one while it is still in the
+    # reopen seed, so a complete slot list cannot drain its unread mark first.
+    restore_deferred_slot_keys: frozenset[str] = frozenset()
+
     # Whether the last open-tab restore could READ the registry at all. False means
     # every generation that might hold the set was refused by the OS, so this process
     # has no basis for treating ``_slots`` as the authoritative open-tab set and
