@@ -2583,8 +2583,18 @@ zsh and PowerShell all read as plain text, so `git commit -m "fix(x): y"` can be
 granted), and that one entry matches whole, as kiro-cli anchors each entry at
 both ends. Every other condition above still holds, so a matching command the
 deny floor, governance or `confirm_tools` refuses is still refused, and a command
-that chains, pipes, redirects, groups or substitutes is never granted whatever the
-pattern says. When an entry matches such a command whole or matches the plain command before
+that redirects, groups or substitutes is never granted whatever the pattern says.
+A chain is the one composed shape that can be granted
+(`allowed_commands.chain_commands` / `chain_matches_all`): the command is split
+at every `&&`, `||`, `;` and `|` into at most 16 parts; a chain holding a quote,
+a backslash, any non-ASCII character or PowerShell's stop-parsing `--%` anywhere is
+refused, since a quote (PowerShell's typographic U+2018 to U+201E included) or `--%`
+can carry a separator into one argument and the parts would not be the commands that run, and is granted only when every part is a plain
+command as above and an entry matches each part whole, as kiro-cli asks about
+each command of a chain. The deny floor and the other deny tiers run on the
+whole line first, so a chain carrying a denied command is still refused, and a
+spec with `deniedCommands` or `denyByDefault` beside `allowedCommands` keeps the
+grant withheld as before. When an entry matches such a command whole or matches the plain command before
 its first composition character (`allowed_commands.composition_blocks_match`), the
 gate's fall-through `allow` carries `COMPOSITION_NOTICE` as its reason and the
 dashboard shows it ahead of the card; under `denyByDefault` the refusal names the
