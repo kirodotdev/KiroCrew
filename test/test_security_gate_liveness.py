@@ -706,7 +706,9 @@ def _url_payload_command(n: int) -> str:
 #: a shell reads, a command after a heredoc, a ``\n`` escape in ``$'...'``). Deny-only:
 #: the default read is unchanged and nothing the floor refused is allowed now; the
 #: walk is bounded by ``rm_floor._WALK_BUDGET_CHARS``.
-_PACKAGE_LINE_BUDGET = 34_936
+#: Raised by 24, from 34,936, for ``rm_floor._carrier_home``: each ``$HOME`` the carrier
+#: command leaves live is read as home in a nested payload. Deny-only. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_960
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
