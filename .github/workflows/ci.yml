@@ -4243,9 +4243,11 @@ jobs:
     # this job runs on `kirocrew-linux-4-core`, where the slowest of six
     # observed fork runs took 23.9 of the 25 minutes -- 66 seconds of margin, so
     # a green run is one slow dependency install away from a cancellation with
-    # no failing test. The fleet keeps 25; only the slower route gets room, and
-    # a genuinely hung job is still bounded.
-    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
+    # no failing test. The fleet gets 30, the smallest budget whose derived
+    # Playwright ceiling reaches the 1500 s cap: the 1200 s a 25-minute budget
+    # derives leaves a slow fleet runner under 20 s past its ~1183 s of spec
+    # time for the run's own overhead. A genuinely hung job is still bounded.
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
     defaults:
       run:
         shell: /usr/local/bin/ci-shell {0}
@@ -4341,7 +4343,7 @@ jobs:
       - name: Install Playwright browser (Chromium)
         # A step-level cap. The download itself takes ~7s, so anything approaching
         # this is a stalled mirror or CDN -- fail here with budget left for the
-        # specs instead of consuming the job's 25min and reporting nothing.
+        # specs instead of consuming the job's budget and reporting nothing.
         timeout-minutes: 6
         shell: bash
         working-directory: website
@@ -4456,8 +4458,8 @@ jobs:
           # The Playwright run's ceiling is sized from this job's wall-clock budget
           # so it cannot kill a green suite that still has job budget to spare. Set
           # from the SAME expression as this job's timeout-minutes above so the two
-          # cannot drift: 25 on the CodeBuild fleet, 40 on the hosted route.
-          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
+          # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
+          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence
