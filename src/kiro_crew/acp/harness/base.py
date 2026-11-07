@@ -597,6 +597,7 @@ class HarnessAdapter(LaunchAdapter):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -609,6 +610,9 @@ class HarnessAdapter(LaunchAdapter):
         ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
         names of the stubs ``session/new`` injects for that session, from the
         caller's one overlay lookup. A host that projects nothing ignores it.
+
+        ``engine_features`` is :func:`kiro_crew.acp.kas_engine_features.advertised`
+        of this process's ``initialize`` answer. Only the KAS projection reads it.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:

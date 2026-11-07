@@ -210,6 +210,7 @@ class KiroHarness(MembershipHarness):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
     ) -> SessionExtras:
         """Nothing. kiro-cli already has the agent from its spawn flag.
 

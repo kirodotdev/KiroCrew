@@ -1125,6 +1125,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             skill_scope_rules=(),
             withheld_out=None,
             prompt_unread_out=None,
+            engine_features=frozenset(),
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1151,6 +1152,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             skill_scope_rules=(),
             withheld_out=None,
             prompt_unread_out=None,
+            engine_features=frozenset(),
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]
