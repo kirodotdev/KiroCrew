@@ -1585,7 +1585,7 @@ function ChatEmbed({
             <StopControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={onStop} inlineHints={false} guideTarget={false} />
           ) : (
             <ComposerSend
-              className="p-2 min-h-0 rounded-md disabled:opacity-40"
+              className="p-2 min-h-0 rounded-md"
               onSend={() => send()}
               running={running}
               pending={sendMutation.isPending}

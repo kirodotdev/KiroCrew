@@ -484,7 +484,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
 
   it('makes a dead Use button look dead, in the onboarding button style', async () => {
     // The detail's one mutating control is the same accent button first-run setup
-    // uses, and its dead state is that button's: disabled, faded, no pointer. A dead
+    // uses, and its dead state is that button's: disabled, muted, no pointer. A dead
     // click is answered by silence, so the button must not read as pressable.
     acpBackendsMock.mockResolvedValue({
       backends: [
@@ -497,7 +497,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     highlight('Claude Code')
     await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
     const dead = useButton('Claude Code').className
-    expect(dead).toContain('disabled:opacity-30')
+    expect(dead).toContain('disabled:bg-bg-hover')
     expect(dead).toContain('disabled:cursor-not-allowed')
     expect(dead).toContain('bg-accent')
 
