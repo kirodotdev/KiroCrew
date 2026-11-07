@@ -439,7 +439,9 @@ bytes cannot authorize adopting — and later deleting — a user's restoration 
 the older bytes.
 
 A fresh create uses `O_EXCL` + `O_NOFOLLOW` at `0o600`, so two sessions sharing a
-`work_dir` cannot clobber each other. Re-seeding an owned file uses an inode-pinned
+`work_dir` cannot clobber each other. The session that loses that race treats the
+file like one that was already there: it shares a matching sibling seed, or else
+takes the guarded exclusion below. Re-seeding an owned file uses an inode-pinned
 move-aside plus atomic replacement; a concurrent user replacement is detected and
 left in place. Teardown runs ownership check, durable revocation, and deletion in
 one shielded worker-thread transaction. If revocation or deletion cannot complete,
