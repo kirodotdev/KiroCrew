@@ -483,7 +483,7 @@ def _blocks(payload: str) -> dict[str, str]:
 #: Byte extent of every block in the normalized default session context, and the
 #: total. Regenerate ONLY as part of a reviewed change to what a block contains.
 EXPECTED_EXTENTS = {
-    "[CRITICAL RULES": 3747,
+    "[CRITICAL RULES": 4338,
     "[CURRENT DATE]": 48,
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,
@@ -492,7 +492,7 @@ EXPECTED_EXTENTS = {
     "[Skills:]": 413,
     "[Learned corrections": 320,
 }
-EXPECTED_TOTAL = 7412
+EXPECTED_TOTAL = 8003
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
