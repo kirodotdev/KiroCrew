@@ -418,13 +418,21 @@ class TestDashboardClientProbe:
 
 
 def _callback(  # type: ignore[no-untyped-def]
-    monkeypatch, *, clients: int, raise_when_unreachable: bool, slack: object = None
+    monkeypatch,
+    *,
+    clients: int,
+    raise_when_unreachable: bool,
+    slack: object = None,
+    hooks: dict | None = None,
+    approval_mode: str = "interactive",
+    yolo: bool = False,
+    on_host_decision=None,
 ):
     """Build one real ``_interactive_approval`` closure over a fake gateway."""
     from kiro_crew.slack import gateway as gateway_mod
 
     monkeypatch.setattr(
-        gateway_mod, "safety_override", lambda: SimpleNamespace(is_active=lambda: False)
+        gateway_mod, "safety_override", lambda: SimpleNamespace(is_active=lambda: yolo)
     )
     state = MagicMock()
     state._slots = {}
@@ -434,8 +442,8 @@ def _callback(  # type: ignore[no-untyped-def]
         slack=slack,
         _owner_id="U123" if slack is not None else "",
         dashboard_state=state,
-        _cfg=SimpleNamespace(hooks={}),
-        _approval_mode="interactive",
+        _cfg=SimpleNamespace(hooks=hooks or {}),
+        _approval_mode=approval_mode,
         autonudge_svc=None,
         sessions=None,
     )
@@ -448,6 +456,7 @@ def _callback(  # type: ignore[no-untyped-def]
         fake,  # type: ignore[arg-type]
         "subagent",
         raise_when_unreachable=raise_when_unreachable,
+        on_host_decision=on_host_decision,
     )
     return cb, state
 
@@ -522,5 +531,60 @@ class TestOnlyTheSpawnGateRaises:
             for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
         )
         assert "on_tool_approval=_approve_subagent," in src
-        assert "return await _approve_spawn_gate(event, parent_session_key)" in src
+        assert "approved = await _approve_spawn_gate(event, parent_session_key)" in src
         assert src.count("raise_when_unreachable=True") == 1
+
+
+class TestHostDecisionsAreReported:
+    """The gate is told which answers it gave with nobody asked, so its log says host."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "rung",
+        [
+            {"hooks": {"auto_approve_sources": ["subagent"]}},
+            {"approval_mode": "yolo"},
+            {"yolo": True},
+        ],
+        ids=["auto_approve_source", "approval_yolo", "yolo_override"],
+    )
+    async def test_a_rung_that_answers_alone_is_a_host_approval(self, monkeypatch, rung) -> None:  # type: ignore[no-untyped-def]
+        decided: list[tuple[str, str]] = []
+        cb, state = _callback(
+            monkeypatch,
+            clients=1,
+            raise_when_unreachable=True,
+            on_host_decision=lambda rid, cause: decided.append((rid, cause)),
+            **rung,
+        )
+        assert await cb(_event()) is True
+        assert decided == [("spawn:abc123", "")]
+        state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_slack_prompt_is_a_host_decline(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+        from kiro_crew.slack import gateway as gateway_mod
+
+        monkeypatch.setattr(gateway_mod.DashboardState, "_APPROVAL_TIMEOUT", 0)
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D123")
+        slack.post_blocks = AsyncMock(return_value="1.2")
+        slack.update_message = AsyncMock()
+        decided: list[tuple[str, str]] = []
+        cb, state = _callback(
+            monkeypatch,
+            clients=1,
+            raise_when_unreachable=True,
+            slack=slack,
+            on_host_decision=lambda rid, cause: decided.append((rid, cause)),
+        )
+        unanswered = asyncio.Event()
+
+        async def _parked(*_args: object, **_kwargs: object) -> bool:
+            await unanswered.wait()
+            return True
+
+        state.request_approval = _parked
+        assert await cb(_event()) is False
+        assert decided == [("spawn:abc123", DENY_CAUSE_APPROVAL_TIMEOUT)]
