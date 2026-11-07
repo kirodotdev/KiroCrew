@@ -92,66 +92,42 @@ def _young_entry_digest(path: str, st: os.stat_result, limit: int) -> tuple[byte
 def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     """Fingerprint of *agents_dir* strong enough to pin a read answer to.
 
-    ``None`` means "cannot prove freshness; do not memoize". Where
-    :func:`_dir_signature` answers every call with a tuple because the catalog
-    caches it serves tolerate a same-tick edit, this never lets entry metadata
-    miss a rewrite, and it parses no spec either way.
+    ``None`` means "cannot prove freshness; do not memoize". Unlike
+    :func:`_dir_signature`, whose caches tolerate a same-tick edit, this never
+    lets entry metadata miss a rewrite. It parses no spec.
 
     Each spec entry contributes its name, timestamps, size, identity, mode and
-    link count, so an entry added, removed, renamed or re-linked and every
-    ordinary in-place edit or metadata change moves the revision; the link
-    count and the mode are what the hardened reader judges a file by besides
-    its bytes. The in-process spec generation (:func:`spec_cache_generation`)
-    is part of the tuple, so :func:`clear_list_agents_cache` -- which the
-    in-process spec writers call -- moves every revision at once.
+    link count (mode and link count are what the hardened reader judges besides
+    the bytes). The tuple includes :func:`spec_cache_generation`, so
+    :func:`clear_list_agents_cache`, called by in-process spec writers, moves
+    every revision at once.
 
     An entry whose mtime or ctime is within :data:`_AGENTS_DIR_RACY_WINDOW_NS`
-    of the walk is pinned on a SHA-256 of its bytes as well (the racy-git rule:
-    git re-compares the content of an entry whose stat is too young to trust).
-    A same-size rewrite that lands in the same filesystem timestamp tick as the
-    previous write leaves the metadata unchanged but not the bytes, so it is
-    never served stale, and one fresh write does not withdraw the pin from
-    the whole directory: a directory written continuously is pinned between
-    writes. An older entry's metadata is enough on its own: any later write
-    stamps a ctime no POSIX call can set back, which lands past the window the
-    entry was outside of. A walk with more than
-    :data:`_AGENTS_DIR_RACY_MAX_DIGESTS` young entries, or more than
-    :data:`_AGENTS_DIR_RACY_MAX_DIGEST_BYTES` of them, gives ``None``, and so
-    does a young entry whose bytes cannot be hashed (not a regular file,
-    unreadable, or replaced while it was read).
+    of the walk is also pinned on a SHA-256 of its bytes (git's racy-stat rule),
+    so a same-size rewrite in the same timestamp tick is never served stale.
+    Older entries need only metadata: a later write stamps a ctime no POSIX call
+    can set back. More than :data:`_AGENTS_DIR_RACY_MAX_DIGESTS` young entries,
+    more than :data:`_AGENTS_DIR_RACY_MAX_DIGEST_BYTES` of them, or a young entry
+    that cannot be hashed gives ``None``.
 
-    A symlinked spec gives ``None``: its entry metadata cannot see edits to its
-    target. On Windows (:data:`_PIN_EVERY_ENTRY_ON_BYTES`) ``st_ctime_ns`` is
-    creation time, so entry metadata cannot prove an in-place rewrite did not
-    happen; there EVERY entry is pinned on a digest of its bytes, whatever its
-    age, with no cap on how many and a total of
-    :data:`_AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES`, past which the answer is
-    ``None``. Its metadata comes from ``os.stat(path, follow_symlinks=False)``,
-    because ``DirEntry.stat`` leaves the inode, device and link count at zero
-    there. One residual is accepted: a rewrite DURING one read that is undone
-    before the read ends, with its mtime set back by hand, leaves the bytes and
-    the metadata as they were, so the answer read across it can be stored; it
-    takes a deliberate ``utime`` inside the read, which an ordinary edit,
-    restore or sync never does. There is no cap on the number of entries: the
-    walk is one ``stat`` per spec where the reads it saves are one parse per
-    spec, and
-    :class:`AgentsDirMemo` retains a fixed-size digest of the revision, never
-    the tuple.
+    A symlinked spec gives ``None``: its metadata cannot see edits to its target.
+    On Windows (:data:`_PIN_EVERY_ENTRY_ON_BYTES`) ``st_ctime_ns`` is creation
+    time, so EVERY entry is pinned on its bytes, up to
+    :data:`_AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES` in total (past that,
+    ``None``), and metadata comes from ``os.stat(path, follow_symlinks=False)``
+    because ``DirEntry.stat`` leaves inode, device and link count at zero there.
+    Accepted residual: a rewrite during one read, undone before it ends with the
+    mtime set back by a deliberate ``utime``, can be stored. The entry count is
+    uncapped: one ``stat`` per spec saves one parse per spec, and
+    :class:`AgentsDirMemo` keeps only a fixed-size digest of the revision.
 
-    Only the entries :func:`_iter_spec_entries` yields -- a recognised spec
-    suffix, not a skill-view alias -- are fingerprinted; that is a superset of
-    what the spec scans read (a Markdown spec shadowed by its JSON twin is still
-    fingerprinted; an alias is left out by scan and fingerprint alike), so the
-    revision can only be more sensitive than the scan, never less. The
-    directory's own mtime is not part of it: every file a scan reads is named
-    in the tuple, so a stray file or an alias written beside the specs neither
-    moves the revision nor withdraws the pin. Nothing read from an alias is
-    pinned to it either: :class:`AgentsDirMemo` never stores an answer under
-    an alias name. A ``stat`` that fails records
-    zeros: the entry is still named, so its appearance and disappearance are
-    revisions. An entry whose kind cannot be determined gives ``None``, and so
-    does a directory that cannot be listed: an unlistable directory is not an
-    empty one.
+    Only entries :func:`_iter_spec_entries` yields are fingerprinted, a superset
+    of what the scans read, so the revision is never less sensitive than the
+    scan. The directory mtime is left out, so a stray file or skill-view alias
+    beside the specs does not move the revision; :class:`AgentsDirMemo` never
+    stores an answer under an alias name. A failed ``stat`` records zeros (the
+    name still counts). An entry of unknown kind, or an unlistable directory,
+    gives ``None``: an unlistable directory is not an empty one.
     """
     if not AGENTS_DIR_MEMO_ENABLED:
         return None
@@ -229,37 +205,25 @@ class AgentsDirMemo(Generic[T]):
     """Answers computed from one walk of an agents directory, pinned to its revision.
 
     The two ``spec_by_declared_name`` callers (the KAS projection and the
-    tool-policy read) each parse every spec in the directory to resolve one
-    name, and each keeps its own instance here so their SEL ``operation``
-    labels never share an answer. The store and hit rules live once:
+    tool-policy read) each parse every spec to resolve one name, and each keeps
+    its own instance so their SEL ``operation`` labels never share an answer.
 
-    - a revision is taken before ``compute`` and again after it, and the answer
-      is stored only when both are equal and not ``None``, so a write landing
-      during the read is never memoized under the revision that preceded it;
-    - an exception from ``compute`` propagates and nothing is stored;
-    - one answer set per directory, replaced whole on a new revision and
-      cleared when it reaches :data:`_AGENTS_DIR_MEMO_MAX_KEYS`, so a churn of
-      keys cannot grow it;
-    - the revision an answer set is pinned to is retained as its fixed-size
-      digest (:func:`_revision_pin`), so what the memo holds per directory does
-      not grow with the number of specs in it;
-    - a key that is a skill-view alias name is computed on every call and never
-      stored, because the revision leaves aliases out and a caller's
-      direct-filename fallback would read ``<alias>.json``;
-    - a caller that can answer every name from one walk passes ``prefill``, so
-      the first read of each other name under a revision is a hit (see
-      :meth:`get`).
+    - An answer is stored only when the revision before and after ``compute`` is
+      equal and not ``None``, so a write during the read is never memoized.
+    - An exception from ``compute`` propagates and stores nothing.
+    - One answer set per directory, replaced on a new revision and cleared at
+      :data:`_AGENTS_DIR_MEMO_MAX_KEYS`; the revision is kept as a fixed-size
+      digest (:func:`_revision_pin`), so memory does not grow with spec count.
+    - A skill-view alias key is never stored: the revision leaves aliases out,
+      and a caller's filename fallback would read ``<alias>.json``.
+    - ``prefill`` lets a caller answer every name from one walk (see :meth:`get`).
 
-    An in-process spec write that calls :func:`clear_list_agents_cache` moves
-    the spec generation, which is part of every revision, so the stored answers
-    stop matching without the memo being told.
+    :func:`clear_list_agents_cache` moves the spec generation inside every
+    revision, so stored answers stop matching without the memo being told.
 
-    The answer returned is the stored object itself, so a caller that hands it
-    to code which may mutate it must copy (the KAS projection deep-copies; the
-    tool-policy read's answer is serialized and never mutated). Two threads
-    missing at once compute redundantly and last-write-wins, the same answer
-    from the same revision. The lock guards the dict only; callers run on
-    worker threads.
+    The stored object itself is returned, so a caller that may mutate it must
+    copy (the KAS projection deep-copies). Two threads missing at once compute
+    the same answer redundantly. The lock guards the dict only.
     """
 
     def __init__(self) -> None:
@@ -276,22 +240,15 @@ class AgentsDirMemo(Generic[T]):
     ) -> T:
         """Return the memoized answer for *key* under *agents_dir*, or ``compute()``.
 
-        A *key* that is a skill-view alias name is always computed: every reader
-        keyed here is keyed by agent name and may read ``<key>.json`` by
-        filename, and the revision does not fingerprint aliases, so an answer
-        read from one could outlive the alias it was read from.
+        A skill-view alias *key* is always computed: readers may open
+        ``<key>.json`` by filename, and the revision does not fingerprint
+        aliases, so a stored answer could outlive its alias.
 
-        *prefill*, when given, answers many keys from ONE walk of the directory:
-        it runs on the first miss under a revision, and the answers it returns
-        are stored under the same rules as ``compute``'s (revision equal before
-        and after, alias names left out), so each other key's first read is a
-        hit instead of another walk. A key it does not answer is computed as
-        before. It runs once per revision (two threads missing at once may
-        both run it, as they may both compute); an ``OSError`` from it stores
-        nothing, and past :data:`_AGENTS_DIR_MEMO_MAX_KEYS` only part of its
-        answers is kept (see :meth:`_prefill`). A prefill must answer a key
-        exactly as ``compute`` would, and leave out every key it cannot answer
-        that way.
+        *prefill* answers many keys from ONE walk. It runs once per revision on
+        the first miss, its answers are stored under ``compute``'s rules, and a
+        key it omits is computed. An ``OSError`` from it stores nothing; past
+        :data:`_AGENTS_DIR_MEMO_MAX_KEYS` only part is kept (see :meth:`_prefill`).
+        It must answer each key exactly as ``compute`` would, or leave it out.
         """
         if is_native_skill_alias_name(key):
             return compute()

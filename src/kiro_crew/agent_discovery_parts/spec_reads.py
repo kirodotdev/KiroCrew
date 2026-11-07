@@ -688,29 +688,18 @@ def spec_by_declared_name(
     backend runs, so the question the caller asks (this agent's policy, this
     agent's projection) has one answer and that answer is returned, with a
     warning naming each file so the operator can tidy the directory. A package
-    installer that flattens dependencies writes exactly such twins for an agent
-    two packages vend; refusing them denied the agent its policy and its KAS
-    session with no lasting repair. Equality is of the whole parse, not of the
-    fields one caller reads: a pair that agrees on ``managedToolPolicy`` but
-    differs elsewhere is still two agents, and stays refused. Propagates
-    ``OSError`` from the directory walk itself; the per-file reads never raise.
+    installer that flattens dependencies writes such twins. Equality is of the
+    whole parse: a pair that agrees on ``managedToolPolicy`` but differs
+    elsewhere is still two agents, and stays refused. Propagates ``OSError``
+    from the directory walk itself; the per-file reads never raise.
 
-    Only the first matching spec is held; a later match is compared with it,
-    keeps its path, and its parse is dropped when the loop moves on. The reader
-    caps each file, so the parsed-spec memory this scan holds at its peak is a
-    constant few capped parses (the first match, the loop's last parse and the
-    one being read), not one per same-name file; the paths themselves, one per
-    candidate, are what the refusal message and the warning need and are all
-    the scan keeps of the rest.
+    Only the first match's parse is held, so peak memory is a few capped parses,
+    not one per same-name file; later matches keep only their paths.
 
-    This is a fresh walk rather than a filter over :func:`parsed_agent_specs`,
-    and the difference is the labels, not the loop. That cache serves catalog
-    readers of one directory, so its SEL labels are first-reader-wins for the
-    life of a snapshot; a denial met here would then be attributed to whichever
-    listing warmed the cache instead of to the projection or the policy read
-    that asked, which is the attribution the call-site ratchet exists to keep.
-    The cache also hands out its own rows to be treated as read-only, where
-    this returns a parse the caller owns.
+    A fresh walk rather than a filter over :func:`parsed_agent_specs`: that
+    cache's SEL labels are first-reader-wins, so a denial here would be
+    attributed to whichever listing warmed it. This also returns a parse the
+    caller owns, not a shared read-only row.
     """
     entry = declared_spec_entry(agents_dir, agent_id, operation=operation, source=source, pins=pins)
     return None if entry is None else entry[1]
