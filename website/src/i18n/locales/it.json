@@ -12279,6 +12279,7 @@
       "promote_slug_taken_open": "Apri «{{slug}}»",
       "promote_slug_taken_open_older": "Apri il precedente «{{taken}}»",
       "published": "Pubblicato ({{visibility}})",
+      "published_on_provider": "Pubblicato su {{provider}} ({{visibility}})",
       "published_sync_issue": "Pubblicato (problema di sincronizzazione)",
       "published_rolling_out": "Pubblicato — ancora in distribuzione",
       "published_distribution_disabled": "Pubblicato — rete di distribuzione disattivata",

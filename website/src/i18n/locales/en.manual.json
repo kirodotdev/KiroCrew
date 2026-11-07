@@ -5335,6 +5335,7 @@
       "promote_slug_taken_open": "Open {{slug}}",
       "promote_slug_taken_open_older": "Open older {{taken}}",
       "published": "Published ({{visibility}})",
+      "published_on_provider": "Published to {{provider}} ({{visibility}})",
       "published_rolling_out": "Published — still rolling out",
       "published_distribution_disabled": "Published — delivery network disabled",
       "published_notice_generic": "Published — link may not work yet",
