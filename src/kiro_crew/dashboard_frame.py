@@ -1268,12 +1268,28 @@ def fill_bindings_as_text(html: str, read: Mapping[str, Any]) -> str:
     Only a cell with NO nested markup is filled. A binding is a text cell by
     definition, so an element holding tags was never one, and rewriting it would be
     this function guessing at a structure the contract does not describe.
+
+    A cell whose field the read names in ``missing`` keeps its own text and is marked
+    the way the bootstrap marks it (``data-dashboard-missing`` and the "not current"
+    label in the reader's language), so the host CSS dims it here too. As in the
+    bootstrap, ``missing`` wins over a value ``fields`` still carries.
     """
     fields = read.get("fields") if isinstance(read, Mapping) else None
     values = fields if isinstance(fields, Mapping) else {}
+    listed = read.get("missing") if isinstance(read, Mapping) else None
+    missing = {n for n in listed if isinstance(n, str)} if isinstance(listed, list) else set()
+    locale = read.get("locale") if isinstance(read, Mapping) else None
+    label = _MISSING_LABELS.get(locale if isinstance(locale, str) else "", _MISSING_LABELS["en"])
+    marker = (
+        ' data-dashboard-missing="true" data-dashboard-missing-label="'
+        + _escape_html_text(label).replace('"', "&quot;")
+        + '"'
+    )
 
     def _fill(m: "re.Match[str]") -> str:
         name = m.group("dq") or m.group("sq") or m.group("bare") or ""
+        if name in missing:
+            return m.group(1)[:-1] + marker + ">" + m.group("body") + m.group("close")
         if name not in values:
             return m.group(0)
         return m.group(1) + _escape_html_text(_as_text(values[name])) + m.group("close")
