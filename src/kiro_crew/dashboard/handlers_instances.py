@@ -88,6 +88,7 @@ from kiro_crew.instances.registry import (  # noqa: F401
     InstancesError,
     InstancesRegistry,
     InvalidInstanceError,
+    RegistryUnreadableError,
     ancestor_ids,
     descendant_ids,
     is_headless_provisioner,
@@ -106,6 +107,20 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers_instances")
+
+
+def _registry_unreadable_response(exc: RegistryUnreadableError) -> web.Response:
+    """503 for a mutation the registry refused because ``instances.json`` is unreadable.
+
+    The file is unchanged, so the message tells the user what to repair rather
+    than reporting a gateway fault; the path and cause go to the log.
+    """
+    logger.warning("instances registry refused a write: %s", exc)
+    message = (
+        "Your instances file (instances.json) could not be read, so nothing was "
+        "saved. Fix or restore that file, then try again."
+    )
+    return web.json_response({"error": message, "code": "instances_file_unreadable"}, status=503)
 
 
 # ── read endpoints ───────────────────────────────────────────────────────
@@ -247,6 +262,9 @@ async def api_instances_add(request: web.Request) -> web.Response:
                 via_remote_id=via_remote_id,
                 instance_id=body.get("id"),
             )
+        except RegistryUnreadableError as e:
+            _audit("add", "denied", error=str(e))
+            return _registry_unreadable_response(e)
         except DuplicateInstanceError as e:
             # Split from InvalidInstanceError because the two are different user
             # actions: a name collision is resolved by renaming, a rejected field by
@@ -476,6 +494,9 @@ async def api_instances_update(request: web.Request) -> web.Response:
     except InstanceNotFoundError as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e), "code": "instance_not_found"}, status=404)
+    except RegistryUnreadableError as e:
+        _audit("update", "denied", request_id=instance_id, error=str(e))
+        return _registry_unreadable_response(e)
     except (InvalidInstanceError, InstancesError) as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e)}, status=400)
@@ -608,7 +629,12 @@ async def api_instances_remove(request: web.Request) -> web.Response:
         # above has already brought every captured crew down, deepest first; this only
         # deletes rows. The helper answers deepest-first too, so each id is audited in the
         # order it was torn down.
-        for removed_id in await asyncio.to_thread(reg.remove_cascade, instance_id):
+        try:
+            removed_ids = await asyncio.to_thread(reg.remove_cascade, instance_id)
+        except RegistryUnreadableError as e:
+            _audit("remove", "denied", request_id=instance_id, error=str(e))
+            return _registry_unreadable_response(e)
+        for removed_id in removed_ids:
             if removed_id != instance_id:
                 _audit("remove", "success", request_id=removed_id)
     if mgr is not None:

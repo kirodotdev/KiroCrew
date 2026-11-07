@@ -2542,7 +2542,9 @@ no file, and a sandboxed process cannot create the file first with `disable_all`
   `UserDeniedPattern`). Missing file / keys → the safe "nothing disabled" state
   (fail-safe for a deny gate). A file saved with one leading UTF-8 byte-order
   mark is read like the same file without it (`user_json.loads_user_json`, also
-  on the Settings > Security read and write paths and for `hooks.json`). A file
+  on the Settings > Security read and write paths and for the webhook contexts in
+  `hooks.json`, whose script-hook readers hand `json.loads` the bytes, which drops
+  the mark too). A file
   that is present but unreadable, not JSON or not an object also yields that
   state, and logs a WARNING because its `user_added` rules then do not apply.
 - **Write (dashboard):** the `/api/security/denied-commands` mutations run
