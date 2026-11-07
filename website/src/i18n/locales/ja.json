@@ -9784,11 +9784,14 @@
       "close_tab_hint": "このタブを閉じます。セッションはサイドバーに残ります。",
       "close_tab_name": "タブ {{name}} を閉じる",
       "open_sessions": "開いているセッション",
+      "pin_tab_hint": "このタブをピン留めします。サイドバーをクリックすると、このタブを置き換えずに新しいタブが開きます。",
+      "pin_tab_name": "タブ {{name}} をピン留め",
       "status_permission": "許可が必要",
       "status_question": "応答を待機中",
       "status_running": "処理中",
       "status_unread": "未読",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "このタブのピン留めを解除します。ピン留めしたタブは閉じられません。"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "スマホで {{productName}} を使う",

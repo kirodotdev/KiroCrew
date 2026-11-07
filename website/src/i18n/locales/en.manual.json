@@ -4014,11 +4014,14 @@
       "close_tab_hint": "Close this tab. The session stays in the sidebar.",
       "close_tab_name": "Close tab {{name}}",
       "open_sessions": "Open sessions",
+      "pin_tab_hint": "Pin this tab. A sidebar click then opens a new tab instead of replacing it.",
+      "pin_tab_name": "Pin tab {{name}}",
       "status_permission": "needs permission",
       "status_question": "waiting on you",
       "status_running": "working",
       "status_unread": "unread",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Unpin this tab. A pinned tab cannot be closed."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Use {{productName}} on your phone",

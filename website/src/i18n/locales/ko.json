@@ -9784,11 +9784,14 @@
       "close_tab_hint": "이 탭을 닫습니다. 세션은 사이드바에 남습니다.",
       "close_tab_name": "{{name}} 탭 닫기",
       "open_sessions": "열린 세션",
+      "pin_tab_hint": "이 탭을 고정합니다. 그러면 사이드바를 클릭할 때 이 탭을 바꾸지 않고 새 탭이 열립니다.",
+      "pin_tab_name": "{{name}} 탭 고정",
       "status_permission": "권한 필요",
       "status_question": "응답 대기 중",
       "status_running": "작업 중",
       "status_unread": "읽지 않음",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "이 탭의 고정을 해제합니다. 고정된 탭은 닫을 수 없습니다."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "휴대폰에서 {{productName}} 사용",

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { Pin, X } from 'lucide-react'
 import { Reorder, useReducedMotion } from 'framer-motion'
 import { useAppSelector } from '../store'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -44,6 +44,7 @@ const FLASH_FADE_MS = 400
  *  side-panel and terminal strips use, so a reorder snaps rather than floats. */
 const REORDER_SPRING = { type: 'spring', stiffness: 700, damping: 45 } as const
 const INSTANT = { duration: 0 } as const
+const NO_PINS: readonly string[] = []
 
 interface SessionTabProps {
   value: string
@@ -135,8 +136,14 @@ function ReorderableSessionTab({ value, tabRef, style, className, instant, child
  * strips call them, so the shared behaviour has one owner and the two shells
  * stay separate.
  */
-export default function SessionTabStrip({ tabs, activeKey, cue, connected = true, onSelect, onClose, onReorder }: {
+export default function SessionTabStrip({ tabs, pinned = NO_PINS, activeKey, cue, connected = true, onSelect, onClose, onReorder, onTogglePin }: {
   tabs: readonly string[]
+  /**
+   * Pinned tabs (#22775). A pinned tab keeps its pin shown; its close button
+   * is hidden and disabled, and ×, middle-click or Delete cannot close it
+   * until it is unpinned.
+   */
+  pinned?: readonly string[]
   activeKey: string | null
   /** A tab worth looking at — a swap, or a re-request. See `SessionTabsApi.cue`. */
   cue?: { key: string; at: number } | null
@@ -154,6 +161,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
    * on the focused tab. Works offline, because the order is local view state.
    */
   onReorder: (keys: string[]) => void
+  onTogglePin: (key: string) => void
 }) {
   const slots = useAppSelector(s => s.dashboard.slots)
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
@@ -311,6 +319,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
     else if (e.key === 'End') target = tabs[tabs.length - 1]
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
+      if (pinned.includes(key)) return
       // Hand focus on BEFORE unmounting the tab that holds it. Without this the
       // closed tab's node goes away with focus on it, focus falls to
       // document.body, and the keyboard user who just used the strip's own close
@@ -328,6 +337,8 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
       onClose(key)
       return
     } else if (e.key === 'Enter' || e.key === ' ') {
+      // On a nested button (pin, close) the key is that button's own click.
+      if (e.target !== e.currentTarget) return
       e.preventDefault()
       onSelect(key)
       return
@@ -336,7 +347,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
     e.preventDefault()
     onSelect(target)
     tabRefs.current[target]?.focus()
-  }, [tabs, onSelect, onClose, onReorder])
+  }, [tabs, pinned, onSelect, onClose, onReorder])
 
   if (tabs.length < 2) return null
 
@@ -348,6 +359,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
     const title = sessionDisplayTitle({ key, title: slot?.title })
     const hoverTitle = isUntitledSession({ key, title: slot?.title }) ? `${title} · ${key}` : title
     const active = key === activeKey
+    const isPinned = pinned.includes(key)
     const status = tabStatus(slot, unreadSlots, key)
     // The dot is decorative (aria-hidden) and colour is its only channel,
     // so the STATUS WORD has to ride the tab's own accessible name and
@@ -400,7 +412,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
         onAuxClick={e => {
           if (e.button !== 1) return
           e.preventDefault()
-          closeByPointer(key)
+          if (!isPinned) closeByPointer(key)
         }}
         onKeyDown={e => onKeyDown(e, key)}
         style={{
@@ -432,6 +444,24 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
         {/* flex-1 pins the close button to the tab's right edge, so it
             sits at the same offset in every tab. */}
         <span className="flex-1 min-w-0 truncate whitespace-nowrap">{truncateTabTitle(title)}</span>
+        {/* On the active tab (shown on hover) and on every pinned one (always,
+            filled), so an inactive tab keeps its title width. */}
+        {(active || isPinned) && (
+          <button
+            type="button"
+            aria-label={i18nT('components.sessionTabStrip.pin_tab_name', { name: title })}
+            aria-pressed={isPinned}
+            title={isPinned ? i18nT('components.sessionTabStrip.unpin_tab_hint') : i18nT('components.sessionTabStrip.pin_tab_hint')}
+            onClick={e => { e.stopPropagation(); onTogglePin(key) }}
+            className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${
+              isPinned
+                ? 'opacity-60 hover:opacity-100 hover:text-text'
+                : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
+            }`}
+          >
+            <Pin size={11} fill={isPinned ? 'currentColor' : 'none'} />
+          </button>
+        )}
         <button
           type="button"
           // Closing a TAB is not closing the session — the session stays
@@ -439,13 +469,16 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
           // sidebar's own destructive "Close session".
           aria-label={i18nT('components.sessionTabStrip.close_tab_name', { name: title })}
           title={i18nT('components.sessionTabStrip.close_tab_hint')}
+          // A pinned tab cannot be closed. Hidden rather than removed, so the
+          // pin beside it stays where the pointer found it.
+          disabled={isPinned}
           onClick={e => {
             e.stopPropagation()
             // detail 0 is a click synthesized from Enter or Space on the
             // focused button: a keyboard close, which must not freeze.
             if (e.detail === 0) { setFreeze(null); onClose(key) } else closeByPointer(key)
           }}
-          className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${
+          className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${isPinned ? 'invisible' : ''} ${
             active
               ? 'opacity-60 hover:opacity-100 hover:text-text'
               : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'

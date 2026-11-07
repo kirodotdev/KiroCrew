@@ -10013,11 +10013,14 @@
       "close_tab_hint": "यह टैब बंद करें. सत्र साइडबार में बना रहता है.",
       "close_tab_name": "टैब {{name}} बंद करें",
       "open_sessions": "खुले सत्र",
+      "pin_tab_hint": "यह टैब पिन करो। तब साइडबार पर क्लिक करने से इसे बदलने के बजाय नया टैब खुलता है।",
+      "pin_tab_name": "टैब {{name}} पिन करो",
       "status_permission": "अनुमति चाहिए",
       "status_question": "जवाब की प्रतीक्षा",
       "status_running": "काम चल रहा है",
       "status_unread": "अपठित",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "यह टैब अनपिन करो। पिन किया गया टैब बंद नहीं किया जा सकता।"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "अपने फ़ोन पर {{productName}} इस्तेमाल करें",
