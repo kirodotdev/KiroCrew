@@ -122,6 +122,12 @@
       "route": "/settings/channels/discord?highlight=channels.allowed-user-ids-discord"
     },
     {
+      "id": "channels.allowed-user-ids-feishu",
+      "label": "Allowed user IDs (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.allowed-user-ids-feishu"
+    },
+    {
       "id": "channels.allowed-user-ids-telegram",
       "label": "Allowed user IDs (Telegram)",
       "tab": "channels",
@@ -221,10 +227,30 @@
       "hint": "Start the channel at gateway boot when a token is set."
     },
     {
+      "id": "channels.feishu-app-id",
+      "label": "Feishu app ID",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.feishu-app-id",
+      "description": "The App ID from your custom app’s Credentials page in the Feishu developer console."
+    },
+    {
+      "id": "channels.feishu-app-secret",
+      "label": "Feishu app secret",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.feishu-app-secret",
+      "description": "The App Secret shown next to the App ID on the same Credentials page."
+    },
+    {
       "id": "channels.file-sessions-in-a-folder-discord",
       "label": "File sessions in a folder (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.file-sessions-in-a-folder-discord"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-feishu",
+      "label": "File sessions in a folder (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.file-sessions-in-a-folder-feishu"
     },
     {
       "id": "channels.file-sessions-in-a-folder-imessage",
@@ -279,6 +305,13 @@
       "label": "Folder name (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.folder-name-discord",
+      "hint": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-feishu",
+      "label": "Folder name (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.folder-name-feishu",
       "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
@@ -432,6 +465,12 @@
       "label": "Soft context threshold % (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.soft-context-threshold-discord"
+    },
+    {
+      "id": "channels.soft-context-threshold-feishu",
+      "label": "Soft context threshold % (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.soft-context-threshold-feishu"
     },
     {
       "id": "channels.soft-context-threshold-teams",
