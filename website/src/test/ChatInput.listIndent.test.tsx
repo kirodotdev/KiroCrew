@@ -116,6 +116,23 @@ describe('ChatInput: Tab indents list lines', () => {
     expect(hint.textContent).toMatch(/Escape, then Tab/)
   })
 
+  // A small manual height must not squeeze the text column under the textarea's
+  // 44px floor, or the textarea paints over the hint. jsdom has no layout, so
+  // this pins the two floors that keep the hint below the text.
+  it('a manually sized composer floors the box at min-content and the text column at 44px', () => {
+    localStorage.setItem('mc-input-height', '93')
+    renderWithProviders(<Host />)
+    const ta = typeWithCaret('- item|')
+    expect(screen.getByTestId('list-indent-hint').className).not.toContain('sr-only')
+    const wrapper = screen.getByTestId('input-wrapper')
+    expect(wrapper.style.height).toBe('93px')
+    expect(wrapper.classList.contains('min-h-min')).toBe(true)
+    expect(wrapper.classList.contains('min-h-0')).toBe(false)
+    const column = ta.parentElement!
+    expect(column.classList.contains('min-h-[44px]')).toBe(true)
+    expect(column.classList.contains('min-h-0')).toBe(false)
+  })
+
   it('Dismiss hides the visible hint, keeps it for screen readers, and persists', () => {
     const { unmount } = renderWithProviders(<Host />)
     const ta = typeWithCaret('- item|')
