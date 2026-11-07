@@ -87,6 +87,27 @@ class TestControllerDispatch:
         assert rc == 0
         assert "linger" not in capsys.readouterr().out
 
+    @pytest.mark.parametrize("plat", [Platform.SYSTEMD, Platform.LAUNCHD])
+    def test_install_success_says_how_to_open_the_dashboard(self, plat, capsys):
+        """A service never opens a browser, so the success block must name
+        ``kirocrew token`` -- the one command that prints the sign-in link."""
+        from kiro_crew.service import apparmor, controller
+        from kiro_crew.service import linux as svc_linux
+        from kiro_crew.service import macos as svc_macos
+
+        with (
+            patch("kiro_crew.service.controller.current_platform", return_value=plat),
+            patch.object(svc_linux, "install", return_value=apparmor.ProfileOutcome(False, "")),
+            patch.object(svc_linux, "linger_warning_for_service_account", return_value=None),
+            patch.object(svc_macos, "install"),
+            patch.object(controller, "_print_headless_auth_warning"),
+        ):
+            rc = controller.install_service()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Open:   kirocrew token" in out
+        assert out.index("Open:") < out.index("Status:")
+
     def test_uninstall_unsupported_returns_2(self):
         from kiro_crew.service import controller
 
