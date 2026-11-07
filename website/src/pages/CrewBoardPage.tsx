@@ -212,7 +212,15 @@ function RowActions({
   })
 
   const workerGone = item.alive === 'closed'
-  const stopDisabled = workerGone || act.isPending
+  // While a request is out both buttons are inert through `aria-disabled` and the
+  // guard in `run`, never native `disabled`: disabling the button the reader just
+  // pressed blurs it to `<body>`, so a keyboard user lands at the top of the page
+  // with the failure notice somewhere below.
+  const pending = act.isPending
+  const run = (action: CrewBoardAction) => {
+    if (!pending) act.mutate(action)
+  }
+  const pendingClass = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
   const stopReason = workerGone ? i18nT('pages.crewBoard.stop_unavailable_closed') : ''
 
   // Shown as TEXT, not only as a `title`. A tooltip on a disabled button is not
@@ -237,10 +245,11 @@ function RowActions({
         <Btn
           danger
           type="button"
-          disabled={stopDisabled}
+          disabled={workerGone}
+          aria-disabled={pending || undefined}
           title={stopReason || undefined}
-          onClick={() => act.mutate('stop')}
-          className="px-1.5 py-0.5 text-[11px]"
+          onClick={() => run('stop')}
+          className={`px-1.5 py-0.5 text-[11px] ${pendingClass}`}
         >
           {i18nT('pages.crewBoard.action_stop')}
         </Btn>
@@ -248,9 +257,9 @@ function RowActions({
         {takeOverAvailable ? (
           <Btn
             type="button"
-            disabled={act.isPending}
-            onClick={() => act.mutate('take_over')}
-            className="px-1.5 py-0.5 text-[11px]"
+            aria-disabled={pending || undefined}
+            onClick={() => run('take_over')}
+            className={`px-1.5 py-0.5 text-[11px] ${pendingClass}`}
           >
             {i18nT('pages.crewBoard.action_take_over')}
           </Btn>
