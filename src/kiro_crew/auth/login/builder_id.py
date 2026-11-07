@@ -14,7 +14,8 @@ Endpoints (all under ``https://oidc.<region>.amazonaws.com``):
   POST /token (grant device_code) -> {accessToken, refreshToken, expiresIn, ...}
 
 RegisterClient returns a client_id + client_secret; both are persisted with the token so
-refresh (a separate CreateToken call) can reuse them.
+refresh (a separate CreateToken call) can reuse them, with the registration's expiry so a
+refresh refused past it can be told apart from any other refusal.
 """
 
 from __future__ import annotations
@@ -107,6 +108,7 @@ def _require_str(data: dict, key: str, step: str) -> str:
 class RegisteredClient:
     client_id: str
     client_secret: str
+    client_secret_expires_at: int | None = None
 
 
 @dataclass
@@ -132,9 +134,11 @@ async def register_client(region: str, *, session: aiohttp.ClientSession) -> Reg
             body = await resp.text()
             raise BuilderIdAuthError(f"RegisterClient failed: HTTP {resp.status} {body}")
         data = await _parse_json(resp, "RegisterClient")
+    expires_at = data.get("clientSecretExpiresAt")
     return RegisteredClient(
         client_id=_require_str(data, "clientId", "RegisterClient"),
         client_secret=_require_str(data, "clientSecret", "RegisterClient"),
+        client_secret_expires_at=expires_at if isinstance(expires_at, int) else None,
     )
 
 
@@ -274,4 +278,5 @@ def _token_from_create(
         region=region,
         client_id=client.client_id,
         client_secret=client.client_secret,
+        client_secret_expires_at=client.client_secret_expires_at,
     )

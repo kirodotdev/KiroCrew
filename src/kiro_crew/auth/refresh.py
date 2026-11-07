@@ -260,6 +260,7 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
         region=region,
         client_id=token.client_id,
         client_secret=token.client_secret,
+        client_secret_expires_at=token.client_secret_expires_at,
         extra=dict(token.extra),
     )
 

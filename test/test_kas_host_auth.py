@@ -119,6 +119,32 @@ class TestVaultProbe:
         assert "access token expired" in line and "NOT usable" in line
         assert not line.endswith("-> usable")
 
+    def test_describe_dates_a_lapsed_client_registration(self, data_home):
+        """SSO-OIDC refuses a refresh past the client registration's expiry with a
+        bare invalid_client, so doctor names the date and does not call it usable,
+        before the refusal and after it; a registration still in date changes nothing."""
+        store = TokenStore(data_home)
+        tok = _token(identity="builder_id", provider="BuilderId", client_id="c", client_secret="s")
+        tok.client_secret_expires_at = int(
+            datetime(2026, 1, 31, 12, tzinfo=timezone.utc).timestamp()
+        )
+        store.save(tok)
+        line = describe_vault_identity()
+        assert line is not None
+        assert "client registration expired on 2026-01-31" in line
+        assert line.endswith("-> cannot renew -- sign in again from the dashboard or sign out")
+        store.mark_refresh_rejected("builder_id")
+        line = describe_vault_identity()
+        assert line is not None and "client registration expired on 2026-01-31" in line
+        assert line.endswith("-> sign-in expired -- sign in again from the dashboard or sign out")
+        tok.client_secret_expires_at = int(
+            (datetime.now(timezone.utc) + timedelta(days=30)).timestamp()
+        )
+        store.save(tok)
+        line = describe_vault_identity()
+        assert line is not None and line.endswith("-> usable")
+        assert "client registration" not in line
+
     def test_describe_reports_issuer_rejection_without_changing_the_spawn_verdict(self, data_home):
         """A refresh the issuer refused is a diagnosis for the user, not a demotion:
         doctor says so and names the remedy, while the spawn-time predicate still
