@@ -17019,6 +17019,7 @@
       "generating_execution_plan": "এক্সিকিউশন পরিকল্পনা তৈরি হচ্ছে",
       "go_to_task": "টাস্কে যান →",
       "idea": "আইডিয়া",
+      "layout_label": "কাজের বিন্যাস",
       "no_idea_or_spec_content_available": "কোনো আইডিয়া বা স্পেক বিষয়বস্তু নেই।",
       "phased": "ধাপভিত্তিক",
       "task_is_waiting_for_your_decision": "টাস্ক {{index}} \"{{title}}\" আপনার সিদ্ধান্তের অপেক্ষায় আছে",

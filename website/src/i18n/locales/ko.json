@@ -16597,6 +16597,7 @@
       "generating_execution_plan": "실행 플랜을 생성하는 중",
       "go_to_task": "작업으로 이동 →",
       "idea": "아이디어",
+      "layout_label": "작업 레이아웃",
       "no_idea_or_spec_content_available": "아이디어나 명세 내용이 없습니다.",
       "phased": "단계별",
       "task_is_waiting_for_your_decision": "작업 {{index}} ‘{{title}}’이(가) 결정을 기다리고 있습니다",

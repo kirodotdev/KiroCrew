@@ -16597,6 +16597,7 @@
       "generating_execution_plan": "実行計画を生成中",
       "go_to_task": "タスクに移動 →",
       "idea": "アイデア",
+      "layout_label": "タスクのレイアウト",
       "no_idea_or_spec_content_available": "アイデアまたは仕様の内容がありません。",
       "phased": "段階的",
       "task_is_waiting_for_your_decision": "タスク {{index}} 「{{title}}」があなたの決定を待機中",
