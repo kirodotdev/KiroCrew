@@ -33,7 +33,7 @@ import { chatLaunchMemoryMode, chatLaunchOpensDraft, type ChatLaunchMemoryMode }
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
-export type { AppApi, AppApiError, AppInfo, AppPermissions, AppUpdate } from './scopedApi'
+export type { AppApi, AppApiError, AppInfo, AppPermissions, AppSession, AppUpdate } from './scopedApi'
 
 // ---------------------------------------------------------------------------
 // Types
