@@ -182,8 +182,9 @@ _BASE_NAMES = frozenset("""
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
-#: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "e49860c4f160d2d4a0415334722d285cdada119f540333842f6ed84a81d61614"
+#: name keeps the kind and signature it had there, except ``_apply_startup_yolo``,
+#: which also takes the gateway's ``approval_mode``.
+_BASE_SHAPE_DIGEST = "8177a15dcf3115ecb5fbe803a7f343b86cca6a8bb28555e72ed57bbe2852b33f"
 
 #: The definitions of the one-module file that ``_BASE_OWNERS`` does not name: the two
 #: entrypoints, and the helpers repository guards read by path or that own module

@@ -49,6 +49,7 @@ from kiro_crew.llm_helpers import (
     unfinished_turn_error,
 )
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
+from kiro_crew.safety_override import safety_override
 from kiro_crew.trust_patterns import extract_bash_command
 
 logger = logging.getLogger(__name__)
@@ -1573,12 +1574,12 @@ async def _stream_task(
                     )
                     await client.reject_tool(event.request_id)
                     continue
-                # YOLO mode (global) or channel trust — auto-approve
-                if (is_yolo and is_yolo()) or channel.trusted:
+                # YOLO mode (global) or channel trust — auto-approve. A
+                # ``gateway --approval yolo`` grant is for dashboard chats only.
+                _yolo = bool(is_yolo and is_yolo()) and safety_override().is_cli_launch is not True
+                if _yolo or channel.trusted:
                     approval_outcome = (
-                        "auto_approved_yolo"
-                        if (is_yolo and is_yolo())
-                        else "auto_approved_channel_trust"
+                        "auto_approved_yolo" if _yolo else "auto_approved_channel_trust"
                     )
                     # Audit BEFORE the wire call: approve_tool can raise, and a
                     # decision that reached the transport must not vanish from

@@ -632,3 +632,29 @@ async def test_an_unreadable_config_keeps_the_full_cap(monkeypatch):
     waited, reasons, _client = await _expire_one_card(monkeypatch, loader=_Unreadable)
     assert waited == [3600]
     assert reasons == ["the channel approval card went unanswered for 3600s"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("source", "carded"), [("cli", True), ("dashboard", False)])
+async def test_a_cli_grant_leaves_channel_agents_asking(monkeypatch, source, carded):
+    """``gateway --approval yolo``'s grant is for dashboard chats: a channel agent still asks."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.safety_override import reset_singleton, safety_override
+
+    monkeypatch.setattr("kiro_crew.safety_override.sel", MagicMock())
+    reset_singleton()
+    assert safety_override().activate_declared(source).active is True
+    agent = _make_agent()
+    ch = _make_channel(agent)
+    client = _make_client(
+        [_perm_event(tool_input=json.dumps({"command": "ls -la"}), is_shell=True), _done()]
+    )
+    try:
+        await _stream_task(agent, ch, client, "hi", is_yolo=lambda: True)
+    finally:
+        reset_singleton()
+
+    cards = [kw for _args, kw in ch.post.call_args_list if kw.get("msg_type") == "approval"]
+    assert bool(cards) is carded
+    assert client.approve_tool.await_count == (0 if carded else 1)

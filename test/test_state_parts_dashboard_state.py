@@ -806,6 +806,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, ask_id: 'str', session_key: 'str') -> 'bool'",
     ),
     "ws_client_count": ("function", False, False, "(self) -> 'int'"),
+    "yolo_reaches": (
+        "function",
+        False,
+        False,
+        "(self, slot: 'Any', *, channel_origin: 'bool' = False) -> 'bool'",
+    ),
 }
 
 #: ``typing.get_type_hints`` raised on these members of the one-module class too.

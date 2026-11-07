@@ -1111,6 +1111,7 @@ class DashboardState:
     enable_yolo = _dashboard_services.enable_yolo
     disable_yolo = _dashboard_services.disable_yolo
     is_yolo_active = _dashboard_services.is_yolo_active
+    yolo_reaches = _dashboard_services.yolo_reaches
     request_approval = _dashboard_services.request_approval
     pending_coordinator_approvals = _dashboard_services.pending_coordinator_approvals
     linked_session_busy = _dashboard_services.linked_session_busy

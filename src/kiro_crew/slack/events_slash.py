@@ -229,8 +229,10 @@ async def _handle_yolo(
     arg = args.strip().lower()
     so = safety_override()
 
+    # ``gateway --approval yolo``'s grant is the dashboard's only, so Slack reads it as off.
+    slack_yolo = so.is_active() and so.is_cli_launch is not True
     if arg == "on":
-        if so.is_active():
+        if slack_yolo:
             await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
         # Off-loop: activate() writes a SEL event and consults the
@@ -280,8 +282,10 @@ async def _handle_yolo(
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.
-        renew_result = await asyncio.to_thread(so.renew, "slack")
-        if renew_result.renewed:
+        renew_result = (
+            None if so.is_cli_launch is True else await asyncio.to_thread(so.renew, "slack")
+        )
+        if renew_result is not None and renew_result.renewed:
             sel().log_api_access(
                 caller=caller_id,
                 operation="slack.yolo_mode",
@@ -295,7 +299,7 @@ async def _handle_yolo(
         else:
             await respond("🔴 YOLO mode is not active. Use `on` to activate first.")
     else:
-        if so.is_active():
+        if slack_yolo:
             await respond(
                 f"YOLO mode is currently *ON 🟢* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
