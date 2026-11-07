@@ -703,7 +703,11 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
 #: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
 #: (55 lines; the rest fit in the headroom main had left). Re-measured.
-_PACKAGE_LINE_BUDGET = 34_845
+#: Raised by 10, from 34,845, to the package's measured size on main: the headroom the
+#: 55 above were counted against was spent by the linear-time credential scans that
+#: merged before them, so main landed over budget. No code changes; nothing is relaxed.
+#: Re-measured.
+_PACKAGE_LINE_BUDGET = 34_855
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
