@@ -4421,6 +4421,13 @@ replaced node), `test/conftest.py`'s `pytest_internalerror` hook prints an
 `xdist run ABANDONED` banner to stderr replaying the crashed workers and the
 tests they were running, so the red stays diagnosable. The run still exits
 non-zero; the banner only preserves the report the crash would otherwise erase.
+A worker can also finish, without crashing, while still assigned work, after a
+shutdown command or its channel closing: xdist then fails `assert not crashitem`
+on an item that never started. The banner names that worker, that item and how
+many selected items the scheduler still queued, and says to re-run the shard;
+that worker's `session_end` progress record carries `channel_closed` to tell the
+two causes apart (other workers' channels close at teardown, so only its own
+record counts).
 
 So any override that still runs MANY tests must carry
 `-n auto --dist loadgroup --max-worker-restart=2`, and keep `-p no:platformdirs`
