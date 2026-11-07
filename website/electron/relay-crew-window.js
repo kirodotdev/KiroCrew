@@ -236,7 +236,7 @@ function openRelayCrewWindow({ endpointId, crewUrl, title, getToken }, deps) {
     endpointId,
     origin,
     reload: () => { if (!closed) view.webContents.reload(); },
-    focus: () => { if (!closed) win.focus(); },
+    focus: () => { if (closed) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); },
     close: () => { if (!closed && !win.isDestroyed()) win.close(); },
     isClosed: () => closed,
     onMainFrameStatus: (cb) => { statusListeners.push(cb); },

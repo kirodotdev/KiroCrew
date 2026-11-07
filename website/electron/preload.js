@@ -306,6 +306,16 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
   open: (filePath) => ipcRenderer.invoke("dashboard:open-file", String(filePath || "")),
 });
 
+// Relay viewer: open one remote Crew reached through the Kiro relay, in its own
+// window. Takes the endpoint ID ONLY. Main asks the local gateway for the
+// access token and the Crew URL, so neither crosses this bridge, and no token
+// is ever returned. Resolves { ok: true } or { ok: false, error: "<code>" }.
+// Absent in plain browsers and in the PWA; the dashboard hides the relay list
+// when the bridge is missing.
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
+  open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
+});
+
 // Native folder chooser for the project picker's "Open system folder picker"
 // button. Neither call passes anything to the main process: the dialog's
 // options are fixed there. `available()` resolves whether this window's gateway
