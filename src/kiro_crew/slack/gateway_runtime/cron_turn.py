@@ -168,6 +168,8 @@ async def _cron_run_sequence(
     # Each step's missing-server note, kept apart from result_text because the
     # next step's reply replaces it; the stored result carries all of them.
     _seq_mcp_notes: list[str] = []
+    # Run-scoped for the same reason: a refused person-only directive.
+    _seq_directive_refusals: list[str] = []
     _seq_downgraded = False
     # Run-scoped: a sequence where one agent got a tool through has
     # done work, even if a later agent was blocked outright.
@@ -270,6 +272,7 @@ async def _cron_run_sequence(
                     client,
                     full_message,
                     job_name=job.name,
+                    directive_refusals=_seq_directive_refusals,
                     on_resume=lambda: settle_turn(self.sessions, agent_session_key),
                     # The gate resolves this session's governance profile, as it
                     # does for a chat turn, and refuses when it cannot evaluate.
@@ -481,6 +484,8 @@ async def _cron_run_sequence(
                 raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
     if _seq_mcp_notes:
         result_text = "\n".join(_seq_mcp_notes) + "\n\n" + result_text
+    if _seq_directive_refusals:
+        result_text = "\n\n".join([*_seq_directive_refusals, result_text])
     if _seq_downgraded:
         result_text = _annotate_model_downgrade(job, result_text)
     result_text = _annotate_partial_block(result_text, _gate)
@@ -704,11 +709,13 @@ async def _cron_run_single(
         # above. acp reports no duration, so this is the row's fallback.
         _turn_t0 = time.monotonic()
         _gate = _GateTally()
+        _directive_refusals: list[str] = []
         _prompt_dispatched = True
         result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
             client,
             full_message,
             job_name=job.name,
+            directive_refusals=_directive_refusals,
             on_resume=lambda: settle_turn(self.sessions, session_key),
             # The gate resolves this session's governance profile, as it does
             # for a chat turn, and refuses when it cannot evaluate. The agent is
@@ -757,6 +764,8 @@ async def _cron_run_single(
         _missing = declared_mcp_not_ready_note(client)
         if _missing:
             result_text = f"⚠ {_missing}.\n\n{result_text}"
+        if _directive_refusals:
+            result_text = "\n\n".join([*_directive_refusals, result_text])
         # Before set_run_result and the dedup hash below, so the stored
         # result, the slot, the bell and every transport carry the
         # refusal, and a run that lost a call never hashes equal to

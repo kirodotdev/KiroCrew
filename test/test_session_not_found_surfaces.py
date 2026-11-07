@@ -739,7 +739,9 @@ async def test_cron_continuation_loss_is_marked_as_activity():
     ):
         usage.return_value = SimpleNamespace(credits=0.0)
         with pytest.raises(AcpError) as caught:
-            await _cron_stream_with_posttoken_resume(object(), "task", job_name="j")
+            await _cron_stream_with_posttoken_resume(
+                object(), "task", job_name="j", directive_refusals=[]
+            )
     assert calls == 2
     assert acp_error_after_tool_activity(caught.value) is True
 
