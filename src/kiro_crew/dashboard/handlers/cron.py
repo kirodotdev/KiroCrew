@@ -45,13 +45,16 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.cron_board import (  # noqa: F401
         _FOLDER_ID_SHAPE,
+        _LIST_TEXT_PREVIEW,
         _cron_folders_lock,
         _get_cron_folders_lock,
         _job_snapshot,
+        _jobs_response,
         api_cron_folders,
         api_cron_folders_create,
         api_cron_folders_delete,
         api_cron_folders_update,
+        api_cron_get,
         api_crons,
         create_or_adopt_cron_folder,
         logger,

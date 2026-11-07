@@ -17248,6 +17248,7 @@
       "retried_n_times_other": "{{count}}回再試行しました",
       "backing_off_after_n_failures_other": "{{time}}まで待機中 · {{count}}回連続で失敗",
       "backoff_ends_on_success": "実行が1回成功すると待機は終了します。",
+      "full_run_text_load_failed": "最後の実行の全文を読み込めなかったため、下のテキストは途中で切れている可能性があります。ジョブの設定には影響ありません。",
       "jobs_table": "スケジュール済みのジョブ",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Bot で絞り込み",

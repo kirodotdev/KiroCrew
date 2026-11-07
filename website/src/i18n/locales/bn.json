@@ -17703,6 +17703,7 @@
       "backing_off_after_n_failures_one": "{{time}} পর্যন্ত বিরতি · পরপর {{count}}টি ব্যর্থতা",
       "backing_off_after_n_failures_other": "{{time}} পর্যন্ত বিরতি · পরপর {{count}}টি ব্যর্থতা",
       "backoff_ends_on_success": "একটি সফল রান বিরতি শেষ করে।",
+      "full_run_text_load_failed": "শেষ রানের পুরো টেক্সট লোড করা যায়নি, তাই নিচের টেক্সটটি অসম্পূর্ণ হতে পারে। জবের সেটিংসে কোনো প্রভাব পড়েনি।",
       "jobs_table": "নির্ধারিত জব",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Bot অনুযায়ী ফিল্টার",

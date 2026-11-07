@@ -6,6 +6,7 @@ token to its own jobs through ``handlers.cron._refuse_foreign_app_job`` (pinned
 by ``test/test_r12_cron_app_ownership_gate.py``). These tests pin the same rule
 on the routes that READ a job or surface its result:
 
+* ``GET /api/crons/{id}``
 * ``GET /api/crons/{id}/history`` and ``GET /api/crons/{id}/history/{run_id}``
 * ``GET /api/crons/{id}/script``
 * ``POST /api/crons/{id}/to-chat``
@@ -106,7 +107,7 @@ async def _seed(svc: CronService) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for key, created_by in (("owner", ""), ("a", f"app:{APP_A}"), ("b", f"app:{APP_B}")):
         job = await svc.add_job_async(
-            f"job-{key}", f"task {key}", every_secs=3600, created_by=created_by
+            f"job-{key}", f"{MARK} task {key}", every_secs=3600, created_by=created_by
         )
         rec = CronRunRecord(
             job_id=job.id,
@@ -143,6 +144,7 @@ def _server(svc: CronService, app_claim: str) -> web.Application:
     )
     app.router.add_get("/api/crons", h.api_crons)
     app.router.add_get("/api/crons/history", h.api_cron_history_all)
+    app.router.add_get("/api/crons/{job_id}", h.api_cron_get)
     app.router.add_get("/api/crons/{job_id}/history", h.api_cron_history)
     app.router.add_get("/api/crons/{job_id}/history/{run_id}", h.api_cron_history_detail)
     app.router.add_get("/api/crons/{job_id}/script", h.api_cron_script_source)
@@ -158,6 +160,7 @@ async def _call(svc: CronService, app_claim: str, method: str, path: str):
 
 
 ROUTES = {
+    "job": ("GET", "/api/crons/{job}", "crons.get"),
     "history": ("GET", "/api/crons/{job}/history", "crons.history"),
     "history_detail": ("GET", "/api/crons/{job}/history/{run}", "crons.history_detail"),
     "script": ("GET", "/api/crons/{job}/script", "crons.script_source"),

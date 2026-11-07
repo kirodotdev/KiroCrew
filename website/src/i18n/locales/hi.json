@@ -17703,6 +17703,7 @@
       "backing_off_after_n_failures_one": "{{time}} तक रुका हुआ · लगातार {{count}} विफलता",
       "backing_off_after_n_failures_other": "{{time}} तक रुका हुआ · लगातार {{count}} विफलताएँ",
       "backoff_ends_on_success": "एक सफल रन देरी समाप्त कर देता है।",
+      "full_run_text_load_failed": "पिछले रन का पूरा टेक्स्ट लोड नहीं हो सका, इसलिए नीचे का टेक्स्ट अधूरा हो सकता है। जॉब की सेटिंग्स पर कोई असर नहीं पड़ा है।",
       "jobs_table": "शेड्यूल किए गए जॉब",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Bot के अनुसार फ़िल्टर",

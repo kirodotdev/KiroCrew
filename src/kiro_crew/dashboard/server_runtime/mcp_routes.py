@@ -482,6 +482,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
     app.router.add_get("/api/crons/history", handlers.api_cron_history_all)
     app.router.add_post("/api/crons/tools", handlers.api_cron_tools)
+    app.router.add_get("/api/crons/{job_id}", handlers.api_cron_get)
     app.router.add_delete("/api/crons/{job_id}", handlers.api_cron_delete)
     app.router.add_patch("/api/crons/{job_id}", handlers.api_cron_update)
     # Operator-only vault-secret grants. The "/api/crons" prefix above makes
