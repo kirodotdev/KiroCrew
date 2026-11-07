@@ -735,7 +735,11 @@ predicate `pod ls` and `pod prune` use, rather than a bare directory probe — s
 symlinks are skipped and, on macOS, a name whose per-pod plist exists counts as
 *installed* rather than orphaned and is never reclaimed from underneath a
 concurrent `up`. That predicate keys on the pod root, liveness and plist and
-never on the checkout pin, so attribution is not its job.
+never on the checkout pin, so attribution is not its job. On systemd, liveness
+includes the pod's own evidence: a HOME whose `gateway.lock` a gateway holds, or
+that a process has open, is not an orphan. The removal then refuses: what uses it
+runs outside the unit (a gateway started by hand, say) and may be serving from this
+checkout.
 
 Attribution and teardown are ONE locked transaction. `_reclaim_pod_locked` runs
 entirely inside `runtime.pod_name_mutex` — the cross-process flock every mutating
