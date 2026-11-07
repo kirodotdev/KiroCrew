@@ -5,6 +5,7 @@ import { Toggle } from './ui'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { SettingRef } from './settingRef/SettingRef'
+import { DO_NOT_TRACK_COMMANDS } from './settingRef/envShellCommands'
 
 /** Read-only CLI twins of the toggle, kept for headless hosts and for the one
  * case the toggle cannot win: a `config.local.json` overlay or the env var. */
@@ -23,16 +24,18 @@ const SHELL_LABEL_KEY = {
   cmd: 'privacyDisclosure.shellWindowsCmdLabel',
 } as const
 
-/** The three per-shell env-var forms, keyed by the same shell ids as
- * `SHELL_LABEL_KEY` so a new shell cannot be added without its label. */
-export const SHELL_COMMANDS = [
-  { shell: 'macos', command: 'export KIROCREW_TELEMETRY_DISABLED=1' },
-  { shell: 'powershell', command: "$env:KIROCREW_TELEMETRY_DISABLED = '1'" },
-  { shell: 'cmd', command: 'set KIROCREW_TELEMETRY_DISABLED=1' },
-] as const satisfies ReadonlyArray<{
-  shell: keyof typeof SHELL_LABEL_KEY
-  command: string
-}>
+/** The three per-shell env-var forms, one per `SHELL_LABEL_KEY` shell, so a
+ * shell cannot render without its label. The command text lives in
+ * `envShellCommands.ts`, the module for CLI syntax that is never translated.
+ *
+ * `DO_NOT_TRACK`, not `KIROCREW_TELEMETRY_DISABLED`: with local recording on by
+ * default, the env var shown here must turn off everything the command above it
+ * does. `KIROCREW_TELEMETRY_DISABLED` stops only the heartbeat, so a user who
+ * copied it would believe metrics were off while recording went on. */
+const DO_NOT_TRACK_BY_SHELL: Record<keyof typeof SHELL_LABEL_KEY, string> = DO_NOT_TRACK_COMMANDS
+export const SHELL_COMMANDS = (Object.keys(SHELL_LABEL_KEY) as Array<keyof typeof SHELL_LABEL_KEY>).map(
+  shell => ({ shell, command: DO_NOT_TRACK_BY_SHELL[shell] }),
+)
 
 /** The backend's stable suppression discriminants, mapped to catalog keys.
  *
@@ -126,6 +129,9 @@ export function TelemetryToggle({ renderControl }: TelemetryToggleProps = {}) {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['beaconStatus'] })
       qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      // The heartbeat-off load rule ties unwritten recording to this switch, so
+      // a heartbeat change can move recording too.
+      qc.invalidateQueries({ queryKey: ['telemetryCollection'] })
     },
   })
 
@@ -231,7 +237,12 @@ function DisclosureSection({
  * wire without a line here would make this text a false statement — the
  * `PrivacyPanel.test.tsx` field-count assertion is what keeps them in step.
  */
-export function PrivacyDisclosureSections() {
+/**
+ * The shared disclosure sections. ``recordingOn`` is the effective local
+ * recording state when the caller has read it; left undefined (still loading,
+ * or the read failed) the local-data line states the default instead.
+ */
+export function PrivacyDisclosureSections({ recordingOn }: { recordingOn?: boolean } = {}) {
   return (
     <div className="flex flex-col gap-5">
       <div>
@@ -269,7 +280,13 @@ export function PrivacyDisclosureSections() {
       <DisclosureSection
         icon={<HardDrive className="lucide-inline" aria-hidden="true" />}
         title={i18nT('privacyDisclosure.localDataTitle')}
-        body={i18nT('privacyDisclosure.localDataBody')}
+        body={
+          recordingOn === true
+            ? i18nT('privacyDisclosure.localDataBodyOn')
+            : recordingOn === false
+              ? i18nT('privacyDisclosure.localDataBodyOff')
+              : i18nT('privacyDisclosure.localDataBody')
+        }
       />
     </div>
   )
@@ -284,6 +301,9 @@ export function PrivacyCommandList() {
           {command}
         </code>
       ))}
+      {/* Say what the env var stops: the status and disable commands above it
+          are self-describing, this line is not. */}
+      <span className="mt-1 text-[12px] text-muted">{i18nT('privacyDisclosure.doNotTrackCaption')}</span>
       {SHELL_COMMANDS.map(({ shell, command }) => (
         <div key={command} className="flex max-w-full flex-col items-start gap-1">
           <span className="text-[12px] font-medium text-muted">

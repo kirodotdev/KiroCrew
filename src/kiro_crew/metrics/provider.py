@@ -1,14 +1,17 @@
 """Telemetry provider wiring — builds the process-global ``MetricsRecorder``.
 
 Consent + local-first:
-  * ``telemetry.enabled`` defaults **False**. When off, ``get_recorder()`` returns
-    a no-op recorder, so adding metric call sites is a zero-runtime-effect change
-    until a host opts in (mirrors the ``mcp_gateway.enabled`` /
-    ``skills.lazy_load`` default-off convention).
-  * Easy opt-in: set ``telemetry.enabled: true`` in ``~/.kiro/crew/config.json``
-    OR export the ``KIROCREW_TELEMETRY`` env var (``1``/``true``/``on`` to enable,
-    ``0``/``false``/``off`` to force-disable). The env var overrides the config
-    flag and gates LOCAL collection only — it never enables network egress.
+  * ``telemetry.enabled`` defaults **True**: local recording is on unless the
+    user turned it off, and every user is told (the dashboard's Privacy chapter,
+    or a one-line notice on a CLI or headless start, see :mod:`metrics.notice`).
+    When off, ``get_recorder()`` returns a no-op recorder.
+  * Off switches: ``telemetry.enabled: false`` in ``~/.kiro/crew/config.json``
+    (what the Privacy chapter's Turn off and ``kirocrew telemetry disable``
+    write), the ``KIROCREW_TELEMETRY`` env var (``0``/``false``/``off``
+    force-disables, ``1``/``true``/``on`` force-enables), or a truthy
+    ``DO_NOT_TRACK``, which wins over everything. The env vars gate LOCAL
+    collection only; network egress needs a destination AND
+    :func:`outbound_consented`.
   * Opting in does NOT require a restart. The recorder is process-global and
     memoized, but ``get_recorder()`` re-resolves consent on a rate-limited window
     (``_CONSENT_RECHECK_SECS``) and rebuilds when it moved — so a config edit from
@@ -52,6 +55,16 @@ from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics import otlp_endpoints, otlp_governance
 from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
+
+# The env-var pins and the export opt-in live in ``consent_pins`` (this module's
+# line budget); they are re-exported here, the import path every caller uses.
+from kiro_crew.metrics.consent_pins import (  # noqa: F401
+    TELEMETRY_ENV_VAR,
+    env_pin,
+    env_pin_is_soft,
+    outbound_consented,
+    pin_env_var,
+)
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -603,6 +616,13 @@ _CONSENT_RECHECK_SECS = 30.0
 # Consent the live recorder was built with, and when it was last verified.
 # ``None`` means "no live recorder", so the next call builds rather than compares.
 _built_consent: Optional[bool] = None
+# Export permission the live recorder was built with: ``None`` when no export
+# destination existed (nothing to gate), else what ``outbound_consented`` said.
+# Tracked apart from ``_built_consent`` because the two move independently:
+# deleting a written ``telemetry.enabled: true`` leaves recording on by default
+# but withdraws export, and the config watcher cannot see that change because
+# every loaded value stays the same.
+_built_outbound: Optional[bool] = None
 _consent_checked_at = 0.0
 # The ``agent.acp_backend`` / ``agent.provider`` pair the live recorder's
 # ``kirocrew.harness`` resource attribute was read from (see ``_agent_key``).
@@ -626,47 +646,6 @@ _ever_built = False
 # thread per request. Cleared in the worker's finally, so a crash costs one window
 # rather than stranding the check.
 _check_in_flight = False
-
-# Env-var opt-in. ``KIROCREW_TELEMETRY`` lets a host turn
-# LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
-# handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
-# disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
-# default False). This gates LOCAL collection ONLY: external OTLP egress needs the
-# active telemetry provider to name a destination (the default provider does so
-# only for a non-empty ``telemetry.otlp_endpoint``), so merely flipping this var
-# never causes data to leave the host (egress stays off by default).
-# Public: a UI control over ``telemetry.enabled`` names this variable when it
-# reports the setting as pinned, and naming it from here keeps the message and the
-# lookup from drifting apart.
-TELEMETRY_ENV_VAR = "KIROCREW_TELEMETRY"
-_ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
-_ENV_FALSY = frozenset({"0", "false", "no", "off"})
-
-
-def env_pin() -> Optional[bool]:
-    """Return the ``KIROCREW_TELEMETRY`` pin, or ``None`` when the var is unset.
-
-    Public because a UI control over ``telemetry.enabled`` has to know the config
-    flag is not the last word: a pinned host would otherwise offer a switch whose
-    write can never change what is collected. Resolving the pin here (rather than
-    re-reading the env var at the call site) keeps the control and the collector
-    from disagreeing about what "on" means.
-    """
-    # DO_NOT_TRACK first: off wins, so a truthy DO_NOT_TRACK pins recording off
-    # even when KIROCREW_TELEMETRY asks for it.
-    if beacon.do_not_track():
-        return False
-    raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
-    if raw in _ENV_TRUTHY:
-        return True
-    if raw in _ENV_FALSY:
-        return False
-    return None
-
-
-def pin_env_var() -> str:
-    """Name the env var behind :func:`env_pin`, for a UI note that says which to unset."""
-    return beacon.DO_NOT_TRACK_ENV if beacon.do_not_track() else TELEMETRY_ENV_VAR
 
 
 def _consent_enabled(cfg: object) -> bool:
@@ -845,6 +824,8 @@ class _Build(NamedTuple):
     consent: Optional[bool]
     agent_key: object = None
     endpoints_key: object = None
+    # ``outbound_consented`` at build time, or None when there was no destination.
+    outbound: Optional[bool] = None
 
 
 def _agent_key(cfg: object) -> object:
@@ -921,6 +902,18 @@ def _build_recorder() -> _Build:
     # not be folded into "telemetry init failed" below, and resolving first means
     # there is nothing started to reap if it goes wrong.
     destinations = _otlp_destinations(cfg)
+    # Recording on is not consent to export. Checked only when a destination
+    # exists, so the common local-only host reads nothing extra.
+    outbound: Optional[bool] = None
+    if destinations:
+        outbound = outbound_consented(full_cfg)
+    if destinations and not outbound:
+        logger.info(
+            "telemetry export waits for an explicit opt-in to recording "
+            "(telemetry.enabled: true in config.json, or KIROCREW_TELEMETRY=1); "
+            "local only"
+        )
+        destinations = ()
 
     # PeriodicExportingMetricReader starts its daemon ticker thread inside
     # __init__, so if any later step (MeterProvider construction, etc.) raises,
@@ -1077,7 +1070,12 @@ def _build_recorder() -> _Build:
         # collector can admit them without taking the inventory gauges above.
         behavioral_meter = provider.get_meter(BEHAVIORAL_SCOPE)
         return _Build(
-            MetricsRecorder(meter, behavioral_meter), provider, consent, agent_key, endpoints_key
+            MetricsRecorder(meter, behavioral_meter),
+            provider,
+            consent,
+            agent_key,
+            endpoints_key,
+            outbound,
         )
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
@@ -1088,7 +1086,7 @@ def _build_recorder() -> _Build:
         # Off this thread, because a reader shutdown performs a final export and
         # joins its ticker with the SDK's 30s default.
         _reap_readers_detached(started_readers)
-        return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
+        return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key, outbound)
 
 
 def _egress_degraded() -> tuple:
@@ -1560,10 +1558,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
 def _install_locked(built: _Build) -> None:
     """Publish a finished build. Call under ``_lock``."""
     global _recorder, _provider, _initialized, _built_consent, _consent_checked_at
-    global _ever_built, _built_agent_key, _built_endpoints_key
+    global _ever_built, _built_agent_key, _built_endpoints_key, _built_outbound
     _recorder = built.recorder
     _provider = built.provider
     _built_consent = built.consent
+    _built_outbound = built.outbound
     _built_agent_key = built.agent_key
     _built_endpoints_key = built.endpoints_key
     _initialized = True
@@ -1589,15 +1588,20 @@ def _consent_worker(generation: int) -> None:
     was disabled or removed loses its reader there too.
     """
     global _consent_checked_at, _check_in_flight, _recorder, _initialized
-    global _built_consent
+    global _built_consent, _built_outbound
     try:
         agent_key: object = None
         endpoints_key: object = None
+        outbound: Optional[bool] = None
         try:
             full_cfg = KiroCrewConfig.load()
             consent: Optional[bool] = _consent_enabled(full_cfg.telemetry)
             agent_key = _agent_key(full_cfg)
             endpoints_key = _endpoints_key(full_cfg.telemetry)
+            # Re-ask about export only when the live build had a destination to
+            # gate; a local-only host reads nothing extra here.
+            if consent and _built_outbound is not None:
+                outbound = outbound_consented(full_cfg)
         except Exception as exc:
             # Losing the ability to READ the setting is not withdrawal. Keep the
             # live recorder and try again after the next window.
@@ -1624,12 +1628,25 @@ def _consent_worker(generation: int) -> None:
             harness_moved = bool(consent) and agent_key != _built_agent_key
             # Same for the endpoint settings: a disabled one has no reader.
             endpoints_moved = bool(consent) and endpoints_key != _built_endpoints_key
-            if consent == _built_consent and not harness_moved and not endpoints_moved:
+            # Export permission moves on its own: deleting a written
+            # ``telemetry.enabled: true`` keeps recording on by default but
+            # withdraws export, with every loaded value unchanged.
+            outbound_moved = (
+                outbound is not None and _built_outbound is not None and outbound != _built_outbound
+            )
+            if (
+                consent == _built_consent
+                and not harness_moved
+                and not endpoints_moved
+                and not outbound_moved
+            ):
                 return
             if harness_moved and consent == _built_consent:
                 logger.info("configured harness changed on disk; rebuilding recorder")
             elif endpoints_moved and consent == _built_consent:
                 logger.info("OTLP endpoint settings changed on disk; rebuilding recorder")
+            elif outbound_moved and consent == _built_consent:
+                logger.info("telemetry export permission changed on disk; rebuilding recorder")
             else:
                 logger.info("telemetry consent changed on disk; rebuilding recorder")
             doomed = _take_provider_locked()
@@ -1787,7 +1804,7 @@ def _take_provider_locked() -> Optional["_MeterProviderT"]:
     flushes it after the lock is released.
     """
     global _recorder, _initialized, _provider, _built_consent, _build_generation
-    global _built_agent_key, _built_endpoints_key
+    global _built_agent_key, _built_endpoints_key, _built_outbound
     doomed = _provider
     _provider = None
     _recorder = None
@@ -1795,6 +1812,7 @@ def _take_provider_locked() -> Optional["_MeterProviderT"]:
     _built_consent = None
     _built_agent_key = None
     _built_endpoints_key = None
+    _built_outbound = None
     # Any rebuild started before this point is now stale.
     _build_generation += 1
     return doomed
@@ -1925,7 +1943,8 @@ async def _on_config_change(change: object) -> None:
     Downstream that reads as a new series set from the change on, which is the
     honest reading of an install that switched harness.
 
-    The consent worker re-resolves only ``enabled``, on a 30-second window, so
+    The consent worker re-resolves only ``enabled`` (and, when an export
+    destination exists, whether export is still permitted), on a 30-second window, so
     every other field in the section (``local_dir``, ``retention_days``,
     ``max_total_mb``, ``export_interval_seconds``, ``otlp_endpoint``) was frozen
     into the recorder at first use and stayed there for the process lifetime.

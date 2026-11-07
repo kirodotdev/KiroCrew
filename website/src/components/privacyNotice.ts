@@ -21,6 +21,8 @@ interface CollectionStatus {
   env_var?: string
   /** Recording would also send metrics to a configured destination. */
   otlp_configured?: boolean
+  /** That destination is sent to now: recording was turned on explicitly. */
+  export_permitted?: boolean
 }
 
 /**
@@ -79,7 +81,8 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
   }
   const recordingOn = !!collection.enabled
   const heartbeatOn = !!beacon.enabled && !beacon.env_override && !beacon.governance_override
-  const exportOn = recordingOn && !!collection.otlp_configured
+  // Absent reads as permitted: a disclosure errs toward "sent".
+  const exportOn = recordingOn && !!collection.otlp_configured && collection.export_permitted !== false
   if (recordingOn || heartbeatOn) {
     return { status: 'ready', on: true, recordingOn, heartbeatOn, exportOn, offReason: null, envVar: '' }
   }

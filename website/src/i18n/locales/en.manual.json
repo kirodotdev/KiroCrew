@@ -9010,6 +9010,7 @@
         "recordMetricsEnvPinned": "The {{envVar}} environment variable is pinning this setting — unset it to change it here.",
         "recordMetricsOverlayPinned": "A config.local.json entry is pinning this setting — remove it to change it here.",
         "recordMetricsEgressOn": "Metrics are being sent off this machine, to the collectors listed below.",
+        "recordMetricsEgressWaiting": "Metrics collectors are configured, but nothing is sent to them until telemetry.enabled: true is written in config.json.",
         "recordMetricsEgressDestinations": "Collectors: {{names}}",
         "recordMetricsEgressLockedName": "{{name}} (included by this build; turning off Record metrics stops it too)",
         "recordMetricsEgressLockedNameOff": "{{name}} (included by this build)",
@@ -10186,7 +10187,7 @@
     "controlsTitle": "Telemetry controls",
     "dataNeverSentBody": "Prompts, responses, files, credentials, hostnames, usernames, or your operating system. Your IP is not stored.",
     "dataNeverSentTitle": "Never sent",
-    "localDataBody": "Usage and context records. Performance metrics are off by default.",
+    "localDataBody": "Performance metrics are recorded on this device by default. The Record metrics switch in Settings > Privacy shows whether they are on now.",
     "localDataTitle": "Stays on your device",
     "notSendingAlreadySentToday": "Today's heartbeat has already been sent.",
     "notSendingAwaitingAck": "Nothing has been sent yet. The first heartbeat waits until you've seen this page.",
@@ -10209,7 +10210,10 @@
     "toggleDescription": "Saved for future launches.",
     "toggleLabel": "Send anonymous usage heartbeat",
     "toggleSaveFailed": "Couldn't save your telemetry choice. Try again.",
-    "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here."
+    "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here.",
+    "localDataBodyOn": "Performance metrics are being recorded on this device now.",
+    "localDataBodyOff": "Performance metrics are not being recorded on this device now.",
+    "doNotTrackCaption": "Setting DO_NOT_TRACK=1 turns off performance metrics and the heartbeat."
   },
   "settings": {
     "chat": {
