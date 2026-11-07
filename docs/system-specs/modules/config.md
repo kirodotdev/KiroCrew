@@ -1245,6 +1245,10 @@ A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON
 (`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
 written. Details: [cli](cli.md) (`config set`).
 
+A `--local` dotted-leaf write keeps an overlay section's other keys; a whole-object
+write replaces the section and prints a stderr hint naming the keys it dropped (same
+`config set` row in [cli](cli.md)).
+
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 
