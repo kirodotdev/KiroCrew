@@ -1588,10 +1588,11 @@ waiting for a Gateway restart.
 
 `kirocrew app enable` and `kirocrew app disable` apply live when a running
 Gateway is reachable through the CLI's owner-only Unix socket (POSIX only),
-including starting or stopping the backend. Otherwise the CLI records the change
-for the next Gateway start. On that file-only path, enabling an app that declares
-`backend.hooks` also prints the hooks reminder so the delayed activation is
-explicit.
+including starting or stopping the backend. Otherwise the CLI edits the files
+alone: a Gateway that is running anyway loads or unloads the hooks within a
+minute, and the backend process starts or stops at the next Gateway start. On
+that file-only path, enabling an app that declares `backend.hooks` also prints
+the hooks reminder so the timing is explicit.
 
 **Importing your own modules.** Hook entry files are loaded from their file path
 into a synthetic package named after the app, never via `sys.path`, so use a
