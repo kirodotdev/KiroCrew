@@ -54,6 +54,7 @@ from kiro_crew.dashboard.handlers.terminal_lifecycle import (
     _sess_alive,
     _sess_pid,
     _take_shell_to_evict,
+    apply_terminal_enabled,
 )
 from kiro_crew.dashboard.handlers.terminal_placement import (
     _CHAT_NOT_LOADED,
@@ -74,6 +75,7 @@ from kiro_crew.dashboard.handlers.terminal_session import (
     _get_registry,
     _is_enabled,
     _sel,
+    _terminal_enabled,
     _TerminalSession,
 )
 from kiro_crew.dashboard.handlers.terminal_shell import (
@@ -989,6 +991,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # displaced shell untouched: it goes back unless its id was opened afresh.
         if evicted is not None and not _restore_evicted_shell(registry, evicted):
             await _end_evicted_shell(request.app, evicted, max_sessions)
+
+    # A switch-off applied while this open awaited skipped its reservation: read the
+    # switch again now that the shell is published, so this read or the applier ends it.
+    cfg = _get_config(request)
+    if registry.get(session_id) is sess and not _terminal_enabled(cfg):
+        await apply_terminal_enabled(registry, cfg)
+        return ws
 
     # The placement check above ran before this shell was published, and a bind
     # in between skipped the then-unpublished reservation: read it again now

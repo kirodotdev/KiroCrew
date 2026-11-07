@@ -315,6 +315,36 @@ class TestTerminalReservationOwnership:
         terminal._kill_session.assert_awaited_once_with(sess)
         assert o.registry == {}
 
+    @pytest.mark.asyncio
+    async def test_a_switch_off_during_setup_ends_the_shell_once_published(
+        self, opening, monkeypatch
+    ):
+        """``dashboard.terminal.enabled`` going false while an open awaits its spawn
+        finds only the reservation, so the open ends the shell it then publishes."""
+        o = opening
+        entered, release = asyncio.Event(), asyncio.Event()
+        proc = o.spawn.return_value
+
+        async def pause(*_args, **_kwargs):
+            entered.set()
+            await await_until(release, what="the test releasing the spawn")
+            return proc
+
+        o.spawn.side_effect = pause
+        task = o.start(terminal.api_terminal_ws(o.request))
+        try:
+            await await_until(entered, what="the spawn being entered")
+            monkeypatch.setattr(terminal, "_get_config", lambda _: {"enabled": False})
+            await terminal.apply_terminal_enabled(o.registry, {"enabled": False})
+            assert o.registry == {"abc123": None}
+        finally:
+            release.set()
+            await await_until(task, what="the opening handler finishing")
+        terminal._kill_session.assert_awaited_once()
+        assert terminal._kill_session.await_args.args[0].proc is proc
+        assert o.registry == {}
+        o.ws.close.assert_awaited_once_with(code=4001)
+
     @pytest.mark.parametrize("successor", ["opening", "published", "absent"])
     @pytest.mark.asyncio
     async def test_stale_cleanup_cannot_remove_a_successor(self, opening, successor):
