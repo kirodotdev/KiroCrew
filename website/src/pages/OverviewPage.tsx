@@ -22,7 +22,7 @@ import { providerUsageQuery } from '../api/providerUsageQuery'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { compactPluralCount, fmtCompact, fmtDuration } from '../i18n/format'
+import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber } from '../i18n/format'
 import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
@@ -191,9 +191,9 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
       ) : (
         <div className="flex flex-col gap-1 text-[13px] text-muted">
           <span>
-            {i18nT('pages.overviewPage.summarizes_chats_into_memory_after')} {data.history_idle_hours ?? 3}{i18nT('pages.overviewPage.h_idle')}
-            {!data.migrated && <> {i18nT('pages.overviewPage.keeps')} {data.history_max_days ?? 90} {i18nT('pages.overviewPage.days_of_history')}</>}
-            {data.migrated && <> {i18nT('pages.overviewPage.semantic_memory_active')}</>}
+            {data.migrated
+              ? i18nT('pages.overviewPage.memory_summary_semantic', { hours: fmtNumber(data.history_idle_hours ?? 3) })
+              : i18nT('pages.overviewPage.memory_summary_kept', { hours: fmtNumber(data.history_idle_hours ?? 3), count: data.history_max_days ?? 90, days: fmtNumber(data.history_max_days ?? 90) })}
           </span>
           <Link to="/settings/developer/memory" className="text-accent hover:underline w-fit">{i18nT('pages.overviewPage.memory_developer_link')} <ArrowRight size={12} className="lucide-inline" /></Link>
         </div>
