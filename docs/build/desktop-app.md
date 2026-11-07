@@ -1018,6 +1018,11 @@ the state). It always offers **Retry**, plus the actions the state allows:
   recorded crew uses it re-execs the app with a free, crew-free fallback port
   pinned, because a gateway bound there would shadow that crew.
 
+On Windows and Linux the dialog stays above the window it is about without
+disabling it, so that window's **Close window** still works while the dialog
+waits (`runtime/gateway/failure-dialog.js`). On macOS it is a sheet on that
+window, which blocks the window until the dialog is answered.
+
 The dialog also explains the refusals that start nothing:
 
 - **`crew-configured`**: the local gateway is on, but a recorded crew owns this
