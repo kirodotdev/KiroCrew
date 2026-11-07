@@ -315,7 +315,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -507,7 +507,7 @@ export default function App() {
               touch
               replace
               onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
-              badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
+              badge={settingsDotLabel ? <span title={settingsDotLabel.title} role="status" aria-label={settingsDotLabel.label} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
             />
             <button
               type="button"
@@ -962,16 +962,16 @@ export default function App() {
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
       <InstancesViewport macInset={macInset} />
-      {/* macOS: window-drag strips for the LOCAL header's gaps while it is on
+      {/* macOS and Windows: window-drag strips for the LOCAL header's gaps while it is on
           screen (docked, or peeked in focus mode), placed to be structurally
           identical to the pane strips that provably work — the
           .host-drag-strip mechanism, in the same top-level container, OUTSIDE
           the shell's grid/overflow/stacking context, painted after everything
           drag-related. Every in-shell variant failed on the desktop app. Why
           docked needs them as well: useFocusChrome's localHeaderDragGaps. */}
-      {activeInstanceId === null && macInset && (!focusActive || topChromeShown) &&
+      {activeInstanceId === null && (macInset || isWinElectron) && (!focusActive || topChromeShown) &&
         localHeaderDragGaps.map((g, i) => (
-          <div key={`mac-drag-${i}`} aria-hidden data-testid="mac-header-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
+          <div key={`header-drag-${i}`} aria-hidden data-testid="header-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
         ))}
       </div>{/* /pane stack */}
     </div>

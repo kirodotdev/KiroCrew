@@ -9,7 +9,8 @@ its record back so the next task still gets the body. The settle runs before
 the session is released, because the next task builds on the same session. A
 compaction the backend reports during a task arms the session's one-shot
 reinjection flag, so the next task sends the body and the session-start context
-again.
+again. Triggers read the task alone, never the HEARTBEAT_KEEP reminder the turn
+puts before it.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.memory import MemoryStore
 from kiro_crew.session import HEARTBEAT_KEY
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.slack.gateway_runtime.heartbeat_turns import _HEARTBEAT_KEEP_INJECTION
 
 BODY_SENTINEL = "STEP ONE: pour the concrete before the rebar."
 HINT_HEADER = "[Relevant skills for this message]"
@@ -39,12 +41,12 @@ def _close_skills_loaders(close_skills_loaders):
     """Every test builds a ``SkillsLoader``: close it so its ``skill-catalog-refresh`` thread does not leak across teardown (``test/conftest.py``)."""
 
 
-def _builder(tmp_path: Path) -> ContextBuilder:
+def _builder(tmp_path: Path, trigger: str = "zebra quokka") -> ContextBuilder:
     skill_dir = tmp_path / "skills" / "foundation"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: foundation\ndescription: Lay a foundation\n"
-        f"triggers: zebra quokka\n---\n{BODY_SENTINEL}",
+        f"triggers: {trigger}\n---\n{BODY_SENTINEL}",
         encoding="utf-8",
     )
     loader = SkillsLoader(
@@ -313,3 +315,42 @@ class TestCompactionMidCycle:
 
         assert REINJECTED_HEADER in sent[1]
         assert REINJECTED_HEADER in sent[2]
+
+
+class TestTriggerText:
+    #: Words of the HEARTBEAT_KEEP reminder that the task below never uses.
+    TRIGGER = "heartbeat keyword"
+
+    @pytest.mark.asyncio()
+    async def test_the_reminder_alone_loads_no_skill(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task = "summarize yesterday's deploys"
+        # Control: matched as a whole, the reminder plus the task selects the skill.
+        control, _ = _builder(tmp_path / "control", self.TRIGGER).build_message(
+            _HEARTBEAT_KEEP_INJECTION + task, True, None
+        )
+        assert BODY_SENTINEL in control
+        orch, _sessions = _orchestrator(_builder(tmp_path, self.TRIGGER), fresh_sessions=[True])
+        sent: list[str] = []
+        monkeypatch.setattr(gw_mod, "stream_and_collect", _stream_recording(sent, ["end_turn"]))
+        on_task = await _heartbeat_task(orch, monkeypatch)
+
+        await on_task(task, "")
+
+        # The model still gets the reminder; only the matcher's input narrows.
+        assert "include the keyword HEARTBEAT_KEEP" in sent[0]
+        assert BODY_SENTINEL not in sent[0]
+
+    @pytest.mark.asyncio()
+    async def test_a_task_naming_the_trigger_still_loads_the_skill(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch, _sessions = _orchestrator(_builder(tmp_path, self.TRIGGER), fresh_sessions=[True])
+        sent: list[str] = []
+        monkeypatch.setattr(gw_mod, "stream_and_collect", _stream_recording(sent, ["end_turn"]))
+        on_task = await _heartbeat_task(orch, monkeypatch)
+
+        await on_task("check the heartbeat keyword list", "")
+
+        assert BODY_SENTINEL in sent[0]

@@ -154,6 +154,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
     clear_trusted_sessions,
     is_session_trusted,
+    trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
@@ -185,6 +186,7 @@ from kiro_crew.security import (  # noqa: F401 - read by the owners
     redact_exfiltration_urls,
     redact_local_paths,
 )
+from kiro_crew.security.text_redaction import ends_plain_sentence  # noqa: F401 - read by the owners
 from kiro_crew.sel import sel
 from kiro_crew.session import (
     _CIRCUIT_BREAKER_THRESHOLD,
@@ -317,6 +319,7 @@ from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
 )
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _append_footer_actions,
+    _backfill_late_link,
     _maybe_auto_title_slack,
     _mirror_to_dashboard,
     _post_review_draft,
@@ -487,6 +490,9 @@ _TRUNCATION_MARKER = "\n… [truncated]"
 # Slack UX strings
 _THINKING = "_Thinking…_"
 _THINKING_PLACEHOLDER = "💭 _Thinking…_"
+_WORKING = "Working…"
+#: Row meta key naming the Slack message a thread import read the row from.
+_SLACK_TS_META = "slack_ts"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"

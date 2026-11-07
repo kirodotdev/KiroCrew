@@ -80,18 +80,25 @@ describe('ArtifactDeployPage profile Verify', () => {
     expect(screen.queryByText(/alpha: access reachable/)).toBeNull()
   })
 
-  it('locks a row\u2019s Verify while its own check runs, and only that row', async () => {
+  it('locks a row\u2019s Verify while its own check runs, and only that row, keeping focus on it', async () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/AWS Profiles \(2\)/)).toBeInTheDocument())
 
-    fireEvent.click(verifyButton('alpha'))
-    await waitFor(() => expect(verifyButton('alpha')).toBeDisabled())
-    expect(verifyButton('beta')).toBeEnabled()
+    const alpha = verifyButton('alpha')
+    alpha.focus()
+    fireEvent.click(alpha)
+    await waitFor(() => expect(verifyButton('alpha')).toHaveAttribute('aria-disabled', 'true'))
+    // `aria-disabled`, not `disabled`: a disabled button leaves the tab order
+    // and drops a keyboard user's focus to the page while the check runs.
+    expect(verifyButton('alpha')).not.toBeDisabled()
+    expect(verifyButton('alpha')).toHaveFocus()
+    expect(verifyButton('beta')).not.toHaveAttribute('aria-disabled')
     fireEvent.click(verifyButton('alpha'))
     expect(verifies).toHaveLength(1)
 
     await act(async () => { verifies[0].resolve({ reachable: true, profile: 'alpha' }) })
-    await waitFor(() => expect(verifyButton('alpha')).toBeEnabled())
+    await waitFor(() => expect(verifyButton('alpha')).not.toHaveAttribute('aria-disabled'))
+    expect(verifyButton('alpha')).toHaveFocus()
     expect(screen.getByText('alpha: access reachable')).toBeInTheDocument()
   })
 

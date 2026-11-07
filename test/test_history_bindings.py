@@ -41,6 +41,8 @@ from kiro_crew.history import ConversationLog
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_history_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _PACKAGE = "kiro_crew"
 _REPO = Path(__file__).resolve().parents[1]
 
@@ -137,6 +139,9 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "derive_messages": ("function", "d4d3f09b758c", "history_derivation"),
     "derive_messages_chained": ("function", "d4d3f09b758c", "history_derivation"),
     "derive_messages_chained_with_keys": ("function", "81471b1c6628", "history_derivation"),
+    "derive_messages_chained_full_with_keys": ("function", "81471b1c6628", "history_derivation"),
+    "_read_messages_with_rotated_head": ("function", "d4d3f09b758c", "history_derivation"),
+    "_derive_settled_chain_rows": ("function", "5b8db63436a5", "history_derivation"),
     "derive_recent": ("function", "cac529f460f5", "history_derivation"),
     "get_cached_intent_summary": ("function", "ffa13bebb6bc", "history_summaries"),
     "get_cached_summary": ("function", "4b576121a346", "history_summaries"),
@@ -335,15 +340,6 @@ def _class_only_constructs(fn: ast.FunctionDef) -> list[str]:
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == [  # type: ignore[arg-type]
-        "__class__",
-        "__hidden",
-        "super()",
-    ]
 
 
 @pytest.mark.parametrize("owner", history._OWNERS)

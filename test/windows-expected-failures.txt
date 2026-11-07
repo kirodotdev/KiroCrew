@@ -67,11 +67,8 @@ test/test_deploy_web_profiles.py::test_create_aws_profile_writes_only_allowliste
 test/test_deploy_web_profiles.py::test_list_merges_profiles_and_dedupes
 test/test_deploy_web_profiles.py::test_verify_backfill_audited
 test/test_discord_config_handlers.py::test_save_persists_token_and_config
-test/test_ephemeral_sessions_recognition.py::TestSessionSlotRecovery::test_session_has_persisted_history_unit
 test/test_flock_compat.py::TestFlockCompat::test_posix_delegates_to_real_fcntl
-test/test_gateway_lock.py::test_acquire_creates_lock_file_with_pid
 test/test_gateway_lock.py::test_second_acquire_refused_and_names_holder
-test/test_gateway_lock.py::test_stale_lock_is_reclaimed
 test/test_governance_chokepoints.py::TestFilesystemEgressAtGate::test_filesystem_write_denied_via_edit_args
 test/test_governance_chokepoints.py::TestFilesystemEgressAtGate::test_filesystem_write_traversal_escape_denied
 test/test_governance_chokepoints.py::TestFoldersAliasesFilesystem::test_folders_and_filesystem_both_present_intersect
@@ -83,9 +80,6 @@ test/test_hooks_shell_command.py::TestSafeReadFile::test_blocks_symlinked_ancest
 test/test_installer_shim_and_cleanup.py::test_first_run_delivers_shim_and_purge
 test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
-# Needs symlink-creation privilege: builds an in-vault FILE symlink
-# (Alias.md -> One.md); a junction is directory-only and cannot model it.
-test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_declared
 test/test_pod.py::TestUnitRendering::test_env_block_pins_nondefaults
 test/test_pod_cli.py::TestCliVerbs::test_install_writes_unit
 test/test_pod_cli.py::TestUpVerb::test_up_happy_path_json

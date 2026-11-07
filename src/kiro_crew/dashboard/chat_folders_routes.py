@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_folders_icons import (
     _bump_icon_epoch,
     _is_single_emoji,
     _is_valid_folder_color,
+    _prune_icon_tasks_from_other_loops,
     _spawn_chat_folder_icon_task,
     generate_emoji_for_name,
     icon_preview_avoid,
@@ -906,6 +907,7 @@ async def api_chat_folder_icon_preview(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     pending = _CHAT_FOLDER_PENDING_ICON_TASKS.get(fid)
     if fid in _CHAT_FOLDER_ICON_PREVIEWS or (pending is not None and not pending.done()):
         return web.json_response(
@@ -1332,6 +1334,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         if refused:
             return web.json_response({"error": refused, "code": "folder_not_empty"}, status=409)
         _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
+        _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
         pending_icon = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
         if pending_icon is not None and not pending_icon.done():
             pending_icon.cancel()
@@ -1453,6 +1456,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # is safe after a confirmed delete: a write already started finishes under
     # the shield, and its write-back re-finds the folder by id, which no
     # longer exists, so nothing lands.
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
     if pending is not None and not pending.done():
         pending.cancel()

@@ -66,8 +66,13 @@ The electron-builder configuration lives in
   so the three agree by construction instead of by coincidence. Overriding
   `StartupWMClass` by hand breaks that agreement.
 - `deb.depends` declares alternatives (`libgtk-3-0 | libgtk-3-0t64`) because
-  Ubuntu 24.04's 64-bit `time_t` transition renamed several libraries;
-  `rpm.depends` needs no such thing but uses entirely different names
+  Ubuntu 24.04's 64-bit `time_t` transition renamed several libraries.
+  ALSA lists the t64 package first, `libasound2t64 | libasound2 (>= 1.0.17)`:
+  on 24.04 OSS4's `liboss4-salsa-asound2` provides an unversioned
+  `libasound2` and lacks ALSA symbols the app links, so the app fails to
+  start. The order fixes a clean install; the version keeps an
+  already-installed stand-in from satisfying the dependency.
+  `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
@@ -834,6 +839,24 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+A window whose gateway the shell already knows is not on this machine (a
+configured Remote Crew on its port, as in the client-only launch with the local
+gateway off, or a non-loopback URL) does not ask in the first place.
+`setupWindowContents` passes the preload `--kc-remote-gateway`, decided by the
+same `isGatewayLocalForWindow` the gate reads, and the preload then withholds
+every bridge whose channels that gate refuses: `remoteCrewSetupAPI`,
+`crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
+`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
+a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
+the native folder and terminal controls and first-run's link to a crew on
+another machine are absent there, a failed pane reloads without a cache purge,
+and that window's gateway never governs this install's updates. The argument is
+fixed when the view is created: a crew configured for the port afterwards leaves
+the bridges in place and the gate keeps refusing them, and a crew cleared
+afterwards leaves them withheld until the window is next created. The gate stays
+the authority; the preload only stops the asking.
+
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
 ([`bundle-integrity.js`](../../website/electron/bundle-integrity.js)). The
@@ -1127,16 +1150,19 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
-**On macOS the band alone cannot keep the bar draggable.** Because the band is
-prepended, every later `no-drag` rectangle that reaches into it wins, including
-ones nobody can see there: a theme pack's decoration iframes (the exemption list
-covers every `iframe`, and a pack's top-bar strip and full-window overlays sit
-at `top: 0`) and transcript content scrolled up under the glass header (inside
-the `tabIndex={-1}` scroller, and taken from layout without clipping to it).
-Either one leaves the bar unable to move or zoom the window. So whenever the
-local header is on screen, docked or peeked in focus mode, `App.tsx` also
-renders `.host-drag-strip` divs over the band's control-free gaps, painted
-after everything else. Being last, a strip would also turn any other surface's
+**On macOS and Windows the band alone cannot keep the bar draggable.** Because
+the band is prepended, every later `no-drag` rectangle that reaches into it
+wins, including ones nobody can see there: a theme pack's decoration iframes
+(the exemption list covers every `iframe`, and a pack's top-bar strip and
+full-window overlays sit at `top: 0`) and transcript content scrolled up under
+the glass header (inside the `tabIndex={-1}` scroller, and taken from layout
+without clipping to it). On Windows the header's own `drag` rule loses to the
+same rectangles, since they come after it. Either one leaves the bar unable to
+move or zoom the window. So whenever the local header is on screen, docked or
+peeked in focus mode, `App.tsx` also renders `.host-drag-strip` divs over the
+band's control-free gaps, painted after everything else. On Windows the band
+they cover stops at the zoom-aware `--mc-win-drag-reserve` (falling back to
+`WIN_CAPTION_OVERLAY_WIDTH`), so no strip reaches the caption buttons. Being last, a strip would also turn any other surface's
 control in the band into a window drag (the phone nav drawer, the image
 viewer's toolbar, an in-place notice), so the gaps come from
 `computeTitleBandDragGaps` in

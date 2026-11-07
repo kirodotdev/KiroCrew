@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const {
   shouldDisableGpu,
+  isGpuLessHost,
   gpuDisableSwitches,
   initGpuPolicy,
 } = require("../disable-gpu.js");
@@ -109,4 +110,38 @@ test("main wires GPU policy in the lock winner before Electron becomes ready", (
   assert.ok(gpuPolicy > nativeLogging, "GPU policy must follow native logging in the winner");
   assert.ok(secondInstance > gpuPolicy, "GPU policy must precede second-instance registration");
   assert.ok(ready > gpuPolicy, "GPU policy must run before app ready");
+});
+
+// --- RDP auto-detect and the force-ON override -----------------------------
+
+test("isGpuLessHost: an RDP session is GPU-less; console or none is not", () => {
+  assert.equal(isGpuLessHost({ env: { SESSIONNAME: "RDP-Tcp#0" } }), true);
+  assert.equal(isGpuLessHost({ env: { SESSIONNAME: "rdp-tcp#1" } }), true);
+  assert.equal(isGpuLessHost({ env: { SESSIONNAME: "Console" } }), false);
+  assert.equal(isGpuLessHost({ env: {} }), false);
+});
+
+test("shouldDisableGpu: an RDP host disables the GPU with no explicit control", () => {
+  assert.equal(shouldDisableGpu({ env: { SESSIONNAME: "RDP-Tcp#0" }, argv: [] }), true);
+  assert.equal(shouldDisableGpu({ env: { SESSIONNAME: "Console" }, argv: [] }), false);
+});
+
+test("shouldDisableGpu: force ON (falsy env or --enable-gpu) beats RDP auto-detect", () => {
+  for (const v of ["0", "false", "no", "off", " OFF "]) {
+    assert.equal(
+      shouldDisableGpu({ env: { KIROCREW_DISABLE_GPU: v, SESSIONNAME: "RDP-Tcp#0" }, argv: [] }),
+      false,
+      `KIROCREW_DISABLE_GPU=${JSON.stringify(v)}`,
+    );
+  }
+  assert.equal(shouldDisableGpu({ env: { SESSIONNAME: "RDP-Tcp#0" }, argv: ["--enable-gpu"] }), false);
+});
+
+test("initGpuPolicy: applies all switches on an RDP host, none on a workstation", () => {
+  const rdp = [];
+  assert.equal(initGpuPolicy({ appendSwitch: (n) => rdp.push(n), env: { SESSIONNAME: "RDP-Tcp#0" }, argv: [] }).disabled, true);
+  assert.deepEqual(rdp, gpuDisableSwitches());
+  const desk = [];
+  assert.equal(initGpuPolicy({ appendSwitch: (n) => desk.push(n), env: { SESSIONNAME: "Console" }, argv: [] }).disabled, false);
+  assert.deepEqual(desk, []);
 });

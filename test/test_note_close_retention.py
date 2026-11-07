@@ -196,6 +196,77 @@ class TestDeferredNoteLostOnClose:
         assert [c["content"] for c in slot._pending_context] == ["RESTORED-CTX"]
         assert "held00000009" in slot._dropped_note_ids
 
+    @staticmethod
+    def _held(note_id: str, text: str, merged_from: dict | None = None) -> dict:
+        """A held note for slot ``s1`` with a context half, a merge card when *merged_from*."""
+        context = {"content": f"{text}-CTX", "source": "app", "injectedAt": 1.0, "maxAge": None}
+        note = {
+            "id": note_id,
+            "content": text,
+            "cls": "reconcile-note",
+            "session": "dashboard:s1",
+            "context": context,
+        }
+        if merged_from is not None:
+            note["merged_from"] = merged_from
+        return note
+
+    def test_a_closing_flush_gives_a_merge_card_its_ordinary_row_and_seat(self):
+        """A merge card's entry already outlives its row until its context is consumed, so a
+        closing flush gives it the row its readers need (``noteId`` and ``mergedFrom``) and its
+        queue seat now, while the plain note beside it still takes the ``noteRowFor`` path."""
+        from kiro_crew.dashboard.slot_buffers import MERGED_FROM_META_KEY
+
+        merged_from = {"session": "dashboard:fork", "slot": "fork", "through": "m1"}
+        slot = _ChatSlot("s1")
+        slot.begin_close()
+        slot._deferred_notes = [
+            self._held("card00000001", "CARD", merged_from),
+            self._held("plain0000001", "PLAIN"),
+        ]
+
+        assert slot.flush_deferred_notes() == 2
+
+        card_row, plain_row = slot.messages
+        assert card_row["meta"]["noteId"] == "card00000001"
+        assert card_row["meta"][MERGED_FROM_META_KEY] == merged_from
+        assert "noteRowFor" not in card_row["meta"]
+        assert plain_row["meta"]["noteRowFor"] == "plain0000001"
+        assert "noteId" not in plain_row["meta"]
+        assert [(c["content"], c["noteId"]) for c in slot._pending_context] == [
+            ("CARD-CTX", "card00000001")
+        ]
+        assert [(n["id"], n.get("rowCommitted")) for n in slot._deferred_notes] == [
+            ("plain0000001", True)
+        ]
+
+    def test_a_card_seat_that_raises_keeps_the_notes_the_closing_flush_held(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A raise skips the flush's final hand-back of the notes it kept, so the card's seat arm
+        returns them itself, ahead of the card and in order."""
+        slot = _ChatSlot("s1")
+        slot.begin_close()
+        merged_from = {"session": "dashboard:fork", "slot": "fork", "through": "m1"}
+        slot._deferred_notes = [
+            self._held("plain0000002", "PLAIN"),
+            self._held("card00000002", "CARD", merged_from),
+        ]
+
+        def seat_raises(_slot: _ChatSlot, _entry: dict) -> bool:
+            raise RuntimeError("no queue")
+
+        monkeypatch.setattr(_ChatSlot, "append_pending_context", seat_raises)
+        with pytest.raises(RuntimeError):
+            slot.flush_deferred_notes()
+
+        assert [(n["id"], n.get("rowCommitted")) for n in slot._deferred_notes] == [
+            ("plain0000002", True),
+            ("card00000002", None),
+        ]
+        assert slot._deferred_notes[1]["context"]["content"] == "CARD-CTX"
+        assert [m["content"] for m in slot.messages] == ["PLAIN"]
+
     @pytest.mark.asyncio
     async def test_an_aborted_close_keeps_the_held_context_deliverable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

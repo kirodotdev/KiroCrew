@@ -164,7 +164,7 @@ In an `oss` build a scope the policy does not name is ungoverned and permitted (
 - **Where it applies.** `evaluator._policy_level` fills the POLICY level only, in `resolve`. `_query_level` still permits a `None` control, because it also answers the profile level: a profile that does not name a scope must not impose the baseline again beneath a remote widening. For the same reason no baseline is added when a `Profile` sits in the ceiling slot (`governance_profiles` asks `may_skip_gate` about one profile alone) or when `gate_decision`'s alias-group pass asks the profile layer alone (`resolve(..., baseline=False)`). `policy_level_control` exposes the same lookup to readers that inspect a ceiling directly: `may_skip_gate` and `_ceiling_mentions_mcp_server` use it, so an auto-approve grant cannot skip the gate for an unnamed scope, the policy viewer (`GET /api/governance/policy`) reports the baseline instead of "ungoverned", and the member-dashboard script grant (`member_dashboard._egress_decision`) reads an unnamed `network.egress` as the baseline's off. A `folders.*` query finds the policy's `filesystem.*` rule before the baseline answers, because the parser stores it under the canonical scope.
 - **Who may widen.** The remote policy, by naming the scope. A profile only narrows.
 - **Not gated.** `BASELINE_UNGATED` lists, each with its reason, the scopes that keep Crew's own default: the two ordinals (`approval_mode`, `sandbox.min_level`) and the open controls of RFC D3 as amended on 2026-11-02 (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`; appendix "Crew default") and as amended on 2026-11-05 (`capabilities.memory_writes`, `capabilities.theme_persona`, `capabilities.milestones`, `capabilities.decisions_local`). Open means permitted, not switched on: a feature's preview flag or user setting, where it has one, keeps its `oss` default, and `capabilities.decisions_local` only narrows `capabilities.decisions`, which stays in the baseline off. `capabilities.app_dev_mode` and `app_versions` stay in `BASELINE_CONTROLS`. `edition_locks.policy_permits` (the process-wide switch milestones read) lets an open scope's `default`-layer permit stand; every other scope it answers still needs a policy-layer permit (`follows_policy`). With the policy silent, an open control answers as in `oss`, ungoverned; a remote policy that names one still decides, and a local tier composed under a silent central policy still narrows it. A scope in neither table (one registered at run time) is denied.
-- **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (the catalog floor; only `yolo` is off). `updates.source` is not a catalog scope and has no baseline.
+- **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (only `yolo` is off; the catalog floor is `normal` alone, so a remote `permission_mode` rule may narrow it). `updates.source` is not a catalog scope and has no baseline.
 - **A proven non-shell call is judged in its own scopes.** `classify_tool_title` reads an unprefixed name as a command body and a tool name both, and kiro-cli titles an MCP call `Running: @server/tool`, so with `commands` off (a remote policy that turns it off) every built-in and every MCP call was refused. In an enterprise build `GateFacts.governance_own_scopes` proves, from the trusted identity of a call the client did not classify as shell, that the call is MCP-served (`("mcp",)`) or a host built-in whose `BUILTIN_TOOL_SCOPES` row has no `commands` (`("tools", *row)`; a KAS id through its admitting kiro-cli alias only, so `delete_file`, `run_command` and `code` stay unproven). `gate_decision(own_scopes=...)` then keeps every `commands` pair, the title's `tools` pair, an MCP identity's `tools` pair, and a built-in's argument pair outside its row as deny-only: an explicit deny there (a local `curl *` deny) still refuses, an allow-mode miss does not. Each scope in a built-in's row that its arguments name no target in is asked about `_NO_TARGET_ITEM`, so an allow-mode `filesystem.read` the remote policy names refuses a pathless `grep` or `glob` (it searches a directory the gate cannot see), and an allow-mode `filesystem.write` refuses a write that does not arrive as an edit. A relative path is anchored at the gateway's working directory, as for every `filesystem.*` rule. `oss` never sets `own_scopes`.
 - **Inner lists the remote leaves out.** `BASELINE_INNER_LISTS` names inner lists that keep their baseline even when the remote policy names their capability: today `capabilities.publish` `regions`, `audience` and `accounts`, all off. `parsing.with_inner_baseline` fills them into a remote-named gate, in `evaluator._policy_level` and in `tiers._with_enterprise_baseline` for a central authority, so a local tier cannot supply a list the remote left out.
 - **Local policy tiers.** `compose_tier_ladder` first fills the authority tier's unnamed scopes from the baseline (`tiers._with_enterprise_baseline`), so the tighten-only `_intersect_ceilings` composes a local tier (`env`, `home`, `bundled`) WITH the baseline: a local tier can narrow it and never supply a scope's whole answer. With no central document the authority is itself local, so it is intersected with the baseline scope by scope rather than filled; only a central authority's named scopes replace the baseline. The installed ceiling therefore names every gated scope in an enterprise build, and `kirocrew policy show` lists the baseline rows beside the document's own.
@@ -2800,7 +2800,12 @@ otherwise let a denied channel trigger a download by attaching a file to the one
 word that skips the gate. Both arguments default to the gated behaviour, so a
 caller that does not pass them is unchanged. This matters most where the channel
 has no widgets: with `max_buttons=0` a typed `/stop` is the only cancel
-affordance the operator has.
+affordance the operator has. The Feishu, iMessage, Teams, Webex, WeCom and Weixin
+dispatchers pass `text` only when their own `parse_command` reads the message as
+`stop` (Feishu, Webex and WeCom after removing the bot's @mention; never for a Teams or
+Webex card press, and never for drained turn content), so a cancel word another
+channel spells, such as `!stop`, keeps the strict gate instead of passing into
+the busy path's steer. WhatsApp passes its text as is.
 
 `_CANCEL_ALIASES` is the recognised set, and it is a MIRROR of the per-channel
 command tables (`/stop`, `/cancel`, Discord's `!` bang forms, WeCom's `停止`),
@@ -3051,7 +3056,7 @@ below), `filesystem.read` / `filesystem.write` / `folders.*` and
 the messaging chokepoint AND at transport startup), `apps` (app
 activation), `agent_backend` (which ACP harness a deployment may select —
 materialised by narrowing the `acp_backends` registry at gateway start),
-`approval_modes` (currently the `yolo` dashboard mode), `yolo_duration`
+`approval_modes` (the `trust_reads`, `trust` and `yolo` modes), `yolo_duration`
 (the `permanent` and `until_shutdown` no-expiry choices), `sandbox.min_level`
 (ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
@@ -4063,36 +4068,57 @@ matcher — data-only shape, no evaluator change, mirroring `agent_backend`
 above) lets a managed fleet forbid an auto-approve mode and force interactive
 approval.
 
-**Today the scope governs exactly one mode: `yolo`.**
+**The scope governs `trust_reads`, `trust` and `yolo`; `normal` is the floor**
+([RFC D9](../../request-for-change/rfc-crew-enterprise-edition.md)). The KGL term is
+`permission_mode`; the translator adds `normal` back to a rule's allow-list and nothing
+else, so `match: ["normal", "trust_reads"]` denies `trust`:
 
 ```json
-{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}
+{"approval_modes": {"mode": "allow", "allow": ["normal", "trust_reads"]}}
 ```
 
 This is distinct from the ordinal `approval_mode` scale
 (`yolo < auto < interactive`) documented under the archetypes: that clamps a
 single ceiling, whereas `approval_modes` denies a named mode.
 
-**Three modes are non-deniable, for two different reasons.** Both are declared as
-catalog DATA — `ScopeSpec(..., always_permitted=("normal", "trust", "trust_reads"))`
-— and `_parse_control` refuses any ruleset that forbids one, whether directly
-(`deny: ["trust"]`) or by an allow-list that omits it, with
-`PlatformCompositionError`. Data rather than a scope-name branch, so a second scope
-with a non-deniable member is a catalog entry and not another `if` in the loader:
+**`normal` is non-deniable.** It is catalog DATA —
+`ScopeSpec(..., always_permitted=("normal",))` — and `_parse_control` refuses any
+ruleset that forbids it, directly or by an allow-list that omits it, with
+`PlatformCompositionError`. Denying it would leave no selectable mode and brick tool
+approval, and the trust-root `security_policy.json` is the one file the dashboard may
+not write to repair it (see [Self-protection](#self-protection-the-keystone)). The
+refusal happens at parse time, because a policy that misdescribes the posture is worse
+than one that fails to load. A mode id Crew does not know (`approval_mode_policy.
+KNOWN_APPROVAL_MODES`) is refused by `approval_mode_permitted` and by `api_chat_mode`
+(`400`).
 
-- **`normal` is the interactive floor.** Denying it would leave no selectable mode
-  and brick tool approval, and the trust-root `security_policy.json` is the one file
-  the dashboard may not write to repair it (see
-  [Self-protection](#self-protection-the-keystone)).
-- **`trust` and `trust_reads` are not yet governed.** Their grants are honoured by
-  consumption predicates this scope does not reach — the in-memory trusted set, and
-  the session `approval_policy` a spawned subagent inherits — spread across the
-  messaging, Slack, Telegram and subagent-admission paths. Accepting a deny for them
-  would advertise a control that does not hold, so the policy is refused **loudly at
-  parse time** instead. Governing those read paths is tracked separately.
-
-The refusal happens at parse time in both cases, because a policy that misdescribes
-the posture is worse than one that fails to load.
+**`trust` and `trust_reads` are enforced where they are set and where they are
+honoured.** `kiro_crew/approval_mode_policy.py` holds a pushed verdict
+(`session_mode_permitted`, `disabled_session_modes`), resolved once per ceiling install
+like the `yolo` one below. It is read from the installed ceiling's `approval_modes`
+rule alone, in memory with no file read: a governance profile does not narrow these
+two modes, and one (or a policy `fallback`) that denies either is refused at load
+(`ScopeSpec.profile_always_permitted`), as before this scope governed them. While a ceiling is being installed and when the rule
+cannot be read, both are denied only if the installed ceiling
+has a rule refusing one of them; with no such rule they stay permitted. Set sites
+refuse a denied mode before any mutation: `api_chat_mode` and `apply_approval_mode`
+(every dashboard, cron `set_session_mode`, crewmate Profile and workflow write), the
+approval card's Trust and Trust-reads actions (`api_chat_slot_approve`), the crewmate
+record writes (`PUT /api/agents/{name}`, create), a cron job's `approval_mode: "auto"`
+(`cron_service.fields`), a spawn's `approval_mode: "auto"` and the config fallback in
+the subagent admission gate and `resolve_parent_policy`, and the Trust buttons of the
+messaging transports (`messaging.session_trust.add_trusted_session`, the Slack and
+Telegram press handlers, the decider's `_grant_session_trust`, a channel's `trust`
+decision): a press there approves the one tool. A crewmate's unset or stored Profile
+mode is clamped to the highest permitted mode (`clamp_session_mode`). Read sites mask
+a grant made before the deny: `_ChatSlot._trust` / `._trust_reads` read back only what
+the policy permits, `SessionManager.get_approval_policy` returns `""` for a stored
+`"auto"` unless a session-wide YOLO grant is live, `is_session_trusted`, a channel's
+`trusted`, the messaging driver's `trust` / `trust_reads` ladder, and a cron job's
+`auto` at fire time. At the install that resolves a deny, `register_deny_hook` callbacks
+drop what the mask hides (the dashboard's slot flags and their stored `"auto"`, the
+messaging Trust set), so a later policy that allows the mode again brings back no grant
+nobody re-made. A channel's persisted `trusted` flag is masked, not dropped.
 
 **Enforced at every `yolo` surface**, because a mode is only actually off if every
 path that can arm it — and every path that HONOURS an existing grant — refuses:
@@ -4172,11 +4198,9 @@ Security panel lists the scope and its deny-list automatically —
 `api_governance_policy` iterates `SCOPE_CATALOG` — so an operator can always see
 which modes a policy removed.
 
-**Not yet reached.** Auto-approval also enters through cron
-`approval_mode: "auto"`, the messaging API's approval-mode field, subagent spawn, and
-config `agent.approval_mode`. Those carry their own vocabulary and are tracked
-separately from this scope — see the reserved `approval_mode` ordinal's
-still-reserved note.
+**Not reached by `approval_modes`.** Config `agent.approval_mode` (the chat-service
+dispatchers' own `auto`) carries its own vocabulary and is governed by the reserved
+`approval_mode` ordinal — see its still-reserved note.
 
 ### Computer use has one on/off row (deliberately)
 

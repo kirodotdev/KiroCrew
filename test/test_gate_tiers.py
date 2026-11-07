@@ -47,6 +47,7 @@ from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.governance import parse_policy
+from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant
 
 _HOME = Path.home()
 
@@ -171,6 +172,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
             identity_trusted=True,
             kas_builtin_ids=True,
             spec_write_allowlist=("/tmp/allowed",),
+        ),
+    ),
+    Scenario(
+        "spec-denies",
+        TOOL_DENY,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="make clean",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_denied_grant=SpecDeniedGrant(denied_commands=("make clean",)),
         ),
     ),
     Scenario(
@@ -401,6 +415,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("governance", "deny_policy"),
         ("spec-shell-allowlist", "deny_policy"),
         ("spec-write-allowlist", "deny_policy"),
+        ("spec-denies", "deny_policy"),
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
         ("spec-builtin-grant", "grant"),
@@ -586,7 +601,7 @@ _DENY_UNDER_GRANT = (
             grant == "app-own-server"
             and (
                 scenario.call.mcp_server
-                or scenario.tier in ("spec-shell-allowlist", "spec-write-allowlist")
+                or scenario.tier in ("spec-shell-allowlist", "spec-write-allowlist", "spec-denies")
             )
         )
     ]

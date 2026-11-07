@@ -1230,6 +1230,11 @@ sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
 copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
 
+A row whose sign-in Crew holds (`connections.crew_oauth` on KAS) carries
+`crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
+CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
+it with 409 `crew_oauth_test_unsupported`.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`

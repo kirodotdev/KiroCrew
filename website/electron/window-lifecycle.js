@@ -302,15 +302,22 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
+    // isGatewayLocalForWindow reads this, and the preload argument below needs
+    // it. The argument is fixed for the view's life.
+    win._mcBackendUrl = windowBackendUrl;
+    const remoteGateway = !isGatewayLocalForWindow(win);
 
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Frameless Linux is a launch-time decision, not a platform constant.
-        // The preload reads this argument to reserve caption-control space.
-        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // Launch-time decisions the preload reads: frameless Linux reserves
+        // caption-control space; a remote gateway withholds local-only bridges.
+        additionalArguments: [
+          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
+          ...(remoteGateway ? ["--kc-remote-gateway"] : []),
+        ],
       },
     });
     view.setBackgroundColor("#00000000");
@@ -398,9 +405,9 @@ function createWindowLifecycle(options) {
       scheduleFullscreenSettle();
     });
 
-    // DOM fullscreen is separate from native window fullscreen. Bridge it so a
-    // video can grow the BaseWindow, and retain provenance so persistence never
-    // mistakes a video-raised transition for the user's launch preference.
+    // Electron raises the BaseWindow when a page element goes DOM-fullscreen.
+    // Retain who raised it, so persistence never mistakes a video-raised
+    // transition for the user's launch preference.
     win._mcHtmlFullScreen = attachHtmlFullScreen({
       win,
       webContents: view.webContents,
@@ -472,7 +479,6 @@ function createWindowLifecycle(options) {
       applyTitle();
     };
     win._mcGetCustomName = () => customName;
-    win._mcBackendUrl = windowBackendUrl;
     // The dashboard SPA is a capture surface (the chat composer's snip and the
     // web-preview crop). Registered against the gateway origin THIS window was
     // opened on, so a secondary window pointed at a remote gateway is bound to
@@ -731,7 +737,11 @@ function createWindowLifecycle(options) {
     };
     mainWindow.on("resize", persistDebounced);
     mainWindow.on("move", persistDebounced);
-    mainWindow.on("enter-full-screen", persist);
+    // Entering fullscreen is persisted after the debounce, not inside the emit:
+    // whether a page or the user raised the window is only known once both of
+    // Electron's events for the raise have landed, and their order differs by
+    // platform.
+    mainWindow.on("enter-full-screen", persistDebounced);
     mainWindow.on("leave-full-screen", persist);
 
     // Journal the terminal events so a stalled transition is legible in

@@ -38,8 +38,12 @@ async def test_a_failed_crew_held_cleanup_is_a_coded_failure_not_a_disconnect(
     async def _vault_broken(_slug: str) -> dict:
         raise OSError("vault unreadable")
 
+    from kiro_crew.connections import crew_oauth_proxy
+
+    dropped: list[str] = []
     monkeypatch.setattr(crew_oauth, "manages", lambda _slug: True)
     monkeypatch.setattr(crew_oauth, "disconnect", _vault_broken)
+    monkeypatch.setattr(crew_oauth_proxy, "drop_slug", dropped.append)
     client = await _client()
     try:
         resp = await client.post("/api/connections/disconnect", json={"slug": _SLUG})
@@ -50,6 +54,7 @@ async def test_a_failed_crew_held_cleanup_is_a_coded_failure_not_a_disconnect(
     assert resp.status == 502
     assert body["code"] == "crew_cleanup_failed" and body["entryRemoved"] is True
     assert purged == [_SLUG], "the rest of Disconnect still ran"
+    assert dropped == [_SLUG], "a pair that may survive must not stay reachable"
     assert [a["outcome"] for a in audits if a.get("operation") == "connections_disconnect"] == [
         "partial"
     ]
@@ -93,7 +98,8 @@ async def test_disconnect_always_revokes_the_crew_grant(
     assert body["grantCensusIncomplete"] is False
     assert body["crewGrantRemoved"] is True and body["upstreamRevoked"] is True
     assert "crewGrantKept" not in body
-    assert called == ["drop", "disconnect"], "Crew's grant was not revoked and cut"
+    # Live bridges stay registered, so a reconnect revives them.
+    assert called == ["disconnect"], "Crew's grant was not revoked, or bridges were cut"
 
 
 class _UnreadableVault:

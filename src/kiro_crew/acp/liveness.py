@@ -139,8 +139,10 @@ but a runtime can host several sessions, and then that pid's process tree is not
 one session's. Which probes survive that is not uniform, so it is stated per
 probe rather than claimed for the module:
 
-- the cmdline match keys shell evidence to THIS session's in-flight command, so
-  the shell branch attributes;
+- the cmdline match keys shell liveness evidence to THIS session's in-flight
+  command; signal authority is narrower: an exact, post-dispatch match must be
+  the direct child of an identity-pinned harness, whose location comes from the
+  runtime's trusted ``sandbox_wrapped_by_crew`` spawn fact;
 - the ``remote_flat`` socket scan reads only the subtree of the process that
   was launched as the in-flight tool's own MCP server, and declines when that
   process is not found exactly once (a second copy of the server is another
@@ -173,6 +175,10 @@ from concurrent.futures import Executor
 from typing import Any, Callable, Iterable, Protocol
 
 from kiro_crew import platform_compat
+from kiro_crew.acp.liveness_cleanup import (  # noqa: F401 - re-exported for existing importers
+    _CleanupLineage,
+    _ShellCleanupMixin,
+)
 from kiro_crew.acp.liveness_command import (  # noqa: F401 - re-exported for existing importers
     _COMMAND_ELISION,
     MAX_RETAINED_COMMAND_CHARS,
@@ -182,6 +188,7 @@ from kiro_crew.acp.liveness_command import (  # noqa: F401 - re-exported for exi
     LaunchRoster,
     _command_text,
     bounded_command_text,
+    complete_command_match,
     first_program,
     launch_matches,
     match_fragment,
@@ -274,6 +281,8 @@ from kiro_crew.acp.liveness_proc import (  # noqa: F401 - re-exported for existi
     select_windows_backend,
     socket_inodes,
     steady_now,
+    strict_descendants,
+    strict_direct_children,
 )
 from kiro_crew.acp.liveness_tool_state import (  # noqa: F401 - re-exported for existing importers
     InFlightToolTracker,
@@ -299,7 +308,7 @@ _WINDOWS_SHELL_CPU_KEY = "windows_shell_cpu"
 EVIDENCE_WINDOWS_TREE_MOVED = f"{_WINDOWS_CPU_LABEL}: tree cpu moved"
 
 
-class LivenessOracle:
+class LivenessOracle(_ShellCleanupMixin):
     """Per-session liveness verdicts from /proc evidence (libproc on macOS).
 
     One instance per :class:`~kiro_crew.acp.session_handle.AcpSessionHandle`.
@@ -328,6 +337,8 @@ class LivenessOracle:
         wall_now=time.time,
         steady_now_fn=steady_now,
         tenancy: Callable[[], int | None] | None = None,
+        cleanup_tenancy: Callable[[], int | None] | None = None,
+        sandbox_wrapped_by_crew: Callable[[], bool] | None = None,
         server_launches: Callable[[], LaunchRoster | None] | None = None,
         attribution_launches: Callable[[], LaunchRoster | None] | None = None,
     ) -> None:
@@ -346,6 +357,8 @@ class LivenessOracle:
             darwin_backend if darwin_backend is not None else select_darwin_backend(self._proc)
         )
         self._tracked_child: int | None = None
+        self._tracked_child_start_id: str | None = None
+        self._tracked_tool: ToolCallState | None = None
         self._child_gone_ts: float | None = None
         # How many sessions the probed runtime hosts, asked at verdict time
         # because a runtime gains and loses tenants while a turn runs. Only the
@@ -358,6 +371,17 @@ class LivenessOracle:
         # about tenancy keeps today's verdicts exactly; a caller whose runtime
         # CAN host a second session is the one that must pass this.
         self._tenancy = tenancy
+        # Cleanup has a stricter, separate contract: only a positive answer of
+        # one authorizes signals. Keeping this probe separate means adding shell
+        # cleanup cannot change the model-wait DEAD/UNKNOWN policy.
+        self._cleanup_tenancy = cleanup_tenancy
+        # Spawn-time fact owned by AcpRuntime. A true value on Linux's procfs
+        # path means a namespace launcher occupies runtime_pid and its sole
+        # direct child is the harness. The macOS Seatbelt wrapper execs the
+        # harness in place, so runtime_pid remains the parent there. Missing or
+        # non-boolean context can inform liveness but cannot authorize a signal.
+        self._sandbox_wrapped_by_crew = sandbox_wrapped_by_crew
+        self._cleanup_lineage: _CleanupLineage | None = None
         # How this session launched its MCP servers (see :data:`LaunchRoster`),
         # read ONLY by the socket scan behind the ``remote_flat`` tag, which
         # uses it to find the in-flight tool's own server process. Asked at
@@ -389,6 +413,9 @@ class LivenessOracle:
         confine.
         """
         self._tracked_child = None
+        self._tracked_child_start_id = None
+        self._tracked_tool = None
+        self._cleanup_lineage = None
         self._child_gone_ts = None
         self._samples.clear()
 
@@ -408,6 +435,8 @@ class LivenessOracle:
             wall_now=self._wall_now,
             steady_now_fn=self._steady_now,
             tenancy=self._tenancy,
+            cleanup_tenancy=self._cleanup_tenancy,
+            sandbox_wrapped_by_crew=self._sandbox_wrapped_by_crew,
             server_launches=self._server_launches,
             attribution_launches=self._attribution_launches,
         )
@@ -672,6 +701,7 @@ class LivenessOracle:
         return root
 
     def _check_shell_child(self, runtime_pid: int, tool: ToolCallState) -> tuple[str, str]:
+        self._observe_cleanup_tenancy(tool)
         if self._darwin is not None:
             return self._check_shell_child_darwin(self._darwin, runtime_pid, tool)
         windows = self._windows()
@@ -703,7 +733,7 @@ class LivenessOracle:
             self._proc_rows(runtime_pid, descendants), tool
         )
         if matched is not None:
-            return self._track_child(matched)
+            return self._track_child(matched, tool, runtime_pid)
         if possibly_running:
             return VERDICT_UNKNOWN, "no matching shell child"
         if not live_descendants and not children_interface_readable(self._proc, runtime_pid):
@@ -740,7 +770,7 @@ class LivenessOracle:
         rows = (row for row in map(backend.row, descendants) if row is not None)
         matched, live_descendants, possibly_running = self._scan_for_child(rows, tool)
         if matched is not None:
-            return self._track_child(matched)
+            return self._track_child(matched, tool, runtime_pid)
         if possibly_running:
             return VERDICT_UNKNOWN, "no matching shell child"
         return self._absent_child_verdict(live_descendants)
@@ -873,35 +903,48 @@ class LivenessOracle:
 
     def _scan_for_child(
         self, rows: Iterable[ProcessRow], tool: ToolCallState
-    ) -> tuple[int | None, int, bool]:
-        """``(matched_pid, live_descendants, possibly_running)`` over *rows*.
+    ) -> tuple[ProcessRow | None, int, bool]:
+        """``(matched_row, live_descendants, possibly_running)`` over *rows*.
 
-        ``matched_pid`` is the first live descendant whose cmdline matches the
-        cached command AND that is young enough to be this dispatch's own.
-        ``possibly_running`` is True when something that could be this command
-        is running unrecognized: a descendant started since the dispatch (the
-        match heuristic may have missed a live command — a shell that exec'd
-        away, a cached input redacted past any usable fragment), or one whose
-        cmdline matches while predating a late-taken stamp. Either vetoes the
-        absence claim; the caller keeps the plain evidence and the full window.
+        ``matched_row`` is the first live descendant whose cmdline matches a
+        liveness heuristic and that is young enough to be this dispatch's own,
+        or the one topmost such match when the others sit in its tree (a shell
+        and its matching exec child). Cleanup attribution is stricter: the
+        selected root must also match the complete decoded command. Matches with
+        no single root, such as two sibling commands under a shared runtime,
+        still track that first match for liveness, but either sibling can be
+        another session's, so the call loses cleanup authority for good: a
+        sibling exiting later cannot restore it. ``possibly_running`` is True
+        when something that could be this command is running unrecognized; it
+        vetoes the absent-child claim.
         """
         fragment = match_fragment(tool.command)
         program = first_program(tool.command)
         live_descendants = 0
         started_since_dispatch = False
         matched_but_older = False
+        matched_rows: list[ProcessRow] = []
+        non_authoritative_match_pids: set[int] = set()
         for row in rows:
             live_descendants += 1
             fresh = self._started_after_dispatch(row.started, tool)
             started_since_dispatch = started_since_dispatch or fresh
             if not row.cmdline:
                 continue
-            matched = bool(fragment) and fragment in row.cmdline
+            fragment_match = bool(fragment) and fragment in row.cmdline
+            matched = fragment_match
             if not matched and program:
                 base_tokens = {t.rsplit("/", 1)[-1] for t in row.cmdline.split()}
                 matched = program in base_tokens
             if not matched:
                 continue
+            cleanup_attributable = (
+                fragment_match
+                and complete_command_match(row.cmdline, tool.command)
+                and self._started_after_dispatch_for_cleanup(row.started, tool)
+            )
+            if not cleanup_attributable:
+                non_authoritative_match_pids.add(row.pid)
             if not fresh:
                 # Cmdline matches but the process predates the dispatch stamp by
                 # more than the tolerance. Two causes the oracle cannot tell
@@ -915,17 +958,89 @@ class LivenessOracle:
                 # not evidence that nothing is running.
                 matched_but_older = True
                 continue
-            return row.pid, live_descendants, True
+            matched_rows.append(row)
+        topmost = self._unique_topmost_shell_match(matched_rows)
+        if topmost is not None:
+            if topmost.pid in non_authoritative_match_pids:
+                tool.shell_cleanup_disqualified = True
+            return topmost, live_descendants, True
+        if matched_rows:
+            # No single matching root: never cleanup authority, but still the
+            # first fresh match as liveness evidence, as before cleanup existed.
+            tool.shell_cleanup_disqualified = True
+            return matched_rows[0], live_descendants, True
         return None, live_descendants, started_since_dispatch or matched_but_older
 
-    def _track_child(self, pid: int) -> tuple[str, str]:
+    def _unique_topmost_shell_match(self, matches: list[ProcessRow]) -> ProcessRow | None:
+        """The sole matching tree root, or None when the matches are ambiguous."""
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return None
+        match_pids = {row.pid for row in matches}
+        nested: set[int] = set()
+        for row in matches:
+            if self._darwin is not None:
+                descendants = self._darwin.descendants(row.pid)
+            else:
+                descendants = iter_descendants(self._proc, row.pid)
+                if descendants and descendants[0] == row.pid:
+                    descendants = descendants[1:]
+            if descendants is None:
+                return None
+            nested.update(match_pids.intersection(descendants))
+        topmost = [row for row in matches if row.pid not in nested]
+        return topmost[0] if len(topmost) == 1 else None
+
+    def _track_child(
+        self, row: ProcessRow, tool: ToolCallState, runtime_pid: int
+    ) -> tuple[str, str]:
+        pid = row.pid
         self._tracked_child = pid
+        self._tracked_tool = tool
+        self._cleanup_lineage = None
+        self._tracked_child_start_id = self._capture_tracked_child_start_id(row, tool, runtime_pid)
+        if self._tracked_child_start_id is None:
+            tool.shell_cleanup_disqualified = True
         self._child_gone_ts = None
         # Prime the stuck-detection movement baseline now so the NEXT check
         # can already compare deltas (otherwise stuck detection needs three
         # ticks: match, baseline, compare).
         self._tree_movement(pid, key_prefix="stuck")
         return VERDICT_WORKING, f"shell child {pid} matched command"
+
+    def _capture_tracked_child_start_id(
+        self, observed: ProcessRow, tool: ToolCallState, runtime_pid: int
+    ) -> str | None:
+        """Bind *observed* to one process incarnation, or refuse authority.
+
+        The matcher and identity reader are separate kernel calls. Read the
+        identity, then re-read the row's start instant; a PID recycled since the
+        match keeps liveness tracking but gains no later cleanup authority. The
+        oracle runs off the event loop, so tenancy is read again here: a session
+        that joined during the tree walk latches the call.
+        """
+        self._observe_cleanup_tenancy(tool)
+        if observed.started is None or tool.shell_cleanup_disqualified:
+            return None
+        lineage = self._capture_cleanup_lineage(runtime_pid, observed.pid)
+        if lineage is None:
+            return None
+        start_id = platform_compat.get_process_start_id(observed.pid)
+        if not self._valid_start_id(start_id):
+            return None
+        if self._darwin is not None:
+            current = self._darwin.row(observed.pid)
+            current_started = current.started if current is not None else None
+        else:
+            stat = read_pid_stat(self._proc, observed.pid)
+            current_started = process_start_boot_secs(stat[1]) if stat is not None else None
+        if current_started != observed.started:
+            return None
+        if not self._cleanup_lineage_is_current(lineage, observed.pid):
+            return None
+        self._cleanup_lineage = lineage
+        return start_id
 
     def _tracked_child_verdict(self, pid: int, alive: bool) -> tuple[str, str]:
         """Verdict for the tracked shell child *pid* given whether it is still alive."""
@@ -987,6 +1102,23 @@ class LivenessOracle:
             f"{EVIDENCE_SHELL_CHILD_ABSENT}: no shell child started since dispatch "
             f"({live_descendants} live descendants, none started since dispatch)",
         )
+
+    def _started_after_dispatch_for_cleanup(
+        self, started: float | None, tool: ToolCallState
+    ) -> bool:
+        """Whether *started* positively belongs to this dispatch for cleanup.
+
+        Liveness deliberately accepts an undatable process and a process inside
+        the pre-dispatch tolerance window. Signalling cannot: it requires both
+        timestamps, a stable Darwin wall clock, and a process start at or after
+        the dispatch stamp. A delayed tool-call frame may therefore keep a live
+        process in WORKING while withholding cleanup authority.
+        """
+        if tool.dispatch_boot_ts is None or started is None:
+            return False
+        if self._darwin is not None and self._wall_clock_stepped_since(tool):
+            return False
+        return started >= tool.dispatch_boot_ts
 
     def _started_after_dispatch(self, started: float | None, tool: ToolCallState) -> bool:
         """Whether a process started at *started* is young enough to be *tool*'s.

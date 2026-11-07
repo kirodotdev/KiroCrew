@@ -51,6 +51,8 @@ SHARED_BINDINGS_CHECKS = (
     "the_field_scan_counts_every_read_and_write_shape",
     "the_signature_digest_ignores_an_object_address_in_either_spelling",
     "the_bound_function_scans_include_every_static_method",
+    "the_class_only_scan_can_fail",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
 )
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
@@ -68,8 +70,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime_class"),
     "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
     # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``),
-    # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``.
-    "__init__": ("function", False, "7da71c4f7900", "runtime_class"),
+    # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``,
+    # and ``harness_pin``: the session's own Bot pin, which KAS's route rule 2 reads.
+    "__init__": ("function", False, "e6317032e444", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -114,7 +117,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
-    "_kas_custom_agents": ("function", True, "1cacd0d91137", "runtime_session_setup"),
+    "_kas_custom_agents": ("function", True, "cceb389a5970", "runtime_session_setup"),
     "_kill_failed_start_escapees": ("function", True, "ccaec8d76f05", "runtime_spawn_launch"),
     "_kill_inner": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "_mark_dead": ("function", False, "e8c36427bffd", "runtime_liveness"),
@@ -198,6 +201,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "runtime_mode_activation",
     ),
     "_unclaimed_new_sessions": ("property", False, "67a56d539800", "runtime_class"),
+    "_unconfirmed_teardowns": ("property", False, "67a56d539800", "runtime_class"),
     "_unpooled_control_planes": ("function", True, "5255b093c0d2", "runtime_session_setup"),
     "_verify_spawn_agent_active": ("function", True, "3d143e45e940", "runtime_mode_activation"),
     "_wait_for_answer_capacity": ("function", True, "609119a8d63a", "runtime_host_requests"),
@@ -569,11 +573,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", _OWNERS)
@@ -978,19 +977,6 @@ def test_every_base_import_stays_bound_on_the_facade() -> None:
     assert sorted(_BASE_IMPORTS - set(vars(runtime))) == []
 
 
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    import source_corpus
-
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve()
-    assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
-
-
 #: ``typing.get_type_hints(AcpRuntime.__init__)`` before the class left ``runtime.py``.
 _INIT_HINTS = {
     "acp_backend": "<class 'str'>",
@@ -998,6 +984,7 @@ _INIT_HINTS = {
     "crew_agent": "<class 'str'>",
     "expect_mcp_reports": "<class 'bool'>",
     "extra_env": "dict[str, str] | None",
+    "harness_pin": "<class 'str'>",
     "max_age_secs": "<class 'float'>",
     "max_rss_mb": "<class 'float'>",
     "mcp_gateway_overlay": "str | pathlib.Path | None",

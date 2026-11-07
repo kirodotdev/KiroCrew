@@ -368,6 +368,7 @@ async def _kas_custom_agents(
     crew_panel: bool = False,
     session_key: str = "",
     worker_stub_names: frozenset[str] | None = None,
+    session_cwd: str | Path | None = None,
 ) -> SessionExtras:
     """The per-session payload for a wire-registered host, and what built it.
 
@@ -387,7 +388,8 @@ async def _kas_custom_agents(
 
     *worker_stub_names* is :func:`_kas_worker_stub_names`' answer, handed down
     only when it is one (a KAS crewmate worker), so every other host's call is
-    unchanged.
+    unchanged. *session_cwd* is the session's own directory, for a host that reads
+    workspace settings beside the session.
     """
     worker: dict[str, Any] = (
         {} if worker_stub_names is None else {"worker_stub_names": worker_stub_names}
@@ -400,6 +402,7 @@ async def _kas_custom_agents(
         crew_panel=crew_panel,
         session_key=session_key,
         engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
+        session_cwd=session_cwd,
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
@@ -1029,6 +1032,26 @@ def _copy_native_launch_sources(
     handle.native_context_documents.update(self._native_launch_sources)
 
 
+def _spec_limited_to_wire(
+    spec: Any, wire_servers: Any, custom_agents: Any = None, agent_id: str = ""
+) -> dict[str, Any]:
+    """*spec* with only the ``mcpServers`` entries KAS was handed: those the wire
+    array carries, plus those left in the active custom agent's ``mcpServers``."""
+    servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+    if not isinstance(servers, dict):
+        return {}
+    delivered = {
+        entry.get("name")
+        for entry in (wire_servers if isinstance(wire_servers, list) else ())
+        if isinstance(entry, dict)
+    }
+    for agent in custom_agents if isinstance(custom_agents, list) else ():
+        block = agent.get("mcpServers") if isinstance(agent, dict) else None
+        if isinstance(block, dict) and agent.get("id") == agent_id:
+            delivered.update(block)
+    return {"mcpServers": {name: entry for name, entry in servers.items() if name in delivered}}
+
+
 def _guard_unresolved_mcp_refs(
     self: AcpRuntime,
     handle: AcpSessionHandle,
@@ -1092,12 +1115,25 @@ def _guard_unresolved_mcp_refs(
     except Exception:
         logger.debug("env-placeholder guard: evaluation failed", exc_info=True)
     try:
-        # The same spec names the servers an unattended run waits for, but
-        # only on kiro-cli: it launches the spec's own servers (via --agent)
-        # and reports each one's start. Elsewhere a spec server may be held
-        # back or never report, and every run would wait out the bound.
+        # The same spec names the servers an unattended run waits for. kiro-cli
+        # launches the spec's own servers (via --agent) and reports each one's
+        # start. KAS starts the servers the wire array carries and those the
+        # active custom agent's ``mcpServers`` keeps (a third-party server is
+        # not hoisted on session/new), and reports each in ``_kiro/mcp/status``.
+        # So it waits only for the spec servers one of the two delivered: one
+        # Crew held back from both would never report, and every run would wait
+        # out the bound. Other hosts declare nothing.
         if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
             handle.mcp_session_report().record_declared(spec)
+        elif self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KAS:
+            handle.mcp_session_report().record_declared(
+                _spec_limited_to_wire(
+                    spec,
+                    wire_servers,
+                    getattr(handle, "kas_registered_agents", None),
+                    getattr(handle, "kas_projected_agent", ""),
+                )
+            )
     except Exception:
         logger.debug("declared MCP servers: spec unreadable", exc_info=True)
 

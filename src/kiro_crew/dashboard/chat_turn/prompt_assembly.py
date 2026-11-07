@@ -5,9 +5,9 @@ The prompt phase ``_turn_build_prompt`` runs the steps in order and makes the
 ContextBuilder call; each step reads what it is handed and returns what it adds. The
 context-composition record is written in ``_turn_dispatch_gates``, once the gates pass.
 When the turn ends, ``_turn_settle_debts`` settles what it owed its prompts: the replay,
-the re-injection flag, the skill bodies and the first-turn history debt. Ahead of a cold
-start's session-start build, ``_prewarm_startup_query`` starts the first message's embedding
-and memory reads on the recall pool.
+the re-injection flag, the skill bodies, the first-turn history debt and the drained
+sub-agent notices. Ahead of a cold start's session-start build, ``_prewarm_startup_query``
+starts the first message's embedding and memory reads on the recall pool.
 """
 
 from __future__ import annotations
@@ -53,7 +53,6 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _STARTUP_QUERY_PREWARM_SECS,
         MAX_PROMPT_BYTES,
-        STOP_REASON_CANCELLED,
         STOP_REASON_END_TURN,
         DashboardState,
         _ChatSlot,
@@ -88,10 +87,12 @@ if TYPE_CHECKING:
         _detach_appended_context,
         _folder_steering_turn,
         _startup_query_prewarm_applies,
-        drain_pending_context,
+        resolve_turn_transcript_identity,
+        take_turn_context,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_stats import _kiro_cli_kept_the_prompt
 
 
 # How long a context-bearing turn waits to ENTER the memory embed pool before it
@@ -759,13 +760,17 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 turn._interrupted_turn_preamble = _interrupted_turn_preamble
         logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
         # Drain any pending subagent delivery failures so the LLM knows
-        # about timed-out results and can read them from disk.
+        # about timed-out results and can read them from disk. Settled or put
+        # back in _turn_settle_debts; a notice the message already carries (a
+        # verbatim replay) is not prepended twice.
         if slot._pending_subagent_failures:
             failures = slot._pending_subagent_failures[:]
             slot._pending_subagent_failures.clear()
-            settle_drained_subagent_notices(state, slot, failures)
-            message = "\n\n".join(failures) + "\n\n" + message
-            turn.message = message
+            turn._drained_subagent_notices = failures
+            fresh = [notice for notice in failures if notice not in message]
+            if fresh:
+                message = "\n\n".join(fresh) + "\n\n" + message
+                turn.message = message
         # Save raw user message before context/persona prepend for Slack
         # mirror — avoids leaking injected context to the linked thread.
         _user_msg_for_mirror = message
@@ -780,8 +785,16 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             message = _sender + message
             turn.message = message
         # Drain pending context injections (silent background context
-        # from apps/subagents).  Expired entries are discarded.
-        _ctx_prefix = drain_pending_context(slot)
+        # from apps/subagents).  Expired entries are discarded. A merge card
+        # queued on another slot of this session is this turn's as well; the
+        # transcript identity that admits it is read off the loop first.
+        _turn_identity = await resolve_turn_transcript_identity(state, slot)
+        _turn_context = take_turn_context(state, slot, transcript_identity=_turn_identity)
+        _ctx_prefix = _turn_context.prefix
+        turn._drained_merge_contexts = _turn_context.consumed
+        slot._inflight_merge_contexts = turn._drained_merge_contexts
+        _message_without_merge_cards = _turn_context.prefix_without_cards + message
+        turn._message_without_merge_cards = _message_without_merge_cards
         if _ctx_prefix:
             message = _ctx_prefix + message
             turn.message = message
@@ -1095,9 +1108,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
 
 
 async def _turn_settle_debts(turn: _ChatTurn) -> None:
-    """Settle the turn's prompt debts: replay, re-injection, skill bodies, first-turn history."""
-    _compaction_completed = turn._compaction_completed
-    _recovering_compaction = turn._recovering_compaction
+    """Settle the turn's prompt debts.
+
+    The replay, re-injection, skill bodies, first-turn history and drained sub-agent notices.
+    """
     _replay_accepted_this_turn = turn._replay_accepted_this_turn
     _responsive_recovery = turn._responsive_recovery
     _responsive_turn = turn._responsive_turn
@@ -1117,6 +1131,13 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     if turn._admission_slot is not None and not turn._admission_slot.handed_off:
         turn._admission_slot.release()
         turn._admission_slot = None
+    # Settle only notices the model consumed; otherwise requeue them at the
+    # front, still owed, so they are announced again rather than lost.
+    if turn._drained_subagent_notices:
+        if turn._consumed_reported:
+            settle_drained_subagent_notices(state, turn.slot, turn._drained_subagent_notices)
+        else:
+            turn.slot._pending_subagent_failures[:0] = turn._drained_subagent_notices
     # Replay settlement belongs on the one path every turn exit crosses.
     # A clean, non-synthetic landed end_turn is the only ordinary terminal
     # whose fresh native transcript is durable enough to replace the prior
@@ -1242,19 +1263,7 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # (``not _turn_emitted``: a pre-stream 5xx re-queue, a bare early return)
     # never streamed, so the history did NOT reach the provider and the debt
     # correctly stays armed for the re-queue to rebuild.
-    _first_turn_history_delivered = (
-        (
-            turn._stop_reason == STOP_REASON_END_TURN
-            and not _terminal_synthetic
-            and not turn._had_empty_response_verdict
-        )
-        or (
-            turn._turn_emitted
-            and turn._stop_reason != STOP_REASON_CANCELLED
-            and not turn._had_empty_response_verdict
-        )
-        or (_recovering_compaction and _compaction_completed)
-    )
+    _first_turn_history_delivered = _kiro_cli_kept_the_prompt(turn)
     if turn._first_turn_history_assembled and _first_turn_history_delivered:
         try:
             state.sessions.consume_first_turn_history_owed(session_key)

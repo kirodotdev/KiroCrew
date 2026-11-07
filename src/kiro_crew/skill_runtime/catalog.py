@@ -1002,6 +1002,36 @@ def _get_released_app_names(
     return released & owners
 
 
+def _prime_gate_frontmatter(loader: SkillsLoader, rows: list[tuple[str, Path, str | None]]) -> None:
+    """Cache each flat row's saved metadata as its frontmatter, as ``list_skills`` does.
+
+    Until a walk vets the stored rows, the gate's read of a flat row's ``app:`` line
+    pays :func:`_vet_unconfined_path`; a saved row whose stat fingerprint still
+    matches answers it instead, as it answers every gate pass after the listing.
+    """
+    if loader._search_index is None:
+        return
+    answered = (loader._fm_cache, loader._walk_vetted)
+    unread = [
+        (key, path)
+        for key, path, within in rows
+        if within is None and "/" not in key and not any(str(path) in a for a in answered)
+    ]
+    if not unread:
+        return
+    saved = loader._search_index.metadata_snapshot()
+    for key, path in unread:
+        stored = saved.get(str(path))
+        if stored is None or stored[1].get("_catalog_key") != key:
+            continue
+        try:
+            st = path.stat()
+        except (OSError, ValueError):
+            continue
+        if stored[0] == f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}":
+            loader._fm_cache[str(path)] = (st.st_mtime, stored[1])
+
+
 def _hidden_by_app(
     loader: SkillsLoader,
     row: tuple[str, Path, str | None],
@@ -1028,7 +1058,7 @@ def _iter_visible(
     """Return the first ``(name, skill_file, within)`` per key, minus app-gated skills.
 
     The gate is :func:`_hidden_by_app`. ``_owning_app`` resolves real paths, so
-    filtering the whole catalog costs a few ``realpath`` walks per skill, and
+    filtering the whole catalog costs a ``realpath`` walk per skill, and
     context assembly asks several times a turn. ``_iter_rows`` hands back the SAME
     cached list until the catalog is rebuilt, so the filtered rows are kept against
     that list object and the disabled and released sets and reused while all three
@@ -1048,11 +1078,9 @@ def _iter_visible(
     memo = loader._visible_memo.get(id(rows))
     if memo is not None and memo[0] is rows and memo[1] == gates:
         return memo[2]
-    visible = [
-        row
-        for row in _first_per_key(rows)
-        if not _hidden_by_app(loader, row, disabled_apps, released_apps)
-    ]
+    first = _first_per_key(rows)
+    _prime_gate_frontmatter(loader, first)
+    visible = [r for r in first if not _hidden_by_app(loader, r, disabled_apps, released_apps)]
     if len(rows) > _VISIBLE_MEMO_MAX_ROWS:
         return visible
     # Holding `rows` keeps its id from being reused while the entry lives; a
@@ -1212,6 +1240,8 @@ def _scoped_entries(
     for key, path, _within in rows:
         winners.setdefault(key, path)
     admitted_copy_roots = loader._snapshot_admitted_roots()
+    if disabled or released:
+        _prime_gate_frontmatter(loader, rows)
     entries = [
         sk._ScopedSkillEntry(*row)
         for row in rows
@@ -1459,6 +1489,25 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
         loader._request_catalog_refresh(scope)
 
 
+def _owner_roots(loader: SkillsLoader) -> tuple[Path, Path]:
+    """The resolved apps and builtins roots, kept for the catalog TTL like the app sets.
+
+    Keyed on the apps root as spelled, so a moved data home is never answered stale.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.apps.manager import apps_dir
+
+    spelled = str(apps_dir())
+    now = time.monotonic()
+    cached = loader._owner_roots_cache
+    if cached is not None and now < cached[0] and cached[1] == spelled:
+        return cached[2]
+    package = Path(os.path.realpath(Path(sk.__file__).parent))
+    roots = (Path(os.path.realpath(spelled)), package / "apps" / "builtins")
+    loader._owner_roots_cache = (now + sk._ITER_CACHE_TTL_SECS, spelled, roots)
+    return roots
+
+
 def _owning_app(
     loader: SkillsLoader, name: str, skill_file: Path, within: str | None = None
 ) -> str | None:
@@ -1497,21 +1546,15 @@ def _owner_and_source(
     loader: SkillsLoader, name: str, skill_file: Path, within: str | None = None
 ) -> tuple[str | None, bool]:
     """:func:`_owning_app`, and whether the owner came ONLY from the ``app:`` frontmatter line."""
-    from kiro_crew import skills as sk  # circular import: the facade imports this module
-
     head = name.split("/", 1)[0]
     if head != name:
         return head, False
     try:
-        from kiro_crew.apps.manager import apps_dir
-
         real = Path(os.path.realpath(skill_file))
-        # Resolved like ``real``: the default data home keeps $HOME's spelling.
-        root = Path(os.path.realpath(apps_dir()))
+        root, builtins_root = _owner_roots(loader)
         if real.is_relative_to(root):
             # <apps root>/<app>/... — the segment directly under the root.
             return real.relative_to(root).parts[0], False
-        builtins_root = Path(os.path.realpath(Path(sk.__file__).parent)) / "apps" / "builtins"
         if real.is_relative_to(builtins_root):
             pkg_dir = builtins_root / real.relative_to(builtins_root).parts[0]
             return _builtin_dir_app_name(str(pkg_dir)), False

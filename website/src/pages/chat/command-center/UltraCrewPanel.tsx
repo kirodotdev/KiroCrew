@@ -292,6 +292,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   // with no report yet stays Not started (it may have no worker bound at all),
   // and raises only the quiet pulse below.
   if (open && item.stale) return 'quiet'
+  // Idle, but its own loop will wake it (waiting on CI, the server's `looping`):
+  // the flow still runs. A report the conductor still owes an answer stays waiting.
+  if (open && item.looping === true && item.alive === 'idle' && !onConductor(item)) return 'running'
   // An idle session after progress, or a question / blocked report the
   // conductor still owns, is waiting, as the List shows it.
   if (open) return 'waiting'
@@ -363,12 +366,15 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       {said && <span className="truncate" title={said}>· {said}</span>}
     </>
   } else {
+    // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
     const text = state === 'needs_you' ? waitingOn
+      : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.ultra_ms_running')} ${i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}`
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.ultra_ms_running'))
         : i18nT('components.crewMode.ultra_ms_not_started')
     sub = <span className="truncate" title={text}>{text}</span>
   }
-  const right = state === 'running' ? i18nT('components.crewMode.ultra_ms_now')
+  // "now" only for a turn in flight; a loop between checks shows the time since its report.
+  const right = state === 'running' && item.alive === 'running' ? i18nT('components.crewMode.ultra_ms_now')
     : state === 'next' ? i18nT('components.crewMode.ultra_ms_next')
       : state === 'done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
         : fmtMinutes(minutesBetween(item.last_report_at || item.created_at, now))

@@ -137,6 +137,19 @@ class TestIdle:
         assert await sd.deliver(state, slot, WAKE_TEXT, sd.automation(3, "l1")) == sd.NOT_DELIVERED
         assert slot.messages == []
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("running", [False, True])
+    async def test_a_wake_with_a_turn_starter_runs_it_only_on_an_idle_slot(self, state, running):
+        slot = _running_slot(state) if running else state.get_or_create_slot("idle")
+        start = AsyncMock(return_value="the starter's answer")
+        steer = AsyncMock()
+        with patch("kiro_crew.dashboard.chat_delivery.steer_into_running_turn", steer):
+            out = await sd.deliver(state, slot, WAKE_TEXT, sd.automation(3, "l1"), start_turn=start)
+        assert out == (sd.NOT_DELIVERED if running else "the starter's answer")
+        assert start.await_count == (0 if running else 1)
+        steer.assert_not_awaited()
+        assert slot.messages == [] and slot._queue == []
+
 
 class TestRunning:
     @pytest.mark.asyncio
@@ -330,13 +343,35 @@ class TestCallersRouteThroughDeliver:
         loop = _ledger_loop()
         slot = _slot(running=True)
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-        deliver = AsyncMock(return_value=sd.DELIVERED_STEERED)
+        deliver = AsyncMock(side_effect=[sd.NOT_DELIVERED, sd.DELIVERED_STEERED])
         with (
             patch.object(sd, "deliver", deliver),
             patch("kiro_crew.dashboard.session_control.containment_meta", return_value={}),
             patch.object(orch, "_work_ledger_wake_text", AsyncMock(return_value=WAKE_TEXT)),
         ):
             assert await orch._fire_dashboard_nudge(loop) is True
-        origin = deliver.await_args.args[3]
+        # The running slot declines the fire's turn starter; the steer is a second
+        # delivery that brings none.
+        fire, steer = deliver.await_args_list
+        assert "start_turn" in fire.kwargs and "start_turn" not in steer.kwargs
+        origin = steer.args[3]
         assert origin.kind == sd.ORIGIN_AUTOMATION
         assert origin.nudge == {"cycle": loop.cycle_count + 1, "loop_id": loop.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("running", [False, True])
+    async def test_the_session_picks_whether_a_nudge_fire_starts_its_turn(self, running):
+        from test_work_ledger_wake_delivery import _ledger_loop, _orchestrator, _slot
+
+        from kiro_crew.monitoring.models import MonitorDispatchResult
+
+        orch = _orchestrator()
+        loop = _ledger_loop()
+        orch.dashboard_state.get_slot = MagicMock(return_value=_slot(running=running))
+        start = AsyncMock(return_value=MonitorDispatchResult.DISPATCHED)
+        with (
+            patch.object(orch, "_start_dashboard_wake_turn", start),
+            patch.object(orch, "_work_ledger_wake_text", AsyncMock(return_value="")),
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is not running
+        assert start.await_count == (0 if running else 1)

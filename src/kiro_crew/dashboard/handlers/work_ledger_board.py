@@ -483,6 +483,9 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         facts["stale"] = work_ledger.is_stale(
             item, worker_running=running, worker_closed=closed, worker_looping=looping
         )
+        # Idle, and its worker's own loop will wake it (waiting on CI): the page reads
+        # it as working, not waiting. A running turn keeps its own live reading.
+        facts["looping"] = looping and not running
         facts["worker"] = _alive_of(state, item.worker_session_key or "")
         events = raw.get("events")
         facts["awaits_person"] = not item.is_terminal and awaits_person(
@@ -593,6 +596,9 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         row["stale"] = work_ledger.is_stale(
             item, worker_running=running, worker_closed=closed, worker_looping=looping
         )
+        # Idle, and its worker's own loop will wake it (waiting on CI): the Crew panel
+        # reads it as running, not waiting. A running turn keeps its own reading.
+        row["looping"] = looping and not running
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["report_undelivered"] = undelivered.get(item.item_id)
         events = [event.to_dict() for event in event_tails[item.item_id]]

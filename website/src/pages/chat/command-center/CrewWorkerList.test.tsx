@@ -444,6 +444,21 @@ describe('Ultra Mode Crew tab', () => {
     expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Quiet or stuck work is under Milestones.')
   })
 
+  it('Status: an idle milestone whose worker loops on CI reads running and names its PR', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'l1', title: 'Drinks menu', pr: 7, looping: true, summary: 'Monitor armed, ending turn.' }),
+    ] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const [row] = await screen.findAllByTestId('ultra-milestone')
+    expect(row.getAttribute('data-state')).toBe('running')
+    // One wording, typed, never the worker's own words; no turn is in flight, so no "now".
+    expect(row).toHaveTextContent('In progress · PR #7')
+    expect(row).not.toHaveTextContent('Waiting')
+    expect(row).not.toHaveTextContent('Monitor armed')
+    expect(row).not.toHaveTextContent(/\bnow\b/)
+  })
+
   it('Status: a blocked milestone opens its crew member, and shows no "moving" pulse', async () => {
     api.crewWorkers.mockResolvedValue({ ...WORKERS, workers: [{ ...W('w-sup', 'Supplies', 'idle', 'waiting'), ledger_item: 'b1' }] })
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'b1', title: 'Supplies list', status: 'blocked' })] })

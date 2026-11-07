@@ -16,36 +16,41 @@ describe('crewWorkCounts — the ledger read against the live rows', () => {
   })
 
   it('an item before its stale moment is moving', () => {
-    expect(crewWorkCounts(facts([item()]), idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(crewWorkCounts(facts([item()]), idle, NOW)).toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
   })
 
   it('an item past its stale moment is stalled', () => {
     expect(crewWorkCounts(facts([item({ stale_at_ms: NOW - 1 })]), idle, NOW))
-      .toEqual({ person: 0, moving: 0, stalled: 1 })
+      .toEqual({ person: 0, moving: 0, looping: 0, stalled: 1 })
   })
 
   it('an item the ledger never flags is moving', () => {
-    expect(crewWorkCounts(facts([item({ stale_at_ms: 0 })]), idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(crewWorkCounts(facts([item({ stale_at_ms: 0 })]), idle, NOW)).toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
   })
 
   it('a running worker is never stalled, however long it is quiet', () => {
     expect(crewWorkCounts(facts([item({ stale_at_ms: 1 })]), [{ key: 'w', running: true }], NOW))
-      .toEqual({ person: 0, moving: 1, stalled: 0 })
+      .toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
   })
 
   it('a stall the conductor\'s own live loop will pick up is not counted stalled', () => {
     const handled = { ...facts([item({ stale_at_ms: NOW - 1 })]), conductor_looping: true }
-    expect(crewWorkCounts(handled, idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(crewWorkCounts(handled, idle, NOW)).toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
     expect(stalledWorkKeys(handled, idle, NOW)).toBe('')
   })
 
   it('a remote worker (no key) follows its stale moment alone', () => {
     expect(crewWorkCounts(facts([item({ worker: '', stale_at_ms: NOW - 1 })]), idle, NOW))
-      .toEqual({ person: 0, moving: 0, stalled: 1 })
+      .toEqual({ person: 0, moving: 0, looping: 0, stalled: 1 })
+  })
+
+  it('a moving item whose worker loops (waiting on CI) is counted looping too', () => {
+    const f = facts([item({ looping: true }), item({ worker: 'x' })])
+    expect(crewWorkCounts(f, idle, NOW)).toEqual({ person: 0, moving: 2, looping: 1, stalled: 0 })
   })
 
   it('items on a person are counted apart', () => {
-    expect(crewWorkCounts(facts([], 2), idle, NOW)).toEqual({ person: 2, moving: 0, stalled: 0 })
+    expect(crewWorkCounts(facts([], 2), idle, NOW)).toEqual({ person: 2, moving: 0, looping: 0, stalled: 0 })
   })
 })
 

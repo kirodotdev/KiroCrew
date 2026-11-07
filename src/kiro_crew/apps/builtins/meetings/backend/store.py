@@ -38,7 +38,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import threading
 import time
 import uuid
@@ -52,7 +51,11 @@ from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry, replace_with_retry
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
-from kiro_crew.platform_compat import is_link_or_junction, strip_extended_length_prefix
+from kiro_crew.platform_compat import (
+    is_link_or_junction,
+    remove_with_retry,
+    strip_extended_length_prefix,
+)
 from kiro_crew.sel import sel
 from kiro_crew.user_json import loads_user_json
 
@@ -490,12 +493,20 @@ def delete_meeting(meeting_id: str, root: Path | None = None) -> bool:
         )
         if not meta.is_file():
             return False
-        shutil.rmtree(resolved)
-        for sidecar in (edit_resolved, note_resolved):
-            if sidecar.is_dir():
-                shutil.rmtree(sidecar)
-            elif sidecar.exists():
-                sidecar.unlink()
+        # ``session.json`` goes last: a file another process holds open can fail
+        # any step, and the marker that survives it lets a retry find the meeting
+        # and finish instead of answering "not found" over a half-deleted tree.
+        hint = "Close the program using that file, then delete the meeting again"
+        try:
+            for sidecar in (edit_resolved, note_resolved):
+                if sidecar.exists():
+                    remove_with_retry(sidecar, retry_hint=hint)
+            for child in resolved.iterdir():
+                if child.name != k.SESSION_META_FILE:
+                    remove_with_retry(child, retry_hint=hint)
+            remove_with_retry(resolved, retry_hint=hint)
+        except PermissionError as exc:
+            raise MeetingsPathError(str(exc), status=500, code="meeting_delete_failed") from exc
     return True
 
 

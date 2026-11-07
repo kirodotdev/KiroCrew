@@ -1264,11 +1264,13 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
+        new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
         widget_density=section.get("widget_density"),
         browser_local_origins=_sections.coerce_browser_local_origins(
             section.get("browser_local_origins")
         ),
         verbosity=_sections.normalize_verbosity(section.get("verbosity")),
+        preferred_language=section.get("preferred_language"),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
         terminal=section.get("terminal"),

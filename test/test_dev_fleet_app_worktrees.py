@@ -7,6 +7,7 @@ the upstream-remote resolution the sync and the verdicts share.
 
 from __future__ import annotations
 
+import sys
 import textwrap
 import threading
 from contextlib import ExitStack
@@ -21,6 +22,7 @@ from dev_fleet_app_helpers import _sweep_staged_sync_tempdirs  # noqa: F401 - fi
 from dev_fleet_app_helpers import _venv_maps_to_the_synced_checkout  # noqa: F401 - fixture
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
+from kiro_crew import gateway_lock
 from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
@@ -623,6 +625,29 @@ async def test_remove_leaves_a_non_orphan_home_alone(tmp_path):
     assert result["ok"] is True
     reclaim.assert_not_called()
     assert result["reclaimed_pod_home"] is False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="only systemd judges a HOME by its use")
+@pytest.mark.asyncio
+async def test_remove_refuses_while_a_gateway_outside_the_unit_serves_the_home(tmp_path):
+    """No unit runs the pod, so ``orphan_homes`` leaves out the HOME a gateway still
+    holds. That gateway may serve from this checkout, so the checkout stays."""
+    home = tmp_path / "feat-x"
+    home.mkdir()
+    reclaim = MagicMock(return_value=("reclaimed", ""))
+    with ExitStack() as stack:
+        for cm in _remove_stubs(
+            tmp_path,
+            active=patch.object(runtime_mod.rt, "active_names", return_value=set()),
+            reclaim=patch.object(worktree_ops_mod, "_reclaim_pod_locked", reclaim),
+        ):
+            stack.enter_context(cm)
+        with gateway_lock.GatewayLock(home):  # stands in for a gateway run outside the unit
+            result = await mod._worktree_remove("feat-x", force=False)
+
+    assert result["ok"] is False
+    assert "HOME of pod 'feat-x' is still in use" in result["error"]
+    reclaim.assert_not_called()
 
 
 @pytest.mark.asyncio

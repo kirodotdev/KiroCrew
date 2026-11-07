@@ -59,6 +59,7 @@ from kiro_crew.port_resolution import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
+from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
 
 
@@ -371,10 +372,11 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     # overload resolution on the build fleet). POSIX: start_new_session=True (own
     # session/group, immune to SIGHUP); creationflags resolves to 0 (no-op).
     # Windows: there is no setsid (start_new_session is silently ignored), so
-    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP gives the child its own
-    # console-less process group that survives the parent. The flags come from
-    # platform_compat (getattr) so referencing them doesn't fail mypy's
-    # [attr-defined] check on Linux where subprocess.* lacks them.
+    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP gives the child its own process
+    # group that survives the parent and a hidden console of its own, which its
+    # console children inherit instead of each opening a visible window. The
+    # flags come from platform_compat (getattr) so referencing them doesn't fail
+    # mypy's [attr-defined] check on Linux where subprocess.* lacks them.
     proc = subprocess.Popen(  # noqa: S603 — argv from trusted sources
         argv,
         stdin=subprocess.DEVNULL,
@@ -383,7 +385,9 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         close_fds=True,
         cwd=str(Path.home()),
         start_new_session=platform_compat.IS_POSIX,
-        creationflags=(platform_compat.DETACHED_PROCESS | platform_compat.CREATE_NEW_PROCESS_GROUP),
+        creationflags=(
+            platform_compat._SUBPROCESS_NO_WINDOW | platform_compat.CREATE_NEW_PROCESS_GROUP
+        ),
     )
     return proc
 
@@ -917,12 +921,13 @@ def _restart(cli_port: int | None = None) -> None:
 
         # Our unit is stopped and no gateway runs: never start one outside it.
         unit = service_controller.installed_unit_path()
+        if unit is not None and not service_controller.unit_is_ours(unit):
+            # The system file is not our loaded unit (an alias of another unit, or
+            # a file the manager does not load); our per-user unit may still be
+            # installed beside it.
+            unit = svc_linux.user_unit_path()
         running = True
-        if (
-            unit is not None
-            and service_controller.unit_is_ours(unit)
-            and not platform_compat.find_listening_pids(port)
-        ):
+        if unit is not None and not platform_compat.find_listening_pids(port):
             try:
                 running = lock_holder(config_dir()).pid is not None
             except LockProbeError:

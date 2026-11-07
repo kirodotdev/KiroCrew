@@ -577,8 +577,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
     # through the side panel. ``affects`` is the two entry types
     # :mod:`~kiro_crew.crew_log.projection_otel_usage` reads; both are small and rare
     # next to a session's message bodies, so ``copy_state`` is spelled out rather
-    # than falling back to a deep copy of a state that is already two scalars and a
-    # small dict.
+    # than falling back to a deep copy of a state that is a few scalars and two small
+    # dicts.
     OTEL_USAGE_FOLD_NAME: _Fold(
         OTEL_USAGE_FOLD_NAME,
         _otel_usage_start,
@@ -586,20 +586,22 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _otel_usage_render,
         affects=OTEL_USAGE_TYPES,
         copy_state=_otel_usage_copy,
-        # Three past the base. Two of those are the stored SHAPE: the state carries
-        # ``opened_ts`` beside ``opened`` / ``turns``, and the opened agent is held as
-        # the closed ``opened_agent_kind`` enum, not a raw name. A savepoint whose
-        # shape does not match -- one missing ``opened_ts``, or one carrying a raw
-        # agent string -- retires to a cold fold rather than resuming under a shape
-        # this version does not read.
+        # Four past the base. Three of those are the stored SHAPE: the state carries
+        # ``opened_ts`` beside ``opened`` / ``turns``, the opened agent is held as
+        # the closed ``opened_agent_kind`` enum, not a raw name, and the resume floor
+        # (``resumed_ts`` / ``resumed_turns``) is kept beside the totals. A savepoint
+        # whose shape does not match -- one missing ``opened_ts`` or the floor, or one
+        # carrying a raw agent string -- retires to a cold fold, which re-derives the
+        # floor from the log, rather than resuming under a shape this version does not
+        # read.
         #
-        # The third is a shape the keys cannot show: ``opened_agent_kind`` is answered
+        # The fourth is a shape the keys cannot show: ``opened_agent_kind`` is answered
         # from the opening entry's ``slot`` for the ``crewmate`` value, so a savepoint
         # written by a build that read only ``agent`` holds ``other`` for every
         # crewmate session it folded. The keys match, the meaning does not, and
         # resuming such a file would serve that wrong value for the life of the unit --
         # which is exactly what this number retires.
-        state_version=_FOLD_STATE_VERSION_BASE + 3,
+        state_version=_FOLD_STATE_VERSION_BASE + 4,
     ),
     # Keyed by one SESSION and NOT advertised, for the same reason as ``otel_usage``
     # beside it: its one reader is the OTel export subscriber, which asks for it by

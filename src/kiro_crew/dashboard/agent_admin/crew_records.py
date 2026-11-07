@@ -506,6 +506,19 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if "approval_mode" in body and body["approval_mode"]:
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        if not session_mode_permitted(body["approval_mode"]):
+            return web.json_response(
+                {
+                    "error": f"approval mode {body['approval_mode']!r} is disabled by your "
+                    "organization's policy",
+                    "code": "mode_disabled_by_policy",
+                    "mode": body["approval_mode"],
+                },
+                status=403,
+            )
     approval_mode = body.get("approval_mode", "")
     # Same placement rule as the other pre-lock validations: refused before any
     # state is touched. Presentation only, but strictly a string — every roster

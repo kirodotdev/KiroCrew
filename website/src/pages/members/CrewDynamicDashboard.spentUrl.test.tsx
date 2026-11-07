@@ -63,6 +63,12 @@ async function mount(scripts?: boolean) {
     if (!found) throw new Error('the frame never mounted')
     return found as HTMLIFrameElement
   })
+  // Flush any React effects that are still pending after waitFor returns, so the
+  // useFrameAliveRecovery load listener is attached before vi.useFakeTimers() installs
+  // the fake clock.  Without this, on a busy runner the effects can still be queued
+  // in a microtask when fake timers are installed, causing reload()'s fireEvent.load
+  // to fire before the listener is in place.
+  await act(async () => {})
   // The test DOM gives a cross-origin frame no window, so the frame gets a stand-in
   // that records the ping and is the `source` its answer comes from.
   const pings: unknown[] = []

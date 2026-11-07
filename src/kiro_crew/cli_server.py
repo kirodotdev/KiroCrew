@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from pathlib import Path
@@ -136,7 +137,11 @@ def _status(args: argparse.Namespace) -> None:
         with loopback_urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
+        if e.code not in (401, 403):
+            print(f"Kiro Crew gateway is running but returned HTTP {e.code}.")
+            return
+        data = _owner_status(port)
+        if data is None:
             print("Kiro Crew gateway is running (token auth enabled).")
             print("  For detailed stats, see the Overview page in the dashboard.")
             from kiro_crew.doctor_checks.services import _running_gateway_version
@@ -146,9 +151,7 @@ def _status(args: argparse.Namespace) -> None:
                 {"version": _running_gateway_version(port)}, live_target.selected_version()[0], None
             )
             print(f"  Version:     {version}")
-        else:
-            print(f"Kiro Crew gateway is running but returned HTTP {e.code}.")
-        return
+            return
     except (urllib.error.URLError, OSError) as e:
         # A timeout means something took the request, so a gateway IS listening
         # -- it is up but busy (a loop thread starved of the GIL), not gone.
@@ -172,6 +175,8 @@ def _status(args: argparse.Namespace) -> None:
     print(f"Kiro Crew v{__version__} 👻\n")
     print(f"  Uptime:      {data.get('uptime', '—')}")
     print(f"  Sessions:    {data.get('sessions', 0)}")
+    if data.get("session_map_writes_refused"):
+        print(f"  Session map: {data.get('session_map_remedy', '')}")
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")
@@ -183,6 +188,32 @@ def _status(args: argparse.Namespace) -> None:
     from kiro_crew.service import live_target
 
     print(f"  Version:     {_format_version_line(data, *live_target.selected_version())}")
+
+
+def _owner_status(port: int) -> dict | None:
+    """The ``/api/status`` payload read as the owner, or None when that fails.
+
+    The route takes only a dashboard token, so this mints a one-minute one the way
+    ``kirocrew token`` does and presents it. Both requests carry an owner credential,
+    so both go through the peer-proven transport.
+    """
+    from kiro_crew import cli_server_peer as peer  # in-function: see ``deadline_expired`` above
+
+    base = f"http://{peer._CLI_LOOPBACK}:{port}"
+    try:
+        secret = read_local_secret(port, dial_host=peer._CLI_LOOPBACK)
+        if not secret:
+            return None
+        mint = urllib.request.Request(
+            f"{base}/api/token/local?ttl=1m", headers={"X-Local-Secret": secret}
+        )
+        with peer._owner_verified_secret_urlopen(mint, port, 3, operation="gateway_token") as resp:
+            token = urllib.parse.quote(json.loads(resp.read())["token"], safe="")
+        read = urllib.request.Request(f"{base}/api/status?token={token}")
+        with peer._owner_verified_secret_urlopen(read, port, 3, operation="gateway_status") as resp:
+            return json.loads(resp.read())
+    except Exception:  # noqa: BLE001 -- any failure keeps the token-auth line
+        return None
 
 
 def _format_version_line(data: dict, selected: str | None, changed_at: float | None) -> str:

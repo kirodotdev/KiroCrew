@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
 import os
 import zipfile
 from pathlib import Path
@@ -277,6 +278,45 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
         assert resp.status == 400, await resp.text()
         body = await resp.json()
         assert "does not match its type" in body["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "content_type"),
+    [
+        (".dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template"),
+        (".xltx", "application/vnd.openxmlformats-officedocument.spreadsheetml.template"),
+        (".potx", "application/vnd.openxmlformats-officedocument.presentationml.template"),
+    ],
+)
+async def test_upload_ooxml_template_is_accepted_and_zip_checked(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+    extension: str,
+    content_type: str,
+) -> None:
+    """An OOXML template uploads like its base format, under the same ZIP check."""
+    async with TestClient(TestServer(_make_app())) as client:
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", _minimal_docx_bytes(), filename=f"brand{extension}", content_type=content_type
+        )
+        with caplog.at_level(logging.INFO, logger="kiro_crew.dashboard.handlers.files"):
+            resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        saved = Path((await resp.json())["paths"][0])
+        assert mimetypes.guess_type(saved.name)[0] == content_type
+        diagnostic = [m for r in caplog.records if "upload.file diagnostic" in (m := r.getMessage())]
+        assert diagnostic and "is_zipfile=True" in diagnostic[0], diagnostic
+
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", b"<html>not a zip</html>", filename=f"fake{extension}", content_type=content_type
+        )
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        assert "does not match its type" in (await resp.json())["error"]
 
 
 @pytest.mark.asyncio
@@ -618,6 +658,28 @@ async def test_upload_unconverted_heic_names_the_reload_remedy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["deck.key", "Essay.PAGES", "budget.numbers"])
+async def test_upload_iwork_document_names_the_export_remedy(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """An Apple iWork document is still refused -- nothing here reads its
+    format -- but the refusal names the export that does upload."""
+    form = aiohttp.FormData()
+    form.add_field("file", _minimal_docx_bytes(), filename=filename)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "unsupported_file_type"
+    assert body["error"].startswith(f"Unsupported file type: {Path(filename).suffix.lower()}.")
+    assert "File > Export To" in body["error"]
+    assert "PowerPoint, Word, Excel or PDF" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_upload_html_under_an_image_extension_is_still_refused(
     upload_dir: Path,
     mock_sel,
@@ -772,12 +834,12 @@ def test_a_short_name_is_kept_as_it_is() -> None:
     [
         ("cafe\u0301.txt", "caf\u00e9.txt"),  # NFD from macOS: composed, not "cafe_"
         ("Bjo\u0308rk n\u0303.png", "Bj\u00f6rk_\u00f1.png"),  # every composable accent
-        # A mark with no composed form is replaced as before, so the stored path
-        # still matches the image-path grammar that reads \w.
-        ("\u0939\u093f\u0902\u0926\u0940.png", "\u0939__\u0926_.png"),
+        # A mark with no composed form is kept: the image-path grammar reads it.
+        ("\u0939\u093f\u0902\u0926\u0940.png", "\u0939\u093f\u0902\u0926\u0940.png"),
+        ("a\ufe0f\u034f\U000e0100.png", "a___.png"),  # a mark that draws nothing is not kept
         ("my report (v2).pdf", "my_report__v2_.pdf"),  # replaced exactly as before
     ],
-    ids=["nfd-latin", "nfd-several", "devanagari-unchanged", "ascii-punctuation"],
+    ids=["nfd-latin", "nfd-several", "devanagari-kept", "invisible-marks", "ascii-punctuation"],
 )
 def test_upload_name_composes_accents(filename: str, expected: str) -> None:
     from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
@@ -789,14 +851,24 @@ def test_upload_name_composes_accents(filename: str, expected: str) -> None:
     "filename",
     ["cafe\u0301.png", "\u0939\u093f\u0902\u0926\u0940.png", "\u6587\u4ef6.jpg", "x\u0338.png"],
 )
-def test_a_sanitized_image_name_is_still_read_as_an_image_path(filename: str) -> None:
-    """The stored path must match image_refs, or the picture never reaches the model."""
+@pytest.mark.parametrize(
+    ("grammar", "uploads"),
+    [
+        ("_POSIX_PATH_RE", "/home/u/.kiro/crew/uploads/"),
+        ("_WINDOWS_PATH_RE", "C:\\Users\\u\\.kiro\\crew\\uploads\\"),
+    ],
+    ids=["posix", "windows"],
+)
+def test_a_sanitized_image_name_is_still_read_as_an_image_path(
+    filename: str, grammar: str, uploads: str
+) -> None:
+    """Each host's path grammar must read the stored path, or the picture never reaches the model."""
     from kiro_crew import image_refs
     from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
 
-    stored = f"/home/u/.kiro/crew/uploads/{'0' * 32}_{_safe_upload_name(filename)}"
+    stored = f"{uploads}{'0' * 32}_{_safe_upload_name(filename)}"
 
-    match = image_refs._POSIX_PATH_RE.search(stored)
+    match = getattr(image_refs, grammar).search(stored)
     assert match is not None and match.group(1) == stored, ascii(stored)
 
 

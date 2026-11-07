@@ -8,6 +8,7 @@ restricted it. Pure; every other key, and any malformed value, is kept.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import _SHELL_SETTINGS_KEYS, _WRITE_SETTINGS_KEYS
@@ -62,3 +63,70 @@ def without_grant_only_settings(tools_settings: Any) -> Any:
             else:
                 del out[key]
     return out
+
+
+def _shell_key_grants_only(key: str, value: Any) -> bool:
+    """Whether a shell entry's *key* leaves an ``allowedCommands`` match unasked.
+
+    On kiro-cli none of these turns a command an ``allowedCommands`` entry matches
+    into a prompt: ``allowedCommands`` is the grant; ``denyByDefault`` refuses only
+    the commands no entry matches, and Crew's ``spec-shell-allowlist`` row refuses
+    those before any grant row; ``autoAllowReadonly`` only adds read-only commands,
+    which Crew's read-only row answers. A non-boolean ``autoAllowReadonly`` is not
+    one of them, so it still withholds.
+    """
+    if key in ("allowedCommands", "denyByDefault"):
+        return True
+    return key == "autoAllowReadonly" and isinstance(value, bool)
+
+
+def _write_key_grants_only(key: str, value: Any) -> bool:
+    """Whether a write entry's *key* leaves a write ``allowedPaths`` covers unasked.
+
+    On kiro-cli ``allowedPaths`` is the grant, and ``fallbackAction`` decides only
+    what happens to a write no entry covers: ``"deny"`` is refused by Crew's
+    ``spec-write-allowlist`` row before any grant row, anything else asks.
+    """
+    return key in ("allowedPaths", "fallbackAction")
+
+
+def _without_keys(
+    tools_settings: Any, tools: tuple[str, ...], grants_only: Callable[[str, Any], bool]
+) -> Any:
+    """*tools_settings* with every key *grants_only* accepts left out of each *tools*
+    entry. An entry left empty goes too; any other key, and any malformed value, is
+    kept, so it still withholds."""
+    if not isinstance(tools_settings, dict):
+        return tools_settings
+    out = dict(tools_settings)
+    for key in tools:
+        entry = out.get(key)
+        if not isinstance(entry, dict):
+            continue
+        rest = {k: v for k, v in entry.items() if not grants_only(k, v)}
+        if rest:
+            out[key] = rest
+        else:
+            del out[key]
+    return out
+
+
+def without_shell_grant_keys(tools_settings: Any) -> Any:
+    """*tools_settings* with each shell entry's grant-only keys left out
+    (:func:`_shell_key_grants_only`).
+
+    For the ``allowedCommands`` reading of
+    :func:`withhold_answered_under_authored_rules`: the grant itself, and the keys
+    that never turn a matched command back into a prompt, are not a restriction.
+    Wider than :func:`without_allowed_commands`, which the ``allowedTools`` reading
+    keeps (:func:`without_grant_only_settings`), so a ``denyByDefault`` beside a
+    whole-tool grant still keeps it at the prompt (fail toward ask).
+    """
+    return _without_keys(tools_settings, _SHELL_SETTINGS_KEYS, _shell_key_grants_only)
+
+
+def without_write_grant_keys(tools_settings: Any) -> Any:
+    """*tools_settings* with each write entry's grant-only keys left out
+    (:func:`_write_key_grants_only`), for the write ``allowedPaths`` reading, like
+    :func:`without_shell_grant_keys`."""
+    return _without_keys(tools_settings, _WRITE_SETTINGS_KEYS, _write_key_grants_only)

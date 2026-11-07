@@ -113,6 +113,32 @@ The gate **fails closed** — a missing, unreadable or malformed keystone yields
 entry — matching `enable_state`'s own posture, for a stronger reason: the open
 position hands out the operator's whole desktop.
 
+`is_enabled()` reads whatever the gateway last endorsed, not a tampered disk file.
+`computer_use.json` is a per-file read-only sandbox leaf, and the Linux bind stops
+sealing it after the gateway's next rename-save, so a prompt-injected agent could
+write `enabled: true` directly past the seal; where the namespace sandbox seals it,
+`enable_state.load_state` parses the gateway-endorsed copy whenever the on-disk bytes
+differ (whole-file, so every key including `enabled` is covered). `save_state`
+endorses its own serialized bytes before the rename publishes them, and the dashboard
+saver's strict read (`_read_state_strict`) reconciles the same way before it mutates,
+so nothing re-endorses a tampered `enabled: true`; while the keystone is pending, an
+ordinary save of it is refused (`file_pending_review`) until the owner applies or discards. Where the
+sandbox seals the keystone, a copy that cannot be written aborts the save, and an
+unreadable copy reads as an unreadable keystone (disabled). A keystone with no endorsed copy
+yet is read as written until the gateway's first save of it endorses it. A keystone that
+differs from its copy (a hand edit, or an in-sandbox write) is PENDING: `is_enabled()` keeps
+reading the endorsed copy until the dashboard owner applies or discards the change in
+Settings > Security (owner-gated, CSRF-guarded, never an agent or MCP tool), so writing
+`enabled: true` from a sandbox never enables computer use on its own. Apply runs the PUT's
+own field validation (`keystone_patch`: `enabled` a boolean and not locked by policy,
+`allowed_apps` / `extra_denied_apps` pattern lists within the PUT's caps, lowercased as the PUT
+stores them) on the keys the edit changed; a refused value answers `409 write_refused` with the
+PUT's message and the keystone stays pending. This applies only where the Linux namespace sandbox
+actually seals the keystone (`loosening_provenance.enforcement_active`: a Linux host that
+can build the namespace sandbox, probed once per process); off Linux, and on a Linux host
+without user namespaces, the keystone is read as written. Mechanism and threat:
+[security](security.md) and [config](config.md).
+
 Both in-process checks stay, and they cover what the gate structurally cannot: the
 keystone flipping **off** mid-session, after the spec was written and the backend
 spawned. The gate covers what they cannot: the process existing.
@@ -572,9 +598,17 @@ screenshot_jpeg_quality, cursor_motion, cursor_motion_supported, allowed_apps,
 extra_denied_apps, policy_error, permissions{accessibility,
 screen_recording, responsible_hint}, limits{field: [min, max]}}`.
 
-- `permissions` comes from shelling `kirocrew computer doctor --json`
+- `permissions` comes from a short-lived child,
+  `<gateway interpreter> [-s] -P -m kiro_crew.computer_use.permission_probe`
   (`asyncio.create_subprocess_exec`, fixed argv, 5s timeout, one
-  `test_spawn_audit.BENIGN_SPAWNS` entry). Degrades to `unknown` on timeout,
+  `test_spawn_audit.BENIGN_SPAWNS` entry), which prints the driver's
+  `probe_permissions()` block as one JSON object. It is not
+  `kirocrew computer doctor --json`, which asks the same driver: the CLI's start-up
+  plus the doctor's agent-spec projection measure 3.5s warm and over 11s on a cold
+  file cache on macOS, so on a busy host that probe outlasts the timeout and both
+  rows read "Could not check" while both grants are held. The child imports only the driver
+  seam (about half a second), and `test_computer_use_permission_probe.py` fails if
+  it loads `kiro_crew.cli` or `kiro_crew.agent`. Degrades to `unknown` on timeout,
   non-zero exit or unparseable output, and reports `unsupported` when the current
   platform has no probe; macOS and Windows both probe. A timed-out child is killed —
   the panel polls every 5s while a
@@ -2271,10 +2305,11 @@ is parked off-screen at `-32000, -32000`, so the capture SUCCEEDS over a uniform
 buffer and the blank-frame gate rejects it with no cause anyone can report. The
 tree is still returned — the UIA tree of a minimized window reads perfectly well.
 
-`kirocrew computer doctor --json` is what the gateway shells for the Settings
-permission rows — a short-lived subprocess, deliberately NOT an in-gateway ctypes
-call, so a native fault cannot take the gateway (and with it cron, Slack and the
-dashboard WS) down.
+The gateway reads the Settings permission rows from a short-lived child,
+`python -m kiro_crew.computer_use.permission_probe`, deliberately NOT an
+in-gateway ctypes call, so a native fault cannot take the gateway (and with it
+cron, Slack and the dashboard WS) down. `kirocrew computer doctor --json` reports
+the same `probe_permissions()` answer, but is too slow to start for that budget.
 
 ### An app's own popups are not addressable surfaces
 
@@ -2448,9 +2483,7 @@ and restart, or use the Kiro CLI backend), and it is absent once the running gat
 routes the server: `gateway_routed_names()`, the saved routing and a stub in the
 overlay built at the gateway's start, the answer the MCP tab gives. On every other
 backend the line names only the Kiro CLI backend, routed or not. The projection's
-own withhold warnings are silenced for this one question: no session runs in it,
-and the Settings panel repeats the `--json` probe every few seconds while a
-permission is missing.
+own withhold warnings are silenced for this one question: no session runs in it.
 
 ### `call` is a harness, not an eleventh tool
 
@@ -2556,6 +2589,8 @@ Deliberately narrow, so a restart is never gratuitous:
 The response carries `sessions_reset` so the panel can EXPLAIN the restart — an
 unexplained session reset reads as a crash. Pinned by
 `test_computer_use_api_keystone.py::TestEnableRestartsSessions`.
+Applying a pending `computer_use.json` edit in Settings > Security that changes whether
+computer use is on runs the same rebuild and reset (`apply_enable_change`, shared with the PUT).
 
 ## Known limitations
 
@@ -2722,6 +2757,7 @@ computer use.
 | `computer_use/overlay.py` | Gateway-side overlay SUPERVISOR: the `cursor_motion` opt-in, child lifecycle, motion commands. Never raises, never blocks the loop |
 | `computer_use/overlay_proc.py` | The AppKit overlay CHILD (`python -m …overlay_proc`). Its OWN ctypes surface — out of process on purpose; `NSWindowSharingNone` keeps it out of screenshots |
 | `computer_use/permissions.py` | Advisory TCC probe + `responsible_hint` |
+| `computer_use/permission_probe.py` | The Settings panel's permission-probe CHILD (`python -m …permission_probe`): the driver's `probe_permissions()` as one JSON line, without the CLI's start-up |
 | `computer_use/macos_driver.py` | `MacOSBackend` glue |
 | `computer_use/cli.py` | `kirocrew computer doctor [--json] \| apps \| call` |
 | `mcp_computer.py` | The thin stdio shim (`kirocrew mcp-computer`) |

@@ -248,7 +248,8 @@ class TestEveryHydrationPathRestoresOrDefers:
     def test_every_metadata_applying_bind_site_restores_dismissals(self):
         """Structural pin: discover every dashboard function that applies a
         transcript's metadata (proxy: it assigns ``slot.autocompact_pct`` from
-        ``meta``) or hydrates a slot's rows (calls ``hydrate_slot_from_history``),
+        ``meta``, directly or through ``seed_autocompact_from_disk``) or hydrates a
+        slot's rows (calls ``hydrate_slot_from_history``),
         and require each to call ``_restore_dismissed_source_links``. A new
         hand-rolled bind path that skips the mirror fails HERE, by name, instead
         of regressing to a resurrected chip.
@@ -270,10 +271,22 @@ class TestEveryHydrationPathRestoresOrDefers:
                 restores = False
                 for node in ast.walk(fn):
                     # A restore site ASSIGNS the transcript's value onto the slot:
-                    # ``slot.autocompact_pct = _validate_autocompact_pct(meta[...])``.
+                    # ``slot.autocompact_pct = _validate_autocompact_pct(meta[...])``,
+                    # or hands it to ``seed_autocompact_from_disk``, which does.
                     # The save path only READS the attribute into the metadata
                     # line, and the ``/autocompact`` endpoint assigns a REQUEST
                     # value; neither sources from ``meta``, so neither matches.
+                    if (
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "seed_autocompact_from_disk"
+                        and any(
+                            isinstance(n, ast.Name) and n.id == "meta"
+                            for arg in node.args
+                            for n in ast.walk(arg)
+                        )
+                    ):
+                        applies_meta = True
                     if (
                         isinstance(node, ast.Assign)
                         and any(

@@ -79,6 +79,7 @@ def _stub_provider(**attrs):
         # runtime kwargs mirror; the base class answers None and so does this double.
         "tool_search_settings": None,
         "work_scratch_dir": None,
+        "harness_pin": "",
     }
     base.update(attrs)
     return SimpleNamespace(**base)

@@ -199,12 +199,14 @@ describe('WorldsPage', () => {
 })
 
 describe('WorldsPage: localized scene buttons', () => {
-  it('names a scene button in the active language', async () => {
+  it('names, labels and titles a scene button in the active language', async () => {
     const previous = i18next.language
     await i18next.changeLanguage('de')
     try {
       renderWithProviders(<WorldsPage />)
-      expect(screen.getByRole('radio', { name: 'Szene Office: Classic pixel office' })).toBeInTheDocument()
+      const office = screen.getByRole('radio', { name: 'Szene Büro: Klassisches Pixel-Büro' })
+      expect(office).toHaveTextContent('Büro')
+      expect(office).toHaveAttribute('title', 'Klassisches Pixel-Büro')
     } finally {
       await i18next.changeLanguage(previous)
     }

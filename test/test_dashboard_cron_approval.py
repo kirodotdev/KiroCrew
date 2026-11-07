@@ -295,6 +295,7 @@ class TestCronListFields:
         mock_job.schedule = CronSchedule(kind="every", every_secs=300)
         mock_job.last_run_ts = None
         mock_job.last_result = None
+        mock_job.last_result_ts = 0.0
         mock_job.last_retry_count = 0
         # Set explicitly, like every other field here: an unset attribute on a
         # MagicMock answers with a MagicMock, which the JSON response cannot

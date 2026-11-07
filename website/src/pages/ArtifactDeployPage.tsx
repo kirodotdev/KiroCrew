@@ -19,7 +19,7 @@ import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
 import { fmtNumber, fmtRelative } from '../i18n/format'
-import { ApiError, toApiError } from '../api/apiError'
+import { ApiError, statusErrText, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
 
@@ -116,7 +116,7 @@ async function pendingActionError(
   failedKey: 'pages.artifactDeployPage.pending_deploy_failed_status' | 'pages.artifactDeployPage.dismiss_failed_status',
 ): Promise<ApiError> {
   const err = await toApiError(r)
-  if (err.message === `HTTP ${r.status}`) err.message = i18nT(failedKey, { status: r.status })
+  if (err.message === statusErrText(r.status, err.body)) err.message = i18nT(failedKey, { status: r.status })
   return err
 }
 // The top-level fields of a JSON object body, or `{}` for any other body.
@@ -608,8 +608,14 @@ export default function ArtifactDeployPage() {
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 6 }}>
-                      {/* Locked while this row's own check runs; another row stays free to check. */}
-                      <Btn disabled={verifying.has(p.name)} onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
+                      {/* Locked while this row's own check runs; another row stays free to check.
+                          `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+                          order and drops a keyboard user's focus while the check runs. */}
+                      <Btn
+                        aria-disabled={verifying.has(p.name) || undefined}
+                        className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+                        onClick={() => { if (!verifying.has(p.name)) verify.mutate(p.name) }}
+                      ><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
                       <Btn aria-label={i18nT('pages.artifactDeployPage.remove_from_registry', { name: p.name })}
                         onClick={async () => {
                           if (await confirm({

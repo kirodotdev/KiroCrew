@@ -1008,7 +1008,7 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
+function dashboardWindowHarness({ platform, frameless = false, remoteHosts = null, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
   const log = [];
   const prompts = [];
   const sessionListeners = new Map();
@@ -1100,7 +1100,7 @@ function dashboardWindowHarness({ platform, frameless = false, downloadExpectati
       nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
       app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
     },
-    store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
+    store: { get: (key) => (key === "linuxFrameless" ? frameless : key === "remoteHosts" ? remoteHosts : null) },
     platform,
     env: {},
     downloadExpectations,
@@ -1140,7 +1140,7 @@ describe("dashboard window wiring order", () => {
       "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "view.on:enter-html-full-screen",
-      "view.on:leave-html-full-screen",
+      "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "win.on:show",
       "win.on:restore",
@@ -1186,6 +1186,14 @@ describe("dashboard window wiring order", () => {
     assert.ok(!wiring.some((entry) => entry.startsWith("win.setWindowButtonPosition")));
     assert.equal(onLoad[1], "win.setTitle:Kiro Crew", "the default local port is omitted on Windows");
     assert.equal(onLoad[2], "view.insertCSS:#electron-drag-bar {");
+  });
+
+  it("a window whose port names a configured crew withholds the local-only bridges", async (t) => {
+    const { wiring } = await wireDashboardWindow(t, {
+      platform: "darwin",
+      remoteHosts: { 5476: { host: "crew.example.test" } },
+    });
+    assert.equal(wiring[0], "new WebContentsView:[\"--kc-remote-gateway\"]");
   });
 
   it("a frameless Linux window injects caption controls after the drag band", async (t) => {

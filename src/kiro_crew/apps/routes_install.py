@@ -31,7 +31,6 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.registry import (
     git_unavailable_refusal,
-    install_from_registry,
     is_registry_source,
     registry_name_from_source,
 )
@@ -42,6 +41,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _deregister_app_off_loop,
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
+    _reinstall_from_registry,
     _restore_app_after_failed_update,
     _snapshot_agent_configs_off_loop,
     _start_backend_after_install,
@@ -90,25 +90,16 @@ async def handle_update_app(request: web.Request) -> web.Response:
     source = body.get("source", info.get("source", ""))
 
     # Registry-installed apps: re-clone from registry.
-    # Same order as the local-source branch below: stop the backend and scrub
-    # its resources BEFORE the files are replaced. For an already-installed
-    # app ``install_from_registry`` reaches ``update_app``, which renames the
-    # live tree aside and copies the new one in -- on Windows that fails with a
-    # sharing violation (WinError 32) while the backend still holds a file open
-    # under the tree. A failed install must not leave the app broken either:
-    # the failure path restores what was there (``_restore_app_after_failed_update``),
-    # exactly as the local-source branch does.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
         async with app_lifecycle_lock(name):
-            # Preflight BEFORE the stop so a retryable refusal leaves app state
-            # untouched (app-kit-platform: refusal "without mutating app state").
+            # Preflight so a retryable refusal is the local branch's 409, leaving app
+            # state untouched (app-kit-platform: refusal "without mutating app state").
             # ``install_from_registry`` re-checks at its own replacement boundary.
             startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
             if startup_refusal is not None:
                 return startup_refusal
-            # ``install_from_registry`` asks this too, but only after the stop below
-            # has taken the app down; a host without git must keep the app running.
+            # A host without git keeps the app running and reads the missing tool.
             git_refusal = git_unavailable_refusal(name)
             if git_refusal is not None:
                 return web.json_response(
@@ -121,22 +112,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     status=400,
                 )
 
-            # Stop the backend, then deregister old resources -- same order as
-            # uninstall and the disable rollback. Stopping pops the tracking record,
-            # so the health watch cannot re-register the OLD manifest's MCP servers
-            # after the scrub (see app-kit-platform §17).
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), stop_app_backend, name
-            )
-            # Deregistering deletes the agent configs that hold the user's edits.
-            prior_agents = await _snapshot_agent_configs_off_loop(name)
-            await _deregister_app_off_loop(name)
-
-            reg_install = await install_from_registry(registry_name)
+            reg_install = await _reinstall_from_registry(name, registry_name)
             if not reg_install.get("ok"):
-                restore_refused = await _restore_app_after_failed_update(name, prior_agents)
-                if restore_refused:
-                    reg_install["backend_refused"] = restore_refused
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_update",
@@ -149,8 +126,12 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # ``enabled`` when the new version adds ``permissions.sessionApproval``,
             # and a backend started here would run an app the UI shows as disabled.
             still_enabled = await _app_may_run_after_install(name)
-            if still_enabled:
-                reg_result = await _register_app_off_loop(name, prior_agents)
+            if not still_enabled:
+                # The take-down kept the agent specs for the re-registration; an app
+                # that may not run gets none (as on the registry install routes).
+                await _suspend_app_for_session_approval_reconsent(name)
+            else:
+                reg_result = await _register_app_off_loop(name)
                 # Same promotion as the local-source branch: the re-install
                 # rewrote app-crons.json, and only this call carries a changed
                 # cron field into the RUNNING scheduler before the next start.

@@ -28,8 +28,10 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
+from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
+    mounted_servers,
     required_managed_servers,
     roster_names,
 )
@@ -46,6 +48,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
+from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled, settings_server_names
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -298,6 +301,7 @@ async def load_session(
             member_dispatch=bool(member_session_key) and not member_withheld,
             crew_panel=panel_mounted,
             session_key=session_key,
+            session_cwd=session_work_dir,
             **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents
@@ -333,6 +337,7 @@ async def load_session(
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
         # Same as create_session: a worker stub the payload's spec read muted.
         mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+        mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
             active_agent,
@@ -653,6 +658,11 @@ async def _wait_managed_mcp(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if self._expect_mcp_reports else 0.0,
             )
+        # Best effort, never required: Connections and user servers also belong
+        # in turn 1's catalog, but a slow or dead one must not block the start.
+        rest = tuple(n for n in mounted_servers(params, wire_agent) if n not in required)
+        if rest:
+            await handle.wait_mounted_mcp(rest, MOUNTED_MCP_WAIT_SECS)
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.

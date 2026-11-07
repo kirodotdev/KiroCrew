@@ -227,6 +227,36 @@ class TestInitSubagents:
         await self._await_patch_pushes(orch, 1)
         assert orch.dashboard_state.push_slots_update.call_count == 0
 
+    @pytest.mark.asyncio
+    async def test_a_nested_runs_frames_carry_its_root_chats_slot(self):
+        """A run whose parent is a sub-agent draws in the tab of the chat its tree
+        started from (``root_session_key``), not on ``subagent:<id>``, which no tab
+        reads. Its parent's queued depth and wave start stay on the parent's key."""
+        from kiro_crew.subagent import SubagentInfo
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        on_event = self._capture_on_event(orch)
+        orch.subagent_mgr.published_queued_depths = lambda: {"subagent:b": 1}
+        grandchild = SubagentInfo(id="c", task="t", parent_session_key="subagent:b")
+        grandchild.root_session_key = "dashboard:chat1"
+
+        await on_event("subagent_spawn", grandchild, {"task": "t"})
+        await on_event("subagent_tool", grandchild, {"tool": "grep"})
+        await on_event("subagent_queued", grandchild, {"queued": 1})
+        await on_event("spawn_batch_started", grandchild, {"batch_id": "w1", "count": 2})
+
+        broadcast = orch.dashboard_state.broadcast_ws.call_args_list
+        assert [(c.args[0], c.args[1]["slot"]) for c in broadcast] == [
+            ("subagent_spawn", "chat1"),
+            ("subagent_tool", "chat1"),
+            ("subagent_queued", "subagent:b"),
+            ("spawn_batch_started", "subagent:b"),
+        ]
+
 
 class TestSubagentDoneStoppedClassification:
     """A user-stopped subagent (error-free record) must never be classified as

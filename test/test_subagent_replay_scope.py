@@ -724,6 +724,26 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         )
         assert _drawn(fake.sent) == {"acp-1-0-child-1"}
 
+    def test_a_nested_run_replays_into_its_root_chats_slot(self, monkeypatch):
+        """A managed run whose parent is a sub-agent replays, running or done,
+        into the tab of the chat its tree started from, as its live frames do."""
+        from kiro_crew.subagent import SubagentInfo
+
+        running = SubagentInfo(id="b", task="t", parent_session_key="subagent:a")
+        finished = SubagentInfo(id="c", task="t", parent_session_key="subagent:b")
+        running.root_session_key = finished.root_session_key = "dashboard:chat-0"
+        finished.done = True
+        manager = SimpleNamespace(running=[running], all_agents=[running, finished])
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-0"]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch, frames, ["chat-0"], expect_units=set(), expect_ids={"c"}, manager=manager
+        )
+        cards = [f for f in fake.sent if f["type"] in ("subagent_snapshot", "subagent_done")]
+        assert [(f["type"], f["data"]["id"], f["data"]["slot"]) for f in cards] == [
+            ("subagent_snapshot", "b", "chat-0"),
+            ("subagent_done", "c", "chat-0"),
+        ]
+
     def test_with_the_crew_log_off_the_folder_replay_still_runs_once(self, monkeypatch, folds):
         """The opt-out keeps its folder reader; the per-slot admit must not refuse it."""
         monkeypatch.setenv("KIROCREW_CREW_LOG", "0")

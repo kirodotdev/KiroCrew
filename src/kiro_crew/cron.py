@@ -509,6 +509,9 @@ class CronService:
     _store_version: int = _STORE_VERSION
     _store_extra: Mapping[str, Any] = MappingProxyType({})
     _unknown_fields: Mapping[str, UnknownFields] = MappingProxyType({})
+    # The jobs[] objects the last _load could build no job from and kept
+    # (StoreDocument.skipped). _save writes them back after the jobs.
+    _skipped_records: tuple[Any, ...] = ()
 
     def __init__(
         self,
@@ -717,6 +720,7 @@ class CronService:
     running_since = _run_registry.running_since
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert
+    trigger_run = _run_registry.trigger_run
     run_job = _run_registry.run_job
     _run_claimed_manual = _run_registry._run_claimed_manual
     # When the scheduler wakes: ``kiro_crew.cron_service.service.wake_timer``.

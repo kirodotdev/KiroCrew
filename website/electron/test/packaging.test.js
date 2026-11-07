@@ -1450,6 +1450,15 @@ describe("uninstall data preservation contract", () => {
     }
   });
 
+  it("keeps OSS4's ALSA stand-in from satisfying the deb's ALSA dependency", () => {
+    // On Ubuntu 24.04 OSS4's liboss4-salsa-asound2 provides an unversioned
+    // libasound2 and lacks ALSA symbols the binary links, so the app never starts.
+    // Naming libasound2t64 first fixes a clean install; the version keeps an
+    // already-installed stand-in from satisfying the dependency.
+    const alsa = electronPkg.build.deb.depends.filter(entry => entry.includes("libasound2"));
+    assert.deepEqual(alsa, ["libasound2t64 | libasound2 (>= 1.0.17)"]);
+  });
+
   it("reclaims the updater cache the generated uninstaller cannot reach", () => {
     // The uninstaller template only ever clears $APPDATA (Roaming), and only
     // under deleteAppDataOnUninstall -- which stays false here to protect

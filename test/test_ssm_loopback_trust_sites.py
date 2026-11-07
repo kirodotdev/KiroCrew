@@ -122,6 +122,7 @@ RAW_LOOPBACK_SITES = {
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/core_local_token.py": 1,
     "dashboard/handlers/external_terminal.py": 1,
+    "dashboard/handlers/relay_viewer.py": 1,
     "dashboard/handlers/search_segment.py": 1,
     # The same, and they also read the SSM marker.
     "dashboard/handlers/computer_use.py": 1,
@@ -175,6 +176,7 @@ def test_the_raw_sites_that_grant_something_read_the_marker_or_a_secret() -> Non
         "dashboard/handlers/core.py",
         "dashboard/handlers/core_local_token.py",
         "dashboard/handlers/external_terminal.py",
+        "dashboard/handlers/relay_viewer.py",
         "dashboard/handlers/search_segment.py",
         "dashboard/handlers/computer_use.py",
         "dashboard/handlers/updates_channel.py",

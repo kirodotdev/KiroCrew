@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
+from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -80,7 +81,6 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
-        "autocompact_pct",
         "turn_timeout_secs",
         "_turn_timeout_hydrated",
         "mode",
@@ -113,10 +113,10 @@ class _ChatSlot:
         "_approval_futures",
         "_approval_instances",
         "_approval_stopped",
-        "_trust",
+        "_trust_held",
         "_trust_card_scoped",
         "_trust_scope",
-        "_trust_reads",
+        "_trust_reads_held",
         "_posture_inherited",
         "_member_approval_seeded",
         "_trusted_patterns",
@@ -222,6 +222,7 @@ class _ChatSlot:
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
+        "_fallback_walk_refused",
         "_active_fallback_model",
         "_fallback_primary_model",
         "_fallback_slot_model",
@@ -265,6 +266,7 @@ class _ChatSlot:
         "_pending_memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_inflight_merge_contexts",
         "_deferred_notes",
         "_dropped_note_ids",
         "_app",
@@ -277,6 +279,7 @@ class _ChatSlot:
         "_window_swap_applying",
         "_lock",
         "forked_from",
+        "forked_from_created_at",
         "_fork_lock",
         "_model_pick_lock",
         "_tab_id",
@@ -409,7 +412,6 @@ class _ChatSlot:
     served_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
-    autocompact_pct: float | None
     turn_timeout_secs: int | None
     _turn_timeout_hydrated: bool
     memory_store: str
@@ -464,6 +466,7 @@ class _ChatSlot:
     _human_seen: bool
     _origin: str
     forked_from: str | None
+    forked_from_created_at: str
     _fork_lock: asyncio.Lock
     _model_pick_lock: asyncio.Lock
     _tab_id: str
@@ -500,10 +503,10 @@ class _ChatSlot:
     _approval_futures: dict[str, asyncio.Future[str]]
     _approval_instances: dict[str, tuple[asyncio.Future[str], str]]
     _approval_stopped: set[str]
-    _trust: bool
+    _trust_held: bool
     _trust_card_scoped: bool
     _trust_scope: str
-    _trust_reads: bool
+    _trust_reads_held: bool
     _posture_inherited: bool
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
@@ -531,6 +534,7 @@ class _ChatSlot:
     _cycle_reached_provider: bool
     _subagent_delivery_pending: dict[str, list[SubagentDelivery]]
     _pending_context: list[dict[str, Any]]
+    _inflight_merge_contexts: list[dict[str, Any]]
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]
@@ -596,6 +600,7 @@ class _ChatSlot:
     _infra_retries: int
     _fallback_candidate_idx: int
     _fallback_walked: list[str]
+    _fallback_walk_refused: bool
     _active_fallback_model: str
     _fallback_primary_model: str
     _fallback_slot_model: str
@@ -770,6 +775,16 @@ class _ChatSlot:
         write_project(self._binding, value)
 
     @property
+    def autocompact_pct(self) -> float | None:
+        """The session's compaction threshold override, held in the binding aliases share."""
+        return self._binding.autocompact_pct
+
+    @autocompact_pct.setter
+    def autocompact_pct(self, value: float | None) -> None:
+        self._binding.autocompact_pct = value
+        self._binding.autocompact_set = True
+
+    @property
     def reasoning_effort(self) -> str:
         """The slot's reasoning effort: "" = provider default, else a level."""
         return self._reasoning_effort
@@ -862,6 +877,28 @@ class _ChatSlot:
     def pending_has_consumer(self) -> bool:
         """True while something can still deliver rows out of the pending queue."""
         return self._buffers.pending_has_consumer(self)
+
+    # ``_trust`` / ``_trust_reads`` read back only what the policy lets a session hold
+    # now (``approval_mode_policy``), so a grant set before a ``permission_mode`` deny
+    # landed is not honoured by any reader: tool approval, inheritance, the stored
+    # session policy and the picker all read these. A write of a denied grant holds
+    # nothing, so a grant committed late (after an await, past the deny teardown)
+    # cannot come back when a later policy allows the mode again.
+    @property
+    def _trust(self) -> bool:
+        return self._trust_held and session_mode_permitted("trust")
+
+    @_trust.setter
+    def _trust(self, value: bool) -> None:
+        self._trust_held = bool(value) and session_mode_permitted("trust")
+
+    @property
+    def _trust_reads(self) -> bool:
+        return self._trust_reads_held and session_mode_permitted("trust_reads")
+
+    @_trust_reads.setter
+    def _trust_reads(self, value: bool) -> None:
+        self._trust_reads_held = bool(value) and session_mode_permitted("trust_reads")
 
     @property
     def _has_reader(self) -> bool:

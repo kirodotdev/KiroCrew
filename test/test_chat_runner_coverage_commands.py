@@ -1039,7 +1039,7 @@ class TestRunChatRecoveryLadders:
                     STOP_REASON_TOOL_STALL,
                     title="Running: tail -f app.log",
                     tool_input="tail -f app.log",
-                    text="idle_secs=900 stuck_input",
+                    text="idle_secs=900; processes_terminated=2; stuck_input",
                 )
             ],
         )
@@ -1048,6 +1048,7 @@ class TestRunChatRecoveryLadders:
             await _drive(state, slot)
 
         assert slot._tool_stall_retries == 1
+        assert "terminated 2 processes" in slot._queue[0]["content"]
         assert any("Tool appeared stalled" in err for err in _errors(slot))
 
     @pytest.mark.asyncio

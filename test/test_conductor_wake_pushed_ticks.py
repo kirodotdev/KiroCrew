@@ -204,11 +204,8 @@ def test_a_quiet_pushed_tick_keeps_the_earlier_deadline(tmp_path, monkeypatch):
 def _ledger_service(tmp_path, monkeypatch, *, closed: "set[str]"):
     """A real service whose real gate reads the real ledger, counting delivered turns.
 
-    The wake window is OFF here, so every case built on this harness keeps asking what it
-    asked before the window existed: what a push, a close and a storm cost in delivered
-    turns, with each push arming its own tick. The window's own cases arm it explicitly
-    (``_batched_pushes``), and the two together are what say the accounting is the same
-    whether reports are batched or not.
+    The wake window is OFF here, so each push arms its own tick. The window's own cases
+    arm it explicitly (``_batching_service`` in ``test_conductor_wake_batching.py``).
     """
     import kiro_crew.autonudge as autonudge
 

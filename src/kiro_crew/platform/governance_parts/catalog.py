@@ -53,6 +53,10 @@ class ScopeSpec:
     # loader's contract is that registering a scope needs no loader edit, and a
     # second scope with a floor should be a catalog entry, not another `if`.
     always_permitted: tuple[str, ...] = ()
+    #: Identifiers a PROFILE (or the policy ``fallback``) may not forbid, on top of
+    #: ``always_permitted``: ones only the installed policy enforces, so a profile deny
+    #: would describe a control that does not hold.
+    profile_always_permitted: tuple[str, ...] = ()
 
 
 # ── CAPABILITY-DEFAULT CONTRACT (read before touching any capability_default) ──
@@ -99,27 +103,22 @@ class ScopeSpec:
 # fails closed — the asymmetry is documented on ``_parse_controls``.)
 SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "tools": ScopeSpec(RULESET, matcher="identifier"),
-    # Dashboard tool-approval modes. Today this scope governs exactly ONE mode:
-    # ``yolo`` (auto-approve every tool everywhere), e.g.
-    # ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``. An absent scope
-    # permits every mode (unchanged behavior).
+    # Tool-approval modes (KGL ``permission_mode``): ``normal``, ``trust_reads``,
+    # ``trust`` and ``yolo``, e.g. ``{"approval_modes": {"mode": "allow", "allow":
+    # ["normal", "trust_reads"]}}``. An absent scope permits every mode (unchanged
+    # behavior).
     #
-    # ``always_permitted`` carries the three modes this scope may not forbid, for two
-    # DIFFERENT reasons, both enforced at parse time so a policy author is told
-    # rather than left with a control that silently does not hold:
-    #
-    # * ``normal`` is the interactive floor. Denying it would leave no selectable
-    #   mode and brick tool approval, and the trust-root ``security_policy.json`` is
-    #   the one file the dashboard may not rewrite to repair itself.
-    # * ``trust`` and ``trust_reads`` are NOT YET GOVERNED. Their grants are honoured
-    #   by consumption predicates this scope does not reach — the in-memory trusted
-    #   set, and the session ``approval_policy`` a spawned subagent inherits — so
-    #   accepting a deny for them would advertise enforcement that does not exist.
-    #   Governing those read paths is tracked separately.
+    # ``normal`` is the one mode this scope may not forbid, enforced at parse time:
+    # denying it would leave no selectable mode and brick tool approval, and the
+    # trust-root ``security_policy.json`` is the one file the dashboard may not
+    # rewrite to repair itself. A policy deny of ``trust`` or ``trust_reads`` holds where
+    # the grant is set and where it is honoured (``kiro_crew.approval_mode_policy``).
+    # Only the installed policy narrows those two, so a profile may not deny them.
     "approval_modes": ScopeSpec(
         RULESET,
         matcher="identifier",
-        always_permitted=("normal", "trust", "trust_reads"),
+        always_permitted=("normal",),
+        profile_always_permitted=("trust", "trust_reads"),
     ),
     "mcp": ScopeSpec(RULESET, matcher="mcp"),
     "apps": ScopeSpec(RULESET, matcher="identifier"),

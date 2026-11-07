@@ -543,6 +543,41 @@ async def test_each_sequence_step_streams_under_the_runs_task_and_ends_its_conti
 
 
 @pytest.mark.asyncio
+async def test_a_refusal_in_an_earlier_sequence_step_leads_the_runs_result(monkeypatch):
+    """Each step's reply replaces the previous one, so a person-only directive
+    refused in step one would vanish with step one's text; the refusals are
+    run-scoped and lead the stored result."""
+    from kiro_crew.slack import gateway
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    _let_sequence_complete(monkeypatch, gw)
+
+    async def stream(_client, _message, **kw):
+        if kw["session_key"].endswith(":beta"):
+            kw["directive_refusals"].append("Error: set_project refused.")
+            return "beta's reply", 0
+        return "alpha's reply", 0
+
+    monkeypatch.setattr(gateway, "_cron_stream_with_posttoken_resume", stream)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-refusal",
+        name="sequence refusal",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+    )
+
+    await callback(job)
+    assert job.last_result == "Error: set_project refused.\n\nalpha's reply"
+
+
+@pytest.mark.asyncio
 async def test_each_sequence_step_marks_its_key_finished_just_before_it_releases_it(monkeypatch):
     """A step's finally tells the cron service the run is done with that step's key
     (``finish_session_key``) as it hands the session back, so the last sub-agent's

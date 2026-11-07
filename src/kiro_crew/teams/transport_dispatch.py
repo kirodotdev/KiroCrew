@@ -487,11 +487,6 @@ class TeamsDispatcher:
         its model-written label into a session that never asked the question.
         """
         assert self.client is not None, "TeamsDispatcher.client must be set"
-        # Inbound channels-governance gate (off-loop) — recheck per message so a
-        # host-profile deny added after connect stops dispatch without a restart
-        # (the startup gate only blocks CONNECTING). Silently drop on deny.
-        if not await inbound_permitted("teams"):
-            return
         # The ONE reader of the identity in this module. Re-deriving it with a fixed
         # preference order is what made a turn key on the UPN while a card click keyed on
         # the object id, for a user the allow-list authorized by object id: the approval
@@ -528,6 +523,24 @@ class TeamsDispatcher:
             restricted=_refused_turn_restricted,
         ):
             return
+        # A FILE-bearing message is never a command. Teams puts the caption in
+        # ``text``, so "/stop here is the log" would otherwise cancel the turn AND
+        # discard the file; and a caption is prose the user wrote about the upload,
+        # not an instruction to this dispatcher. Discord and Telegram draw the line
+        # in the same place. The body echo is not a file (see ``files`` above). A
+        # card click is not a command either, whatever text rides along with it.
+        cmd = (
+            parse_command(text)
+            if (interpret_commands and not files and not inbound.is_card_action)
+            else None
+        )
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny. Only
+        # a message this dispatcher acts on as /stop claims the pure-cancel
+        # exemption, so a halt stays reachable on a denied channel.
+        if not await inbound_permitted("teams", text=text if cmd == "stop" else ""):
+            return
         logger.info(
             "Teams inbound from %s: %d chars",
             email[:3] + "***" if email else "?",
@@ -542,12 +555,6 @@ class TeamsDispatcher:
             return
 
         override_mode: str | None = None
-        # A FILE-bearing message is never a command. Teams puts the caption in
-        # ``text``, so "/stop here is the log" would otherwise cancel the turn AND
-        # discard the file; and a caption is prose the user wrote about the upload,
-        # not an instruction to this dispatcher. Discord and Telegram draw the line
-        # in the same place. The body echo is not a file (see ``files`` above).
-        cmd = parse_command(text) if (interpret_commands and not files) else None
         # Resume routing runs BEFORE the intercept, and its answer is used by the
         # commands below. `/compact` and `/stop` act on the RESOLVED session, so after a
         # binding was destroyed they would compact or cancel the native Teams session
@@ -999,6 +1006,11 @@ class TeamsDispatcher:
         # queue mode, a /queue override, or steer unavailable.
         if not await self._enqueue_with_receipt(session_key, inbound, text):
             await (rerun() if rerun is not None else self.handle_message(inbound))
+        else:
+            # A turn Teams did not start ends without draining this queue.
+            drain_when_free(
+                channel=_CHANNEL, session_key=session_key, is_busy=self.sessions.is_busy
+            )
 
     # ── Adaptive Card clicks ───────────────────────────────────────────────
 

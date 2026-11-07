@@ -242,13 +242,16 @@
         // Stuck needs a worker that reported and then lost its chat; an item with no
         // report may have no worker bound at all, which the host also calls closed.
         if (it.stale === true) return it.worker === 'closed' && text(it.status) ? 'stuck' : 'quiet';
+        // Idle, but its own loop will wake it (the host's `looping`, waiting on CI):
+        // still working. A question or block the conductor owes stays waiting.
+        if (it.looping === true && it.worker === 'idle' && it.status === 'progress') return 'working';
         if (it.worker === undefined && it.status === 'progress') return 'working';
         return 'waiting';
       }
       // An item that waits on the reader: the warm band.
       function needsYou(it) { return view(it) === 'needs_you'; }
       // Only a worker actually mid-turn pulses.
-      function live(it) { return view(it) === 'working'; }
+      function live(it) { return view(it) === 'working' && !(it.looping === true && it.worker === 'idle'); }
       // THE CHAT BOX, never the wire: the host fills the person's composer with this
       // text and the person presses send, so a row can offer a reply and never speak
       // as them. Same message office and project-report post.

@@ -635,6 +635,10 @@ def _bind_cron_slot(
         origin=SlotOrigin.CRON,
     )
     slot.title = f"Cron: {_safe_job_name(job)}{run_stamp(job) if session_key else ''}"
+    # Pinned, as a reload restores it, so the auto-titler never renames the tab
+    # after its first user row: this run's header with its hidden marker.
+    slot._titled = True
+    slot._title_origin = "user"
     # A provider-template alias on a legacy V1 job cannot authorize a private
     # member. Private cron dispatch publishes its protected session binding;
     # follow-up turns must use that binding instead of minting one from agent_id.

@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import RestartButton from './RestartButton'
 import { api } from '../api/client'
+import { statusErrText } from '../api/apiError'
 import { confirmAction } from '../test/confirmAction'
 
 vi.mock('../api/client', async importOriginal => {
@@ -62,6 +63,19 @@ describe('RestartButton', () => {
     expect(screen.getByTestId('restart-button-error')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(screen.queryByTestId('restart-button-error')).not.toBeInTheDocument()
+  })
+
+  it('ends the sentence once when the reason is a proxy 502 page', async () => {
+    // The restart is pressed while a tunnel serves its own 502 page; the
+    // template adds the period after the reason, so the reason must not.
+    restartSessions.mockRejectedValue(new Error(statusErrText(502, '<!DOCTYPE html><html><body>502</body></html>')))
+    render(<RestartButton />)
+
+    fireEvent.click(screen.getByRole('button', { name: /apply & restart/i }))
+    await confirmAction(/apply & restart/i)
+    expect(await screen.findByTestId('restart-button-error')).toHaveTextContent(
+      'Could not restart — The server is temporarily unavailable (HTTP 502). Wait a moment, then press Apply & Restart again.',
+    )
   })
 
   it('falls back to the generic failure text for a non-Error rejection', async () => {

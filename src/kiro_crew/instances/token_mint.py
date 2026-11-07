@@ -639,6 +639,11 @@ async def mint_remote_token(
             f"through a jump host or proxy, the mint pays that handshake again; "
             f"otherwise the host may not be answering. {_mint_timeout_advice(timeout_secs)}"
         ) from e
+    except asyncio.CancelledError:
+        # A cancelled mint (an instance edit, a gateway shutdown) has no one
+        # left to store its token, so ssh is stopped like a timed-out one.
+        await kill_and_reap(proc)
+        raise
 
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace").strip()

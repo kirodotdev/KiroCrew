@@ -503,6 +503,7 @@ class CodexHarness(MembershipHarness):
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

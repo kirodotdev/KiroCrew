@@ -670,7 +670,8 @@ loop-apply phase rather than dropping a whole coordinator into a thread:
   possible outcome instead of the loud one it was closed to produce. A refusal
   whose row already holds the state the write asked for lost nothing (another
   write settled it the same way first: a queued stop whose cancel did not land
-  re-posts it ahead of its settle, and the re-posted cancel wins), so that one
+  settles that cancel beside its report (`taskq_settle_unlanded_cancel`), and
+  either may write `cancelled` first), so that one
   is logged at DEBUG. A
   queued stop whose own cancel landed (Stop all, the stage Cancel, a parent-end
   teardown, a single `cancel`) skips the write altogether
@@ -1258,15 +1259,21 @@ and with them the `retry_wait` rows (a start given back before registration,
 or a parked backoff: claimable by the same refill, so refused the same way)
 (`store.queued_rows()`, snapshotted BEFORE the active pass, so a row that pass
 requeues from `admitted` is not read twice; counted in
-`ReconcileReport.queued_examined`, not `examined`) for one thing only: an
+`ReconcileReport.queued_examined`, not `examined`) for two markers only: an
 `artifact_probe` verdict of `REFUSED` (the subagent refusal tombstone,
 `cause="refused"`, [subagent](subagent.md) § Refused-row settle), settled
-`failed`. It never applies a class verdict to a `queued` row, and it does NOT
+`failed`, and one of `STOPPED` (the queued-stop tombstone, `cause="queued_stop"`,
+written when a Stop of a waiting run could not land its cancel), settled
+`cancelled`; a store that refuses either write holds the row out of every claim
+for that state (`hold_until_settled(id, state)`). An `admitted` row carrying the
+queued-stop marker is settled `cancelled` by the active pass, through the same
+verdict. It never applies a class verdict to a `queued` row, and it does NOT
 settle one on a plain `done` / `failed` / `cancelled`: a row comes back to
 `queued` after an earlier attempt (a dependency wake of a parked `retry_wait`
 row, this table's own lost-owner requeue), and that attempt's ending on disk is
 not this row's; the refusal marker is written only for a spawn refused before
-its row was claimed, so it can only be this row's own. A `queued` row whose
+its row was claimed, and the queued-stop marker only for a run stopped before it
+started, so either can only be this row's own. A `queued` row whose
 artifacts say nothing, or record only such an ending, is left as it was. The
 case it closes is a refusal recorded for a row the dispatcher never claimed
 whose own `failed` write was lost before the crash: without the pass the
@@ -1488,7 +1495,9 @@ codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch,
 duck-typed over `urllib`/`aiohttp`/`httpx` error shapes) and `acp_provider`
 (reuses the ACP layer's own throttle / usage-limit / auth / 5xx patterns and
 `_is_transient_raw_error`, defined in `acp.transport_errors` and read through
-`acp.client`, so a third copy cannot drift) — and returns the
+`acp.client`, so a third copy cannot drift; an `AcpError` tagged
+`sign_in_needed` or `auth_required` from its raw frame is `auth_failed` for every
+harness, without reading its wording) — and returns the
 first match, or `None` when the error is not a dependency error at all. An
 exception carrying a pre-attached `dependency_signal` wins outright, and an
 `AcpProcessDied` flagged `ambiguous_delivery` is never a dependency error, whatever

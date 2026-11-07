@@ -15,6 +15,9 @@ export interface CrewWorkItemFacts {
   /** Epoch ms it is stale from while its worker's turn is not running
    *  (`work_ledger.is_stale`, read by the gateway); `0` for never. */
   stale_at_ms: number
+  /** Its worker's own loop will wake it (`ledger_wake.worker_looping`): idle
+   *  between checks, waiting on CI, still running. Absent from an older gateway. */
+  looping?: boolean
 }
 
 /** A conductor's work ledger in brief (`crew_work` on its slot row). */
@@ -717,6 +720,8 @@ export interface ContentBlock {
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** On a cron result note: the job's `last_result_ts` for the result the note carries. */
+  result_ts?: number
   /** OS-banner collapse tag the gateway stamps on every delivered note
    *  (`native_notification_tag`). The service worker's Web Push banner carries
    *  the same value, so one event shows one banner. Absent on client-made notes. */

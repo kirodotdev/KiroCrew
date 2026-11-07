@@ -415,6 +415,15 @@ made updatable or newly validated here; their underlying service behavior is
 unchanged. Existing app cron permission
 and runtime execution checks remain required.
 
+`CronSDK.run_job_async(job_id)` starts a manual run of an owned job now and leaves
+its schedule as it is. It shares `CronService.trigger_run` with the dashboard Run
+route: `False` when a run of the job is already in flight, `True` once the run is
+dispatched, which does not promise that it executes. Ownership is checked against
+the cache first (`PermissionError`, SEL-audited), then, as `set_enabled` does,
+against the store: the run does not start for a job gone or owned by another app
+by then. Like the Run button it runs a paused job, and the fire-time vet still
+applies. There is no sync form: the run starts as a task on the running loop.
+
 `CronSDK`'s three create methods share one closed keyword allowlist
 (`_add_job_kwargs`), so the fields an app can set at create are exactly the ones
 that allowlist threads — a field `CronService.add_job` accepts but the allowlist
@@ -1195,24 +1204,38 @@ The prior file is snapshotted BEFORE the replace (the write path unlinks a legac
 symlink first, so reading afterwards would find nothing). An unreadable prior file
 means "nothing to preserve", never "abort the refresh".
 
-**An update carries the edits across its own deregister.** Both branches of
-`POST /api/apps/{name}/update` deregister the app before re-registering it, and
+**An update carries the edits across its own deregister.** The local-source branch
+of `POST /api/apps/{name}/update` deregisters the app before re-registering it, and
 deregistering deletes the agent files, so the re-registration would find no prior
-file. The route therefore snapshots the app's agent files first
+file. That branch therefore snapshots the app's agent files first
 (`snapshot_app_agent_configs`, regular files only, keyed by file name) and hands
 the snapshot to `register_app(name, prior_agent_configs)`; an agent with no file
 on disk takes its prior config from it. The failed-update restore uses the same
-snapshot. This is what keeps a user's `model` or `description` across a registry
-update, a pin-follow of an adopted former built-in, or a local update. An agent
-the new version renames or drops gets nothing from the snapshot. Disable and
-re-enable still start from the template: a disabled app keeps no agent file and no
-snapshot, so the same is true when an update newly asks for `sessionApproval` and
-suspends the app.
+snapshot. An agent the new version renames or drops gets nothing from the snapshot.
+
+**A registry update keeps the agent files instead.** The update route's registry
+branch and a registry install over an installed app deregister with
+`deregister_app(name, keep_agents=True)` (§17), so registration rewrites each file in
+place and reads the edits from it. A file it does not rewrite keeps its last good
+copy, as on the boot reconcile: a full disk, a data home that does not own a shared
+agents directory (registration declines to write there, and a deleted file would
+never come back), or an agent the new version ships unreadable. After the take-down
+`_reinstall_from_registry` prunes the files the installed manifest no longer
+declares (`_prune_stale_app_resources`), and an app the update left unable to run
+loses them all: suspended on success, deregistered on a failure. Pinned by
+`test_a_registry_update_keeps_an_agent_file_it_cannot_rewrite` and
+`test_a_registry_update_that_needs_consent_leaves_no_agent_file`.
+
+Both keep a user's `model` or `description` across a registry update, a pin-follow of
+an adopted former built-in, or a local update. Disable and re-enable still start from
+the template: a disabled app keeps no agent file and no snapshot, so the same is true
+when an update newly asks for `sessionApproval` and suspends the app.
 
 Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`,
 `_read_agent_config`, `snapshot_app_agent_configs`; the update route
 `apps/routes_install.py::handle_update_app` with
-`apps/routes_lifecycle.py::_snapshot_agent_configs_off_loop`.
+`apps/routes_lifecycle.py::_snapshot_agent_configs_off_loop` and
+`_reinstall_from_registry`.
 
 ## 4. A generated prompt is pinned through the app's policy
 
@@ -2148,6 +2171,13 @@ Classify-and-update is ONE operation under a single exclusive ledger lock. Doing
 it as a read, then a decision, then a write would let two apps sharing a
 dependency be uninstalled concurrently and both conclude they were the sole
 owner.
+
+A ledger that exists but cannot be read is never rewritten, so every app's
+entries survive a transient read error: the install (or enable) records nothing
+and reports that dependency as failed until a later install or enable records
+it, and the uninstall removes no dependency and goes on. Each logs a warning. One
+that does not decode, or is not an object, still reads as empty and the next
+install rewrites it as an object.
 
 A dependency type with no cleanup operation (`capability.agents`) keeps its
 ledger row and only loses this app's ownership even when classified removable:
@@ -4375,9 +4405,28 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
 the tracking record, and that pop is what ends the watch's authority to reconcile MCP for
 the app — so it has to happen BEFORE `deregister_app`. Scrubbing first leaves a window in
 which a backend that recovers re-registers the OLD manifest's servers, and entries the
-update removed survive it. Uninstall, the disable rollback and the two update paths in `kiro_crew.apps.routes` all
-order it this way, and
+update removed survive it. Uninstall, the disable rollback, the two update paths in
+`kiro_crew.apps.routes` and a registry install over an installed app all order it
+this way, and
 `test_update_stops_the_backend_before_deregistering_resources` pins it.
+
+**A registry update takes the app down only to replace it.** The update route's
+registry branch and both registry install routes, over an installed app, go through
+`routes_lifecycle._reinstall_from_registry`, which hands `install_from_registry` the
+stop and a deregister that keeps the agent files (§3) as `before_replace`. The
+install awaits it right before `update_app` copies a managed app's new files in: once
+every gate, the clone, the build, `setup.onInstall` and the startup-hook recheck have
+passed. A refusal before that point leaves the app running, and a failure after the
+take-down restores it (`_restore_app_after_failed_update`). The backend stops first
+because on Windows the copy fails while it holds a file open under the tree. A
+self-managed app (`resources: "app"`) is never taken down: it replaces no installed
+file, and it owns the registrations a deregister would delete. A gateway-managed app
+whose registry entry declares `resources: "app"` takes that path too: once the install has
+written its record self-managed, even if a later step fails, its backend is stopped and
+`deregister_app` runs in full, since from then on it registers its own. Pinned by
+`test_an_update_takes_the_app_down_only_to_copy_its_files`,
+`test_reinstall_over_an_installed_app_takes_it_down_to_replace_its_files` and
+`test_registry_update_to_self_managed_cleans_up_only_gateway_owned_resources`.
 
 `backend_status.running` on `/api/apps` is likewise read off the record
 (`AppProcess.is_running`) rather than asserted from the record merely existing.
@@ -5776,7 +5825,7 @@ records which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
-| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs` and `_unregister_notification_channels` |
+| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs` and `_unregister_notification_channels` |
 | `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers and the `token` query credential it strips (`_forwarded_query`) and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
@@ -6300,8 +6349,9 @@ over the same data. `install_clone._downgrade_refusal` compares the cloned
 manifest's `version` with the installed record's after the admission gate and
 before the build or `onInstall` runs. An older one is refused with code
 `would_downgrade` and a sentence naming both versions, the checkout is put back the
-way an admission refusal puts it back, and the update route restores the stopped
-app, so the installed version keeps its tree, record and commit. The comparison is
+way an admission refusal puts it back, and the app keeps running (the refusal comes
+before the copy step where an update takes it down), so the installed version keeps
+its tree, record and commit. The comparison is
 `catalog._version_newer`, the one the store's `updateAvailable` uses: a pre-release
 of the installed release is older, a re-sync of the same version passes, and a
 version either side cannot read is never refused. A fresh install has no record

@@ -10,6 +10,8 @@ that reads the registry, including the deploy surface that predates aws-control.
 import json
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
+from stray_line_helpers import too_deep_to_decode
 
 from kiro_crew.deploy import profiles as profiles_mod
 
@@ -83,6 +85,30 @@ def test_undecodable_registry_files_read_as_empty(tmp_path, monkeypatch):
         out = profiles_mod.load_registry()
     except UnicodeDecodeError as exc:
         pytest.fail(f"an undecodable registry escaped load_registry: {exc!r}")
+    assert out == EMPTY
+
+
+@pytest.mark.usefixtures("cyclic_gc_quiesced")
+@pytest.mark.parametrize(
+    "make",
+    [too_deep_to_decode, lambda: '{"profiles": [], "default": ' + "9" * 5000 + "}"],
+    ids=["nested-past-the-decoder", "over-digit-limit"],
+)
+def test_registry_files_json_loads_refuses_read_as_empty(tmp_path, monkeypatch, make):
+    """A file ``json.loads`` refuses with ``RecursionError`` (nested past the limit) or a
+    plain ``ValueError`` (a number past the integer digit limit) degrades at every step."""
+    text = make()
+    paths = [tmp_path / name for name in ("profiles.json", "legacy.json", "config.json")]
+    for path in paths:
+        path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(profiles_mod, "_registry_path", lambda: paths[0])
+    monkeypatch.setattr(profiles_mod, "_legacy_registry_path", lambda: paths[1])
+    monkeypatch.setattr(profiles_mod, "_legacy_config_path", lambda: paths[2])
+
+    try:
+        out = profiles_mod.load_registry()
+    except (ValueError, RecursionError) as exc:
+        pytest.fail(f"a registry json.loads refuses escaped load_registry: {type(exc).__name__}")
     assert out == EMPTY
 
 

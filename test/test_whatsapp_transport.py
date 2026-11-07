@@ -821,7 +821,7 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
     ``receive`` rewrites ``msg.text`` with attachment context and temp paths
     before dispatch, so a route built from ``inbound.text`` at the dispatch site
     would spool -- and the restart notice would quote -- on-disk paths to files
-    that do not survive the restart. The original caption and media count are captured
+    that do not survive the restart. The original caption and media names are captured
     BEFORE ingestion in a side table keyed like the others.
     """
 
@@ -842,7 +842,7 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
             return IngestResult(image_paths=[str(image)])
 
         monkeypatch.setattr(mod, "ingest_media", fake_ingest)
-        seen: list[tuple[str, tuple[str, int] | None]] = []
+        seen: list[tuple[str, tuple[str, tuple[str, ...]] | None]] = []
 
         async def dispatch(msg):
             seen.append((msg.text, harness.transport.pending_original.get(id(msg))))
@@ -855,7 +855,7 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
         assert len(seen) == 1
         ingested_text, original = seen[0]
         assert str(image) in ingested_text, "ingestion did not rewrite the text"
-        assert original == ("look at this", 1), "the pre-ingestion original was not captured"
+        assert original == ("look at this", ("image.jpg",)), "the original was not captured"
         assert harness.transport.pending_original == {}, "the side table leaked past dispatch"
         assert not image.exists(), "receive did not hand the temp path to cleanup"
 
@@ -887,8 +887,37 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
         assert seen == [True, False]
         assert harness.transport.pending_voice_note == set(), "the flag leaked past dispatch"
 
+    async def test_a_document_records_the_name_its_sender_gave_it(self, harness, monkeypatch):
+        import kiro_crew.whatsapp.transport as mod
+        from kiro_crew.messaging.attachments import IngestResult
+
+        async def fake_ingest(*a, **kw):
+            return IngestResult()
+
+        monkeypatch.setattr(mod, "ingest_media", fake_ingest)
+        seen: list[tuple[str, tuple[str, ...]] | None] = []
+
+        async def dispatch(msg):
+            seen.append(harness.transport.pending_original.get(id(msg)))
+
+        harness.transport._dispatch = dispatch
+        doc = event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="")
+        doc.Message = Msg(
+            conversation="",
+            extendedTextMessage=None,
+            documentMessage=Msg(
+                caption="the draft",
+                mimetype="application/pdf",
+                fileName="report.pdf",
+                fileLength=1024,
+            ),
+        )
+        await harness.transport.receive(doc)
+
+        assert seen == [("the draft", ("report.pdf",))]
+
     async def test_a_text_only_message_records_zero_media(self, harness):
-        seen: list[tuple[str, int] | None] = []
+        seen: list[tuple[str, tuple[str, ...]] | None] = []
 
         async def dispatch(msg):
             seen.append(harness.transport.pending_original.get(id(msg)))
@@ -898,7 +927,7 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
             event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="just words")
         )
 
-        assert seen == [("just words", 0)]
+        assert seen == [("just words", ())]
 
 
 @pytest.mark.asyncio

@@ -412,7 +412,7 @@ _LAZY_IMPORTS = {
         "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
     ),
     "kiro_crew.enterprise_boot": "require_kiro_login",
-    "kiro_crew.dashboard.handlers": "remote_puller wf_handlers work_ledger",
+    "kiro_crew.dashboard.handlers": "config_pending remote_puller wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.agents": "_remove_member_leftovers",
     "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
     "kiro_crew.dashboard.handlers.ask_question": (
@@ -431,6 +431,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
     "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
+    "kiro_crew.dashboard.handlers.terminal": "apply_terminal_enabled",
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
@@ -489,7 +490,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 134
+    assert len(expected) == 135
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

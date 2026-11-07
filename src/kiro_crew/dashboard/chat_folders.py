@@ -1317,6 +1317,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _folder_icon_lock,
         _is_single_emoji,
         _is_valid_folder_color,
+        _prune_icon_tasks_from_other_loops,
         _spawn_chat_folder_icon_task,
         generate_emoji_for_name,
         icon_preview_avoid,
@@ -1338,6 +1339,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_folders_records import (  # noqa: F401
         _KNOWN_INTERNAL_CALLERS,
         CREATED_BY_SESSION,
+        FOLDER_MEMBER_LABELS_MARKER,
         LAYOUT_ONLY_FIELDS,
         MAX_CHAT_FOLDERS,
         MAX_FOLDER_DEFAULT_PROMPT_CHARS,
@@ -1360,6 +1362,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         create_folder_record,
         folder_ids_filed_into,
         live_slot_names_in_folders,
+        migrate_folder_member_labels,
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
         _ICON_PREVIEW_ATTEMPTS,

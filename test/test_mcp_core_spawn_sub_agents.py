@@ -35,7 +35,7 @@ class TestDeferredSubmission:
         step = spawn_sub_agents("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
         assert isinstance(step, DeferredTool)
         assert step.phase == "submit"
-        assert step.sa_ids == [] and step.sa_errors == [] and step.sa_deferred == set()
+        assert step.sa_ids == [] and step.sa_errors == []
         post.assert_not_called()
         audit.log_api_access.assert_called_once()
         assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "attempt"
@@ -71,7 +71,6 @@ class TestDeferredSubmission:
             assert step.due_at() == manual_clock.monotonic()
             assert step.phase == ("poll" if index == 3 else "submit")
         assert step.sa_ids == ["a1", "a2"]
-        assert step.sa_deferred == {"a2"}
         assert step.sa_errors == ["doomed task: capacity reached",
                                   "missing id: spawn returned no agent id"]
         call_id = step.call_id
@@ -421,21 +420,27 @@ class TestSpawnSubAgents:
                 for call in mock_post.call_args_list
             ), "expected a /api/session-keepalive ping during the poll loop"
 
-    def test_errored_agent_settles_loop_without_spinning(self):
-        """Finding 1: an agent that reports error (never done) must settle the
-        poll loop instead of spinning until max_wait."""
+    def test_a_failed_read_ends_the_pass_and_is_reported_unread(self):
+        """A read that answers error without done (the gateway did not answer)
+        settles the poll loop instead of spinning until max_wait, and the child
+        is reported unread with the real wait, never as an error."""
         with patch("kiro_crew.mcp_core._post") as mock_post, \
              patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core.time") as mock_time, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "a1"}
-            # done is False but error is set — must be treated as settled.
-            mock_get.return_value = {"done": False, "error": "crashed", "agent": "bad"}
+            mock_get.return_value = {"done": False, "error": "HTTP 503", "agent": "bad"}
+            mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
+            result = _call_after_submission({
+                "agents": [{"prompt": "task"}], "solo_reason": "bulk_data",
+            }, mock_time, 5)
 
-            assert '"error"' in result
-            assert "crashed" in result
+            envelope = json.loads(result.split("\n\n")[-1])
+            assert envelope["states"] == {"a1": "unread"}
+            assert envelope["waited_secs"] == 5
+            assert '"status": "error"' not in result
 
     def test_max_wait_configurable_via_env(self):
         """Finding 1: max_wait is configurable and clamped."""
@@ -787,8 +792,8 @@ class TestSpawnSubAgentsFailedChildTranscript:
     On a finished run (``done`` is True) the server's ``error`` is the reason the
     run ended badly, sent next to the ``result`` the run retained. The reply
     carries that result as ``text``, with the same redaction and size cap as a
-    completed child. A payload that is not a finished run (a failed poll) carries
-    no result, and its block keeps its keys.
+    completed child. A payload that is not a finished run (a failed poll) is no
+    error block at all: it is listed as still running.
     """
 
     @staticmethod
@@ -855,10 +860,12 @@ class TestSpawnSubAgentsFailedChildTranscript:
         assert "fail123" in path_arg and path_arg.endswith("result.txt")
         assert blocks[0]["text"] == "summary with path"
 
-    def test_failed_poll_of_an_unfinished_child_carries_no_text(self):
+    def test_failed_poll_of_an_unfinished_child_is_listed_as_still_running(self):
         blocks = self._run({"done": False, "agent": "w", "error": "HTTP 503"})
 
-        assert blocks == [{"agent": "w", "status": "error", "error": "HTTP 503"}]
+        assert [(b["status"], b.get("states")) for b in blocks] == [
+            ("still_running", {"a1": "unread"})
+        ]
 
     def test_finished_child_that_ended_in_error_is_still_counted_as_errored(self):
         """The tool's own SEL row keeps the per-child tallies and the ``partial``
@@ -1096,7 +1103,7 @@ class TestDeferredCollectionCommit:
         monkeypatch.setattr(mcp_core, "sel", lambda: audit)
         monkeypatch.setattr(mcp_core, "_get", lambda path: {"done": True, "result": "ok"})
         step = _SubAgentsStep(
-            sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
+            sa_ids=["a1"], sa_errors=[], parent_session="dashboard:owner",
             max_wait=60, inline_result=lambda aid, text: text,
         )
         text = step._collect()
@@ -1129,7 +1136,7 @@ class TestDeferredCollectionCommit:
         monkeypatch.setattr(mcp_core, "sel", lambda: MagicMock())
         monkeypatch.setattr(mcp_core, "_get", lambda path: {"done": True, "result": "ok"})
         step = _SubAgentsStep(
-            sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
+            sa_ids=["a1"], sa_errors=[], parent_session="dashboard:owner",
             max_wait=60, inline_result=lambda aid, text: text,
         )
         step.on_settled(step._collect())
@@ -1149,7 +1156,7 @@ class TestDeferredCollectionCommit:
         monkeypatch.setattr(mcp_core, "_post", post)
         monkeypatch.setattr(mcp_core, "_get", lambda path: {"done": True, "result": "ok"})
         step = _SubAgentsStep(
-            sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
+            sa_ids=["a1"], sa_errors=[], parent_session="dashboard:owner",
             max_wait=60, inline_result=lambda aid, text: text,
         )
         text = step.abandon()

@@ -66,7 +66,6 @@ from .model import (
     ADMITTED,
     CANCELLED,
     CLAIMABLE,
-    FAILED,
     KIND_SUBAGENT,
     LEASE_SECS,
     QUEUED,
@@ -419,7 +418,7 @@ class TaskStore:
         #: (:meth:`_release_settled_holds`). Guarded by its own lock, as the
         #: index above is: the hold is read on the dispatch path, under
         #: ``_lock``, and written at boot and on release.
-        self._settle_holds: set[str] = set()
+        self._settle_holds: dict[str, str] = {}
         self._settle_holds_lock = threading.Lock()
         #: Set while the boot reconcile's queued pass is INCOMPLETE -- its read of
         #: the queued rows raised :class:`TaskStoreUnavailable` -- to the callable
@@ -551,20 +550,22 @@ class TaskStore:
         with self._unstarted_lock:
             return task_id in self._unstarted_ids
 
-    def hold_until_settled(self, task_id: str) -> None:
-        """Keep *task_id* out of every claim until its ``failed`` write lands.
+    def hold_until_settled(self, task_id: str, state: str) -> None:
+        """Keep *task_id* out of every claim until its terminal *state* write lands.
 
-        Called for a refused row whose ``failed`` write raised
-        :class:`TaskStoreUnavailable` -- by the boot reconcile's queued pass for
-        a ``queued`` row whose refusal tombstone records the ending, and by the
-        live settle once that tombstone is confirmed: the caller was already
-        told the outcome, so the row must not be published to the dispatcher on
-        the strength of a write that has not happened. Each dispatch read
-        retries the write before it reads (:meth:`_release_settled_holds`); the
-        hold ends when one lands, or when the row is found already settled.
+        Called for a row whose ending was published and whose terminal write
+        raised :class:`TaskStoreUnavailable` -- by the boot reconcile's queued
+        pass for a ``queued`` row whose refusal or queued-stop tombstone records
+        the ending, and by the live settle once that tombstone is confirmed: the
+        caller was already told the outcome, so the row must not be published to
+        the dispatcher on the strength of a write that has not happened. *state*
+        is that ending: ``failed`` for a refusal, ``cancelled`` for a stop. Each
+        dispatch read retries the write before it reads
+        (:meth:`_release_settled_holds`); the hold ends when one lands, or when
+        the row is found already settled.
         """
         with self._settle_holds_lock:
-            self._settle_holds.add(task_id)
+            self._settle_holds[task_id] = state
 
     def fence_dispatch(self, until: Callable[[], bool]) -> None:
         """Publish no ``subagent`` row until *until* returns True; retried at each dispatch read.
@@ -615,16 +616,16 @@ class TaskStore:
         the store is the thing that is down.
         """
         with self._settle_holds_lock:
-            pending = sorted(self._settle_holds)
+            pending = sorted(self._settle_holds.items())
         if not pending:
             return []
-        for task_id in pending:
+        for task_id, state in pending:
             try:
-                self.transition(task_id, FAILED, detail={"reconciled": "artifact"})
+                self.transition(task_id, state, detail={"reconciled": "artifact"})
             except TaskStoreUnavailable:
                 break
             with self._settle_holds_lock:
-                self._settle_holds.discard(task_id)
+                self._settle_holds.pop(task_id, None)
         return self.held_until_settled()
 
     def _open_connection(self) -> sqlite3.Connection:

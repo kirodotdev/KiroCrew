@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +20,7 @@ from typing import Any
 import kiro_crew.config.resolution as _resolution
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.aws_project_profiles import coerce_project_profiles
+from kiro_crew.config import loosening_provenance
 from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
 from kiro_crew.config import windows_exec_adoption
@@ -42,6 +43,7 @@ from kiro_crew.config.loader_document import (
     _SIDECAR_BASE_SHADOW,
     _SIDECAR_BASE_UNREADABLE,
     _SIDECAR_OVERLAY_UNREADABLE,
+    PendingEditBlocksSave,
     _config_fingerprint,
     _content_digest_of,
     _invalidate_config_cache,
@@ -145,6 +147,37 @@ from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, memory_store_name_defe
 logger = logging.getLogger("kiro_crew.config.loader")
 
 
+def _recording_config_reader(
+    seen: list[bytes], *, overlay: bool = False
+) -> Callable[[Path], bytes]:
+    """The config read handed to ``loosening_provenance.reconciled_bytes``.
+
+    Appends what it read to *seen*, so the content digest names the on-disk text
+    exactly as ``config_content_stamp`` reads it. A name that does not exist reads as
+    missing without opening it, as the plain loader did. For the *overlay*, a name that
+    is not a regular file reads as missing (no overlay), and a world-writable one is
+    reported.
+    """
+
+    def _read(p: Path) -> bytes:
+        if not overlay and not p.exists():
+            raise FileNotFoundError(p)
+        if overlay:
+            if not p.is_file():
+                raise FileNotFoundError(p)
+            st_mode = p.stat().st_mode
+            if st_mode & 0o002:
+                logger.warning(
+                    "config.local.json is world-writable (%o); consider running: chmod 600 %s",
+                    st_mode & 0o777,
+                    p,
+                )
+        seen.append(read_config_text(p).encode("utf-8"))
+        return seen[-1]
+
+    return _read
+
+
 def workspace_dir_for(workspace: str | None = None) -> Path:
     """Resolve a named workspace to its directory path.
 
@@ -211,16 +244,19 @@ def default_project_dir(workspace: str | None = None) -> str:
     """Resolve the default project directory for a workspace.
 
     Returns the realpath of ``workspace_dir_for(workspace)`` if it exists and
-    is not a sensitive path, otherwise returns ``""``.
+    is not a sensitive path, otherwise returns ``""``. The realpath is judged
+    on :func:`security.is_sensitive_canonical_path`, which answers inline off
+    the event loop, so a resolver child that misses its deadline cannot turn
+    the workspace into a sensitive path.
 
     Used by chat_handlers (slot.project fallback) and session.py (pool cwd)
     to avoid duplicating the same resolution + validation logic.
     """
-    from kiro_crew.security import is_sensitive_path  # circular import
+    from kiro_crew.security import is_sensitive_canonical_path  # circular import
 
     try:
         ws_dir = os.path.realpath(str(workspace_dir_for(workspace)))
-        if os.path.isdir(ws_dir) and not is_sensitive_path(ws_dir):
+        if os.path.isdir(ws_dir) and not is_sensitive_canonical_path(ws_dir):
             return ws_dir
     except Exception:
         pass
@@ -393,11 +429,31 @@ def read_config_document() -> ConfigDocument:
     # than whatever a later read would find.
     read_parts: list[bytes | None] = [None, None]
     digestible = True
-    if path.exists():
+    # Where the namespace sandbox seals this file, a read serves the gateway-endorsed
+    # copy when the on-disk bytes differ, or when the file is missing or unreadable, so
+    # a direct in-sandbox rewrite or delete of ANY key is ignored; the plain read
+    # everywhere else. See loosening_provenance.reconciled_bytes.
+    # The digest names the on-disk text the read returned, as config_content_stamp
+    # does; a document served for a file that could not be read is not stamped.
+    base_seen: list[bytes] = []
+    base_doc: bytes | None = None
+    try:
+        base_doc = loosening_provenance.reconciled_bytes(
+            "config.json", path, _recording_config_reader(base_seen)
+        )
+    except (OSError, UnicodeDecodeError) as e:
+        config_source_unreadable = True
+        base_unreadable = True
+        digestible = False
+        logger.warning("Failed to load config from %s: %s", path, e)
+        _mark_file_degraded(path)
+    if base_doc is not None:
         try:
-            base_text = read_config_text(path)
-            read_parts[0] = base_text.encode("utf-8")
-            raw = json.loads(base_text)
+            if base_seen:
+                read_parts[0] = base_seen[0]
+            else:
+                digestible = False
+            raw = json.loads(base_doc)
             if isinstance(raw, dict):
                 data = raw
                 loaded_base = True
@@ -456,18 +512,28 @@ def read_config_document() -> ConfigDocument:
     # Deep-merge config.local.json overlay (user-owned, never touched by setup)
     local_data: dict = {}
     local_path = config_local_path()
-    if local_path.is_file():
+    # Same read as the base file; a name that is not a regular file is no overlay.
+    local_seen: list[bytes] = []
+    local_doc: bytes | None = None
+    try:
+        local_doc = loosening_provenance.reconciled_bytes(
+            "config.local.json",
+            local_path,
+            _recording_config_reader(local_seen, overlay=True),
+        )
+    except (OSError, UnicodeDecodeError) as e:
+        config_source_unreadable = True
+        overlay_unreadable = True
+        digestible = False
+        logger.warning("Failed to load config.local.json: %s", e)
+        _mark_file_degraded(local_path)
+    if local_doc is not None:
         try:
-            st_mode = local_path.stat().st_mode
-            if st_mode & 0o002:
-                logger.warning(
-                    "config.local.json is world-writable (%o); consider running: chmod 600 %s",
-                    st_mode & 0o777,
-                    local_path,
-                )
-            local_text = read_config_text(local_path)
-            read_parts[1] = local_text.encode("utf-8")
-            raw_local = json.loads(local_text)
+            if local_seen:
+                read_parts[1] = local_seen[0]
+            else:
+                digestible = False
+            raw_local = json.loads(local_doc)
             if isinstance(raw_local, dict):
                 local_data = raw_local
             else:
@@ -1409,6 +1475,9 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
                 )
                 + "\n",
             )
+    except PendingEditBlocksSave as e:
+        # Refused again on every load while the file is pending: once per version.
+        loosening_provenance.log_writeback_refused_once(e.leaf, str(e))
     except Exception as e:
         # Migration write-back is best-effort; never block startup.
         logger.warning("Config write-back failed: %s", e)

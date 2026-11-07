@@ -557,8 +557,15 @@ def list_servers() -> list[McpServerInfo]:
         cached = probe_metadata(s.name)
         if cached is not None and cached.identity == identity:
             s.auth_challenge = cached.auth_challenge
-            s.auth_grant_present = cached.auth_grant_present
             s.temp_refusals = [dict(r) for r in cached.temp_refusals]
+            # Crew custody is read live and is not part of the identity: once the
+            # flag is off or chats leave KAS, Crew's grant says nothing about the
+            # runtime's, so the row falls back to "Not verified" until a re-probe.
+            from kiro_crew.connections import crew_oauth  # circular: crew_oauth reads list_servers
+
+            if not cached.auth_crew_held or crew_oauth.manages(s.name):
+                s.auth_grant_present = cached.auth_grant_present
+                s.auth_crew_held = cached.auth_crew_held
         # A registry pointer never has a probe result of its own, so without this
         # it reads "unknown" until the first probe pass -- the same row the probe
         # reports, stated without waiting for one. See ``probe_server``.

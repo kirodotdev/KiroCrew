@@ -128,6 +128,7 @@ class _GateMixin(ManagerComponent):
         _stop_before_memory_read: bool = False,
         _memory_reading: "tuple[float, str] | None" = None,
         _depth: int | None = None,
+        _root_session_key: str | None = None,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | MemoryReadPoint | None":
         """Spawn a subagent for *task*.
 
@@ -351,6 +352,28 @@ class _GateMixin(ManagerComponent):
             _proven_depth = 1
         _carried_depth = _depth if type(_depth) is int else 0
         _depth = max(_carried_depth, _proven_depth)
+        # The root carried by a retry, continuation or drained row, else the parent's root or key.
+        if not (isinstance(_root_session_key, str) and _root_session_key):
+            _parent_record = (
+                next(
+                    (
+                        a
+                        for a in self._manager._agents.values()
+                        if not a.done
+                        and (getattr(a, "conversation_key", "") or f"subagent:{a.id}")
+                        == parent_session_key
+                    ),
+                    self._manager._agents.get(_parent_run_id),
+                )
+                if _parent_run_id
+                else None
+            )
+            _root_session_key = parent_session_key
+            if _parent_record is not None:
+                _root_session_key = (
+                    getattr(_parent_record, "root_session_key", "")
+                    or _parent_record.parent_session_key
+                )
         # The second half of a claimed dispatch is never refused for depth: its
         # first half already was checked, and a refusal here would return the
         # claimed row to the store as claimable work the caller was told was
@@ -658,6 +681,7 @@ class _GateMixin(ManagerComponent):
             "crew": crew,
             "_memory_mode": _memory_mode,
             "_depth": _depth,
+            "_root_session_key": _root_session_key,
             # Same rule for the asking turn: `spawn_async` re-enters from this
             # dict (prepare -> write -> re-enter), so a follow-up whose asking
             # ordinal was pinned by its watcher would otherwise be re-read from
@@ -1549,6 +1573,7 @@ class _GateMixin(ManagerComponent):
             crew=crew,
             memory_mode=_memory_mode,
             depth=_depth,
+            root_session_key=_root_session_key,
             **run_fields,
         )
         info._start_price_gb = candidate_price
@@ -1597,10 +1622,16 @@ class _GateMixin(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
+        # A spawn's own ``approval_mode="auto"`` is a session Trust: a ``permission_mode``
+        # deny of ``trust`` refuses it, and the spawn takes the approval path below.
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        spawn_auto = approval_mode == "auto" and session_mode_permitted("trust")
         # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
+        from kiro_crew.subagent_manager.turn_session import approval_policy_of
+
         parent_trusted = (
-            parent_session_key
-            and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
+            parent_session_key and approval_policy_of(self._manager, parent_session_key) == "auto"
         )
 
         # Shared Crew: each run's runtime starts in its initiator's containment slice.
@@ -1609,7 +1640,7 @@ class _GateMixin(ManagerComponent):
         if self._manager._is_yolo and self._manager._is_yolo():
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
-        elif approval_mode == "auto":
+        elif spawn_auto:
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
             sel().log_tool_invocation(

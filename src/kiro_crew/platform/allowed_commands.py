@@ -585,3 +585,55 @@ def _run(program: tuple[tuple, ...], start: int, command: str, budget: list[int]
                 step.append(node[2])
         current = closure(step)
     return current is not None and 0 in current
+
+
+#: Spellings :func:`parse` reads narrower than kiro-cli's Rust engine does, which is
+#: safe for a grant and unsafe for a deny: a ``|`` (``\\Aa|b\\z`` is "starts with a or
+#: ends with b" in Rust, exactly ``a`` or ``b`` here) and the word boundaries ``\\<``,
+#: ``\\>`` and ``\\b{`` (literal text here). Plain substring tests, never a pattern.
+_DENY_UNSAFE = ("|", "\\<", "\\>", "\\b{")
+
+
+def parse_deny(raw: object) -> Pattern | None:
+    """*raw* as a ``deniedCommands`` entry, or ``None`` when :func:`parse` cannot read
+    it as wide as kiro-cli does (:data:`_DENY_UNSAFE`), so the caller treats it as
+    unknown and grants nothing."""
+    if not isinstance(raw, str) or any(piece in raw for piece in _DENY_UNSAFE):
+        return None
+    return parse(raw)
+
+
+def denied_match(
+    raw_patterns: object, command: object, *, word_bounded: bool = False
+) -> bool | None:
+    """Whether a ``deniedCommands`` entry names *command*, read WIDER than kiro-cli.
+
+    True when one of *raw_patterns* matches the whole of *command* or any leading
+    piece of it, so an entry kiro-cli reads as a prefix is never read narrower
+    here. ``None`` -- unknown, so the caller grants nothing -- when the command is
+    not :func:`plain_command`, when an entry is outside the syntax :func:`parse`
+    reads, or when the match budget runs out. False only when every piece was
+    matched against every entry.
+
+    *word_bounded* keeps only the pieces that end at a word: the whole command, or
+    a prefix followed by a space. The refusal row asks for it, so ``make clean``
+    refuses ``make clean now`` but not ``make cleanup``; the grant check reads every
+    prefix, which only sends the call back to a prompt.
+    """
+    entries = list(raw_patterns) if isinstance(raw_patterns, (list, tuple)) else None
+    if not isinstance(command, str) or not plain_command(command) or entries is None:
+        return None
+    patterns = [parse_deny(raw) for raw in entries]
+    if any(p is None for p in patterns):
+        return None
+    budget = [_MAX_MATCH_STEPS]
+    for end in range(len(command), 0, -1):
+        if word_bounded and end < len(command) and command[end] != " ":
+            continue
+        for pattern in patterns:
+            assert pattern is not None
+            if _match(pattern, command[:end], budget):
+                return True
+            if budget[0] < 0:
+                return None
+    return False

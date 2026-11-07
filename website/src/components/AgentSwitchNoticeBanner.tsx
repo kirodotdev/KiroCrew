@@ -84,6 +84,7 @@ export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitc
             askAgent
             testId="agent-switch-notice-error"
             className="basis-full"
+            title={notice.title}
             message={notice.message}
           />
         ) : (

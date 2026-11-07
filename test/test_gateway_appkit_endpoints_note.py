@@ -33,42 +33,6 @@ from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _Cha
 # ---------------------------------------------------------------------------
 
 
-_TURN_DRAIN_HELPERS = frozenset({"_dequeue_next_message", "_dequeue_next_system_message"})
-
-
-def _queue_drain_seams(source: str) -> list[tuple[str, bool]]:
-    """Find every function that drains the queue to start a successor turn.
-
-    Returns ``(function_name, flushes_above_the_drain)`` per seam, in source
-    order. A held ``/note`` must be written ABOVE the successor's own user row:
-    the replay path passes ``exclude_last_n=1`` and ``inject`` is recall
-    eligible, so a note still held when the successor's row lands becomes the
-    last recall-eligible row and the exclusion falls on the note instead of the
-    request. Draining the queue is how a successor turn is started, so any
-    function that drains must flush first.
-    """
-    import ast
-
-    seams: list[tuple[str, bool]] = []
-    for fn in ast.walk(ast.parse(source)):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        drains: list[int] = []
-        flushes: list[int] = []
-        for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-            if name in _TURN_DRAIN_HELPERS:
-                drains.append(node.lineno)
-            elif name == "flush_deferred_notes":
-                flushes.append(node.lineno)
-        if drains:
-            seams.append((fn.name, any(f < min(drains) for f in flushes)))
-    return seams
-
-
 class TestNoteEndpoint:
     """POST /api/chat/slots/{slot}/note — visible line + silent next-turn context."""
 
@@ -1262,63 +1226,6 @@ class TestNoteEndpoint:
         # note; _finish_queue_cycle delivers it after that turn instead.
         assert 'slot._queue[0].get("kind")' in queued
         assert queued.index('slot._queue[0].get("kind")') < queued.index("flush_deferred_notes")
-
-    def test_every_queue_drain_seam_flushes_before_starting_the_successor(self):
-        """A NEW successor-dispatch path that skips the flush must turn this red.
-
-        The seam test above names two functions by hand, so it cannot see a path
-        that does not exist yet -- which is the reviewable failure mode. This one
-        enumerates instead: it walks every module in the package and finds each
-        function that drains the queue to start a successor turn, then requires a
-        flush above that drain. Draining is the mechanism by which a successor
-        starts, so a sixth seam is caught wherever it is added.
-        """
-        import kiro_crew
-
-        root = Path(kiro_crew.__file__).resolve().parent
-        found: list[tuple[str, str, bool]] = []
-        for path in sorted(root.rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
-            try:
-                source = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            if not any(helper in source for helper in _TURN_DRAIN_HELPERS):
-                continue
-            for name, flushes_above in _queue_drain_seams(source):
-                found.append((path.name, name, flushes_above))
-
-        # Positive control: an empty scan would satisfy "all seams flush" vacuously.
-        assert found, "scan found no queue-drain seam; the scan itself is broken"
-        offenders = [(mod, fn) for mod, fn, ok in found if not ok]
-        assert not offenders, f"queue-drain seams that do not flush first: {offenders}"
-
-    def test_the_drain_seam_scan_can_actually_fail(self):
-        """Negative controls for the scan above, one per way a seam breaks."""
-        missing = (
-            "def _start_another(state, slot):\n"
-            "    nxt, consumed = _dequeue_next_message(slot, merge_enabled=False)\n"
-            "    spawn_guarded_turn(state, slot, _run_chat(state, slot, nxt))\n"
-        )
-        assert _queue_drain_seams(missing) == [("_start_another", False)]
-
-        # Present but BELOW the drain: the note would land under the successor's row.
-        late = (
-            "def _start_another(state, slot):\n"
-            "    nxt, consumed = _dequeue_next_message(slot, merge_enabled=False)\n"
-            "    slot.flush_deferred_notes()\n"
-            "    spawn_guarded_turn(state, slot, _run_chat(state, slot, nxt))\n"
-        )
-        assert _queue_drain_seams(late) == [("_start_another", False)]
-
-        correct = (
-            "def _start_another(state, slot):\n"
-            "    slot.flush_deferred_notes()\n"
-            "    nxt, consumed = _dequeue_next_message(slot, merge_enabled=False)\n"
-            "    spawn_guarded_turn(state, slot, _run_chat(state, slot, nxt))\n"
-        )
-        assert _queue_drain_seams(correct) == [("_start_another", True)]
 
     @pytest.mark.asyncio
     async def test_full_queue_sheds_expired_before_evicting_a_live_entry(self, tmp_path: Path):

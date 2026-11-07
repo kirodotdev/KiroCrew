@@ -600,7 +600,7 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     """
     from kiro_crew.acp import kas_engine_install, kas_route
 
-    _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda: False)
+    _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": False)
     _floor_monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", None)
     _floor_monkeypatch.setattr(
         kas_engine_install,
@@ -624,6 +624,24 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
+
+
+@pytest.fixture(autouse=True)
+def _config_content_check_off_unless_a_test_turns_it_on(_floor_monkeypatch):
+    """Turn the config content check off for tests that do not ask for it.
+
+    The real answer is "on" on a Linux runner with user namespaces and "off" elsewhere,
+    so whether every
+    config read serves the endorsed copy would differ between a Linux and a macOS or
+    Windows run. The provenance tests force the check on with
+    ``monkeypatch.setattr(lp, "enforcement_active", ...)``. The cached host answer is
+    pre-set too, so a gateway boot's ``prime_host_verdict`` never runs a real namespace
+    probe; a test that wants the probe sets ``lp._host_verdict`` back to ``None``.
+    """
+    from kiro_crew.config import loosening_provenance
+
+    _floor_monkeypatch.setattr(loosening_provenance, "enforcement_active", lambda: False)
+    _floor_monkeypatch.setattr(loosening_provenance, "_host_verdict", False)
 
 
 @pytest.fixture
@@ -882,7 +900,10 @@ def pytest_configure(config: pytest.Config) -> None:
 # State lives at module level on the controller only: ``pytest_testnodedown``
 # and ``pytest_handlecrashitem`` are controller-side xdist hooks that never
 # fire inside a worker, and ``pytest_internalerror`` only emits when a crash
-# was recorded, so a non-xdist internal error is reported exactly as before.
+# was recorded or a worker finished while still assigned work, so a
+# non-xdist internal error is reported exactly as before.
+
+from conftest_xdist_clean_finish import format_clean_finish_report  # noqa: E402
 
 _crashed_workers: list[tuple[str, str]] = []  # (worker id, error text)
 _crash_victims: list[str] = []  # test nodeids running when their worker died
@@ -952,7 +973,8 @@ def _format_abandoned_run_report(crashes: list[tuple[str, str]], victims: list[s
 
 
 def pytest_internalerror(excrepr, excinfo) -> None:
-    """Replay recorded worker crashes when an INTERNALERROR kills the run.
+    """Replay recorded worker crashes, or name a clean finish with work still
+    assigned, when an INTERNALERROR kills the run.
 
     Written to ``sys.stderr`` directly rather than through the terminal
     reporter: this hook runs on a path where pytest's own reporting machinery
@@ -961,6 +983,9 @@ def pytest_internalerror(excrepr, excinfo) -> None:
     ``INTERNALERROR>`` traceback and exits 3 -- the goal is a diagnosable red,
     not a green.
     """
+    clean_finish = format_clean_finish_report(excinfo)
+    if clean_finish is not None:
+        print(clean_finish, file=sys.stderr, flush=True)
     if not _crashed_workers:
         return
     print(

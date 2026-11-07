@@ -165,6 +165,8 @@ _EXEMPT: dict[str, str] = {
     "work_brief": "a worker's tool (mcp_work.WORKER_TOOLS), never the conductor's",
     "work_report": "a worker's tool (mcp_work.WORKER_TOOLS), never the conductor's",
     "work_ledger_rebuild": "repairs a damaged or missing ledger, not part of the ordinary loop",
+    "accept_eval": "named by the act-by-status rule, rendered only with the ledger (see below)",
+    "patrol_budget": "named by the patrol rule, rendered only with the ledger (_PATROL_MARKS)",
     "offer_dashboard_page": (
         "named by its per-turn note (dashboard/page_offer.py), which is the only time "
         "the crewmate may call it"
@@ -320,7 +322,7 @@ def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
 # -- ledger tracking and the gated patrol, only where the ledger is mounted ---- #
 
 #: What the patrol text must name, and what a render without the ledger must not.
-_PATROL_MARKS = ('watch="work-ledger"', "300..900", "patrol_budget.py renew")
+_PATROL_MARKS = ('watch="work-ledger"', "300..900", "`patrol_budget` tool", "`mode=renew`")
 #: The ledger verbs the tracking sentence names only where they are mounted.
 _LEDGER_TOOLS = ("work_ledger_record", "work_ledger_read", "work_ledger_rebuild")
 

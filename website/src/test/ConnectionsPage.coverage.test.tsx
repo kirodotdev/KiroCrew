@@ -396,6 +396,25 @@ describe('the provider gallery', () => {
     expect(within(notion).queryByText('In chats')).not.toBeInTheDocument()
   })
 
+  // Test runs on Kiro CLI's grant; the gateway refuses it (409
+  // crew_oauth_test_unsupported) for a Crew-held sign-in, so the card drops it.
+  it.each([
+    ['Crew-held', true, false],
+    ['native', undefined, true],
+  ])('offers Test on a connected %s row only when Crew does not hold it', async (_label, crewHeld, hasTest) => {
+    mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'connected', grantPresent: true, crewHeld }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'connected'))
+    expect(within(github).queryByRole('button', { name: 'Test' }) !== null).toBe(hasTest)
+    expect(within(github).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
+  })
+
   it('merges the backend caveat into the shared-grant tip beside Disconnect', async () => {
     mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
     connectionsStatus.mockResolvedValue({

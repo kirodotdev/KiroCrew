@@ -18,48 +18,25 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Hallucination filter — suppress Whisper-family transcription artefacts.
-#
-# Whisper models fed silence or low-energy audio produce two recognisable
-# artefacts, and both are worse than an empty transcript in this app: the text
-# goes to agents, so a hallucinated sign-off becomes a meeting note, and a phrase
-# repeated forty times becomes forty note lines.
+# Whisper models fed silence or low-energy audio produce two artefacts, both worse
+# than an empty transcript because the text goes to agents as notes:
 #
 #  1. One phrase repeating ("Thank you. Thank you. Thank you. …")
-#  2. Boilerplate unrelated to the audio — subtitle credits, sign-offs, stock
-#     phrases memorised from the training set's video captions.
+#  2. Boilerplate unrelated to the audio, such as subtitle credits.
 #
-# Applied to every Whisper-family provider. The repetition collapse below is
-# pure text logic and language-independent; the boilerplate list is English-only
-# and matches nothing in a zh-CN or de-DE transcript, so a non-English recording
-# gets the repetition half of this filter and none of the phrase half.
-# AWS Transcribe uses a different decoder and does not produce these,
-# so it is deliberately excluded rather than filtered "just in case" — running
-# the filter there could only ever delete genuine speech.
-# ---------------------------------------------------------------------------
+# The repetition collapse is language-independent; the boilerplate list is
+# English-only, so other languages get only the repetition half. AWS Transcribe
+# does not produce these artefacts and is excluded: filtering it could only delete
+# genuine speech.
 
 # Boilerplate phrases Whisper hallucinates on silence. Compared case-insensitively.
-# LIST DISCIPLINE: an entry must be a CAPTION ARTEFACT — text that exists because
-# a transcript was produced, not because anyone spoke. "Implausible as dictated
-# speech" was the earlier bar and it was not strict enough: it admitted sign-offs
-# and subscribe CTAs ("thank you for watching", "don't forget to subscribe",
-# "hit the bell", "see you in the next video"), which anyone recording a demo or
-# dictating a video script says out loud. Because the match is whole-sentence and
-# a transcript filtered down to nothing returns None, such an entry can delete the
-# only sentence a recording had — the speaker's own words, unrecoverable. Those
-# entries are gone, along with the ordinary-speech phrases dropped before them
-# ("goodbye", "copyright", "thanks for listening", "thanks for joining", "see you
-# next time", "all rights reserved").
-#
-# What remains is attribution text a caption track carries about itself. Nobody
-# utters "Subtitles by the Amara.org community" into a voice memo, so no reading of
-# these deletes speech.
-#
-# Residual, accepted deliberately: a single un-repeated hallucinated sign-off now
-# survives into the transcript. That is the safe direction of the trade — one stray
-# line a reader can see and ignore, versus silently destroying real speech — and the
-# repetition collapse below still removes the far more common form of this artefact,
-# where the model emits the same sign-off for the rest of the decode window.
+# An entry must be a CAPTION ARTEFACT: text that exists because a transcript was
+# produced, not because anyone spoke. Sign-offs and subscribe CTAs ("thank you for
+# watching", "don't forget to subscribe") do not qualify: people say them out loud,
+# and because the match is whole-sentence and an emptied transcript returns None,
+# such an entry can delete the only sentence a recording had. The accepted cost is
+# that a single un-repeated hallucinated sign-off survives; the repetition collapse
+# still removes the common form, where the model repeats it for the whole window.
 _WHISPER_BOILERPLATE: tuple[str, ...] = (
     "subtitles by",
     "subtitles by amara.org",
@@ -81,14 +58,9 @@ _WHISPER_BOILERPLATE: tuple[str, ...] = (
 # is still far below the artefact and comfortably above plausible emphasis.
 _REPEAT_THRESHOLD = 6
 
-# Boilerplate matches the WHOLE sentence only, never a substring and never a
-# word-count neighbourhood. Anything looser deletes real speech: a bare
-# substring rule drops "Thanks for joining today's standup, let's start", and
-# even a one-word slack drops "Thanks for joining, everyone." — a normal
-# meeting opener. This filter runs on every Whisper-family transcript, so a
-# false positive is silent loss of genuine speech; a false negative is one
-# stray boilerplate line, which the repetition collapse usually removes anyway.
-# Known multi-word artefact shapes ("Subtitles by Amara.org") are covered by
+# Boilerplate matches the WHOLE sentence only, never a substring or a word-count
+# neighbourhood: anything looser deletes real speech ("Thanks for joining,
+# everyone." is a normal meeting opener). Multi-word artefacts are covered by
 # listing the full phrase in _WHISPER_BOILERPLATE, not by loosening the match.
 
 

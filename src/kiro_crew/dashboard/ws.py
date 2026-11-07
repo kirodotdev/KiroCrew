@@ -537,6 +537,9 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
     The key is OMITTED entirely when the agent is not stalled, so a client
     cannot attach an idle span to a healthy row — the reducer pairs the span
     with the flag and would otherwise have to defend against the mismatch.
+
+    ``slot`` is the tab of the chat the run's spawn tree started from
+    (``root_session_key``), so a nested run replays where its live frames draw.
     """
     ts = time.time() if now is None else now
 
@@ -547,7 +550,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
 
     data: dict = {
         "id": a.id,
-        "slot": subagent_event_slot(a.parent_session_key),
+        "slot": subagent_event_slot(getattr(a, "root_session_key", "") or a.parent_session_key),
         # The sub-agent's OWN session key (where it writes its ctx_blocks /
         # token rows), so a client can fetch this node's own context-trace and
         # render its window composition. Mirrors the run key derived in
@@ -1418,7 +1421,9 @@ async def _serve_ws(
                                 # prefix-strip tags replayed cards with a slot
                                 # no tab reads, so the panel rehydrated empty
                                 # after every reconnect for cron/channel tabs.
-                                slot = subagent_event_slot(a.parent_session_key)
+                                slot = subagent_event_slot(
+                                    getattr(a, "root_session_key", "") or a.parent_session_key
+                                )
                                 try:
                                     _replay.append(
                                         {

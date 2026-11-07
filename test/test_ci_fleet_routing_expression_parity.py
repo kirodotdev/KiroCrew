@@ -160,6 +160,7 @@ _PERMANENT_EXCEPTIONS = {
     # work where a human waits to merge, so they run on the larger-runner group for
     # queue position. A runner may only be pinned for a job this set names.
     ("issue-gate.yml", "issue-gate"),
+    ("issue-gate-retrigger.yml", "retrigger"),
     ("pr-size-override.yml", "record"),
     ("sensitive-change-review-comment.yml", "rerun"),
     # Scheduled lanes whose schedule event carries no live collaborator actor for
@@ -261,6 +262,7 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     ),
+    ("issue-gate-retrigger.yml", "retrigger"): _GROUP_LABEL_EXPR,
     ("pr-size-override.yml", "record"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
@@ -313,7 +315,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("ci.yml", "cancel-superseded-run"),
     ("code-review.yml", "autosde-rules"),
     ("code-review.yml", "inclusive-language"),
-    ("code-review.yml", "pr-hygiene"),
+    ("pr-hygiene.yml", "pr-hygiene"),
     ("code-review.yml", "sast"),
     ("pr-merge-conflict-label.yml", "label"),
     ("build-wheel.yml", "build-wheel"),
@@ -351,20 +353,46 @@ _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "client-py.yml",
 }
 
+
 # Resolver consumers pin their complete expressions, including hosted fallbacks.
 # Backend shards, backend lint, frontend tests and bundle size use large Linux
 # compute; Windows and boot-matrix consumers pin their respective OS mappings.
-# A literal fleet label must never bypass the shared actor/event/fork admission.
-_CANONICAL_CONSUMER_EXPR = "${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}"
-_CANONICAL_CONSUMER_EXPR_LARGE = (
-    "${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"
+# A literal fleet label must never bypass the shared actor/event/fork admission:
+# a consumer spells one only when the resolver's output says the run was admitted.
+# It spells it rather than reading the output because a one-job re-run is a new
+# attempt that does not re-run `changes`, whose output names an earlier attempt.
+def _fleet_or_resolved(output: str, label: str, hosted: str) -> str:
+    return (
+        f"startsWith({output}, 'codebuild-') && "
+        f"format('{label}', github.run_id, github.run_attempt) || {output} || '{hosted}'"
+    )
+
+
+_LINUX_LABEL = "codebuild-kirocrew-gha-linux-{0}-{1}"
+_LINUX_LARGE_LABEL = _LINUX_LABEL + " instance-size:large"
+_WINDOWS_LARGE_LABEL = "codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large"
+_LINUX_CONSUMER = _fleet_or_resolved(
+    "needs.changes.outputs.linux_runner", _LINUX_LABEL, "ubuntu-latest"
 )
-_CANONICAL_WINDOWS_CONSUMER_EXPR = "${{ needs.changes.outputs.windows_runner || 'windows-latest' }}"
+_LINUX_LARGE_CONSUMER = _fleet_or_resolved(
+    "needs.changes.outputs.linux_runner_large", _LINUX_LARGE_LABEL, "ubuntu-latest"
+)
+_WINDOWS_CONSUMER = _fleet_or_resolved(
+    "needs.changes.outputs.windows_runner", _WINDOWS_LARGE_LABEL, "windows-latest"
+)
+_CANONICAL_CONSUMER_EXPR = "${{ " + _LINUX_CONSUMER + " }}"
+_CANONICAL_CONSUMER_EXPR_LARGE = "${{ " + _LINUX_LARGE_CONSUMER + " }}"
+_CANONICAL_WINDOWS_CONSUMER_EXPR = "${{ " + _WINDOWS_CONSUMER + " }}"
 _CANONICAL_BOOT_MATRIX_EXPR = (
-    "${{ matrix.os == 'ubuntu-latest' && "
-    "(needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || "
-    "matrix.os == 'windows-latest' && "
-    "(needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}"
+    f"${{{{ matrix.os == 'ubuntu-latest' && ({_LINUX_LARGE_CONSUMER}) || "
+    f"matrix.os == 'windows-latest' && ({_WINDOWS_CONSUMER}) || matrix.os }}}}"
+)
+_CANONICAL_DESKTOP_X64_EXPR = (
+    "${{ matrix.os == 'ubuntu-22.04' && ("
+    + _fleet_or_resolved(
+        "needs.desktop-matrix.outputs.linux_x64_runner", _LINUX_LARGE_LABEL, "ubuntu-22.04"
+    )
+    + ") || matrix.os }}"
 )
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "lint-gate"): _CANONICAL_CONSUMER_EXPR,
@@ -397,6 +425,9 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     # Default Linux: `pip download` only, so neither tier binds.
     ("ci.yml", "wheel-closure"): _CANONICAL_CONSUMER_EXPR,
 }
+# Jobs that spell a fleet label behind a resolver's admission rather than carry
+# the inline policy; each one's whole expression is pinned where it is listed.
+_RESOLVER_CONSUMERS = set(_EXPECTED_RESOLVER_CONSUMER_JOBS) | {("build.yml", "build-desktop")}
 
 
 def _all_workflow_files() -> list[Path]:
@@ -479,7 +510,7 @@ def test_every_copy_of_the_routing_expression_matches_the_canonical_one() -> Non
             # Parse the value, not a line regex: folded YAML and label arrays
             # must not hide a fleet route from this check. Anchor on the fleet
             # prefix, never on the predicate whose correctness we are checking.
-            if "codebuild-" not in str(value):
+            if "codebuild-" not in str(value) or (path.name, job_id) in _RESOLVER_CONSUMERS:
                 continue
             found_any = True
             if value != _expected_inline_expression(path.name):
@@ -497,7 +528,7 @@ def test_every_job_using_the_routing_expression_is_accounted_for() -> None:
         for job_id, spec in workflow["jobs"].items():
             key = (path.name, job_id)
             runs_on = spec.get("runs-on")
-            if "codebuild-" in str(runs_on):
+            if "codebuild-" in str(runs_on) and key not in _RESOLVER_CONSUMERS:
                 routed.add(key)
             if key in _PERMANENT_EXCEPTIONS:
                 exception_runs_on[key] = runs_on
@@ -611,10 +642,7 @@ def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> No
 
     desktop = workflow["jobs"]["build-desktop"]
     assert desktop["name"] == "Build Desktop (${{ matrix.os }})"
-    assert desktop["runs-on"] == (
-        "${{ matrix.os == 'ubuntu-22.04' && "
-        "(needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}"
-    )
+    assert desktop["runs-on"] == _CANONICAL_DESKTOP_X64_EXPR
 
     # The release matrix (nightly/release) builds the shipped bytes on hosted.
     release = yaml.safe_load((_WORKFLOWS_DIR / "build-desktop.yml").read_text(encoding="utf-8"))

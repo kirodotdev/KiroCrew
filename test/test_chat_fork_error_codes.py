@@ -71,7 +71,7 @@ def test_the_ratchet_can_actually_fail() -> None:
     `slot_ownership.slot_not_found` set the code there and are counted in those modules.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 26, f"scanner reached {len(coded)} coded sites, expected 26"
+    assert len(coded) == 28, f"scanner reached {len(coded)} coded sites, expected 28"
     assert all(f.code_value for f in coded)
 
 

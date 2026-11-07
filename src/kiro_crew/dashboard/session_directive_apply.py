@@ -105,6 +105,29 @@ def _audit(session_key: str, kind: str, outcome: str) -> None:
         logger.debug("session-directive SEL audit failed", exc_info=True)
 
 
+def refuse_user_origin_directive(session_key: str, kind: str) -> str:
+    """Audit *kind* as denied by the user-origin gate and return the refusal text.
+
+    The gate's one wording, shared with the cron turn, which no applier reads.
+    """
+    _audit(session_key, kind, "denied")
+    if kind in _USER_SURFACE_DIRECTIVES:
+        # Unchanged wording: extending the set must not silently reword an
+        # unrelated tool's refusal.
+        return (
+            f"Error: {kind} only works from a user-facing session (dashboard "
+            f"or a messaging channel); headless callers such as cron jobs and "
+            f"sub-agents are refused (this turn is {session_key!r}). "
+            "Nothing was changed."
+        )
+    return (
+        f"Error: {kind} only works from a turn a person sent; cron jobs, "
+        f"sub-agents, task-runner turns and this session's own wakes are "
+        f"refused even when this session has an open dashboard tab "
+        f"(this turn is {session_key!r}). Nothing was changed."
+    )
+
+
 async def apply_session_directive(
     state: Any,
     slot: Any,
@@ -218,22 +241,7 @@ async def apply_session_directive_outcome(
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
         # parent's slot, so both inherit a surface they never opened.
-        _audit(session_key, kind, "denied")
-        if kind in _USER_SURFACE_DIRECTIVES:
-            # Unchanged wording: extending the set must not silently reword an
-            # unrelated tool's refusal.
-            return DirectiveOutcome(
-                f"Error: {kind} only works from a user-facing session (dashboard "
-                f"or a messaging channel); headless callers such as cron jobs and "
-                f"sub-agents are refused (this turn is {session_key!r}). "
-                "Nothing was changed."
-            )
-        return DirectiveOutcome(
-            f"Error: {kind} only works from a turn a person sent; cron jobs, "
-            f"sub-agents, task-runner turns and this session's own wakes are "
-            f"refused even when this session has an open dashboard tab "
-            f"(this turn is {session_key!r}). Nothing was changed."
-        )
+        return DirectiveOutcome(refuse_user_origin_directive(session_key, kind))
     # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
     # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
     # started in this session (the same authenticated-human flag the

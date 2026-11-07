@@ -1,6 +1,7 @@
 "use strict";
 //
-// Opt-in disabling of Chromium hardware acceleration for the desktop shell.
+// Opt-in and RDP auto-detect disabling of Chromium hardware acceleration for
+// the desktop shell.
 //
 // The problem this solves: on hosts with no usable GPU — a VMware/VirtualBox
 // guest, a Windows RDP session (SESSIONNAME=RDP-Tcp#*), an X11-forwarded or
@@ -26,10 +27,13 @@
 // instance), and applied through the same `appendSwitch` seam `main.js`
 // already exposes to `native-logging.js`.
 //
-// This is deliberately OFF by default: a normal desktop with a real GPU should
-// keep hardware acceleration. It is opt-in via `KIROCREW_DISABLE_GPU`
-// (mirroring the existing `KIROCREW_*` env conventions: KIROCREW_HOME,
-// KIROCREW_PORT, KIROCREW_DEBUG) or the `--disable-gpu` command-line flag.
+// A normal desktop with a real GPU keeps hardware acceleration. The decision,
+// in precedence order (see shouldDisableGpu):
+//   1. force ON  (`KIROCREW_DISABLE_GPU` in 0/false/no/off, or `--enable-gpu`)
+//   2. force OFF (`KIROCREW_DISABLE_GPU` in 1/true/yes/on, or `--disable-gpu`),
+//      mirroring the existing `KIROCREW_*` env conventions
+//   3. auto      (nothing explicit AND a GPU-less host: a Windows RDP session)
+//   4. default   (hardware acceleration ON)
 //
 // Note the limit of this switch set: it shortens Chromium's GPU mode chain but
 // a GPU process is still spawned for the display compositor. A Windows host on
@@ -43,13 +47,25 @@
 
 /** Truthy env values, matching how the rest of the shell reads KIROCREW_* flags. */
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
+/** Falsy env values: an explicit force-ON of hardware acceleration. */
+const FALSY = new Set(["0", "false", "no", "off"]);
 
 /**
- * Whether GPU acceleration should be disabled for this launch.
+ * Whether this host has no usable GPU and should default to software rendering.
+ * Conservative and signal-based: never guesses from "looks like a VM" alone.
  *
- * Inputs, in order of intent (any one is enough):
- *   1. `KIROCREW_DISABLE_GPU` env set to a truthy value (1/true/yes/on).
- *   2. `--disable-gpu` present in argv.
+ * @param {object} deps
+ * @param {NodeJS.ProcessEnv} [deps.env]
+ * @returns {boolean}
+ */
+function isGpuLessHost({ env = process.env } = {}) {
+  const session = env && env.SESSIONNAME;
+  return typeof session === "string" && session.trim().toUpperCase().startsWith("RDP-");
+}
+
+/**
+ * Whether GPU acceleration should be disabled for this launch, in the
+ * precedence order the header lists: force ON, force OFF, RDP auto, default.
  *
  * @param {object} deps
  * @param {NodeJS.ProcessEnv} [deps.env]   Defaults to process.env at call time.
@@ -58,9 +74,12 @@ const TRUTHY = new Set(["1", "true", "yes", "on"]);
  */
 function shouldDisableGpu({ env = process.env, argv = process.argv } = {}) {
   const raw = env && env.KIROCREW_DISABLE_GPU;
-  if (typeof raw === "string" && TRUTHY.has(raw.trim().toLowerCase())) return true;
+  const val = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+  if (val !== null && FALSY.has(val)) return false;
+  if (Array.isArray(argv) && argv.includes("--enable-gpu")) return false;
+  if (val !== null && TRUTHY.has(val)) return true;
   if (Array.isArray(argv) && argv.includes("--disable-gpu")) return true;
-  return false;
+  return isGpuLessHost({ env });
 }
 
 /**
@@ -83,7 +102,7 @@ function gpuDisableSwitches() {
 }
 
 /**
- * Apply the GPU-disable switches if the launch opted in. Never throws.
+ * Apply the GPU-disable switches if this launch should run GPU-less. Never throws.
  *
  * Must run BEFORE the app is ready: Chromium reads these switches during
  * initialization, so appending them later is accepted and then ignored — the
@@ -116,7 +135,9 @@ function initGpuPolicy({ appendSwitch, env, argv, log = () => {} } = {}) {
 
 module.exports = {
   shouldDisableGpu,
+  isGpuLessHost,
   gpuDisableSwitches,
   initGpuPolicy,
   TRUTHY,
+  FALSY,
 };

@@ -970,6 +970,10 @@ class RunEventCoordinator(ManagerComponent):
                 return _factory_approver()(event)
             return _ask_parent(event)
 
+        # The operator's ``auto_approve_subagent_tools`` grant is not a Trust, so a
+        # ``permission_mode`` deny of ``trust`` does not end it.
+        _hooks = manager._ctx_builder.hooks if manager._ctx_builder else None
+        _trust_gated = not (_hooks is not None and _hooks.auto_approve_subagent_tools is True)
         return Policy(
             gate=HookGate(consult),
             audit=SelAudit(rows, on_refusal_failure="answer", sel=sel, log=log),
@@ -985,7 +989,10 @@ class RunEventCoordinator(ManagerComponent):
                     agent_role=info.agent or None,
                 ),
             ),
-            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy, parent_revoked)),
+            grants=(
+                GATE_GRANT,
+                ParentPolicyAuto(parent_policy, parent_revoked, trust_gated=_trust_gated),
+            ),
             responders=(
                 CallbackResponder(
                     _factory_approver,
@@ -1003,7 +1010,10 @@ class RunEventCoordinator(ManagerComponent):
             child=ChildRule.enforce(
                 # For such a child the unconditional grant is tried BEFORE the
                 # gate's (identity-keyed) one.
-                grants=(ParentPolicyAuto(parent_policy, parent_revoked), GATE_GRANT),
+                grants=(
+                    ParentPolicyAuto(parent_policy, parent_revoked, trust_gated=_trust_gated),
+                    GATE_GRANT,
+                ),
                 unattended=Refusal.host(
                     "child_unattended", _LOW_FIDELITY_DENY_REASON, DENY_CAUSE_SURFACE_POLICY
                 ),

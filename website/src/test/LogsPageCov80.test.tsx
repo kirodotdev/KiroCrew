@@ -58,6 +58,7 @@ vi.mock('react-virtuoso', async () => {
 })
 
 import LogsPage, { LogViewer } from '../pages/LogsPage'
+import { i18next } from '../i18n/all'
 
 /** Feed lines through the websocket subscription the viewer registered. */
 function emit(...lines: Line[]) {
@@ -106,6 +107,22 @@ describe('LogViewer level control', () => {
     expect(within(group).getByRole('radio', { checked: true }).textContent).toBe('Info')
     await act(async () => { fireEvent.click(within(group).getByRole('radio', { name: 'Warning' })) })
     expect(within(group).getByRole('radio', { checked: true }).textContent).toBe('Warning')
+  })
+
+  it('names the level chips in the reader\'s language', async () => {
+    // The chips were built from the English level constants, so every locale
+    // read Debug / Info / Warning / Error while the rest of the bar translated.
+    await i18next.changeLanguage('ja')
+    try {
+      render(<LogViewer />)
+      await act(async () => {})
+      const group = screen.getByRole('radiogroup', { name: 'ログレベル:' })
+      expect(within(group).getAllByRole('radio').map(r => r.textContent)).toEqual(['デバッグ', '情報', '警告', 'エラー'])
+      await act(async () => { fireEvent.click(within(group).getByRole('radio', { name: '警告' })) })
+      expect(setLogLevel).toHaveBeenCalledWith('WARNING')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('styles each active level with its own tone', async () => {

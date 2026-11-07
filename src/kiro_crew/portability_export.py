@@ -318,13 +318,19 @@ def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> i
         real = pinned_fs.fd_real_path(fd)
         if real is None:
             return None  # cannot witness containment -> fail closed
+        # `fd_real_path` folds the `\\?\` prefix off `real`; fold the root the same way.
+        root_cmp = platform_compat.strip_extended_length_prefix(root_real)
         try:
-            if os.path.commonpath([real, root_real]) != root_real:
+            if os.path.commonpath([real, root_cmp]) != root_cmp:
                 return None
         except ValueError:  # different drives on Windows
             return None
         if not fenced_ok and is_sensitive_path(real):
             return None
+        # The fence's targets keep the root's own spelling, so ask in that one too.
+        if not fenced_ok and root_cmp != root_real:
+            if is_sensitive_path(root_real + real[len(root_cmp) :]):
+                return None
     except OSError:
         return None
     else:

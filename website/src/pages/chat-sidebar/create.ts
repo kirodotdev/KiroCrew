@@ -137,7 +137,7 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       // The tab gestures register the slot without activating it, so the
       // tab strip does not replace the current tab -- same `activate: false`
       // contract as the header New button's gestures.
-      return createSlotWithOrigin(dispatch, { agent, mode: mode || '', folder_id: folderId, project, activate: !inNewTab, ...(memoryMode ? { memory_mode: memoryMode } : {}), ...(prefill ? { prefill } : {}) })
+      return createSlotWithOrigin(dispatch, { agent, mode: mode || '', folder_id: folderId, project, activate: !inNewTab, crewModeDefault: true, ...(memoryMode ? { memory_mode: memoryMode } : {}), ...(prefill ? { prefill } : {}) })
     },
     onSuccess: ({ slot, origin }: { slot: Slot; origin: ForkOrigin }, { folderId, columnId, focus, attempt, inNewTab: requested }: CreateChatInFolderVars) => {
       const inNewTab = settledTabMode(store, requested ?? false, origin)
@@ -322,7 +322,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   const createChatMutation = useMutation({
     mutationFn: ({ inNewTab }: { inNewTab: NewTabMode }) => {
       setNewChatError('')
-      return createSlotWithOrigin(dispatch, { mode: mode || '', activate: !inNewTab, defaultFolder: true })
+      return createSlotWithOrigin(dispatch, { mode: mode || '', activate: !inNewTab, defaultFolder: true, crewModeDefault: true })
     },
     onSuccess: ({ slot, origin }, { inNewTab: requested }) => {
       const inNewTab = settledTabMode(store, requested, origin)

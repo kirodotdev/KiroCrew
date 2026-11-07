@@ -939,11 +939,21 @@ export default function AgentImportFlow({
                       <p className="text-[13px] font-medium text-text">
                         {item.category ? `${item.source}: ${item.category}` : item.source}
                       </p>
-                      {/* Every row stays a note, as before: which skips are caught
-                          failures needs a flag the scan does not send yet (#29216). */}
-                      <p className="mt-1 text-[13px] text-muted" data-reason={item.reason}>
-                        {skipReasonText(item.reason)}
-                      </p>
+                      {/* A caught failure is an error; any other skip is a note.
+                          No hand-off: the source and category picks are unsaved wizard state. */}
+                      {item.failed ? (
+                        <div className="mt-1" data-reason={item.reason}>
+                          <ErrorNotice
+                            variant="inline"
+                            testId="agent-import-skip-read-error"
+                            message={skipReasonText(item.reason)}
+                          />
+                        </div>
+                      ) : (
+                        <p className="mt-1 text-[13px] text-muted" data-reason={item.reason}>
+                          {skipReasonText(item.reason)}
+                        </p>
+                      )}
                     </div>
                     {item.count !== undefined && <span className="font-mono text-[13px] text-muted">{item.count}</span>}
                   </div>

@@ -507,6 +507,38 @@ async def test_a_continuation_keeps_the_runs_lineage_depth(restart: bool) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("asker", "root"),
+    [("subagent:gone", "dashboard:root"), ("dashboard:other", "dashboard:other")],
+    ids=["from-its-own-parent", "from-another-chat"],
+)
+async def test_a_continuation_keeps_the_runs_root_chat(asker: str, root: str) -> None:
+    # The run's parent record is gone, so only the run's own record names the chat
+    # its tree started from; a follow-up asked from another chat draws in that one.
+    conv_id = f"rooted-{asker.replace(':', '-')}"
+    await asyncio.to_thread(create_agent_folder, conv_id, memory_mode="persistent")
+    await asyncio.to_thread(write_run_agent, conv_id, "")
+    sessions = _mock_sessions(resumed=True)
+    manager = _manager(sessions)
+    original = SubagentInfo(
+        id=conv_id, task="first task", parent_session_key="subagent:gone", done=True
+    )
+    original.root_session_key = "dashboard:root"
+    manager._agents[conv_id] = original
+    state = {"session_id": "sid-from-state", "provider": "acp", "cwd": "", "keep": True}
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.read_state", return_value=state),
+        patch.object(manager, "_promote_conversation", return_value=object()),
+    ):
+        info = manager.continue_conversation(conv_id, "follow-up", parent_session_key=asker)
+        assert info is not None and not info.error, info.error
+        await await_until(manager._tasks[info.id], what="the run finishing")
+    assert info.root_session_key == root
+
+
+@pytest.mark.asyncio
 async def test_a_follow_up_keeps_the_runs_model_and_effort() -> None:
     await asyncio.to_thread(create_agent_folder, "pinned-a", memory_mode="persistent")
     await asyncio.to_thread(write_run_agent, "pinned-a", "")

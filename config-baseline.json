@@ -9052,9 +9052,11 @@
         "chat_entry_cache_max_bytes": 33554432,
         "cautious_boot": true,
         "default_memory_mode": "persistent",
+        "new_chat_crew_mode": false,
         "widget_density": "more",
         "browser_local_origins": [],
         "verbosity": "answer_only",
+        "preferred_language": "",
         "link_previews": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
@@ -9851,6 +9853,20 @@
       "defaultValue": "persistent"
     },
     {
+      "path": "dashboard.new_chat_crew_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Start new chats in Ultra Mode",
+      "help": "Open each new dashboard chat with Ultra Mode already on. It can still be turned off before the first message. Applies only where Ultra Mode is offered: a Persistent chat on the default agent, with the Ultra Mode preview on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.widget_density",
       "kind": "core",
       "type": "string",
@@ -9912,6 +9928,34 @@
         "answer_only"
       ],
       "defaultValue": "answer_only"
+    },
+    {
+      "path": "dashboard.preferred_language",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Preferred Reply Language",
+      "help": "Language the agent replies in, as one of the dashboard's language codes (e.g. 'zh-CN'). Empty (the default) replies in the language of the user's message. A set language holds even when a message mixes languages, until the user asks for another one in chat. Code, commands and identifiers stay as they are, and text written for other readers (commit messages, PR text, code comments, public posts) keeps the project's own language. Separate from 'language', which sets only the dashboard UI.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "en",
+        "zh-CN",
+        "hi",
+        "es",
+        "fr",
+        "bn",
+        "pt",
+        "ru",
+        "de",
+        "ja",
+        "ko",
+        "it"
+      ],
+      "defaultValue": ""
     },
     {
       "path": "dashboard.link_previews",

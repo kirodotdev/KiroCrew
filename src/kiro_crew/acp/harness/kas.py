@@ -57,7 +57,9 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
+from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
+from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
@@ -627,10 +629,12 @@ class KasHarness(MembershipHarness):
             )
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
-        # Read only when the route is still open: a stored Kiro CLI pick never
-        # leaves kiro-cli (``kas_route`` rule 2).
+        # Read only when the route is still open: a stored Kiro CLI pick, the
+        # session's own pin first, never leaves kiro-cli (``kas_route`` rule 2).
         host_auth: bool | None = None
-        switch_allowed = await asyncio.to_thread(kas_route_mod.automatic_switch_allowed)
+        switch_allowed = await asyncio.to_thread(
+            kas_route_mod.automatic_switch_allowed, ctx.harness_pin
+        )
         # Off the loop: on Windows the comparison resolves the override's real path.
         operator_override = False
         if kas_bin:
@@ -876,9 +880,25 @@ class KasHarness(MembershipHarness):
         # A `fallbackAction: "deny"` spec's write allowlist, anchored at the
         # session's own directory: the gate refuses every other file write of this
         # agent (`spec-write-allowlist` tier).
-        from kiro_crew.acp.kas_write_allowlist import projected_write_allowlist
+        from kiro_crew.acp.kas_write_allowlist import (
+            projected_answered_paths,
+            projected_write_allowlist,
+        )
 
         handle.kas_spec_write_allowlist = projected_write_allowlist(
+            custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
+        )
+        from kiro_crew.acp.kas_spec_denies import projected_spec_denies
+
+        handle.kas_spec_denies = projected_spec_denies(
+            custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
+        )
+        # `autoAllowReadonly: true` beside `denyByDefault`, and the write tool's
+        # `allowedPaths` the gate answers (`spec-builtin-grant` tier).
+        handle.kas_spec_shell_readonly = kas_agents_mod.projected_shell_readonly(
+            custom_agents, active_agent
+        )
+        handle.kas_crew_answered_paths = projected_answered_paths(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
         handle.kas_projected_agent = active_agent if custom_agents else ""
@@ -897,6 +917,7 @@ class KasHarness(MembershipHarness):
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1087,6 +1108,20 @@ class KasHarness(MembershipHarness):
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.
             custom_agents = with_switched_off_tools(
                 custom_agents, session_mcp_disabled_tools(agent, spec=spec)
+            )
+            # The mcp.json / cli.json reads the wire envelope finishes the block
+            # from, read here off the loop and beside the session's own directory.
+            declared = spec.get("mcpServers")
+            custom_agents = stamp_settings_mcp(
+                custom_agents,
+                agent,
+                session_cwd or work_dir,
+                declared=declared if isinstance(declared, dict) else (),
+                # Called for every session so the first one records the list; only
+                # a user-level spec can be on it, since a checkout's spec of the
+                # same name is not the file that was recorded.
+                legacy_mcp_json=legacy_mcp_json(agent, agents_dir, spec)
+                and prompt_dir == agents_dir,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``

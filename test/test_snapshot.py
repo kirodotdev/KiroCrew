@@ -363,6 +363,83 @@ class TestRestoreReplace:
         assert (existing / "memory.db").read_bytes() == before_db
         assert (existing / "crons.json").read_bytes() == before_crons
 
+    @pytest.mark.parametrize("pinned", [False, True], ids=["by_name", "pinned"])
+    def test_replace_endorses_the_restored_config(self, env, monkeypatch, pinned):
+        """A restore is the owner's write: where the sandbox seals config.json, the
+        restored file takes effect instead of loading as the endorsed copy it replaced."""
+        from kiro_crew.config import loosening_provenance as lp
+        from kiro_crew.config.loader import read_config_for_update
+
+        if pinned and unpinnable_argv():
+            pytest.skip("no pinned staging on this platform")
+        by_name: list[str] = []
+        if not pinned:
+            # The by-name branch `_backup_and_copy` takes where staging is not pinned.
+            def _unpinned(**kwargs) -> bool:
+                by_name.append(kwargs["what"])
+                return False
+
+            monkeypatch.setattr(snapshot_mod, "_staging_is_pinned", _unpinned)
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing-endorse"
+        _setup_fake_kirocrew(existing)
+        (existing / "config.json").write_text('{"agent": {"model": "old"}}')
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+        lp.record("config.json", (existing / "config.json").read_bytes(), strict=True)
+
+        assert restore_main([str(tarball), "--mode", "replace", "--force"] + unpinnable_argv()) == 0
+
+        assert ("restore of 'config'" in by_name) is not pinned, by_name
+        assert read_config_for_update(existing / "config.json")["agent"]["model"] == "test"
+        assert lp.endorsed_bytes("config.json") == (existing / "config.json").read_bytes()
+        assert lp.pending_changes() == []
+
+    def test_failed_replace_puts_the_endorsed_config_back(self, env, monkeypatch):
+        from kiro_crew.config import loosening_provenance as lp
+
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing-endorse-rollback"
+        _setup_fake_kirocrew(existing)
+        (existing / "config.json").write_text('{"agent": {"model": "old"}}')
+        before = (existing / "config.json").read_bytes()
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+        lp.record("config.json", before, strict=True)
+
+        real = snapshot_mod._do_replace_mutations
+
+        def _fail_after_installing(*args, **kwargs):
+            real(*args, **kwargs)  # config.json is installed and endorsed by now
+            raise RuntimeError("late failure")
+
+        monkeypatch.setattr(snapshot_mod, "_do_replace_mutations", _fail_after_installing)
+        with pytest.raises(RuntimeError):
+            restore_main([str(tarball), "--mode", "replace", "--force"] + unpinnable_argv())
+
+        assert (existing / "config.json").read_bytes() == before
+        assert lp.endorsed_bytes("config.json") == before
+        assert lp.pending_changes() == []
+
+
+class TestRestoreMergeEndorses:
+    def test_merge_endorses_a_config_it_restores_because_it_was_missing(self, env, monkeypatch):
+        from kiro_crew.config import loosening_provenance as lp
+        from kiro_crew.config.loader import read_config_for_update
+
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing-merge-endorse"
+        _setup_fake_kirocrew(existing)
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+        lp.record("config.json", b'{"agent": {"model": "old"}}', strict=True)
+        (existing / "config.json").unlink()
+
+        restore_main([str(tarball), "--mode", "merge", "--force"] + unpinnable_argv())
+
+        assert read_config_for_update(existing / "config.json")["agent"]["model"] == "test"
+        assert lp.pending_changes() == []
+
 
 class TestRestoreMerge:
     def test_merge_memory_dedup(self, env, monkeypatch):

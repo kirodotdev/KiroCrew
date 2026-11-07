@@ -58,3 +58,14 @@ def test_referenced_skill_names_survives_every_corruption_class(tmp_path, monkey
     ):
         store.write_bytes(payload)
         assert cron_mod.referenced_skill_names() == set(), f"raised/leaked on {payload[:24]!r}"
+
+
+def test_a_record_with_a_non_text_message_does_not_drop_other_jobs_skills(tmp_path, monkeypatch):
+    """The store keeps a malformed record; it must not empty the protected-skill set."""
+    monkeypatch.setattr(cron_mod, "config_dir", lambda: tmp_path)
+    jobs = [
+        {"id": "bad", "name": "b", "message": 5},
+        {"id": "1", "name": "j", "message": "run $deploy-helper"},
+    ]
+    (tmp_path / "crons.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    assert "deploy-helper" in cron_mod.referenced_skill_names()

@@ -858,6 +858,13 @@ def _deliver_note(self: DashboardState, note: dict[str, Any]) -> None:
     _notifications_for(self).deliver(self, note)
 
 
+def _bridge_note(self: DashboardState, note: dict[str, Any]) -> None:
+    """Hand a locally delivered note to the notification bridge."""
+    bridge = getattr(self, "notification_bridge", None)
+    if bridge is not None:
+        bridge.schedule(note, serving_loop=getattr(self, "serving_loop", None))
+
+
 def register_sse(self: DashboardState) -> asyncio.Queue[dict[str, Any]]:
     """Register a new SSE client and return its dedicated queue."""
     return _notifications_for(self).register_sse(self)

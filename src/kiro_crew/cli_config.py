@@ -22,7 +22,11 @@ from kiro_crew.config.loader import (
     update_config_locked,
     workspace_dir_from_entry,
 )
-from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE, drop_extra_section_keys
+from kiro_crew.config.resolution import (
+    _SECTION_KEYS_EMITTED_ELSEWHERE,
+    drop_extra_section_keys,
+    drop_retired_section_keys,
+)
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import (
@@ -443,6 +447,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
                     _ack_explicit_config_write(key, parsed)
+                    # This raw write bypasses save(), which is what drops retired keys.
+                    drop_retired_section_keys(existing)
                     return existing
 
                 try:
@@ -640,6 +646,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         except ConfigReadError as e:
             print(f"❌ Cannot edit a corrupt config.json: {e}", file=sys.stderr)
             sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
+            sys.exit(1)
         except OSError as e:
             # A read-only or full data home, or a refused link: report it and stop,
             # rather than letting the CLI die on a traceback.
@@ -696,6 +705,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
             recorded = record_acks(keys)
         except ConfigReadError as e:
             print(f"❌ Cannot read a corrupt config.json: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
             sys.exit(1)
         except OSError as e:
             print(f"❌ Could not record acknowledgments: {e}", file=sys.stderr)

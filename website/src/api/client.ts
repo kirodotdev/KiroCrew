@@ -15,7 +15,7 @@
  * those modules own are re-exported below, so every import path is unchanged.
  */
 import { installSessionExpiryHandler } from './sessionExpirySignal'
-import { ApiError, friendlyErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
+import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -117,6 +117,9 @@ export type {
   DeniedCommandRule,
   DeniedUserRule,
   AwsConsentStatus,
+  ConfigPendingChange,
+  ConfigPendingData,
+  ConfigPendingLeaf,
   CredentialRedactionState,
   DeniedCommandsData,
   GovernanceScopeDetail,
@@ -154,6 +157,7 @@ export type {
   SsoStatus,
   InstanceView,
   AddInstanceBody,
+  RelayCrewEntry,
 } from './client/instances'
 export { filenameFromDisposition } from './client/instances'
 export type {
@@ -930,7 +934,7 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
       ? i18nT('api.client.session_expired_sign_in_again')
       : edgeChallengeMessage(edgeOutcome)
         || friendlyErrText(r.status, errText)
-        || `HTTP ${r.status}`
+        || statusErrText(r.status, errText)
   const code = parseErrorCode(errText)
   // One specific denial on one endpoint is a DESIGNED, benign signal rather than a
   // failure worth showing the user — a disabled optional feature answering its own
@@ -1272,6 +1276,24 @@ const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
 const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teammate' }
 const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
 
+/**
+ * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF` while
+ * `tunnel.relay_viewer_enabled` is off, which is every install by default. The desktop
+ * app's relay Crew list reads it on every load and hides itself on that answer, so
+ * journaling it would file one error report per load. Any other failure journals.
+ */
+const RELAY_VIEWER_OFF: BenignDenial = { status: 404, code: 'RELAY_VIEWER_OFF' }
+const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)
+
+/**
+ * The ninth: `GET /api/security/config-pending` answering `owner_only` to a caller that is
+ * not the dashboard owner. The shell reads it on every page for the Settings nav dot, and for
+ * a guest that refusal means "nothing to review", so journaling it would file one error report
+ * per page load. Apply and Discard keep `j`: a refusal there is a real failure.
+ */
+const CONFIG_PENDING_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jConfigPending = (r: Response) => parseJson(r, CONFIG_PENDING_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1539,6 +1561,8 @@ const transport: ClientTransport = {
   jSharedCrewPreview,
   jMembers,
   jApps,
+  jRelayViewer,
+  jConfigPending,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,

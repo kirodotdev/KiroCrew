@@ -1039,7 +1039,13 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             if row.get("process") == "released" and status != "working"
             else ""
         )
-        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}{released}")
+        # Idle between checks of its own loop (waiting on CI): wait, nothing to decide.
+        looping = (
+            ", its own loop will wake it (waiting on a check: wait)"
+            if status == "idle" and row.get("looping")
+            else ""
+        )
+        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}{looping}{released}")
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
 

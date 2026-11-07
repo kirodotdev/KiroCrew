@@ -30,6 +30,7 @@ from relay_client_helpers import (
     FakeCrew,
     FakeHostLeg,
     FakeRelay,
+    StaticHostTokenSource,
     TopRng,
     make_client,
     ready_frame,
@@ -46,7 +47,7 @@ from kiro_crew.relay_client.protocol import (
     REQUEST_CREDIT_INITIAL_BYTES,
 )
 from kiro_crew.relay_client.streams import HttpStream
-from kiro_crew.relay_client.token_source import HostCredential, StaticHostTokenSource
+from kiro_crew.relay_client.token_source import HostCredential
 from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 
 pytestmark = pytest.mark.asyncio

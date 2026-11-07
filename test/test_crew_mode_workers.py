@@ -16,6 +16,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
+# Loaded here, before any test patches chat_delivery / chat_runner: chat_handlers
+# copies those names in at import, so a first import under a patch would keep the
+# fake for every later test on this worker.
+import kiro_crew.dashboard.chat_handlers  # noqa: F401
 from kiro_crew import crew_mode
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -846,7 +850,7 @@ async def test_a_held_steer_is_reported_queued_persisted_and_shown(_open_gate, m
     monkeypatch.setattr(
         chat_delivery, "start_queue_persist", lambda st, sl: persisted.append(sl.key)
     )
-    monkeypatch.setattr(chat_delivery, "warn_if_not_durable", lambda *a: None)
+    monkeypatch.setattr(chat_delivery, "warn_if_not_durable", lambda *a: True)
     monkeypatch.setattr(crew_log_emit, "on_message_queued", lambda *a, **k: None)
     monkeypatch.setattr("kiro_crew.dashboard.relay_archive.is_relay_archive", lambda s: False)
     queue: list[dict[str, Any]] = []
@@ -1046,6 +1050,36 @@ def test_the_side_panel_group_of_a_worker(status, progress, group):
     from kiro_crew.dashboard.handlers import crew_workers
 
     assert crew_workers._group(status, progress) == group
+
+
+@pytest.mark.parametrize(
+    ("progress", "group"),
+    [
+        # Idle between checks of its own loop (waiting on CI): the flow still runs.
+        ("", "working"),
+        # A report it owes its conductor, or a finish, outranks the loop.
+        ("with_conductor", "with_conductor"),
+        ("done", "done"),
+    ],
+)
+def test_an_idle_worker_whose_loop_will_wake_it_is_working(progress, group):
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    assert crew_workers._group("idle", progress, looping=True) == group
+    assert crew_workers._group("needs_approval", progress, looping=True) == "approval"
+
+
+@pytest.mark.asyncio
+async def test_the_worker_list_reads_a_looping_idle_worker_as_working(_open_gate, monkeypatch):
+    rows = [*_TREE, _row("w3", created_by="root", title="Waits on CI")]
+    monkeypatch.setattr(_open_gate, "_looping", lambda key: key in {"w3", "w2"})
+    resp = await _open_gate.api_crew_workers(
+        _req("GET", "/api/chat/slots/root/crew-workers", _state(rows), {"slot": "root"})
+    )
+    by_key = {w["key"]: w for w in json.loads(resp.text)["workers"]}
+    assert by_key["w3"]["group"] == "working"
+    # A worker waiting on a tool approval still reads as the approval, loop or not.
+    assert by_key["w2"]["group"] == "approval"
 
 
 @pytest.mark.parametrize(

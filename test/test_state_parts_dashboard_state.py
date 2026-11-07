@@ -59,6 +59,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "decision: 'str' = '') -> 'None'",
     ),
     "_background_turn_sema": ("function", False, False, "(self) -> 'asyncio.Semaphore'"),
+    "_bridge_note": ("function", False, False, "(self, note: 'dict[str, Any]') -> 'None'"),
     "_broadcast": ("function", False, False, "(self, note: 'dict[str, Any]') -> 'None'"),
     "_broadcast_chat_message": (
         "function",

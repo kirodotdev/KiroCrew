@@ -385,7 +385,7 @@ class WhatsAppDispatcher:
             self.sessions.release(session_key)
 
     def _inbound_route(self, inbound: InboundMessage) -> InboundRoute | None:
-        """The spool route for a DM: the user's own text and media count, or ``None``.
+        """The spool route for a DM: the user's own text and media names, or ``None``.
 
         Read from the transport's ``pending_original`` side table, which
         ``receive`` fills BEFORE ingestion rewrites ``inbound.text``. Same lifetime
@@ -403,7 +403,8 @@ class WhatsAppDispatcher:
             conversation_id=inbound.conversation_id,
             text=text,
             user_id=inbound.user_id,
-            attachments_dropped=media,
+            attachments_dropped=len(media),
+            attachment_names=media,
         )
 
     async def _drive(

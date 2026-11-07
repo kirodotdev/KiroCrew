@@ -212,7 +212,11 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``permission_pre_tool_block`` takes a keyword-only ``event_tool_params=None`` (the
 #: call's structured params, the hook's ``tool_input`` when the rendering is a diff),
 #: so its callers fit too.
-_BASE_SHAPE_DIGEST = "1f27f685b70d82f55d2185b5632e9464b1abb7d349a90a029e44fbca1d920fa9"
+#: ``safe_read_file_bytes_nolink`` and ``validate_file_path`` take the same keyword (the
+#: member start's spec read), so their callers fit too.
+#: ``safe_read_prefix`` takes a keyword-only ``refuse=None`` (a caller's fence on
+#: the opened descriptor's kernel path), so its callers fit too.
+_BASE_SHAPE_DIGEST = "779ba3972cc7887377c5ea6661a6b6e435e70c81aadba1ddae3d62d3dd07e3d3"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

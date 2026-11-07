@@ -374,9 +374,13 @@ Open via **Connection → Open Config File** or the tray menu.
   `showTrayIcon` key in this app's config file; only `false` hides the icon
   (`tray-icon.js`), and the icon appears or disappears as soon as either
   setting changes.
-- **GPU rendering.** Hardware acceleration is on by default.
-  `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
-  (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard
+- **GPU rendering.** Hardware acceleration is on by default, except in a
+  Windows RDP session (`SESSIONNAME` starting with `RDP-`), where it starts
+  off. The decision, first match wins (`disable-gpu.js`):
+  `KIROCREW_DISABLE_GPU=0` (or `false`/`no`/`off`) or `--enable-gpu` keeps it
+  on, including over RDP; `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it
+  off for a launch; otherwise an RDP session turns it off; otherwise it stays
+  on. On Windows, if the GPU process dies before the dashboard
   has loaded, the app relaunches itself once with software rendering
   (`--in-process-gpu --use-angle=swiftshader`, never `--no-sandbox`) and keeps
   that setting for the current app version under `gpuSoftwareFallback` in
@@ -400,6 +404,18 @@ Open via **Connection → Open Config File** or the tray menu.
   "has a dashboard document loaded in this run"; there is one such latch.
   No sandbox switch is ever applied.
 - External links open in your default browser
+- **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
+  accepts exactly three shapes, refusing everything else with a logged reason:
+  `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
+  (open that session; what `kirocrew open` builds) and
+  `kirocrew://apps/detail/<name>` (show that app's detail page, so a companion
+  program can send the user to its app without a walk through the store). The
+  route is rebuilt from the validated pieces, never copied from the URL, and a
+  link only navigates: the detail page takes its install, update and enable
+  trigger from router state, never from a URL, so the click stays the user's.
+  `deep-link-handler.js` holds a link until the dashboard document reports
+  `navigate-ready`, and `main.js` sends it through the same `navigate` IPC as
+  the native menu's Settings and About.
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
   service independently probes Kiro CLI's supported user-local, Homebrew,
   macOS app-bundle, and Windows MSI locations

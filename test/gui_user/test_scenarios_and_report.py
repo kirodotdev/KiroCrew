@@ -556,6 +556,35 @@ class TestShippedScenarios:
             assert "screenshot taken" not in exp, exp
             assert "Panel Navigation" not in exp, exp
 
+    def test_notifications_scenarios_quote_the_shipped_empty_sheet(self) -> None:
+        """The bell scenarios quote the empty state the sheet draws.
+
+        It has no "Activity will appear here" line under "No notifications", and
+        a scenario that expects one fails every night whatever the product does.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        empty = en["components"]["notifications"]["notificationFeed"]["no_notifications"]
+        for name in ("notifications-bell-sheet-open-close", "notifications-center-empty-state"):
+            sc = scenarios.load_scenario(SCENARIOS_DIR / f"{name}.yaml")
+            text = " ".join([*sc.steps, *sc.expectations])
+            for label in (en["app"]["notifications"], empty, en["app"]["open_inbox"]):
+                assert f'"{label}"' in text, (name, label)
+            assert "Activity will appear here" not in text, name
+
+    def test_crewmate_panel_tabs_quotes_the_bot_panels_workspace_label(self) -> None:
+        """The Bot panel titles its Files view with the Profile card's word.
+
+        A scenario that asks for a "Files" tab there stalls the tester every night.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        workspace = en["pages"]["membersPage"]["profile_workspace"]
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-panel-tabs.yaml")
+        text = " ".join([*sc.steps, *sc.expectations])
+        assert f'Click the "{workspace}" tab' in text
+        assert '"Files"' not in text
+
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.
 

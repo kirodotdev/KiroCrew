@@ -1329,8 +1329,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # ends instead of parking it behind background children.
             composer_send=_from_composer,
             author=_author_meta(_queued_actor_of(request)) if _person_send else None,
+            queued_work=_queued_admission,
         )
-        _sc_entry.stamp_queued_work(slot, qid, _queued_admission)
         _send_race.commit_request(request, message_id=qid)
         # The admission await (a config refresh included, even when admission
         # turns out off) may have outlived the running turn's handoff: the
@@ -1446,7 +1446,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _sc_entry.stamp_queued_work(slot, qid, _held_admission)
         _send_race.commit_request(request, message_id=qid)
         _redacted = queued_text_for_display(message, user_origin=_person_send)
-        warn_if_not_durable(slot._queue, qid, slot.key)
+        _hold_durable = warn_if_not_durable(slot._queue, qid, slot.key)
         # Start the durable write here too, not only in the busy-slot branch.
         # This branch holds an IDLE slot, so no drain is coming to write the
         # prompt's transcript row and no turn-end flush is scheduled: the queue
@@ -1471,6 +1471,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
         if banner:
             _hold_push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
+        if not _hold_durable:
+            # The card's "won't survive a restart" marker, as on the busy-slot frame.
+            _hold_push.setdefault("meta", {})["durable"] = False
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry
@@ -1486,8 +1489,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             await _drain_parked_queues(state, [slot.key])
         # Same receipt contract as the busy-slot queue branch: `queue_id` binds
         # the sender's pre-send composer state to this exact entry. An entry the
-        # durable bounds refuse is reported in the log by the call above, not on
-        # the receipt: the on-screen marker belongs with its consumer.
+        # durable bounds refuse is reported in the log and on the frame above.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
     # WS mode: return JSON immediately, chunks delivered via WebSocket

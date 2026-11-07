@@ -24,9 +24,11 @@ if TYPE_CHECKING:
         _sel,
         _spec_path_is_safe,
         _unlink_copy_unless_referenced,
+        agent_route_name,
         agent_state,
         clear_list_agents_cache,
         coerce_dict_section,
+        invalid_agent_name_response,
         kiro_agents_dir_path,
         logger,
         memory_store_namespace_lock,
@@ -395,7 +397,9 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
     denied = await _require_owner(request, "agent.delete")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:

@@ -34,6 +34,7 @@ import SortableHeader from '../../components/SortableHeader'
 
 import { i18nT } from '../../i18n/t'
 import { compareText, fmtDateTimeNumeric } from '../../i18n/format'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /** `POST /api/memory/consolidate`'s code for a target the memory modes promise
  *  leaves no durable trace (a Temporary or Incognito session). "Summarize now"
@@ -165,7 +166,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
   return <>
     <MemoryStoreCard store={store} onStoreChange={choose} compact={!!store} />
     {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} /> : <Card>
-      {stores.isPending ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
+      {stores.isPending && !queryReadFailed(stores) ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
         <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
         <div className="min-w-0 flex-1 space-y-2">
           <p className="text-[13px] text-muted">{i18nT('memoryV2.identity_loading')}</p>
@@ -176,7 +177,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
         <CardTitle>{i18nT('memoryV2.identity_unavailable')}</CardTitle>
         <MemoryScopeNotice error={stores.error} />
         <div className="flex flex-wrap gap-2">
-          <Btn className="min-h-11" disabled={stores.isFetching} onClick={() => void stores.refetch()}>{i18nT('memoryV2.retry_identity')}</Btn>
+          <Btn className="min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={stores.isFetching || undefined} onClick={() => { if (!stores.isFetching) void stores.refetch() }}>{i18nT('memoryV2.retry_identity')}</Btn>
           <Btn className="min-h-11" onClick={() => {
             const destination = selected?.owner_member
               ? `/capabilities?tab=crews&crew=${encodeURIComponent(selected.owner_member)}`

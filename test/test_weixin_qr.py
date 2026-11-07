@@ -124,16 +124,13 @@ def test_env_value_round_trips_and_delete_preserves_other_keys(tmp_path, monkeyp
     assert qr._read_env_value("OTHER") == "keepme"
 
 
-def _fail_config_writes(monkeypatch, env_file):
+def _fail_config_writes(monkeypatch):
     """Let the .env write through, but make the config.json write fail."""
-    real = qr._atomic_write
 
-    def selective(path, text, **kw):
-        if path == env_file:
-            return real(path, text, **kw)
+    def failing(*_args, **_kwargs):
         raise OSError("ENOSPC")
 
-    monkeypatch.setattr(qr, "_atomic_write", selective)
+    monkeypatch.setattr(qr, "update_config_locked", failing)
 
 
 def test_failed_config_commit_restores_the_previous_credential(tmp_path, monkeypatch):
@@ -141,10 +138,10 @@ def test_failed_config_commit_restores_the_previous_credential(tmp_path, monkeyp
     ep = tmp_path / ".env"
     ep.write_text("OTHER=keepme\nWEIXIN_TOKEN=previous\n", encoding="utf-8")
     monkeypatch.setattr(qr, "env_path", lambda: ep)
-    _fail_config_writes(monkeypatch, ep)
+    _fail_config_writes(monkeypatch)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert qr._read_env_value("WEIXIN_TOKEN") == "previous"
     assert qr._read_env_value("OTHER") == "keepme"
@@ -155,10 +152,10 @@ def test_failed_config_commit_removes_a_credential_that_did_not_exist(tmp_path, 
     ep = tmp_path / ".env"
     ep.write_text("OTHER=x\n", encoding="utf-8")
     monkeypatch.setattr(qr, "env_path", lambda: ep)
-    _fail_config_writes(monkeypatch, ep)
+    _fail_config_writes(monkeypatch)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert qr._read_env_value("WEIXIN_TOKEN") is None
     assert qr._read_env_value("OTHER") == "x"
@@ -168,7 +165,7 @@ def test_successful_commit_writes_both_files(tmp_path, monkeypatch):
     ep = tmp_path / ".env"
     cp = tmp_path / "config.json"
     monkeypatch.setattr(qr, "env_path", lambda: ep)
-    qr._commit_credential_and_config(cp, '{"weixin": {}}', "brand-new")
+    qr._commit_credential_and_config(cp, {"weixin": {}}, "brand-new")
     assert qr._read_env_value("WEIXIN_TOKEN") == "brand-new"
     assert json.loads(cp.read_text()) == {"weixin": {}}
 
@@ -184,7 +181,7 @@ def test_successful_commit_replaces_the_credential_boot_propagated(tmp_path, mon
     monkeypatch.setenv("WEIXIN_TOKEN", "stale")
     monkeypatch.delenv("_KIROCREW_CREDS_SCRUBBED", raising=False)
 
-    qr._commit_credential_and_config(tmp_path / "config.json", '{"weixin": {}}', "brand-new")
+    qr._commit_credential_and_config(tmp_path / "config.json", {"weixin": {}}, "brand-new")
 
     assert os.environ["WEIXIN_TOKEN"] == "brand-new"
     assert KiroCrewConfig().load_credentials(propagate=False)["WEIXIN_TOKEN"] == "brand-new"
@@ -205,7 +202,7 @@ def test_first_sign_in_owns_the_token_so_removing_the_line_revokes_it(tmp_path, 
     monkeypatch.delenv("_KIROCREW_CREDS_SCRUBBED", raising=False)
     loader.discard_env_owned_key("WEIXIN_TOKEN")
     try:
-        qr._commit_credential_and_config(tmp_path / "config.json", '{"weixin": {}}', "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {"weixin": {}}, "brand-new")
         assert os.environ["WEIXIN_TOKEN"] == "brand-new"
         assert loader.env_owns_key("WEIXIN_TOKEN")
 
@@ -229,7 +226,7 @@ def test_successful_commit_keeps_a_scrubbed_environ_free_of_the_credential(tmp_p
     monkeypatch.delenv("WEIXIN_TOKEN", raising=False)
     monkeypatch.setenv("_KIROCREW_CREDS_SCRUBBED", "1")
 
-    qr._commit_credential_and_config(tmp_path / "config.json", '{"weixin": {}}', "brand-new")
+    qr._commit_credential_and_config(tmp_path / "config.json", {"weixin": {}}, "brand-new")
 
     assert "WEIXIN_TOKEN" not in os.environ
     assert KiroCrewConfig().load_credentials(propagate=False)["WEIXIN_TOKEN"] == "brand-new"
@@ -241,10 +238,10 @@ def test_failed_config_commit_leaves_the_process_credential_alone(tmp_path, monk
     monkeypatch.setattr(qr, "env_path", lambda: ep)
     monkeypatch.setenv("WEIXIN_TOKEN", "previous")
     monkeypatch.delenv("_KIROCREW_CREDS_SCRUBBED", raising=False)
-    _fail_config_writes(monkeypatch, ep)
+    _fail_config_writes(monkeypatch)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert os.environ["WEIXIN_TOKEN"] == "previous"
 
@@ -287,9 +284,8 @@ def test_stage_config_preserves_unrelated_sections(tmp_path, monkeypatch):
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({"slack": {"command": "kirocrew"}, "agent": {"model": "auto"}}))
     monkeypatch.setattr(qr, "config_path", lambda: cfg)
-    path, serialized = qr._stage_weixin_config(account_id="acct1@im.bot", base_url="https://x")
+    path, data = qr._stage_weixin_config(account_id="acct1@im.bot", base_url="https://x")
     assert path == cfg
-    data = json.loads(serialized)
     assert data["slack"] == {"command": "kirocrew"}  # untouched
     assert data["agent"] == {"model": "auto"}
     assert data["weixin"]["enabled"] is True
@@ -336,7 +332,7 @@ def test_corrupt_config_does_not_clobber_an_existing_credential(tmp_path, monkey
 
     # The handler stages first, so this raises before _write_env_secret runs.
     with pytest.raises(json.JSONDecodeError):
-        _path, _serialized = qr._stage_weixin_config(account_id="new", base_url="https://x")
+        _path, _staged = qr._stage_weixin_config(account_id="new", base_url="https://x")
         qr._write_env_secret("WEIXIN_TOKEN", "replacement")
 
     assert "working" in env.read_text()
@@ -519,7 +515,7 @@ def test_commit_credential_aborts_when_env_lock_is_held(tmp_path, monkeypatch):
     monkeypatch.setattr(_pc, "release_lock", lambda fd: None)
 
     with pytest.raises(OSError, match="locked by another process"):
-        qr._commit_credential_and_config(cp, "{}", "should-not-be-written")
+        qr._commit_credential_and_config(cp, {}, "should-not-be-written")
 
     # .env must be untouched — WEIXIN_TOKEN was not inserted.
     assert qr._read_env_value("WEIXIN_TOKEN") is None
@@ -541,7 +537,7 @@ def test_commit_credential_succeeds_when_env_lock_is_free(tmp_path, monkeypatch)
     cp = tmp_path / "config.json"
     monkeypatch.setattr(qr, "env_path", lambda: ep)
 
-    qr._commit_credential_and_config(cp, '{"weixin": {}}', "newtoken")
+    qr._commit_credential_and_config(cp, {"weixin": {}}, "newtoken")
 
     assert qr._read_env_value("WEIXIN_TOKEN") == "newtoken"
     assert qr._read_env_value("OTHER") == "keepme"
@@ -623,7 +619,7 @@ def test_a_confirmed_sign_in_persists_while_the_config_watcher_is_held(monkeypat
     monkeypatch.setattr(
         qr,
         "_commit_credential_and_config",
-        lambda cp, serialized, token: depths.append(live.watch()._hold_depth),
+        lambda cp, staged, token: depths.append(live.watch()._hold_depth),
     )
 
     resp = asyncio.run(qr.weixin_qr_status(request))
@@ -646,7 +642,7 @@ def test_a_cancelled_sign_in_keeps_the_hold_until_the_write_finishes(monkeypatch
     request, _client = _confirmed_session(monkeypatch)
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
 
-    def slow_commit(cp, serialized, token):
+    def slow_commit(cp, staged, token):
         started.set()
         release.wait(timeout=10)
         finished.set()
@@ -753,10 +749,10 @@ def test_a_failed_commit_restores_every_spelling_byte_for_byte(tmp_path, monkeyp
     original = "# keep me\nweixin_token=\nOTHER=keep\nWEIXIN_TOKEN=working\n"
     ep.write_text(original, encoding="utf-8")
     monkeypatch.setattr(qr, "env_path", lambda: ep)
-    _fail_config_writes(monkeypatch, ep)
+    _fail_config_writes(monkeypatch)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert ep.read_text(encoding="utf-8") == original
     assert qr._read_env_value("WEIXIN_TOKEN") == "working"
@@ -767,10 +763,10 @@ def test_a_failed_commit_keeps_a_utf8_bom(tmp_path, monkeypatch):
     ep = tmp_path / ".env"
     ep.write_bytes(b"\xef\xbb\xbfWEIXIN_TOKEN=working\nNAME=caf\xc3\xa9\n")
     monkeypatch.setattr(qr, "env_path", lambda: ep)
-    _fail_config_writes(monkeypatch, ep)
+    _fail_config_writes(monkeypatch)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert ep.read_bytes() == b"\xef\xbb\xbfWEIXIN_TOKEN=working\nNAME=caf\xc3\xa9\n"
 
@@ -782,10 +778,10 @@ def test_a_failed_commit_restores_crlf_line_endings_byte_for_byte(tmp_path, monk
     original = b"# keep me\r\nWEIXIN_TOKEN=working\r\nOTHER=keep\r\n"
     ep.write_bytes(original)
     monkeypatch.setattr(qr, "env_path", lambda: ep)
-    _fail_config_writes(monkeypatch, ep)
+    _fail_config_writes(monkeypatch)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert ep.read_bytes() == original
 
@@ -810,15 +806,12 @@ def test_read_env_value_skips_an_empty_case_spelling_on_windows(tmp_path, monkey
 def _edit_env_then_fail_config(monkeypatch, env_file, edit):
     """Let the .env write through, apply *edit* to .env (an operator's editor
     save landing after the sign-in's write), then fail the config.json write."""
-    real = qr._atomic_write
 
-    def selective(path, text, **kw):
-        if path == env_file:
-            return real(path, text, **kw)
+    def failing(*_args, **_kwargs):
         edit(env_file)
         raise OSError("sharing violation")
 
-    monkeypatch.setattr(qr, "_atomic_write", selective)
+    monkeypatch.setattr(qr, "update_config_locked", failing)
 
 
 def test_rollback_keeps_an_unrelated_edit_saved_after_the_token_write(tmp_path, monkeypatch):
@@ -835,7 +828,7 @@ def test_rollback_keeps_an_unrelated_edit_saved_after_the_token_write(tmp_path, 
     _edit_env_then_fail_config(monkeypatch, ep, operator_save)
 
     with pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert ep.read_text(encoding="utf-8").splitlines() == [
         "OTHER=keepme",
@@ -862,7 +855,7 @@ def test_rollback_refuses_when_the_token_entry_was_changed_independently(
     _edit_env_then_fail_config(monkeypatch, ep, operator_rewrites_token)
 
     with caplog.at_level("ERROR"), pytest.raises(OSError):
-        qr._commit_credential_and_config(tmp_path / "config.json", "{}", "brand-new")
+        qr._commit_credential_and_config(tmp_path / "config.json", {}, "brand-new")
 
     assert ep.read_text(encoding="utf-8").splitlines() == ["WEIXIN_TOKEN=hand", "OTHER=keep"]
     assert any("rollback failed" in r.getMessage() for r in caplog.records)
@@ -913,7 +906,7 @@ def test_a_read_failure_after_the_token_write_cannot_escape_the_commit(tmp_path,
 
     monkeypatch.setattr(qr, "read_env_text", flaky)
 
-    qr._commit_credential_and_config(cp, '{"weixin": {}}', "brand-new")
+    qr._commit_credential_and_config(cp, {"weixin": {}}, "brand-new")
 
     assert calls["n"] == 1
     assert ep.read_text(encoding="utf-8") == "WEIXIN_TOKEN=brand-new\n"

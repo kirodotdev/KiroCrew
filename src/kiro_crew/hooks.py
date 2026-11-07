@@ -99,6 +99,7 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
 # bound here, not only in gate_tiers.
 from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     GateFacts,
+    _command_is_read_only,
     _command_matches_any,
     _is_spec_write_call,
     _operator_confirms,
@@ -108,6 +109,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _spec_builtin_names,
     _spec_command_composed,
     _spec_command_granted,
+    _spec_write_granted,
     _tier_app_own_server,
     _tier_batch_guard_grant,
     _tier_deny_rules,
@@ -118,6 +120,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_read_only,
     _tier_search_target,
     _tier_spec_builtin_grant,
+    _tier_spec_denies,
     _tier_spec_shell_allowlist,
     _tier_spec_write_allowlist,
     _tier_targets,
@@ -260,6 +263,10 @@ from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime
 # are defined). Imported here so ``hooks.TARGET_PATH_KEYS`` / ``hooks.TargetPaths``
 # / ``hooks.target_paths`` (and the work caps) stay importable at their historic
 # names; hooks keeps its HARD-DENY reading of ``TargetPaths.truncated``.
+from kiro_crew.platform.spec_denied_grant import (  # noqa: F401  (read by tool_identity)
+    SpecDeniedGrant,
+    as_spec_denied_grant,
+)
 from kiro_crew.platform.tool_names import (  # noqa: F401  (read by hook_runtime owners)
     DEEPSEEK_READ_ONLY_TOOLS,
     KIRO_TOOL_ALIASES,
@@ -819,6 +826,9 @@ class HookManager:
         spec_shell_allowlist: tuple[str, ...] | None = None,
         spec_write_allowlist: tuple[str, ...] | None = None,
         spec_write_cwd: str = "",
+        spec_denied_grant: Any = None,
+        spec_shell_readonly: bool = False,
+        spec_granted_paths: tuple[str, ...] = (),
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
@@ -864,6 +874,9 @@ class HookManager:
                     None if spec_write_allowlist is None else tuple(spec_write_allowlist)
                 ),
                 spec_write_cwd=spec_write_cwd,
+                spec_denied_grant=as_spec_denied_grant(spec_denied_grant),
+                spec_shell_readonly=spec_shell_readonly is True,
+                spec_granted_paths=tuple(spec_granted_paths),
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -1883,6 +1896,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("governance", "deny_policy", _tier_governance),
     GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
     GateTier("spec-write-allowlist", "deny_policy", _tier_spec_write_allowlist),
+    GateTier("spec-denies", "deny_policy", _tier_spec_denies),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

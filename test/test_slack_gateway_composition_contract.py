@@ -205,7 +205,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_cron_stream_with_posttoken_resume",
             "async function",
-            "(client: 'Any', message: 'str', *, job_name: 'str', on_resume: 'Callable[[], None] | None' = None, **stream_kwargs: 'Any') -> 'tuple[str, float | None]'",
+            "(client: 'Any', message: 'str', *, job_name: 'str', directive_refusals: 'list[str]', on_resume: 'Callable[[], None] | None' = None, **stream_kwargs: 'Any') -> 'tuple[str, float | None]'",
         ),
     ),
     "cron_verdict": (
@@ -395,6 +395,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, loop: 'NudgeLoop', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
         ),
         (
+            "_start_dashboard_wake_turn",
+            "async method",
+            "(self, loop: 'NudgeLoop', slot: 'Any', wake_message: 'str | None', tagged: 'str', visible: 'str', trigger_text: 'str | None', fired_generation: 'int') -> 'MonitorDispatchResult'",
+        ),
+        (
             "_work_ledger_wake_loop",
             "method",
             "(self, loop: 'NudgeLoop', wake_message: 'str | None') -> 'bool'",
@@ -467,7 +472,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_interactive_approval",
             "method",
-            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '') -> 'ToolApprovalCallback'",
+            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '', on_host_decision: 'Callable[[str, str], None] | None' = None) -> 'ToolApprovalCallback'",
         ),
         (
             "_heartbeat_approval",

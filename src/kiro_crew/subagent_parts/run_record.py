@@ -113,6 +113,10 @@ class SubagentInfo:
     # its parent's depth + 1 for a child of a sub-agent. Set at admission,
     # which refuses a spawn past ``_MAX_SPAWN_DEPTH``.
     depth: int = field(default=1, kw_only=True)
+    # The session the spawn tree started from: a nested run's Subagents panel
+    # cards draw in its tab, since a ``subagent:<id>`` parent names none. Set at
+    # admission from the spawning run's record; "" reads as the parent's own key.
+    root_session_key: str = field(default="", kw_only=True)
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
@@ -341,8 +345,7 @@ class SubagentInfo:
     # write). A completion route skips the injection for an announce whose every
     # member is marked: the parent already holds the result.
     _collected_inline: bool = False
-    # A mark on a parent that is not dashboard-born (``settles_at_release``):
-    # "pending" until the attempt holding the parent's permit when it arrived
+    # A mark on any parent: "pending" until the attempt holding the parent's permit when it arrived
     # (``_inline_token``) ends, then "confirmed" if that turn landed. A revoked
     # mark clears all three, so the completion is delivered
     # (``kiro_crew.parent_turns``).
@@ -712,6 +715,9 @@ class SubagentInfo:
     # Set when the run's lane slot was yielded for a wait and a resume entry
     # is queued in admission; cleared when the slot is granted back.
     _resume_pending: bool = False
+    # Awaited children this run released as deferral-held
+    # (``taskq_release_deferred_async``); no wait of this run awaits them again.
+    _deferred_released: set[str] = field(default_factory=set)
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
     # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).

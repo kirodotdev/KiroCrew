@@ -315,6 +315,9 @@ class _Subs:
     def published_queued_depths(self) -> dict[str, int]:
         return dict(self._queued)
 
+    def published_queued_labels(self) -> dict[str, dict]:
+        return {}
+
 
 class TestSubagentPatch:
     """Each lifecycle flush re-states every live slot's sub-agent counts."""

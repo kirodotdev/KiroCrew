@@ -575,8 +575,11 @@ probe for its advisory row. Low-level `systemctl()`, `is_active()`, and `main_pi
 keep only the cheap platform, executable, and bus-address checks, so a multi-query verb does
 not pay a five-second probe before every unit command. A provably absent bus address returns
 `no_session` without spawning systemctl, and that pre-spawn check is the only source of
-backend absence. Every spawned probe failure is operational except a positive permission-denied
-match, which is `sandboxed_away`; neither can become `PodBackendAbsent`. Probe and unit operations
+backend absence. On that branch the gate spawns no `--user` call; it asks only the SYSTEM
+manager (`systemctl show --property=LoadState user@<uid>.service`) which remedy the
+refusal names, and any answer, or none, leaves it `PodBackendAbsent`. Every spawned probe
+failure is operational except a positive permission-denied match, which is `sandboxed_away`;
+neither can become `PodBackendAbsent`. Probe and unit operations
 resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
 the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
 If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
@@ -739,7 +742,11 @@ predicate `pod ls` and `pod prune` use, rather than a bare directory probe — s
 symlinks are skipped and, on macOS, a name whose per-pod plist exists counts as
 *installed* rather than orphaned and is never reclaimed from underneath a
 concurrent `up`. That predicate keys on the pod root, liveness and plist and
-never on the checkout pin, so attribution is not its job.
+never on the checkout pin, so attribution is not its job. On systemd, liveness
+includes the pod's own evidence: a HOME whose `gateway.lock` a gateway holds, or
+that a process has open, is not an orphan. The removal then refuses: what uses it
+runs outside the unit (a gateway started by hand, say) and may be serving from this
+checkout.
 
 Attribution and teardown are ONE locked transaction. `_reclaim_pod_locked` runs
 entirely inside `runtime.pod_name_mutex` — the cross-process flock every mutating
@@ -1758,6 +1765,11 @@ choose the gateway's next image. Instead:
   (`backend_confined`: a replacement spawned inside the sandbox would inherit its
   confinement). In the gateway there is no confinement, so the last-resort
   foreground restart is *attempted* there — the same detached `kirocrew restart` the CLI's own restart uses.
+  It is never attempted for a gateway a generated service definition launched
+  (`_foreground_eligible` reads `launched_as_managed_service()` in the gateway):
+  the detached restart would run in the unit's cgroup and be stopped with the
+  gateway it stops, so Restart Gateway answers with the service reason and the
+  manual command, and Make Live is staged only.
 
 ### Live-worktree resolution
 
@@ -1862,7 +1874,10 @@ Fleet can also bounce the gateway:
   systemd > launchd > foreground, POSIX-only, and requires: an UNCONFINED
   backend (no `KIROCREW_SANDBOX_ACTIVE` marker, not inside
   `kirocrew-agents.slice` — a replacement spawned from inside the sandbox or
-  cgroup scope would inherit that confinement for the gateway's whole life);
+  cgroup scope would inherit that confinement for the gateway's whole life); a
+  gateway no generated service definition launched (see *Foreground restart*; a
+  definition old enough to lack the launch marker is not detected, and
+  `kirocrew doctor` asks for its re-install);
   exactly ONE run-marker whose recorded pid is alive; and the marker's own
   recorded `kirocrew` launcher (keystone-fenced `run/` dir — there is
   deliberately NO `PATH` fallback, which an agent-planted `~/.local/bin/kirocrew`

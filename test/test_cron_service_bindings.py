@@ -52,6 +52,8 @@ from kiro_crew.cron_service import service as service_package
 # The reach checks read the whole test tree; keep them on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_cron_service_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _REPO = Path(__file__).resolve().parents[1]
 _PACKAGE = service_package.__name__
 
@@ -121,7 +123,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_remove_jobs_locked": ("function", False, "143dcf019388", "job_removal"),
     "_reset_and_kill_once": ("function", True, "3b055aa25104", "run_kill"),
     "_reset_fingerprint": ("function", False, "b60c5fea256e", "store_sync"),
-    "_run_claimed_manual": ("function", True, "d0a5f3855125", "run_registry"),
+    "_run_claimed_manual": ("function", True, "e89a271c4853", "run_registry"),
     "_run_job_isolated": ("function", True, "3e2c7932e9d5", "run_execution"),
     "_run_session_keys": ("function", False, "abecf674945c", "run_registry"),
     "_save": ("function", False, "ce13e6013574", "store_sync"),
@@ -131,6 +133,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_sessions_under": ("function", False, "4006e562409e", "run_kill"),
     "_sigkill_session": ("function", True, "2bd4ceeed5eb", "run_kill"),
     "_sigkill_sessions": ("function", True, "020bda9371ba", "run_kill"),
+    "_skipped_records": ("data", False, "", ""),
     "_snapshot": ("staticmethod", False, "e950d87d36c5", "store_sync"),
     "_spawn_in_flight": ("function", False, "57a0bf994fdd", "run_kill"),
     "_store_extra": ("data", False, "", ""),
@@ -184,7 +187,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "remove_jobs_by_owner_sync": ("function", False, "1dda3a2e9ae6", "job_removal"),
     "remove_jobs_sync": ("function", False, "f314181d1f02", "job_removal"),
     "retire_finished_session_key": ("function", False, "6525c2a94d9c", "run_registry"),
-    "run_job": ("function", False, "59a56549db3e", "run_registry"),
+    "run_job": ("function", False, "965a55e3568d", "run_registry"),
     "running_since": ("function", False, "987a386c5e2e", "run_registry"),
     "set_refresh_callback": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_timeout_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
@@ -192,6 +195,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "start_reaper": ("function", False, "bbb4b664cf76", "run_teardown"),
     "status": ("function", False, "16d9fe32838b", "store_sync"),
     "stop": ("function", True, "b60c5fea256e", "service_lifecycle"),
+    "trigger_run": ("function", False, "1867f8767e01", "run_registry"),
     "unack_job": ("function", False, "6bfa9f8fda21", "job_writes"),
     "unack_job_async": ("function", True, "6bfa9f8fda21", "job_writes"),
     "update_job": ("function", False, "b04f778a42dc", "job_writes"),
@@ -327,11 +331,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", _OWNERS)

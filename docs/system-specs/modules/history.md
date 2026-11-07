@@ -401,7 +401,7 @@ The hook is a facade over composed owners, each holding one responsibility:
 |---|---|
 | `useVirtualChat.ts` | option wiring, row identity (display key, stable id, alt id), and the hook-call order the owners depend on |
 | `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger, and the tail-append mount (rows appended under a followed reader join the window in the render that first sees them, so they never commit as estimate-priced spacer). A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
-| `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it, and every measurement writer (resize observer, row ref seed, measure farm), each gated on the caller's `canMeasure` so a width-transition measurement never lands in the old scope, plus the mounted-row reseed a scope change runs after the reading-position restore. Only the cache WRITE stands down for the gate: the observer classifies every fire (first mount vs resize, the above-fold delta the compensation adds to scrollTop) against the height the DOM last showed for that node, tracked per mounted element apart from any scope, so a re-wrap during the transition is compensated once and a repeated fire adds nothing. The write a fire makes is the RESIDUAL for the reader's row — the row seen highest among those reaching below the fold at the last frame the reader saw — between where it is after layout and where it was last seen (moved by its own credited change: a re-wrapped straddler keeps its bottom, an appending or in-place one its top), never the batch's summed growth: Chromium's native scroll anchoring adjusts scrollTop during the reprice layout, before any observer callback, so the summed growth was paid twice there and a row native pushed under the fold read as straddling. Row positions are re-read at scroll events and seeds (the last painted frame), carried arithmetically by a fire's own write, and never re-read at the end of a fire (a layout is delivered over several callbacks). The record cannot be stale against the reader's own input: a user scroll reaches scrollTop at the start of a rendering update and dispatches its scroll event in that update's scroll steps, before layout and the observer, so the record is refreshed before any rect the fire reads; only a row that is no longer mounted stands the write down (a click or key that scrolls nothing leaves the record valid). The scope reseed announces immediately rather than through the debounce, so the cold owner's estimate spacer is replaced in the swap commit's layout phase |
+| `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it (re-synced to the rendering list's own row count, so a deferred render that React throws away never leaves its rows priced into the next commit's spacers), and every measurement writer (resize observer, row ref seed, measure farm), each gated on the caller's `canMeasure` so a width-transition measurement never lands in the old scope, plus the mounted-row reseed a scope change runs after the reading-position restore. Only the cache WRITE stands down for the gate: the observer classifies every fire (first mount vs resize, the above-fold delta the compensation adds to scrollTop) against the height the DOM last showed for that node, tracked per mounted element apart from any scope, so a re-wrap during the transition is compensated once and a repeated fire adds nothing. The write a fire makes is the RESIDUAL for the reader's row — the row seen highest among those reaching below the fold at the last frame the reader saw — between where it is after layout and where it was last seen (moved by its own credited change: a re-wrapped straddler keeps its bottom, an appending or in-place one its top), never the batch's summed growth: Chromium's native scroll anchoring adjusts scrollTop during the reprice layout, before any observer callback, so the summed growth was paid twice there and a row native pushed under the fold read as straddling. Row positions are re-read at scroll events and seeds (the last painted frame), carried arithmetically by a fire's own write, and never re-read at the end of a fire (a layout is delivered over several callbacks). The record cannot be stale against the reader's own input: a user scroll reaches scrollTop at the start of a rendering update and dispatches its scroll event in that update's scroll steps, before layout and the observer, so the record is refreshed before any rect the fire reads; only a row that is no longer mounted stands the write down (a click or key that scrolls nothing leaves the record valid). The scope reseed announces immediately rather than through the debounce, so the cold owner's estimate spacer is replaced in the swap commit's layout phase |
 | `geometryScheduling.ts` | when a measurement becomes geometry: the debounced sync, its deferral while the reader moves, the streaming row's immediate path, the rail-collapse window |
 | `shiftCompensation.ts` | holding a scrolled-up reader still across prepends, splices, window shifts in either direction (rows mounting above the reader are re-priced from the estimate; rows unmounting above them are replaced by a spacer the tree prices, which is short by every re-wrap the tree has not been allowed to learn during a width transition), appends, height syncs and the width-scope swap, and planning which row measurements a commit retires. The swap: the settled bucket's cold owner re-prices the before-spacer from estimates in the render that constructs it, so a same-session swap over an unchanged list captures the reader's row render-phase into the height-sync slot; the consumer is keyed on the owner's identity as well as its announced version (two owners can report equal versions) and stands down on the swap commit itself, leaving the capture for the reseed's announcement in that commit's layout phase, which is where the committed spacer it must be paid against exists. That stand-down also reads the engine's RANGE CLAMP: the cold document prices every unmounted row at the flat estimate, so it can be shorter than the reader's scrollTop, and the engine then drags scrollTop to its ceiling (`scrollHeight - clientHeight`) with no application write anywhere and leaves it there when the reseed grows the document back (Firefox and Chromium alike at a matched depth; a shallower reader never reaches the ceiling). When the pending capture's scrollTop is above that ceiling and the live scrollTop is exactly the ceiling (within `SELF_SCROLL_EPSILON`), the capture is re-based to the clamped value with its candidates' painted geometry kept, so the reseed pays the whole move; a drop that is not the ceiling (native anchoring's spacer-delta move) is left alone, and any movement after the clamp still differs from the re-based value, so the scrollTop freshness guard still drops the capture. A followed reader keeps the tail pin; a true session switch captures nothing |
 | `readingPosition.ts` | the persisted reading position: entry latch, debounced save, leave flush, visibility re-placement, restore and settle. A restore owed on slot entry is dropped once the reader moves the scroller after the entry latch (`readerMovedSinceEntry`) |
@@ -614,8 +614,12 @@ status the gateway recorded (`summary` on a finished change card; `actions` ids 
 a guide). It never carries a parameter, an edited field or a typed value. When the
 card or guide store publishes a new status for it, the row is patched in place by
 `mid` and a `chat_message_update` frame carries the patch, so a finished card is
-still drawn in its final state after the store prunes it. The same step writes the
-`card/*` / `guide/*` crew-log entries ([crew-log-core](crew-log-core.md) section 5,
+still drawn in its final state after the store prunes it. Each patch bumps
+`meta.card.rev`, and the dashboard's slot-detail merge
+(`preserveSettledUpsertRows`) keeps the copy with the higher revision, so a
+snapshot taken before a patch cannot redraw the card's earlier status, whichever
+way that status moved (a guide replay takes `completed` back to `offered`).
+The same step writes the `card/*` / `guide/*` crew-log entries ([crew-log-core](crew-log-core.md) section 5,
 "Cards and guides").
 
 Two surfaces record a change the agent already made, so they have no store
@@ -1217,7 +1221,9 @@ unwinding turns), `restore_drivers.py` (`restore_open_slots`,
 tail and reports), `slot_builders.py` (`_rehydrate_slot_from_history`,
 `_apply_recent_session`, the open-tab slot build, the deferred window load and the
 prefetch reads they share) and `member_store.py` (the private member-store
-assignment). New orchestration goes to the part of its responsibility. The rules
+assignment). Both slot builders undo the slot they registered when a read raises
+(a non-string title, a malformed row), and both restore drivers log that session
+and go on to the next. New orchestration goes to the part of its responsibility. The rules
 those consult live in `dashboard/slot_persistence/`, and each file names the work
 that belongs in it. Only the newest `EAGER_WINDOW_RESTORES` open tabs are built with
 their transcript window loaded; every later tab that only a person drives (its own
@@ -1232,7 +1238,8 @@ message, OpenAI-compatible turn, script cron result, heartbeat result, loop nudg
 subagent notice delivered into a session, a reply in a Slack or transport thread linked
 to the tab (which resolves the link again after the load), a change card or guide row
 recorded or settled in its conversation (`chat_cards.load_conversation_window`), a
-workflow result, a resume of the live tab,
+workflow result, a resume of the live tab, every parent tab a fork's merge-back
+draft or merge reads (`chat_merge_back._read_inputs`),
 and every consistent-transcript read (`transcript_snapshot.read_consistent_transcript`:
 the slot detail page read, a fork and a peer transfer). A read that reaches a pending
 row on the loop without that still loads it and logs a warning. A load reads the
@@ -1267,7 +1274,8 @@ learn-cron-dashboard):
   import) -- through `slot_args` (the constructor keywords), `apply` (every other
   field) and `AppliedMeta.settle` (the fields that need the loaded window: held
   notes already delivered, the turn-in-flight marker, the title refresh mark). A
-  purpose missing from a row is a declared asymmetry with its reason. The value
+  purpose missing from a row is a declared asymmetry with its reason. A JSON
+  `null` origin reads as no origin. The value
   checks a read applies live beside their rows, among them the title state, the
   auto-compaction threshold, the dismissed source links, the model and effort, the
   retired modes and the color. The model and effort go through one shared
@@ -1395,29 +1403,72 @@ no longer destroy older turns.
   beside the plain entry: the plain entry sends `direction="tail"` and this one
   sends `direction="head"`. With the gate off the plain entry already forks with
   history, so the menu lists no second entry.
-- **Fork inherits `memory_mode`, and never loosens it**: an incognito or
-  temporary session forks like a persistent one, and the child is born with the
-  parent's mode -- passed to `get_or_create_slot` at creation so the child's
-  `dashboard:` key is registered restricted in the same step, never stamped on
-  afterwards. There is no `slot_not_persistent` refusal: one would buy no
-  privacy, for the reason the titling section below gives -- the parent's full
-  transcript is already in its session JSONL, and a fork copies transcript
-  while engaging neither guarantee the modes make (`is_restricted`,
-  `blocks_reads`). What a fork must not do is
-  produce a *persistent* child from a restricted parent -- that would hand
-  no-write content to consolidation -- so the request body carries no
-  `memory_mode` and the parent's value is the only source. A temporary child
-  still receives its copied turns: `build_session_context` assembles the
-  thread-history block before any `blocks_reads` gate. The response and the
-  `chat.slot_fork` audit event both report the inherited mode. The inherited
-  value is validated against `VALID_MEMORY_MODES` before the child is
-  allocated: rehydration copies the transcript header's `memory_mode` onto the
-  slot as written, so a hand-edited or partially written header can leave a
-  value outside the allowlist on a live parent, and passing it through would
-  raise out of the slot constructor as a 500. The fork instead answers 409
+- **Fork inherits `memory_mode`, and never loosens it on its own**: an
+  incognito or temporary session forks like a persistent one, and the child is
+  born with the parent's mode -- passed to `get_or_create_slot` at creation so
+  the child's `dashboard:` key is registered restricted in the same step,
+  never stamped on afterwards. There is no `slot_not_persistent` refusal: one
+  would buy no privacy, for the reason the titling section below gives -- the
+  parent's full transcript is already in its session JSONL, and a fork copies
+  transcript while engaging neither guarantee the modes make (`is_restricted`,
+  `blocks_reads`). What an ORDINARY fork must not do is produce a *persistent*
+  child from a restricted parent -- that would hand no-write content to
+  consolidation -- so the request body carries no `memory_mode` and the
+  parent's value is the only source; promotion (below) is the one deliberate,
+  consent-gated exception. A temporary child still receives its copied turns:
+  `build_session_context` assembles the thread-history block before any
+  `blocks_reads` gate. The response and the `chat.slot_fork` audit event both
+  report the inherited (or, for a promotion, forced) mode. The inherited value
+  is validated against `VALID_MEMORY_MODES` before the child is allocated:
+  rehydration copies the transcript header's `memory_mode` onto the slot as
+  written, so a hand-edited or partially written header can leave a value
+  outside the allowlist on a live parent, and passing it through would raise
+  out of the slot constructor as a 500. The fork instead answers 409
   `fork_source_memory_mode_invalid` (SEL `denied`), and no child exists.
   This refusal precedes execution-identity and database lookup, preserving the
   named mode error even when the source's other metadata is unavailable.
+- **Promoting an ephemeral session** (`POST /api/chat/slots/{slot}/promote`,
+  `chat_fork.api_chat_slot_promote`): "Keep this chat" turns an
+  incognito/temporary slot into a persistent one. The ephemeral transcript is
+  already written to History (see
+  `docs/decisions/2026-09-25-incognito-and-temporary-chats-keep-their-transcript.md`),
+  so the chat is never lost; what the mode withholds is everything derived from
+  it (memory, summaries, search, consolidation), and `is_incognito_transcript()`
+  (below) is the gate for those readers. Promotion is a THIN wrapper over the
+  fork machinery above: it passes an internal-only, keyword-only
+  `_promote_from_ephemeral=True` to `api_chat_slot_fork`, the ONE consent-gated
+  exception to the mode-inheritance rule the bullet above describes. The child
+  is bound through `ExecutionContext.promoted_to_persistent()`, the only method
+  that loosens a record's mode, and is created as a `persistent` slot.
+  The copy is an ordinary fork in every other respect: the same save, the same
+  failure handling and the same whole-fork capacity guard (`fork_corpus_too_large`
+  above `_MAX_SLOT_MESSAGES` rows, with no slot created). The new slot is a HEAD
+  fork of the ENTIRE transcript, and any body field that would narrow the scope
+  (`at_message_index`, `direction`, `mode`, `prompt`) is discarded before
+  parsing, because the confirmation dialog promises the whole conversation is
+  copied. Unlike an ordinary fork it keeps every persisted renderable row
+  (a Stop notice, a compaction card, an error row), preserves each row's stored
+  `cls`, and re-stamps a copied App Kit note to the kept session's key. It is
+  titled `"↳ Kept: <parent title>"` (a short prefix so the parent title stays
+  visible in the truncated sidebar row) and keeps the parent's title rather than
+  scheduling an automatic one. **Fork, not in-place header rewrite**, by design:
+  rewriting `memory_mode` on the existing transcript would make every earlier
+  turn, sent when the user believed the session was private, retroactively
+  eligible for memory, summaries and search, a scope the confirmation dialog
+  cannot honestly describe up front. Forking leaves the ephemeral ORIGINAL
+  untouched (still incognito/temporary, still excluded from those readers). An
+  already-persistent slot refuses with `slot_already_persistent` (400). A
+  successful promotion is SEL-audited as `chat.slot_promote` (`outcome=allowed`,
+  `resources` includes `promoted_from=<incognito|temporary>`); every refusal path
+  shares the same operation name so a promote attempt is never misattributed to
+  a fork one. **Owner only:** the route requires `is_owner_dashboard_request`. An
+  app credential for a slot it owns, an unplaceable internal-secret caller and a
+  non-owner dashboard user are refused (`promote_requires_dashboard_user`, 403,
+  SEL-audited) before delegating. An app credential for a slot it does not own
+  never reaches the handler: the slot-ownership check answers `slot_not_found`
+  (404) first, the same as for any other route. There is no MCP tool,
+  no CLI command and no other endpoint that can reach
+  `_promote_from_ephemeral=True`.
 - **Member fork identity**: a V2 fork also inherits the parent's canonical
   execution context before the child receives copied history. The captured
   member/store identity must be valid; missing, damaged or mismatched identity
@@ -2241,8 +2292,10 @@ no longer destroy older turns.
   body) rides onto the user row it becomes and reaches every
   reader unchanged: ingress drops only `RESERVED_ROW_META_KEYS`
   (`chat_handlers.py`: the keys the gateway mints itself -- `decisions_strip`,
-  its receipt carrier, the human-turn marker, the turn-actor stamp and the
-  cross-session sender `relay`), plus
+  its receipt carrier, the human-turn marker, the turn-actor stamp, the
+  cross-session sender `relay`, the note identity keys `mergedFrom` and
+  `noteId` that make a row a merge card, and `noteRowFor`, the closing flush's
+  stand-in for `noteId`), plus
   `mid` on an app's send to a user session through `permissions.sessionApproval`,
   where the gateway mints the row id (see
   [app-kit-platform](app-kit-platform.md)); `_redact_meta` (`chat_utils_display.py`) redacts credential- and exfiltration-shaped

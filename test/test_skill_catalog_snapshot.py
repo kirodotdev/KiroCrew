@@ -1340,6 +1340,39 @@ class TestListingCost:
         rows = second.list_skills()
         assert [row["description"] for row in rows] == ["edited out of band"]
 
+    @pytest.mark.parametrize(
+        "gated",
+        [
+            lambda loader: _keys(loader._iter_visible()),
+            lambda loader: [e.key for e in loader._scoped_entries(None, [f"{loader._dir}/*/*"])],
+        ],
+        ids=["catalog", "mapping"],
+    )
+    def test_a_restarted_app_gate_reads_only_what_the_saved_index_cannot_answer(
+        self, harness, monkeypatch, patient_budget, gated
+    ):
+        _skill(harness.root, "kept")
+        owned = "---\nname: {0}\ndescription: d\napp: off\n---\n{0}\n"
+        _skill(harness.root, "hidden").write_text(owned.format("hidden"), encoding="utf-8")
+        edited = _skill(harness.root, "edited")
+        first = harness.loader()
+        assert sorted(row["key"] for row in first.list_skills()) == ["edited", "hidden", "kept"]
+        _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+
+        edited.write_text(owned.format("edited, out of band"), encoding="utf-8")
+        second = harness.loader()
+        monkeypatch.setattr(second, "_get_disabled_app_names", lambda: frozenset({"off"}))
+        monkeypatch.setattr(
+            second, "_iter_uncached", lambda project_key=None: pytest.fail("walked the tree")
+        )
+        vetted: list[Path] = []
+        real_vet = second._vet_unconfined_path
+        monkeypatch.setattr(
+            second, "_vet_unconfined_path", lambda path: vetted.append(path) or real_vet(path)
+        )
+        assert gated(second) == ["kept"]
+        assert vetted == [edited], "the gate re-read a file its saved metadata still answers"
+
 
 class TestAStoredRowIsNotAnAdmission:
     """The index is an agent-writable crew-home leaf, so a row is a claim only."""

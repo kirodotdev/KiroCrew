@@ -127,7 +127,13 @@ describe('ArtifactDetailPage companion chat', () => {
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).deleteChatSlot = vi.fn().mockResolvedValue({ ok: true })
-    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+    // No bound session until the page creates one; after that the slot list has not caught up
+    // yet (an empty list would mean the new session is gone), so the panel runs off the create
+    // response alone.
+    vi.mocked(api).chatSlots = vi.fn(() => (vi.mocked(api).createChatSlot.mock.calls.length
+      ? new Promise<never>(() => {}) : Promise.resolve([])))
+    // The panel shows the chat once the bound session has opened.
+    vi.mocked(api).chatSlotDetail = vi.fn().mockResolvedValue({ messages: [], has_more: false, total: 0 })
   })
 
   // ── create + optimistic bind ────────────────────────────────────────────────
@@ -542,6 +548,37 @@ describe('ArtifactDetailPage companion chat', () => {
     const staged = sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? ''
     expect(staged).toContain('chat-bound')
     expect(staged).toContain('1 open comment')
+  })
+
+  it('mounts a fresh session only once its prompt is staged, even when its slots frame lands first (#30338)', async () => {
+    const store = createTestStore()
+    vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({
+      comments: [{
+        id: 'c1', origin: 'local', scope: 'private', author: 'alice', body: 'tighten this',
+        thread_id: 't1', status: 'open', sync_state: 'local',
+        anchor: { quote: 'CR Queue' },
+        created_at: '2026-05-21T22:00:00Z', updated_at: '2026-05-21T22:00:00Z',
+      }],
+    })
+    let finishCreate: (slot: ChatSlot) => void = () => {}
+    vi.mocked(api).createChatSlot = vi.fn().mockImplementation(() => new Promise<ChatSlot>((resolve) => { finishCreate = resolve }))
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(await screen.findByRole('button', { name: /draft a prompt in chat/i }))
+    await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
+    // The gateway broadcasts the bound newborn before its POST answers.
+    const newborn = mkSlot({ key: 'slot-new', artifact: 'cr-queue' })
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([newborn])
+    seedSlots(store, [newborn])
+    await settleRender()
+    expect(store.getState().dashboard.slots.map((s) => s.key)).toContain('slot-new')
+    // ChatPage takes a staged prompt only when it mounts or switches slot, so it must not mount yet.
+    expect(screen.queryByTestId('chat-page')).toBeNull()
+    expect(screen.getByText(/starting session/i)).toBeInTheDocument()
+    await act(async () => { finishCreate(newborn) })
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    expect(store.getState().chat.activeSlot).toBe('slot-new')
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? '').toContain('"slotKey":"slot-new"')
   })
 
   // ── "New chat" ──────────────────────────────────────────────────────────────

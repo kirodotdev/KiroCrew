@@ -218,10 +218,11 @@ each stall token (`stall:<last_report_at>`) is kept in a seen set in the
 gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
-A token is marked seen when the probe emits it, not when the turn lands; the
-quiet floor above covers a lost delivery, because a worker report moves
-`ledger_revision` and only a landed turn catches `ledger_delivered_revision` up,
-so the loop stays on the shipped floor and a plain patrol turn reads the board.
+A token is marked seen when the probe emits it, not when the turn lands. A woken
+turn that fails, or a recovery it queued for itself that fails, is charged to the
+loop (see [learn-cron-dashboard](learn-cron-dashboard.md)), so
+`gate._spend_ledger_wake_retry` buys one plain patrol turn on the next tick that
+reads the board, not the wake's text again.
 
 A delivered work-ledger wake is a POINTER, not a copy of the board.
 `ledger_wake.wake_turn_text` prefixes the nudge with the kernel's structural briefs
@@ -275,10 +276,14 @@ frame, since open dashboards render queue cards from frames), and an MCP App's
 (`api_mcp_apps_message`) call it too, and so does a peer `session_send`
 (`send_to_target`) with a `peer` origin: a `user` row on both paths, a steer only
 when it asked for one and the slot is running. `send_to_target` keeps its audience
-fence, cancellation shield and post-RPC re-gate around those calls. The idle
-autonudge fire writes its nudge row through `session_deliver.write_origin_row` (the
-`automation` origin, plus its `monitor` record), the same mapping a steered wake
-uses, but still chooses idle vs running itself (#23064).
+fence, cancellation shield and post-RPC re-gate around those calls. The autonudge
+fire calls it too, with its own turn start as `start_turn`
+(`_start_dashboard_wake_turn`, which keeps the fire's admission gate, completion
+hook, background-turn budget and run kwargs): an idle slot runs that starter,
+which, once it admits the turn, writes the nudge row through
+`session_deliver.write_origin_row` (the `automation` origin, plus its `monitor`
+record), the same mapping a steered wake uses; a running slot declines it, and the
+fire then steers a work-ledger wake or leaves the cycle to the turn's end.
 
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus

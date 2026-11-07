@@ -131,11 +131,11 @@ without the watch must be fixed with
 `monitor_update(watch="work-ledger")` before anything else. """,
     "patrol_budget": """Keep
 `interval_secs` within 300..900 seconds, whatever the round waits on. Take the
-bounds from the goal-conductor skill's `patrol_budget.py check` (it never
+bounds from the `patrol_budget` tool with `mode=check` (it never
 raises the user's runtime; on exit 21 arm with a 3000-second runtime and say
 so), and on every
-cycle whose nudge's `[patrol budget: ...]` line ends `10% or less left`, run
-`patrol_budget.py renew` and apply what it prints with `monitor_update` — a
+cycle whose nudge's `[patrol budget: ...]` line ends `10% or less left`, call
+it with `mode=renew` and apply what it returns with `monitor_update` — a
 spent loop cannot be renewed later. """,
     "patrol_requested": """A reply saying
 *requested* confirms receipt only — do not retry it in the same turn.
@@ -154,8 +154,8 @@ three of them:
 
 - **`done`** — a CLAIM, never an acceptance. Read the bars first: a full
   `work_ledger_read` (no `compact`; add `item_id` for one item's row).
-  Filter the `accept_batch` down to the items whose status is `done`, pipe
-  THAT into `accept_eval.py`, and in a later step, once it has printed, record
+  Filter the `accept_batch` down to the items whose status is `done`, pass
+  THAT to the `accept_eval` tool, and in a later step, once it has returned, record
   its answer with `work_ledger_record` `action=verdict`. The batch carries
   every open item with a concrete acceptance, `progress` ones included, and a stub that already exists is a
   genuine `pass` on unfinished work — so the unfiltered batch would let you
@@ -227,8 +227,10 @@ dispatch, verify and report on.
     ("acceptance", _LEDGER_CONDUCTOR_RULES["acceptance"]),
     (
         "shell_scope",
-        """ Shell access exists to run the `goal-conductor`
-skill's bundled scripts, `scripts/accept_eval.py` and `scripts/patrol_budget.py`.
+        """ The `goal-conductor` skill's bundled checks run as the
+`accept_eval` and `patrol_budget` tools on `kirocrew-work`, without a prompt.
+Shell access exists only as their fallback: the same scripts,
+`scripts/accept_eval.py` and `scripts/patrol_budget.py`.
 
 """,
     ),

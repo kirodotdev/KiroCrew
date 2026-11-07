@@ -165,6 +165,36 @@ def _bid_auth() -> "builder_id.DeviceAuthorization":
     )
 
 
+async def test_the_client_registration_expiry_survives_sign_in_storage_and_refresh(
+    tmp_path: Path,
+):
+    """RegisterClient's clientSecretExpiresAt is what dates a lapsed registration:
+    it rides from the registration onto the stored token and onto every refreshed
+    one, or the next refresh would forget it."""
+    session = _FakeSession(
+        [
+            _FakeResp(
+                200,
+                {"clientId": "cid", "clientSecret": "csec", "clientSecretExpiresAt": 1798000000},
+            ),
+            _FakeResp(200, {"accessToken": "at", "refreshToken": "rt", "expiresIn": 1}),
+            _FakeResp(200, {"accessToken": "new", "expiresIn": 3600}),
+        ]
+    )
+    client = await builder_id.register_client("us-east-1", session=session)
+    tok = await builder_id.poll_token(client, _bid_auth(), region="us-east-1", session=session)
+    store = TokenStore(tmp_path)
+    store.save(tok)
+    stored = store.load("builder_id")
+    assert stored is not None
+    out = await ensure_fresh(store, stored, session=session)
+    assert out.access_token == "new"
+    refreshed = store.load("builder_id")
+    assert refreshed is not None and refreshed.access_token == "new"
+    for entry in (stored, refreshed):  # the vault entry after the sign-in and after the refresh
+        assert json.loads(entry.to_json()).get("client_secret_expires_at") == 1798000000
+
+
 async def test_builder_id_register_client_failure_raises():
     session = _FakeSession([_FakeResp(400, "bad request")])
     with pytest.raises(BuilderIdAuthError, match="RegisterClient failed"):

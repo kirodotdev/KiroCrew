@@ -101,7 +101,7 @@ def _reset_ctx():
 @pytest.fixture(autouse=True)
 # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture, moved verbatim; no test in a module that imports it calls monkeypatch.undo()
 def no_real_probe(monkeypatch):
-    """Never spawn the real ``kirocrew computer doctor`` child in CI.
+    """Never spawn the real permission-probe child in CI.
 
     Individual tests override this with their own stub when they care about the
     probe's own behaviour.

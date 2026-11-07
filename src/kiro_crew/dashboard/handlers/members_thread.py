@@ -611,8 +611,16 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
     """
     if slot._member_approval_seeded:
         return
+    from kiro_crew.approval_mode_policy import clamp_session_mode, verdict_pending
+
+    if verdict_pending():
+        # The policy answer is not final yet: seed on a later open or turn, rather
+        # than commit a passing deny as this thread's mode.
+        return
     slot._member_approval_seeded = True
-    effective = mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+
+    # The Profile cannot raise a thread above what the policy allows.
+    effective = clamp_session_mode(mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE)
     if effective == "normal" or slot._trust or slot._trust_reads or slot._trust_scope:
         return
     key = effective_session_key(slot)
@@ -624,7 +632,11 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
                 sharing._trust_reads = True
             # The Profile decides this slot's mode, not its creator's changes.
             sharing._posture_inherited = False
-    state.sessions.set_approval_policy(key, "auto" if effective == "trust" else "")
+    # Keyed on what the slot actually holds: the setter refuses a denied grant.
+    held_trust = any(
+        s._trust_held for s in state._slots.values() if effective_session_key(s) == key
+    )
+    state.sessions.set_approval_policy(key, "auto" if held_trust else "")
     try:
         _sel().log_api_access(
             caller="dashboard:member_profile",

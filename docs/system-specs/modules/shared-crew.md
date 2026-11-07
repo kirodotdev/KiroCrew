@@ -615,6 +615,18 @@ the phone dialog show its plain URL in `capabilities.tailnet_direct.urls` order
 (`tailnet_direct.direct_urls`): the IPv4 tailnet address first, which needs no
 MagicDNS, then `http://<magicdns-name>:<port>/`, then the IPv6 address, with a copy
 button (`TailnetDirectLink`). The URL carries no token.
+
+Invite message. Tailscale writes the invitation email and its invite API takes only
+`{email?, multiUse, allowExitNode}`, so the Crew address cannot ride in it. After an email
+invite the dialog says so in one line and offers the copyable message, which carries the
+direct listener's links (`CopyInviteMessage`, the same `capabilities.tailnet_direct.urls`
+source as the share link; never the `tailscale serve` address, which needs a token, and
+never a token). With the listener `off` there is no link to send: the line names the
+**Direct tailnet link** setting in Advanced instead, and no button renders. `unavailable`
+means the setting is already on and the listener could not start, so the line says there is
+no direct link right now and does not ask for the setting. A gateway that reports no
+`tailnet_direct` at all shows neither.
+
 The phone dialog keeps its token-carrying QR and sign-in link under an Advanced fold
 for devices without Tailscale. People adds the device-owner caveat under the list,
 and the macOS empty state (`platform_unprovable`) points at the direct link.

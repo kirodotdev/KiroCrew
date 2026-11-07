@@ -14,6 +14,7 @@ import type { NavIntent } from '../utils/popoutController'
 import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
+  isAppDetailPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -72,6 +73,8 @@ import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useGuideGate, useGuidePredicate } from '../guide/guidePredicates'
 import { appNavTarget } from '../appNav'
 import { useGlobalApprovalCount, useRailBadges } from './nav/railBadges'
+import { settingsNavDotLabel } from './nav/settingsNavDot'
+import { useConfigPendingCount } from '../pages/settings/configPendingQuery'
 import { resolveSlotOverlays, type SlotOwners } from '../apps/overlaySlots'
 import { isChatRoute, useRouteActiveModel } from './nav/routeActive'
 import { appPathname } from '../lib/basePath'
@@ -169,6 +172,11 @@ export function useAppShell() {
   const updateAvailable = useAppSelector(
     s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
   )
+  // The same Settings nav dot while a settings file edited outside the dashboard
+  // waits for the owner's review (Settings > Security); `settingsNavDotLabel`
+  // names whichever cause lit it.
+  const configPending = useConfigPendingCount() > 0
+  const settingsDotLabel = settingsNavDotLabel(updateAvailable, configPending)
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
   // the red top-banner tells the user what to do (paste a fresh
@@ -846,6 +854,13 @@ export function useAppShell() {
         )
         return
       }
+      // An app detail link names an app installed in the local Crew. Over a
+      // Remote Crew pane a bare navigate would route the hidden local pane, so
+      // bring the local Crew forward first, as a session link does: the leave
+      // prompt then sits over the draft it is asking about.
+      if (isAppDetailPath(path) && appStore.getState().instances?.activeId != null) {
+        dispatch(setActiveId(null))
+      }
       // Same leave check as every other in-app exit: a native menu entry
       // replaces the page on screen just like a sidebar click does.
       if (!mayLeaveForNavigation()) return
@@ -998,7 +1013,7 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,

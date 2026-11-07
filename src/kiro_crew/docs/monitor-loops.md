@@ -78,6 +78,21 @@ Settings. That scope sends a watched session's transcript tail and a pull
 request's typed facts to the decision service, so it is off until you turn it
 on. With the scope off, such a loop runs as a plain timer.
 
+A loop never switches its session to a cheaper model for a check. The judge is a
+separate small call, not a turn of the loop's own session, and every cycle that
+fires is an ordinary turn on the session's own model and effort. Switching the
+session's model each cycle can drop the prompt cache, and a cheap turn that finds
+work would need a second turn to hand it back, which can cost more than the
+cheaper model saves. The judge reads only watched dashboard sessions and
+github.com pull requests, so it does not screen a loop that watches anything
+else, such as a ticket or a build outside a pull request. To make the judge's own
+call cheaper, pick a model in **Model for the small-model judge**
+(`decisions.nudge_wake.llm_model`), in the **Quiet check-ins: wake or skip**
+panel of the Decisions card (Settings > Developer > Feature Previews). Empty, the
+default, uses the background agent's model (`agent.role_models.background`).
+[Letting a judge skip a quiet loop cycle](decisions.md#letting-a-judge-skip-a-quiet-loop-cycle)
+says when that model answers.
+
 ## One at a time
 
 A session holds one automation. Arming a new loop is refused while an active one

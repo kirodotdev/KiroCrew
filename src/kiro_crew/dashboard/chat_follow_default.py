@@ -151,7 +151,7 @@ def _persons_line(meta: Mapping[str, Any]) -> bool:
     """Whether a metadata line is a chat a person started; an empty line is."""
     if meta.get("created_by") or meta.get("app"):
         return False
-    if str(meta.get("origin", "")) not in _PERSON_ORIGINS:
+    if str(meta.get("origin") or "") not in _PERSON_ORIGINS:
         return False
     if meta.get("mode") == "member":
         return False

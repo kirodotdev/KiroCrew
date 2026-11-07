@@ -31,8 +31,9 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
 from kiro_crew import crew_log as lg
 from kiro_crew import executors
 from kiro_crew.crew_log import emit
-from kiro_crew.crew_log.writer import WriterLimits
+from kiro_crew.crew_log.writer import DEFAULT_LIMITS, WriterLimits
 from kiro_crew.dashboard import server as server_module
+from kiro_crew.testing.wait import default_timeout
 
 
 def test_no_second_thread_appends_while_a_writer_batch_is_claimed(monkeypatch):
@@ -56,7 +57,7 @@ def test_no_second_thread_appends_while_a_writer_batch_is_claimed(monkeypatch):
         return real_append(self, *args, **kwargs)
 
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     async def _emit() -> None:
         emit.on_turn_started(SESSION, 1, "user")
@@ -148,7 +149,7 @@ def test_every_gateway_mode_drains_the_log_before_a_hard_exit():
 
 def test_fold_reads_loss_marker_with_contiguous_sequence():
     _open_session()
-    assert emit.flush()
+    assert_drained()
     real_append = lg.CrewLog.append
 
     def _lose_the_call(self, entry_type, *args, **kwargs):
@@ -159,10 +160,10 @@ def test_fold_reads_loss_marker_with_contiguous_sequence():
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(lg.CrewLog, "append", _lose_the_call)
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
     assert emit.dropped_writes() == 1, "the append was not given up on"
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     known = {"session/opened", "write/dropped", "turn/completed"}
     entries = list(lg.CrewLog.open(lg.KIND_SESSION, SESSION).iter_from(1, known=known))
@@ -174,7 +175,7 @@ def test_fold_reads_loss_marker_with_contiguous_sequence():
 
 def test_a_permanent_refusal_midbatch_owes_a_loss_marker():
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     real_append = lg.CrewLog.append
     refused_once = {"left": 1}
@@ -193,7 +194,7 @@ def test_a_permanent_refusal_midbatch_owes_a_loss_marker():
             # continues to the second, so the file resumes right after the hole.
             emit.on_turn_started(SESSION, 1, "user")
             emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-            assert emit.flush(timeout=20.0)
+            assert_drained()
 
         asyncio.run(_batch())
 
@@ -300,14 +301,14 @@ def test_an_append_never_runs_on_the_event_loop_thread(monkeypatch):
     turns and the liveness heartbeat.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     seen: list[int] = []
     _spy_on_append(monkeypatch, seen)
 
     async def _turn() -> int:
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-        assert emit.flush()
+        assert_drained()
         return threading.get_ident()
 
     loop_thread = asyncio.run(_turn())
@@ -337,7 +338,7 @@ def test_a_turn_boundary_crossing_a_full_queue_cannot_mis_attribute_an_entry():
     shared cell for a later turn to overwrite and no cache entry to evict.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     async def _two_turns() -> None:
         emit.on_turn_started(SESSION, 1, "user")
@@ -346,7 +347,7 @@ def test_a_turn_boundary_crossing_a_full_queue_cannot_mis_attribute_an_entry():
         emit.on_turn_started(SESSION, 2, "user")
         emit.on_tool_called(SESSION, 2, name="fs_read", call_id="tc-2")
         emit.on_turn_completed(SESSION, 2, stop_reason="end_turn")
-        assert emit.flush()
+        assert_drained()
 
     asyncio.run(_two_turns())
     body = _body()
@@ -370,7 +371,7 @@ def test_a_slow_writer_costs_memory_not_a_record_and_not_the_loop(monkeypatch):
     neither writes nor waits. What gives instead is memory, which is visible.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     original = lg.CrewLog.append
     release = threading.Event()
 
@@ -416,7 +417,7 @@ def test_the_backlog_is_reported_rather_than_shed(monkeypatch, caplog):
     """
     emit.reset_caches(limits=WriterLimits(pending_high_water=4))
     _open_session()
-    assert emit.flush()
+    assert_drained()
     original = lg.CrewLog.append
     release = threading.Event()
 
@@ -451,7 +452,7 @@ def test_shutdown_drains_what_the_writer_has_not_written_yet():
     what a reader goes looking for after a restart.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     async def _turn() -> None:
         # No flush: this is the state a restart interrupts.
@@ -477,7 +478,7 @@ def test_a_close_under_a_live_turn_leaves_that_turn_its_open_calls():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
     emit.on_session_closed(SESSION, "reset")
-    assert emit.flush()
+    assert_drained()
 
     types = [e["type"] for e in _body()]
     assert "session/closed" in types, "the terminal is written, not held"
@@ -485,7 +486,7 @@ def test_a_close_under_a_live_turn_leaves_that_turn_its_open_calls():
     # The turn ends the way the runner ends one, after its session already closed.
     assert emit.close_open_tool_calls(SESSION, 1) == 1, "the live turn lost its open call"
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     after = [e["type"] for e in _body()]
     assert after.index("tool/completed") > after.index("session/closed")
@@ -500,9 +501,9 @@ def test_a_close_with_no_live_turn_is_written_at_once():
     without one.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     emit.on_session_closed(SESSION, "shutdown")
-    assert emit.flush()
+    assert_drained()
     assert _body()[-1]["type"] == "session/closed"
     assert _body()[-1]["data"]["reason"] == "shutdown"
 
@@ -512,23 +513,26 @@ def test_shutdown_drains_even_when_the_writer_pool_is_gone():
 
     The executor's own exit hook can remove the pool first, so the drain writes inline.
 
-    The writer thread is occupied so the drain pass is queued, then cancelled. Nothing
+    Every writer worker is occupied so the drain pass is queued, then cancelled. Nothing
     releases the claim, so it must be read from the future, or ``flush`` stays False.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
-    occupied = threading.Event()
+    workers = DEFAULT_LIMITS.lanes  # the pool runs one worker per lane
+    occupied = threading.Semaphore(0)
     release = threading.Event()
 
     def _occupy() -> None:
-        occupied.set()
+        occupied.release()
         assert release.wait(20.0)
 
-    executors.crew_log_executor().submit(_occupy)
-    # Waited on the worker's OWN signal, so the queue state below is a fact rather
+    for _ in range(workers):
+        executors.crew_log_executor().submit(_occupy)
+    # Waited on each worker's OWN signal, so the queue state below is a fact rather
     # than a guess about scheduling.
-    assert occupied.wait(20.0), "the writer thread was never occupied"
+    for _ in range(workers):
+        assert occupied.acquire(timeout=default_timeout()), "a writer worker was never occupied"
 
     async def _turn() -> None:
         emit.on_turn_started(SESSION, 2, "user")
@@ -549,7 +553,7 @@ def test_shutdown_drains_even_when_the_writer_pool_is_gone():
     # not answered False forever.
     assert emit.flush(timeout=20.0), "the writer claim outlived the pass it was made for"
     emit.on_turn_started(SESSION, 3, "user")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert [e["data"]["turn"] for e in _body() if e["type"] == "turn/started"] == [2, 3]
 
 
@@ -600,12 +604,12 @@ def test_a_dropped_turn_start_leaves_its_turn_unthreaded_not_folded_into_the_las
     the previous turn. They still land: a refusal is final, so the pass moves past it.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     async def _first_turn() -> None:
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-        assert emit.flush()
+        assert_drained()
 
     asyncio.run(_first_turn())
     first_start = next(e for e in _body() if e["type"] == "turn/started")
@@ -622,7 +626,7 @@ def test_a_dropped_turn_start_leaves_its_turn_unthreaded_not_folded_into_the_las
     async def _second_turn() -> None:
         emit.on_turn_started(SESSION, 2, "user")
         emit.on_tool_called(SESSION, 2, name="fs_read", call_id="tc-2")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     asyncio.run(_second_turn())
     orphan = [e for e in _body() if e["type"] == "tool/called" and e["data"]["turn"] == 2]
@@ -639,7 +643,7 @@ def test_a_log_failure_on_the_writer_never_reaches_the_caller(monkeypatch):
     retried, then given up on and counted in ``dropped_writes``.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     real_append = lg.CrewLog.append
 
     def _boom(self, entry_type, *args, **kwargs):
@@ -666,7 +670,7 @@ def test_a_failed_append_is_retained_and_lands_on_the_next_pass(monkeypatch):
     in emit order and nothing is dropped.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     original = lg.CrewLog.append
     failures = {"left": 1}
 
@@ -682,7 +686,7 @@ def test_a_failed_append_is_retained_and_lands_on_the_next_pass(monkeypatch):
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     asyncio.run(_turn())
     assert failures["left"] == 0, "the injected failure never fired"
@@ -707,7 +711,7 @@ def test_a_later_write_during_retention_queues_behind_the_retained_batch(monkeyp
     which a fold reads as fact, and cannot detect.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     original = lg.CrewLog.append
     refused = threading.Event()
     seen = {"starts": 0}
@@ -728,7 +732,7 @@ def test_a_later_write_during_retention_queues_behind_the_retained_batch(monkeyp
         # produced INSIDE the retention window rather than racing it.
         assert refused.wait(20.0), "the start never reached the writer"
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     asyncio.run(_turn())
     assert seen["starts"] == 3, "the start was not retried twice before it landed"
@@ -745,7 +749,7 @@ def test_a_reopen_that_fails_is_retried_rather_than_discarding_the_entry():
     exactly the silent hole the retention exists to close.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     original = lg.CrewLog.open
     failures = {"left": 1}
 
@@ -762,7 +766,7 @@ def test_a_reopen_that_fails_is_retried_rather_than_discarding_the_entry():
 
         async def _turn() -> None:
             emit.on_turn_started(SESSION, 1, "user")
-            assert emit.flush(timeout=20.0)
+            assert_drained()
 
         asyncio.run(_turn())
 
@@ -789,7 +793,7 @@ def test_a_retried_session_open_still_writes_the_entry_it_owes():
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(lg.CrewLog, "append", _fail_the_first_open_entry)
         _open_session()
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     assert failures["left"] == 0, "the injected failure never fired"
     body = _body()
@@ -808,7 +812,7 @@ def test_shutdown_is_not_reported_drained_while_a_batch_is_still_writing():
     not mean the entries reached the file.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     holding = threading.Event()
     release = threading.Event()
     original = lg.CrewLog.append
@@ -865,7 +869,7 @@ def test_shutdown_writes_a_batch_that_had_been_failing():
 
     with pytest.MonkeyPatch.context() as mp:
         _open_session()
-        assert emit.flush()
+        assert_drained()
         # A backoff long enough that the batch is still PARKED when the assertions
         # below run: with the fixture's flattened schedule it would burn its whole
         # attempt budget in microseconds and be dropped before the drain is asked.
@@ -902,7 +906,7 @@ def test_a_write_that_finishes_late_sheds_nothing():
 
     with pytest.MonkeyPatch.context() as mp:
         _open_session()
-        assert emit.flush()
+        assert_drained()
         mp.setattr(lg.CrewLog, "append", _slow)
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
@@ -920,7 +924,7 @@ def test_attachment_metadata_is_omitted_before_a_fitting_body_is_split():
     body = "x" * (emit._crew_log().MAX_ENTRY_BYTES - emit._ENVELOPE_HEADROOM - 64)
     ids = [f"/tmp/attachment-{n:04d}-with-a-long-enough-name.bin" for n in range(200)]
     emit.on_message_received(SESSION, 1, role="user", text=body, attachments=ids)
-    assert emit.flush()
+    assert_drained()
 
     received = [e for e in _body() if e["type"] == "message/received"]
     assert len(received) == 1, "the message was refused when attachment metadata exceeded the cap"
@@ -951,7 +955,7 @@ def test_an_oversize_body_reaches_the_file_as_one_group():
         mp.setattr(lg.CrewLog, "append_many", _counting)
         body = "y" * (emit._crew_log().MAX_ENTRY_BYTES * 2)
         emit.on_message_sent(SESSION, 1, step=1, text=body)
-        assert emit.flush()
+        assert_drained()
 
     assert calls["many"] == 1, "the group was not written as a single batch"
     entries = _body()
@@ -972,10 +976,12 @@ def test_an_oversize_body_reaches_the_file_as_one_group():
 def test_queued_terminal_write_keeps_ownership_until_it_lands(monkeypatch):
     """Cache pressure cannot hand away a still-open turn's write lease."""
     blocker = "acp-sess-blocker"
+    # One lane: the closer must queue behind the held writer, not land on a spare lane.
+    emit.reset_caches(limits=WriterLimits(lanes=1))
     _open_session()
     emit.on_session_opened(blocker, agent="kirocrew", slot="chat-b")
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     writer_entered = threading.Event()
     release_writer = threading.Event()
@@ -1007,7 +1013,7 @@ def test_queued_terminal_write_keeps_ownership_until_it_lands(monkeypatch):
     finally:
         release_writer.set()
 
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert [e["type"] for e in _body()][-1] == "turn/completed"
     assert emit.live_turn(SESSION) == 0
 
@@ -1015,7 +1021,7 @@ def test_queued_terminal_write_keeps_ownership_until_it_lands(monkeypatch):
 def test_retryable_terminal_failure_keeps_the_turn_pinned(monkeypatch):
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     original_append = lg.CrewLog.append
     failures = {"left": 1}
@@ -1045,7 +1051,7 @@ def test_retryable_terminal_failure_keeps_the_turn_pinned(monkeypatch):
 def test_every_terminal_path_releases_its_pin_after_a_definitive_drop(terminal):
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     assert emit.live_turn(SESSION) == 1
 
     original_append = lg.CrewLog.append
@@ -1063,7 +1069,7 @@ def test_every_terminal_path_releases_its_pin_after_a_definitive_drop(terminal):
             emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
         else:
             emit.on_turn_failed(SESSION, 1, error="AcpError")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     assert emit.dropped_writes() == 1
     assert emit.live_turn(SESSION) == 0
@@ -1083,9 +1089,10 @@ def test_overflow_while_the_creating_record_is_queued_still_creates_the_log(monk
     blocker = "acp-sess-blocker"
     # One buffered append fills the buffer: the creating record is admitted past it,
     # and the turn's start, which is not exempt, is refused.
-    emit.reset_caches(limits=WriterLimits(max_pending_count=1))
+    # One lane, so the second session's entries queue behind the held writer.
+    emit.reset_caches(limits=WriterLimits(max_pending_count=1, lanes=1))
     emit.on_session_opened(blocker, agent="kirocrew", slot="chat-b")
-    assert emit.flush()
+    assert_drained()
 
     writer_entered = threading.Event()
     release_writer = threading.Event()
@@ -1112,9 +1119,9 @@ def test_overflow_while_the_creating_record_is_queued_still_creates_the_log(monk
     finally:
         release_writer.set()
 
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     assert _log_path().is_file(), "the ceiling refused the log-creating record"
     body_types = [e["type"] for e in _body()]
@@ -1140,7 +1147,7 @@ def _fail_creation_permanently() -> None:
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(lg.CrewLog, "create", _refuse_create)
         emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
 
 def test_a_permanently_failed_creation_counts_later_discards_as_loss():
@@ -1157,7 +1164,7 @@ def test_a_permanently_failed_creation_counts_later_discards_as_loss():
     dropped_before = emit.dropped_writes()
 
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     assert emit.dropped_writes() == dropped_before + 1, (
         "a discarded entry for a creation-failed session was a silent no-op, " "not counted as loss"
@@ -1172,7 +1179,7 @@ def test_a_session_that_was_never_opened_stays_a_silent_no_op():
     """
     dropped_before = emit.dropped_writes()
     emit.on_turn_started("never-opened-session", 1, "user")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert not _log_path("never-opened-session").exists()
     assert emit.dropped_writes() == dropped_before, "an unopened session was counted as a loss"
 
@@ -1187,7 +1194,7 @@ def test_a_closed_session_does_not_leave_its_creation_failure_flagged():
     assert SESSION in emit._creation_failed, "the failed creation was not flagged"
 
     emit.on_session_closed(SESSION, reason="test")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     assert (
         SESSION not in emit._creation_failed
@@ -1202,7 +1209,7 @@ def test_a_closed_session_does_not_leave_its_overflow_count_behind():
     """
     emit.reset_caches(limits=WriterLimits(max_pending_count=0))
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     async def _overflow() -> None:
         emit.on_turn_started(SESSION, 1, "user")
@@ -1226,7 +1233,7 @@ def test_a_writer_built_under_a_patched_handle_uses_the_real_one_after_undo(monk
         patch.setattr(emit, "_handle", lambda session_id: None)
         emit.on_turn_started(SESSION, 1, "user")  # the first use builds the writer
     _open_session()
-    assert emit.flush()
+    assert_drained()
     real_append = lg.CrewLog.append
 
     def _refuse_turns(self, entry_type, *args, **kwargs):
@@ -1242,7 +1249,7 @@ def test_a_writer_built_under_a_patched_handle_uses_the_real_one_after_undo(monk
             emit.on_turn_started(SESSION, 2, "user")
 
         asyncio.run(_lost())
-        assert emit.flush(timeout=10.0)
+        assert_drained()
     markers = [e["data"] for e in _body() if e["type"] == "write/dropped"]
     assert markers and markers[0]["dropped_count"] == 1, "the lost entry was never admitted"
 
@@ -1256,7 +1263,7 @@ def test_the_writer_and_the_emitter_report_through_one_budget(caplog):
     """
     emit.reset_caches(limits=WriterLimits(max_pending_count=0))
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     def _failing_cleanup() -> None:
         raise RuntimeError("the cleanup failed")

@@ -667,17 +667,34 @@ class SpecHooks:
 
 
 class ParentPolicyAuto:
-    """``parent_policy=auto``: a grant read once at run start, and withheld from
-    any request *revoked* (asked per request) answers true for."""
+    """``parent_policy=auto``: a grant read at run start, re-checked per request.
 
-    def __init__(self, parent_policy: str, revoked: Callable[[], bool] | None = None) -> None:
+    It is withheld from any request *revoked* (asked per request) answers true for.
+    A ``permission_mode`` deny of ``trust`` that lands while the run is going ends
+    it, unless a session-wide YOLO grant is live (``stored_auto_permitted``).
+    *trust_gated* is False when the operator's ``auto_approve_subagent_tools``
+    setting is on: that grant is not a Trust and the mode policy does not reach it.
+    """
+
+    def __init__(
+        self,
+        parent_policy: str,
+        revoked: Callable[[], bool] | None = None,
+        *,
+        trust_gated: bool = True,
+    ) -> None:
         self._on = parent_policy == "auto"
         self._revoked = revoked
+        self._trust_gated = trust_gated
 
     async def offer(self, ask: Ask) -> Hit | None:
         if not self._on or (self._revoked is not None and self._revoked()):
             return None
-        return Hit("parent_policy_auto", Evidence.NONE)
+        if not self._trust_gated:
+            return Hit("parent_policy_auto", Evidence.NONE)
+        from kiro_crew.approval_mode_policy import stored_auto_permitted
+
+        return Hit("parent_policy_auto", Evidence.NONE) if stored_auto_permitted() else None
 
 
 class ContextOverflow:

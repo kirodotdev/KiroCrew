@@ -1415,6 +1415,7 @@ class SessionMap:
     aclose = _store.aclose
     _write = _store._write
     _write_payload = _store._write_payload
+    writes_refused = _store.writes_refused
 
     # A session's channel links: ``kiro_crew.session_map_links``.
     _rebuild_thread_index = _links._rebuild_thread_index

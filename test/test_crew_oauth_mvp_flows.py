@@ -651,3 +651,21 @@ async def test_the_card_shows_no_sharing_hint_for_a_crew_held_grant(tmp_path, mo
     gh = next(s for s in statuses if s["slug"] == "github")
     assert gh["grantPresent"] is True and "grantSharedWith" not in gh
     assert all("github" not in slugs for slugs in called)
+    # The card hides Test (kiro-cli's grant, refused 409) only for this row.
+    assert gh["crewHeld"] is True
+    assert all("crewHeld" not in s for s in statuses if s["slug"] != "github")
+
+
+@pytest.mark.asyncio
+async def test_a_native_grant_is_not_marked_crew_held(tmp_path, monkeypatch):
+    """Flag off (or kiro-cli backend): no row carries ``crewHeld``, so Test stays."""
+    from kiro_crew.connections import status
+
+    data_home = tmp_path / "crew-home"
+    data_home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(data_home))
+    monkeypatch.setattr(crew_oauth, "manages", lambda slug: False)
+    monkeypatch.setattr(status, "_provider_grant_presence", lambda url: False)
+    monkeypatch.setattr(status, "reconcile_connected_since", lambda statuses, now: {})
+    statuses = await status.collect_connection_statuses()
+    assert statuses and all("crewHeld" not in s for s in statuses)

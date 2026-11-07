@@ -10,6 +10,7 @@ goes red here.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -17,10 +18,14 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import cli_open
+from kiro_crew.apps import manifest_names
 from kiro_crew.cli_open import DeepLinkError, build_deep_link, open_url
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEEP_LINK_JS = _REPO_ROOT / "website" / "electron" / "deep-link.js"
+_APP_NAME_SAMPLES = (
+    _REPO_ROOT / "website" / "electron" / "test" / "fixtures" / "app-name-samples.json"
+)
 
 
 class TestBuildDeepLink:
@@ -149,6 +154,23 @@ class TestGrammarAgreesWithTheElectronResolver:
 
     def test_slot_key_regex_is_identical(self):
         assert cli_open._SLOT_KEY_RE.pattern == _js_regex("SLOT_KEY_RE")
+
+    def test_app_name_samples_agree_with_the_manifest_grammar(self):
+        # deep-link.js checks ``kirocrew://apps/detail/<name>`` with plain logic
+        # rather than a copy of ``KEBAB_RE``; deep-link.test.js runs the same
+        # samples through it, so the two grammars cannot drift apart.
+        samples = json.loads(_APP_NAME_SAMPLES.read_text(encoding="utf-8"))
+        assert samples["valid"] and samples["invalid"]
+        for name in samples["valid"]:
+            assert manifest_names.KEBAB_RE.fullmatch(name), name
+        for name in samples["invalid"]:
+            assert not manifest_names.KEBAB_RE.fullmatch(name), name
+
+    def test_app_name_length_cap_is_the_manifest_cap(self):
+        source = _DEEP_LINK_JS.read_text(encoding="utf-8")
+        match = re.search(r"const APP_NAME_MAX_LENGTH = (\d+);", source)
+        assert match, "APP_NAME_MAX_LENGTH not found in deep-link.js"
+        assert int(match.group(1)) == manifest_names.APP_NAME_MAX_LENGTH
 
     def test_scheme_is_identical(self):
         source = _DEEP_LINK_JS.read_text(encoding="utf-8")

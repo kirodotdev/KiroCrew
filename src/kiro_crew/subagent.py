@@ -291,6 +291,7 @@ from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     NOT_DELIVERY_STATE,
     PARKS_WHEN_SET,
     PARKS_WHEN_UNSET,
+    HostSpawnDecision,
     SpawnApprovalCallback,
     SpawnApprovalUnreachable,
     SubagentEventCallback,
@@ -439,7 +440,10 @@ from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _spawn_memory_floor_and_cost,
     _startup_memory_reserve_gb,
 )
-from kiro_crew.subagent_parts.terminal_surface import write_refusal_tombstone  # noqa: F401
+from kiro_crew.subagent_parts.terminal_surface import (  # noqa: F401
+    write_queued_stop_tombstone,
+    write_refusal_tombstone,
+)
 from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run_lifecycle.py via bind_component_globals
     DISMISSAL_FAILED,
     _agent_dir,

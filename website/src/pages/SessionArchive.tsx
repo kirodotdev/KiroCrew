@@ -97,6 +97,8 @@ export default function SessionArchive() {
               tabIndex={0}
               onClick={() => openArchive(a.name)}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openArchive(a.name) } }}
+              // The open archive is shown by a background tint alone; say it to assistive tech too.
+              aria-current={selected === a.name ? 'true' : undefined}
               className={`cursor-pointer px-2 py-1 rounded hover:bg-bg-hover ${selected === a.name ? 'bg-bg-elevated' : ''}`}
             >
               <div className="text-[13px] font-mono truncate" title={a.key}>{a.key}</div>

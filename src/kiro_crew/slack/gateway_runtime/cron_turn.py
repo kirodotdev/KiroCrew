@@ -48,11 +48,13 @@ if TYPE_CHECKING:
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
         acp_error_is_transient,
+        auto_job_approver,
         configured_fallback_chain,
         consume_reinjection,
         context_meter_reading,
         dataclass,
         declared_mcp_not_ready_note,
+        effective_job_approval_mode,
         engine_attributed_model,
         logger,
         note_turn_landed,
@@ -168,6 +170,8 @@ async def _cron_run_sequence(
     # Each step's missing-server note, kept apart from result_text because the
     # next step's reply replaces it; the stored result carries all of them.
     _seq_mcp_notes: list[str] = []
+    # Run-scoped for the same reason: a refused person-only directive.
+    _seq_directive_refusals: list[str] = []
     _seq_downgraded = False
     # Run-scoped: a sequence where one agent got a tool through has
     # done work, even if a later agent was blocked outright.
@@ -270,6 +274,7 @@ async def _cron_run_sequence(
                     client,
                     full_message,
                     job_name=job.name,
+                    directive_refusals=_seq_directive_refusals,
                     on_resume=lambda: settle_turn(self.sessions, agent_session_key),
                     # The gate resolves this session's governance profile, as it
                     # does for a chat turn, and refuses when it cannot evaluate.
@@ -281,15 +286,21 @@ async def _cron_run_sequence(
                     unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
-                        if job.approval_mode == "auto"
+                        if effective_job_approval_mode(job.approval_mode) == "auto"
                         else ToolApprovalPolicy.HOOK_BASED
                     ),
                     hooks=self.ctx_builder.hooks,
                     # The card's requester line ends with the user-authored job
                     # name, so it cannot forge the id or agent before it.
                     on_tool_approval=(
-                        None
-                        if job.approval_mode == "auto"
+                        # ``auto`` is re-checked per request: a mid-turn deny asks instead.
+                        auto_job_approver(
+                            self._interactive_approval(
+                                "cron",
+                                requester=f"cron job {job.id}, agent {step.alias}: {job.name}",
+                            )
+                        )
+                        if effective_job_approval_mode(job.approval_mode) == "auto"
                         else self._interactive_approval(
                             "cron", requester=f"cron job {job.id}, agent {step.alias}: {job.name}"
                         )
@@ -487,6 +498,8 @@ async def _cron_run_sequence(
                 raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {_seq_snf_err}")
     if _seq_mcp_notes:
         result_text = "\n".join(_seq_mcp_notes) + "\n\n" + result_text
+    if _seq_directive_refusals:
+        result_text = "\n\n".join([*_seq_directive_refusals, result_text])
     if _seq_downgraded:
         result_text = _annotate_model_downgrade(job, result_text)
     result_text = _annotate_partial_block(result_text, _gate)
@@ -710,11 +723,13 @@ async def _cron_run_single(
         # above. acp reports no duration, so this is the row's fallback.
         _turn_t0 = time.monotonic()
         _gate = _GateTally()
+        _directive_refusals: list[str] = []
         _prompt_dispatched = True
         result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
             client,
             full_message,
             job_name=job.name,
+            directive_refusals=_directive_refusals,
             on_resume=lambda: settle_turn(self.sessions, session_key),
             # The gate resolves this session's governance profile, as it does
             # for a chat turn, and refuses when it cannot evaluate. The agent is
@@ -726,14 +741,22 @@ async def _cron_run_single(
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
-                if job.approval_mode == "auto"
+                if effective_job_approval_mode(job.approval_mode) == "auto"
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
             # The job name ends the requester line, as on the sequence site.
             on_tool_approval=(
-                None
-                if job.approval_mode == "auto"
+                # ``auto`` is re-checked per request: a mid-turn deny asks instead.
+                auto_job_approver(
+                    self._interactive_approval(
+                        "cron",
+                        requester=f"cron job {job.id}"
+                        + (f", agent {cap.gate_agent}" if cap.gate_agent else "")
+                        + f": {job.name}",
+                    )
+                )
+                if effective_job_approval_mode(job.approval_mode) == "auto"
                 else self._interactive_approval(
                     "cron",
                     requester=f"cron job {job.id}"
@@ -771,6 +794,8 @@ async def _cron_run_single(
         _missing = declared_mcp_not_ready_note(client)
         if _missing:
             result_text = f"⚠ {_missing}.\n\n{result_text}"
+        if _directive_refusals:
+            result_text = "\n\n".join([*_directive_refusals, result_text])
         # Before set_run_result and the dedup hash below, so the stored
         # result, the slot, the bell and every transport carry the
         # refusal, and a run that lost a call never hashes equal to

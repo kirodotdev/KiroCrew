@@ -5,7 +5,7 @@ import { useMutation } from '@tanstack/react-query'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { setPendingInput } from '../../store/chatSlice'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
 import { useMayLeaveForNavigation, useIsCurrentUrl, useAskingNavigate } from '../NavigationLeaveGuard'
 
 /**
@@ -111,13 +111,10 @@ export function usePaletteActions(): PaletteActions {
   const hasActiveChat = useAppSelector((s) => s.chat.activeSlot !== null)
 
   const { mutate: doCreateSlot } = useMutation({
-    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true }),
-    onError: (err: unknown) => {
-      // The palette has already closed by the time this settles, so there is no
-      // surface left to render the failure on and no other record of it.
-      // eslint-disable-next-line no-console -- sole diagnostic for a failed session create; without it the row silently does nothing
-      console.error('[palette] failed to create session:', err)
-    },
+    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true, crewModeDefault: true }),
+    // The palette has already closed by the time this settles, so the failure
+    // goes to the shell notice.
+    onError: (err: unknown) => reportCreateFailure(dispatch, err),
   })
 
   const insertToken = useCallback((token: string) => {

@@ -602,6 +602,17 @@
           "integer": true
         },
         {
+          "name": "resumed_ts",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "resumed_turns",
+          "type": "object",
+          "optional": false
+        },
+        {
           "name": "turns",
           "type": "object",
           "optional": false

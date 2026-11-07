@@ -120,6 +120,7 @@ class AcpSessionHandle:
     mcp_session_report = _sh_mcp.mcp_session_report
     wait_mcp_ready = _sh_mcp.wait_mcp_ready
     wait_for_declared_mcp = _sh_mcp.wait_for_declared_mcp
+    wait_mounted_mcp = _sh_mcp.wait_mounted_mcp
     _note_mcp_sign_in_status = _sh_mcp._note_mcp_sign_in_status
     _offer_mcp_sign_in = _sh_mcp._offer_mcp_sign_in
     want_mcp_sign_in_named = _sh_mcp.want_mcp_sign_in_named
@@ -362,6 +363,8 @@ class AcpSessionHandle:
         self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
+            cleanup_tenancy=lambda: self._runtime.session_tenancy(self._session_id),
+            sandbox_wrapped_by_crew=lambda: self._runtime.sandbox_wrapped_by_crew,
             server_launches=self._remote_flat_launches,
             attribution_launches=self._mcp_attribution_launches,
         )
@@ -688,6 +691,14 @@ class AcpSessionHandle:
         # session's directory (``kas_agents.projected_write_allowlist``); None when
         # it does not. The gate refuses every other file write.
         self.kas_spec_write_allowlist: tuple[str, ...] | None = None
+        self.kas_spec_denies: Any = None
+        # Whether that shell allowlist lets a read-only command past, as kiro-cli
+        # does for `autoAllowReadonly: true` (``kas_agents.projected_shell_readonly``).
+        self.kas_spec_shell_readonly: bool = False
+        # The agent's write `allowedPaths`, anchored at this session's directory
+        # (``kas_write_allowlist.projected_answered_paths``): the gate answers a
+        # write every target of which one covers, after its checks.
+        self.kas_crew_answered_paths: tuple[str, ...] = ()
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.

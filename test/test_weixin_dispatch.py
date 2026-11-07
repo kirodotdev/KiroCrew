@@ -497,6 +497,78 @@ def test_update_pause_spools_new_before_generation_side_effects(tmp_path, monkey
     assert refused.text == "/new"
 
 
+def _file_and_image_msg():
+    msg = _msg(text="see these")
+    msg.attachments = [
+        {"type": 4, "file_item": {"file_name": "a.pdf", "media": {"encrypt_query_param": "p0"}}},
+        {"type": 2, "image_item": {"media": {"encrypt_query_param": "p1"}}},
+    ]
+    return msg
+
+
+def test_a_refused_callback_spools_the_attachment_names(tmp_path, monkeypatch):
+    import kiro_crew.messaging.dispatch as dispatch
+
+    d, _client, sessions = _make(tmp_path)
+    sessions.reserve_inbound_callback = lambda: None
+    spooled: list[Any] = []
+
+    async def capture(*, channel_type, route):
+        spooled.append(route)
+
+    monkeypatch.setattr(dispatch, "spool_refused_turn", capture)
+
+    asyncio.run(d.handle_message(_file_and_image_msg()))
+
+    assert [(r.attachments_dropped, r.attachment_names) for r in spooled] == [
+        (2, ("a.pdf", "image.jpg"))
+    ]
+
+
+def test_a_url_shaped_file_name_is_spooled_without_a_mime_guess(tmp_path, monkeypatch):
+    """``mimetypes.guess_type`` raises on this name; naming must not, or the message is lost."""
+    import kiro_crew.messaging.dispatch as dispatch
+
+    d, _client, sessions = _make(tmp_path)
+    sessions.reserve_inbound_callback = lambda: None
+    spooled: list[Any] = []
+
+    async def capture(*, channel_type, route):
+        spooled.append(route)
+
+    monkeypatch.setattr(dispatch, "spool_refused_turn", capture)
+    msg = _msg(text="see this")
+    msg.attachments = [{"type": 4, "file_item": {"file_name": "//[broken]/report.pdf"}}]
+
+    asyncio.run(d.handle_message(msg))
+
+    assert [r.attachment_names for r in spooled] == [("//[broken]/report.pdf",)]
+
+
+def test_the_turn_route_names_the_attachments_ingestion_consumed(tmp_path, monkeypatch):
+    """Ingestion clears ``inbound.attachments``, so the names are taken before it."""
+    import kiro_crew.weixin.transport_dispatch as td
+
+    seen: dict[str, Any] = {}
+
+    async def fake_drive_turn(turn, **_kw):
+        seen["route"] = turn.inbound_route
+
+    async def fake_ingest(inbound, _user_id, text):
+        inbound.attachments = []
+        return f"{text}\n/tmp/kc-att/a.pdf", []
+
+    monkeypatch.setattr(td, "drive_turn", fake_drive_turn)
+    d, _client, _sessions = _make(tmp_path)
+    monkeypatch.setattr(d, "_ingest_or_refuse", fake_ingest)
+
+    asyncio.run(d.handle_message(_file_and_image_msg()))
+
+    route = seen["route"]
+    assert (route.text, route.attachments_dropped) == ("see these", 2)
+    assert route.attachment_names == ("a.pdf", "image.jpg")
+
+
 def test_compact_command_compacts_without_a_turn(tmp_path):
     provider = FakeProvider()
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -856,6 +928,24 @@ def test_governance_deny_drops_the_message_before_any_turn(tmp_path, monkeypatch
     assert provider.prompts == []  # no turn ran
     assert client.sent == []  # and nothing was sent back
     assert sessions.successes == 0
+
+
+def test_a_typed_stop_survives_a_governance_deny(tmp_path, monkeypatch):
+    """Weixin has no buttons: a typed /stop is its only off-switch."""
+    import kiro_crew.messaging.dispatch as mod
+
+    provider = FakeProvider()
+    d, client, _ = _make(tmp_path, provider=provider, busy=True)
+
+    async def deny(_channel_type):
+        return False
+
+    monkeypatch.setattr(mod, "channel_inbound_permitted", deny)
+    # A cancel word another channel spells is no stop here: it keeps the gate.
+    asyncio.run(d.handle_message(_msg("!stop")))
+    assert provider.cancelled == [] and client.sent == []
+    asyncio.run(d.handle_message(_msg("/stop")))
+    assert provider.cancelled == [0]
 
 
 def test_governance_permit_allows_the_turn(tmp_path, monkeypatch):

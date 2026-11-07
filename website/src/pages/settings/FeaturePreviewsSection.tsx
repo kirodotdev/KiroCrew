@@ -19,6 +19,7 @@ import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
+import { EditionPreviewRows } from './EditionPreviewRows'
 import { i18nT } from '../../i18n/t'
 
 
@@ -226,15 +227,9 @@ export function FeaturePreviewsSection() {
       {writeError && (
         <ErrorNotice
           testId="feature-previews-save-error"
-          // A carry refused as owner-only names the owner rather than a reload:
-          // a reload sends the same carry and gets the same 403.
-          message={writeError.carry
-            ? writeError.denied
-              ? i18nT('pages.settings.developerPanel.feature_previews_carry_denied', { name: previewFlagLabel(writeError.flag) })
-              : i18nT('pages.settings.developerPanel.feature_previews_carry_failed', { name: previewFlagLabel(writeError.flag) })
-            : writeError.denied
-              ? i18nT('pages.settings.developerPanel.feature_previews_save_denied', { name: previewFlagLabel(writeError.flag) })
-              : i18nT('pages.settings.developerPanel.feature_previews_save_failed', { name: previewFlagLabel(writeError.flag) })}
+          message={writeError.denied
+            ? i18nT('pages.settings.developerPanel.feature_previews_save_denied', { name: previewFlagLabel(writeError.flag) })
+            : i18nT('pages.settings.developerPanel.feature_previews_save_failed', { name: previewFlagLabel(writeError.flag) })}
           onDismiss={clearPreviewFlagWriteError}
           // The hand-off is safe here: this section holds no draft input, and the
           // refused switch already shows its stored value, so leaving loses nothing.
@@ -470,6 +465,8 @@ export function FeaturePreviewsSection() {
           onChange={value => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, value)}
         />
       </SettingsCard>
+      {/* Rows an edition contributes; none on the public build. */}
+      <EditionPreviewRows />
       {/* LAST, and the only card here whose switch is not in gateway config: it
           writes the KEYSTONE `decisions_consent.json`, not a config path. It lives in
           `DecisionsCard.tsx` because it is a list and a detail rather than one row,

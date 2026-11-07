@@ -22,6 +22,17 @@ import { api } from '../api/client'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 
+// Every argument the page hands `createSlot`, read by the Ultra Mode default
+// case; the real thunk still runs.
+const createSlotArgs = vi.hoisted(() => [] as unknown[])
+vi.mock('../store/chatSlice', async importOriginal => {
+  const actual = await importOriginal<typeof import('../store/chatSlice')>()
+  const createSlot = Object.assign((arg: Parameters<typeof actual.createSlot>[0]) => {
+    createSlotArgs.push(arg)
+    return actual.createSlot(arg)
+  }, actual.createSlot)
+  return { ...actual, createSlot }
+})
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 vi.mock('../components/ChatInput', () => ({ default: () => null }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
@@ -206,6 +217,18 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     fireEvent.click(await newSessionItem())
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-new'))
     await waitFor(() => expect(store.getState().chat.revealRequest).toMatchObject({ target: 'slot-new', openFoldersOnly: true, folderId: 'f-child' }))
+  })
+
+  it("asks for the person's Ultra Mode default (crewModeDefault), keeping the folder's agent and project", async () => {
+    renderChat({ key: 'slot-0', title: 'Session 0', folder_id: 'f-child' })
+    await waitFor(() => expect(api.chatFolders).toHaveBeenCalled())
+    await act(async () => {})
+    const item = await newSessionItem()
+    await waitFor(() => expect(item.textContent).toContain('New chat in Child'))
+    createSlotArgs.length = 0
+    fireEvent.click(item)
+    await waitFor(() => expect(createSlotArgs).toHaveLength(1))
+    expect(createSlotArgs[0]).toMatchObject({ crewModeDefault: true, agent: 'folder-agent', folder_id: 'f-child', project: '/work/repo' })
   })
 
   it('an unfiled session creates an unfiled, agent-less sibling (the server stamps the default custom agent)', async () => {

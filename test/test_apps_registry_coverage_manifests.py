@@ -15,12 +15,21 @@ import pytest
 from apps_registry_coverage_helpers import _explicit_registry_execution_admission  # noqa: F401
 from apps_registry_coverage_helpers import cache_dir_fixture  # noqa: F401
 from apps_registry_coverage_helpers import _fake_sandbox, _FakeProc
+from stray_line_helpers import too_deep_to_decode
 
 from conftest import requires_symlinks
 from kiro_crew.apps import registry
 from kiro_crew.apps.registry_pipeline import manifests as manifests_mod
 
 # Manifest cache
+
+
+def _no_recursion(fn, *args):
+    """*fn*'s result; a ``RecursionError`` fails the test instead of erroring it."""
+    try:
+        return fn(*args)
+    except RecursionError:
+        pytest.fail(f"{fn.__name__} raised RecursionError on a nested body")
 
 
 class TestManifestCache:
@@ -45,6 +54,20 @@ class TestManifestCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("not json", encoding="utf-8")
         assert registry._read_manifest_cache(self._DEMO) is None
+
+    def test_cache_nested_past_the_decoder_stack_reads_none(self, cache_dir):
+        """Nesting deep enough to exhaust the JSON decoder's stack is one more
+        malformed body: it reads as absent instead of raising RecursionError."""
+        path = registry._manifest_cache_path(self._DEMO)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(too_deep_to_decode(), encoding="utf-8")
+        assert _no_recursion(registry._read_manifest_cache, self._DEMO) is None
+
+    def test_external_cache_nested_past_the_decoder_stack_reads_none(self, cache_dir):
+        path = registry._external_registry_cache_path("mine")
+        assert path.parent == cache_dir
+        path.write_text(too_deep_to_decode(), encoding="utf-8")
+        assert _no_recursion(registry._read_external_registry_cache, "mine") is None
 
     def test_write_failure_is_swallowed(self, cache_dir, monkeypatch):
         def _boom(path, data):

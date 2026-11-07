@@ -77,6 +77,11 @@ interface NotificationsState {
    *  merge drops a row withdrawn after its request began, so a stale snapshot
    *  cannot bring it back. Bounded to the newest `NOTIFICATIONS_RING_CAP` entries. */
   withdrawnAtByTs?: Record<string, number>
+  /** True once a fetch has landed in this tab. Until then `items` holds only
+   *  live arrivals, not the notes the server already has, so it cannot say
+   *  which of a chat's cron notes are unread (`useAckCronNotesInView`, #24080).
+   *  A failed fetch leaves it as it was. */
+  loaded?: boolean
 }
 
 /** Why a listed approval row can no longer be decided (`retiredApprovals`). */
@@ -431,19 +436,23 @@ const notificationsSlice = createSlice({
   reducers: {
     addNotification(state, action: PayloadAction<Notification>) {
       const note = action.payload
-      if (!state.items.some(n => n.ts === note.ts)) {
+      // Read the rows as plain objects, not through the draft: touching each
+      // row through the draft makes a proxy per row on every pass, which made a
+      // burst that fills the ring cost the cap squared in proxies.
+      const prior = (isDraft(state.items) ? original(state.items) : undefined) ?? state.items
+      if (!prior.some(n => n.ts === note.ts)) {
+        let rows = prior
         // The bell holds one note per (source, key), as the backend does: a
         // keyed note replaces the one this view already shows for that key.
         if (note.key) {
           const seq = nextMembershipSeq(state)
-          for (const n of state.items) {
+          for (const n of prior) {
             if (n.key === note.key && n.source === note.source) markWithdrawn(state, n.ts, seq)
           }
-          state.items = state.items.filter(n => !(n.key === note.key && n.source === note.source))
+          rows = prior.filter(n => !(n.key === note.key && n.source === note.source))
           ;(state.keyedAtByTs ??= {})[note.ts] = seq
         }
-        state.items.push(note)
-        state.items = capRows(state, state.items)
+        state.items = capRows(state, [...rows, note])
         pruneAckStamps(state)
         pruneKeyedStamps(state)
       }
@@ -567,6 +576,8 @@ const notificationsSlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(fetchNotifications.fulfilled, (state, action) => {
+        // Also when stale: the clear that made it stale emptied the server's list too.
+        state.loaded = true
         // Stale response: a clear landed while this fetch was in flight, so
         // its payload predates the clear. Applying it would restore the rows
         // and the badge with them.

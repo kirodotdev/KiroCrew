@@ -79,6 +79,31 @@ describe('McpTab sign-in rows on the KAS harness (#24693)', () => {
     expect(screen.getAllByRole('button', { name: 'Sign in again' })).toHaveLength(2)
   })
 
+  it('a Crew-held row reads signed in, with no Sign in again and no KAS line', async () => {
+    // connections.crew_oauth on KAS: Crew holds the grant and serves KAS chats.
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    mockApi.mcpServers.mockResolvedValue([
+      userAdded('github', { authGrantPresent: true, authCrewHeld: true }),
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Signed in')).toBeInTheDocument())
+    expect(screen.queryByText('Sign-in required')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).toBeNull()
+    expect(screen.queryByTestId('mcp-sign-in-kas-chat-note')).toBeNull()
+  })
+
+  it('a Crew-held row not yet signed in offers Sign in without the KAS line', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    mockApi.mcpServers.mockResolvedValue([
+      userAdded('github', { authGrantPresent: false, authCrewHeld: true }),
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument())
+    expect(screen.queryByTestId('mcp-sign-in-kas-chat-note')).toBeNull()
+  })
+
   it('shows no line on the kiro-cli harness', async () => {
     mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' } })
     renderTab()

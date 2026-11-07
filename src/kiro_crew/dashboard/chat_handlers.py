@@ -35,6 +35,10 @@ from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # n
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
+from kiro_crew.approval_mode_policy import (  # noqa: F401
+    KNOWN_APPROVAL_MODES,
+    session_mode_permitted,
+)
 from kiro_crew.apps import seams as _app_seams
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
 from kiro_crew.config.fields import _coerce_bool  # noqa: F401 -- read by chat_api.slot_repair
@@ -294,6 +298,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _close_slot,
     _drain_file_changes_flush,
     _emit_archived_rows,
+    _hand_off_cards_when_the_turn_ends,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
@@ -317,11 +322,17 @@ from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     switch_slot_model,
 )
 from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
+    _UNSET,
+    NoteDelivery,
+    SourceCheckFailed,
     _discard_held_note,
+    _flush_held_notes_if_idle,
     _note_already_durable,
     _note_delivered_live,
     _persist_deferred_note_hold,
+    _same_chat_replacement,
     api_chat_slot_note,
+    deliver_note,
 )
 from kiro_crew.dashboard.chat_api.slot_repair import (  # noqa: F401
     api_chat_slot_repair_images,
@@ -376,6 +387,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     queue_entry_is_user_origin,
     queue_entry_view,
     queue_for_next_turn,
+    queue_view,
     queued_text_for_display,
     quote_meta,
     start_queue_persist,
@@ -402,6 +414,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
     _restore_dismissed_source_links,
+    _restore_fork_lineage,
     _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
@@ -483,6 +496,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.chat_utils import (  # noqa: F401
+    transcripts_share_file,
+)
 from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
     resolve_default_session_folder,
 )
@@ -511,12 +527,16 @@ from kiro_crew.dashboard.session_folders import (  # noqa: F401
     create_session_folder,
 )
 from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
+    AWAITING_DURABLE_WRITE,
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
     MAX_SOURCE_LABEL_LEN,
+    MERGED_FROM_META_KEY,
     SOURCE_LABEL_CTRL_RE,
     DeferredHoldFull,
+    DeferredHoldOutcome,
     DeferredHoldRebound,
+    NoteEvidence,
     note_hold_durable,
     persist_deferred_notes_sync,
 )
@@ -539,6 +559,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     transcript_acquisition_reason,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: F401
+    autocompact_commits,
     tighten_line_for_appends,
 )
 from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: F401
@@ -557,6 +578,7 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
 from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
     RESTORED_QUEUE_KEY,
     RESTORED_SEND_CHOSEN_KEY,
+    refused_durable_ids,
     warn_if_not_durable,
 )
 from kiro_crew.dashboard.slot_registry import (  # noqa: F401
@@ -569,6 +591,7 @@ from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     select_idle_slot_keys,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONTEXT_PER_SOURCE,
     _MAX_DISMISSED_SOURCE_LINKS,
     TURN_OPENING_INJECT_KINDS,
     DashboardState,
@@ -600,6 +623,8 @@ from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
     ConversationLog,
+    TranscriptBusy,
+    TranscriptWithheld,
     carry_provenance,
     is_incognito_transcript,
     transcript_stems,
@@ -684,7 +709,8 @@ _SESSION_RELOAD_NOTICE = (
 
 
 #: Row-meta keys a REQUEST may never supply, because the gateway mints them and a
-#: surface reads them as the gateway's own claim. ``decisions_strip`` is a Jev
+#: surface reads them as the gateway's own claim. Merge-card identity and note
+#: retirement fields are server-minted for the same reason. ``decisions_strip`` is a Jev
 #: decision receipt with a verdict control attached (``decisions/points/
 #: message_steer.py``, ``website/src/pages/chat/SteerDecisionLine.tsx``), so a
 #: caller-supplied one would render a decision nobody made. ``HUMAN_TURN_META_KEY``
@@ -714,6 +740,9 @@ RESERVED_ROW_META_KEYS = frozenset(
         "slack_request",
         CHAT_BANNER_META_KEY,
         "relay",
+        MERGED_FROM_META_KEY,
+        "noteId",
+        "noteRowFor",
     }
 )
 
@@ -1295,7 +1324,6 @@ class ResumeOutcome(NamedTuple):
 MAX_COLOR_INDEX = 20
 
 
-_MAX_CONTEXT_PER_SOURCE = 10
 _MAX_CONTEXT_CONTENT = 40000
 # Default expiry for a note's context half: if the user never sends a follow-up
 # within 24h, the stale entry is dropped at drain rather than attaching itself to
@@ -1307,9 +1335,6 @@ _NOTE_CONTEXT_MAX_AGE = 86400
 # read back from disk), so the value lives in slot_buffers.
 _MAX_DEFERRED_NOTES = MAX_DEFERRED_NOTES
 
-# Distinguishes "key absent" from an explicit JSON null, which `body.get("maxAge")`
-# alone cannot: both yield None, so the two cannot mean different things without it.
-_UNSET = object()
 
 # Source label bounds. The label is interpolated into the
 # ``[Background context from "{source}"]`` prompt frame at drain, so disallow

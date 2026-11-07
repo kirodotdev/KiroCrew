@@ -10,7 +10,7 @@ import { useSimplifiedToolNames } from '../../../hooks/useSimplifiedToolNames'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { selectSlotsWithLiveLastTs } from '../../../store/slotLastTs'
 import { resumeFromHistory, switchSlot } from '../../../store/chatSlice'
-import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../../lib/createdChatView'
 import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { focusComposerForOpenedSession, focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
@@ -361,10 +361,10 @@ export function useRecentsProvider(): ResourceProvider {
               // Await the create BEFORE navigating: landing on /chat with no
               // active slot triggers ChatPage's auto-create, which would race
               // this thunk into a duplicate session. A failed create, or one
-              // the user moved away from, leaves the user where they are.
-              void createChatForView(dispatch, store.getState, { defaultFolder: true })
-                .then((view) => { showCreatedChat(view, askingNavigate) })
-                .catch(() => {})
+              // the user moved away from, leaves the user where they are; a
+              // failure goes to the shell notice, as the palette has closed.
+              void createChatForView(dispatch, store.getState, { defaultFolder: true, crewModeDefault: true })
+                .then((view) => { showCreatedChat(view, askingNavigate) }, (err) => reportCreateFailure(dispatch, err))
             },
           })
         }

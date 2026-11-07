@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         SUBAGENT_COMPLETION_PREFIX,
         Any,
         GatewayOrchestrator,
+        HostSpawnDecision,
         LLMEvent,
         SubagentDelivery,
         SubagentEventCoalescer,
@@ -357,14 +358,19 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
     # unreachable behaviour. It is a separate closure because the one above is
     # also wired as ``on_tool_approval``: a mid-run tool prompt has no
     # terminal path that could report the refusal, so raising there would turn
-    # a recoverable park into a lost turn.
+    # a recoverable park into a lost turn. It also reports the answers it gave
+    # with nobody asked, keyed by the request's unique ``spawn:<id>``.
+    _host_decided: dict[str, str] = {}
     _approve_spawn_gate = self._interactive_approval(
-        "subagent", slot_resolver=_spawn_slot_resolver, raise_when_unreachable=True
+        "subagent",
+        slot_resolver=_spawn_slot_resolver,
+        raise_when_unreachable=True,
+        on_host_decision=_host_decided.__setitem__,
     )
 
     async def _spawn_approve(
         request_id: str, description: str, parent_session_key: str = ""
-    ) -> bool:
+    ) -> bool | HostSpawnDecision:
         # Channel-side delivery FIRST. A spawn parented on
         # a live channel conversation (Telegram, …) is best answered where the
         # human already is, with that channel's own Approve/Deny/Trust
@@ -377,7 +383,9 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         if channel_decision is not None:
             return channel_decision
         event = LLMEvent(kind="permission_request", request_id=request_id, title=description)
-        return await _approve_spawn_gate(event, parent_session_key)
+        approved = await _approve_spawn_gate(event, parent_session_key)
+        cause = _host_decided.pop(request_id, None)
+        return approved if cause is None else HostSpawnDecision(approved, cause)
 
     # Debounced slots push: keep slots[].subagents_running and
     # slots[].subagents_queued live for every
@@ -429,6 +437,17 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             return
         slot_name = _event_slot(info.parent_session_key)
         base = {"id": info.id, "slot": slot_name}
+        # A nested run's cards draw in the tab its spawn tree started from. Its
+        # parent's queued depth and wave start stay on the parent's own slot, the
+        # one the slot list sums and ``batch_finished`` names. (Type guard: test
+        # doubles pass MagicMock infos.)
+        _root = getattr(info, "root_session_key", "")
+        if (
+            isinstance(_root, str)
+            and _root
+            and etype not in ("subagent_queued", "spawn_batch_started")
+        ):
+            base["slot"] = _event_slot(_root)
         # Batch identity rides every frame when present so the UI can
         # group/aggregate a wave without a lookup table. (Type guard:
         # test doubles pass MagicMock infos.)

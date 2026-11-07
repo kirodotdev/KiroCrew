@@ -172,6 +172,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.artifactDeployPage.remove_profile_confirm',
   'pages.artifactsPage.remove_artifact_confirm',
   'pages.chatSidebar.delete_folder_confirm',
+  'components.themeEditor.delete_theme_confirm', // theme-name operand, quoted per locale
   'hooks.useSessionActions.close_confirm.reason_setting', // {{setting}} = the settings toggle's label, quoted per locale
   'pages.chatSidebar.unlink_source_link_confirm', // {{label}} = PR/Issue chip label, glyph-quoted per locale (UX #8072)
   'pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', // cancel-branch body, bare {{name}}/{{staged}} #5725
@@ -256,6 +257,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     'not a confirmation prompt: a non-interactive outcome notice stating whether the named '
     + 'mate was created; it offers no destructive action and the name identifies the '
     + 'uncertain result that the user must check in the roster',
+  'pages.schedulePage.late_save_unconfirmed':
+    'not a confirmation prompt: a non-interactive notice that a save sent from the closed '
+    + 'job dialog was never confirmed; it offers no destructive action',
   'apps.awsControl.console.library_remove_confirm_slug':
     'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
     + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '

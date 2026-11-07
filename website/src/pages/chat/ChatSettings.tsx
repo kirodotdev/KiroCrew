@@ -384,8 +384,12 @@ export interface DashboardConfig {
   restore_window_minutes: number
   merge_queued_messages: boolean
   default_memory_mode: MemoryMode
+  /** New chats start in Ultra Mode where it is offered (`dashboard.new_chat_crew_mode`). */
+  new_chat_crew_mode?: boolean
   widget_density: 'more' | 'less'
   verbosity: 'default' | 'concise' | 'answer_only'
+  /** Language code the agent replies in; '' = the language of the user's message. */
+  preferred_language?: string
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean

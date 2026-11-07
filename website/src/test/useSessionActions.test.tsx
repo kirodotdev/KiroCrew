@@ -42,7 +42,7 @@ const cfgMock = vi.hoisted(() => ({ loadChatConfig: vi.fn(() => ({ confirmCloseS
 vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 
 import { store } from '../store'
-import { ApiError } from '../api/apiError'
+import { ApiError, statusErrText } from '../api/apiError'
 import { sseSlots, sseSlotPatch, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
 import { useSessionActions, pinMutationKeysInFlight } from '../hooks/useSessionActions'
 import { recordError, __resetErrorJournalForTests } from '../utils/errorReport'
@@ -463,6 +463,22 @@ describe('useSessionActions', () => {
     act(() => a.current.duplicate(SLOT))
     await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
     expect(alertSpy.mock.calls[0][0]).toBe("Couldn't duplicate this session. Reason: Rate limited. Try again in a moment.")
+  })
+
+  it('duplicate says "Try again" once when the reason is a proxy 502 page', async () => {
+    // The transport names a proxy's HTML 502 page as a temporary outage; the
+    // subject template already adds the retry advice, so the reason must not.
+    const page = '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>'
+    mocks.forkChatSlot.mockRejectedValueOnce(refusal(502, page, statusErrText(502, page)))
+    const alertSpy = vi.fn()
+    vi.stubGlobal('alert', alertSpy)
+    seed()
+    const a = renderActions()
+    act(() => a.current.duplicate(SLOT))
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+    expect(alertSpy.mock.calls[0][0]).toBe(
+      "Couldn't duplicate this session. Reason: The server is temporarily unavailable (HTTP 502). Try again in a moment.",
+    )
   })
 
   it('duplicate wraps the server reason in the subject template on a non-429 ApiError', async () => {

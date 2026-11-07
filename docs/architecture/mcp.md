@@ -89,16 +89,19 @@ kirocrew`). Onto that base:
    instead of losing to the value the first rebuild froze. Every other key on the
    entry is the user's and survives by omission, `autoApprove` included.
    Reconciling retires the name, so a lower-priority scope cannot reconcile it
-   again. `command`/`url` and `headers` are NOT reconciled — see the fallback's
-   as-a-unit rule below. `args` and `env` ARE, but only onto an entry whose
-   command names the same program the source declares (the discovery module's
-   `_commands_diverged`, which reads the entry's resolved `/…/bin/npx` as the
-   source's bare `npx`): the two are written for one program, so a source that
-   kept its command and added an `env` variable or an argument later must reach
-   the server it already runs, while a source that switched programs keeps the
-   entry's old command/args/env pairing whole rather than lending its new env to
-   the old command. The unit is projected, not merged: a key the source dropped
-   is removed.
+   again. `url` and `headers` are NOT reconciled — see the fallback's as-a-unit
+   rule below. A stdio entry's `command`, `args` and `env` ARE, as one unit: the
+   three are written for one program. A source naming the program the entry
+   already runs (the discovery module's `_commands_diverged`, which reads the
+   entry's resolved `/…/bin/npx` as the source's bare `npx`) keeps the resolved
+   command and hands over its `args` and `env`, so a variable added later reaches
+   the server. A source that switched programs has its command written too, and
+   the unit it replaced becomes the LAST resolution candidate: a new command that
+   does not resolve on this host keeps the old command with its own `args`/`env`
+   and logs a warning, instead of dropping the server. Two kinds of entry are not
+   switched: one carrying a provenance record (an agent-only declaration), and one
+   whose command the `~/.kiro/crew/mcp.json` store declares, which step 4 writes as
+   before. The unit is projected, not merged: a key the source dropped is removed.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
@@ -115,7 +118,8 @@ overwritten by a stale global entry.
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
 same server's spec from the other sources in priority order (kirocrew, then
-kiro-global, then provider-global) before dropping it. When it falls back to a
+kiro-global, then provider-global, then the unit a switched source replaced in
+step 2) before dropping it. When it falls back to a
 different source it adopts that source's `command`, `args` and `env` **as a
 unit**, so one source's command is never paired with another's arguments.
 Resolution, the dashboard probe, and the `env.PATH` written into the agent
@@ -663,7 +667,14 @@ Probes run from `POST /api/mcp/probe`:
   `authChallenge`), and it asks both runtimes' grant stores whether they hold a
   grant for the url to set `authGrantPresent`: kiro-cli's cache (a stat of its
   paired grant artifacts) and the KAS grant vault (whether an entry name is
-  listed; see below). Three wordings follow, one per answer the pair supports:
+  listed; see below). A server whose sign-in Crew holds (`crew_oauth.owns`:
+  `connections.crew_oauth` on KAS) is the exception: `authGrantPresent` is
+  Crew's vault (`crew_oauth.holds_grant`) and the row carries `authCrewHeld`,
+  so the table drops Sign in again and the KAS caveat, both false there because
+  Crew serves KAS chats through its proxy. A cached Crew answer is not served
+  once custody ends (flag off, or chats leave KAS): the row reads Not verified
+  until the next probe. Three wordings follow, one per answer
+  the pair supports:
 
   | Evidence | Badge | Why |
   |---|---|---|
@@ -1335,7 +1346,10 @@ each stub's argv as `--read-limit`, and the stub resolves its ceiling as
 default. Because the value rides the overlay, `read_buffer_limit` is an input to the
 rewrite fingerprint, so changing the key regenerates the overlays.
 `test_mcp_gateway_stub_import_budget.py` pins the module set a running stub holds,
-which is what keeps the config package out of it. `socket_path`, `overlay_dir`,
+which is what keeps the config package out of it. The Connections page's stdio
+discovery probe calls `read_limits.resolve_read_buffer_limit()` each time it spawns
+a server, so a server whose `tools/list` the gateway reads does not probe as an
+error. `socket_path`, `overlay_dir`,
 `idle_timeout_secs`, `max_backends`, `prewarm_count`, `stub_servers`,
 `poolable_servers`, `stub_overrides`, `pool_identity_env`,
 `forward_declared_env`, `spawn_concurrency_initial`, `spawn_concurrency_min`,
@@ -5600,8 +5614,8 @@ the same identity installed: `written` is True only when `respond()` reports the
 whole frame written to the client's own pipe, and never for a pooled backend,
 whose frame lands in the broker. `spawn_sub_agents` marks the children its reply
 carries collected only there, on True -- never in its collect step, in
-`on_settled`, or for an abandonment reply. For every parent that is not
-dashboard-born that mark is held only under the attempt that spawned the child,
+`on_settled`, or for an abandonment reply. For every parent that mark is held
+only under the attempt that spawned the child,
 the token `(key, task, epoch)` opened at the parent tool's spawn, done read or
 landing note and ended by `settle_turn` or `release`, and only an attempt that
 landed confirms it (`kiro_crew.parent_turns`). The spawn names the attempt that
@@ -5705,16 +5719,21 @@ asked, and would at best drop the frame as unattributable.
 On an identity-capable server, the upstream release of a caller's subscription
 to a URI is held while another stub of that caller is routed for the URI, or
 while a same-caller subscribe for it is in flight
-(`Backend._hold_identity_release`), whether or not anything was cancelled. The
-unsubscribing stub is answered locally, and with no such stub routed the first
-same-caller subscribe in flight inherits the release
-(`_PendingRequest.release_owed`). A grant that routes a stub discharges it,
-because the caller's one upstream subscription now serves that stub, whose own
-departure releases it. A refusal, an unknown verdict or a grant that routes no
-stub has the gateway send it as that caller, unless the rule still holds.
-When the unsubscribing stub was the last one routed for the URI, the URI is
-orphan-marked while the release waits, as detach does, so an update the
-server sends for the still-live subscription is dropped without a hazard.
+(`Backend._hold_identity_release`), whether or not anything was cancelled.
+This decides the release that falls due on a stub's final unsubscribe
+(answered locally when held), its detach, a warm-pool claim's eviction
+(`evict_stub_subscriptions`), and the release sentinel's grant of a subscribe
+no stub is left to receive. With no such stub routed the first same-caller
+subscribe in flight inherits the release (`_PendingRequest.release_owed`). A
+grant that routes a stub discharges it, because the caller's one upstream
+subscription now serves that stub, whose own departure releases it. A refusal,
+an unknown verdict or a grant that routes no stub has the gateway send it as
+that caller, unless the rule still holds. The rule is per caller, so a stub of
+another caller routed for the URI does not hold the release; a sentinel grant
+without caller identity, or for a subscribe with no caller, is released only
+when no stub is routed for the URI. While a release is held and no stub is
+routed for the URI, an update for that URI is dropped without a hazard,
+whichever caller's stub left last.
 
 ### Checklist for a new tool
 

@@ -4,7 +4,7 @@ import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { computeTitleBandDragGaps, observeDocumentLayout, observeHeaderLayout, type DragGap } from '../../lib/dragGaps'
 import { isEmbeddedPane } from '../../lib/embedded'
-import { isMacElectron } from '../../lib/electron'
+import { isMacElectron, isWinElectron, WIN_CAPTION_OVERLAY_WIDTH } from '../../lib/electron'
 import { setNativeFocusChrome, subscribeNativeFocusModeToggle } from '../platform/electronBridge'
 
 /**
@@ -207,7 +207,7 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
     }
   }, [focusActive, topChromeShown])
   const focusChromeVisible = useFocusChromeVisible()
-  // Control-free spans of the LOCAL header's band, for the macOS drag strips
+  // Control-free spans of the LOCAL header's band, for the macOS and Windows drag strips
   // `App.tsx` renders — the same geometry a remote pane relays via mc-drag-gaps, computed
   // directly since the local header lives in this document. Kept whenever the
   // header is on screen: docked, and peeked in focus mode (the slide is a
@@ -226,14 +226,19 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
   const headerOnScreen = !focusActive || topChromeShown
   const [localHeaderDragGaps, setLocalHeaderDragGaps] = useState<DragGap[]>([])
   useEffect(() => {
-    if (!(isMacElectron && headerOnScreen)) { setLocalHeaderDragGaps([]); return }
+    if (!((isMacElectron || isWinElectron) && headerOnScreen)) { setLocalHeaderDragGaps([]); return }
     const header = topPeekSurface.current
     if (!header) return
     let last = ''
     const measure = () => {
       // Peeked in focus mode the opaque header overlays the content column, so
       // controls under it cannot be clicked and must not cut its strips.
-      const gaps = computeTitleBandDragGaps(header, window.innerWidth, document, focusActive)
+      // On Windows the band stops short of the caption buttons. Their width is
+      // fixed in DIP, so the main process pushes it in CSS px for the current
+      // zoom; a fixed 138 would reach over Minimize below 100% zoom.
+      const reserve = parseFloat(document.documentElement.style.getPropertyValue('--mc-win-drag-reserve')) || WIN_CAPTION_OVERLAY_WIDTH
+      const bandWidth = isWinElectron ? window.innerWidth - reserve : window.innerWidth
+      const gaps = computeTitleBandDragGaps(header, bandWidth, document, focusActive)
       const json = JSON.stringify(gaps)
       if (json === last) return
       last = json

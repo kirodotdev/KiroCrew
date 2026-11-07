@@ -307,6 +307,10 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.bridges import (  # noqa: F401
+        _prune_stale_app_resources,
+        _registration_source,
+    )
     from kiro_crew.apps.point_grants import (  # noqa: F401
         point_grant_families,
     )
@@ -345,6 +349,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
+        _reinstall_from_registry,
         _restore_app_after_failed_update,
         _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
@@ -398,7 +403,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_CLEANUP_ATTEMPTS,
         _CRON_CLEANUP_BACKOFF_SECS,
         _deregister_crons_with_retry,
+        _InProcessRequest,
         _run_uninstall,
+        uninstall_app_in_process,
     )
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,

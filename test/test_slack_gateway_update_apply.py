@@ -11,6 +11,7 @@ pip install, and the console-script check and repair. The reset path is
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import sys
 import threading
@@ -31,9 +32,10 @@ from slack_gateway_helpers import (
     _mock_sessions,
 )
 
+from kiro_crew import platform_compat
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import GatewayOrchestrator
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _check_for_updates
@@ -836,6 +838,81 @@ class TestAutoApplyUpdateGitPath:
         # it from the voluntary no-diff path, which does not refresh.
         assert ds._update_progress is None
         assert {"_type": "refresh", "kinds": "update_available"} in sent
+
+    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX process groups")
+    @pytest.mark.parametrize("step", ["reset", "update", "pip"])
+    @pytest.mark.asyncio
+    async def test_a_cancel_while_an_install_child_starts_kills_its_group(
+        self, step, tmp_path, monkeypatch
+    ):
+        """A cancel that lands while the git reset, the kiro-cli update or the core-dep
+        repair is still starting kills that child's whole group.
+
+        asyncio forks the child before it connects the pipes, and a cancel there
+        SIGKILLs the leader alone, so the grandchild below would outlive the update.
+        """
+        from asyncio import base_subprocess
+
+        released = asyncio.Event()
+        connect_pipes = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+        async def _held_connect_pipes(transport, waiter):
+            await released.wait()
+            await connect_pipes(transport, waiter)
+
+        monkeypatch.setattr(
+            base_subprocess.BaseSubprocessTransport, "_connect_pipes", _held_connect_pipes
+        )
+        real_exec = asyncio.create_subprocess_exec
+        git_fake = _git_exec_fake()
+        leader = tmp_path / "leader"
+        # The grandchild is forked before the leader writes its pid, so the
+        # group already has a second member when the test cancels; it outlives
+        # every wait below, so only the group kill can empty the group.
+        script = 'sleep 600 & echo $$ > "$1.tmp" && mv "$1.tmp" "$1"; wait'
+
+        async def _exec(*args, **kwargs):
+            if step not in args:
+                return await git_fake(*args, **kwargs)
+            kwargs.setdefault("cwd", str(tmp_path))
+            return await real_exec("/bin/sh", "-c", script, "sh", str(leader), **kwargs)
+
+        def _leader_pgid() -> int | None:
+            return int(leader.read_text(encoding="utf-8")) if leader.is_file() else None
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}),
+            patch("asyncio.create_subprocess_exec", side_effect=_exec),
+            # A failed dependency sync is what reaches the core-dep repair.
+            patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=1),
+            patch("kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock),
+            patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/usr/bin/kiro-cli"),
+            patch("os.execv"),
+        ):
+            task = asyncio.create_task(orch._auto_apply_update())
+            try:
+                pgid = await async_wait_until(
+                    _leader_pgid, off_loop=True, describe=lambda: f"the {step} child never started"
+                )
+            finally:
+                task.cancel()
+                released.set()
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    await finished(task, "the cancelled update")
+                await async_wait_until(
+                    lambda: not platform_compat.pgroup_exists(pgid),
+                    off_loop=True,
+                    describe=lambda: f"the {step} child's group outlived the cancel",
+                )
+            finally:
+                # Only a group that still has a member is ours: an emptied pgid can be reused.
+                if platform_compat.pgroup_exists(pgid):
+                    with contextlib.suppress(OSError):
+                        platform_compat.kill_process_group(pgid, platform_compat.SIGKILL)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

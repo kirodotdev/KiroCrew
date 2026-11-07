@@ -165,6 +165,13 @@
     "memberChanged_one": "{{name}}: {{count}} change listed below.",
     "memberChanged_other": "{{name}}: {{count}} changes listed below."
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "Packages"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "The server accepted the request, but its reply could not be read.",
@@ -177,9 +184,11 @@
       "proxy_challenge_reload": "Reload this browser tab — if a sign-in page appears, your access proxy’s session expired. If not, a proxy or firewall in front of this dashboard refused the request; check the proxy’s logs, or retry later.",
       "proxy_challenge_framed": "Open {{origin}} in a new tab — if a sign-in page appears, your access proxy’s session expired. Signing in inside this panel won’t work. Sign in there, then reload this page.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
+      "server_temporarily_unavailable_http_status": "The server is temporarily unavailable (HTTP {{status}})",
       "too_many_open_sessions_http_429_close_old": "Too many sessions are open. Close a few old sessions (they stay in History and reopen anytime), then try again.",
       "subagents_still_running_or_queued": "Still running or queued: {{list}}.",
       "subagents_could_not_be_checked": "Some sub-agents could not be checked.",
+      "file_pending_review": "This settings file was changed outside {{productName}}, so this save was not made. Review the change in Settings → Security first (Apply or Discard), then try again.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Run kirocrew token in a terminal, then paste the sign-in URL below and press Enter.",
       "session_expired": "Session expired.",
@@ -279,6 +288,9 @@
       "copy_failed": "Copy failed",
       "show_less": "Show less",
       "show_more": "Show more"
+    },
+    "chatPanel": {
+      "session_gone": "This session no longer exists. Open or start a session from the app."
     }
   },
   "apps": {
@@ -2239,7 +2251,7 @@
       "stop_the_current_response_to_switch_agents": "Stop the current response to switch agents",
       "switch_not_confirmed": "Switch not confirmed yet — it will apply if the connection recovers.",
       "dictation_added": "Dictation added to your message",
-      "mic_in_use_elsewhere": "Microphone in use in another chat",
+      "mic_in_use_elsewhere": "Microphone in use elsewhere",
       "mic_in_use_in": "Microphone in use in “{{chat}}”",
       "type_label": "Type instead",
       "that_approval_expired_the_turn_it_belonged_to_is": "This approval request expired because the associated turn is no longer awaiting approval.",
@@ -3868,7 +3880,8 @@
       "lazy_page_load_failed": "This page couldn't load. Check the connection to the gateway, then try again."
     },
     "errorNotice": {
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "review_pending_change": "Review the change"
     },
     "reportProblemModal": {
       "report_a_problem": "Report a Problem",
@@ -4886,6 +4899,7 @@
       "cycle_model": "Cycle model",
       "cycle_reasoning_effort": "Cycle reasoning effort",
       "focus_pending_approval": "Focus pending approval",
+      "reject_pending_approval": "Refuse the waiting tool call (the agent can ask again)",
       "focus_text_input": "Focus text input",
       "edit_last_message": "Edit last message",
       "indent_list_line": "Indent list line",
@@ -5335,6 +5349,7 @@
       "promote_slug_taken_open": "Open {{slug}}",
       "promote_slug_taken_open_older": "Open older {{taken}}",
       "published": "Published ({{visibility}})",
+      "published_on_provider": "Published to {{provider}} ({{visibility}})",
       "published_rolling_out": "Published — still rolling out",
       "published_distribution_disabled": "Published — delivery network disabled",
       "published_notice_generic": "Published — link may not work yet",
@@ -6281,7 +6296,7 @@
         "annotation_note": "flag only, did not allow or block",
         "confidence_title": "Jev's confidence in its own answer, from 0 to 1",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "Feedback only",
         "rate_right_jev": "Jev read the risk right",
         "rate_wrong_jev": "Jev read the risk wrong",
         "tier_caution": "worth a look",
@@ -6422,6 +6437,12 @@
       "fork_failed_error": "Fork failed: {{error}}",
       "hide_sessions": "Hide sessions",
       "hide_sessions_sidebar": "Hide sessions sidebar",
+      "keep_this_chat": "Keep this chat",
+      "keep_this_chat_confirm_title": "Keep this chat?",
+      "keep_this_chat_confirm_body": "The whole conversation is copied into a new, regular session. The new copy can save to memory and appears in history and summaries. You'll be taken to it.\n\nThe original stays private and unchanged.",
+      "keep_this_chat_confirm_body_temporary": "The whole conversation is copied into a new, regular session. The new copy can save to memory and appears in history and summaries. You'll be taken to it.\n\nThe original stays private and unchanged.\n\nReplies in this chat ran without your stored memory, so they may lack context a regular session would have.",
+      "keep_this_chat_failed": "Couldn't keep this chat. Try again.",
+      "keep_this_chat_too_long": "This chat is too long to keep. The original stays in history.",
       "knowledge_item_one": "{{count}} knowledge item",
       "knowledge_item_other": "{{count}} knowledge items",
       "mcp_session_also_started": "Also started in this session: {{names}}",
@@ -6917,6 +6938,8 @@
       "error_title": "Could not read this board"
     },
     "devFleetPage": {
+      "pod_task_chip_one": "{{n}} task",
+      "pod_task_chip_other": "{{n}} tasks",
       "applies_the_last_pull_build_the_dashboard_will_b": "Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.",
       "building": "Building…",
       "build_finished_restarting_gateway": "Build finished — restarting the gateway…",
@@ -7355,6 +7378,10 @@
       "installed_apps": "Installed apps"
     },
     "logsPage": {
+      "level_debug": "Debug",
+      "level_info": "Info",
+      "level_warning": "Warning",
+      "level_error": "Error",
       "latest_first": "Latest: first",
       "latest_last": "Latest: last",
       "tail_off": "Tail: off",
@@ -7369,12 +7396,12 @@
         "col_evidence": "Evidence",
         "col_running_as": "Running as",
         "connections_link": "Connections",
-        "how_measured": "A server reads as not measured until {{productName}} probes it. The button below measures every unmeasured server at once; the MCP server list under {{link}} also probes a couple at a time when it is refreshed.",
+        "how_measured": "A server reads as not measured until {{productName}} probes it, and most servers also need a measurement under two different callers before their verdict is complete. The button below runs both for every server in the MCP server list under {{link}}. It does not count a server switched off or no longer probed there, one whose env names a vault secret, or one only another agent declares.",
         "lede": "What {{productName}} managed to observe about each server, and how that lines up with what the server is running as right now. Nothing on this view changes anything — the switches live under Per-server sharing.",
         "measure_failed": "The measurement pass stopped early; see the gateway log",
         "measure_finished_one": "Measured {{count}} server",
         "measure_finished_other": "Measured {{count}} servers",
-        "measure_none_left": "Every server has been measured",
+        "measure_none_left": "Nothing left this button can measure",
         "measure_running": "Measuring, {{done}} of {{total}} done",
         "measure_unmeasured_one": "Measure {{count}} server",
         "measure_unmeasured_other": "Measure {{count}} servers",
@@ -8177,6 +8204,24 @@
       "show_comments": "Show comments"
     },
     "scenes": {
+      "config": {
+        "office_label": "Office",
+        "office_desc": "Classic pixel office",
+        "panda_label": "Panda Den",
+        "panda_desc": "Bamboo forest workspace, all pandas",
+        "neural_label": "Neural Net",
+        "neural_desc": "Constellation map",
+        "wizard_label": "Wizard Tower",
+        "wizard_desc": "Alchemy lab",
+        "underwater_label": "Deep Lab",
+        "underwater_desc": "Underwater station",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA ops center",
+        "serengeti_label": "Watering Hole",
+        "serengeti_desc": "Serengeti savanna with giraffes, warthogs, and elephants",
+        "ghost_label": "Kiro Haunt",
+        "ghost_desc": "Kiro ghosts in hats, glasses, and capes"
+      },
       "ghostScene": {
         "kiro_ghost_haunt_animation": "Kiro ghost haunt animation",
         "kiro_ghost_haunt_text_overlay": "Kiro ghost haunt text overlay",
@@ -8394,9 +8439,9 @@
         "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",
         "automatic_updates_unavailable_translocated": "Automatic updates are unavailable because macOS is running this app from a temporary read-only copy. Move it to your Applications folder and reopen it.",
         "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it.",
-        "download_failed": "Download failed",
+        "download_failed_reason": "Download failed: {{reason}}",
         "download_the_latest_version": "download the latest version",
-        "install_failed": "Couldn’t install the update",
+        "install_failed_reason": "Couldn’t install the update: {{reason}}",
         "install_update_restart_app": "Install Update & Restart App",
         "installing_quiet_note": "Installing — this can take several minutes. {{productName}} will reopen automatically when the update is complete.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
@@ -8507,9 +8552,7 @@
         "feature_previews": "Feature Previews",
         "feature_previews_desc": "Unreleased features and pages. Your choices here are saved on this {{productName}}, so they apply wherever you open the dashboard, in any browser or in the desktop app. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose.",
         "feature_previews_save_denied": "Only the owner of this {{productName}} can change feature previews, so “{{name}}” was switched back.",
-        "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again.",
-        "feature_previews_carry_failed": "“{{name}}” is on in this browser only: it couldn’t be saved on this {{productName}}. Reload the page to try again; it stays on until then.",
-        "feature_previews_carry_denied": "“{{name}}” was turned on in this browser before it could be saved here. Only the owner of this {{productName}} can save it, so it stays on in this browser only."
+        "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again."
       },
       "computerUsePanel": {
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",
@@ -9087,9 +9130,66 @@
         "custom_sound_preview": "Play",
         "custom_sound_choose_where": "Choose where it plays in Per-category sounds",
         "custom_sound_kind_file": "File",
-        "custom_sound_kind_tones": "Tones"
+        "custom_sound_kind_tones": "Tones",
+        "channel_tip_agent": "When an agent sends you a message or alert outside a chat, and for general {{productName}} notices, such as an expired tool approval, an available update, or sessions moved to History.",
+        "channel_tip_approval": "When an agent is stopped until you approve a tool it wants to use.",
+        "channel_tip_cron": "When a scheduled job finishes or fails. If it keeps giving the same result or error, each repeat is still noted here, marked as a repeat.",
+        "channel_tip_heartbeat": "When a heartbeat task (a background task the agent checks on a timer) finishes. Tasks still in progress stay quiet. Also when {{productName}} restarts after it stopped responding.",
+        "channel_tip_hook": "When an outside service calls one of your webhooks and the agent run it starts sends back a result.",
+        "channel_tip_monitor": "When a pull request watch or a repeating check stops: it finished, ran out of time or turns, or is stuck waiting on you.",
+        "channel_tip_resources": "When the computer running {{productName}} runs low on memory, or an agent is stopped for using too much. Critically low memory alerts again every 30 minutes, and you get one note when it recovers.",
+        "channel_tip_safety_override": "When auto-approve runs out while an unattended job, such as a monitoring loop, is still running. That job then waits for approvals nobody is there to give.",
+        "channel_tip_skills": "When {{productName}} drafts a new skill, or a change to one, from your sessions. Nothing changes until you review it.",
+        "channel_tip_subagent": "When a background helper agent finishes, fails, or is cut off by a restart, and no open chat is showing its result. Quiet by default: no sound or banner.",
+        "channel_tip_taskrunner": "When a task run moves forward or needs you: its plan is ready, it starts, retries or re-plans, completes, fails, stalls or times out, or is paused after a restart.",
+        "channel_tip_terminal": "When a terminal tab's shell exits with an error or is killed. The tab closes, so the exit code is kept here.",
+        "channel_tip_member": "When a Bot replies to you in its own chat. Quiet by default: no sound or banner.",
+        "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once.",
+        "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included."
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} was changed outside {{productName}}",
+          "intro": "This edit is not in effect yet. Apply it to start using it, or discard it to put back the version {{productName}} last saved.",
+          "added": "Added {{key}}",
+          "added_value": "Added {{key}}: {{after}}",
+          "added_hidden": "Added {{key}} (value hidden)",
+          "removed": "Removed {{key}}",
+          "removed_value": "Removed {{key}} (was {{before}})",
+          "removed_hidden": "Removed {{key}} (value hidden)",
+          "changed": "Changed {{key}}",
+          "changed_value": "Changed {{key}} from {{before}} to {{after}}",
+          "changed_hidden": "Changed {{key}} (value hidden)",
+          "hint_sandbox_off": "Turns off the process sandbox.",
+          "hint_sandbox_changed": "Changes how strictly agents are sandboxed.",
+          "hint_unsandboxed_exec": "Lets agents run commands outside the sandbox.",
+          "hint_third_party_apps": "Lets third-party apps run.",
+          "hint_auto_approve": "Changes which tools run without asking you.",
+          "hint_agent_env": "Changes the environment variables every agent starts with.",
+          "hint_deny_all_off": "Turns off every built-in command deny rule.",
+          "hint_deny_rules": "Changes which command deny rules apply.",
+          "hint_computer_use_on": "Lets agents control this computer's screen, keyboard and mouse.",
+          "hint_section": "This part of the file holds security settings.",
+          "no_key_changes": "No setting changed. Only the file's layout is different.",
+          "truncated": "More keys changed than are listed here.",
+          "invalid_json": "The edited file is not valid JSON, so it cannot be applied. Fix the file, or discard the edit.",
+          "removed_file": "The file was deleted. The version {{productName}} last saved stays in effect. Discard to put the file back.",
+          "pending_changed": "The file changed again while you were reviewing it. The list now shows the latest edit.",
+          "apply_refused_action": "Fix the file, or discard the edit.",
+          "apply": "Apply",
+          "apply_file": "Apply the edit to {{file}}",
+          "apply_title": "Apply the edit to {{file}}?",
+          "apply_body": "{{productName}} will start using this edit right away. It makes the security changes listed below.",
+          "apply_edit": "Apply edit",
+          "apply_turn_off_sandbox": "Apply and turn off the sandbox",
+          "discard": "Discard",
+          "discard_file": "Discard the edit to {{file}}",
+          "discard_title": "Discard the edit to {{file}}?",
+          "discard_body": "{{productName}} will overwrite {{file}} with the version it last saved. The edit made outside {{productName}} will be lost.",
+          "nav_dot": "Settings files changed outside {{productName}}",
+          "search_description": "Review edits made to settings files outside {{productName}}, then apply or discard them.",
+          "read_failed": "Could not check for settings files changed outside {{productName}}."
+        },
         "all_allowed": "All allowed",
         "allow_list_rules": "Allow-list · {{rules}}",
         "block_list_rules": "Block-list · {{rules}}",

@@ -97,6 +97,7 @@ def summarize(
     from kiro_crew.work_ledger import (
         DEFAULT_STALE_WINDOW_SECS,
         WorkItem,
+        _worker_owns_next_move,
         is_stale,
         parse_stamp,
         quiet_since,
@@ -147,7 +148,17 @@ def summarize(
             stale_at = int((since + window).timestamp() * 1000) if since is not None else 0
         else:
             stale_at = 0
-        listed.append({"worker": "" if remote else ledger_key(key), "stale_at_ms": stale_at})
+        # `looping`: its worker's own loop will wake it (waiting on CI) and the next
+        # move is the worker's, so the row reads it as running, not waiting. A report
+        # the conductor still owes an answer stays a wait on the conductor.
+        shown_looping = loops and _worker_owns_next_move(item)
+        listed.append(
+            {
+                "worker": "" if remote else ledger_key(key),
+                "stale_at_ms": stale_at,
+                "looping": shown_looping,
+            }
+        )
     return {"open": open_count, "person": person, "person_workers": person_workers, "items": listed}
 
 

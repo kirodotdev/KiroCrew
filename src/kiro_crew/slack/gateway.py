@@ -130,6 +130,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
     LEAKED_TOOL_CALL_NOTE,
     NO_TOOL_CALLS_NOTE,
     SUBAGENT_COMPLETION_META_KEY,
@@ -148,6 +149,10 @@ from kiro_crew.cron import (
     effective_wake_budget,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
+from kiro_crew.cron_service.fields import (  # noqa: F401
+    auto_job_approver,
+    effective_job_approval_mode,
+)
 from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
 from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
@@ -365,7 +370,7 @@ from kiro_crew.monitoring.models import (
     monitor_state_public_dict,
 )
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
-from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn, settles_at_release
+from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn
 from kiro_crew.platform import boot_platform, release_apply
 from kiro_crew.platform.bootstrap import apply_kas_cli_floor
 from kiro_crew.platform.context import (
@@ -625,6 +630,7 @@ from kiro_crew.subagent import (
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
     ORPHAN_NOTICE_OWED,
+    HostSpawnDecision,
     SpawnApprovalUnreachable,
     SubagentDelivery,
     SubagentInfo,
@@ -974,6 +980,7 @@ class GatewayOrchestrator:
     _report_monitor_completion = _nudge_chan._report_monitor_completion
     # gateway_runtime/nudge_dashboard_fire.py
     _fire_dashboard_nudge = _nudge_dash._fire_dashboard_nudge
+    _start_dashboard_wake_turn = _nudge_dash._start_dashboard_wake_turn
     _work_ledger_wake_loop = _nudge_dash._work_ledger_wake_loop
     _work_ledger_wake_text = _nudge_dash._work_ledger_wake_text
     _steer_work_ledger_wake = _nudge_dash._steer_work_ledger_wake

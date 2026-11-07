@@ -4330,7 +4330,11 @@ still serves (a superseded generation is dropped on the next store), at most 16 
 them and `_VISIBLE_MEMO_MAX_ROWS` (32,768) catalog rows in total; a larger catalog is
 filtered per read, uncached and never truncated. An out-of-band edit of a
 flat skill's `app:` frontmatter line is therefore seen at the next catalog
-revalidation (a new list object), not on the very next read.
+revalidation (a new list object), not on the very next read. The owner roots are
+resolved once per catalog TTL (`_owner_roots`), and until a walk vets the stored rows a
+flat row's saved metadata answers its `app:` line while its stat fingerprint matches,
+as `list_skills` already caches it (`_prime_gate_frontmatter`): a restarted process
+reads and vets only the files the index holds no current row for (#29801).
 
 **Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
 `/api/skills/{name}` catch-all. All three require the configured dashboard owner: the
@@ -4814,7 +4818,7 @@ rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.
 
-**KAS-refused skills (`kas_skill_scope.refused_skill_copies`).** KAS drops, without a word, a SKILL.md that kiro-cli loads: no front matter, no `name` or `description`, front matter its YAML parser rejects (an unquoted `: ` in a value), and, in its default trees only, a name outside `[a-z0-9-]` (1-64, no edge or double hyphen) or a description over 1024 UTF-16 units (in kiro-agent: `validateSkillMd` and `readSkill`). kiro-cli falls back to the path and "No description available". For each in-scope skill (the scope above, or every default-tree skill when there is no rule) that no path KAS reads loads, Crew writes a copy to `<data home>/kas-skills/<sha256 of the path and the copy name, 16 hex>/SKILL.md` (0600 in a 0700 dir, rewritten at every session start) and appends it to the agent's `resources` as `skill://`. The copy's front matter carries a sanitized name not used by any skill KAS loads (`-2`, `-3` on a clash) and a description: the original's, else the body's first line, else "No description available", cut to 1024. The body is the original's after one line naming the original path, so relative paths still resolve. The name and description are written double-quoted, so a value like `1e3` stays a string. A skill whose own name, folder or path a `deny` or `ask` rule of the spec's `permissions` matches under `skill` gets no copy, since the copy's new name would slip that rule. The copy names join the rule's `exclude`. The original is read through `hooks.safe_read_prefix`; a file over 1 MiB, unreadable, or not writable gets no copy, and a failure here costs the copies, never the session.
+**KAS-refused skills (`kas_skill_scope.refused_skill_copies`).** KAS drops, without a word, a SKILL.md that kiro-cli loads: no front matter, no `name` or `description`, front matter its YAML parser rejects (an unquoted `: ` in a value), and, in its default trees only, a name outside `[a-z0-9-]` (1-64, no edge or double hyphen) or a description over 1024 UTF-16 units (in kiro-agent: `validateSkillMd` and `readSkill`). kiro-cli falls back to the path and "No description available". For each in-scope skill (the scope above, or every default-tree skill when there is no rule) that no path KAS reads loads, Crew writes a copy to `<data home>/kas-skills/<sha256 of the path and the copy name, 16 hex>/SKILL.md` (0600 in a 0700 dir, rewritten at every session start) and appends it to the agent's `resources` as `skill://`. The copy's front matter carries a sanitized name not used by any skill KAS loads (`-2`, `-3` on a clash) and a description: the original's, else the body's first line, else "No description available", cut to 1024. The body is the original's after one line naming the original path, so relative paths still resolve. The name and description are written double-quoted, so a value like `1e3` stays a string. A skill whose own name, folder or path a `deny` or `ask` rule of the spec's `permissions` matches under `skill` gets no copy, since the copy's new name would slip that rule. The copy names join the rule's `exclude`. The original is read through `hooks.safe_read_prefix`, which asks `kas_prompt_paths.is_unsafe_prompt_path` about the descriptor's kernel path after the open, so a SKILL.md linked into `/proc` or `~/.config/gh` gets no copy even when the link is swapped mid-read; a file over 1 MiB, unreadable, or not writable gets no copy, and a failure here costs the copies, never the session.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded wherever a body reaches the model: the **body-delivery loop** in `context_assembly/turn_message.py` (`ContextBuilder.build_message`; `_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt), `resolve_dollar_skills`, an exact `skill_search` read (below), and direct reads of `SKILL.md` (see **Direct reads**). Since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config, so the other three supply the hits unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading. The load never raises on file content: a row it cannot read (a non-numeric or infinite `hits`) is skipped, and a file that is not UTF-8 or nested past the recursion limit reads as a corrupt file (empty ledger, replaced by the next flush).
 
@@ -6361,7 +6365,7 @@ wedged owner frame still reads as a gate stall.
 | `stream_caps` | A hook's bounded output drain, the truncation-marking decode and the concurrent stdin/stdout/stderr exchange |
 | `hook_dispatch` | The global store accessors, the strict on-disk read a store-less process uses (a snapshot, so its fires never write their status back over a newer save), the informational tool-call fire, and the PreToolUse block gate with the names a matcher meets |
 | `hook_types` | The pipeline's value types: `HookResult`, the tool gate's verdict `ToolHookResult` (its constructors emit the approval-decision counter, which `test/metrics/test_business_counters.py` reads in this file), the rule dataclasses, `UserDeniedPattern`, and `HooksConfig` with its defensive parse of the `hooks` section |
-| `script_hooks` | Running script hooks: a hook process's environment (`_hook_subprocess_env`, the one reader of `_HOOK_BASE_ENV_KEYS`), one hook's sandboxed run (`run_script_hook`) and its `ScriptHookResult`, and `ScriptHookStore`, which persists the Hooks page's hooks, validates every edit and fires the hooks an event matches; `fire` sits beside `run_script_hook`, and `test_hook_events_kas_triggers` reads its source through the object |
+| `script_hooks` | Running script hooks: a hook process's environment (`_hook_subprocess_env`, the one reader of `_HOOK_BASE_ENV_KEYS`), one hook's sandboxed run (`run_script_hook`) and its `ScriptHookResult`, and `ScriptHookStore`, which persists the Hooks page's hooks, validates every edit and fires the hooks an event matches; it parses `hooks.json` from its bytes (as do the strict read in `hook_dispatch` and the import sanitizer), so UTF-8 with or without a byte-order mark, UTF-16 (Windows PowerShell 5.1's default) and UTF-32 all load, and bytes none of those decode are a failed load; a store whose load could not read or represent `hooks.json` reloads from disk at its next edit and, while the file still cannot be loaded, refuses every save with `WebhookStoreUnreadable` (503 at the hooks routes) rather than writing its empty in-memory list over the file; `fire` sits beside `run_script_hook`, and `test_hook_events_kas_triggers` reads its source through the object |
 
 What stays in `hooks.py`, and why, because a guard or a contract reads it there:
 
@@ -6426,6 +6430,7 @@ deny blocked:
 | `governance` | deny_policy | the ceiling ∩ active profile (`_governance_denial`) |
 | `spec-shell-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.shell.denyByDefault`: its own shell call whose command no usable `allowedCommands` entry matches whole (`ToolCall.spec_shell_allowlist`) |
 | `spec-write-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.fs_write.fallbackAction: "deny"`: its own file write with a target no usable `allowedPaths` entry covers, as written or symlink-resolved (`ToolCall.spec_write_allowlist`) |
+| `spec-denies` | deny_policy | a KAS agent spec's `deniedCommands` / write `deniedPaths` that Crew reads itself: its own shell call a deny matches (whole or any leading piece), or write whose target, as written or symlink-resolved, a deny covers (`ToolCall.spec_denied_grant`) |
 | `app-own-server` | grant | a builtin app agent calling its own declared MCP server |
 | `operator-grants` | grant | the operator's `auto_approve_tools` patterns, unless a `confirm_tools` pattern names the call or the list is unknown |
 | `read-only` | classify | the read-only classifier, except for an MCP call `confirm_tools` names (or any MCP call while the list is unknown) and a shell command that runs `git` at any command position (`readonly_bash.command_invokes_git`), which falls through to the surface's own approval; the only auto-approve under `classifier_only` |
@@ -6547,6 +6552,12 @@ calling thread: inline off the event loop, with no `mc-pathres` submission, and 
 gate on it. The gate list is the same either way. It is for a bulk read on a worker thread
 whose per-file pool submissions would queue ahead of the loop's own checks; its one caller
 is the materialized-agent snapshot scan (`config/loader_snapshots._scan_materialized_index`).
+
+`safe_read_file_bytes_nolink(..., canonical_gate=True)` takes the same keyword. It passes it to
+`validate_file_path` / `screen_file_path` for the `realpath` they compute, and judges the opened
+descriptor's kernel path (the identity check and the within-root checks) the same way. The
+identity comparison itself is unchanged. Its caller is `agent_capabilities._read_spec`, the
+spec read behind the member start and the Capabilities pane.
 
 ### `safe_read_file_internal(read_id: str) -> bytes | None` (audited carve-out)
 
@@ -7011,8 +7022,13 @@ record identity, explicit subject/predicate/scope, category, validity interval,
 source reference and revision distinguish a fact's identity from its wording.
 Revisions retain before/after evidence and conflict proposals. V1 keeps the
 latest 20 accepted snapshots per record; V2 keeps all accepted snapshots. Neither
-version automatically removes proposals. Metadata helpers never commit or
-embed; each writer owns the transaction with its content.
+version automatically removes proposals. `propose_conflict` adds one pending
+proposal per record, base revision, operation and change, and returns the pending
+row when only provenance differs (the writer's `source` and `confidence`, the
+metadata's `source_ref` and `observed_at`, the row's `updated_at` clock),
+because consolidation proposes as `consolidation:<session>` every session.
+Metadata helpers never commit or embed; each writer owns the transaction with
+its content.
 
 Research informing these choices: [LongMemEval](https://arxiv.org/html/2410.10813v2)
 studies granularity, fact-expanded retrieval keys and temporal filtering;

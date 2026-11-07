@@ -202,10 +202,11 @@ def settle_drained_subagent_notices(state: Any, slot: Any, notices: list[str]) -
 
     A notice whose run owes a ``delivered`` tombstone is recorded on the slot's
     ledger under its own text when it is queued, and that run's folder stays
-    untombstoned until this drain, so a restart before it leaves the run to the
-    next start's orphan reconciliation. The parent's next turn calls this where
-    it takes the list. The manager writes the tombstones on a tracked task,
-    behind the same teardown gate as a queued announce.
+    untombstoned until this settles, so a restart before it leaves the run to
+    the next start's orphan reconciliation. The parent's turn that took the list
+    calls this once the model has consumed its prompt (``_turn_settle_debts``
+    in ``chat_turn/prompt_assembly.py``). The manager writes the tombstones on a
+    tracked task, behind the same teardown gate as a queued announce.
     """
     try:
         owed = slot.take_pending_subagent_deliveries(notices)
@@ -426,6 +427,12 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 #: durable (``slot_queue_repository._is_durable_queue_entry``).
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
+#: Process-local key on a synthetic-recovery queue entry that a loop's own cycle
+#: queued for itself: that loop's ``(id, config generation)``, so the recovery's
+#: fault is charged to the loop like the cycle it retries. Never persisted: a kinded
+#: entry is not durable.
+_RECOVERED_WAKE_KEY = "_recovered_wake"
+
 
 def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
     """Whether an injector may start the queued head of an idle *slot* now.
@@ -608,7 +615,7 @@ async def _start_next_queued_turn(
     _forget_swept_replays(slot)
 
     # Above the dequeue, so a held note's visible line lands before this turn's
-    # user row: its context half drains inside _turn_build_prompt via drain_pending_context.
+    # user row: its context half drains inside _turn_build_prompt via take_turn_context.
     # Withheld when the next queued item carries a structural origin tag -- a cron
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next
@@ -1406,6 +1413,8 @@ async def _start_next_queued_turn(
         _run_kwargs["_synthetic_recovery_turn"] = True
         if len(consumed) == 1 and consumed[0].get(_REPLAYS_COMPLETION_KEY) is True:
             _run_kwargs["_replays_completion"] = True
+        if len(consumed) == 1 and consumed[0].get(_RECOVERED_WAKE_KEY):
+            _run_kwargs["_recovered_wake"] = consumed[0][_RECOVERED_WAKE_KEY]
     if _possibly_delivered_steer:
         _run_kwargs["_steer_possibly_delivered"] = True
     # A re-routed automation refusal carries the originating wake's provenance

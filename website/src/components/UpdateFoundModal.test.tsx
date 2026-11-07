@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { useState, type ReactElement } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
@@ -38,8 +39,8 @@ function withNudgeConfig(record: Record<string, unknown> | undefined) {
   mockedApi.kirocrewConfig.mockResolvedValue({ dashboard: { update_nudge: record } } as never)
 }
 
-async function mount(initial?: UpdateState, store = createTestStore()) {
-  const rendered = renderWithProviders(<UpdateFoundModal />, { store })
+async function mount(initial?: UpdateState, store = createTestStore(), ui: ReactElement = <UpdateFoundModal />) {
+  const rendered = renderWithProviders(ui, { store })
   const push = async (next: UpdateState) => {
     await act(async () => { rendered.queryClient.setQueryData(['update-state'], next) })
   }
@@ -369,6 +370,51 @@ describe('UpdateFoundModal — desktop source', () => {
     expect(mockedApi.patchConfig).toHaveBeenCalledTimes(1)
     expect(mockedApi.patchConfig).toHaveBeenCalledWith('dashboard.update_nudge',
       expect.objectContaining({ skipped: true }))
+  })
+
+  it('an Escape pressed the moment it appears still snoozes it', async () => {
+    // An open from a default-priority update (here the hold lifting outside an
+    // event) whose render runs past the scheduler's 5 ms slice lets React yield
+    // before it runs passive effects, so a listener attached there would miss a
+    // press in that gap. A render that outlasts the slice forces the yield.
+    function SlowBody() {
+      const end = performance.now() + 20
+      while (performance.now() < end) { /* outlast the scheduler slice */ }
+      return null
+    }
+    let release: () => void = () => {}
+    function Host() {
+      const [held, setHeld] = useState(true)
+      release = () => setHeld(false)
+      return <>{!held && <SlowBody />}<UpdateFoundModal held={held} /></>
+    }
+    const { queryClient } = await mount(found, undefined, <Host />)
+    await waitFor(() => expect(queryClient.getQueryState(['mc-config-update-nudge'])?.status).toBe('success'))
+    expect(dialog()).not.toBeInTheDocument()
+
+    const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    const prior = g.IS_REACT_ACT_ENVIRONMENT
+    let pressedEscape!: () => void
+    const pressed = new Promise<void>(resolve => { pressedEscape = resolve })
+    const watch = new MutationObserver(() => {
+      const shown = document.querySelector('[role="dialog"]')
+      if (!shown) return
+      watch.disconnect()
+      fireEvent.keyDown(shown, { key: 'Escape' })
+      pressedEscape()
+    })
+    // Undone even when the test times out, so a failure cannot leak into the next test.
+    const restore = () => { watch.disconnect(); g.IS_REACT_ACT_ENVIRONMENT = prior }
+    onTestFinished(restore)
+    // Let React schedule the open as it does in the app, not flush it in act().
+    g.IS_REACT_ACT_ENVIRONMENT = false
+    watch.observe(document.body, { childList: true, subtree: true })
+    release()
+    await pressed
+    restore()
+    await waitFor(() => expect(mockedApi.patchConfig).toHaveBeenCalledWith(
+      'dashboard.update_nudge', expect.objectContaining({ version: '9.9.9', skipped: false }),
+    ))
   })
 })
 

@@ -101,9 +101,13 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     if (!rootKey || enteredKey.current === rootKey) { if (!rootKey) enteredKey.current = null; return }
     enteredKey.current = rootKey
     if (isMobile) return
+    // A chat created already in Ultra Mode (`dashboard.new_chat_crew_mode`) is
+    // entered, not turned on: remember a closed panel the same way, so turning
+    // it off before the first message closes the panel again.
+    if (!activityOpen) panelWasClosed.current.add(rootKey)
     dispatch(openActivityPanel())
     openView('workers')
-  }, [rootKey, dispatch, openView, isMobile])
+  }, [rootKey, dispatch, openView, isMobile, activityOpen])
   // The chats whose switch back to the default agent is in flight: their chips
   // come back the moment the mark is pressed, the same way they leave on turning on.
   const [turningOff, setTurningOff] = useState<ReadonlySet<string>>(EMPTY)

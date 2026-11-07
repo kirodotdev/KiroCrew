@@ -713,7 +713,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_release_slot": ("method", "(self, info: 'SubagentInfo') -> 'bool'"),
     "_report_queued_stop": (
         "method",
-        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False) -> \"'asyncio.Task[bool] | None'\"",
+        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False, gate: \"'asyncio.Future[bool] | None'\" = None) -> \"'asyncio.Task[bool] | None'\"",
     ),
     "_report_terminal": (
         "async method",
@@ -908,6 +908,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, task: 'str', **kwargs: 'Any') -> \"'SubagentInfo | PreparedSpawn | MemoryReadPoint | None'\"",
     ),
     "published_queued_depths": ("method", "(self) -> 'dict[str, int]'"),
+    "published_queued_labels": ("method", "(self) -> 'dict[str, dict[str, object]]'"),
     "queued_count": ("property", ""),
     "queued_count_for": ("method", "(self, parent_session_key: 'str') -> 'int'"),
     "queued_count_for_async": ("async method", "(self, parent_session_key: 'str') -> 'int'"),
@@ -965,7 +966,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "spawn": (
         "method",
-        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, failover_from: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None) -> 'SubagentInfo | None'",
+        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, failover_from: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None, _root_session_key: 'str | None' = None) -> 'SubagentInfo | None'",
     ),
     "spawn_async": (
         "async method",

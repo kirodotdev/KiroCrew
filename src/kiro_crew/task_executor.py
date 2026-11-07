@@ -28,7 +28,12 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
 )
-from kiro_crew.agent_sdk.mcp_problems import session_mcp_problems
+from kiro_crew.agent_sdk.mcp_problems import (
+    UNATTENDED_MCP_WAIT_SECS,
+    missing_mcp_notice,
+    session_mcp_problems,
+    wait_for_declared_mcp,
+)
 from kiro_crew.agent_sdk.spec_hooks import (
     invalidate_stale_kas_session,
     refuse_stale_switch,
@@ -152,6 +157,16 @@ logger = logging.getLogger(__name__)
 
 # Prefix of ``task.error`` when self-review could not judge the step at all.
 _REVIEW_UNVERIFIED = "Self-review could not verify the step"
+
+
+def _step_mcp_problems(provider: object) -> str:
+    """The step notice's MCP line: unusable servers, then declared ones that never reported."""
+    problems, never_reported = session_mcp_problems(provider), missing_mcp_notice(provider)
+    return (
+        f"{problems}; {never_reported}"
+        if problems and never_reported
+        else problems or never_reported
+    )
 
 
 async def _reset_session_quietly(sessions: "SessionManager", session_key: str) -> None:
@@ -833,7 +848,11 @@ async def execute_task(
                 sessions, session_key, agent or "kirocrew", (client, is_new, _resumed), _claim
             )
             _turn_provider = client
-            _mcp_at_open = session_mcp_problems(client)
+            if is_new:
+                # Nobody can reconnect a slow MCP server during a step, so its
+                # first prompt waits (bounded) for the agent spec's servers.
+                await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
+            _mcp_at_open = _step_mcp_problems(client)
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
             if ctx:
@@ -1394,7 +1413,7 @@ async def execute_task(
             # one. A failure handler that already reset the session leaves it
             # empty, so the reading taken at open stands in. Operator-only (log
             # + dashboard notification), never fed back into a prompt.
-            mcp_problems = session_mcp_problems(_turn_provider) or _mcp_at_open
+            mcp_problems = _step_mcp_problems(_turn_provider) or _mcp_at_open
             if _acquired:
                 sessions.release(session_key)
             if mcp_problems and mcp_problems != mcp_noticed:

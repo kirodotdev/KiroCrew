@@ -437,6 +437,11 @@ export class OffsetIndex {
     return this.total
   }
 
+  /** How many rows the tree holds. O(1). */
+  rowCount(): number {
+    return this.n
+  }
+
   /** Row index whose vertical span contains scrollTop. Clamped to [0, n-1]. O(log N). */
   indexAt(scrollTop: number): number {
     if (this.n <= 0) return 0

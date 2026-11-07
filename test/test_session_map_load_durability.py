@@ -291,3 +291,33 @@ def test_a_failed_move_aside_refuses_the_write_until_one_succeeds(map_dir, monke
         assert handle.read() == b"{not json"
     on_disk = json.loads((map_dir / "session_map.json").read_text(encoding="utf-8"))
     assert list(on_disk) == ["dashboard:carol"]
+
+
+async def _api_status_body(monkeypatch, map_dir: pathlib.Path, session_map: SessionMap) -> dict:
+    """``GET /api/status`` from a real ``DashboardState`` whose session manager holds *session_map*."""
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+    from test_handlers_system_meminfo_unavailable import _status_state
+
+    from kiro_crew.dashboard.handlers_system import api_status
+
+    state = _status_state(monkeypatch, map_dir)
+    state.sessions._session_map = session_map
+    app = web.Application()
+    app["state"] = state
+    resp = await api_status(make_mocked_request("GET", "/api/status", app=app))
+    return json.loads(resp.body.decode())
+
+
+@pytest.mark.asyncio
+async def test_api_status_names_the_refuse_writes_state_and_its_remedy(
+    map_dir, unreadable_once, monkeypatch
+) -> None:
+    """The scattered write failures after a failed read have one place that explains them."""
+    refusing = await _api_status_body(monkeypatch, map_dir, SessionMap())
+    assert refusing["session_map_writes_refused"] is True
+    assert "restart the gateway once the file is readable" in refusing["session_map_remedy"]
+
+    healthy = await _api_status_body(monkeypatch, map_dir, SessionMap())
+    assert healthy["session_map_writes_refused"] is False
+    assert healthy["session_map_remedy"] == ""

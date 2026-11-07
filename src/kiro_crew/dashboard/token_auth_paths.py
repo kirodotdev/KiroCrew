@@ -155,9 +155,16 @@ UPDATE_REVALIDATE_PATH = "/api/update/revalidate"
 #: every other method stay behind the ordinary gate.
 AGENT_HOOK_STATUS_PATH = "/api/hooks/agent/status"
 
+#: The relay viewer's access token mint for the desktop app's main process, which
+#: holds the local secret and no dashboard token. Its handler (api_relay_viewer_token)
+#: admits only loopback or the same-user unix socket, the X-Local-Secret and a
+#: verified host process, the /api/token/local admission. POST only.
+RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
+    RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }

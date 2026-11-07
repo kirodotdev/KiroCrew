@@ -5,7 +5,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Command, MessageSquarePlus, SunMoon, Keyboard, Pin } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
-import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../../lib/createdChatView'
 import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { useSessionActions } from '../../../hooks/useSessionActions'
 import { useTheme } from '../../../hooks/useTheme'
@@ -198,10 +198,12 @@ export function useActionsProvider(opts: { openShortcuts: () => void }): Resourc
   // "New session" is a write (createSlot); route it through useMutation for
   // error/loading state and consistency with paletteActions.ts's createSlot
   // mutation (`use-react-query` lint rule). onSuccess brings the user to the
-  // new session, unless they moved to another session or page meanwhile.
+  // new session, unless they moved to another session or page meanwhile; a
+  // failure goes to the shell notice, as the palette has closed.
   const { mutate: doNewSession } = useMutation({
-    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true }),
+    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true, crewModeDefault: true }),
     onSuccess: (view) => { showCreatedChat(view, navigate) },
+    onError: (err) => reportCreateFailure(dispatch, err),
   })
 
   return useMemo(

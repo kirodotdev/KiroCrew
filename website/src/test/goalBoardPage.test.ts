@@ -257,6 +257,27 @@ describe('goal-board item states', () => {
     expect(document.getElementById('done')?.textContent).toContain('1 quiet')
   })
 
+  it('reads an idle item whose worker loops on CI as working, without the mid-turn pulse', () => {
+    mount({
+      items: [
+        item({ item_id: 'l', worker: 'idle', stale: false, looping: true, pr: 7 }),
+        // A block the conductor owes an answer stays waiting, loop or not.
+        item({ item_id: 'b', worker: 'idle', stale: false, looping: true, status: 'blocked' }),
+      ],
+    })
+    // One wording: "working", never "waiting"; the PR keeps its own chip.
+    expect(all('#items .item').map(pill)).toEqual(['working', 'waiting on conductor'])
+    expect(tally()).toContain('working 1')
+    expect(all('#items .item').map((c) => c.classList.contains('live'))).toEqual([false, false])
+  })
+
+  it('a looping worker mid-turn keeps the live pulse and its working pill', () => {
+    mount({ items: [item({ item_id: 'r', worker: 'running', stale: false, looping: true, pr: 7 })] })
+    const [card] = all('#items .item')
+    expect(card.classList.contains('live')).toBe(true)
+    expect(pill(card)).not.toContain('waiting on PR')
+  })
+
   it('calls an open report stuck when the main chat closed, as the Crew panel does', () => {
     mount({
       items: [

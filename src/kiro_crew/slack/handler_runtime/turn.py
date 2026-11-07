@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _STATUS_WORKING,
         _TIMEOUT_REPLY,
         _UNFINISHED_STOP_REASONS,
+        _WORKING,
         CONTEXT_EVENT_COMPACTION,
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
@@ -453,8 +454,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # Dashboard" control exists for the whole turn rather than appearing
         # only once the turn completes — on a long turn the footer arrives far
         # too late to be the first chance to link. A click imports and links the
-        # thread via the existing command path; the next turn then mirrors
-        # through the normal pre-committed-link mirror in ``_deliver_answer``.
+        # thread via the existing command path; ``_deliver_answer`` then gives the
+        # slot this turn's final answer, and the next turn mirrors normally.
         _early_link = (
             not sessions.get_session_for_thread(reply_ts) and get_dashboard_state() is not None
         )
@@ -463,7 +464,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             _working_ts = await slack.post_blocks(
                 channel,
                 build_working_blocks(session_key, include_dashboard_link=_early_link),
-                "Working…",
+                _WORKING,
                 reply_ts,
             )
         except Exception:

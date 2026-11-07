@@ -25,8 +25,10 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from kiro_crew.feishu.client import CHAT_GROUP, CHAT_P2P, LarkClient, LarkInbound
+from kiro_crew.feishu.renderer import FEISHU_UPLOAD_LIMITS
 from kiro_crew.messaging.attachments import channel_reads_no_attachments
 from kiro_crew.messaging.dispatch import inbound_permitted
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -224,6 +226,37 @@ class FeishuTransport(MessagingTransport):
         if not await self._client.send_new(receive_id_type, receive_id, content):
             raise RuntimeError(f"Feishu message was not delivered ({receive_id_type})")
         return ""
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The budgets an upload to this conversation is extracted under, or None.
+
+        Asked by the dashboard -> channel reply mirror BEFORE it extracts, so a
+        conversation that takes no upload keeps its references as text, exactly
+        as a channel-driven turn there does. The renderer's own budgets, for an
+        allow-listed DM only: the dispatcher allows uploads for a ``p2p`` chat
+        alone, because a group's members are not all on ``allowed_open_ids``.
+        """
+        if self._address(conversation_id, thread_id)[0] != "open_id":
+            return None
+        return FEISHU_UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image as a NEW message. True only when it landed.
+
+        The proactive counterpart of the renderer's image reply, used by the
+        dashboard -> channel reply mirror. *file* carries the bytes extraction
+        validated; its path is never re-opened. Re-decided against the live
+        rosters at the send, as :meth:`send_message` is: an address that is not
+        an allow-listed DM (see :meth:`outbound_image_limits`) answers False.
+        """
+        receive_id_type, receive_id = self._address(conversation_id, thread_id)
+        if receive_id_type != "open_id" or not file.data:
+            return False
+        return await self._client.send_new_image(receive_id_type, receive_id, file.data)
 
     def _address(self, conversation_id: str, thread_id: str | None) -> tuple[str, str]:
         """``(receive_id_type, receive_id)`` a proactive send goes to, or ``("", "")``.

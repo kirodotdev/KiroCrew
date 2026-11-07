@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        trust_permitted,
     )
 
 
@@ -399,7 +400,18 @@ def _resolve_linked_click(
     """
     approved = action_id != _ACTION_REJECT
     trusted = False
-    if action_id == _ACTION_TRUST:
+    if action_id == _ACTION_TRUST and not trust_permitted():
+        # A ``permission_mode`` deny of ``trust``: the press approves this one tool,
+        # as every other Trust button does, and grants nothing.
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive.trust_linked",
+            outcome="denied",
+            source="slack",
+            resources=linked_entry.session_key,
+            error="trust_disabled_by_policy",
+        )
+    elif action_id == _ACTION_TRUST:
         trusted = _grant_linked_trust(linked_entry, sessions)
         # A Trust click that could not grant must NOT be quietly downgraded to
         # a one-shot approve and labelled "Trusted": that reports a security
@@ -537,6 +549,17 @@ async def _grant_late_trust(
     # reads (see subagent.py). Poking the container directly would let a
     # revoke clear one half and leave the other, so the two are not
     # separable at a call site.
+    if not trust_permitted():
+        # A ``permission_mode`` deny of ``trust``: the late press grants nothing.
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive.trust_late",
+            outcome="denied",
+            source="slack",
+            resources=session_key,
+            error="trust_disabled_by_policy",
+        )
+        return None
     add_trusted_session(session_key, sessions)
     logger.info("Trust mode ON (late click) for session %s", session_key)
     sel().log_api_access(

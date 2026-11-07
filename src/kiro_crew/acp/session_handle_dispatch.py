@@ -62,6 +62,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -102,6 +103,11 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 #: a turn budget it never reaches, instead of racing the arm against the turn's
 #: own deadline.
 QUEUE_POLL_SECS = 5.0
+
+#: Longest a cancelled kiro turn waits for the metering frame behind its answer.
+#: The frame follows within milliseconds; the bound keeps a missing one from
+#: delaying the Stop acknowledgement.
+_CANCELLED_TURN_METERING_GRACE_SECS = 0.25
 
 
 async def _dispatch_events(
@@ -755,6 +761,16 @@ async def _dispatch_events(
                 self._tool_dispatched = False
                 for _injected in self._release_proven_steers(reason, _refusal):
                     yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_injected)
+                if (
+                    reason == STOP_REASON_CANCELLED
+                    and self._runtime.acp_backend == ACP_BACKEND_KIRO
+                ):
+                    # kiro-cli answers a cancelled prompt first and sends the frame that
+                    # bills the turn right after it; that frame also repeats the context
+                    # percentage the drain stops on (live-probe confirmed, 3.1.0).
+                    await self._drain_post_compaction_metadata(
+                        grace=_CANCELLED_TURN_METERING_GRACE_SECS
+                    )
                 self._turn_done.set()
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,

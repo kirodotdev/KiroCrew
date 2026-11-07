@@ -205,12 +205,14 @@ async def resolve_dependencies(
                 logger.warning("Exception installing %s: %s", dep_key, exc)
                 continue
             if ok:
-                result.installed.append(dep_key)
                 # The ledger write takes a blocking file lock: keep it off the loop.
-                await asyncio.to_thread(
+                if await asyncio.to_thread(
                     record_install, dep_key, app_name, capability_dep_type(dep_type)
-                )
-                logger.info("Installed dependency %s for app %s", dep_key, app_name)
+                ):
+                    result.installed.append(dep_key)
+                    logger.info("Installed dependency %s for app %s", dep_key, app_name)
+                else:
+                    result.failed.append(dep_key)
             else:
                 result.failed.append(dep_key)
                 logger.warning(

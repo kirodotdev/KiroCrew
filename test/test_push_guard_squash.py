@@ -39,6 +39,7 @@ from push_guard_helpers import (
     _spy_popen,
     _write_message,
 )
+from spawn_test_helpers import unblocked_signals
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout, wait_until
@@ -344,17 +345,19 @@ class TestPushGuardSquash:
         assert not list(git_dir.glob("push_guard-squash-*"))
         assert not list(git_dir.glob("push_guard-message-*"))
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="hook and gpg stand-ins are sh")
     def test_hooks_and_signing_run_as_for_any_commit(self, repo_pair, tmp_path):
         clone_dir, _ = repo_pair
         hooks = tmp_path / "hooks"
         hooks.mkdir()
-        (hooks / "commit-msg").write_text('#!/bin/sh\nprintf "\\nChange-Id: I123\\n" >> "$1"\n')
+        (hooks / "commit-msg").write_text(
+            '#!/bin/sh\nprintf "\\nChange-Id: I123\\n" >> "$1"\n', newline="\n"
+        )
         gpg = tmp_path / "fake-gpg"
         gpg.write_text(
             "#!/bin/sh\ncat >/dev/null\n"
             "echo '[GNUPG:] SIG_CREATED D 1 8 00 0 FP' >&2\n"
-            "printf -- '-----BEGIN PGP SIGNATURE-----\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n"
+            "printf -- '-----BEGIN PGP SIGNATURE-----\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n",
+            newline="\n",
         )
         for script in (hooks / "commit-msg", gpg):
             script.chmod(0o755)
@@ -373,14 +376,13 @@ class TestPushGuardSquash:
         raw = _git(clone_dir, "cat-file", "commit", "HEAD")
         assert "gpgsig" in raw and "Change-Id: I123" in raw
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-in is sh")
     def test_a_rejecting_commit_msg_hook_refuses_and_moves_nothing(self, repo_pair, tmp_path):
         clone_dir, _ = repo_pair
         head = _feature(clone_dir)
         hooks = tmp_path / "hooks"
         hooks.mkdir()
         hook = hooks / "commit-msg"
-        hook.write_text("#!/bin/sh\necho 'subject must be imperative' >&2\nexit 1\n")
+        hook.write_text("#!/bin/sh\necho 'subject must be imperative' >&2\nexit 1\n", newline="\n")
         hook.chmod(0o755)
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
         _write_message(clone_dir)
@@ -390,7 +392,6 @@ class TestPushGuardSquash:
         assert "subject must be imperative" in stderr
         assert _rev(clone_dir, "HEAD") == head
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-in is sh")
     def test_hooks_see_the_callers_locale_and_prompt_settings(self, repo_pair, tmp_path):
         """Only the guard's own probes run with LC_ALL=C and no prompts; user code does not."""
         clone_dir, _ = repo_pair
@@ -401,7 +402,8 @@ class TestPushGuardSquash:
         hook = hooks / "commit-msg"
         hook.write_text(
             "#!/bin/sh\n"
-            'echo "$LC_ALL|${GIT_TERMINAL_PROMPT-unset}" > ' + shlex.quote(str(seen)) + "\n"
+            'echo "$LC_ALL|${GIT_TERMINAL_PROMPT-unset}" > ' + shlex.quote(str(seen)) + "\n",
+            newline="\n",
         )
         hook.chmod(0o755)
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
@@ -417,7 +419,6 @@ class TestPushGuardSquash:
         assert proc.returncode == 0, proc.stderr
         assert seen.read_text().strip() == "C.UTF-8|unset"
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-in is sh")
     def test_caller_config_from_the_environment_applies(self, repo_pair, tmp_path):
         """GIT_CONFIG_COUNT carries the caller's choices (a hooks path here); it is kept."""
         clone_dir, _ = repo_pair
@@ -426,7 +427,8 @@ class TestPushGuardSquash:
         hooks.mkdir()
         hook = hooks / "commit-msg"
         hook.write_text(
-            "#!/bin/sh\n" 'printf "\\nSigned-off-by: Env <env@example.invalid>\\n" >> "$1"\n'
+            "#!/bin/sh\n" 'printf "\\nSigned-off-by: Env <env@example.invalid>\\n" >> "$1"\n',
+            newline="\n",
         )
         hook.chmod(0o755)
         _write_message(clone_dir)
@@ -483,13 +485,14 @@ class TestPushGuardSquash:
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
         _write_message(clone_dir)
 
-        proc = subprocess.Popen(
-            [sys.executable, PUSH_GUARD, "--base", "main", "--squash"],
-            cwd=clone_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        with unblocked_signals():
+            proc = subprocess.Popen(
+                [sys.executable, PUSH_GUARD, "--base", "main", "--squash"],
+                cwd=clone_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         try:
             wait_until(
                 lambda: mark.exists() or proc.poll() is not None,
@@ -756,7 +759,6 @@ class TestPushGuardCommitByName:
             assert rc == _PG.EXIT_USAGE, (argv, stderr)
 
 
-@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-ins are sh")
 class TestPushGuardSquashMessage:
     """The squash message goes through the hooks and cleanup ``git commit -F`` applies."""
 
@@ -879,7 +881,8 @@ class TestPushGuardSquashMessage:
             '#!/bin/sh\nread answer\n[ "$answer" = yes ] || exit 1\n'
             "for last; do :; done\n"
             "printf -- '-----BEGIN SSH SIGNATURE-----\\nZmFrZQ==\\n"
-            '-----END SSH SIGNATURE-----\\n\' > "$last.sig"\n'
+            '-----END SSH SIGNATURE-----\\n\' > "$last.sig"\n',
+            newline="\n",
         )
         signer.chmod(0o755)
         public_key = tmp_path / "signing-key.pub"

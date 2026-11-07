@@ -1,15 +1,17 @@
 """Builders the ``test_slack_gateway_coverage*.py`` suites share.
 
-A ``GatewayOrchestrator`` with mocked credentials, a mocked dashboard state, the
-lost-run ceiling for a wait a test must end itself, and the recorded-await lookup.
+A ``GatewayOrchestrator`` with mocked credentials (and one wired for the Slack
+auto-nudge path), a mocked dashboard state, the lost-run ceiling for a wait a
+test must end itself, and the recorded-await lookup.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -94,6 +96,34 @@ def _loop(key: str = "slack:111.222", **kwargs: Any) -> NudgeLoop:
         message=kwargs.pop("message", "keep checking"),
         **kwargs,
     )
+
+
+def _nudge_sessions(client: object) -> MagicMock:
+    s = MagicMock()
+    s.is_busy = MagicMock(return_value=False)
+    s.get_channel = MagicMock(return_value="C123")
+    s.get_thread = MagicMock(return_value="111.222")
+    s.get_or_create = AsyncMock(return_value=(client, True, False))
+    s.cancel_current = AsyncMock()
+    s.release = MagicMock()
+    return s
+
+
+def _slack_nudge_orchestrator() -> Any:
+    """Orchestrator wired for the Slack auto-nudge path."""
+    orch = _make_orchestrator()
+    orch.sessions = _nudge_sessions(SimpleNamespace())
+    orch.slack = MagicMock()
+    orch.slack.post_message = AsyncMock()
+    orch.ctx_builder = SimpleNamespace(hooks=object(), build_message=lambda *a, **k: ("MSG", None))
+    orch.conv_log = None
+    orch.autonudge_svc = None
+
+    async def _approve(_event: object, _parent: str = "") -> bool:
+        return True
+
+    orch._interactive_approval = lambda *a, **k: _approve
+    return orch
 
 
 _DKEY = "discord:kirocrew:direct:U9"

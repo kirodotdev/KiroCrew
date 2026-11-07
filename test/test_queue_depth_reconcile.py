@@ -62,6 +62,7 @@ import kiro_crew.subagent_manager.run as run_mod
 import kiro_crew.taskq.store as store_mod
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.subagent_persistence import read_tombstone
 from kiro_crew.taskq import model
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 from kiro_crew.testing.wait import await_until
@@ -707,9 +708,10 @@ async def test_stop_all_reposts_a_row_cancel_that_did_not_land(
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A store outage during Stop all: the window entry is dropped and the stop
-    is published, so the cancel that did NOT land is re-posted rather than
-    assumed (a row left ``queued`` is dispatchable by the next incarnation),
-    and its report keeps the settle, because nothing wrote the row's state."""
+    is published, so the cancel that did NOT land is settled rather than
+    assumed (a row left ``queued`` is dispatchable by the next incarnation):
+    its queued-stop marker goes to disk for the next boot, and its report keeps
+    the settle, because nothing wrote the row's state."""
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
     try:
         with patch.object(SubagentManager, "_run", new=_park):
@@ -744,10 +746,13 @@ async def test_stop_all_reposts_a_row_cancel_that_did_not_land(
 
         assert _parent_window(mgr) == []
         assert store.state_of(row.id) == model.CANCELLED
-        assert attempts == [row.id, row.id], "the cancel that did not land was not re-posted"
+        assert (read_tombstone(row.id) or {}).get(
+            "cause"
+        ) == "queued_stop", "the cancel that did not land was not settled"
         assert row.id in finished, "the report skipped the settle for a cancel that did not land"
-        # The re-posted cancel landed first, so that settle's refusal lost
-        # nothing; the re-post has already warned once.
+        # Whichever of the settled cancel and the report's finish lands first,
+        # the other is refused over the state it asked for and loses nothing;
+        # the stop has already warned once.
         assert _warned(caplog, _ADMISSION_LOGGER, "did not commit") == 0
         await mgr.cancel_all()
     finally:

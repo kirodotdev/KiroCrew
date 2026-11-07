@@ -2253,6 +2253,17 @@ the artifact. The
 comment-count auto-reveal never switches away from an open chat panel, since the
 chat panel opens only on explicit action.
 
+**Bound session (frontend)** — the panel's embedded `ChatPage` renders the
+dashboard's active slot, so `ArtifactChatPanel` keeps it on the bound session with
+`useOwnSlotChat` (`website/src/hooks/useOwnSlotChat.ts`): it switches to the bound
+session and shows the chat only while that session is the active slot. Another
+session made active while the panel is open (a transcript link) is switched back.
+A 404 from the switch, or a confirmed close of the session, takes the row out of
+the slot list (`armConfirmedCloseHold` then `removeSlotOptimistic`, as archiving a
+gone session does), so the page resolves the next bound session or offers **Start
+chat**. Any other failure shows an `ErrorNotice` with **Try again**, never the
+chat that was open before.
+
 **Send to a session (frontend)** — the **More** menu's submenu
 (`ArtifactSendToSessionSubmenu`, driven by the page-owned
 `useArtifactSendToSession` so a New-session create outlives the menu closing) lists "New session" plus the ten most recent live
@@ -2315,7 +2326,10 @@ binding, so it is dispatched straight into the slots list (`addSlotOptimistic`)
 and the panel becomes interactive immediately. The silent context entry POST and
 the `fetchSlots` reconciliation run in the background: the context entry is
 consumed on the *next* user message, so it always lands before a human can type
-and send.
+and send. The panel withholds the new session until that response is handled,
+even if the WS `slots` frame listing it lands first (an artifact-bound create
+broadcasts before it answers), because ChatPage takes a staged prompt only when
+it mounts or switches slot.
 
 **Chat parity** — the panel embeds the same `ChatPage` component as `/chat`
 (`embedded` + `embedMode="chat"` for the single-session chrome), so follow-up
@@ -2525,6 +2539,10 @@ sandboxed iframe.
 SVG is deliberately **not** an image artifact: it is markup, stored as
 `kind="svg"` text and rendered through the sanitizing `SvgViewer`. Serving
 agent-authored SVG as an image would reintroduce a same-origin script vector.
+`SvgViewer` and the library card draw it inline without its `<style>`
+elements: an inline SVG's stylesheet applies to the whole page, so an SVG
+styled that way renders without that stylesheet rather than restyling the
+dashboard.
 
 ### Storage layout
 

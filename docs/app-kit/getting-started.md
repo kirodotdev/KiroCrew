@@ -352,6 +352,9 @@ For Python app hooks with an existing cron grant, use
 `True` to resume it without replacing its ID. Use `set_enabled` off-loop.
 `update_job` and `update_job_async` reject `enabled` and `user_paused` arguments;
 use the toggle methods instead. Foreign and missing job IDs are refused.
+`await ctx.cron.run_job_async(job_id)` runs an owned job now, paused or not,
+without touching its schedule. It returns `False` when a run of that job is
+already in flight, and has no sync form.
 
 The `add_job*` methods accept `approval_mode`, `timeout_secs` and `timeout` at
 create time. Pass `approval_mode="auto"` for an unattended agent job: the

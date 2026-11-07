@@ -1537,7 +1537,6 @@ def test_spawn_collection_commit_installs_its_call_identity(monkeypatch):
     monkeypatch.setattr(mcp_core, "_post", post)
     step = _SubAgentsStep(
         sa_ids=["a1"],
-        sa_deferred=set(),
         sa_errors=[],
         parent_session="dashboard:owner",
         max_wait=60,

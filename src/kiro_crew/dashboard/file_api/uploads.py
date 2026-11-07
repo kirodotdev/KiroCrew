@@ -28,6 +28,8 @@ if TYPE_CHECKING:
         _DEFAULT_NAME_MAX,
         _HEIC_HINT_EXT,
         _HEIF_BRANDS,
+        _IWORK_HINT,
+        _IWORK_HINT_EXT,
         _MAGIC_PREFIXES,
         _MAX_STORED_NAME_BYTES,
         _MAX_UPLOAD_FILES,
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
         _VIDEO_HINT_EXT,
         _ZIP_CONTAINER_EXTS,
         OWNER_ONLY_FILE_MODE,
+        PATH_MARKS,
         SNIFF_BYTES,
         WINDOWS_DEVICE_STEMS,
         _PathProbeBusy,
@@ -85,17 +88,12 @@ def _fit_stored_name(safe_name: str, name_max: int | None = None) -> str:
 
 
 def _safe_upload_name(name: str) -> str:
-    """*name* with every character outside letters, digits, ``_``, ``.`` and ``-``
-    replaced by ``_``, after composing it to NFC.
-
-    A macOS browser sends ``é`` as ``e`` plus a combining accent, and ``\\w`` does not
-    match the accent, so without NFC the name was stored as ``cafe_``. Composed, it is
-    one letter. A mark with no composed form (an Indic vowel sign, say) is still
-    replaced: the image-path grammar in ``image_refs`` reads ``\\w`` too, and a stored
-    path it cannot match would stop an uploaded picture from reaching the model.
+    """*name* composed to NFC, with every character other than a letter, digit,
+    ``_``, ``.``, ``-`` or a mark in ``image_refs.PATH_MARKS`` replaced by ``_``:
+    what the image-path grammar reads, so a stored picture still reaches the model.
     """
     name = unicodedata.normalize("NFC", name)
-    return "".join(ch if ch in "_.-" or ch.isalnum() else "_" for ch in name)
+    return "".join(ch if ch in "_.-" or ch.isalnum() or ch in PATH_MARKS else "_" for ch in name)
 
 
 def _upload_dir() -> Path:
@@ -153,11 +151,7 @@ def _log_upload_diagnostic(dest: Path, data: bytearray, ext: str, safe_name: str
                 disk_hash.update(chunk)
                 disk_size += len(chunk)
         disk_sha = disk_hash.hexdigest()
-        is_zip = (
-            zipfile.is_zipfile(str(dest))
-            if ext in {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
-            else None
-        )
+        is_zip = zipfile.is_zipfile(str(dest)) if ext in _ZIP_CONTAINER_EXTS else None
         logger.info(
             "upload.file diagnostic: name=%s ext=%s sent_size=%d disk_size=%d "
             "sent_sha256=%s disk_sha256=%s match=%s magic=%s is_zipfile=%s",
@@ -393,6 +387,8 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         "before uploading them: reload the page and attach the "
                         "photo again, or export it as a JPEG."
                     )
+                elif ext in _IWORK_HINT_EXT:
+                    detail = f"{detail}. {_IWORK_HINT}"
                 return web.json_response(
                     {"error": detail, "code": "unsupported_file_type"},
                     status=400,
@@ -885,6 +881,8 @@ async def api_directory_upload(request: web.Request) -> web.Response:
         if ext in _VIDEO_HINT_EXT:
             accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
             detail = f"{detail} — accepted video containers: {accepted}"
+        elif ext in _IWORK_HINT_EXT:
+            detail = f"{detail}. {_IWORK_HINT}"
         return _denied("unsupported_file_type", detail, 400, resources=filename)
 
     # ``dashboard.upload_max_mb``, read off the loop like api_upload_file.

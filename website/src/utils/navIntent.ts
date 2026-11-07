@@ -132,6 +132,25 @@ export function chatDeepLinkSlot(path: string): string {
 }
 
 /**
+ * Does a dashboard path name one app's detail page (`/apps/detail/<name>`)?
+ *
+ * The desktop app's `kirocrew://apps/detail/<name>` link resolves to this route.
+ * Apps are installed in the local Crew, so like a session deep link it must
+ * bring the local Crew forward rather than navigate a pane hidden behind a
+ * Remote Crew.
+ */
+export function isAppDetailPath(path: string): boolean {
+  let url: URL
+  try {
+    url = new URL(path, 'http://dashboard.invalid')
+  } catch {
+    return false
+  }
+  const prefix = '/apps/detail/'
+  return url.pathname.startsWith(prefix) && url.pathname.length > prefix.length
+}
+
+/**
  * Perform a navigation intent forwarded from a popout window, in THIS main
  * dashboard window. Order matters: the prefill must be in sessionStorage
  * before the slot switch + route change so ChatPage's slot-restore effect
