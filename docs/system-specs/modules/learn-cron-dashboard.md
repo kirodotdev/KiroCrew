@@ -3273,6 +3273,16 @@ them (`chat_delivery.attachment_meta`). `meta` is omitted when the lists are emp
 On `queue_edit` an absent `meta` means the edit removed every marker, and the client
 drops the row's stale lists.
 
+**A queued send keeps its knowledge envelope mark.** A send's
+`meta.knowledge.envelope` (the injected envelope's length and hash) is kept on the
+queue entry as `meta.knowledgeEnvelope`, and nothing else from `meta.knowledge`
+(`chat_delivery.knowledge_meta`, bounded). It rides the `queue_push` frame, each
+slot-detail `queue[]` item and a requeued steer, and the queue card hides exactly
+the envelope that mark matches (`knowledgeEnvelopeEnd`). A card whose text no
+longer matches the mark, or that has none, shows the whole text. The mark has its
+own key because the drain copies entry meta onto the user row, and a row's
+`meta.knowledge` draws the knowledge chip from the full record.
+
 **An open queue editor holds the queue.** Opening a card's editor posts
 `{"editing": true}` to `/api/chat/slots/{slot}/queue/{queue_id}/editing`, which
 stamps the in-memory entry with `_edit_hold_until` (`queue_edit_hold`, 300 s,
