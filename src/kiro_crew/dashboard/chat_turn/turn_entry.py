@@ -733,8 +733,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # at turn end — it never fails the turn and never re-arms recovery.
     _activity_after_terminal = 0
     turn._activity_after_terminal = _activity_after_terminal
-    # A person's steer entered this turn (admitted into the live stream by
-    # ``chat_delivery.steer_into_running_turn``, which registers it in
+    # The backend echoed consumption of a person's steer (admitted into the live
+    # stream by ``chat_delivery.steer_into_running_turn``, which registers it in
     # ``slot._pending_steers``). Any text after that may be the model's answer
     # to that person — including text after a quiet end the model reached once
     # it had read the steer — so the post-terminal text drop in _on_text_chunk (stream_chunks)
@@ -743,6 +743,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
     turn._person_steered_turn = _person_steered_turn
+    # Post-terminal text chunks that arrived while a steer was pending: streamed by
+    # _release_held_text (stream_chunks), dropped if the turn ends and requeues the steer.
+    _held_after_terminal: list[Any] = []
+    turn._held_after_terminal = _held_after_terminal
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn

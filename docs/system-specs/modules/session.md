@@ -1638,7 +1638,13 @@ against sweep completeness, and are torn down at `close_all`.
   recorded...)`) to fill that gap on the next request, and the model reads it
   back as its own prior reply and repeats it after each later quiet end — one
   grey bubble per patrol cycle. The drop keys on the structured `ends_turn`
-  signal, never on the placeholder's wording.
+  signal, never on the placeholder's wording. Late text that arrives while a
+  person's steer is still pending (`slot._pending_steers`) may be their answer,
+  so it is held instead: the backend's consumption echo releases it as the
+  reply, and every later chunk is kept (codex echoes only at the terminal, so
+  there the reply appears at the turn's end instead of streaming); a turn that
+  ends without that echo requeues the steer as its own turn, which answers it,
+  so the held text stays dropped and counted.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened

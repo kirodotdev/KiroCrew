@@ -249,7 +249,11 @@ from kiro_crew.dashboard.chat_turn.stop_recovery import (
     _turn_persist_and_settle,
     _turn_stop_recovery,
 )
-from kiro_crew.dashboard.chat_turn.stream_chunks import _on_text_chunk, _on_thinking_chunk
+from kiro_crew.dashboard.chat_turn.stream_chunks import (
+    _on_text_chunk,
+    _on_thinking_chunk,
+    _release_held_text,
+)
 from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
     _on_permission_request,
@@ -1194,6 +1198,7 @@ async def _run_chat(
                 continue
             elif event.kind == EVENT_STEER_CONSUMED:
                 await _on_steer_consumed(turn, event)
+                await _release_held_text(turn)
             elif event.kind == EVENT_STEER_DROPPED:
                 await _on_steer_dropped(turn, event)
             elif event.kind == EVENT_COMPACTION_STATUS:
