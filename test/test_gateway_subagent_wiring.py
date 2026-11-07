@@ -108,7 +108,12 @@ class _Done:
 
         self.client = MagicMock(name="client")
         self.clients: list[Any] = [self.client]
+        #: Whether the parent's session is live, and the ``is_new`` a claim
+        #: answers: ``True`` is a session the claim started, the parent having ended.
+        self.parent_live = True
+        self.claim_is_new = False
         sessions = MagicMock(name="sessions")
+        sessions.has_session = MagicMock(side_effect=lambda _key: self.parent_live)
         sessions.get_or_create = AsyncMock(side_effect=self._get_or_create)
         sessions.reset = AsyncMock(side_effect=self._reset)
         sessions.cancel_current = AsyncMock(
@@ -190,7 +195,7 @@ class _Done:
     async def _get_or_create(self, key: str, **_kw: Any) -> tuple[Any, bool, bool]:
         self.calls.append(("acquire", key))
         client = self.clients.pop(0) if len(self.clients) > 1 else self.clients[0]
-        return client, True, False
+        return client, self.claim_is_new, False
 
     def _slot_for_parent(self, _state: Any, _key: str) -> Any:
         slot = self.bound_slots.pop(0) if self.bound_slots else self.bound_slot

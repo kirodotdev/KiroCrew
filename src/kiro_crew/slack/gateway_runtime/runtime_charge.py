@@ -239,7 +239,9 @@ async def _inject_with_retry(
     retry doesn't hit 'Prompt already in progress'. A live backend
     that lost the parent's session is answered once by a reset and a
     fresh claim, which re-loads the same backend id; the caller's
-    single ``release(parent_key)`` balances against that claim.
+    single ``release(parent_key)`` balances against that claim. A
+    ``cron:`` parent is given up on instead: its key is stateless, so
+    the fresh claim would start a session holding none of the run.
 
     *delivery* is the caller's record of this injection attempt, shared so its
     timeout handler sees the provider that holds the prompt. A reload replaces
@@ -348,7 +350,7 @@ async def _inject_with_retry(
             if acp_error_is_session_not_found(exc):
                 if acp_error_after_tool_activity(exc):
                     raise AcpError(f"{SESSION_NOT_FOUND_NOT_REPLAYED_TEXT} {exc}") from exc
-                if _snf_reloaded:
+                if _snf_reloaded or parent_key.startswith("cron:"):
                     raise AcpError(f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {exc}") from exc
                 _snf_reloaded = True
                 logger.warning(
