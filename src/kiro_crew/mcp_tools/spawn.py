@@ -897,6 +897,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
         _OWNER_UNRESOLVED_PREFIX,
+        _TASK_STORE_UNAVAILABLE_CODE,
         RESUME_HOLD_SECS,
         _audit_owner,
         _carried_in_reply,
