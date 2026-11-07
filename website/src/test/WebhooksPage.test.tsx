@@ -437,6 +437,38 @@ describe('credential lifecycle safeguards', () => {
   })
 })
 
+describe('two-step destructive controls and the keyboard', () => {
+  // Arming turns the same button into the confirm, so a held Enter or Space
+  // (whose repeats click a focused button) would confirm with no second
+  // press. Keep unmounts itself, so it hands focus back to Revoke.
+  it('ignores a repeated key on armed Revoke, and Keep returns focus to Revoke', async () => {
+    mount(POPULATED)
+    await openSource()
+    const revoke = screen.getByTestId('webhook-revoke-wht_review')
+    revoke.focus()
+    fireEvent.click(revoke)
+    expect(fireEvent.keyDown(revoke, { key: 'Enter', repeat: true })).toBe(false)
+    expect(fireEvent.keyDown(revoke, { key: ' ', repeat: true })).toBe(false)
+    expect(fireEvent.keyDown(revoke, { key: 'Enter' })).toBe(true)
+    expect(deleteWebhookToken).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('webhook-revoke-wht_review')))
+    expect(deleteWebhookToken).not.toHaveBeenCalled()
+  })
+
+  it('ignores a repeated key on the armed context delete', async () => {
+    mount(POPULATED)
+    await openActivity()
+    fireEvent.click(screen.getByTestId('webhook-row-context-review:pr-123'))
+    const del = screen.getByTestId('webhook-delete-context')
+    fireEvent.click(del)
+    expect(fireEvent.keyDown(del, { key: 'Enter', repeat: true })).toBe(false)
+    expect(fireEvent.keyDown(del, { key: ' ', repeat: true })).toBe(false)
+    expect(deleteWebhookContext).not.toHaveBeenCalled()
+  })
+})
+
 describe('global kill switch', () => {
   it('takes two clicks to turn off and one click to turn back on', async () => {
     setWebhooksEnabled.mockResolvedValue({ ok: true })
