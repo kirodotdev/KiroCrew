@@ -646,8 +646,12 @@ describe('notificationsSlice: approval decision lifecycle', () => {
     expect(store.getState().notifications.retiredApprovals?.r).toEqual({ failed: 'gateway busy' })
   })
 
-  it('holds across 500 seeded interleavings of presses, end frames, snapshots, clears, ring fills and settles', () => {
-    for (let seed = 1; seed <= 500; seed++) {
+  // 500 seeds split into 10 chunks of 50 so no single test carries all 500
+  // under vitest's default 15 s per-test wall limit on loaded CI runners.
+  it.each(
+    Array.from({ length: 10 }, (_, i) => [i * 50 + 1, i * 50 + 50] as [number, number]),
+  )('holds across seeds %i–%i of 500 seeded interleavings of presses, end frames, snapshots, clears, ring fills and settles', (seedFrom, seedTo) => {
+    for (let seed = seedFrom; seed <= seedTo; seed++) {
       const rand = rng(seed)
       let state = seeded()
       let pending = 0
