@@ -640,8 +640,8 @@ def build_post_task(change_link: str) -> str:
         "(that would submit immediately). `gh` uses its own stored auth — never "
         "read, print, or pass any token.\n"
         "  4. Update data/results/<id>.json: set posted_comments = len(comments) "
-        "plus 1 when `body` is non-empty; set design_comment_posted = true when "
-        "`body` is non-empty (else false). Do NOT modify findings, phase1, "
+        "plus 1 when `body` is non-empty and not just `<!-- [code-review-sage] -->`; set "
+        "design_comment_posted = true in that same case (else false). Do NOT modify findings, phase1, "
         "pending_comments, or github_review_payload.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
@@ -1272,7 +1272,12 @@ def _draft_confirmed(link: str, payload: dict) -> str:
                     if positions is None:
                         return ""  # diff unreadable or for another head/base -> unprovable
                     lines_at = {p: {pos: ln for ln, pos in m.items()} for p, m in positions.items()}
-                pos = c.get("position")
+                # `position` is re-mapped by GitHub onto the CURRENT head's
+                # diff; `original_position` stays in the reviewed commit's
+                # diff. When the head moved, `lines_at` is that commit's diff,
+                # so only `original_position` belongs to it.
+                head_moved = pinned is not None and pinned[0] != expected_commit
+                pos = c.get("original_position") if head_moved else c.get("position")
                 line = None if pos is None else lines_at.get(path, {}).get(int(pos))
                 if line is None:
                     return ""  # no position, or one the diff cannot place
@@ -1327,12 +1332,23 @@ def _diff_positions(
     patch is withheld (binary, or too large) maps to nothing, so a comment on
     it cannot be confirmed by position.
     """
-    if pinned is None or pinned[0] != commit or not pinned[1]:
+    if pinned is None or not commit or not pinned[1]:
         return None
     try:
-        files = discovery.run_gh_json(
-            f"repos/{owner}/{repo}/pulls/{number}/files", jq=".[]", paginate=True, host=host
-        )
+        if pinned[0] == commit:
+            files = discovery.run_gh_json(
+                f"repos/{owner}/{repo}/pulls/{number}/files", jq=".[]", paginate=True, host=host
+            )
+        else:
+            # The head moved after the review (new pushes). The draft stays
+            # anchored to the reviewed `commit`, and its positions count down
+            # that commit's diff against the base, so read exactly that diff:
+            # a compare between two fixed shas is immutable, unlike /files,
+            # which always serves the CURRENT head.
+            compare = discovery.run_gh_json(
+                f"repos/{owner}/{repo}/compare/{pinned[1]}...{commit}", host=host
+            )
+            files = (compare[0].get("files") or []) if compare else []
         if _pull_revisions(host, owner, repo, number) != pinned:
             return None
     except Exception:

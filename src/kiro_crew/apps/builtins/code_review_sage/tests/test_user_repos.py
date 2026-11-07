@@ -69,6 +69,7 @@ class TestListUserRepos(_Home):
         rows, truncated = self._run([_repo("widgets")])
         self.assertFalse(truncated)
         self.assertEqual(rows, [{
+            "host": "github.com", "slug": "acme/widgets",
             "owner": "acme", "repo": "widgets", "full_name": "acme/widgets",
             "pushed_at": "2026-07-20T00:00:00Z", "private": False,
             "archived": False, "can_push": True,

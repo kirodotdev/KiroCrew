@@ -135,7 +135,41 @@ describe('AddReposModal', () => {
     mount()
     const row = await screen.findByRole('button', { name: /^Add acme\/dormant$/i })
     await userEvent.click(row)
-    await waitFor(() => expect(api.pinRepo).toHaveBeenCalledWith('acme', 'dormant'))
+    await waitFor(() => expect(api.pinRepo).toHaveBeenCalledWith('acme', 'dormant', undefined))
+  })
+
+  it('pins a GitHub Enterprise repo with its host and keeps it apart from github.com', async () => {
+    api.pinRepo.mockResolvedValue({ repos: [] })
+    api.myRepos.mockResolvedValue({
+      repos: [{
+        owner: 'acme', repo: 'widgets', host: 'acme.ghe.com', slug: 'acme.ghe.com/acme/widgets',
+        full_name: 'acme/widgets', pushed_at: '', private: true, archived: false, can_push: true,
+      }],
+      pinned: [], truncated: false,
+    })
+    mount()
+    // github.com acme/widgets is pinned; the Enterprise one with the same slug is not.
+    const row = await screen.findByRole('button', { name: /^Add acme\.ghe\.com\/acme\/widgets$/i })
+    await userEvent.click(row)
+    await waitFor(() => expect(api.pinRepo).toHaveBeenCalledWith('acme', 'widgets', 'acme.ghe.com'))
+  })
+
+  it('names a configured host that could not be listed', async () => {
+    api.myRepos.mockResolvedValue({
+      repos: [], pinned: [], truncated: false,
+      host_errors: { 'acme.ghe.com': 'not logged in' },
+    })
+    mount()
+    expect(await screen.findByText(/acme\.ghe\.com is unavailable: not logged in/)).toBeTruthy()
+  })
+
+  it('sends a typed Enterprise owner/repo to its own host', async () => {
+    api.pinRepoUrl.mockResolvedValue({ repos: [] })
+    mount()
+    const input = await screen.findByLabelText(/Repository or pull request URL/i)
+    await userEvent.type(input, 'acme.ghe.com/o/r')
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/i }))
+    await waitFor(() => expect(api.pinRepoUrl).toHaveBeenCalledWith('https://acme.ghe.com/o/r'))
   })
 
   it('accepts a manually typed owner/repo', async () => {
@@ -223,7 +257,7 @@ describe('managing repos you already have', () => {
     api.myRepos.mockResolvedValue({ repos: [], pinned: [], gh_ready: true })
     mount()
     await userEvent.click(await screen.findByRole('button', { name: /Remove acme\/widgets/ }))
-    await waitFor(() => expect(api.unpinRepo).toHaveBeenCalledWith('acme', 'widgets'))
+    await waitFor(() => expect(api.unpinRepo).toHaveBeenCalledWith('acme', 'widgets', undefined))
   })
 })
 

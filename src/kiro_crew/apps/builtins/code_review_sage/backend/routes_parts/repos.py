@@ -11,6 +11,7 @@ see this package's ``__init__``.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -26,6 +27,78 @@ if TYPE_CHECKING:
 
 # --- Repo + PR discovery -----------------------------------------------------
 # So the user picks a PR instead of pasting a URL.
+
+
+def _across_hosts(one: Callable[[str], dict]) -> dict:
+    """Run a per-host discovery call on every configured GitHub host and merge.
+
+    github.com keeps its historical behaviour: when it is the only host, a
+    ``GhSetupError`` or ``GhError`` propagates exactly as before. With
+    Enterprise hosts configured, one host being unauthenticated or unreachable
+    must not blank the picker for the others, so a failing host is skipped and
+    named in ``host_errors``; only when EVERY host is unusable does the result
+    read ``setup_required`` (all setup errors) or re-raise (any other error).
+
+    Returns ``{"repos": [...], "truncated": bool, "login"?: str,
+    "logins": {host: login}, "host_errors": {host: msg}}``."""
+    hosts = discovery.configured_hosts()
+    if len(hosts) <= 1:
+        try:
+            res = one(hosts[0] if hosts else discovery.DEFAULT_HOST)
+        except discovery.GhSetupError as exc:
+            return {"repos": [], "setup_required": True, "error": str(exc)}
+        res.setdefault("repos", [])
+        return res
+    rows: list[dict] = []
+    truncated = False
+    logins: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    last_exc: Exception | None = None
+    all_setup = True
+    for host in hosts:
+        try:
+            res = one(host)
+        except discovery.GhSetupError as exc:
+            errors[host] = str(exc)
+            last_exc = exc
+            continue
+        except discovery.GhError as exc:
+            logger.warning("code-review-sage: discovery on %s failed: %s", host, exc)
+            errors[host] = "upstream service error"
+            last_exc = exc
+            all_setup = False
+            continue
+        rows.extend(res.get("repos") or [])
+        truncated = truncated or bool(res.get("truncated"))
+        if res.get("login"):
+            logins[host] = res["login"]
+    if errors and len(errors) == len(hosts):
+        if all_setup:
+            return {"repos": [], "setup_required": True,
+                    "error": "; ".join(f"{h}: {m}" for h, m in errors.items())}
+        assert last_exc is not None
+        raise last_exc
+    out: dict[str, Any] = {"repos": rows, "truncated": truncated, "logins": logins}
+    if discovery.DEFAULT_HOST in logins:
+        out["login"] = logins[discovery.DEFAULT_HOST]
+    elif logins:
+        out["login"] = next(iter(logins.values()))
+    if errors:
+        out["host_errors"] = errors
+    return out
+
+
+def _mark_pinned(rows: list[dict], pinned: list[dict]) -> None:
+    """Annotate discovery rows with ``pinned``, keyed by the host-qualified slug."""
+    keys = {
+        str(r.get("slug") or discovery.repo_slug(
+            r.get("host"), str(r.get("owner") or ""), str(r.get("repo") or ""))).lower()
+        for r in pinned
+    }
+    for row in rows:
+        slug = row.get("slug") or discovery.repo_slug(
+            row.get("host"), str(row.get("owner") or ""), str(row.get("repo") or ""))
+        row["pinned"] = str(slug).lower() in keys
 
 
 async def _handle_recent_repos(request: web.Request) -> web.Response:
@@ -53,19 +126,20 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
                 status=400,
             )
 
+    def _one(host: str) -> dict:
+        login = discovery.current_login(host=host)
+        if not login:
+            return {"repos": [], "login": None}
+        rows, truncated = discovery.list_contributed_repos(
+            login, within_days=days, host=host)
+        return {"repos": rows, "login": login, "truncated": truncated}
+
     def _load() -> dict:
         pinned = discovery.read_repos()
-        pinned_keys = {f"{r['owner']}/{r['repo']}".lower() for r in pinned}
-        try:
-            login = discovery.current_login()
-        except discovery.GhSetupError as exc:
-            return {"repos": [], "pinned": pinned, "setup_required": True, "error": str(exc)}
-        if not login:
-            return {"repos": [], "pinned": pinned, "login": None}
-        rows, truncated = discovery.list_contributed_repos(login, within_days=days)
-        for row in rows:
-            row["pinned"] = row["full_name"].lower() in pinned_keys
-        return {"repos": rows, "pinned": pinned, "login": login, "truncated": truncated}
+        out = _across_hosts(_one)
+        out["pinned"] = pinned
+        _mark_pinned(out["repos"], pinned)
+        return out
 
     try:
         return web.json_response(await asyncio.to_thread(_load))
@@ -87,16 +161,16 @@ async def _handle_my_repos(request: web.Request) -> web.Response:
     200 with ``setup_required`` — an unconfigured CLI is a normal first-run state
     for this panel, and the UI still offers manual entry."""
 
+    def _one(host: str) -> dict:
+        rows, truncated = discovery.list_user_repos(host=host)
+        return {"repos": rows, "truncated": truncated}
+
     def _load() -> dict:
         pinned = discovery.read_repos()
-        pinned_keys = {f"{r['owner']}/{r['repo']}".lower() for r in pinned}
-        try:
-            rows, truncated = discovery.list_user_repos()
-        except discovery.GhSetupError as exc:
-            return {"repos": [], "pinned": pinned, "setup_required": True, "error": str(exc)}
-        for row in rows:
-            row["pinned"] = row["full_name"].lower() in pinned_keys
-        return {"repos": rows, "pinned": pinned, "truncated": truncated}
+        out = _across_hosts(_one)
+        out["pinned"] = pinned
+        _mark_pinned(out["repos"], pinned)
+        return out
 
     try:
         return web.json_response(await asyncio.to_thread(_load))
@@ -111,8 +185,12 @@ async def _handle_my_repos(request: web.Request) -> web.Response:
 async def _handle_review_queue(request: web.Request) -> web.Response:
     """GET .../review-queue — open PRs where the ``gh`` user is a requested
     reviewer. Like ``/my-repos``, an unusable ``gh`` is a 200 ``setup_required``."""
+    def _one(host: str) -> dict:
+        prs, truncated = discovery.list_review_requested(host=host)
+        return {"repos": prs, "truncated": truncated}
+
     try:
-        rows, truncated = await asyncio.to_thread(discovery.list_review_requested)
+        merged = await asyncio.to_thread(_across_hosts, _one)
     except discovery.GhSetupError as exc:
         return web.json_response({"prs": [], "setup_required": True, "error": str(exc)})
     except discovery.GhError as exc:
@@ -120,6 +198,11 @@ async def _handle_review_queue(request: web.Request) -> web.Response:
         return web.json_response(
             {"code": "provider_unavailable", "error": "upstream service error"}, status=502
         )
+    if merged.get("setup_required"):
+        return web.json_response(
+            {"prs": [], "setup_required": True, "error": merged.get("error", "")})
+    rows = sorted(merged["repos"], key=lambda r: r.get("updated_at") or "", reverse=True)
+    truncated = bool(merged.get("truncated"))
     # The same change id the repo list carries: the detail pane scopes posting by
     # it, and an empty one would publish every change of a multi-PR run.
     for row in rows:
@@ -170,13 +253,18 @@ async def _handle_repos(request: web.Request) -> web.Response:
         body = {}
     owner = str(body.get("owner") or "").strip()
     name = str(body.get("repo") or "").strip()
+    raw_host = body.get("host")
+    host = str(raw_host or "").strip().lower() if isinstance(raw_host, str) else ""
+    host = host or discovery.DEFAULT_HOST
     pr: dict | None = None
     if owner and name:
         # An owner/repo pair supplied directly still has to satisfy the same
         # character allowlist as a parsed URL — this value becomes a path segment
-        # in a `gh api` call and (via full_name) a stored identifier.
+        # in a `gh api` call and (via full_name) a stored identifier. The host
+        # goes through the same parsed-hostname allowlist, so only a configured
+        # `github_hosts` entry can be pinned.
         try:
-            owner, name = adapters.parse_repo_url(f"https://github.com/{owner}/{name}")
+            host, owner, name = adapters.parse_repo_ref(f"https://{host}/{owner}/{name}")
         except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
             return web.json_response(
                 {"code": "invalid_repo", "error": f"invalid repo: {e}"}, status=400
@@ -189,35 +277,13 @@ async def _handle_repos(request: web.Request) -> web.Response:
         # Pin the PR's repo and report the PR back so the caller can open it.
         pr = _pull_request_ref(name)
         if pr is not None:
-            # The pinned-repo store carries no host and is enumerated against the
-            # gh default host, so pinning a GitHub Enterprise repo would silently
-            # target the wrong instance later. GHE PRs review fine when pasted in
-            # the PR box; refuse the pin with that pointer instead.
-            if pr.get("host") != "github.com":
-                return web.json_response(
-                    {
-                        "code": "unsupported_repo_host",
-                        "error": "GitHub Enterprise repos can't be pinned; paste the "
-                        "PR link in the review box instead",
-                    },
-                    status=400,
-                )
-            owner, name = pr["owner"], pr["repo"]
+            host, owner, name = pr["host"], pr["owner"], pr["repo"]
         else:
             try:
-                repo_host, owner, name = adapters.parse_repo_ref(name)
+                host, owner, name = adapters.parse_repo_ref(name)
             except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
                 return web.json_response(
                     {"code": "invalid_repo_url", "error": f"invalid repo url: {e}"}, status=400
-                )
-            if repo_host != "github.com":
-                return web.json_response(
-                    {
-                        "code": "unsupported_repo_host",
-                        "error": "GitHub Enterprise repos can't be pinned; paste the "
-                        "PR link in the review box instead",
-                    },
-                    status=400,
                 )
     else:
         return web.json_response(
@@ -226,14 +292,17 @@ async def _handle_repos(request: web.Request) -> web.Response:
         )
 
     if request.method == "POST":
-        repos = await asyncio.to_thread(discovery.add_repo, owner, name)
+        repos = await asyncio.to_thread(discovery.add_repo, owner, name, host=host)
     else:
-        repos = await asyncio.to_thread(discovery.remove_repo, owner, name)
+        repos = await asyncio.to_thread(discovery.remove_repo, owner, name, host=host)
     out: dict[str, Any] = {"ok": True, "repos": repos}
     if request.method == "POST":
         # Name the added repo explicitly: repos[0] is only it if the store
         # happens to prepend.
-        out["added"] = {"owner": owner, "repo": name}
+        out["added"] = {
+            "owner": owner, "repo": name, "host": host,
+            "slug": discovery.repo_slug(host, owner, name),
+        }
     if request.method == "POST" and pr is not None:
         # The caller uses this to open the pasted pull request instead of leaving
         # the user to find it in the list.

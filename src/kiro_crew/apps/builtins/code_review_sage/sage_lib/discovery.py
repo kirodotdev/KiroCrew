@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from sage_lib import store
+from sage_lib import adapters, store
 from sage_lib.store import redact_text as pipeline_redact
 
 # Guarded top-level import, matching pipeline.py: this module is also imported on
@@ -191,14 +191,49 @@ def run_gh_json(path: str, jq: str | None = None, *,
     return out
 
 
-def current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
+DEFAULT_HOST = "github.com"
+
+
+def configured_hosts(config: dict | None = None) -> list[str]:
+    """The canonical GitHub hosts discovery enumerates, github.com first.
+
+    Derived from the adapters' ``allowed_hosts`` allowlist (``github_hosts`` in
+    config.json), so discovery can only ever reach a host a pasted link could
+    reach too. ``www.github.com`` folds into ``github.com``."""
+    hosts = {adapters.canonical_host(h) for h in adapters.allowed_hosts(config)}
+    hosts.discard("")
+    ordered = sorted(hosts - {DEFAULT_HOST})
+    return ([DEFAULT_HOST] if DEFAULT_HOST in hosts else []) + ordered
+
+
+def host_arg(host: str | None) -> str | None:
+    """The ``host`` to pin on a ``gh`` call: ``None`` for github.com (the
+    historical, un-pinned browsing call) and the canonical name otherwise."""
+    h = adapters.canonical_host(host or DEFAULT_HOST)
+    return None if h == DEFAULT_HOST else h
+
+
+def repo_slug(host: str | None, owner: str, repo: str) -> str:
+    """``owner/repo`` on github.com, ``host/owner/repo`` on any other host.
+
+    The same slug ``_list_repo_prs`` reports for a repo, so pinned rows, picker
+    rows and runs all name a repo identically."""
+    h = adapters.canonical_host(host or DEFAULT_HOST)
+    return f"{owner}/{repo}" if h == DEFAULT_HOST else f"{h}/{owner}/{repo}"
+
+
+def current_login(*, timeout: float = GH_TIMEOUT_SEC, host: str | None = None) -> str | None:
     """The authenticated ``gh`` login, or None when it can't be determined.
 
     Runs ``gh api user --jq .login`` directly rather than through
     ``run_gh_json``: ``--jq .login`` emits a BARE STRING, which the JSONL dict
     parser cannot represent. Raises :class:`GhSetupError` when ``gh`` itself is
-    unusable, because "no login" and "no gh" need different UI treatment."""
+    unusable, because "no login" and "no gh" need different UI treatment. A
+    non-github.com ``host`` is pinned with ``--hostname``."""
     argv = [gh_bin(), "api", "user", "--jq", ".login"]
+    h = host_arg(host)
+    if h:
+        argv += ["--hostname", h]
     try:
         proc = _run_gh(argv, timeout=timeout)
     except FileNotFoundError as exc:
@@ -215,7 +250,8 @@ def current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
 
 
 def list_user_repos(*, limit: int = _REPO_PAGE_SIZE,
-                    timeout: float = GH_TIMEOUT_SEC) -> tuple[list[dict], bool]:
+                    timeout: float = GH_TIMEOUT_SEC,
+                    host: str | None = None) -> tuple[list[dict], bool]:
     """Repos the authenticated user can actually reach, newest push first.
 
     Complements :func:`list_contributed_repos`: the event feed only knows what
@@ -233,8 +269,9 @@ def list_user_repos(*, limit: int = _REPO_PAGE_SIZE,
         f"user/repos?per_page={n}&sort=pushed&direction=desc"
         "&affiliation=owner,collaborator,organization_member"
     )
-    rows = run_gh_json(path, _REPO_JQ, timeout=timeout, paginate=False)
+    rows = run_gh_json(path, _REPO_JQ, timeout=timeout, paginate=False, host=host_arg(host))
     truncated = len(rows) >= n
+    canon = adapters.canonical_host(host or DEFAULT_HOST)
     out: list[dict] = []
     for r in rows:
         owner = r.get("owner")
@@ -242,6 +279,8 @@ def list_user_repos(*, limit: int = _REPO_PAGE_SIZE,
         if not isinstance(owner, str) or not isinstance(repo, str) or not owner or not repo:
             continue
         out.append({
+            "host": canon,
+            "slug": repo_slug(canon, owner, repo),
             "owner": owner,
             "repo": repo,
             "full_name": r.get("full_name") or f"{owner}/{repo}",
@@ -264,7 +303,8 @@ def _parse_ts(value: object) -> datetime | None:
 
 
 def list_contributed_repos(login: str, *, within_days: int = CONTRIB_WINDOW_DAYS,
-                           timeout: float = GH_TIMEOUT_SEC) -> tuple[list[dict], bool]:
+                           timeout: float = GH_TIMEOUT_SEC,
+                           host: str | None = None) -> tuple[list[dict], bool]:
     """Repos ``login`` personally contributed to within ``within_days``.
 
     Returns ``(rows, truncated)`` where a row is ``{owner, repo, full_name,
@@ -275,8 +315,9 @@ def list_contributed_repos(login: str, *, within_days: int = CONTRIB_WINDOW_DAYS
     user to conclude they never worked on a repo. ``within_days=0`` disables the
     window."""
     path = f"users/{quote(login, safe='')}/events?per_page={_EVENT_PAGE_SIZE}"
-    events = run_gh_json(path, _EVENT_JQ, timeout=timeout, paginate=False)
+    events = run_gh_json(path, _EVENT_JQ, timeout=timeout, paginate=False, host=host_arg(host))
     truncated = len(events) >= _EVENT_PAGE_SIZE
+    canon = adapters.canonical_host(host or DEFAULT_HOST)
 
     days = max(0, min(int(within_days), MAX_WINDOW_DAYS))
     cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days else None
@@ -295,6 +336,7 @@ def list_contributed_repos(login: str, *, within_days: int = CONTRIB_WINDOW_DAYS
         if row is None:
             owner, _, repo = full_name.partition("/")
             by_repo[full_name] = {
+                "host": canon, "slug": repo_slug(canon, owner, repo),
                 "owner": owner, "repo": repo, "full_name": full_name,
                 "last_contributed_at": ev.get("created_at") or "",
                 "contribution_count": 1, "_when": when,
@@ -324,11 +366,65 @@ def _clip(value: object) -> str:
     return value[:_QUEUE_MAX_TEXT] if isinstance(value, str) else ""
 
 
-def list_review_requested(*, timeout: float = GH_TIMEOUT_SEC) -> tuple[list[dict], bool]:
+_QUEUE_API_JQ = (
+    ".items[] | {url: .html_url, number: .number, title: .title, "
+    "repository_url: .repository_url, author: .user.login, "
+    "updated_at: .updated_at, draft: .draft, labels: [.labels[]?.name]}"
+)
+
+
+def _list_review_requested_on_host(host: str, *, timeout: float) -> tuple[list[dict], bool]:
+    """The review queue on a non-github.com host, via the REST search API.
+
+    ``gh search`` has no ``--hostname`` flag (it follows ``GH_HOST``, which the
+    hardened runner does not let a caller set per call), so an Enterprise host
+    is asked through ``gh api search/issues --hostname <host>`` instead. Rows
+    carry the same shape as the github.com path, with a host-qualified
+    ``repo`` slug so the UI can tell instances apart."""
+    q = quote("is:pr is:open review-requested:@me archived:false", safe=":@")
+    path = f"search/issues?q={q}&sort=updated&order=desc&per_page={_QUEUE_LIMIT}"
+    try:
+        hits = run_gh_json(path, _QUEUE_API_JQ, timeout=timeout, host=host)
+    except GhError as exc:
+        # An empty search result is a JSONL parse "failure" (no lines); that is
+        # an empty queue, not an outage.
+        if "expected one JSON object per line" in str(exc):
+            return [], False
+        raise
+    rows: list[dict] = []
+    for r in hits:
+        url = _clip(r.get("url"))
+        if not url:
+            continue
+        # repository_url is https://<host>/api/v3/repos/<owner>/<repo>
+        repo_api = _clip(r.get("repository_url"))
+        owner_repo = repo_api.split("/repos/", 1)[1] if "/repos/" in repo_api else ""
+        owner, _, name = owner_repo.partition("/")
+        rows.append({
+            "url": url,
+            "number": r.get("number") if isinstance(r.get("number"), int) else 0,
+            "title": _clip(r.get("title")),
+            "repo": repo_slug(host, owner, name) if owner and name else "",
+            "host": host,
+            "author": _clip(r.get("author")),
+            "updated_at": _clip(r.get("updated_at")), "draft": bool(r.get("draft")),
+            "labels": [_clip(lb) for lb in (r.get("labels") or [])[:_QUEUE_MAX_LABELS]
+                       if isinstance(lb, str)],
+            "head_sha": "", "reviewed": False, "reviewed_stale": False,
+        })
+    return rows[:_QUEUE_LIMIT], len(rows) >= _QUEUE_LIMIT
+
+
+def list_review_requested(*, timeout: float = GH_TIMEOUT_SEC,
+                          host: str | None = None) -> tuple[list[dict], bool]:
     """Open PRs that request the ``gh`` user's review, newest update first, in
     the repo PR list's row shape. Search results carry no head SHA, so a row is
     never marked reviewed. Returns ``(rows, truncated)``: one row past the cap is
-    fetched, so ``truncated`` means requests really were left out."""
+    fetched, so ``truncated`` means requests really were left out. A
+    non-github.com ``host`` is searched through the REST API instead."""
+    h = host_arg(host)
+    if h:
+        return _list_review_requested_on_host(h, timeout=timeout)
     argv = [gh_bin(), "search", "prs", "--review-requested=@me", "--state=open",
             "--sort=updated", "--json", _QUEUE_FIELDS, "--limit", str(_QUEUE_LIMIT + 1)]
     try:
@@ -368,7 +464,7 @@ def repos_path(root: Path | None = None) -> Path:
     return store.data_dir(root) / "repos.json"
 
 
-def read_repos(root: Path | None = None) -> list[dict]:
+def read_repos(root: Path | None = None, *, all_hosts: bool = False) -> list[dict]:
     """The user's pinned repos, newest-added first. ``[]`` when unset/unreadable.
 
     Read through the no-link guard and scrubbed on the way out, because this file
@@ -391,10 +487,33 @@ def read_repos(root: Path | None = None) -> list[dict]:
     # this file, and a planted dict or list is truthy, survives redaction (which
     # walks strings), and reaches the client as an object React cannot render --
     # taking the page down rather than showing one bad row.
-    return [_redact_repo(r) for r in repos
-            if isinstance(r, dict)
-            and isinstance(r.get("owner"), str) and r["owner"]
-            and isinstance(r.get("repo"), str) and r["repo"]]
+    #
+    # `host` is optional (rows written before Enterprise support carry none and
+    # mean github.com). A present host must be a string naming a CONFIGURED host:
+    # the UI turns it into the repo URL it lists PRs for, and although that URL
+    # is re-validated server-side, a planted row for an unknown host would only
+    # ever render as a repo that cannot load, so it is dropped here.
+    allowed = set(configured_hosts())
+    out: list[dict] = []
+    for r in repos:
+        if not (isinstance(r, dict)
+                and isinstance(r.get("owner"), str) and r["owner"]
+                and isinstance(r.get("repo"), str) and r["repo"]):
+            continue
+        raw_host = r.get("host", DEFAULT_HOST)
+        if not isinstance(raw_host, str):
+            continue
+        host = adapters.canonical_host(raw_host or DEFAULT_HOST)
+        # The write path reads with `all_hosts` so a repo pinned on a host the
+        # user has temporarily dropped from `github_hosts` survives an
+        # unrelated add/remove instead of being silently deleted.
+        if host not in allowed and not all_hosts:
+            continue
+        row = _redact_repo(r)
+        row["host"] = host
+        row["slug"] = repo_slug(host, row["owner"], row["repo"])
+        out.append(row)
+    return out
 
 
 def _redact_repo(row: dict) -> dict:
@@ -426,27 +545,45 @@ def _write_repos(repos: list[dict], root: Path | None = None) -> Path:
     return path
 
 
-def _same(a: dict, b_owner: str, b_repo: str) -> bool:
-    """Repo identity is case-insensitive on GitHub, so compare that way."""
-    return (str(a.get("owner", "")).lower() == b_owner.lower()
+def _same(a: dict, b_owner: str, b_repo: str, b_host: str = DEFAULT_HOST) -> bool:
+    """Repo identity is case-insensitive on GitHub, so compare that way. The
+    host is part of the identity: ``acme/api`` on github.com and on an
+    Enterprise instance are different repositories."""
+    a_host = adapters.canonical_host(str(a.get("host") or DEFAULT_HOST))
+    return (a_host == adapters.canonical_host(b_host or DEFAULT_HOST)
+            and str(a.get("owner", "")).lower() == b_owner.lower()
             and str(a.get("repo", "")).lower() == b_repo.lower())
 
 
-def add_repo(owner: str, repo: str, root: Path | None = None) -> list[dict]:
-    """Pin a repo (idempotent, most-recent first). Returns the new list."""
+def _visible(repos: list[dict]) -> list[dict]:
+    """The rows a caller may show: those on a currently configured host."""
+    allowed = set(configured_hosts())
+    return [r for r in repos if r.get("host", DEFAULT_HOST) in allowed]
+
+
+def add_repo(owner: str, repo: str, root: Path | None = None, *,
+             host: str = DEFAULT_HOST) -> list[dict]:
+    """Pin a repo (idempotent, most-recent first). Returns the new list.
+
+    ``host`` is the canonical hostname the repo lives on; callers pass a host
+    that already passed the adapters' allowlist."""
+    h = adapters.canonical_host(host or DEFAULT_HOST)
     with _REPOS_LOCK:
-        repos = [r for r in read_repos(root) if not _same(r, owner, repo)]
+        repos = [r for r in read_repos(root, all_hosts=True) if not _same(r, owner, repo, h)]
         repos.insert(0, {
+            "host": h, "slug": repo_slug(h, owner, repo),
             "owner": owner, "repo": repo, "full_name": f"{owner}/{repo}",
             "added_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
         _write_repos(repos, root)
-        return repos
+        return _visible(repos)
 
 
-def remove_repo(owner: str, repo: str, root: Path | None = None) -> list[dict]:
+def remove_repo(owner: str, repo: str, root: Path | None = None, *,
+                host: str = DEFAULT_HOST) -> list[dict]:
     """Unpin a repo. Returns the new list."""
+    h = adapters.canonical_host(host or DEFAULT_HOST)
     with _REPOS_LOCK:
-        repos = [r for r in read_repos(root) if not _same(r, owner, repo)]
+        repos = [r for r in read_repos(root, all_hosts=True) if not _same(r, owner, repo, h)]
         _write_repos(repos, root)
-        return repos
+        return _visible(repos)

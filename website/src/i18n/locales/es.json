@@ -853,7 +853,8 @@
           "repository_or_pull_request_url_or_owner_repo": "URL de repositorio o de pull request, u owner/repo",
           "setup_hint": "Instala GitHub CLI e inicia sesión con el comando de abajo para listar tus repos. Aún puedes añadir cualquier repo por URL arriba.",
           "these_lists_are_capped_so_a_repo_you_have_not_to": "Estas listas tienen un límite, así que puede faltar un repo que no hayas tocado últimamente. Añádelo por URL arriba si no lo ves.",
-          "your_repos": "Tus repos"
+          "your_repos": "Tus repos",
+          "host_unavailable": "{{host}} no está disponible: {{message}}"
         },
         "bandChips": {
           "all": "Todas",
