@@ -658,6 +658,28 @@ async def test_upload_unconverted_heic_names_the_reload_remedy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["deck.key", "Essay.PAGES", "budget.numbers"])
+async def test_upload_iwork_document_names_the_export_remedy(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """An Apple iWork document is still refused -- nothing here reads its
+    format -- but the refusal names the export that does upload."""
+    form = aiohttp.FormData()
+    form.add_field("file", _minimal_docx_bytes(), filename=filename)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "unsupported_file_type"
+    assert body["error"].startswith(f"Unsupported file type: {Path(filename).suffix.lower()}.")
+    assert "File > Export To" in body["error"]
+    assert "PowerPoint, Word, Excel or PDF" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_upload_html_under_an_image_extension_is_still_refused(
     upload_dir: Path,
     mock_sel,

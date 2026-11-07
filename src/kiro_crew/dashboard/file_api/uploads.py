@@ -28,6 +28,8 @@ if TYPE_CHECKING:
         _DEFAULT_NAME_MAX,
         _HEIC_HINT_EXT,
         _HEIF_BRANDS,
+        _IWORK_HINT,
+        _IWORK_HINT_EXT,
         _MAGIC_PREFIXES,
         _MAX_STORED_NAME_BYTES,
         _MAX_UPLOAD_FILES,
@@ -389,6 +391,8 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         "before uploading them: reload the page and attach the "
                         "photo again, or export it as a JPEG."
                     )
+                elif ext in _IWORK_HINT_EXT:
+                    detail = f"{detail}. {_IWORK_HINT}"
                 return web.json_response(
                     {"error": detail, "code": "unsupported_file_type"},
                     status=400,
@@ -881,6 +885,8 @@ async def api_directory_upload(request: web.Request) -> web.Response:
         if ext in _VIDEO_HINT_EXT:
             accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
             detail = f"{detail} — accepted video containers: {accepted}"
+        elif ext in _IWORK_HINT_EXT:
+            detail = f"{detail}. {_IWORK_HINT}"
         return _denied("unsupported_file_type", detail, 400, resources=filename)
 
     # ``dashboard.upload_max_mb``, read off the loop like api_upload_file.

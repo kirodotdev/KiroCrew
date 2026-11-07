@@ -773,6 +773,14 @@ _VIDEO_HINT_EXT = frozenset(
 #: the conversion shipped, or a client other than the dashboard). The boundary
 #: still refuses it -- no model reads HEIC -- but says how to get past it.
 _HEIC_HINT_EXT = frozenset({".heic", ".heif"})
+#: Apple iWork names. Keynote, Pages and Numbers save a closed binary format
+#: no parser here reads, so the boundary refuses them, but names the export
+#: that does upload. ``.key`` is also a PEM private key's extension, hence the "if".
+_IWORK_HINT_EXT = frozenset({".key", ".pages", ".numbers"})
+_IWORK_HINT = (
+    "If it is an Apple Keynote, Pages or Numbers document, use File > Export To "
+    "in that app to save a PowerPoint, Word, Excel or PDF copy, and upload that."
+)
 #: Media type :func:`_sniff_media_type` must report for the claimed video
 #: extension. The MP4 family (mp4/m4v/mov) all carry a ``ftyp`` box at offset 4
 #: and sniff as ``video/mp4``; QuickTime's brand differs but the box does not.
