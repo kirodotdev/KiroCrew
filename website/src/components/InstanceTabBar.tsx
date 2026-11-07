@@ -49,6 +49,7 @@ import {
 
 import { i18nT } from '../i18n/t'
 import { postToHost } from '../lib/hostRelay'
+import { quietNextFocus } from '../lib/quietFocusReturn'
 import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
  * Crews that get a switcher entry: sticky connect intent (`was_connected`,
@@ -655,6 +656,10 @@ function SwitcherMenu({
   stableOrder,
   onToggleStableOrder,
   showStableOrderToggle,
+  open,
+  onOpenChange,
+  onInteractOutside,
+  onCloseAutoFocus,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -665,8 +670,12 @@ function SwitcherMenu({
   stableOrder: boolean
   onToggleStableOrder: () => void
   showStableOrderToggle: boolean
+  /** Owned by `Switcher`, so the leading active chip opens this same menu. */
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onInteractOutside: (event: Event) => void
+  onCloseAutoFocus: (event: Event) => void
 }) {
-  const [open, setOpen] = useState(false)
   // Unread the user cannot see: everything that is neither the active pane nor a
   // chip currently on screen. A pinned crew whose chip got cut off counts, since
   // its badge went with it.
@@ -680,7 +689,7 @@ function SwitcherMenu({
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
       : i18nT('components.instanceTabBar.switch_crew')
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -706,6 +715,8 @@ function SwitcherMenu({
         align="start"
         aria-label={i18nT('components.instanceTabBar.instances')}
         className="min-w-[240px] max-w-[340px]"
+        onInteractOutside={onInteractOutside}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
           {entries.map((entry, i) => (
@@ -775,12 +786,17 @@ function SwitcherChip({
   onSelect,
   className = '',
   shrinkable = false,
+  buttonRef,
+  menuOpen,
 }: {
   entry: SwitcherEntry
   active: boolean
   onSelect: () => void
   /** Extra classes for the caller's own layout hooks (see `tb-crew-active-chip`). */
   className?: string
+  buttonRef?: React.Ref<HTMLButtonElement>
+  /** Set only on a chip that opens the switcher menu: whether that menu is open. */
+  menuOpen?: boolean
   /**
    * Let the chip give up NAME width when its row is short of room, instead of
    * holding its full width and letting the row cut whichever chip lands on the
@@ -812,8 +828,11 @@ function SwitcherChip({
   const hasBadge = entry.unread > 0
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onSelect}
+      aria-haspopup={menuOpen === undefined ? undefined : 'menu'}
+      aria-expanded={menuOpen}
       aria-current={active ? 'true' : undefined}
       aria-label={entry.title}
       title={entry.title}
@@ -1119,6 +1138,11 @@ function Switcher({
   const stableOrder = (stableOrderProp ?? (embedded ? false : storeStableOrder)) === true
   const toggleStableOrder = onToggleStableOrderProp ?? storeToggleStableOrder
   const [clippedPinned, setClippedPinned] = useState<Set<string>>(() => new Set())
+  // The leading active chip toggles the same menu as the caret. When the chip
+  // opened it, closing it hands focus back to the chip rather than the caret.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const chipRef = useRef<HTMLButtonElement>(null)
+  const chipOpened = useRef(false)
   const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
   // Two orderings for the always-visible chips:
   //  • Default: the crew on screen LEADS the row and is never also a pinned chip
@@ -1149,8 +1173,13 @@ function Switcher({
         <SwitcherChip
           entry={active}
           active
-          onSelect={() => onSelect(active.id)}
+          onSelect={() => {
+            chipOpened.current = true
+            setMenuOpen(o => !o)
+          }}
           className="tb-crew-active-chip"
+          buttonRef={chipRef}
+          menuOpen={menuOpen}
         />
       ) : null}
       {chips.length > 0 ? (
@@ -1171,6 +1200,24 @@ function Switcher({
         stableOrder={stableOrder}
         onToggleStableOrder={toggleStableOrder}
         showStableOrderToggle={!relayUnsupported}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        onInteractOutside={e => {
+          // A press that reaches the chip (the menu is non-modal on touch devices)
+          // is the chip's own toggle, not a dismissal, or the menu would close on
+          // pointerdown and the chip's click reopen it. A modal menu blocks the
+          // press from reaching the chip and closes on it by itself.
+          if (chipRef.current?.contains(e.target as Node)) e.preventDefault()
+          else chipOpened.current = false
+        }}
+        onCloseAutoFocus={e => {
+          if (chipOpened.current && chipRef.current) {
+            e.preventDefault()
+            quietNextFocus(chipRef.current)
+            chipRef.current.focus()
+          }
+          chipOpened.current = false
+        }}
       />
     </div>
   )
