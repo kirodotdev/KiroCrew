@@ -45,11 +45,11 @@ describe('devFleetApi error shape', () => {
     expect(err.message).toBe('upstream refused the connection')
   })
 
-  it('shows HTTP <status> for an edge HTML error page rather than its markup', async () => {
+  it('says an edge HTML 502 page is temporary rather than showing its markup', async () => {
     mockResponse('<html>502 Bad Gateway</html>', 502)
     const err = await failureOf(api.get('/fleet'))
     expect(err.status).toBe(502)
-    expect(err.message).toBe('HTTP 502')
+    expect(err.message).toBe('The server is temporarily unavailable (HTTP 502)')
     // The page itself stays readable for diagnostics.
     expect(err.body).toContain('502 Bad Gateway')
   })
