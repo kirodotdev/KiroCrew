@@ -700,7 +700,10 @@ def _url_payload_command(n: int) -> str:
 #: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
 #: it, and the catalog comment on why their call names stand bare (both rows match
 #: exactly what they matched). Nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_802
+#: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
+#: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
+#: (55 lines; the rest fit in the headroom main had left). Re-measured.
+_PACKAGE_LINE_BUDGET = 34_845
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

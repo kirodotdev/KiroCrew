@@ -464,6 +464,9 @@ def compose_tier_ladder(
             _warn_env_beneath_central_once(ceiling.tier)
         _audit_tier_intersect_once(ceiling.tier, lower.tier)
         ceiling = _intersect_ceilings(ceiling, lower)
+    if len(present) > 1:
+        # Only on a real fold, so a ceiling that composes alone stays the same object.
+        ceiling = replace(ceiling, lower_tier_folded=True)
     if distribution != ceiling.distribution:
         # Only when the fold actually moved them, so a ceiling that composes alone
         # is returned as the same object: callers assert that identity to prove a

@@ -80,6 +80,8 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.app_dev_mode": _CAPABILITY_OFF,
     # The session's agent and tools run in Kiro's cloud, outside this ceiling.
     "capabilities.kiro_cloud_sessions": _CAPABILITY_OFF,
+    # Credential redaction stays on in the Files view.
+    "capabilities.credential_redaction_off": _CAPABILITY_OFF,
 }
 
 #: Inner lists of a capability that keep their baseline when the remote policy

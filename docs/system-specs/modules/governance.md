@@ -3107,7 +3107,17 @@ an agent-bound task profile, then the surface binding. A policy or profile
 denial of this capability refuses even on an otherwise ungoverned host, and
 an unreadable ceiling or profile fails closed. Every grant, denial and evaluation
 error is emitted through `sel().log_governance_decision`, including the session,
-agent, capability and reason; audit failures never change the permission result).
+agent, capability and reason; audit failures never change the permission result),
+and `capabilities.credential_redaction_off` (opt-in, `capability_default=False`:
+on a host whose policy governs any scope, only a policy that names this row
+`enabled: true` lets the owner turn credential redaction off in the Files view.
+`security.redaction_switch.owner_may_disable` reads it at the policy layer only
+(`policy_level_control`, so an enterprise build reads the baseline's off; a
+profile does not take part), and an unreadable ceiling keeps redaction on. A
+folded ceiling (`lower_tier_folded`) also keeps it on, even when the top tier
+named the row itself, because the fold does not say which tier did. What
+the switch then does is in [security](security.md), "Owner's credential-redaction
+switch").
 Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in

@@ -731,6 +731,11 @@ class GovernanceCeiling:
     # audit in ``compose_tier_ladder``, which names authority and subordinate in the
     # SEL when two tiers compose; nothing displays it to an operator yet.
     tier: str = ""
+    # True when ``compose_tier_ladder`` folded a lower tier beneath this ceiling's
+    # authority, so a scope the authority left unnamed may come from that lower tier.
+    # Set per composition, never carried over: a refresh with no lower tier is False.
+    # Read by ``redaction_switch.owner_may_disable``.
+    lower_tier_folded: bool = False
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)

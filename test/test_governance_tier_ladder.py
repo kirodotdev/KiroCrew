@@ -540,6 +540,8 @@ class TestEveryCeilingFieldHasAComposeClass:
             "agentcore_workload_name",
             "mcp_registry_local_control_plane",
             "tier",
+            # A lower tier never supplies it; compose_tier_ladder sets it after the fold.
+            "lower_tier_folded",
         }
     )
 
@@ -568,6 +570,7 @@ class TestEveryCeilingFieldHasAComposeClass:
             agentcore_gateway_url="https://sub.example",
             agentcore_workload_name="sub-workload",
             agentcore_identity_posture="login",
+            lower_tier_folded=True,
         )
 
         merged = governance._intersect_ceilings(authority, subordinate)
