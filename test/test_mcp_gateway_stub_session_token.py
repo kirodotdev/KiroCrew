@@ -840,6 +840,8 @@ class TestTokenOnlyControlPlane:
         frame = _register(PARENT_KEY)
         frame["server_name"] = self.NAME
         key = PoolKey.from_register(frame)
+        # A control-plane target is resolved only once its gateway announced a port.
+        monkeypatch.setattr(gw, "_OWNER_PORT", 47211)
         monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_DASHBOARD", "kirocrew mcp-dashboard")
         monkeypatch.setenv("LD_PRELOAD", "/host/preload.so")
 
@@ -1140,6 +1142,8 @@ class TestSpawnsOwnControlPlane:
         monkeypatch.setattr(gw, "spawn_backend", fake_spawn)
         monkeypatch.setattr(gw, "_declared_env_to_forward", lambda k: {})
         monkeypatch.setattr(gw, "resolve_secret_uris", lambda env, home: (dict(env), []))
+        # A control-plane spawn waits for the port its gateway announces.
+        monkeypatch.setattr(gw, "_OWNER_PORT", 47211)
         key = PoolKey.from_register(_register_frame(server_name="kirocrew-cron"))
         got, was_spawned = await gw._acquire_backend(
             BackendPool(max_backends=4),
@@ -1188,6 +1192,8 @@ class TestSpawnsOwnControlPlane:
         monkeypatch.setattr(gw, "spawn_backend", fake_spawn)
         monkeypatch.setattr(gw, "_declared_env_to_forward", lambda k: {})
         monkeypatch.setattr(gw, "resolve_secret_uris", lambda env, home: (dict(env), []))
+        # A control-plane spawn waits for the port its gateway announces.
+        monkeypatch.setattr(gw, "_OWNER_PORT", 47211)
         key = PoolKey.from_register(_register_frame(server_name=server_name))
         resolved_env = {"PATH": "/usr/bin"}
         got, _ = await gw._acquire_backend(

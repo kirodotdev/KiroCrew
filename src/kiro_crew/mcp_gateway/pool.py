@@ -361,8 +361,9 @@ _MAX_SPAWN_DRAIN_RETRIES = 3
 
 class _DrainedDuringSpawn(RuntimeError):
     """Internal signal: a blue-green cutover advanced the drain epoch while a
-    backend was being spawned, so :meth:`BackendPool.add` refused to insert the
-    (possibly stale-credential) backend into the active pool. Caught by
+    backend was being spawned, or the backend fails the caller's ``reusable``
+    check (what it was spawned for was retired meanwhile), so
+    :meth:`BackendPool.add` refused to insert it into the active pool. Caught by
     :meth:`get_or_create`, which discards the backend and respawns fresh."""
 
 
@@ -625,6 +626,7 @@ class BackendPool:
         *,
         reserve: bool = False,
         spawn_epoch: Optional[int] = None,
+        reusable: Optional[Callable[["Backend"], bool]] = None,
     ) -> None:
         """Register a freshly-spawned backend under ``key``.
 
@@ -647,13 +649,20 @@ class BackendPool:
         was launched with the pre-rotation credential and MUST NOT be pooled
         as active — :class:`_DrainedDuringSpawn` is raised so
         :meth:`get_or_create` discards it and respawns fresh. ``None`` (the
-        default) disables the guard.
+        default) disables the guard. ``reusable`` is the same guard for a
+        caller's own condition: checked under the lock that
+        :meth:`drain_matching_to_bluegreen` takes, so a backend that a retirement
+        made stale while it spawned is never pooled.
         """
         digest = key.stable_hash()
         async with self._lock:
             if spawn_epoch is not None and spawn_epoch != self._drain_epoch:
                 raise _DrainedDuringSpawn(
                     f"blue-green cutover during spawn of {key.human_readable()}"
+                )
+            if reusable is not None and not reusable(backend):
+                raise _DrainedDuringSpawn(
+                    f"target of {key.human_readable()} retired during its spawn"
                 )
             if digest in self._backends:
                 raise RuntimeError(
@@ -683,6 +692,8 @@ class BackendPool:
         self,
         key: PoolKey,
         spawn: Callable[[], Awaitable["Backend"]],
+        *,
+        reusable: Optional[Callable[["Backend"], bool]] = None,
     ) -> "Backend":
         """Return the backend for ``key``, spawning via ``spawn()`` if absent.
 
@@ -692,13 +703,28 @@ class BackendPool:
         false) are treated as absent: the stale entry is evicted and
         ``spawn()`` runs again.
 
+        ``reusable`` (``None`` = every live backend is) is the caller's own
+        condition on a backend it may be handed. A live entry that fails it is
+        retired to the draining list, where its in-flight calls finish, and a
+        fresh one is spawned. A fresh one that fails it (what it was spawned for
+        was retired while it spawned) is discarded and spawned again, like a
+        backend that raced a blue-green cutover.
+
         The returned backend is **reserved** against idle/LRU eviction. The
         caller MUST call :meth:`unreserve` once ``backend.attach_stub``
         completes (or if the caller bails without attaching).
         """
+
+        def _usable(backend: "Backend") -> bool:
+            return (
+                backend.is_alive
+                and not backend.quarantined
+                and (reusable is None or reusable(backend))
+            )
+
         digest = key.stable_hash()
         existing = await self.get(key)
-        if existing is not None and existing.is_alive and not existing.quarantined:
+        if existing is not None and _usable(existing):
             self.reserve(key)
             return existing
 
@@ -716,9 +742,15 @@ class BackendPool:
                 # Double-check after acquiring the per-key lock: another task
                 # may have completed the spawn while we were queued.
                 existing = await self.get(key)
-                if existing is not None and existing.is_alive and not existing.quarantined:
+                if existing is not None and _usable(existing):
                     self.reserve(key)
                     return existing
+                if existing is not None and existing.is_alive and not existing.quarantined:
+                    # Live but failing ``reusable``: retired, not killed, so the
+                    # calls its attached stubs have in flight still finish. The
+                    # per-key spawn lock stays held for the respawn below.
+                    await self._retire_to_draining(digest, existing)
+                    existing = None
                 if existing is not None and existing.is_alive and existing.quarantined:
                     # Quarantine enforcement: never hand a quarantined backend to
                     # a new stub — it may still be executing cancelled (possibly
@@ -789,15 +821,15 @@ class BackendPool:
                             backend,
                             reserve=True,
                             spawn_epoch=spawn_epoch,
+                            reusable=reusable,
                         )
-                    except _DrainedDuringSpawn:
-                        # Stale-credential backend raced a rotation — discard it
-                        # (shielded so a concurrent cancel can't orphan it) and
-                        # respawn against the fresh credential.
+                    except _DrainedDuringSpawn as superseded:
+                        # Stale backend raced a rotation or a retirement — discard
+                        # it (shielded so a concurrent cancel can't orphan it) and
+                        # respawn against what is current now.
                         logger.info(
-                            "get_or_create: blue-green cutover during spawn of "
-                            "%s — discarding stale backend and respawning",
-                            key.server_name,
+                            "get_or_create: %s — discarding stale backend and respawning",
+                            superseded,
                         )
                         try:
                             await asyncio.shield(backend.shutdown(timeout=2.0))
@@ -1200,31 +1232,70 @@ class BackendPool:
 
         Returns the count of backends moved to draining.
         """
-        now = time.monotonic()
-        deadline = now + deadline_secs
+        deadline = time.monotonic() + deadline_secs
         async with self._lock:
             # Bump the cutover generation so any in-flight spawn that started
             # before this drain (reading the pre-rotation credential) is
             # rejected by add()'s epoch guard and respawned fresh, instead of
             # landing a stale-credential backend in the freshly-drained pool.
             self._drain_epoch += 1
-            moved = 0
-            for digest in list(self._backends.keys()):
-                backend = self._backends.pop(digest)
-                # Do NOT pop a spawn lock held by an in-flight spawn for this
-                # digest — the epoch guard now handles the in-flight backend,
-                # and popping a held lock breaks the fork convention (a
-                # concurrent get_or_create would create a fresh lock and could
-                # double-spawn / hit the pool-key-collision RuntimeError). Only
-                # reap an idle lock (no holder, no waiter).
-                lock = self._spawn_locks.get(digest)
-                if lock is not None and _lock_idle(lock):
-                    self._spawn_locks.pop(digest, None)
-                self._draining.append(
-                    _DrainingBackend(backend=backend, deadline=deadline, digest=digest)
+            return self._drain_locked(list(self._backends.keys()), deadline)
+
+    async def drain_matching_to_bluegreen(
+        self,
+        retire: Callable[["Backend"], bool],
+        deadline_secs: float = DRAIN_DEADLINE_SECS,
+    ) -> int:
+        """Move the active backends for which ``retire`` is true to the draining list.
+
+        :meth:`drain_all_to_bluegreen` for a subset: the rest stay pooled, and the
+        drain epoch is not bumped, so no other key's in-flight spawn is discarded.
+        A spawn of a retired kind that lands after this call is kept out by the
+        ``reusable`` check its caller passes to :meth:`get_or_create`.
+
+        Returns the count of backends moved to draining.
+        """
+        deadline = time.monotonic() + deadline_secs
+        async with self._lock:
+            digests = [digest for digest, backend in self._backends.items() if retire(backend)]
+            return self._drain_locked(digests, deadline)
+
+    def _drain_locked(self, digests: list[str], deadline: float) -> int:
+        """Move ``digests`` from the active index to the draining list. Caller holds ``_lock``."""
+        for digest in digests:
+            backend = self._backends.pop(digest)
+            # Do NOT pop a spawn lock held by an in-flight spawn for this
+            # digest — the epoch guard (or the caller's ``reusable`` check)
+            # now handles the in-flight backend,
+            # and popping a held lock breaks the fork convention (a
+            # concurrent get_or_create would create a fresh lock and could
+            # double-spawn / hit the pool-key-collision RuntimeError). Only
+            # reap an idle lock (no holder, no waiter).
+            lock = self._spawn_locks.get(digest)
+            if lock is not None and _lock_idle(lock):
+                self._spawn_locks.pop(digest, None)
+            self._draining.append(
+                _DrainingBackend(backend=backend, deadline=deadline, digest=digest)
+            )
+        return len(digests)
+
+    async def _retire_to_draining(self, digest: str, backend: "Backend") -> None:
+        """Move ``backend`` to the draining list if it is still the entry for ``digest``.
+
+        For :meth:`get_or_create`, which holds the per-key spawn lock and
+        respawns under it, so the lock is kept.
+        """
+        async with self._lock:
+            if self._backends.get(digest) is not backend:
+                return
+            del self._backends[digest]
+            self._draining.append(
+                _DrainingBackend(
+                    backend=backend,
+                    deadline=time.monotonic() + DRAIN_DEADLINE_SECS,
+                    digest=digest,
                 )
-                moved += 1
-            return moved
+            )
 
     async def reap_draining(self) -> list["Backend"]:
         """Reap draining backends whose refcount hit 0 or whose deadline

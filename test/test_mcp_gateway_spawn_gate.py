@@ -780,9 +780,12 @@ class TestRejectionClasses:
             adm.SpawnGateTimeout,
             adm.SpawnGateClosed,
             BackendUnavailable,
+            gw.OwnerPortUnproven,
         }
         measured = {type(exc) for _, exc, _ in _CAPACITY_FAILURES if not isinstance(exc, OSError)}
-        assert measured == set(gw._CAPACITY_FAILURES)
+        # ``OwnerPortUnproven`` is measured on both wire shapes, and by the
+        # classifier, in test_mcp_policy_instance_binding.py::TestOwnerPortRefusal.
+        assert measured | {gw.OwnerPortUnproven} == set(gw._CAPACITY_FAILURES)
 
     def test_the_legacy_gate_wait_stays_under_the_pre_upgrade_stubs_own_window(self) -> None:
         """The capacity guarantee holds only for a refusal that ARRIVES in time.

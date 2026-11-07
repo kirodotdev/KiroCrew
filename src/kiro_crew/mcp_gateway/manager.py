@@ -255,6 +255,14 @@ class GatewayManager:
     #: and at DEBUG thereafter. Class-level default for the same ``__new__``
     #: reasoning as above.
     _cap_settle_logged: bool = False
+    #: The port this gateway's listener bound, once the gateway has told this
+    #: manager (:meth:`set_owner_port`); ``None`` before that. The daemon binds
+    #: pooled control-plane backends to it, so it comes only from the gateway's
+    #: own record of its bind, never from an environment read before the bind.
+    #: Class-level default for the same ``__new__`` reasoning as above.
+    _owner_port: Optional[int] = None
+    #: Whether the current run of failed announces was already logged at WARNING.
+    _owner_port_warned: bool = False
 
     def __init__(self, spec: GatewaySpec) -> None:
         self._spec = spec
@@ -265,6 +273,8 @@ class GatewayManager:
         self._stand_downs_issued = 0
         self._last_drift_check = 0.0
         self._cap_settle_logged = False
+        self._owner_port = None
+        self._owner_port_warned = False
         self._lifecycle_lock = asyncio.Lock()
         # Detached fire-and-forget telemetry tasks (saturation-signal emits).
         # Held only so the event loop keeps a strong reference until each
@@ -286,7 +296,75 @@ class GatewayManager:
         callers treat a ``False`` return as "fall back to per-session MCP".
         """
         async with self._lifecycle_lock:
-            return await self._start_locked()
+            started = await self._start_locked()
+        if started and self._owner_port is not None:
+            # Spawned or adopted, the daemon now serving may not hold this
+            # gateway's port: an adopted one holds its previous owner's, and the
+            # boot spawn holds none. A miss is retried by the watchdog.
+            await self._send_owner_port()
+        return started
+
+    def set_owner_port(self, port: int) -> bool:
+        """Record the port this gateway's listener bound, without sending it.
+
+        For a manager created after the bind (a broker restart), before
+        :meth:`start`: the spawn passes it on argv and the start announces it.
+        Returns False, and keeps the previous value, for anything but an ``int``
+        in 1..65535.
+        """
+        if type(port) is not int or not 0 < port < 65536:
+            logger.warning("mcp-gateway: ignoring an owner port that is not a port: %r", port)
+            return False
+        self._owner_port = port
+        return True
+
+    async def announce_owner_port(self, port: int) -> bool:
+        """Record this gateway's bound port and send it to the daemon.
+
+        The daemon binds pooled Kiro Crew control-plane backends to this port and
+        holds any that it cannot bind until the port arrives. Returns whether the
+        daemon acknowledged it. A miss never fails anything: it is logged, and the
+        watchdog sends the stored port again on its next liveness reconcile, as it
+        does after every respawn and adoption.
+        """
+        if not self.set_owner_port(port):
+            return False
+        return await self._send_owner_port()
+
+    async def _send_owner_port(self) -> bool:
+        """Send the stored port on its own connection; True iff the daemon took it."""
+        port = self._owner_port
+        if port is None:
+            return False
+        reply = await self._control_roundtrip({"type": "owner-port", "port": port})
+        if reply is not None and reply.get("type") == "owner-port-set" and reply.get("port") == port:
+            self._owner_port_warned = False
+            logger.info("mcp-gateway: the daemon on %s has owner port %d", self._spec.socket_path, port)
+            return True
+        # WARNING once per run of misses: the watchdog retries every liveness
+        # interval, and a daemon that keeps refusing must not flood the log.
+        log = logger.debug if self._owner_port_warned else logger.warning
+        self._owner_port_warned = True
+        log(
+            "mcp-gateway: the daemon on %s did not take owner port %d (%s); pooled "
+            "Kiro Crew backends wait for it, and the watchdog sends it again",
+            self._spec.socket_path,
+            port,
+            (reply or {}).get("reason") or (reply or {}).get("type") or "no answer",
+        )
+        return False
+
+    async def _reconcile_owner_port(self, pong: dict) -> None:
+        """Send the stored port again when the daemon that answered lacks it.
+
+        Read off the liveness pong the watchdog fetches anyway. A pong with no
+        ``owner_port`` key is from a daemon that predates the announce, which
+        cannot take it, so nothing is sent.
+        """
+        if self._owner_port is None or "owner_port" not in pong:
+            return
+        if pong.get("owner_port") != self._owner_port:
+            await self._send_owner_port()
 
     async def _start_locked(self) -> bool:
         """Inner start implementation, called under ``_lifecycle_lock``."""
@@ -745,6 +823,11 @@ class GatewayManager:
             "--idle-timeout-secs", str(self._spec.idle_timeout_secs),
             "--max-backends", str(self._spec.max_backends),
         )
+        # A spawn after the listener bound (a watchdog respawn, a broker restart)
+        # starts with the port, so no stub waits for an announce. Absent before
+        # the bind, which keeps the boot command line unchanged.
+        if self._owner_port is not None:
+            argv += ["--owner-port", str(self._owner_port)]
         # Only pass --prewarm-count when enabled so the daemon command line
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
@@ -1324,6 +1407,7 @@ class GatewayManager:
                     # alive and never displaced.
                     pong = await self._ping_with_escalation(observe=True)
                     if pong is not None:
+                        await self._reconcile_owner_port(pong)
                         if await self._reconcile_adopted(pong):
                             continue
                         await asyncio.sleep(_LIVENESS_PING_INTERVAL_SECS)
@@ -1546,8 +1630,12 @@ class GatewayManager:
             # gives up at it, so a healthy daemon serving 100+ connections looks
             # identical to a dead one. Killing the wrong one costs every attached
             # session its tools.
-            if await self._ping_with_escalation(observe=True) is not None:
+            pong = await self._ping_with_escalation(observe=True)
+            if pong is not None:
                 consecutive_failures = 0
+                # A daemon this watchdog respawned took the port on argv; one
+                # that missed an announce gets it again here.
+                await self._reconcile_owner_port(pong)
                 continue
             consecutive_failures += 1
             logger.warning(

@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, Any, Optional
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway.admission import Admission, SpawnGateClosed, SpawnGateTimeout
 from kiro_crew.mcp_gateway.daemon import logger
-from kiro_crew.mcp_gateway.daemon.launch import _TargetUnknown, resolvable_target_stems
+from kiro_crew.mcp_gateway.daemon.launch import (
+    OwnerPortUnproven,
+    _TargetUnknown,
+    resolvable_target_stems,
+)
 from kiro_crew.mcp_gateway.daemon.wire import _MAX_FRAME_BYTES, _is_ping_frame, _write_json_line
 from kiro_crew.mcp_gateway.host_budget import HostBudgetExhausted, HostCharge
 from kiro_crew.mcp_gateway.pool import (
@@ -103,12 +107,16 @@ _PRESSURE_ERRNOS = frozenset({errno.ENOMEM, errno.EAGAIN, errno.EMFILE, errno.EN
 #: equal to what ``_classify_rejection`` tests, the same way ``_PRESSURE_ERRNOS`` is
 #: held equal to the errnos it calls pressure: a sixth member added to one and not
 #: the other would reach ``capacity`` with nothing asserting it authorises no exec.
+#: ``OwnerPortUnproven`` is the moment too: the owning gateway has not announced
+#: its port yet, and the stub's own exec would run a control-plane server inside
+#: the session's sandbox, where it cannot reach this home's ``run/``.
 _CAPACITY_FAILURES: tuple[type[BaseException], ...] = (
     PoolAtCapacity,
     HostBudgetExhausted,
     SpawnGateTimeout,
     SpawnGateClosed,
     BackendUnavailable,
+    OwnerPortUnproven,
 )
 
 
@@ -541,6 +549,7 @@ async def _refuse_lazy_spawn(
             HostBudgetExhausted,
             SpawnGateTimeout,
             SpawnGateClosed,
+            OwnerPortUnproven,
         ),
     ):
         # Legacy lazy-spawn path: only pre-ensure_backend stubs

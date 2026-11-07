@@ -395,6 +395,74 @@ class TestStopAndApplyMcpBroker:
         assert ds._mcp_gateway_apply == orch._apply_mcp_gateway_enabled
         assert ds._mcp_gateway_apply_stub == orch._apply_mcp_stub
 
+    @pytest.mark.asyncio
+    async def test_wire_dashboard_announces_the_port_the_listener_bound(self, monkeypatch):
+        """The broker started before the bind, so this is where its daemon learns
+        the port: from the listener's record, never the inherited environment."""
+        monkeypatch.setenv("KIROCREW_PORT", "47299")
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "47299")
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        ds._listener_bound_port = 47211
+        orch.dashboard_state = ds
+        mgr = MagicMock()
+        mgr.announce_owner_port = AsyncMock(return_value=True)
+        orch._mcp_gateway_manager = mgr
+
+        orch._wire_mcp_gateway_dashboard()
+        await finished(asyncio.gather(*orch._background_tasks), "the announce task")
+
+        mgr.announce_owner_port.assert_awaited_once_with(47211)
+
+    @pytest.mark.parametrize("bound", [0, None, "47211"])
+    def test_wire_dashboard_announces_nothing_without_a_bound_port(self, bound):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        ds._listener_bound_port = bound
+        orch.dashboard_state = ds
+        mgr = MagicMock()
+        orch._mcp_gateway_manager = mgr
+
+        orch._wire_mcp_gateway_dashboard()
+
+        mgr.announce_owner_port.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", [47211, None], ids=["after-the-bind", "at-boot"])
+    async def test_a_broker_started_after_the_bind_takes_the_listeners_port(
+        self, tmp_path, monkeypatch, bound
+    ):
+        """A broker restart (the sharing toggle) builds a new manager; it learns the
+        port from the same record, before ``start()`` spawns the daemon."""
+        monkeypatch.setenv("KIROCREW_PORT", "47299")
+        orch = _make_orchestrator()
+        orch._cfg.mcp_gateway.enabled = True
+        orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
+        if bound is None:
+            orch.dashboard_state = None
+        else:
+            orch.dashboard_state = _mock_dashboard_state()
+            orch.dashboard_state._listener_bound_port = bound
+        manager = MagicMock()
+        manager.start = AsyncMock(return_value=True)
+        with (
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
+            patch(
+                "kiro_crew.slack.gateway.rewrite_kwargs",
+                side_effect=_gateway_rewrite_inputs(tmp_path),
+            ),
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {})),
+            patch("kiro_crew.slack.gateway.GatewayManager", return_value=manager),
+        ):
+            await orch._init_mcp_gateway()
+
+        calls = [name for name, _args, _kw in manager.method_calls]
+        if bound is None:
+            manager.set_owner_port.assert_not_called()
+        else:
+            manager.set_owner_port.assert_called_once_with(47211)
+            assert calls.index("set_owner_port") < calls.index("start")
+
 
 class TestMcpBrokerRefreshPrefetchAndPersistArms:
     """The broker's refresh, prefetch and approval-persist arms nothing else reaches.
