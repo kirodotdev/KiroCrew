@@ -348,12 +348,15 @@ class TestPushGuardSquash:
         clone_dir, _ = repo_pair
         hooks = tmp_path / "hooks"
         hooks.mkdir()
-        (hooks / "commit-msg").write_text('#!/bin/sh\nprintf "\\nChange-Id: I123\\n" >> "$1"\n')
+        (hooks / "commit-msg").write_text(
+            '#!/bin/sh\nprintf "\\nChange-Id: I123\\n" >> "$1"\n', newline="\n"
+        )
         gpg = tmp_path / "fake-gpg"
         gpg.write_text(
             "#!/bin/sh\ncat >/dev/null\n"
             "echo '[GNUPG:] SIG_CREATED D 1 8 00 0 FP' >&2\n"
-            "printf -- '-----BEGIN PGP SIGNATURE-----\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n"
+            "printf -- '-----BEGIN PGP SIGNATURE-----\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n",
+            newline="\n",
         )
         for script in (hooks / "commit-msg", gpg):
             script.chmod(0o755)
@@ -378,7 +381,7 @@ class TestPushGuardSquash:
         hooks = tmp_path / "hooks"
         hooks.mkdir()
         hook = hooks / "commit-msg"
-        hook.write_text("#!/bin/sh\necho 'subject must be imperative' >&2\nexit 1\n")
+        hook.write_text("#!/bin/sh\necho 'subject must be imperative' >&2\nexit 1\n", newline="\n")
         hook.chmod(0o755)
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
         _write_message(clone_dir)
@@ -398,7 +401,8 @@ class TestPushGuardSquash:
         hook = hooks / "commit-msg"
         hook.write_text(
             "#!/bin/sh\n"
-            'echo "$LC_ALL|${GIT_TERMINAL_PROMPT-unset}" > ' + shlex.quote(str(seen)) + "\n"
+            'echo "$LC_ALL|${GIT_TERMINAL_PROMPT-unset}" > ' + shlex.quote(str(seen)) + "\n",
+            newline="\n",
         )
         hook.chmod(0o755)
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
@@ -422,7 +426,8 @@ class TestPushGuardSquash:
         hooks.mkdir()
         hook = hooks / "commit-msg"
         hook.write_text(
-            "#!/bin/sh\n" 'printf "\\nSigned-off-by: Env <env@example.invalid>\\n" >> "$1"\n'
+            "#!/bin/sh\n" 'printf "\\nSigned-off-by: Env <env@example.invalid>\\n" >> "$1"\n',
+            newline="\n",
         )
         hook.chmod(0o755)
         _write_message(clone_dir)
@@ -874,7 +879,8 @@ class TestPushGuardSquashMessage:
             '#!/bin/sh\nread answer\n[ "$answer" = yes ] || exit 1\n'
             "for last; do :; done\n"
             "printf -- '-----BEGIN SSH SIGNATURE-----\\nZmFrZQ==\\n"
-            '-----END SSH SIGNATURE-----\\n\' > "$last.sig"\n'
+            '-----END SSH SIGNATURE-----\\n\' > "$last.sig"\n',
+            newline="\n",
         )
         signer.chmod(0o755)
         public_key = tmp_path / "signing-key.pub"

@@ -647,7 +647,7 @@ async def test_pack_program_flags_beat_a_vault_set_uploadpack_and_receivepack(fi
         root = Path(vault["localPath"])
         marker = root.parent / "pack-program-ran"
         hostile = root.parent / "hostile-pack.sh"
-        hostile.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 1\n')
+        hostile.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 1\n', newline="\n")
         hostile.chmod(0o755)
         _git("config", "--local", "remote.origin.uploadpack", str(hostile), cwd=root)
         _git("config", "--local", "remote.origin.receivepack", str(hostile), cwd=root)
