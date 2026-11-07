@@ -89,10 +89,13 @@ export function EmbeddingStatus() {
             <>
               <AlertTriangle size={12} className="text-warn" />
               <span className="text-muted">{i18nT('pages.knowledge.embeddingStatus.embedding_engine_ready_knowledge_items_need_embe')}</span>
+              {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+                  order and drops a keyboard user's focus while the run is in flight. */}
               <button
-                onClick={() => generateMutation.mutate()}
-                disabled={generateMutation.isPending}
-                className="text-accent underline bg-transparent border-none cursor-pointer text-[12px] p-0"
+                type="button"
+                onClick={() => { if (!generateMutation.isPending) generateMutation.mutate() }}
+                aria-disabled={generateMutation.isPending || undefined}
+                className="text-accent underline bg-transparent border-none cursor-pointer text-[12px] p-0 aria-disabled:opacity-50 aria-disabled:cursor-default"
               >
                 {generateMutation.isPending ? i18nT('pages.knowledge.embeddingStatus.generating') : i18nT('pages.knowledge.embeddingStatus.generate_now')}
               </button>
