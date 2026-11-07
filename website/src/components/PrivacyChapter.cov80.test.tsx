@@ -18,6 +18,7 @@ vi.mock('../api/client', async importOriginal => {
         env_override: false,
         env_var: 'KIROCREW_TELEMETRY_DISABLED',
       }),
+      collectionStatus: vi.fn().mockResolvedValue({ enabled: false, env_pinned: false }),
     },
   }
 })
@@ -35,13 +36,13 @@ function focusables(): HTMLElement[] {
 describe('PrivacyChapter Tab trap', () => {
   it('focuses the heading on open', async () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    const heading = await screen.findByRole('heading', { name: 'Privacy' })
+    const heading = await screen.findByRole('heading', { name: 'Performance metrics are on' })
     expect(document.activeElement).toBe(heading)
   })
 
   it('Tab from outside the ring wraps to the first focusable', async () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled())
     const ring = focusables()
     expect(ring.length).toBeGreaterThan(0)
 
@@ -52,7 +53,7 @@ describe('PrivacyChapter Tab trap', () => {
 
   it('Tab off the last focusable wraps back to the first', async () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled())
     const ring = focusables()
 
     ring[ring.length - 1].focus()
@@ -62,7 +63,7 @@ describe('PrivacyChapter Tab trap', () => {
 
   it('Shift+Tab off the first focusable wraps to the last', async () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled())
     const ring = focusables()
 
     ring[0].focus()
@@ -72,7 +73,7 @@ describe('PrivacyChapter Tab trap', () => {
 
   it('a non-Tab key is ignored by the trap', async () => {
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled())
     const ring = focusables()
     ring[0].focus()
     fireEvent.keyDown(document, { key: 'ArrowDown' })
@@ -85,11 +86,11 @@ describe('PrivacyChapter Tab trap', () => {
     // would yank focus and abort the composition (issue class of the shared
     // hook's own guard).
     renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    // Wait for the toggle to leave its loading-disabled state so the ring
-    // holds more than one member — a one-element ring wraps onto itself and
-    // cannot distinguish a decline from a wrap.
-    const toggle = await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
-    await waitFor(() => expect(toggle).toBeEnabled())
+    // Wait for the buttons so the ring holds more than one member: a
+    // one-element ring wraps onto itself and cannot distinguish a decline from
+    // a wrap.
+    const turnOff = await screen.findByRole('button', { name: 'Turn off' })
+    await waitFor(() => expect(turnOff).toBeEnabled())
     const ring = focusables()
     expect(ring.length).toBeGreaterThan(1)
     const last = ring[ring.length - 1]
@@ -103,7 +104,7 @@ describe('PrivacyChapter Tab trap', () => {
 
   it('the trap is torn down when the chapter closes', async () => {
     const { rerender } = renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled())
     rerender(<PrivacyChapter open={false} onContinue={vi.fn()} />)
 
     document.body.focus()
