@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from pathlib import Path
 
 from kiro_crew.crew_log.errors import CrewLogError, IndeterminateAppend
@@ -110,6 +111,9 @@ _RESIDUE: "dict[Path, tuple[int, tuple[tuple[int, bytes], ...]]]" = {}
 #: cost before this map existed: the retry may write that run again.
 _RESIDUE_MAX = 64
 
+#: Guards :data:`_RESIDUE`: the writer's lanes append to different units at once.
+_RESIDUE_LOCK = threading.Lock()
+
 
 def _note_residue(path: Path, offset: int, blob: bytes) -> None:
     """Remember where *blob* went, as line-end digests, for :func:`_settle_residue`."""
@@ -122,10 +126,11 @@ def _note_residue(path: Path, offset: int, blob: bytes) -> None:
         digest.update(blob[start:end])
         marks.append((end, digest.copy().digest()))
         start = end
-    _RESIDUE.pop(path, None)
-    _RESIDUE[path] = (offset, tuple(marks))
-    while len(_RESIDUE) > _RESIDUE_MAX:
-        _RESIDUE.pop(next(iter(_RESIDUE)))
+    with _RESIDUE_LOCK:
+        _RESIDUE.pop(path, None)
+        _RESIDUE[path] = (offset, tuple(marks))
+        while len(_RESIDUE) > _RESIDUE_MAX:
+            _RESIDUE.pop(next(iter(_RESIDUE)))
 
 
 def _settle_residue(path: Path) -> None:
@@ -134,10 +139,12 @@ def _settle_residue(path: Path) -> None:
     A retry of an :class:`IndeterminateAppend` would otherwise write the same entries a
     second time under new seqs. A cut that raises keeps the entry for the next try.
     """
-    residue = _RESIDUE.get(path)
+    with _RESIDUE_LOCK:
+        residue = _RESIDUE.get(path)
     if residue is not None:
         _undo_residue(path, *residue)
-        _RESIDUE.pop(path, None)
+        with _RESIDUE_LOCK:
+            _RESIDUE.pop(path, None)
 
 
 def _undo_residue(path: Path, offset: int, marks: "tuple[tuple[int, bytes], ...]") -> None:

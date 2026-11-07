@@ -24,7 +24,8 @@ Two rules govern the writer, and neither gives way to the other: a lifecycle rec
 not dropped merely for crossing the BACKPRESSURE high-water mark, because a hole in an
 append-only log is permanent and silent, and the event loop is never BLOCKED, because a
 turn must not wait on a disk. So a producer appends to an in-memory buffer and returns,
-and one worker drains it in batches. The buffer has hard count and byte ceilings to
+and up to ``WriterLimits.lanes`` drain loops empty it in batches, each holding one unit
+at a time so a unit still has one writer. The buffer has hard count and byte ceilings to
 prevent an OOM from losing every session's debt; records refused at those ceilings are
 counted separately (``WriterStats.overflowed``) and handed BACK to the caller, which
 settles them -- :meth:`CrewLogWriter.submit` returns ``False``. Fail-soft governs
@@ -54,7 +55,7 @@ are in memory, so an exit that skips it loses the last thing each unit did.
 
 Adapters at the two seams:
 
-* ``executor`` -- production passes a factory for the one-worker crew-log pool
+* ``executor`` -- production passes a factory for the crew-log pool, one worker per lane
   (``executors.crew_log_executor``); ``None`` runs every pass on the caller's thread
   inside :meth:`flush`, paced by the injected ``clock`` and ``sleep``, so a test drives
   the whole retry schedule without waiting on a real one.
@@ -68,10 +69,11 @@ gateway boot path, and a launch with the crew log switched off must not load thi
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import logging
 import threading
 import time
-import traceback
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor, Future
@@ -80,6 +82,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.crew_log.writer_group import GroupPart, group_run
+from kiro_crew.crew_log.writer_groups import PROCESS_HOLDS
+from kiro_crew.crew_log.writer_warnings import WarningBudget
 
 if TYPE_CHECKING:  # pragma: no cover -- typing only; the store stays unloaded at import
     from kiro_crew.crew_log.store import CrewLog
@@ -133,6 +137,11 @@ class WriterLimits:
     ``max_write_attempts``: consecutive failed passes before a unit's batch is DROPPED and
     counted. Without it a filesystem that never answers holds entries in memory forever
     and :meth:`CrewLogWriter.flush` / :meth:`CrewLogWriter.drain_for_shutdown` time out.
+
+    ``lanes``: most drain loops running at once, each on its own executor worker. A lane
+    holds one unit at a time and no other lane or inline write touches a held unit, so a
+    unit still has one writer and keeps its order; a slow unit holds one lane, not all.
+    The executor needs at least this many workers to run them side by side.
     """
 
     batch_deadline_seconds: float = 0.02
@@ -147,6 +156,7 @@ class WriterLimits:
     retry_backoff_seconds: float = 0.05
     retry_backoff_max_seconds: float = 2.0
     max_write_attempts: int = 6
+    lanes: int = 4
 
     def retry_delay(self, attempts: int) -> float:
         """How long to wait before retry number *attempts* + 1. Seconds.
@@ -333,6 +343,15 @@ class _RetryState:
 
 
 @dataclass
+class _Lane:
+    """One drain loop: its future (None until published, still coming) and its own wake,
+    so one lane clearing a stale wake cannot swallow another lane's."""
+
+    future: "Future[None] | None" = None
+    wake: threading.Event = dataclasses.field(default_factory=threading.Event)
+
+
+@dataclass
 class _PendingLoss:
     """Loss debt that must be written before this unit can append again."""
 
@@ -393,104 +412,6 @@ class DrainReport:
     batch_in_flight: bool
 
 
-class WarningBudget:
-    """Report a failure at warning level once per KIND, then stay quiet for a window.
-
-    :meth:`kind` keys on the operation and the exception, so an ENOSPC is still named
-    after an unrelated listener error spent a slot. Only *op* (a fixed string) reaches the
-    key; *what* (store, unit or entry type) is for the reader.
-
-    Repeats of a named kind are swallowed and COUNTED, and the count rides on the next
-    warning for that kind after ``rearm_seconds``, so a spent budget still says so.
-
-    Both records carry the failure as TEXT (the traceback rendered while the exception is
-    live, not ``exc_info``). A handler that keeps records (pytest capture, a
-    ``MemoryHandler``) would otherwise keep the job frames and the ``CrewLog`` handle in
-    them; see :meth:`CrewLogWriter._run_job` for why that handle must not outlive the pass.
-
-    Shared by the writer and the emitter, so one budget governs the crew log path.
-    ``max_kinds`` bounds the map (oldest evicted); key parts are program and OS constants,
-    so routine traffic never reaches it.
-    """
-
-    def __init__(
-        self,
-        logger: logging.Logger | None = None,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-        rearm_seconds: float = 300.0,
-        max_kinds: int = 64,
-    ) -> None:
-        self._log = logger if logger is not None else _logger
-        self._clock = clock
-        self._rearm_seconds = rearm_seconds
-        self._max_kinds = max_kinds
-        self._lock = threading.Lock()
-        #: Failure kind -> (clock instant it last warned, failures swallowed since).
-        self._spent: "OrderedDict[tuple[str, str, str], tuple[float, int]]" = OrderedDict()
-
-    @staticmethod
-    def kind(op: str, exc: BaseException) -> "tuple[str, str, str]":
-        """What KIND of failure this is, for the budget to spend a slot on.
-
-        Three stable parts: the operation that failed, the exception's class, and the
-        code the operating system or the store put on it. So a disk that is full and a
-        disk that is failing arrive as two kinds out of one ``OSError``, and a lost write
-        lease is not filed under an unrelated listener's ``RuntimeError``.
-
-        What is deliberately absent is the UNIT -- no store name, no session id, no entry
-        type. Those live in ``what`` for the message and never in the key, because many
-        units failing at once is one cause repeating, and a key holding the unit would
-        hand each of them its own warning and flood the log this budget exists to
-        protect. Every part is a program or OS constant, so the map is bounded with no
-        list of kinds for anyone to maintain: a new call site gets its own slot by naming
-        its own ``op``.
-        """
-        code = getattr(exc, "code", "") or getattr(exc, "errno", "")
-        return (op, type(exc).__qualname__, str(code or ""))
-
-    def report(self, what: str, exc: BaseException, *, op: str) -> None:
-        """Name *exc* at warning level unless its kind already spoke this window."""
-        kind = self.kind(op, exc)
-        now = self._clock()
-        with self._lock:
-            held = self._spent.get(kind)
-            if held is None:
-                speak, swallowed = True, 0
-            else:
-                warned_at, swallowed = held
-                speak = now - warned_at >= self._rearm_seconds
-            if speak:
-                self._spent[kind] = (now, 0)
-                self._spent.move_to_end(kind)
-                while len(self._spent) > self._max_kinds:
-                    self._spent.popitem(last=False)
-            else:
-                self._spent[kind] = (warned_at, swallowed + 1)
-        if speak:
-            self._log.warning(
-                "session log writes are failing (%s: %s%s)%s; further failures of "
-                "this kind are logged at debug only for the next %.0fs",
-                what,
-                str(exc),
-                f", code={getattr(exc, 'code', '')}" if getattr(exc, "code", "") else "",
-                (
-                    f", and {swallowed} more went unreported since it was last named"
-                    if swallowed
-                    else ""
-                ),
-                self._rearm_seconds,
-            )
-        elif self._log.isEnabledFor(logging.DEBUG):
-            # The traceback rendered to text while the exception is live: full
-            # diagnostics on the record, and a string holds no frames.
-            self._log.debug(
-                "session log %s failed:\n%s",
-                what,
-                "".join(traceback.format_exception(exc)).rstrip(),
-            )
-
-
 def _is_refusal(failure: type[BaseException]) -> bool:
     """Whether retrying a *failure* of this type is pointless: it will be refused again.
 
@@ -538,6 +459,10 @@ class CrewLogWriter:
       back to the FRONT of its bucket, and a later submission queues behind it, so a
       log is never written in an order that did not happen. Units are independent: one
       unit's backoff paces only that unit.
+    * **One writer per unit.** Up to ``WriterLimits.lanes`` lanes write DIFFERENT units
+      side by side; a lane holds its unit until the batch is written, retained or
+      dropped, and no other lane or inline write touches a held unit. So jobs, hooks and
+      ``on_grew`` for two units may run on two threads at once, never for one unit.
     * **A refusal is dropped, never retried** (a ``CrewLogError``; see
       :func:`_is_refusal`), and the pass continues past it.
     * **A failure is retained** with doubling backoff up to ``max_write_attempts``
@@ -559,7 +484,9 @@ class CrewLogWriter:
 
     Required configuration: ``open_unit(unit)`` returns the open log the writer appends
     its ``write/dropped`` markers to, or ``None`` when the unit has no log; its exception
-    is a failed marker append, retained like any other.
+    is a failed marker append, retained like any other. Optional ``hold_key(unit)``
+    names a group of units that must not be written side by side (the emitter passes a
+    unit's slot); it must be a pure in-memory lookup, and ``""`` means the unit alone.
     """
 
     def __init__(
@@ -574,8 +501,10 @@ class CrewLogWriter:
         on_grew: Callable[[str], None] | None = None,
         warnings: WarningBudget | None = None,
         logger: logging.Logger | None = None,
+        hold_key: Callable[[str], str] | None = None,
     ) -> None:
         self._open_unit = open_unit
+        self._hold_key = hold_key
         self._executor = executor
         self._clock = clock
         self._sleep = sleep
@@ -647,34 +576,39 @@ class CrewLogWriter:
         #: successful append.
         self._overflow_reported: "set[str]" = set()
         self._warned_high_water = False
-        #: The write currently in progress: when it started, and what it was. A job that
-        #: HANGS never returns, so the writer cannot report on itself -- producers read
-        #: this and say so instead. 0.0 means no write is in flight.
-        self._inflight_since = 0.0
-        self._inflight_what = ""
-        self._stall_reported = False
-        #: True while a drain pass is scheduled or running, so a producer wakes the
-        #: writer once rather than per entry. Never read directly: read
-        #: :meth:`_busy_locked`, which also answers the case where the pass this flag
-        #: was set for can never run.
+        #: The writes in progress, per thread: when each started, and what it was. A job
+        #: that HANGS never returns, so the writer cannot report on itself -- producers
+        #: read this and say so instead. Empty means no write is in flight.
+        self._inflight: "dict[int, tuple[float, str]]" = {}
+        #: The thread whose stalled write was last reported, or None. Per thread, so a
+        #: healthy lane finishing jobs does not re-arm the report for a hung one.
+        self._stall_reported: "int | None" = None
+        #: True while a pass on a CALLER's thread holds the writer (no executor, or the
+        #: shutdown drain's inline pass). Never read directly: read :meth:`_busy_locked`.
         self._draining = False
-        #: The future :meth:`_start_drain` submitted for the current pass, or None.
-        #: Held because the flag alone cannot say whether the pass is still coming:
-        #: shutting the pool down CANCELS a queued future, and the flag would then stay
-        #: set for the life of the process -- making every ``flush`` and
-        #: ``drain_for_shutdown`` return False and, worse, making the exit path's inline
-        #: fallback refuse to write on the belief that a batch is claimed. That loses
-        #: exactly the entries the drain exists to save.
-        self._drain_future: "Future[None] | None" = None
+        #: lane id -> the drain loop scheduled or running on the executor (see
+        #: ``WriterLimits.lanes``). Each holds the future :meth:`_start_drain` submitted,
+        #: because an entry alone cannot say whether the loop is still coming: shutting
+        #: the pool down CANCELS a queued future, and the entry would then stay for the
+        #: life of the process -- making every ``flush`` and ``drain_for_shutdown``
+        #: return False and, worse, making the exit path's inline fallback refuse to
+        #: write on the belief that a batch is claimed. That loses exactly the entries
+        #: the drain exists to save.
+        self._lanes: "dict[int, _Lane]" = {}
+        self._lane_seq = 0
+        #: Units a lane is writing right now. A held unit is claimed by no other lane and
+        #: written inline by no caller: that is what keeps one writer per unit, and so its
+        #: order, with several lanes. Kept across :meth:`close`, because a lane stuck in a
+        #: write still holds its unit until the write returns.
+        self._held = PROCESS_HOLDS
+        #: The units THIS writer's lanes hold, for counting how many lanes to run.
+        self._holding: "set[str]" = set()
+        #: unit -> its hold key as of when its owed work was admitted, until that work is
+        #: gone: a session close clears the key source, not queued work's fence.
+        self._frozen: "dict[str, str]" = {}
         #: True once shutdown has asked for quiescence: the writer stops pausing to
         #: batch and writes what it has as fast as it can.
         self._draining_for_shutdown = False
-        #: Set to make the writer thread abandon its current inter-pass wait and
-        #: recompute it. Without this the pause is a plain sleep: a writer that parked
-        #: for the length of a retry backoff cannot learn that a shutdown has since asked
-        #: for quiescence, so clamping the backoff would never reach the thread that
-        #: honours it.
-        self._wake = threading.Event()
         #: When a bounded shutdown drain is running, the clock instant it gives up at. A
         #: retained batch parked BEYOND it is retried just before it instead of never: a
         #: retry schedule outliving its process does not defer a write, it loses it.
@@ -742,7 +676,8 @@ class CrewLogWriter:
                 self._drained.wait_for(
                     lambda: self._inline_ready(unit), timeout=self.limits.inline_order_seconds
                 )
-            if self._claim_inline(unit):
+            inline_key = self._claim_inline(unit)
+            if inline_key is not None:
                 try:
                     failure = self._run_job(pending.run, pending.what)
                     if failure is None:
@@ -753,7 +688,7 @@ class CrewLogWriter:
                     else:
                         self._retain(unit, [pending])
                 finally:
-                    self._release_inline(unit)
+                    self._release_inline(unit, inline_key)
                 return True
             # The writer is mid-batch. Hand the job over rather than race it: the entry
             # then waits, which is visible in the buffer count and recoverable at
@@ -785,7 +720,7 @@ class CrewLogWriter:
         with self._lock:
             self._flush_waiters += 1
         # Cut a batching pause already in progress; the count keeps the next one away.
-        self._wake.set()
+        self._wake_lanes()
         try:
             with self._drained:
                 return self._drained.wait_for(self._quiet, timeout=timeout)
@@ -826,7 +761,7 @@ class CrewLogWriter:
         # Outside the lock, and BEFORE the wait below: a writer already parked for the
         # length of a retry backoff has to recompute that pause against the deadline,
         # or the clamp above changes a value nothing rereads.
-        self._wake.set()
+        self._wake_lanes()
         if not pending and not running:
             return self._drain_report(True)
         try:
@@ -959,9 +894,12 @@ class CrewLogWriter:
             self._pending_bytes.clear()
             self._retry.clear()
             self._claimed.clear()
+            self._frozen.clear()
             self._inline.clear()
             self._draining = False
-            self._drain_future = None
+            # The process holds stay: a lane stuck in a write still holds its unit, and
+            # no lane or inline write of this or a rebuilt writer may write beside it.
+            self._lanes.clear()
         self._notify()
         return drained
 
@@ -988,6 +926,7 @@ class CrewLogWriter:
         unsettled (see :meth:`submit`).
         """
         overflow = False
+        lane: "int | None" = None
         with self._lock:
             would_count = self._pending_count + 1
             would_bytes = self._pending_bytes.get(unit, 0) + pending.nbytes
@@ -1005,6 +944,7 @@ class CrewLogWriter:
                 overflow_total = self._overflow_count
                 overflow = True
             else:
+                self._freeze_locked(unit)
                 held = self._pending.setdefault(unit, [])
                 held.append(pending)
                 pending.counted = True
@@ -1017,9 +957,7 @@ class CrewLogWriter:
                     self._pending_count >= self.limits.pending_high_water
                     and not self._warned_high_water
                 )
-                start_writer = not self._busy_locked()
-                if start_writer:
-                    self._mark_draining_locked()
+                lane = self._add_lane_locked() if self._want_lane_locked() else None
         if overflow:
             if first_overflow:
                 self._report_overflow(unit, overflow_total)
@@ -1027,8 +965,8 @@ class CrewLogWriter:
             return False
         if over:
             self._report_high_water()
-        if start_writer:
-            self._start_drain()
+        if lane is not None:
+            self._start_drain(lane)
         return True
 
     def _retain(self, unit: str, jobs: "list[_Pending]") -> None:
@@ -1049,11 +987,12 @@ class CrewLogWriter:
             state = self._retry.setdefault(unit, _RetryState())
             state.attempts += 1
             spent = state.attempts >= self.limits.max_write_attempts
+            lane: "int | None" = None
             if spent:
                 self._retry.pop(unit, None)
-                start_writer = False
             else:
                 state.not_before = self._clock() + self._retry_delay(state.attempts)
+                self._freeze_locked(unit)
                 self._pending.setdefault(unit, [])[:0] = list(jobs)
                 self._pending_count += len(jobs)
                 self._pending_bytes[unit] = self._pending_bytes.get(unit, 0) + sum(
@@ -1067,17 +1006,17 @@ class CrewLogWriter:
                     job.counted = True
                 if self._pending_count > self._pending_high_water:
                     self._pending_high_water = self._pending_count
-                start_writer = not self._draining_for_shutdown and not self._busy_locked()
-                if start_writer:
-                    self._mark_draining_locked()
-        if start_writer:
-            self._start_drain()
+                if not self._draining_for_shutdown and not self._busy_locked():
+                    lane = self._add_lane_locked()
+        if lane is not None:
+            self._start_drain(lane)
         if spent:
             self._drop(unit, jobs, mark=True)
 
     def _retain_without_failure(self, unit: str, jobs: "list[_Pending]") -> None:
         """Put *jobs* back at the head without spending their retry budget."""
         with self._lock:
+            self._freeze_locked(unit)
             self._pending.setdefault(unit, [])[:0] = list(jobs)
             self._pending_count += len(jobs)
             self._pending_total_bytes += sum(job.nbytes for job in jobs if not job.counted)
@@ -1167,6 +1106,7 @@ class CrewLogWriter:
         """
         if not mark and not any(job.loss is not None for job in jobs):
             return
+        self._freeze_locked(unit)
         loss = self._pending_loss.setdefault(unit, _PendingLoss())
         for job in jobs:
             if job.loss is not None:
@@ -1331,30 +1271,36 @@ class CrewLogWriter:
         """
         return (
             not self._busy_locked()
+            and not self._key_taken_locked(unit)
             and unit not in self._pending
             and unit not in self._retry
             and unit not in self._pending_loss
-            and unit not in self._inline
         )
 
-    def _claim_inline(self, unit: str) -> bool:
+    def _claim_inline(self, unit: str) -> "str | None":
         """Take the inline slot for *unit*, re-checking under one lock hold.
 
         The wait and the claim cannot be one operation -- the predicate reads ``_lock``
         while the wait holds the condition's own lock -- so the decision is made again
         here, atomically, and the claim is published in the same hold. Without that
         re-read a producer could start the writer in the window between the two.
+        Returns the hold key taken, which the release frees, or None.
         """
         with self._lock:
             if not self._inline_claimable_locked(unit):
-                return False
-            self._inline.add(unit)
-            return True
+                return None
+            key = self._key(unit)
+            if not self._held.try_claim(unit, key, self._key):
+                return None  # another writer in this process holds it
+            self._inline.update((key, unit))
+            return key
 
-    def _release_inline(self, unit: str) -> None:
+    def _release_inline(self, unit: str, key: str) -> None:
         """Give the inline slot back and wake the writer, which may have been waiting."""
         with self._lock:
+            self._inline.discard(key)
             self._inline.discard(unit)
+            self._held.release(unit)
         self._notify()
 
     # -- running a job ---------------------------------------------------------------
@@ -1378,9 +1324,9 @@ class CrewLogWriter:
         to find; a class object has no frames at all. :func:`_is_refusal` needs only the
         type, and the report above has already used the exception.
         """
+        me = threading.get_ident()
         with self._lock:
-            self._inflight_since = self._clock()
-            self._inflight_what = what
+            self._inflight[me] = (self._clock(), what)
         try:
             run()
         except Exception as exc:
@@ -1388,11 +1334,11 @@ class CrewLogWriter:
             return type(exc)
         finally:
             with self._lock:
-                self._inflight_since = 0.0
-                self._inflight_what = ""
-                # Armed again, so a SECOND stall is reported rather than swallowed as a
-                # repeat of the first.
-                self._stall_reported = False
+                self._inflight.pop(me, None)
+                # Armed again once the REPORTED write returns, so a second stall is
+                # reported rather than swallowed as a repeat of the first.
+                if self._stall_reported == me:
+                    self._stall_reported = None
         return None
 
     def _note_stall_if_any(self) -> None:
@@ -1406,13 +1352,12 @@ class CrewLogWriter:
         neither returns nor raises.
         """
         with self._lock:
-            since = self._inflight_since
-            what = self._inflight_what
-            if not since or self._stall_reported:
+            if not self._inflight or self._stall_reported is not None:
                 return
+            thread, (since, what) = min(self._inflight.items(), key=lambda kv: kv[1])
             if self._clock() - since < self.limits.write_stall_secs:
                 return
-            self._stall_reported = True
+            self._stall_reported = thread
             held = self._pending_count
         self._log.error(
             "session log writer stalled: %s has been in progress for over %.0fs and "
@@ -1432,21 +1377,24 @@ class CrewLogWriter:
     def _busy_locked(self) -> bool:
         """Whether a drain pass is really coming or running. ``_lock`` held.
 
-        ``_draining`` says a pass was SCHEDULED, which is not the same claim. Shutting the
-        writer pool down cancels a queued future, and the drain loop that would have
-        cleared the flag then never runs -- so the flag alone reports a batch in flight
+        A lane entry says a loop was SCHEDULED, which is not the same claim. Shutting the
+        writer pool down cancels a queued future, and the loop that would have removed
+        its entry then never runs -- so the entry alone reports a batch in flight
         forever. Deriving the answer from the future instead makes the state
-        self-healing: the next producer starts a fresh pass, and until then every barrier
+        self-healing: the next producer starts a fresh lane, and until then every barrier
         reads the truth.
 
-        Pure on purpose. Clearing the flag here would make a waiter's predicate mutate
-        shared state, and a second waiter would still sit until its own timeout because
-        nothing notified it. Reporting instead leaves the correction to
-        :meth:`_mark_draining_locked`, which assigns a new flag AND a new future together.
+        Pure on purpose. Pruning here would make a waiter's predicate mutate shared
+        state, and a second waiter would still sit until its own timeout because nothing
+        notified it. :meth:`_add_lane_locked` prunes instead.
         """
-        if not self._draining:
-            return False
-        return self._drain_future is None or not self._drain_future.done()
+        return self._draining or self._live_lanes_locked() > 0
+
+    def _live_lanes_locked(self) -> int:
+        """How many lanes are coming or running. ``_lock`` held."""
+        return sum(
+            1 for lane in self._lanes.values() if lane.future is None or not lane.future.done()
+        )
 
     def _quiet(self) -> bool:
         """True when nothing is owed and no batch is in flight. Takes ``_lock``."""
@@ -1462,44 +1410,64 @@ class CrewLogWriter:
                 batch_in_flight=self._busy_locked(),
             )
 
-    def _mark_draining_locked(self) -> None:
-        """Claim the next pass. ``_lock`` held.
+    def _want_lane_locked(self) -> bool:
+        """Whether a producer should start one more lane. ``_lock`` held.
 
-        The future is cleared HERE rather than left pointing at the previous pass, so
-        :meth:`_busy_locked` reports busy for the window before :meth:`_start_drain`
-        publishes the new one -- a pass that is about to be submitted is coming, and a
-        stale done-future would read as "nothing coming" and let a second producer
-        submit a duplicate.
+        Always when none is coming. Another while fewer than ``lanes`` run and more units
+        are owed or held than lanes run (an over-count costs a lane that exits at once).
+        Never beside a pass on a caller's thread.
+        """
+        if self._executor is None or self._draining:
+            return False
+        live = self._live_lanes_locked()
+        if live == 0:
+            return True
+        return live < self.limits.lanes and len(self._pending) + len(self._holding) > live
 
-        With no executor no pass is ever coming, so nothing is claimed: the passes run
-        inside :meth:`flush`, on the caller's thread.
+    def _add_lane_locked(self) -> "int | None":
+        """Register the next lane and return its id. ``_lock`` held.
+
+        Registered with no future yet, so :meth:`_busy_locked` reports it as coming
+        until :meth:`_start_drain` publishes one. Done lanes (a cancelled one never removes
+        itself) are pruned here. No executor, no lane: passes run inside :meth:`flush`.
         """
         if self._executor is None:
-            return
-        self._draining = True
-        self._drain_future = None
+            return None
+        for lane_id in [k for k, v in self._lanes.items() if v.future and v.future.done()]:
+            del self._lanes[lane_id]
+        self._lane_seq += 1
+        self._lanes[self._lane_seq] = _Lane()
+        return self._lane_seq
 
-    def _start_drain(self) -> None:
-        """Ask the writer pool for one drain pass. Never raises."""
+    def _wake_lanes(self) -> None:
+        """Cut every lane's current pause so it recomputes it. Takes ``_lock``."""
+        with self._lock:
+            lanes = list(self._lanes.values())
+        for lane in lanes:
+            lane.wake.set()
+
+    def _start_drain(self, lane_id: int) -> None:
+        """Ask the writer pool to run lane *lane_id*. Never raises."""
         if self._executor is None:
             return
         try:
-            future = self._executor().submit(self._drain_loop)
+            future = self._executor().submit(functools.partial(self._drain_loop, lane_id))
         except Exception as exc:  # pool shut down, or thread creation refused
             with self._lock:
-                self._draining = False
-                self._drain_future = None
+                self._lanes.pop(lane_id, None)
             self._notify()
             self._warnings.report("scheduling the crew log writer", exc, op="schedule-writer")
             return
         with self._lock:
-            # Published so the barriers can tell a pass that is still coming from one that
+            # Published so the barriers can tell a lane that is still coming from one that
             # was CANCELLED by a pool shutdown and will never run.
-            self._drain_future = future
+            lane = self._lanes.get(lane_id)
+            if lane is not None:
+                lane.future = future
         self._notify()
 
-    def _drain_loop(self) -> None:
-        """Drain the pending buffers in batches until they are empty. Writer thread.
+    def _drain_loop(self, lane_id: int) -> None:
+        """Drain the pending buffers in batches until no free unit owes. Writer lane.
 
         The pause before each pass is what makes a batch: a turn emits several entries in
         a burst, and waiting a fixed moment lets one pass take all of them rather than
@@ -1511,33 +1479,45 @@ class CrewLogWriter:
         on a bucket it may not touch. Loss-only debt receives one marker attempt per drain
         invocation; debt folded forward by a failed marker waits for the next invocation
         rather than re-entering this one forever.
+
+        A lane stops when every owed unit is held by another lane of this writer: that
+        lane looks again after it lets its unit go, so nothing owed is left without a loop.
         """
         deferred_loss: "set[str]" = set()
+        with self._lock:
+            lane = self._lanes.get(lane_id)
+        if lane is None:
+            # close() retired this lane before it ran: what it was for is gone, and a
+            # stand-in no barrier can see must not write.
+            return
         try:
             while True:
                 # A wake left over from before this pass stands for state the delay
                 # below re-reads anyway; left set, it would cut this pass's pause short.
-                self._wake.clear()
+                lane.wake.clear()
                 with self._lock:
-                    loss_owed = any(unit not in deferred_loss for unit in self._pending_loss)
-                    if not self._pending and not loss_owed:
-                        self._draining = False
-                        idle = True
+                    # Only a unit THIS writer's lane holds is left to it (it looks again on
+                    # release); one held inline or by another writer is waited for here.
+                    owed = any(unit not in self._holding for unit in self._pending) or any(
+                        unit not in deferred_loss and unit not in self._holding
+                        for unit in self._pending_loss
+                    )
+                    if not owed:
+                        self._lanes.pop(lane_id, None)
                         delay = 0.0
                     else:
-                        idle = False
                         delay = self._next_pass_delay_locked(deferred_loss)
-                if idle:
+                if not owed:
                     self._notify()
                     return
                 if delay:
                     # Interruptible: a shutdown that clamps the backoff sets this so the
                     # pause is recomputed against the new deadline rather than slept out.
-                    self._wake.wait(delay)
+                    lane.wake.wait(delay)
                 deferred_loss.update(self._drain_once(deferred_loss))
         except BaseException:
             with self._lock:
-                self._draining = False
+                self._lanes.pop(lane_id, None)
             self._notify()
             raise
 
@@ -1617,8 +1597,8 @@ class CrewLogWriter:
         )
         for unit in units:
             jobs = self._pending.get(unit)
-            if not jobs and unit not in self._pending_loss:
-                continue
+            if (not jobs and unit not in self._pending_loss) or self._key_taken_locked(unit):
+                continue  # nothing owed, or another lane is writing it and will look again
             if self._claimable_locked(unit, now):
                 if (
                     not batching
@@ -1640,18 +1620,47 @@ class CrewLogWriter:
             return self.limits.batch_deadline_seconds
         return max(0.0, soonest - now)
 
+    def _key(self, unit: str) -> str:
+        """*unit*'s hold key (one lane at a time per key): a slot key frozen while it owes
+        work, else the live one, else the unit (see ``writer_groups.Holds``). ``_lock``."""
+        frozen = self._frozen.get(unit)
+        if frozen is not None and frozen != unit:
+            return frozen  # a frozen slot key outlives the slot being forgotten
+        live = self._live_key(unit) or unit
+        if frozen is not None:
+            self._frozen[unit] = live  # a bare-id freeze upgrades once the slot is known
+        return live
+
+    def _live_key(self, unit: str) -> str:
+        """``hold_key``'s answer for *unit*, or ``""``. A pure in-memory lookup."""
+        return self._hold_key(unit) if self._hold_key is not None else ""
+
+    def _freeze_locked(self, unit: str) -> None:
+        """Keep *unit*'s current key for as long as it owes work. ``_lock`` held."""
+        if unit not in self._frozen:
+            self._frozen[unit] = self._key(unit)
+
+    def _key_taken_locked(self, unit: str) -> bool:
+        """Whether a lane or an inline write holds *unit*, its key, or a unit now known to
+        share its slot. ``_lock`` held."""
+        key = self._key(unit)
+        if unit in self._inline or key in self._inline:
+            return True
+        return self._held.taken(unit, key, self._key)
+
     def _claimable_locked(self, unit: str, now: float) -> bool:
         """Whether the writer may take this unit's bucket. ``_lock`` held.
 
-        Two reasons to leave it alone. Its retained batch is inside its backoff, and
+        Three reasons to leave it alone. Its retained batch is inside its backoff, and
         claiming early would burn an attempt against a filesystem that has not been given
-        time to recover. Or a synchronous caller is writing inline for it, and claiming
-        beside that is the reordering the inline gate exists to prevent.
+        time to recover. Or a synchronous caller is writing inline for it, or another lane
+        holds it, and claiming beside either is the reordering these gates exist to
+        prevent.
 
         A bounded shutdown CLAMPS the first reason without waiving it -- see
         :meth:`_backoff_ready_at_locked`.
         """
-        if unit in self._inline:
+        if self._key_taken_locked(unit):
             return False
         state = self._retry.get(unit)
         return state is None or self._backoff_ready_at_locked(state) <= now
@@ -1696,16 +1705,23 @@ class CrewLogWriter:
         now = self._clock()
         deferred_loss = deferred_loss or set()
         with self._lock:
-            claimed: "list[tuple[str, list[_Pending]]]" = []
             units = list(self._pending)
             units.extend(
                 unit
                 for unit in self._pending_loss
                 if unit not in self._pending and unit not in deferred_loss
             )
-            for unit in units:
+        defer_until_next_drain: "set[str]" = set()
+        # One unit at a time, each claimed and HELD in its own lock hold, so a lane
+        # stuck on one unit's write leaves the rest of this list to the other lanes.
+        for unit in units:
+            with self._lock:
                 if not self._claimable_locked(unit, now):
                     continue
+                # The key read once, here: the release below must free what this took.
+                key = self._key(unit)
+                if not self._held.try_claim(unit, key, self._key):
+                    continue  # another writer in this process holds it
                 jobs = self._pending.pop(unit, [])
                 self._pending_count -= len(jobs)
                 self._pending_bytes.pop(unit, None)
@@ -1715,16 +1731,29 @@ class CrewLogWriter:
                         jobs[0].loss.merge(loss)
                     else:
                         jobs.insert(0, self._loss_marker_job(unit, loss))
-                claimed.append((unit, jobs))
+                if not jobs:
+                    self._held.release(unit)
+                    continue  # another lane wrote it since the list was read
+                self._holding.add(unit)
                 self._claimed[unit] = self._claimed.get(unit, 0) + len(jobs)
-        defer_until_next_drain: "set[str]" = set()
-        for unit, jobs in claimed:
-            marker_attempted = bool(jobs and jobs[0].loss is not None)
-            marker_landed = self._write_batch(unit, jobs)
-            if marker_attempted and not marker_landed:
+            try:
+                marker_attempted = jobs[0].loss is not None
+                marker_landed = self._write_batch(unit, jobs)
+                if marker_attempted and not marker_landed:
+                    with self._lock:
+                        if unit in self._pending_loss and unit not in self._pending:
+                            defer_until_next_drain.add(unit)
+            finally:
                 with self._lock:
-                    if unit in self._pending_loss and unit not in self._pending:
-                        defer_until_next_drain.add(unit)
+                    self._held.release(unit)
+                    self._holding.discard(unit)
+                    if not (
+                        unit in self._pending
+                        or unit in self._retry
+                        or unit in self._pending_loss
+                        or unit in self._claimed
+                    ):
+                        self._frozen.pop(unit, None)
         self._notify()
         return defer_until_next_drain
 
@@ -1899,11 +1928,10 @@ class CrewLogWriter:
     def _claim_here_locked(self) -> None:
         """Claim the writer for an inline drain on THIS thread, even with no executor.
 
-        ``_lock`` held, in the hold that found no batch claimed. Clearing the future keeps
-        a done one from reading as idle. :meth:`_drain_inline_until` releases it.
+        ``_lock`` held, in the hold that found no batch claimed. While it is held no lane
+        starts (:meth:`_want_lane_locked`). :meth:`_drain_inline_until` releases it.
         """
         self._draining = True
-        self._drain_future = None
 
     def _drain_inline_until(self, deadline: float) -> bool:
         """Write buffered entries from THIS thread until quiet or *deadline*.

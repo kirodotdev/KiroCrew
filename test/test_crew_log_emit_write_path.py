@@ -30,8 +30,9 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
 from kiro_crew import crew_log as lg
 from kiro_crew import executors
 from kiro_crew.crew_log import emit
-from kiro_crew.crew_log.writer import WriterLimits
+from kiro_crew.crew_log.writer import DEFAULT_LIMITS, WriterLimits
 from kiro_crew.dashboard import server as server_module
+from kiro_crew.testing.wait import default_timeout
 
 
 def test_no_second_thread_appends_while_a_writer_batch_is_claimed(monkeypatch):
@@ -507,23 +508,26 @@ def test_shutdown_drains_even_when_the_writer_pool_is_gone():
 
     The executor's own exit hook can remove the pool first, so the drain writes inline.
 
-    The writer thread is occupied so the drain pass is queued, then cancelled. Nothing
+    Every writer worker is occupied so the drain pass is queued, then cancelled. Nothing
     releases the claim, so it must be read from the future, or ``flush`` stays False.
     """
     _open_session()
     assert emit.flush()
 
-    occupied = threading.Event()
+    workers = DEFAULT_LIMITS.lanes  # the pool runs one worker per lane
+    occupied = threading.Semaphore(0)
     release = threading.Event()
 
     def _occupy() -> None:
-        occupied.set()
+        occupied.release()
         assert release.wait(20.0)
 
-    executors.crew_log_executor().submit(_occupy)
-    # Waited on the worker's OWN signal, so the queue state below is a fact rather
+    for _ in range(workers):
+        executors.crew_log_executor().submit(_occupy)
+    # Waited on each worker's OWN signal, so the queue state below is a fact rather
     # than a guess about scheduling.
-    assert occupied.wait(20.0), "the writer thread was never occupied"
+    for _ in range(workers):
+        assert occupied.acquire(timeout=default_timeout()), "a writer worker was never occupied"
 
     async def _turn() -> None:
         emit.on_turn_started(SESSION, 2, "user")
@@ -967,6 +971,8 @@ def test_an_oversize_body_reaches_the_file_as_one_group():
 def test_queued_terminal_write_keeps_ownership_until_it_lands(monkeypatch):
     """Cache pressure cannot hand away a still-open turn's write lease."""
     blocker = "acp-sess-blocker"
+    # One lane: the closer must queue behind the held writer, not land on a spare lane.
+    emit.reset_caches(limits=WriterLimits(lanes=1))
     _open_session()
     emit.on_session_opened(blocker, agent="kirocrew", slot="chat-b")
     emit.on_turn_started(SESSION, 1, "user")
@@ -1078,7 +1084,8 @@ def test_overflow_while_the_creating_record_is_queued_still_creates_the_log(monk
     blocker = "acp-sess-blocker"
     # One buffered append fills the buffer: the creating record is admitted past it,
     # and the turn's start, which is not exempt, is refused.
-    emit.reset_caches(limits=WriterLimits(max_pending_count=1))
+    # One lane, so the second session's entries queue behind the held writer.
+    emit.reset_caches(limits=WriterLimits(max_pending_count=1, lanes=1))
     emit.on_session_opened(blocker, agent="kirocrew", slot="chat-b")
     assert emit.flush()
 
