@@ -14,6 +14,7 @@ import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { Bubble } from '../src/renderer/ChatPanel'
+import { i18nT } from '../../../i18n/t'
 
 afterEach(cleanup)
 
@@ -63,5 +64,44 @@ describe('mochi ChatPanel refused link destinations', () => {
     expect(a).not.toBeNull()
     expect(a!.getAttribute('href')).toBe('https://example.com/docs')
     expect(a!.textContent).toBe('the docs')
+    expect(container.querySelector('[data-refused-link]')).toBeNull()
+  })
+
+  it('marks a refused destination with a muted cue and an accessible reason', () => {
+    const { container } = render(
+      <Bubble
+        animate={false}
+        message={assistantMessage('open [my note](obsidian://vault/note)')}
+      />,
+    )
+    const cue = container.querySelector('[data-refused-link]') as HTMLElement | null
+    expect(cue).not.toBeNull()
+    const reason = i18nT('components.markdownRenderer.refused_link_destination')
+    expect(cue!.getAttribute('title')).toBe(reason)
+    expect(cue!.style.textDecoration).toContain('dotted')
+    expect(cue!.textContent).toBe(`my note (${reason})`)
+    expect(container.innerHTML).not.toContain('obsidian:')
+  })
+
+  it('marks javascript:, data: and empty destinations with the same cue', () => {
+    for (const md of ['[click me](javascript:alert(1))', '[d](data:text/html,x)', '[label]()']) {
+      const { container, unmount } = render(
+        <Bubble animate={false} message={assistantMessage(md)} />,
+      )
+      expect(container.querySelector('a')).toBeNull()
+      expect(container.querySelector('[data-refused-link]')).not.toBeNull()
+      unmount()
+    }
+  })
+
+  it('leaves named, id-only and empty anchors as plain prose without the cue', () => {
+    for (const md of ['<a name="install">Install</a>', '<a id="top">Top</a>', 'x <a name="top"></a> y']) {
+      const { container, unmount } = render(
+        <Bubble animate={false} message={assistantMessage(md)} />,
+      )
+      expect(container.querySelector('a')).toBeNull()
+      expect(container.querySelector('[data-refused-link]')).toBeNull()
+      unmount()
+    }
   })
 })

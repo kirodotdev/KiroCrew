@@ -8358,6 +8358,7 @@
       "remote_media_site": "Site : <host/>",
       "remote_media_sites": "Sites : <host/>",
       "remote_media_gateway_refused": "Média non chargé : son adresse passe par le serveur de ce tableau de bord, donc le site qu’elle atteindrait ne peut pas être affiché.",
+      "refused_link_destination": "Lien inactif, sa destination ne peut pas être ouverte ici.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Impossible de copier — sélectionne le texte pour le copier manuellement",
       "couldnt_copy_the_full_session_id_for_label": "Impossible de copier l’ID de session complet de {{label}}.",
       "couldnt_copy_the_session_id_label": "Impossible de copier l’ID de session {{label}}.",

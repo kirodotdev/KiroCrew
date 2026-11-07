@@ -8358,6 +8358,7 @@
       "remote_media_site": "Site: <host/>",
       "remote_media_sites": "Sites: <host/>",
       "remote_media_gateway_refused": "Mídia não carregada: o endereço passa pelo próprio servidor deste painel, então o site que ele alcançaria não pode ser mostrado.",
+      "refused_link_destination": "Link inativo: o destino dele não pode ser aberto aqui.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Não foi possível copiar — selecione o texto para copiá-lo manualmente",
       "couldnt_copy_the_full_session_id_for_label": "Não foi possível copiar o ID de sessão completo de {{label}}.",
       "couldnt_copy_the_session_id_label": "Não foi possível copiar o ID de sessão {{label}}.",

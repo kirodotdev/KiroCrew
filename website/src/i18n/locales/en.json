@@ -5209,6 +5209,7 @@
       "remote_media_site": "Site: <host/>",
       "remote_media_sites": "Sites: <host/>",
       "remote_media_gateway_refused": "Media not loaded: its address goes through this dashboard's own server, so the site it would reach can't be shown.",
+      "refused_link_destination": "Link not active: its destination can't be opened here.",
       "closed_session_open_failed": "Couldn't open {{name}}.",
       "closed_session_try_again": "Try again",
       "unclosed_diff_warning": "The formatting broke here, so the rest of the reply may appear inside this diff."

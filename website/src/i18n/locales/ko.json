@@ -7948,6 +7948,7 @@
       "remote_media_site": "사이트: <host/>",
       "remote_media_sites": "사이트: <host/>",
       "remote_media_gateway_refused": "미디어를 불러오지 않았습니다. 주소가 이 대시보드 자체 서버를 거치기 때문에 실제로 접속할 사이트를 표시할 수 없습니다.",
+      "refused_link_destination": "링크가 비활성 상태입니다. 이 링크의 대상은 여기서 열 수 없습니다.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "복사하지 못했습니다 — 텍스트를 선택해 직접 복사하세요",
       "couldnt_copy_the_full_session_id_for_label": "복사하지 못했습니다: {{label}}의 전체 세션 ID",
       "couldnt_copy_the_session_id_label": "복사하지 못했습니다: 세션 ID {{label}}",

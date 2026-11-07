@@ -7948,6 +7948,7 @@
       "remote_media_site": "サイト: <host/>",
       "remote_media_sites": "サイト: <host/>",
       "remote_media_gateway_refused": "メディアを読み込みませんでした。アドレスがこのダッシュボード自身のサーバーを経由するため、最終的にアクセスするサイトを表示できません。",
+      "refused_link_destination": "リンクは無効です。このリンク先はここでは開けません。",
       "couldnt_copy_select_the_text_to_copy_it_manually": "コピーできませんでした — テキストを選択して手動でコピーしてください",
       "couldnt_copy_the_full_session_id_for_label": "コピーできませんでした：{{label}} の完全なセッション ID",
       "couldnt_copy_the_session_id_label": "コピーできませんでした：セッション ID {{label}}",

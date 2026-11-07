@@ -8153,6 +8153,7 @@
       "remote_media_site": "साइट: <host/>",
       "remote_media_sites": "साइटें: <host/>",
       "remote_media_gateway_refused": "मीडिया लोड नहीं हुआ: इसका पता इसी डैशबोर्ड के अपने सर्वर से होकर जाता है, इसलिए यह जिस साइट तक पहुँचेगा, वह दिखाई नहीं जा सकती।",
+      "refused_link_destination": "लिंक सक्रिय नहीं है: इसका गंतव्य यहाँ नहीं खोला जा सकता।",
       "couldnt_copy_select_the_text_to_copy_it_manually": "कॉपी नहीं हो सकी — टेक्स्ट चुनकर उसे मैन्युअल रूप से कॉपी करो",
       "couldnt_copy_the_full_session_id_for_label": "कॉपी नहीं हो सकी: {{label}} की पूरी सत्र आईडी",
       "couldnt_copy_the_session_id_label": "कॉपी नहीं हो सकी: सत्र आईडी {{label}}",
