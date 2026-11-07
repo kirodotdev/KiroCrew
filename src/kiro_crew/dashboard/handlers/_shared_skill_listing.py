@@ -62,9 +62,12 @@ def _parse_skill_description(skill_md: Path) -> tuple[str, bool]:
         return "", False
     if is_sensitive_path(str(resolved_md)):
         return "", False
+    # ``utf-8-sig`` drops a leading byte-order mark, so a file saved as
+    # "UTF-8 with BOM" still opens with the column-0 ``---`` fence, as it
+    # does for the skills loader.
     try:
         with resolved_md.open("rb") as f:
-            head = f.read(_KIRO_SKILL_FRONTMATTER_BYTES).decode("utf-8", errors="replace")
+            head = f.read(_KIRO_SKILL_FRONTMATTER_BYTES).decode("utf-8-sig", errors="replace")
     except OSError:
         return "", False
     # The loader's own grammar: only a column-0 key is a field, so an indented
