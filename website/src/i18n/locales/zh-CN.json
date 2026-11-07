@@ -15307,6 +15307,10 @@
       "installed_apps": "已安装的应用"
     },
     "logsPage": {
+      "level_debug": "调试",
+      "level_info": "信息",
+      "level_warning": "警告",
+      "level_error": "错误",
       "filter_logs": "筛选日志",
       "filter_logs_2": "筛选日志…",
       "latest_first": "最新：在前",

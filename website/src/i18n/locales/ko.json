@@ -15307,6 +15307,10 @@
       "installed_apps": "설치된 앱"
     },
     "logsPage": {
+      "level_debug": "디버그",
+      "level_info": "정보",
+      "level_warning": "경고",
+      "level_error": "오류",
       "filter_logs": "로그 필터",
       "filter_logs_2": "로그 필터…",
       "latest_first": "최신: 처음",

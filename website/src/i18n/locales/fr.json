@@ -16079,6 +16079,10 @@
       "installed_apps": "Apps installées"
     },
     "logsPage": {
+      "level_debug": "Débogage",
+      "level_info": "Info",
+      "level_warning": "Avertissement",
+      "level_error": "Erreur",
       "filter_logs": "Filtrer les journaux",
       "filter_logs_2": "Filtrer les journaux...",
       "latest_first": "Plus récents : en premier",
