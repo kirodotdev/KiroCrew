@@ -646,6 +646,57 @@ class TestPrAiFingerprint(unittest.TestCase):
         after = routes._pr_ai_fingerprint({**self.DETAIL, "head_sha": "b" * 40}, [], [])
         self.assertNotEqual(before, after)
 
+    # Same input as the prompt: a padded comment past the cap, and more failing
+    # checks than the prompt lists.
+    PADDED = " " * 200 + "A" * 1000 + "OLD" + "Z" * 300
+    NINE_FAILING = [{"name": f"failure-{i}", "bucket": "failure"} for i in range(9)]
+
+    def _timeline(self, body):
+        return [{"kind": "comment", "actor": "a", "created_at": "1", "body": body}]
+
+    def test_an_edit_the_model_sees_after_stripped_padding_changes_it(self):
+        # The prompt strips the body before capping it, so "OLD" sits inside the
+        # model's view even though it is past the cap's raw offset.
+        edited = self.PADDED.replace("OLD", "NEW")
+        before_prompt = routes._build_pr_ai_prompt(
+            "o", "r", self.DETAIL, self._timeline(self.PADDED), []
+        )
+        after_prompt = routes._build_pr_ai_prompt("o", "r", self.DETAIL, self._timeline(edited), [])
+        self.assertNotEqual(before_prompt, after_prompt)
+        self.assertNotEqual(
+            routes._pr_ai_fingerprint(self.DETAIL, self._timeline(self.PADDED), []),
+            routes._pr_ai_fingerprint(self.DETAIL, self._timeline(edited), []),
+        )
+
+    def test_reordered_failing_checks_list_the_same_names_and_keep_it(self):
+        reordered = list(reversed(self.NINE_FAILING))
+        before_prompt = routes._build_pr_ai_prompt("o", "r", self.DETAIL, [], self.NINE_FAILING)
+        after_prompt = routes._build_pr_ai_prompt("o", "r", self.DETAIL, [], reordered)
+        # The prompt must pick the same eight names whatever order the provider
+        # used, or a cached summary would have been written from other names.
+        self.assertEqual(before_prompt, after_prompt)
+        self.assertEqual(
+            routes._pr_ai_fingerprint(self.DETAIL, [], self.NINE_FAILING),
+            routes._pr_ai_fingerprint(self.DETAIL, [], reordered),
+        )
+
+    def test_a_changed_listed_failing_name_changes_it(self):
+        renamed = [{**self.NINE_FAILING[0], "name": "failure-renamed"}] + self.NINE_FAILING[1:]
+        self.assertNotEqual(
+            routes._pr_ai_fingerprint(self.DETAIL, [], self.NINE_FAILING),
+            routes._pr_ai_fingerprint(self.DETAIL, [], renamed),
+        )
+
+    def test_it_is_stable_for_the_same_padded_comment_and_failing_checks(self):
+        args = (self.DETAIL, self._timeline(self.PADDED), self.NINE_FAILING)
+        self.assertEqual(routes._pr_ai_fingerprint(*args), routes._pr_ai_fingerprint(*args))
+        self.assertEqual(
+            routes._pr_ai_fingerprint(*args),
+            routes._pr_ai_fingerprint(
+                dict(self.DETAIL), self._timeline(self.PADDED), [dict(c) for c in self.NINE_FAILING]
+            ),
+        )
+
 
 class TestComputePrAi(unittest.IsolatedAsyncioTestCase):
     DETAIL = {"number": 12, "title": "t", "body": "b", "state": "open"}
