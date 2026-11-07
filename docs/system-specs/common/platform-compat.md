@@ -706,9 +706,10 @@ whose only edge to the root ran through an intermediary that exited before the
 first scan is a different case and must not be read as covered by that refusal:
 Toolhelp reports its parent as a vanished PID, so no walk from the root reaches
 it, the drain confirms the exits it can see and reports success, and that
-residue falls to the PID-file orphan sweep. Pinning at spawn closes the window
-for the ROOT; it does not pin an intermediary nobody has seen yet. POSIX teardown and Windows resource Job limits are
-unchanged. Native small-process regressions live in
+residue is ended by the tree's Job (below) when the resource ceiling installed
+one. Pinning at spawn closes the window for the ROOT; it does not pin an
+intermediary nobody has seen yet. POSIX teardown and Windows resource Job limits
+are unchanged. Native small-process regressions live in
 `test/test_runtime_cleanup_windows.py`; deterministic timing/error contracts
 live in `test/test_windows_tree_reap.py`.
 
@@ -744,17 +745,31 @@ and `test/test_runtime_cleanup_windows.py::test_a_member_refused_before_its_obje
 branch on a virtual clock. `pod._windows_job.retire_identity` meets the same refusal
 when it ends a pod publisher, and judges it by its own bounded retirement wait.
 
-Teardown deliberately does not keep a Job handle and call `TerminateJobObject`
-instead of draining exact handles. The Job that `apply_job_limits` creates is
-anonymous and is closed before that function returns, so there is no handle to
-retain and no name to reopen; `KILL_ON_JOB_CLOSE` is left unset on purpose,
-because setting it would tie an agent tree's LIFETIME to a resource ceiling's
-handle. That ceiling is also fail-soft by published contract — a missing Job must
-not fail a spawn, and four Win32 call sites log and continue — so making
-reclamation depend on it would either turn every ceiling failure into a refused
-start or leave exactly the degraded host with no reclamation at all. A Job also
-enforces by REFUSING new members rather than killing existing ones, so a
-saturated Job is a state the gateway must survive, not a teardown primitive.
+The tree's Job finishes what the drain cannot reach. When `apply_job_limits`
+installs the ceiling on the pinned root of an admitted tree, it hands the
+anonymous Job handle to that tree's cleanup state (`adopt_windows_tree_job`)
+instead of closing it. Once an exact-handle drain completes, the state calls
+`TerminateJobObject` before it retires the tree's tracking, and closes the handle
+at retirement. A refused terminate raises like an unconfirmed drain, so the tree
+keeps its Job and pins for the sweep's next pass.
+That ends every member the parent-PID walk could not reach, such as an MCP server
+whose `cmd.exe` wrapper exited first: the Windows counterpart of the POSIX group
+kill. The Job adds to the drain and does not replace it. Completion is still
+certified from exact handles, a pending tree keeps its Job with its pins until it
+retires, and a spawn whose fail-soft ceiling failed has no Job and tears down by
+the drain alone, so reclamation never depends on the ceiling. `KILL_ON_JOB_CLOSE`
+stays unset, so a gateway that exits only closes the handle and running agents
+live on. A Job that no admitted tree pins (the PDF extractor's) is closed before
+`apply_job_limits` returns. Regressions:
+`test/test_runtime_cleanup_windows.py::test_runtime_kill_ends_a_member_whose_parent_already_exited`.
+
+An exit `AcpRuntime` observes rather than causes (the reader's EOF branch or
+`_exit_watch_loop`) runs the same drain on Windows once
+`_retire_tracking_after_exit` has confirmed it, because a Windows descendant has no
+`kiro_pids.txt` line the sweep could reap it by. The drain retires the root's
+tracking under its pin; `WindowsTreeDrainPending` is one WARNING line, and a drain
+that cannot confirm keeps its pins for the sweep. Regression:
+`test/test_runtime_cleanup_windows.py::test_observed_root_exit_ends_the_tree_it_left_behind`.
 
 ## Pod lifetime Job primitives
 
