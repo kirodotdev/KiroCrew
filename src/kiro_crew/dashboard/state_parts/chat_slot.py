@@ -80,7 +80,6 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
-        "autocompact_pct",
         "turn_timeout_secs",
         "_turn_timeout_hydrated",
         "mode",
@@ -412,7 +411,6 @@ class _ChatSlot:
     served_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
-    autocompact_pct: float | None
     turn_timeout_secs: int | None
     _turn_timeout_hydrated: bool
     memory_store: str
@@ -774,6 +772,16 @@ class _ChatSlot:
         from kiro_crew.dashboard.transcript_binding import write_project
 
         write_project(self._binding, value)
+
+    @property
+    def autocompact_pct(self) -> float | None:
+        """The session's compaction threshold override, held in the binding aliases share."""
+        return self._binding.autocompact_pct
+
+    @autocompact_pct.setter
+    def autocompact_pct(self, value: float | None) -> None:
+        self._binding.autocompact_pct = value
+        self._binding.autocompact_set = True
 
     @property
     def reasoning_effort(self) -> str:
