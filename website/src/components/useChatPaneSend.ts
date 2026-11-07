@@ -289,7 +289,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, ...(crewmate ? { responsiveSend: true } : {}) } },
       }))
       // Same record as ChatPage's send: ↑ can recall it if the bubble is lost.
-      dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId }))
+      dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId, pastes: bubblePastes }))
     }
     const sendEpoch = selectSlotRunEpoch(store.getState(), slotKey)
     // Sending is explicit intent to be at the end, so the pane force-pins the

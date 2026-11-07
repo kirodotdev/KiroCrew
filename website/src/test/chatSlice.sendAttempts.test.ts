@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import chatReducer, { appendMessage, clearMessages, clearSlotCache, confirmOptimisticSend, hydrateSlotMessages, recordSendAttempt, replaceMessages, selectSendAttempts, sseChatMessage, switchSlot, truncateAfterIndex, warmSlotCache } from '../store/chatSlice'
 import { promptHistoryWithAttempts } from '../components/composerPromptHistory'
 import { sseSlots } from '../store/dashboardSlice'
+import { formatToken } from '../utils/pasteTokens'
 import type { RootState } from '../store'
 import './mockApiClient'
 
@@ -205,5 +206,13 @@ describe('a delivered send leaves the record', () => {
     s = chatReducer(s, record('a', 'lost', 's1'))
     const history = promptHistoryWithAttempts([], selectSendAttempts(asRoot(s), 'a'))
     expect(history.map(h => h.text)).toEqual(['lost'])
+  })
+
+  it('a lost send is offered with its paste blocks, so ↑ recalls a token that still expands', () => {
+    const block = { id: 'p1', seq: 1, lines: 3, content: 'a\nb\nc' }
+    let s = { ...init(), activeSlot: 'a' }
+    s = chatReducer(s, recordSendAttempt({ slot: 'a', text: `see ${formatToken(block)}`, sendId: 's1', pastes: [block] }))
+    const history = promptHistoryWithAttempts([], selectSendAttempts(asRoot(s), 'a'))
+    expect(history).toEqual([{ text: `see ${formatToken(block)}`, id: 's1', pastes: [block] }])
   })
 })

@@ -108,7 +108,7 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
@@ -119,6 +119,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   optimizePrompt: () => void
   sendOnEnter: SendMode
   onChange: (v: string) => void
+  onPasteBlocksChange?: (blocks: PasteBlock[]) => void
   valueFromUserRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
   fireComposer: (alternate?: unknown) => void
@@ -129,7 +130,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   promptHistory: ReturnType<typeof usePromptHistory>
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
-  pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
+  pasteBlocksRef: React.RefObject<PasteBlock[]>
   /** A bare Escape with the prompt box focused: stop the running turn on this
    *  slot (soft cancel; a second Escape after the arm window force-kills, via
    *  the same onStop protocol the Stop button runs). Returns true when it
@@ -309,8 +310,8 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       ime.isComposing(e) ||
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
-    promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
+    promptHistory.recall(e, { sentMessages, current: valueRef.current, blocks: pasteBlocksRef.current ?? [], onChange, onBlocksChange: onPasteBlocksChange, inputRef })
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
 }
 
 /** The `beforeinput` inputTypes the mention value-change seam handles: a

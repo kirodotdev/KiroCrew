@@ -11,6 +11,7 @@ import type { ErrorReport } from '../../utils/errorReport'
 import type { AgentSwitchNotice } from '../../utils/agentSwitchFeedback'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
 import type { ParkedThinking } from './thinking'
+import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** Per-slot activity-panel open/closed state, persisted to localStorage so the
  *  panel's open/closed choice survives a full page reload — keeping it
@@ -62,8 +63,9 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 export type EndedTurn = { gen: string; turn: number }
-/** One prompt this tab submitted: the bubble text and the send's own id. */
-export type SendAttempt = { text: string; sendId: string }
+/** One prompt this tab submitted: the bubble text, the send's own id and the
+ *  paste blocks its tokens name. */
+export type SendAttempt = { text: string; sendId: string; pastes?: PasteBlock[] }
 /** Retention bound for `ChatState.sendAttempts`, per slot. */
 export const SEND_ATTEMPTS_PER_SLOT_MAX = 50
 
