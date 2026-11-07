@@ -17,7 +17,7 @@ Instance fields read: ``_config_options``, ``_runtime``, ``_session_id``, ``_ses
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``kas_crew_answered``, ``kas_crew_answered_commands``,
 ``kas_spec_denies``, ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``,
-``_bound_cwd``,
+``kas_spec_shell_readonly``, ``kas_crew_answered_paths``, ``_bound_cwd``,
 ``mirror_used``, ``spec_denied_tools``.
 """
 
@@ -716,4 +716,6 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         event.spec_write_allowlist = getattr(self, "kas_spec_write_allowlist", None)
         event.spec_write_cwd = str(getattr(self, "_bound_cwd", "") or "")
         event.spec_denied_grant = getattr(self, "kas_spec_denies", None)
+        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
+        event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
     return event

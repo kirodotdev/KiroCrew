@@ -124,12 +124,12 @@ def test_tools_settings_notice_fires_once_per_session(agents_dir, notices):
         agents_dir,
         "a1",
         hooks=_OBJECT_HOOKS,
-        toolsSettings={"shell": {"autoAllowReadonly": True}},
+        toolsSettings={"grep": {"allowReadOnly": True}},
     )
     _prepare(_client(ACP_BACKEND_KAS), "a1", is_new=True)
     _prepare(_client(ACP_BACKEND_KAS), "a1", is_new=False)
     assert len(notices) == 1
-    assert "toolsSettings.shell.autoAllowReadonly" in notices[0]
+    assert "toolsSettings.grep.allowReadOnly" in notices[0]
     assert "hooks" not in notices[0]
 
 

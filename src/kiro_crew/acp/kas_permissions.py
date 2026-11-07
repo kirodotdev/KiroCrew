@@ -57,13 +57,21 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
     auto_approved_mcp_servers,
     cached_mcp_tool_names,
 )
+from kiro_crew.acp.kas_spec_grants import (
+    CREW_ANSWERED_PATHS_KEY,
+    CREW_SHELL_READONLY_KEY,
+    SHELL_SETTINGS_KEYS,
+    WRITE_SETTINGS_KEYS,
+)
+from kiro_crew.acp.kas_tool_rows import (  # noqa: F401 - re-exported
+    _HOOK_ONLY_ROWS,
+    KAS_TOOL_IDS_BY_KIRO_TOOL,
+    KAS_TOOL_MATCH_VOCABULARY,
+    kas_tool_match_names,
+)
 from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform import allowed_paths as allowed_paths_mod
-from kiro_crew.platform.tool_names import (
-    KIRO_CLI_NAME_BY_KAS_TOOL,
-    KIRO_TOOL_ALIASES,
-    canonical_kiro_cli_tool_name,
-)
+from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES, canonical_kiro_cli_tool_name
 from kiro_crew.platform.tools_settings_aliases import (
     _TOOLS_SETTINGS_FAMILY,
     canonical_tools_settings,
@@ -194,6 +202,8 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_SPEC_DENIES_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
+        CREW_ANSWERED_PATHS_KEY,
+        CREW_SHELL_READONLY_KEY,
     }
 )
 
@@ -240,7 +250,7 @@ def _entry_shell_allowlist(entry: Any) -> tuple[str, ...] | None:
 
 #: The ``toolsSettings`` keys kiro-cli reads its shell settings under. After
 #: :func:`canonical_tools_settings` at most one of them is present.
-_SHELL_SETTINGS_KEYS = ("execute_bash", "shell")
+_SHELL_SETTINGS_KEYS = SHELL_SETTINGS_KEYS
 
 #: Bounds on what :func:`crew_answered_commands` keeps, so the record the session
 #: carries and the work the gate does per shell call stay small.
@@ -453,7 +463,7 @@ def spec_shell_allowlist(
 
 
 #: The ``toolsSettings`` keys kiro-cli reads its file-write settings under.
-_WRITE_SETTINGS_KEYS = ("fs_write", "write")
+_WRITE_SETTINGS_KEYS = WRITE_SETTINGS_KEYS
 
 #: Bound on what :func:`spec_write_allowlist` keeps, like :data:`_MAX_ALLOWED_COMMANDS`.
 _MAX_ALLOWED_PATHS = 64
@@ -516,6 +526,12 @@ def spec_write_allowlist(tools_settings: Any) -> list[str] | None:
     """
     if not write_denies_by_default(tools_settings):
         return None
+    return _usable_allowed_paths(tools_settings)[:_MAX_ALLOWED_PATHS]
+
+
+def crew_answered_paths(tools_settings: Any) -> list[str]:
+    """The write ``allowedPaths`` Crew answers a KAS write for (``kas_spec_grants``),
+    usable and bounded like :func:`spec_write_allowlist`. The caller asks the ceiling."""
     return _usable_allowed_paths(tools_settings)[:_MAX_ALLOWED_PATHS]
 
 
@@ -662,73 +678,6 @@ def withhold_answered_under_authored_rules(
         for name in answered
         if name in _ANSWERED_CAPABILITIES and not (_ANSWERED_CAPABILITIES[name] & restricted)
     )
-
-
-#: kiro-cli tool name -> the KAS tool ids that do the same job.
-#:
-#: DERIVED, not hand-kept: the kiro-cli <-> KAS relationship has ONE table,
-#: :data:`kiro_crew.platform.tool_names.KIRO_CLI_NAME_BY_KAS_TOOL` (the policy
-#: direction: each KAS built-in id -> the kiro-cli name a rule about it is
-#: written under, pinned to the recorded engine registry). This mapping is its
-#: inverse, grouped per kiro-cli name, plus the rows only the hook vocabulary
-#: needs: ``fs_write`` is a KAS id as well as the kiro-cli name (a file create
-#: states it on a permission request), and ``web_fetch`` reaches a KAS tool no
-#: gate policy names. A matcher in an agent
-#: spec's ``hooks`` names tools in kiro-cli's vocabulary (``execute_bash``,
-#: ``fs_write``). KAS names its own tools differently, and the name it states for
-#: a call is the ``toolId`` of the permission request's ``_meta.kiro``
-#: (``AcpEvent.harness_tool_id``): a shell command is ``run_command``, a partial
-#: edit is ``str_replace``. Every id here is one a live KAS session (kiro-cli
-#: 2.24, ``--agent-engine v3``) stated on a permission request for that kind of
-#: call, and each row stays inside the KAS capability its kiro-cli name belongs
-#: to in KAS's tool table (``policy/capabilities.ts``), so a row never reaches a
-#: tool of a different kind.
-#:
-#: Coverage is per id, not per capability: a row lists the ids seen for that
-#: kind of call, and a KAS id outside every row (a process-control tool) is met
-#: only by a matcher that names it as written. A kiro-cli tool with no row
-#: (``use_aws``) meets no KAS call. Read it through
-#: :func:`kas_tool_match_names` and :data:`KAS_TOOL_MATCH_VOCABULARY`; the rows
-#: themselves are for a caller that must go from a kiro-cli name to KAS ids.
-_HOOK_ONLY_ROWS: dict[str, tuple[str, ...]] = {
-    "web_fetch": ("web_fetch",),
-}
-
-
-def _rows_from_policy_table() -> dict[str, tuple[str, ...]]:
-    grouped: dict[str, list[str]] = {"fs_write": ["fs_write"]}
-    for kas_id, kiro_cli_name in KIRO_CLI_NAME_BY_KAS_TOOL.items():
-        grouped.setdefault(kiro_cli_name, []).append(kas_id)
-    rows = {name: tuple(ids) for name, ids in grouped.items()}
-    rows.update(_HOOK_ONLY_ROWS)
-    return rows
-
-
-KAS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = _rows_from_policy_table()
-
-#: Every name a tool matcher can mean on KAS: the kiro-cli names and their
-#: aliases, and the KAS ids they reach.
-KAS_TOOL_MATCH_VOCABULARY: frozenset[str] = (
-    frozenset(KAS_TOOL_IDS_BY_KIRO_TOOL)
-    | frozenset(KIRO_TOOL_ALIASES)
-    | frozenset(tool_id for ids in KAS_TOOL_IDS_BY_KIRO_TOOL.values() for tool_id in ids)
-)
-
-
-def kas_tool_match_names(tool_id: str) -> tuple[str, ...]:
-    """The names a tool matcher is compared with for a KAS call to ``tool_id``.
-
-    First the kiro-cli name whose row reaches the id (the id itself when no row
-    does), then the KAS id, then the aliases, with no repeats. So a matcher written
-    as ``execute_bash``, ``run_command`` or ``shell`` meets a KAS shell call, and the
-    first name is the one a kiro-cli hook would be told the tool is called. Empty
-    for an empty id: a call KAS did not name matches no tool matcher.
-    """
-    if not tool_id:
-        return ()
-    kiro_names = sorted(name for name, ids in KAS_TOOL_IDS_BY_KIRO_TOOL.items() if tool_id in ids)
-    aliases = sorted(alias for alias, name in KIRO_TOOL_ALIASES.items() if name in kiro_names)
-    return tuple(dict.fromkeys([*kiro_names, tool_id, *aliases]))
 
 
 #: Glob syntax kiro-cli's ``allowedTools`` matcher documents for the TOOL part
@@ -1886,6 +1835,10 @@ def tools_settings_to_permissions(
                 or len(_usable_allowed_commands(tools_settings)) > _MAX_ALLOWED_COMMANDS
             ):
                 lost.append(f"{tool}.allowedCommands")
+            # No rule: Crew's read-only row answers a read-only command, also
+            # under `denyByDefault` (`kas_spec_grants`). A non-boolean is named.
+            if isinstance(settings.get("autoAllowReadonly"), bool):
+                handled.add("autoAllowReadonly")
         elif family in ("read", "write"):
             capability = "fs_read" if family == "read" else "fs_write"
             handled.add("deniedPaths")
@@ -1916,9 +1869,17 @@ def tools_settings_to_permissions(
                 # `interactive` is the default: nothing is lost by leaving it out.
                 # `deny` travels as no rule: Crew's gate refuses every write the
                 # usable `allowedPaths` do not cover (`spec_write_allowlist`).
-                # `allowedPaths` itself stays named below: a covered write still
-                # prompts on KAS, where kiro-cli runs it unasked.
                 handled.add("fallbackAction")
+                # No rule: Crew's gate answers a covered write (`crew_answered_paths`).
+                # Named when an entry is unusable or the bound cuts the list.
+                handled.add("allowedPaths")
+                paths = settings.get("allowedPaths")
+                if paths and (
+                    not isinstance(paths, list)
+                    or any(allowed_paths_mod.parse(p) is None for p in paths)
+                    or len(_usable_allowed_paths(tools_settings)) > _MAX_ALLOWED_PATHS
+                ):
+                    lost.append(f"{tool}.allowedPaths")
                 if settings.get("fallbackAction") not in (
                     None,
                     "",

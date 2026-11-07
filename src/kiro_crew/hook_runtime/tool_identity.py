@@ -202,6 +202,15 @@ class ToolCall:
     #: ``AcpEvent.spec_denied_grant``: grants that hold only after the
     #: ``spec-denies`` row finds no deny naming the call. ``None`` grants nothing.
     spec_denied_grant: SpecDeniedGrant | None = None
+    #: ``AcpEvent.spec_shell_readonly``: the KAS session's own agent sets
+    #: ``autoAllowReadonly: true`` beside ``denyByDefault``, so the
+    #: ``spec-shell-allowlist`` tier lets a read-only command past for the
+    #: read-only tier to answer. ``False`` lifts nothing.
+    spec_shell_readonly: bool = False
+    #: ``AcpEvent.spec_granted_paths``: the KAS session's own agent's write
+    #: ``allowedPaths`` as absolute globs. Read by the ``spec-builtin-grant`` tier
+    #: only, against every target of a file write. Empty grants nothing.
+    spec_granted_paths: tuple[str, ...] = ()
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
@@ -272,6 +281,8 @@ class ToolCall:
             ),
             "spec_write_cwd": _plain_str(getattr(event, "spec_write_cwd", "")),
             "spec_denied_grant": as_spec_denied_grant(getattr(event, "spec_denied_grant", None)),
+            "spec_shell_readonly": getattr(event, "spec_shell_readonly", False) is True,
+            "spec_granted_paths": _granted_patterns(getattr(event, "spec_granted_paths", None)),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
@@ -303,6 +314,8 @@ class ToolCall:
             "spec_write_allowlist": self.spec_write_allowlist,
             "spec_write_cwd": self.spec_write_cwd,
             "spec_denied_grant": self.spec_denied_grant,
+            "spec_shell_readonly": self.spec_shell_readonly,
+            "spec_granted_paths": self.spec_granted_paths,
             "harness_builtin_tool": self.harness_builtin_tool,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
