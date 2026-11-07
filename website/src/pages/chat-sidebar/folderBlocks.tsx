@@ -543,13 +543,15 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             {/* A folder with no body has nothing to toggle, so on an empty row this
              *  is not a control at all: no button role, no tab stop, no pointer
-             *  cursor, no expanded state to announce and no handler. Keeping the
+             *  cursor (`cursor-[inherit]` takes the row's drag cursor over the
+             *  pointer index.css gives the drag-handle `role="button"` below), no
+             *  expanded state to announce and no handler. Keeping the
              *  <button> and neutering its handler is the worst of the options - a
              *  focusable control that looks clickable and does nothing. The name
              *  still double-click renames and the row's own cluster still creates
              *  and opens the menu, so the row keeps every action it can honour. */}
             <HeaderShell
-              className={`flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none text-left text-inherit p-0${emptyRow ? '' : ' cursor-pointer'}`}
+              className={`flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none text-left text-inherit p-0${emptyRow ? ' cursor-[inherit]' : ' cursor-pointer'}`}
               {...(emptyRow
                 // Nothing to disclose, but the row is still a DRAG HANDLE while it
                 // is draggable, and this shell is the only focusable thing inside
