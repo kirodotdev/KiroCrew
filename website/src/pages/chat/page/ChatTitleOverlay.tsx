@@ -69,6 +69,8 @@ interface ChatTitleOverlayProps {
   sidePanelWantsMount: boolean
   mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
   mobileSessionsToggle: JSX.Element
+  onPromote: () => void
+  promoting: boolean
 }
 
 /**
@@ -100,7 +102,7 @@ export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
   scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, headerColorStyle, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
-  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle,
+  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, onPromote, promoting,
 }: ChatTitleOverlayProps) {
   const currentCrewRoot = crewRootOf(currentSlot)
   // A crewmate's session the mate sessions preview keeps out of the person's
@@ -190,6 +192,9 @@ export default function ChatTitleOverlay({
             onRename={activeSlot ? () => setEditingTitleSlot(activeSlot) : undefined}
             mode={effectiveMode}
             sidebarOnScreen={sidebarOnScreen}
+            memoryMode={currentSlot?.memory_mode}
+            onPromote={onPromote}
+            promoting={promoting}
             newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
             onSplitDown={!embedMode && splitFeatureEnabled && activeSlot && !(splitAnchorForActive && !activeIsSplitAnchor) ? () => enterSplit(activeSlot, 'down') : undefined}
           />
