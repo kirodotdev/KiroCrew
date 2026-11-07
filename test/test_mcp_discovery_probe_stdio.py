@@ -1,8 +1,8 @@
 """MCP discovery: the stdio probe's protocol handling and process teardown.
 
 The stdio reader skips blank lines, notifications and non-object JSON, and gives up after a
-capped run of non-JSON banner lines; a malformed response or a timeout becomes an error
-rather than a crash, and a child that exits early leaves a bounded, redacted stderr tail
+capped run of non-JSON banner lines; it reads a line up to the gateway's read ceiling; a
+malformed response or a timeout becomes an error rather than a crash, and a child that exits early leaves a bounded, redacted stderr tail
 on its error; and the teardown closes stdin, kills on timeout and reaps the probe's
 process group, on Windows off the event loop and without a traceback for an already-exited
 process.
@@ -393,6 +393,52 @@ class TestProbeServerStderrCapture:
         assert len(result.error or "") <= _PROBE_ERROR_MAX_CHARS
         # The credential is redacted before it reaches server.error.
         assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
+
+
+class TestProbeStdioReadLimit:
+    """The probe reads a stdio line up to the gateway's read ceiling."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "env_limit,status,tools",
+        [
+            pytest.param(None, "ok", ["big"], id="default-ceiling"),
+            pytest.param("1048576", "error", [], id="env-ceiling"),
+        ],
+    )
+    async def test_tools_list_line_follows_the_read_ceiling(
+        self, tmp_path, monkeypatch, env_limit, status, tools
+    ) -> None:
+        if env_limit is None:
+            monkeypatch.delenv("KIROCREW_MCP_READ_LIMIT", raising=False)
+        else:
+            monkeypatch.setenv("KIROCREW_MCP_READ_LIMIT", env_limit)
+        stub = tmp_path / "large-tools-server.py"
+        stub.write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if request.get('method') == 'initialize':\n"
+            "        result = {}\n"
+            "    elif request.get('method') == 'tools/list':\n"
+            "        result = {'tools': [{'name': 'big', 'description': 'x' * (2 << 20)}]}\n"
+            "    else:\n"
+            "        continue\n"
+            "    reply = {'jsonrpc': '2.0', 'id': request['id'], 'result': result}\n"
+            "    print(json.dumps(reply), flush=True)\n",
+            encoding="utf-8",
+        )
+
+        server = McpServerInfo(name="large-tools", command=sys.executable, args=[str(stub)])
+        with patch("kiro_crew.config.loader.KiroCrewConfig") as mock_cls:
+            mock_cfg = MagicMock()
+            mock_cfg.dashboard.mcp_probe_timeout_secs = 10
+            mock_cls.load.return_value = mock_cfg
+
+            result = await probe_server(server)
+
+        assert result.status == status, result.error
+        assert result.tools == tools
 
 
 class TestProbeStdioMalformedResponse:
