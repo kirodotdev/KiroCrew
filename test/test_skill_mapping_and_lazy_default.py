@@ -358,7 +358,7 @@ class TestScopedDiscovery:
         loader = _loader(tmp_path, opened=opened)
         state = SimpleNamespace(sessions=None)
         monkeypatch.setattr(prompts, "_read_session_key", lambda request: "dashboard:scoped")
-        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
+        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args, **kwargs: None)
         monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
         monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
         monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
@@ -408,7 +408,7 @@ class TestScopedDiscovery:
             _skill(root, f"team/s{n}")
         loader = _loader(tmp_path, opened=opened)
         monkeypatch.setattr(prompts, "_read_session_key", lambda request: "dashboard:scoped")
-        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
+        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args, **kwargs: None)
         monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
         monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
         monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
@@ -577,7 +577,7 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
     monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
     monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
     monkeypatch.setattr(prompts, "session_skill_globs", lambda *args, **kw: scope)
-    monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
+    monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args, **kwargs: None)
 
     def read(key, *, only, project_dir, offset, limit, capacity):
         seen.append((key, only, project_dir))
@@ -651,7 +651,7 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
             monkeypatch.setattr(
                 prompts,
                 "_deny_foreign_app_skill_slot",
-                lambda *args: web.json_response({"code": "foreign_slot"}, status=403),
+                lambda *args, **kwargs: web.json_response({"code": "foreign_slot"}, status=403),
             )
             assert (await client.post("/api/skills/-/discover", json=payload)).status == 403
             assert len(seen) == 1
@@ -684,7 +684,7 @@ async def test_installed_exact_read_credits_the_usage_ledger(tmp_path, monkeypat
     monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
     monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
     monkeypatch.setattr(prompts, "session_skill_globs", lambda *args, **kw: None)
-    monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
+    monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args, **kwargs: None)
     app = web.Application()
     app["state"] = SimpleNamespace(sessions=None)
     app["allowed_origins"] = set()
@@ -715,6 +715,67 @@ async def test_installed_exact_read_credits_the_usage_ledger(tmp_path, monkeypat
         assert _BODY_MARKER in (await legacy.json())["matches"][0]["content"]
 
     assert {key: hits for key, (hits, _seen) in loader._usage.snapshot().items()} == {"alpha": 2}
+
+
+@pytest.mark.asyncio
+async def test_app_reads_a_skill_from_its_own_projectless_slot(tmp_path, monkeypatch, opened):
+    """An app chat slot has no project, and its own skill_search still reads.
+
+    The real slot gate runs: the app's own projectless slot gets the body with
+    no project, and a foreign app's slot still gets the uniform 404.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers import prompts
+    from kiro_crew.dashboard.routes import skills as routes
+
+    _skill(tmp_path / "skills", "alpha")
+    loader = _loader(tmp_path, opened=opened)
+    loader._usage._last_flush = time.time()
+    scopes = []
+
+    def globs(session_key, agent, *, project_dir, provider_type):
+        scopes.append(project_dir)
+        return None
+
+    monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
+    monkeypatch.setattr(prompts, "session_skill_globs", globs)
+    monkeypatch.setattr(prompts, "_sel", MagicMock)
+
+    @web.middleware
+    async def app_token(request, handler):
+        request["app"] = "app-a"
+        return await handler(request)
+
+    app = web.Application(middlewares=[app_token])
+    app["state"] = SimpleNamespace(
+        sessions=None,
+        _slots={
+            "own": SimpleNamespace(project="", _app="app-a", agent="app-agent"),
+            "foreign": SimpleNamespace(project=str(tmp_path), _app="app-b", agent="x"),
+        },
+    )
+    app["allowed_origins"] = set()
+    routes.register(app)
+    read = {"scope": "installed", "action": "read", "key": "alpha"}
+    async with TestClient(TestServer(app)) as client:
+        own = await client.post(
+            "/api/skills/-/discover", json=read, headers={"X-Session-Key": "own"}
+        )
+        assert own.status == 200
+        assert _BODY_MARKER in (await own.json())["matches"][0]["content"]
+        assert scopes == [None]
+
+        foreign = await client.post(
+            "/api/skills/-/discover", json=read, headers={"X-Session-Key": "foreign"}
+        )
+        assert foreign.status == 404
+        assert (await foreign.json())["code"] == "slot_not_found"
+        assert scopes == [None]
 
 
 def test_external_provider_target_keeps_global_budget_and_admitted_root(
