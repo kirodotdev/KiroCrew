@@ -860,6 +860,8 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     as a here-document), the paren-only span stands, so no span gets shorter.
     """
     paren = _close_paren_walk(text, open_end, False)
+    if text.find("{", open_end, paren[0]) < 0:
+        return paren  # no ``${`` on the way, so the second walk takes the same steps
     spanned = _close_paren_walk(text, open_end, True)
     return spanned if spanned[1] and spanned[0] > paren[0] else paren
 
