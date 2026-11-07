@@ -90,13 +90,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_INGEST_ARCHIVE_MEMBERS,
         _MAX_INGEST_ARCHIVE_UNCOMPRESSED,
     )
+    from kiro_crew.dashboard.handlers.knowledge_library import _DATE_ORDER  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _NO_SOURCE  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SCOPED_SEARCH_MAX  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SCOPED_SEARCH_START  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _SOURCE_ORDER  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SQLITE_VARIABLE_CHUNK  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _added_within  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _attach_file_paths  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _entity_items_rows  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _entity_list_rows  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _is_day  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _item_detail  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _items_page  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _load_items_by_id  # noqa: F401
