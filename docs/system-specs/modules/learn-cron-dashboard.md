@@ -651,7 +651,7 @@ state the alert exists to prevent.
 
 ### Per-Job Timezone
 
-Each job stores an optional `timezone` field (IANA name, e.g. `America/Los_Angeles`, or `local`). Schedule evaluation, next-run computation, and display all use the job's timezone rather than the server timezone. The `/api/crons` response includes both the per-job `timezone` and a top-level `server_tz` field so frontends can render correctly.
+Each job stores an optional `timezone` field (IANA name, e.g. `America/Los_Angeles`, or `local`). Schedule evaluation, next-run computation, and display all use the job's timezone rather than the server timezone. A cron expression's next run (`compute_next_run_ts` and the timer boundary `_next_cron_boundary_ts`, both through `_next_wall_clock_ts`) is stepped on the zone's wall clock and only then given the zone, as the schedule label is. Given an aware start, croniter 2 shifts a run past a DST change by the offset change a second time, so a 03:00 job read 04:00 PST the day before a fall-back. A wall time the fall-back repeats takes its second instant when the first is not after now; one the spring-forward skips resolves as `fold=0` does (02:30 runs at 03:30). The `/api/crons` response includes both the per-job `timezone` and a top-level `server_tz` field so frontends can render correctly.
 
 The shared schedule formatter receives the saved job timezone at every display boundary, including `cron_add` and `cron_update` confirmations, `cron_list`, `kirocrew cron list` and `kirocrew cron add`, the Schedule page, and channel command listings. A job without its own timezone is rendered in the zone the scheduler resolves for it (see "The `local` zone" below).
 
