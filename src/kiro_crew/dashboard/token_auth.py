@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.constants import APP_REQUEST_HEADER
 from kiro_crew.dashboard import tailnet_owner
 from kiro_crew.dashboard.agent_ipc import GRANT_KEY as AGENT_IPC_GRANT_KEY
 from kiro_crew.dashboard.agent_ipc import Binding as AgentIpcBinding
@@ -77,6 +78,7 @@ from kiro_crew.dashboard.token_auth_callers import (
     _internal_caller_record_missing,
     _unix_request_socket,
     _verify_unix_peer,
+    refuse_unattributable_caller,
 )
 from kiro_crew.dashboard.token_auth_paths import (
     _APPS_UI_BYPASS_RE,
@@ -142,6 +144,7 @@ def token_auth_middleware(
     tailnet_trust: TailnetTrust | None = None,
     tailnet_direct: tailnet_direct_types.DirectGate | tailnet_direct_types.GateRef | None = None,
     ssm_gate: ssm_gate_types.GateRef | None = None,
+    agent_route_arm: Callable[[object], bool] | None = None,
 ) -> Callable[..., Any]:
     """Factory returning aiohttp middleware for token-based dashboard auth.
 
@@ -185,6 +188,20 @@ def token_auth_middleware(
     SSM port is decided there, by a Crew invite alone, and never enters the token
     flow: a forwarded connection looks like a loopback one, so the port, not the
     request, says it is not the owner.
+
+    *agent_route_arm* is a per-request predicate ``(resolved_route) -> bool``
+    answering one question: did aiohttp select the RouteRegistry catch-all for
+    this request. A LOCAL request presenting ``X-Internal-Secret`` on such a
+    route, and on no path the static internal sets already admit, is handled
+    exactly like a mixed internal path (peer verification, then the secret
+    check) and is marked ``request["app_agent_route"]``. On the agent socket
+    the same route counts as internal for the capability gate, and a verified
+    capability takes the place of the secret. Whether the app
+    DECLARED the route is not decided here: ``RouteRegistry.dispatch`` refuses
+    an armed request whose resolved route is undeclared before any handler runs.
+    A request marked as generic ``app_request`` traffic is admitted only on this
+    arm; static internal paths are refused even when a manifest declares one.
+    Unmarked requests keep the existing dedicated-tool and cookie behavior.
     """
 
     # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
@@ -196,6 +213,20 @@ def token_auth_middleware(
     # `await warm_auth_singletons()` (which offloads to a worker thread) BEFORE
     # constructing this middleware chain, so the first auth op still hits the
     # already-built singletons without any blocking I/O landing on the loop.
+
+    def _resolved_to_agent_route(request: web.Request) -> bool:
+        """Whether aiohttp selected the RouteRegistry catch-all for *request*.
+
+        Only the route resolution; the caller's credential and locality are
+        weighed by each call site, and the declaration by ``RouteRegistry.dispatch``.
+        """
+        if agent_route_arm is None:
+            return False
+        try:
+            return bool(agent_route_arm(request.match_info.route))
+        except Exception:  # noqa: BLE001 - an unanswerable predicate arms nothing
+            logger.debug("agent route arm check failed", exc_info=True)
+            return False
 
     def _extract_and_validate_token(
         request: web.Request, _port: int
@@ -369,7 +400,8 @@ def token_auth_middleware(
             _ipc_response = await agent_socket_gate(
                 request,
                 internal=internal_path_matches(path, internal_paths)
-                or internal_path_matches(path, mixed_internal_paths),
+                or internal_path_matches(path, mixed_internal_paths)
+                or _resolved_to_agent_route(request),
             )
             if _ipc_response is not None:
                 return _ipc_response
@@ -567,6 +599,41 @@ def token_auth_middleware(
             _matches_mixed = True
             _matches_strict = False
         _matches_internal = _matches_strict or _matches_mixed
+        _is_app_request = APP_REQUEST_HEADER in request.headers
+        if _is_app_request and _matches_internal:
+            _log_auth(request, "internal", "denied", "app_request_static_route_refused")
+            return _deny(
+                request,
+                "app_request cannot call a static internal route",
+                "app_request_static_route_refused",
+            )
+        # Set only by agent_socket_gate above, after it verified a capability
+        # bound to this connection's process; such a request carries no secret.
+        _ipc_granted = isinstance(request.get(AGENT_IPC_GRANT_KEY), AgentIpcBinding)
+        # A request aiohttp routed to the app catch-all joins the mixed set for
+        # THIS request only, when a local caller presents the secret (or, on the
+        # agent socket, a verified capability) and no static internal set already
+        # admits the path. Static entries (Issue Radar, Ops Mission Control, Dev
+        # Fleet, the edition's own) keep their branch unchanged; the arm is for
+        # routes an app declared in its manifest, and ``RouteRegistry.dispatch``
+        # is what checks the declaration.
+        _agent_route = False
+        if (
+            not _matches_internal
+            and ("X-Internal-Secret" in request.headers or _ipc_granted)
+            and (_unix_request_socket(request) is not None or is_loopback(request.remote or ""))
+        ):
+            _agent_route = _resolved_to_agent_route(request)
+            if _agent_route:
+                _matches_mixed = True
+                _matches_internal = True
+        if _is_app_request and not _agent_route:
+            _log_auth(request, "internal", "denied", "app_request_route_refused")
+            return _deny(
+                request,
+                "app_request requires a declared app agent route",
+                "app_request_route_refused",
+            )
         # A request on the dashboard's unix socket is same-machine by
         # construction (the socket lives in the 0700 data home), so it
         # qualifies as "local" for the internal branch even though it has no
@@ -583,9 +650,6 @@ def token_auth_middleware(
                 _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
                 if _peer_deny is not None:
                     return _peer_deny
-            # Set only by agent_socket_gate above, after it verified a capability
-            # bound to this connection's process; such a request carries no secret.
-            _ipc_granted = isinstance(request.get(AGENT_IPC_GRANT_KEY), AgentIpcBinding)
             _has_secret_header = "X-Internal-Secret" in request.headers
             if _has_secret_header or _ipc_granted:
                 _provided_secret = request.headers.get("X-Internal-Secret", "")
@@ -619,12 +683,22 @@ def token_auth_middleware(
                     # loopback caller (kiro-cli / MCP) authenticated" from "no
                     # auth ran at all".
                     request["internal_auth"] = True
+                    if _agent_route:
+                        # Read by RouteRegistry.dispatch, which demands and then
+                        # publishes the caller's X-Session-Key on this arm only.
+                        request["app_agent_route"] = True
                     if path == "/api/chat" or path.startswith("/api/chat/"):
                         from kiro_crew.dashboard.handlers._shared import private_chat_route_refusal
 
                         memory_refusal = await private_chat_route_refusal(request)
                         if memory_refusal is not None:
                             return memory_refusal
+                    if _agent_route:
+                        _unattributable_refusal = refuse_unattributable_caller(
+                            request.app.get("state"), request, "app_agent_route"
+                        )
+                        if _unattributable_refusal is not None:
+                            return _unattributable_refusal
                     # Derive the app identity ONCE, here, so every ownership
                     # check downstream sees it. The secret proves
                     # the call came from inside, not who made it, so identity
@@ -647,6 +721,16 @@ def token_auth_middleware(
                         # gate, which must never infer trust from a falsy app
                         # claim (CWE-269).
                         request["is_dashboard_user"] = False
+                        if _agent_route:
+                            # An app-owned session is confined to its own
+                            # namespace on this arm exactly as an app token is
+                            # on the cookie arm: ``app_request`` checks only the
+                            # TARGET app's declaration, so without this an app
+                            # A cron would reach app B's declared route.
+                            await _prime_app_api_allowlist(_derived_app)
+                            _scope_deny = _enforce_app_scope(request, _derived_app, path)
+                            if _scope_deny is not None:
+                                return _scope_deny
                     elif _internal_caller_record_missing(request):
                         # A delegated caller whose OWN record is gone. Absence of
                         # an app claim is only trustworthy for a caller that
@@ -669,6 +753,22 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
+                    if _agent_route:
+                        # Emitted only once every refusal above has passed, the
+                        # app-scope check included, so a "granted" row is never
+                        # written for a call this middleware then denied. It
+                        # names the calling session so the trail says which
+                        # session was admitted onto which app route. An empty
+                        # key falls back to the peer, and dispatch refuses the
+                        # call.
+                        _sel_fn().log_api_access(
+                            caller=request.headers.get("X-Session-Key", "").strip() or _caller,
+                            forwarded=is_proxied_request(request),
+                            operation="app_agent_route",
+                            outcome="granted",
+                            source="token_auth",
+                            resources=f"{request.method} {path}",
+                        )
                     await publish_actor(
                         request, trust=tailnet_trust, serve_peer=None, internal=True
                     )
@@ -1457,7 +1557,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         derive_caller_app,
         effective_request_app,
         folder_principal,
-        refuse_unattributable_caller,
         request_origin,
     )
     from kiro_crew.dashboard.token_auth_paths import (  # noqa: F401

@@ -113,9 +113,11 @@ RAW_LOOPBACK_SITES = {
     # no-Origin allowance and the empty-Host allowance. The last two widen
     # nothing: a request still needs its own credential.
     "dashboard/origin.py": 4,
-    # Internal-secret paths. The SSM gate refuses X-Internal-Secret and strict
-    # internal paths before any of this runs.
-    "dashboard/token_auth.py": 1,
+    # Internal-secret paths and the app agent-route arm, which needs the secret
+    # or an agent-socket capability. The SSM gate refuses X-Internal-Secret and
+    # strict internal paths before any of this runs, and a capability exists only
+    # on the agent's unix socket, never on the SSM port.
+    "dashboard/token_auth.py": 2,
     # Each of these also requires the internal secret, X-Local-Secret or
     # ``internal_auth``, none of which an SSM guest holds.
     "apps/builtins/dev_fleet/agent_pod_api.py": 1,
