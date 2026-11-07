@@ -3987,6 +3987,21 @@ enterprise build caps at 1800 seconds (`30m`, the shortest choice); the baseline
 already denies `yolo` there until a policy permits it. Two tiers fold to the
 lower cap.
 
+**`mcp_registry_local_control_plane` (policy top level, policy-only).** A JSON
+boolean, `false` when absent; any other value fails the load, and a profile
+carrying it is rejected. It is the admin's opt-in for a registry-governed host
+(`agent.mcp_registry_mode`): `true` lets `acp.session_mcp.kiro_control_plane_servers`
+mount Kiro Crew's per-session identity element for `kirocrew-core` and
+`kirocrew-cron`, which launches those two from the local install instead of the
+registry catalog's entry. Opt-in Crew servers and builtin app servers stay under the
+catalog either way. Off, nothing is mounted under registry mode (unless
+`kiro_cli.registry_governance_known_unreachable()` says no admin registry can
+govern the sign-in) and identity-scoped calls from those servers are refused
+`identity_unattestable`, with text naming this field; a refusal from any other server,
+or one made with the field already on, does not name it, since the field cannot fix
+it there. Because it widens the host it is in the authority-only class: a lower tier
+cannot supply it, and the authority's value stands.
+
 **Enterprise values under local tiers.** In an enterprise build
 `tiers._with_enterprise_value_floors` fills the authority's `updates.channel`
 (`stable`), `yolo_max_seconds` (1800) and, when `slack` is a permitted member, an

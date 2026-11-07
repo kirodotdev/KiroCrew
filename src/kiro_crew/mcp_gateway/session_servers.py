@@ -430,8 +430,11 @@ def _registry_ceiling_exemptions() -> frozenset[str] | None:
     every consumer of a stub element reads it from :func:`pooled_session_servers`
     paired with :func:`injection_server_names`. Filtering in a mirror would leave
     the next mirror exposed; filtering here covers all of them and any future
-    one. It is a no-op for the kiro-cli path, which drops an unmarked injected
-    entry under registry mode by itself.
+    one. It holds on the kiro-cli path too: kiro-cli's registry filter reads the
+    agent spec's entries, and an element injected on ``session/new`` is launched
+    as given, which is also why :func:`kiro_crew.acp.session_mcp.kiro_control_plane_servers`
+    mounts its identity element under registry mode only when the admin's security
+    policy sets ``mcp_registry_local_control_plane``.
 
     Crew's own control plane is exempt on the same grounds it is exempt there: it
     is the host's own process, not a third-party server the catalog governs, and

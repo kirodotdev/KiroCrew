@@ -538,6 +538,7 @@ class TestEveryCeilingFieldHasAComposeClass:
             "agentcore_identity_posture",
             "agentcore_gateway_url",
             "agentcore_workload_name",
+            "mcp_registry_local_control_plane",
             "tier",
         }
     )
