@@ -3016,6 +3016,20 @@ per-session tree ceiling the cleanup watchdog recycles at
 published by `/api/status` for this line; `kirocrew doctor` prints the same two
 readings at the top of its Memory Pressure section, on every platform.
 
+`/api/status` takes only a dashboard token, so a token-auth gateway refuses the
+first, credential-less read with `401`/`403`. `kirocrew status` then signs in the
+way `kirocrew token` does: it mints a one-minute owner token from
+`/api/token/local` with the local secret and reads `/api/status` with it, both
+through `_owner_verified_secret_urlopen`, the peer-proven transport. When that
+fails for any reason (no local secret, a peer that cannot be proven, a caller the
+gateway does not verify as the local owner such as an agent's shell, or a timeout
+on either request) it prints `Kiro Crew gateway is running (token auth enabled).`
+with a `Version:` line and no stats. Each such read mints one token, and so takes
+one of the gateway's bounded pending-link slots (`MAX_CONCURRENT_NONCES`) as
+`kirocrew token` does: polling it often enough to keep them all filled with its
+one-minute tokens can push out a sign-in link that has not been opened yet. A
+liveness check that needs no stats reads the token-exempt `/api/health`.
+
 The last line, `Version:`, compares `/api/status`'s `version` with
 `live_target.selected_version()`: the Dev Fleet live-target checkout when one is
 pinned, else the package this `kirocrew` runs, read from disk so an in-place
@@ -3030,14 +3044,14 @@ differ and with no threshold, `version_skew for at least <age>: the gateway runs
 from the later of the gateway's `start_time` and the newest change time of the
 pointer, `__init__.py` and the stamp, so it is a lower bound. A gateway that
 re-imported its package after a git auto-update reports the new `version` until
-its restart lands, and reads as aligned meanwhile. For token-auth `401`/`403`
-responses, `Version:` uses the token-exempt `/api/health` version read by
+its restart lands, and reads as aligned meanwhile. When the owner sign-in
+fails, `Version:` uses the token-exempt `/api/health` version read by
 `kirocrew doctor` and omits the age because that response has no `start_time`.
 
 It exits 1 when nothing answers the resolved port (a refused connection,
 printed as "not running"), so a script or health check can gate on `$?`
 without parsing stdout. It exits 0 whenever a gateway answers: the stats
-view, a token-auth `401`/`403`, another HTTP error, a busy timeout or an
+view, a failed owner sign-in, another HTTP error, a busy timeout or an
 unexpected body.
 
 ## App Dev Mode
