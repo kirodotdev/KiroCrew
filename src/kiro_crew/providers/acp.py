@@ -1078,6 +1078,16 @@ class AcpProvider(LLMProvider):
             return False
         return await discard() is True
 
+    async def kas_command_call(self, command: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """The inner client's KAS ``/context``, ``/knowledge`` or ``/code`` verb, or None.
+
+        Only the session provider (KAS through the shared runtime) carries one.
+        """
+        call = getattr(self._client, "kas_command_call", None)
+        if call is None:
+            return None
+        return await call(command, params)
+
     async def new_conversation(self) -> None:
         """Clean-slate reset on the SAME warm process (no cold start).
 

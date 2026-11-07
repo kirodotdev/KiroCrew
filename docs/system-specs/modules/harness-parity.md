@@ -265,8 +265,9 @@ different harness is still judged by the gate above when the command is sent.
 The same default decides the rest of the list on a harness in
 `ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
 commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
-`/prompts`, `/side`, `/workflow`, plus `/context`, `/help`, `/mcp`, `/model`,
-`/tools` and `/usage` on KAS alone; `kas_local_commands.local_harness_menu`), because the slash
+`/prompts`, `/side`, `/workflow`, plus `/code`, `/context`, `/help`, `/hooks`,
+`/mcp`, `/model`, `/tools` and `/usage` on KAS alone;
+`kas_local_commands.local_harness_menu`), because the slash
 gate reads the same set and answers every other harness command with a notice
 naming the harness. On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
 `/help` and `/agent` (bare or `list`) are answered by
@@ -283,8 +284,24 @@ tokens when measured); `/usage` reads the credit counter's cached reading and ne
 fetches one, and drops a reading published for another sign-in exactly as
 `GET /api/sessions/usage` does (both read `sessions._reading_not_servable`);
 `/help` lists the same `local_harness_menu` set with its descriptions; `/agent` shows the chat's
-agent and `pickable_agent_names`. `/context <argument>` and the other
-`/agent` subcommands edit state kiro-cli keeps, so they keep the notice
+agent and `pickable_agent_names`; `/hooks` lists the hooks a turn fires (the
+Hooks page's store, then the agent spec's own from `spec_hooks.turn_spec_hooks`)
+by name, event and matcher, never by command. `/context add|remove|clear`, `/knowledge` (`show`, `add`, `remove`,
+`update`, `clear`, `cancel`) and `/code` (`status`, `init`) are sent to KAS's own
+verbs (`_kiro/session/context`, `_kiro/knowledge`, `_kiro/codeIntelligence`)
+through the session handle's `kas_command_call`, which sends only those three,
+only to KAS, and only when `initialize` listed the method in
+`_meta.kiro.extensionMethods`; otherwise the reply says the KAS version lacks it.
+A path is made absolute against the session's folder, and one to be read (`add`,
+`update`) must pass `sensitive_path_refusal` first; a wildcard is refused, as each
+match cannot be checked; more than 60 paths at once is refused before any is
+sent. `/knowledge` is not in the `/` menu, so a user quick prompt may keep that
+name. `/knowledge`, `/effort`, `/plan` and `/rewind` are
+kiro-cli commands but not Crew harness commands (`_SLASH_COMMANDS`), so the gate
+takes them on KAS alone (`KAS_KIRO_CLI_ONLY_COMMANDS`; a user quick prompt of
+that name keeps the text path); the last three get the notice rather than
+reaching the model. The other `/agent` subcommands, `/tools <argument>` (`trust`
+and the like) and the other `/code` subcommands keep the notice
 (`kas_local_commands.answers_locally`). Only names are shown: a server's `env`,
 `headers`, `command` and `args` are never read, and the reply is redacted.
 
