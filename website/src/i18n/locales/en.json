@@ -10041,7 +10041,11 @@
       "delete_n_scheduled_jobs_title_other": "Delete {{count}} scheduled jobs?",
       "bulk_delete_removes_jobs_and_history_one": "This permanently removes the selected job and its run history. This action cannot be undone.",
       "bulk_delete_removes_jobs_and_history_other": "This permanently removes the selected jobs and their run history. This action cannot be undone.",
-      "type_token_to_confirm": "Type <token/> to confirm"
+      "type_token_to_confirm": "Type <token/> to confirm",
+      "close_wont_cancel_create": "Closing won't cancel this — the schedule may still be created.",
+      "close_wont_cancel_edit": "Closing won't cancel this — your changes may still be saved.",
+      "late_save_failed": "The schedule “{{job}}” wasn't saved.",
+      "late_save_unconfirmed": "The schedule “{{job}}” may or may not have been saved — the server didn't confirm it."
     },
     "servicesTab": {
       "connected": "Connected",
