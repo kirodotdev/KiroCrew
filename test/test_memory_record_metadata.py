@@ -244,6 +244,33 @@ def test_automated_value_and_metadata_conflicts_preserve_owner_and_deduplicate(s
     assert store.get_semantic("user.work_email") is not None
 
 
+@pytest.mark.parametrize("store", ["v2"], indirect=True)
+def test_one_change_proposed_by_every_session_stays_one_proposal(store):
+    # Consolidation writes as consolidation:<session> with a per-span source_ref
+    # and its own confidence, so a dedup keyed on any provenance never matches.
+    fact(store)
+    reasons = {
+        store.set_semantic(
+            "user.work_email",
+            "other@example.com",
+            confidence,
+            f"consolidation:dashboard:{session}",
+            metadata={"source_ref": f"span {session}", "observed_at": observed},
+        )
+        for session, confidence, observed in (
+            ("a", 0.85, "2026-11-01T00:00:00+00:00"),
+            ("b", 0.95, "2026-11-02T00:00:00+00:00"),
+        )
+    }
+    assert len(reasons) == 1 and None not in reasons
+    assert (
+        store.db.execute(
+            "SELECT COUNT(*) FROM memory_revisions WHERE status='conflict'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
 def correction(before, *, role="user", quote=None):
     quote = quote or "Please replace old@example.com with new@example.com."
     return meta.verified_correction(
