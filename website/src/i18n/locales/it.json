@@ -9069,7 +9069,7 @@
       "bring_back_to_main": "Riporta nella finestra principale",
       "close_session": "Chiudi la sessione",
       "copy_link": "Copia link",
-      "copy_session_id": "Copia ID sessione",
+      "copy_session_id": "Copia ID sessione di {{productName}}",
       "copy_session_id_copied": "Copiato",
       "copy_session_id_failed": "Impossibile copiare l’ID sessione",
       "copy_session_id_failed_detail": "Il browser ha bloccato l’accesso agli appunti. Copialo dal link della sessione oppure riprova.",

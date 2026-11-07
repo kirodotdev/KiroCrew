@@ -8647,7 +8647,7 @@
       "bring_back_to_main": "移回主窗口",
       "close_session": "关闭会话",
       "copy_link": "复制链接",
-      "copy_session_id": "复制会话 ID",
+      "copy_session_id": "复制 {{productName}} 会话 ID",
       "copy_session_id_copied": "已复制",
       "copy_session_id_failed": "无法复制会话 ID",
       "copy_session_id_failed_detail": "浏览器阻止了剪贴板访问。请从会话链接中复制，或重试。",

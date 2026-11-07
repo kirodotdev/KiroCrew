@@ -9069,7 +9069,7 @@
       "bring_back_to_main": "Ramener dans la fenêtre principale",
       "close_session": "Fermer la session",
       "copy_link": "Copier le lien",
-      "copy_session_id": "Copier l’ID de session",
+      "copy_session_id": "Copier l’ID de session de {{productName}}",
       "copy_session_id_copied": "Copié",
       "copy_session_id_failed": "Impossible de copier l’ID de session",
       "copy_session_id_failed_detail": "Ton navigateur a bloqué l’accès au presse-papiers. Copie-le depuis le lien de la session, ou réessaie.",
