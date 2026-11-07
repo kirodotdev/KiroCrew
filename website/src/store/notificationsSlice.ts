@@ -431,19 +431,23 @@ const notificationsSlice = createSlice({
   reducers: {
     addNotification(state, action: PayloadAction<Notification>) {
       const note = action.payload
-      if (!state.items.some(n => n.ts === note.ts)) {
+      // Read the rows as plain objects, not through the draft: touching each
+      // row through the draft makes a proxy per row on every pass, which made a
+      // burst that fills the ring cost the cap squared in proxies.
+      const prior = (isDraft(state.items) ? original(state.items) : undefined) ?? state.items
+      if (!prior.some(n => n.ts === note.ts)) {
+        let rows = prior
         // The bell holds one note per (source, key), as the backend does: a
         // keyed note replaces the one this view already shows for that key.
         if (note.key) {
           const seq = nextMembershipSeq(state)
-          for (const n of state.items) {
+          for (const n of prior) {
             if (n.key === note.key && n.source === note.source) markWithdrawn(state, n.ts, seq)
           }
-          state.items = state.items.filter(n => !(n.key === note.key && n.source === note.source))
+          rows = prior.filter(n => !(n.key === note.key && n.source === note.source))
           ;(state.keyedAtByTs ??= {})[note.ts] = seq
         }
-        state.items.push(note)
-        state.items = capRows(state, state.items)
+        state.items = capRows(state, [...rows, note])
         pruneAckStamps(state)
         pruneKeyedStamps(state)
       }
