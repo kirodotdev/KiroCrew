@@ -602,7 +602,41 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
+        relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
+        **_relay_viewer_targets(section),
     )
+
+
+def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
+    """The viewer's control plane URL and credential reference, or "" for a bad one.
+
+    The URL carries the person's sign-in, so it is held to the lease URL's rule:
+    https://, or http:// only for a loopback port-forward. The credential setting
+    names where a credential is and never holds one, so a value that is not
+    secret://NAME or an absolute path is dropped, and the warning does not repeat
+    it. Imported here, not at module load, so config load pulls in no relay
+    client code while both are empty.
+    """
+    url = str(section.get("relay_viewer_cps_url") or "").strip()
+    ref = str(section.get("relay_viewer_credential") or "").strip()
+    if url or ref:
+        from kiro_crew.relay_client.lease import credential_reference_problem, lease_url_problem
+
+        problem = lease_url_problem(url) if url else None
+        if problem is not None:
+            logger.warning(
+                "tunnel.relay_viewer_cps_url ignored: %s",
+                problem.replace("lease service", "control plane"),
+            )
+            url = ""
+        if ref and credential_reference_problem(ref) is not None:
+            logger.warning(
+                "tunnel.relay_viewer_credential ignored: it must be secret://NAME or the "
+                "absolute path of a file holding the credential, never the credential itself"
+            )
+            ref = ""
+    return {"relay_viewer_cps_url": url, "relay_viewer_credential": ref}
 
 
 def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig:

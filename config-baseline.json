@@ -10990,7 +10990,10 @@
         "relay_move_grace_seconds": 1.0,
         "relay_lease_url": "",
         "relay_lease_credential": "",
-        "relay_lease_token_type": ""
+        "relay_lease_token_type": "",
+        "relay_viewer_enabled": false,
+        "relay_viewer_cps_url": "",
+        "relay_viewer_credential": ""
       }
     },
     {
@@ -11141,6 +11144,51 @@
       "tags": [],
       "label": "Relay Lease Token Type",
       "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center, Builder ID or Kiro sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Any other value keeps Remote Control from starting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer",
+      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default, and nothing reads it yet. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_cps_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer Control Plane URL",
+      "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) means not set up. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_credential",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Relay Viewer Credential",
+      "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
