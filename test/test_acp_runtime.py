@@ -30,7 +30,7 @@ import asyncio
 import dataclasses
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -48,6 +48,8 @@ from acp_runtime_helpers import (
 )
 
 from kiro_crew.acp.harness import SessionExtras
+from kiro_crew.acp.kas_permissions import CREW_ONLY_ENTRY_KEYS
+from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -212,6 +214,12 @@ def kas_readiness_wire(monkeypatch, tmp_path):
                 expected["mcpServers"] = kept
             else:
                 expected.pop("mcpServers", None)
+            # The envelope applies the mcp.json stamp, then drops Crew-only keys.
+            expected = {
+                k: v
+                for k, v in finish_settings_mcp(expected).items()
+                if k not in CREW_ONLY_ENTRY_KEYS
+            }
             assert sent_agent == expected
             for name in hoisted:
                 assert name in wire_names
@@ -321,6 +329,48 @@ async def test_a_withdrawn_worker_stub_never_reaches_the_wire(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_an_excluded_mcp_json_stub_never_reaches_the_wire(
+    kas_readiness_wire, monkeypatch, tmp_path, resume
+):
+    """The pooled stub of an mcp.json server the agent does not load is dropped
+    before the roster every consumer reads is bound, so the request omits it."""
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    wire = kas_readiness_wire
+    rt = wire.runtime
+    stamp = {"timeout": 120_000, "fileServers": {"pooled": []}, "declared": []}
+    monkeypatch.setattr(
+        rt,
+        "_kas_custom_agents",
+        AsyncMock(
+            return_value=SessionExtras(
+                custom_agents=[{"id": "worker", "tools": [], CREW_SETTINGS_MCP_KEY: stamp}]
+            )
+        ),
+    )
+    servers = [{"name": "kirocrew-dashboard"}, {"name": "pooled"}]
+    kwargs = {"cwd": tmp_path, "agent": "worker", "session_key": ""}
+    if resume:
+        monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda *_, **_kw: servers)
+        start = rt.load_session("", "ready-session", **kwargs)
+    else:
+        start = rt.create_session(mcp_servers=servers, **kwargs)
+    reader_task = await _start_reader(rt)
+    task = asyncio.create_task(start)
+    try:
+        request = await wire.take(wire.sent)
+        names = {entry["name"] for entry in request["params"]["mcpServers"]}
+        assert "pooled" not in names
+        assert "kirocrew-dashboard" in names
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
 async def test_kas_readiness_wire_stdout_reads_on_the_running_loop(kas_readiness_wire):
     """Reading ``rt._process.stdout`` directly must not raise a cross-loop error.
 
@@ -405,7 +455,11 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
             agent_name="kirocrew-worker",
         )
         wire.runtime._kas_custom_agents.assert_awaited_once_with(
-            "kirocrew-worker", member_dispatch=False, crew_panel=False, session_key=key
+            "kirocrew-worker",
+            member_dispatch=False,
+            crew_panel=False,
+            session_key=key,
+            session_cwd=ANY,
         )
         if revoked:
             wire.status("connected", extra_servers=("kirocrew-work",))
@@ -568,6 +622,7 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
             member_dispatch=False,
             crew_panel=False,
             session_key="subagent:readiness-worker",
+            session_cwd=ANY,
         )
         # Two pre-mode snapshots must be consumed without satisfying this activation.
         for _ in range(3 if pre_ready else 1):
