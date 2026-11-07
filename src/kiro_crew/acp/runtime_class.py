@@ -205,6 +205,7 @@ class AcpRuntime:
     death_summary = _rt_liveness.death_summary
     _stale_by_age = _rt_liveness._stale_by_age
     _is_stale = _rt_liveness._is_stale
+    session_tenancy = _rt_liveness.session_tenancy
     has_active_sessions = _rt_liveness.has_active_sessions
     has_active_or_initializing_sessions = _rt_liveness.has_active_or_initializing_sessions
     saw_not_logged_in = _rt_liveness.saw_not_logged_in
@@ -785,6 +786,22 @@ class AcpRuntime:
         found = self.__dict__.get("_unclaimed_new_session_ids")
         if found is None:
             found = self.__dict__["_unclaimed_new_session_ids"] = set()
+        return found
+
+    @property
+    def _unconfirmed_teardowns(self) -> set[str]:
+        """Ids unregistered here while the host had not answered their teardown.
+
+        Such a session may still own processes in the harness tree, so
+        ``session_tenancy`` proves nothing while any is listed. Only a success
+        reply removes an id: one that timed out, was refused or went out as a
+        notification stays, so this runtime gives no cleanup targets for the rest
+        of its life. A success reply is taken as the host's word that the session
+        and its processes are gone. Created on first use, like the set above.
+        """
+        found = self.__dict__.get("_unconfirmed_teardown_ids")
+        if found is None:
+            found = self.__dict__["_unconfirmed_teardown_ids"] = set()
         return found
 
     @property

@@ -219,6 +219,7 @@ async def terminate_session(
             unclaimed = session_id in self._unclaimed_new_sessions
             if policy.local_only and not (delete_cloud_session or unclaimed):
                 return
+            self._unconfirmed_teardowns.add(session_id)
             try:
                 if policy.notification:
                     # A verb the host does not answer. Awaiting a reply here would
@@ -232,6 +233,7 @@ async def terminate_session(
                         {"sessionId": session_id},
                         timeout=_TERMINATE_TIMEOUT,
                     )
+                    self._unconfirmed_teardowns.discard(session_id)
             except Exception:
                 logger.debug(
                     "session teardown failed for %s (runtime dead/slow); "
@@ -305,10 +307,12 @@ async def evict_session(self: AcpRuntime, session_id: str) -> None:
     """
     try:
         if not self._dead and self._process is not None:
+            self._unconfirmed_teardowns.add(session_id)
             try:
                 await self._send_and_await(
                     METHOD_SESSION_CLOSE, {"sessionId": session_id}, timeout=_TERMINATE_TIMEOUT
                 )
+                self._unconfirmed_teardowns.discard(session_id)
             except Exception:
                 logger.debug(
                     "session/close failed for %s (runtime dead/slow); proceeding with local unregister",

@@ -363,6 +363,8 @@ class AcpSessionHandle:
         self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
+            cleanup_tenancy=lambda: self._runtime.session_tenancy(self._session_id),
+            sandbox_wrapped_by_crew=lambda: self._runtime.sandbox_wrapped_by_crew,
             server_launches=self._remote_flat_launches,
             attribution_launches=self._mcp_attribution_launches,
         )
