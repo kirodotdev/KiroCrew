@@ -596,6 +596,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                       style={{ top: popoverPos.top, left: popoverPos.left }}
                       onClick={e => e.stopPropagation()}
                       onKeyDown={e => {
+                        // Portaled modal keys belong to that modal, not its React ancestor.
+                        if (!e.currentTarget.contains(e.target as Node)) return
                         if (e.key === 'Escape') { e.stopPropagation(); closeColumnPopover(col.id); return }
                         if (e.key !== 'Tab') return
                         // Trap Tab within the dialog — portal content sits at the end of

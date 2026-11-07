@@ -291,8 +291,9 @@ test.describe('E2E: sidebar tag columns', () => {
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${col.id}"]`)
     await page.locator(`[data-testid="column-edit-${col.id}"]`).click()
-    page.once('dialog', d => d.accept())
     await page.locator(`[data-testid="tag-delete-${created.id}"]`).click()
+    // The in-app dialog asks, not a native one.
+    await page.getByRole('dialog', { name: 'Delete tag' }).locator('[data-guide-confirm]').click()
     await expect.poll(async () => {
       const tags = await (await request.get('/api/chat/tags')).json()
       return tags.find((t: { id: string }) => t.id === created.id)

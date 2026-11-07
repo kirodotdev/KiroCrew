@@ -1,6 +1,7 @@
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import RestartButton from './RestartButton'
 import { api } from '../api/client'
+import { confirmAction } from '../test/confirmAction'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -12,22 +13,19 @@ const restartSessions = vi.mocked(api.restartSessions)
 describe('RestartButton', () => {
   beforeEach(() => {
     restartSessions.mockReset()
-    // The button asks before it relaunches; these cases are about what
-    // happens after the operator has said yes.
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     vi.useFakeTimers({ shouldAdvanceTime: true })
   })
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
-  it('asks first, saying what stays and what stops, and does nothing when declined', () => {
+  it('asks first, saying what stays and what stops, and does nothing when declined', async () => {
     // The reassurance has to land at the moment of the click, not only in a
     // hover title: a reader who reads "Restart" as breaking something never
     // presses it, and a saved template change never reaches a running chat.
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<RestartButton />)
     fireEvent.click(screen.getByRole('button'))
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(confirm.mock.calls[0][0]).toMatch(/Your chats and their history stay; a reply in progress stops/)
+    const dialog = await screen.findByRole('dialog', { name: /apply & restart/i })
+    expect(dialog).toHaveTextContent(/Your chats and their history stay; a reply in progress stops/)
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
     expect(restartSessions).not.toHaveBeenCalled()
   })
 
@@ -36,6 +34,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await confirmAction(/apply & restart/i)
     const ok = await screen.findByText(/sessions restarted/i)
     expect(ok.className).toContain('text-ok')
     expect(restartSessions).toHaveBeenCalledTimes(1)
@@ -51,6 +50,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button', { name: /apply & restart/i }))
+    await confirmAction(/apply & restart/i)
     const notice = await screen.findByTestId('restart-button-error')
     expect(notice).toHaveAttribute('role', 'alert')
     // The page's sentence leads; the server's reason follows it.
@@ -69,6 +69,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await confirmAction(/apply & restart/i)
     const notice = await screen.findByTestId('restart-button-error')
     expect(notice).toHaveTextContent(/restart failed/i)
   })
@@ -81,10 +82,13 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await confirmAction(/apply & restart/i)
     const button = await screen.findByRole('button')
     await waitFor(() => expect(button).toBeDisabled())
     expect(button.className).toContain('cursor-wait')
     expect(screen.getByText(/restarting/i)).toBeInTheDocument()
+    fireEvent.click(button)
+    expect(restartSessions).toHaveBeenCalledTimes(1)
 
     await act(async () => { release?.() })
     await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
@@ -103,6 +107,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await confirmAction(/apply & restart/i)
     const notice = await screen.findByTestId('restart-button-error')
     expect(notice).toHaveTextContent(/mcp sync failed/i)
     expect(screen.queryByText(/config applied/i)).not.toBeInTheDocument()
@@ -118,7 +123,19 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await confirmAction(/apply & restart/i)
     const ok = await screen.findByText(/config applied/i)
     expect(ok.className).toContain('text-ok')
+  })
+
+  it('keeps one question open for repeated restart presses', async () => {
+    render(<RestartButton />)
+    const button = screen.getByRole('button', { name: /apply & restart/i })
+    fireEvent.click(button)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(button)
+    expect(screen.getAllByRole('dialog')).toEqual([dialog])
+    expect(restartSessions).not.toHaveBeenCalled()
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
   })
 })
