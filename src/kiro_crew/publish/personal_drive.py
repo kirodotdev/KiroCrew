@@ -713,6 +713,33 @@ class PersonalDriveProvider(PublishProvider):
             return False
         return True
 
+    async def source_problem(self, *, external_id: str) -> tuple[str, str] | None:
+        """Why this publication's drive copy cannot be read, or ``None``.
+
+        The one cause known without an AWS call: the profile the publication is bound
+        to is not in the registry, so every call for it refuses (see
+        :meth:`reachable_for`). Reads the local profile registry only, because
+        ``upstream_status`` asks on every artifact page open.
+
+        shortcut: does not check whether the object itself still exists; that needs
+        AWS calls on each page open, so add it only behind a cache.
+        """
+        _key, _account, bound = _parse_external_id(external_id)
+        if not bound:
+            return None
+        try:
+            if profiles.resolve_profile(bound) is not None:
+                return None
+        except Exception as exc:  # an unreadable registry proves nothing either way
+            logger.info("source_problem: could not read the profile registry: %s", exc)
+            return None
+        return (
+            f"This artifact's drive copy is in AWS profile {bound!r}, which is no "
+            "longer registered here, so Kiro Crew can't read or change it. Your local "
+            "copy is unchanged; register the profile again on the Artifact Deploy page.",
+            "personal_drive_profile_not_registered",
+        )
+
     async def serving_notice(self, *, external_id: str) -> tuple[str, str] | None:
         """Re-derive this drive's CURRENT serving notice, or ``None`` if it cannot look.
 

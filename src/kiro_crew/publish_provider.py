@@ -426,6 +426,20 @@ class PublishProvider(ABC):
         """
         return None
 
+    async def source_problem(self, *, external_id: str) -> tuple[str, str] | None:
+        """Why the destination copy of ``external_id`` cannot be read, as
+        ``(notice_text, notice_code)`` -- or ``None`` when the copy is fine or the
+        provider cannot tell (the default).
+
+        ``publish_sync.upstream_status`` calls it only when :meth:`fetch_state`
+        returned ``None`` or raised, so a provider can tell "gone", "in a trash"
+        or "unreachable" apart from "nothing to sync". The status payload then
+        carries ``source_notice`` / ``source_notice_code``. Best-effort and
+        bounded by the caller's timeout: implementations must not prompt and must
+        not raise.
+        """
+        return None
+
     async def serving_notice(self, *, external_id: str) -> tuple[str, str] | None:
         """Re-derive the CURRENT serving notice for an already-published id, as
         ``(notice_text, notice_code)`` -- or ``None`` when the provider cannot
