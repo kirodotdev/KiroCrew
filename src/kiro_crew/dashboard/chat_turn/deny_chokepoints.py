@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _credential_tool_hint_for,
         _pre_tool_block_reason,
     )
+    from kiro_crew.dashboard.chat_turn.tool_rows import _tool_meta
 
 
 def _redact_display_text(text: str) -> str:
@@ -234,7 +235,7 @@ async def _reject_hook_blocked(
     if refusal_notices is not None:
         await _steer_policy_notice(client, title, reason, refusal_notices, slot)
     await client.reject_tool(event.request_id)
-    slot.append("tool", f"🚫 {title} (hook blocked)", "msg msg-tool")
+    slot.append("tool", f"🚫 {title} (hook blocked)", "msg msg-tool", meta=_tool_meta(event))
     refusal_reasons.append((title, reason))
 
 
@@ -301,7 +302,7 @@ async def _reject_invalid_tool(
             cause=DENY_CAUSE_INVALID_NAME,
         )
     await client.reject_tool(event.request_id)
-    slot.append("tool", f"🚫 {title} (invalid: {error})", "msg msg-tool")
+    slot.append("tool", f"🚫 {title} (invalid: {error})", "msg msg-tool", meta=_tool_meta(event))
     # The fallback's input. Without this entry a harness with no steer — or a
     # steer that was never folded in — leaves this deny with NO channel to the
     # model at all, while the policy path still gets its continuation. The
@@ -364,7 +365,7 @@ async def _reject_hook_error(
             cause=DENY_CAUSE_HOOK_ERROR,
         )
     await client.reject_tool(event.request_id)
-    slot.append("tool", f"🚫 {title} (hook error)", "msg msg-tool")
+    slot.append("tool", f"🚫 {title} (hook error)", "msg msg-tool", meta=_tool_meta(event))
     # See _reject_invalid_tool: the fallback needs an entry or this deny reaches
     # the model through no channel at all when the steer could not be delivered.
     refusal_reasons.append((title, _safe_error))
