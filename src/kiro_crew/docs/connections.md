@@ -65,6 +65,12 @@ servers, every entry is validated before any of them is written, so a single bad
 entry fails the whole paste rather than half-applying it. A name already configured
 anywhere is refused rather than overwritten.
 
+This page is the place to add or turn on a server. The default agent's spec,
+`~/.kiro/agents/kirocrew.json`, is rebuilt on every gateway start from this list,
+`~/.kiro/settings/mcp.json` and installed apps, so it is not edited to add one. A
+stdio server whose program is not found on this computer is dropped from that spec;
+if a server's tools are missing in chat, check its row here first.
+
 ### Remote servers that need a sign-in
 
 A remote server usually answers the first request with a `401`, and that is the whole
