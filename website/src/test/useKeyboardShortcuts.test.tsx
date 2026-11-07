@@ -18,6 +18,7 @@ import dashboardReducer from '../store/dashboardSlice'
 import ShortcutsModal from '../components/ShortcutsModal'
 import type { RootState } from '../store'
 import { stubAppConfirm } from './appConfirmStub'
+import { api } from '../api/client'
 
 beforeEach(() => localStorage.clear())
 
@@ -1877,6 +1878,30 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     setup({ activeSlot: 'slot-1' })
     press({ code: 'KeyW', ctrlKey: true })
     expect(confirmSpy).not.toHaveBeenCalled()
+  })
+
+  it('Alt+Shift+W on a conductor asks with the server\'s worker count, and a decline closes nothing (#31629)', async () => {
+    const read = vi.spyOn(api, 'chatSlotClosePreview').mockResolvedValue({ workers: 3 })
+    onTestFinished(() => { read.mockRestore() })
+    const ask = stubAppConfirm(false)
+    const spy = vi.spyOn(chatSlice, 'deleteSlot')
+    onTestFinished(() => { spy.mockRestore() })
+    const store = createTestStore({
+      dashboard: {
+        slots: [
+          { key: 'cond', title: 'Conductor', messages: 1, running: false, crew_mode_root: true },
+          { key: 'w1', title: 'W1', messages: 1, running: false, crew_root: 'cond' },
+        ],
+      } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'cond', slotHistory: [] } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    press({ code: 'KeyW', altKey: true, shiftKey: true })
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1))
+    expect(read).toHaveBeenCalledWith('cond')
+    expect(ask.mock.calls[0][0].title).toBe('Close this session and its 3 workers?')
+    await act(async () => { await ask.mock.results[0].value })
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it('Ctrl+W yields to an embedded terminal (Ctrl+W is kill-word in a shell)', () => {

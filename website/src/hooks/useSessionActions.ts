@@ -11,7 +11,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { decideClosePrompt } from '../lib/closeConfirmPrompt'
 import { askAppConfirm } from '../lib/appConfirm'
 import { forgetClosedSessionRef, rememberClosedSession, trackClosedSessionClose } from '../lib/recentlyClosedSessions'
 import { i18nT } from '../i18n/t'
@@ -504,7 +504,6 @@ export function useSessionActions(mode?: string, opts?: {
   // dialog, never the browser's native confirm(): in the desktop app that one
   // can leave the window unable to take input once it closes.
   const close = useCallback((slotKey: string) => {
-    const ask = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
     const closeSlot = () => {
       // Recorded as the close is dispatched, not on `fulfilled` (which trails
       // the peer session's transcript load); a refused close drops the record.
@@ -513,8 +512,11 @@ export function useSessionActions(mode?: string, opts?: {
       trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
       void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
     }
-    if (ask === null) { closeSlot(); return }
-    void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
+    // A conductor with workers asks the server how many its close takes first.
+    decideClosePrompt(store.getState, slotKey, { settingOn: loadChatConfig().confirmCloseSession }, ask => {
+      if (ask === null) { closeSlot(); return }
+      void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
+    })
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }

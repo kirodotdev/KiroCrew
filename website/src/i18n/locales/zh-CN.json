@@ -11065,7 +11065,13 @@
         "reason_work": "它仍有工作在运行。关闭会停止这些工作。",
         "reason_setting": "它没有正在运行的内容。之所以询问，是因为设置中开启了“{{setting}}”。",
         "actions": "对话和消息框中的草稿都会保留，之后可以重新打开会话。",
-        "confirm": "关闭会话"
+        "confirm": "关闭会话",
+        "conductor_title_other": "关闭此会话及其 {{count}} 个 Worker？",
+        "conductor_workers": "它启动的所有未关闭 Worker 都会随之关闭并停止当前工作。每个对话都会保留在历史记录中。",
+        "conductor_confirm": "全部关闭",
+        "conductor_title_unknown": "关闭此会话及其未关闭的 Worker？",
+        "reason_workers_unknown": "它有未关闭的 Worker，会随之关闭。",
+        "reason_workers_other": "它有 {{count}} 个未关闭的 Worker，会随之关闭。"
       },
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "duplicate_unreachable": "无法复制此会话。无法连接到 {{productName}}。请检查网络连接后重试。",
@@ -14133,6 +14139,8 @@
       "close_and_delete": "关闭并删除",
       "closing_and_deleting": "正在关闭并删除…",
       "some_sessions_stayed_open": "部分会话仍处于打开状态，因此保留了它们的文件夹。",
+      "worker_count_failed": "无法读取随之关闭的 Worker 数量。",
+      "worker_count_changed": "随之关闭的 Worker 数量已变化。请检查列表，然后再次点击关闭。",
       "close_sessions_in_title": "关闭 {{name}} 中的会话",
       "close_sessions_explainer": "关闭此文件夹及其子文件夹中所有已打开会话（每个都移至“较早的会话”，可重新打开），然后删除下方所列子文件夹，“较早的会话”中不删除任何内容。",
       "close_sessions": "关闭会话",

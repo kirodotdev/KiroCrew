@@ -223,6 +223,31 @@ async def handoff_target(
     }
 
 
+def hand_back_changes(
+    slots: "list[_ChatSlot]", departed: "_ChatSlot", records: "dict[str, Any]"
+) -> "dict[str, tuple[str, str] | None] | None":
+    """The manager-record writes :func:`hand_back_on_close` makes for *departed*.
+
+    ``None`` when *departed* managed nothing. Otherwise each key maps to its new
+    ``(manager, tab)``, or to ``None`` when its record is dropped and it falls back
+    to its creator. Pure: *records* is :func:`session_managers.load`'s read, and the
+    conductor-close preview runs the same computation without writing it.
+    """
+    reports = session_managers.managed_by(departed.key)
+    for slot in slots:
+        if slot.key not in records and getattr(slot, "_created_by", "") == departed.key:
+            reports[slot.key] = str(getattr(slot, "_tab_id", "") or "")
+    if not reports:
+        return None
+    up = session_managers.holder(departed)
+    changes: dict[str, tuple[str, str] | None] = {
+        key: ((up, tab) if up and up != key else None) for key, tab in reports.items()
+    }
+    # A created session with no record already falls back to its creator, so it
+    # needs a record only when there is a manager above to name.
+    return {k: v for k, v in changes.items() if v is not None or k in records}
+
+
 async def hand_back_on_close(state: "DashboardState", departed: "_ChatSlot") -> "list[str]":
     """Move the sessions *departed* managed to *departed*'s own manager, chain switch on.
 
@@ -237,19 +262,9 @@ async def hand_back_on_close(state: "DashboardState", departed: "_ChatSlot") -> 
             return []
         async with _HANDOFF_LOCK:
             records = await asyncio.to_thread(session_managers.load)
-            reports = session_managers.managed_by(departed.key)
-            for slot in list(state._slots.values()):
-                if slot.key not in records and getattr(slot, "_created_by", "") == departed.key:
-                    reports[slot.key] = str(getattr(slot, "_tab_id", "") or "")
-            if not reports:
+            changes = hand_back_changes(list(state._slots.values()), departed, records)
+            if changes is None:
                 return []
-            up = session_managers.holder(departed)
-            changes: dict[str, tuple[str, str] | None] = {
-                key: ((up, tab) if up and up != key else None) for key, tab in reports.items()
-            }
-            # A created session with no record already falls back to its creator, so it
-            # needs a record only when there is a manager above to name.
-            changes = {k: v for k, v in changes.items() if v is not None or k in records}
             await asyncio.to_thread(session_managers.write, changes)
     except Exception as exc:
         logger.warning("session_handoff: hand-back from %s failed: %s", departed.key, exc)

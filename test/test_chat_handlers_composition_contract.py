@@ -193,6 +193,7 @@ _BASE_ROUTES = (
     ("GET", "/api/chat/slots/unrestored", "api_chat_slots_unrestored"),
     ("GET", "/api/chat/slots/{slot}", "api_chat_slot_detail"),
     ("GET", "/api/chat/slots/{slot}/autocompact", "api_chat_slot_autocompact"),
+    ("GET", "/api/chat/slots/{slot}/close-preview", "api_chat_slot_close_preview"),
     (
         "GET",
         "/api/chat/slots/{slot}/selection-capabilities",

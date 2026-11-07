@@ -11065,7 +11065,13 @@
         "reason_work": "아직 진행 중인 작업이 있습니다. 닫으면 그 작업이 중지됩니다.",
         "reason_setting": "실행 중인 것은 없습니다. 설정에서 ‘{{setting}}’이(가) 켜져 있어서 확인합니다.",
         "actions": "대화와 메시지 입력란의 초안은 유지되며 나중에 세션을 다시 열 수 있습니다.",
-        "confirm": "세션 닫기"
+        "confirm": "세션 닫기",
+        "conductor_title_other": "이 세션과 Worker {{count}}개를 닫으시겠습니까?",
+        "conductor_workers": "이 세션이 시작한 열린 Worker는 모두 함께 닫히고 하던 작업을 멈춥니다. 각 대화는 기록에 남습니다.",
+        "conductor_confirm": "모두 닫기",
+        "conductor_title_unknown": "이 세션과 열린 Worker를 닫으시겠습니까?",
+        "reason_workers_unknown": "열린 Worker가 있으며 함께 닫힙니다.",
+        "reason_workers_other": "열린 Worker가 {{count}}개 있으며 함께 닫힙니다."
       },
       "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
       "duplicate_unreachable": "이 세션을 복제할 수 없습니다. {{productName}}에 연결할 수 없습니다. 연결을 확인한 뒤 다시 시도하세요.",
@@ -14133,6 +14139,8 @@
       "close_and_delete": "닫고 삭제",
       "closing_and_deleting": "닫고 삭제하는 중…",
       "some_sessions_stayed_open": "일부 세션이 열린 상태로 남아 해당 폴더는 유지되었습니다.",
+      "worker_count_failed": "함께 닫히는 Worker 수를 읽지 못했습니다.",
+      "worker_count_changed": "닫히는 Worker 수가 바뀌었습니다. 목록을 확인한 뒤 닫기를 다시 누르십시오.",
       "close_sessions_in_title": "{{name}}의 세션 닫기",
       "close_sessions_explainer": "이 폴더와 하위 폴더의 열린 세션을 모두 닫고(각 세션은 이전 세션으로 이동하며 다시 열 수 있습니다) 아래 목록의 하위 폴더를 삭제합니다. 이전 세션에서는 아무것도 삭제되지 않습니다.",
       "close_sessions": "세션 닫기",

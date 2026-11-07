@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { Clock, FolderX } from 'lucide-react'
@@ -9,8 +9,8 @@ import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { Btn, PanelSectionHeader } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
-import { closeBusyReasons } from '../../lib/closeBusyGate'
-import { reasonLine } from '../../lib/closeConfirmPrompt'
+import { closeBusyReasons, openWorkerCount } from '../../lib/closeBusyGate'
+import { closeWorkerCount, reasonLine, workersLine } from '../../lib/closeConfirmPrompt'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { deleteSlot } from '../../store/chatSlice'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
@@ -85,7 +85,61 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
     const tree = collectFolderSubtreeIds(folders, root.id)
     return slots.filter(s => s.folder_id && tree.has(s.folder_id))
   }, [root, folders, slots])
-  const busy = useAppSelector(state => toClose.map(s => closeBusyReasons(state, s.key).map(reasonLine).join(' ')), shallowEqual)
+  // A conductor among them also closes its open workers (#30877), which sit in
+  // no folder, so its row says so before the Close button is pressed (#31629),
+  // with the count the server's own close selection answers. A failed read says
+  // "its open workers" without a number.
+  const conductors = useAppSelector(state => toClose.filter(s => openWorkerCount(state, s.key) > 0).map(s => s.key), shallowEqual)
+  // Each conductor with the sessions stamped under it, in the query key: a worker
+  // dispatched while the panel is open changes the key, so the count is read again
+  // rather than kept from before it existed.
+  const stamped = useAppSelector(state => conductors.map(key => `${key}:${state.dashboard.slots
+    .filter(s => s.key !== key && (s.crew_root === key || s.mate_root === key)).map(s => s.key).sort().join(',')}`), shallowEqual)
+  const workerCounts = useQuery({
+    queryKey: ['folder-cleanup-close-preview', ...stamped],
+    queryFn: async () => Object.fromEntries(await Promise.all(conductors.map(async key => [key, await closeWorkerCount(key)] as const))),
+    enabled: conductors.length > 0,
+    gcTime: 0,
+  })
+  const countingWorkers = conductors.length > 0 && workerCounts.isFetching
+  const mounted = useRef(true)
+  // Set in the setup too: StrictMode runs setup, cleanup, setup, and a ref only
+  // the cleanup writes would stay false and turn every Close into a no-op.
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  // A read that failed: `closeWorkerCount` answers null. The row keeps its
+  // "open workers" line and also says the count could not be read.
+  const workerCountFailed = (key: string) =>
+    !countingWorkers && !!workerCounts.data && key in workerCounts.data && workerCounts.data[key] === null
+  // A handoff to a conductor moves no stamp, so the count can change without the
+  // query key moving. Close reads it again first and, when it moved, shows the new
+  // count and asks for a second press instead of closing on the old one.
+  const closeAfterRecount = async () => {
+    setError(''); setNotice('')
+    if (conductors.length > 0) {
+      const shown = workerCounts.data
+      const fresh = (await workerCounts.refetch()).data
+      // Pressing Close is the confirmation, and Cancel is held while this read
+      // runs, as it is while the close itself runs. A panel that unmounted during
+      // the read has nowhere left to show a changed count, so it closes nothing.
+      if (!mounted.current) return
+      if (!shown || !fresh || conductors.some(key => shown[key] !== fresh[key])) {
+        // A read that just failed is explained on its row (`worker_count_failed`);
+        // only a real change in the count gets the "changed" notice.
+        if (!fresh || !conductors.some(key => fresh[key] === null)) setNotice(i18nT('pages.chatSidebar.worker_count_changed'))
+        return
+      }
+    }
+    cleanup.mutate()
+  }
+  const busy = useAppSelector(state => toClose.map(s => {
+    const lines = closeBusyReasons(state, s.key).map(reasonLine)
+    if (conductors.includes(s.key)) {
+      // Until the count is read the row still says workers close with it.
+      const workers = workerCounts.data && !countingWorkers ? (workerCounts.data[s.key] ?? null) : null
+      if (workers === null || workers > 0) lines.push(workersLine(workers))
+    }
+    return lines.join(' ')
+  }), shallowEqual)
   const cleanup = useMutation({
     mutationFn: async () => {
       // The open chat closes last, so its close lands outside this tree
@@ -141,6 +195,9 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
                 <div key={s.key} className="text-[12px] text-muted py-0.5 px-1">
                   <div className="truncate" title={path}>{path}</div>
                   {busy[i] && <div className="text-[11px] text-warn" data-testid="folder-cleanup-busy">{busy[i]}</div>}
+                  {workerCountFailed(s.key) && (
+                    <ErrorNotice message={i18nT('pages.chatSidebar.worker_count_failed')} variant="inline" askAgent testId="folder-cleanup-workers-error" />
+                  )}
                 </div>
               )
             })}
@@ -188,14 +245,14 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
       <ErrorNotice message={error} askAgent className="mb-2" testId="folder-cleanup-error" />
       <div className="flex flex-wrap items-center gap-2 justify-end">
         {/* Disabled mid-run: closing the panel would not stop the run. */}
-        <Btn className="text-[12px] px-3 py-1" disabled={cleanup.isPending} onClick={onClose}>{i18nT('pages.chatSidebar.cancel')}</Btn>
+        <Btn className="text-[12px] px-3 py-1" disabled={cleanup.isPending || countingWorkers} onClick={onClose}>{i18nT('pages.chatSidebar.cancel')}</Btn>
         {preview.isSuccess && (rows.length > 0 || toClose.length > 0) && (
           <Btn
             danger
             className="text-[12px] px-2 py-1 whitespace-nowrap"
             data-testid="folder-cleanup-confirm"
-            disabled={cleanup.isPending || preview.isFetching}
-            onClick={() => { setError(''); setNotice(''); cleanup.mutate() }}
+            disabled={cleanup.isPending || preview.isFetching || countingWorkers}
+            onClick={() => { void closeAfterRecount() }}
           >{root
             ? (rootKept
               ? i18nT(cleanup.isPending ? 'pages.chatSidebar.closing_sessions' : 'pages.chatSidebar.close_sessions')

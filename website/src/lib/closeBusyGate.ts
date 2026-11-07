@@ -21,6 +21,31 @@ import { slotRowByKey } from '../store/slotIndex'
  */
 export type CloseBusyReason = 'approval' | 'turn' | 'subagents' | 'queue' | 'workflow' | 'goal_loop' | 'monitor' | 'work'
 
+/**
+ * How many open sessions in the live slot list are stamped with `slotKey` as
+ * their `crew_root` or `mate_root`, at any depth (#30877, #31629).
+ *
+ * This decides only WHETHER closing `slotKey` could take workers, so whether to
+ * ask the server how many (`closeWorkerCount`). It is not the number to show:
+ * the server's close (`DELETE /api/chat/slots/{slot}`) also requires a stamped
+ * session to still be managed by the conductor, which a tab adopted under it is
+ * not, and the manager records are server-side only. Zero means the close cannot
+ * take any: the server only closes stamped sessions.
+ *
+ * Only the live slot list is read: a worker already closed or archived has left
+ * it (it is a History row now). The stamps are read raw, not through
+ * `crewRootOf`: the server closes the tree whether or not the Crew Mode preview
+ * is on in this browser. A plain chat's sessions carry neither stamp, so it
+ * counts zero, as does a worker (its own workers name the top root).
+ */
+export function openWorkerCount(state: RootState, slotKey: string): number {
+  let count = 0
+  for (const s of state.dashboard.slots) {
+    if (s.key !== slotKey && (s.crew_root === slotKey || s.mate_root === slotKey)) count++
+  }
+  return count
+}
+
 /** Reasons that come from a `hasLiveSessionWork` term. */
 const LIVE_WORK_REASONS: ReadonlySet<CloseBusyReason> = new Set(['approval', 'turn', 'subagents', 'queue', 'workflow'])
 

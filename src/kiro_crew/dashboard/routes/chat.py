@@ -163,6 +163,7 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/{slot}/steers/{mid}/retract", chat.api_chat_slot_steer_retract
     )
+    app.router.add_get("/api/chat/slots/{slot}/close-preview", chat.api_chat_slot_close_preview)
     app.router.add_delete("/api/chat/slots/{slot}", chat.api_chat_slot_delete)
     app.router.add_post("/api/chat/slots/{slot}/discard", chat.api_chat_slot_discard)
     app.router.add_post(

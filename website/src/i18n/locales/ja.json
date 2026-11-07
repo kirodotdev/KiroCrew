@@ -11065,7 +11065,13 @@
         "reason_work": "まだ実行中の作業があります。閉じるとその作業は停止します。",
         "reason_setting": "実行中のものはありません。設定で「{{setting}}」がオンになっているため確認しています。",
         "actions": "会話とメッセージ欄の下書きは保持され、後でセッションを再び開けます。",
-        "confirm": "セッションを閉じる"
+        "confirm": "セッションを閉じる",
+        "conductor_title_other": "このセッションと {{count}} 個の Worker を閉じますか？",
+        "conductor_workers": "このセッションが起動した開いている Worker はすべて一緒に閉じられ、作業を止めます。各会話は履歴に残ります。",
+        "conductor_confirm": "すべて閉じる",
+        "conductor_title_unknown": "このセッションと開いている Worker を閉じますか？",
+        "reason_workers_unknown": "開いている Worker があり、一緒に閉じられます。",
+        "reason_workers_other": "開いている Worker が {{count}} 個あり、一緒に閉じられます。"
       },
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "duplicate_unreachable": "このセッションを複製できませんでした。{{productName}} に接続できませんでした。接続を確認してもう一度お試しください。",
@@ -14133,6 +14139,8 @@
       "close_and_delete": "閉じて削除",
       "closing_and_deleting": "閉じて削除しています…",
       "some_sessions_stayed_open": "一部のセッションは開いたままのため、そのフォルダーは保持されました。",
+      "worker_count_failed": "一緒に閉じられる Worker の数を読み取れませんでした。",
+      "worker_count_changed": "閉じられる Worker の数が変わりました。一覧を確認してから、もう一度「閉じる」を押してください。",
       "close_sessions_in_title": "{{name}} のセッションを閉じる",
       "close_sessions_explainer": "このフォルダーとそのサブフォルダー内の開いているすべてのセッションを閉じ（各セッションは「以前のセッション」に移動し、再び開けます）、その後下に表示されたサブフォルダーを削除します。「以前のセッション」からは何も削除されません。",
       "close_sessions": "セッションを閉じる",

@@ -147,7 +147,10 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
     _close_managed,
+    _close_preview,
     _conductor_line,
+    _managed_layer,
+    api_chat_slot_close_preview,
 )
 from kiro_crew.dashboard.chat_api.continue_turn import (  # noqa: F401
     SlotContinueRefusal,

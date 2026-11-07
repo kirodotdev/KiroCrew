@@ -210,6 +210,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      * message. Used by the artifact companion chat to name the bound artifact so
      * the user's first message needs no slug boilerplate. */
     chatSlotContext: (slot: string, content: string, opts?: { source?: string; ephemeral?: boolean; maxAge?: number }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/context', { content, ...(opts?.source ? { source: opts.source } : {}), ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}), ...(opts?.maxAge !== undefined ? { maxAge: opts.maxAge } : {}) }).then(j),
+    /** How many open sessions closing `slot` would close with it now: the server's
+     *  own selection, read before the close prompt asks (#31629). */
+    chatSlotClosePreview: (slot: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/close-preview').then(j) as Promise<{ workers: number }>,
     deleteChatSlot: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot)).then(j),
     /** Close a session nothing was written in and delete its history row; 409 when it is not empty. */
     discardChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/discard').then(j),

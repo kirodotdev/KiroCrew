@@ -230,6 +230,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _HANDOFF_LOCK,
         _manages_up_the_line,
         _move_tree_edge,
+        hand_back_changes,
         hand_back_on_close,
         handoff_target,
     )

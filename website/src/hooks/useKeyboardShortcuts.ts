@@ -2,7 +2,7 @@ import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab, resumeFromHistory, setAgentSwitchNotice } from '../store/chatSlice'
-import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { decideClosePrompt } from '../lib/closeConfirmPrompt'
 import { askAppConfirm } from '../lib/appConfirm'
 import { forgetClosedSessionRef, hasRecentlyClosedSession, isClosedSessionOpenIn, rememberClosedSession, restoreClosedSession, takeRecentlyClosedSession, trackClosedSessionClose, waitForClosedSession } from '../lib/recentlyClosedSessions'
 import type { ClosedSessionRef } from '../lib/recentlyClosedSessions'
@@ -1075,10 +1075,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         'close-chat': () => {
           if (!activeSlot) return
           const modChord = e.metaKey || e.ctrlKey
-          const ask = closeConfirmPrompt(appStore.getState(), activeSlot, {
-            settingOn: loadChatConfig().confirmCloseSession,
-            checkBusy: modChord,
-          })
+          const opts = { settingOn: loadChatConfig().confirmCloseSession, checkBusy: modChord }
           // The slot captured here is the one the chord closed, even if the
           // user switches sessions while the dialog is open.
           const slot = activeSlot
@@ -1092,8 +1089,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
             trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
             void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
           }
-          if (ask === null) { closeSlot(); return }
-          void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
+          // A conductor with workers asks the server how many its close takes first.
+          decideClosePrompt(appStore.getState, slot, opts, ask => {
+            if (ask === null) { closeSlot(); return }
+            void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
+          })
         },
         // ⌘⇧T / Ctrl+Shift+T (alias Option/Alt+Shift+T): reopen the session
         // this tab closed most recently (#18969) — the browser's reopen-closed-

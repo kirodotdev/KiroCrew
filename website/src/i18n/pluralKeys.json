@@ -538,5 +538,7 @@
   "pages.chat.gatewayNotice.eager_spawn_stopped",
   "pages.schedulePage.batchActions.batch_failed",
   "pages.schedulePage.batchActions.changes_n_jobs",
-  "pages.schedulePage.batchActions.run_confirm_title"
+  "pages.schedulePage.batchActions.run_confirm_title",
+  "hooks.useSessionActions.close_confirm.conductor_title",
+  "hooks.useSessionActions.close_confirm.reason_workers"
 ]

@@ -13,13 +13,13 @@
 //   (the open chat last), then sends the previewed ids scoped to that root; a
 //   session that stays open says so
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import type { ComponentProps } from 'react'
+import { StrictMode, type ComponentProps } from 'react'
 import FolderCleanupPanel, { folderPath } from '../pages/chat-sidebar/FolderCleanupPanel'
 import { api } from '../api/client'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import { createTestStore } from './helpers'
 import type { ChatFolder, ChatSlot } from '../types'
@@ -31,21 +31,40 @@ const FOLDERS = [
   { id: 'c', name: 'kirocrew-worker', parent_id: 'b' },
 ] as unknown as ChatFolder[]
 
-function mount(onClose = vi.fn(), props: Partial<ComponentProps<typeof FolderCleanupPanel>> = {}, state: { activeSlot?: string } = {}) {
+function mount(onClose = vi.fn(), props: Partial<ComponentProps<typeof FolderCleanupPanel>> = {}, state: { activeSlot?: string; strict?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   // A fresh store per mount: a close leaves holds behind that must not reach the next test.
   const store = createTestStore({
     dashboard: { ...dashboardReducer(undefined, { type: '@@init' }), slots: (props.slots ?? []) as ChatSlot[] },
     chat: { ...chatReducer(undefined, { type: '@@init' }), activeSlot: state.activeSlot ?? null },
   })
-  render(
+  const tree = (
     <Provider store={store}>
       <QueryClientProvider client={client}>
         <FolderCleanupPanel folders={FOLDERS} onClose={onClose} {...props} />
       </QueryClientProvider>
+    </Provider>
+  )
+  // `main.tsx` mounts the dashboard under StrictMode, which runs each effect's setup twice.
+  render(state.strict ? <StrictMode>{tree}</StrictMode> : tree)
+  return onClose
+}
+
+/** `mount`, handing back the store so a test can change the live slot list. */
+function mountWithStore(props: Partial<ComponentProps<typeof FolderCleanupPanel>>) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const store = createTestStore({
+    dashboard: { ...dashboardReducer(undefined, { type: '@@init' }), slots: (props.slots ?? []) as ChatSlot[] },
+    chat: { ...chatReducer(undefined, { type: '@@init' }), activeSlot: null },
+  })
+  render(
+    <Provider store={store}>
+      <QueryClientProvider client={client}>
+        <FolderCleanupPanel folders={FOLDERS} onClose={vi.fn()} {...props} />
+      </QueryClientProvider>
     </Provider>,
   )
-  return onClose
+  return store
 }
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
@@ -142,6 +161,160 @@ describe('FolderCleanupPanel on one folder', () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ includeTopLevel: false, root: 'a', ids: ['a', 'b', 'c'] }))
     expect(closed).toEqual(['s1', 's2', 's3'])
     await waitFor(() => expect(onClose).toHaveBeenCalled())
+  })
+
+  it('says a conductor in the tree closes its open workers with it, by the server count (#31629)', async () => {
+    const read = vi.spyOn(api, 'chatSlotClosePreview').mockResolvedValue({ workers: 2 })
+    vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    // The workers sit in no folder; their root is filed in the tree.
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+      { key: 'w2', title: 'W2', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    mount(vi.fn(), { root: FOLDERS[0], slots })
+    expect(await screen.findByText('oss / Conductor')).toBeTruthy()
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has 2 open workers, which close with it.']))
+    expect(read).toHaveBeenCalledWith('cond')
+  })
+
+  it('says workers close and holds Close while the worker count is still being read', async () => {
+    let answer: (v: { workers: number }) => void = () => undefined
+    vi.spyOn(api, 'chatSlotClosePreview').mockReturnValue(new Promise(resolve => { answer = resolve }))
+    vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    mount(vi.fn(), { root: FOLDERS[0], slots })
+    const confirm = await screen.findByTestId('folder-cleanup-confirm') as HTMLButtonElement
+    expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has open workers, which close with it.'])
+    expect(confirm.disabled).toBe(true)
+    await act(async () => { answer({ workers: 1 }) })
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has 1 open worker, which closes with it.']))
+    expect((screen.getByTestId('folder-cleanup-confirm') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('reads the count again when the conductor dispatches another worker', async () => {
+    const read = vi.spyOn(api, 'chatSlotClosePreview')
+      .mockResolvedValueOnce({ workers: 1 })
+      .mockResolvedValueOnce({ workers: 2 })
+    vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    const store = mountWithStore({ root: FOLDERS[0], slots })
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has 1 open worker, which closes with it.']))
+    act(() => {
+      store.dispatch(sseSlots([...slots, { key: 'w2', title: 'W2', running: false, crew_root: 'cond' }] as ChatSlot[]))
+    })
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has 2 open workers, which close with it.']))
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads the count again on Close and holds the close when it changed (a handoff moves no stamp)', async () => {
+    const closed: string[] = []
+    vi.spyOn(api, 'deleteChatSlot').mockImplementation(async (key: string) => { closed.push(key); return {} })
+    vi.spyOn(api, 'chatSlotClosePreview')
+      .mockResolvedValueOnce({ workers: 0 })
+      .mockResolvedValueOnce({ workers: 1 })
+      .mockResolvedValue({ workers: 1 })
+    vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    mount(vi.fn(), { root: FOLDERS[0], slots })
+    const confirm = await screen.findByTestId('folder-cleanup-confirm') as HTMLButtonElement
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    expect(screen.queryAllByTestId('folder-cleanup-busy')).toEqual([])
+    fireEvent.click(confirm)
+    expect((await screen.findByTestId('folder-cleanup-notice')).textContent)
+      .toBe('The number of workers that close changed. Check the list, then press Close again.')
+    expect(closed).toEqual([])
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has 1 open worker, which closes with it.']))
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    fireEvent.click(confirm)
+    await waitFor(() => expect(closed).toEqual(['cond']))
+  })
+
+  it('closes a conductor with open workers under StrictMode, whose double effect must not mark the panel unmounted', async () => {
+    const closed: string[] = []
+    vi.spyOn(api, 'deleteChatSlot').mockImplementation(async (key: string) => { closed.push(key); return {} })
+    vi.spyOn(api, 'chatSlotClosePreview').mockResolvedValue({ workers: 1 })
+    vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    mount(vi.fn(), { root: FOLDERS[0], slots }, { strict: true })
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has 1 open worker, which closes with it.']))
+    const confirm = screen.getByTestId('folder-cleanup-confirm') as HTMLButtonElement
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    fireEvent.click(confirm)
+    await waitFor(() => expect(closed).toEqual(['cond']))
+  })
+
+  it('holds Cancel during the recount on Close, and a dismissal mid-recount closes nothing', async () => {
+    const closed: string[] = []
+    vi.spyOn(api, 'deleteChatSlot').mockImplementation(async (key: string) => { closed.push(key); return {} })
+    const cleanupCall = vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    let answer: (v: { workers: number }) => void = () => undefined
+    vi.spyOn(api, 'chatSlotClosePreview')
+      .mockResolvedValueOnce({ workers: 1 })
+      .mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    mount(vi.fn(), { root: FOLDERS[0], slots })
+    const confirm = await screen.findByTestId('folder-cleanup-confirm') as HTMLButtonElement
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    fireEvent.click(confirm)
+    const cancel = screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement
+    await waitFor(() => expect(cancel.disabled).toBe(true))
+    // The panel goes away (Escape, a click outside) before the recount answers.
+    cleanup()
+    await act(async () => { answer({ workers: 1 }) })
+    expect(closed).toEqual([])
+    expect(cleanupCall).not.toHaveBeenCalledWith(expect.objectContaining({ ids: ['a'], dryRun: undefined }))
+  })
+
+  it('names no number for a conductor whose close preview cannot be read', async () => {
+    vi.spyOn(api, 'chatSlotClosePreview').mockRejectedValue(new Error('offline'))
+    vi.spyOn(api, 'cleanupChatFolders').mockImplementation(async (opts) => (
+      opts.dryRun ? { ids: ['a'], archived: {} } : { deleted: ['a'] }
+    ) as Cleanup)
+    const slots = [
+      { key: 'cond', title: 'Conductor', running: false, folder_id: 'a', crew_mode_root: true },
+      { key: 'w1', title: 'W1', running: false, crew_root: 'cond' },
+    ] as Slot[]
+    mount(vi.fn(), { root: FOLDERS[0], slots })
+    await waitFor(() => expect(screen.getAllByTestId('folder-cleanup-busy').map(n => n.textContent))
+      .toEqual(['It has open workers, which close with it.']))
+    // The failure itself is surfaced through ErrorNotice, not only folded into the line.
+    expect((await screen.findByTestId('folder-cleanup-workers-error')).textContent)
+      .toContain("Couldn't read how many workers close with it.")
   })
 
   it('on a root the server keeps, says why it stays and offers only Close sessions', async () => {

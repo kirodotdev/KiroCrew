@@ -4998,7 +4998,15 @@
         "reason_work": "It still has work running. Closing stops that work.",
         "reason_setting": "Nothing is running in it. You are asked because “{{setting}}” is turned on in Settings.",
         "actions": "The conversation and the draft in your message box are kept, and you can reopen the session later.",
-        "confirm": "Close session"
+        "confirm": "Close session",
+        "conductor_title_one": "Close this session and its {{count}} worker?",
+        "conductor_title_other": "Close this session and its {{count}} workers?",
+        "conductor_workers": "Every open worker it started closes with it and stops what it is doing. Each one's conversation is kept in History.",
+        "conductor_confirm": "Close all",
+        "conductor_title_unknown": "Close this session and its open workers?",
+        "reason_workers_unknown": "It has open workers, which close with it.",
+        "reason_workers_one": "It has {{count}} open worker, which closes with it.",
+        "reason_workers_other": "It has {{count}} open workers, which close with it."
       },
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "duplicate_unreachable": "Couldn't duplicate this session. {{productName}} couldn't be reached. Check your connection and try again.",
@@ -6578,6 +6586,8 @@
       "your_crewmate": "Your bot"
     },
     "chatSidebar": {
+      "worker_count_failed": "Couldn't read how many workers close with it.",
+      "worker_count_changed": "The number of workers that close changed. Check the list, then press Close again.",
       "no_sessions_match_folders": "No sessions match — only a folder name did",
       "history_search_failed": "Search failed. Showing title matches only.",
       "answered_by": "answered by {{agent}}",
