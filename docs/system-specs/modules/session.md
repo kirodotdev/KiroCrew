@@ -3863,6 +3863,16 @@ it through `aflush()`, and returns only after the task registration is retired.
 Off the loop (CLI, tests, worker threads) every mutation still writes inline. Losing a pending
 flush on a crash leaves a well-formed older map, never a truncated file.
 
+**Unreadable map at startup (refuse-writes):** when `session_map.json` exists
+but reading it raises `OSError` (permissions, an I/O error), `_load` sets
+`_load_failed` and starts with an empty in-memory map. Every later write then
+raises `OSError` from `_write_payload` without touching the file, so a map this
+instance never read is not replaced by an empty one, and `flush` / `aflush`
+re-owe the state and their callers take the failure branch instead of reporting
+a save. The state lasts until a restart that can read the file, which recovers
+every binding. A missing file, or a file that is not valid JSON (or not a JSON
+object), still loads as an empty map and writes normally.
+
 **Auto-prune:** `SessionMap.get()` auto-removes entries whose `.json` file
 no longer exists, or whose `.jsonl` holds no turn (the entry drops from memory
 immediately; the file write rides the deferred flush). `SessionMap.prune()`
