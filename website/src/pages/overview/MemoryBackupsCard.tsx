@@ -8,6 +8,7 @@ import { SettingsLink } from '../../components/SettingsLink'
 import { fmtBytes, fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { MEMORY_QUERY_PREFIXES, MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /**
  * A store's backup copies, with a way to take one and a way to put one back.
@@ -144,7 +145,7 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
       <MemoryScopeNotice error={backups.error} />
       <MemoryScopeNotice error={taken && taken.failed > 0 ? new Error(i18nT('pages.overview.memoryBackupsCard.failed', { value: fmtNumber(taken.failed) })) : null} />
       <MemoryScopeNotice error={recoveryError} />
-      {!!backups.error && privateMemory && <Btn className="mb-3 min-h-11" disabled={backups.isFetching} onClick={() => void backups.refetch()}>{i18nT('memoryV2.retry_read')}</Btn>}
+      {queryReadFailed(backups) && privateMemory && <Btn className="mb-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={backups.isFetching || undefined} onClick={() => { if (!backups.isFetching) void backups.refetch() }}>{i18nT('memoryV2.retry_read')}</Btn>}
       {backUpNow.error && <MemoryScopeNotice error={backUpNow.error} />}
       {restore.error && <MemoryScopeNotice error={restore.error} />}
       {cancelRestore.error && <MemoryScopeNotice error={cancelRestore.error} />}
