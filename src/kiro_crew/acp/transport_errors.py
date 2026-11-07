@@ -177,6 +177,8 @@ class AcpError(Exception):
         # ``connection_failure``. The interactive ladder waits longer for it and
         # rewinds the failed prompt before re-sending. ``None`` means unclassified.
         self.throttle: bool | None = None
+        # A TRANSIENT capacity/rollout refusal (raw frame); its card offers the picker.
+        self.model_unavailable: bool = False
         # Set by :func:`_raise_acp_error` when the frame's ``data`` names
         # ``errorKind: cloud_credential_error``: the process cached credentials
         # it cannot reload, so the remedy is a fresh process, not a retry.
@@ -1900,12 +1902,9 @@ def _raise_acp_error(
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.
-    err.connection_failure = (
-        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_CONNECTION
-    )
-    err.throttle = (
-        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_THROTTLE
-    )
+    _frame_kind = classify_provider_error(raw_data).kind
+    err.connection_failure = bool(err.transient) and _frame_kind == PROVIDER_ERROR_CONNECTION
+    err.throttle = bool(err.transient) and _frame_kind == PROVIDER_ERROR_THROTTLE
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except
@@ -1917,6 +1916,8 @@ def _raise_acp_error(
     # the same context.
     raw_data_field = provider_data_text(error)  # the same field the verdict above read
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
+    _data_kind = classify_provider_error(raw_data, data=raw_data_field).kind
+    err.model_unavailable = bool(err.transient) and _data_kind == PROVIDER_ERROR_MODEL_UNAVAILABLE
     # The claude adapter's overflow rides in ``message`` (anchored match, see
     # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
     # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag

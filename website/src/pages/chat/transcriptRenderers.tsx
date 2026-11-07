@@ -54,6 +54,7 @@ import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './su
 import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
+import { isModelUnavailable } from '../../lib/modelUnavailable'
 import UserMessage from './UserMessage'
 import SessionMessageCard from './SessionMessageCard'
 import { isSessionSendTool, parseSessionSend } from './sessionRelay'
@@ -753,6 +754,11 @@ export function createTranscriptRenderers(
           return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
         }
         const unentitled = isModelUnentitled(m)
+        // A model the backend refused for capacity or a rollout, after the
+        // retry ladder and the fallback chain were spent: the same fix as an
+        // unentitled model (pick another one, and change the default if new
+        // chats start on it), and never a Resume that re-sends to it.
+        const pickModelFix = unentitled || isModelUnavailable(m)
         const authRequired = isAuthRequired(m)
         const refusal = capabilityRefusal(m)
         const capabilitiesMember = refusal ? String((m.meta as { member?: unknown } | undefined)?.member ?? '') : ''
@@ -798,19 +804,19 @@ export function createTranscriptRenderers(
             // even when this row is the newest and the turn was interrupted:
             // resuming would replay the identical rejection (or the same
             // signed-out wall, or the same spent allowance, or the same start
-            // that already failed twice).
+            // that already failed twice, or the same model the backend refused).
             onContinue={
-              !unentitled && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
+              !pickModelFix && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
                 ? o.onContinue
                 : undefined
             }
             sessionStartRepeat={sessionStartRepeat}
             onRestartGateway={sessionStartRepeat ? o.onRestartGateway : undefined}
             continuing={o.continuing}
-            onPickModel={unentitled ? o.onPickModel : undefined}
-            onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
+            onPickModel={pickModelFix ? o.onPickModel : undefined}
+            onOpenDefaultModel={pickModelFix ? o.onOpenDefaultModel : undefined}
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
-            unentitledElsewhere={unentitled}
+            unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
             kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}
             onOpenCapabilities={openCapabilities}
