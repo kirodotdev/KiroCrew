@@ -407,15 +407,17 @@ export function McpManagement({
     },
   })
 
-  // Rows the measurement pass would act on, including an older gateway's row
-  // with no verdict and a handshake that did not reproduce (re-measured every pass).
+  // Rows the measurement pass would act on. The gateway decides (`measure_due`);
+  // an older gateway's row falls back to the verdict: none at all, unknown, or a
+  // handshake that did not reproduce (re-measured every pass).
   const unmeasuredCount = useMemo(
     () =>
       servers.filter(
         s =>
-          !s.recommendation ||
-          s.recommendation.strength === 'unknown' ||
-          s.recommendation.reasons.some(r => r.code === 'handshake_not_reproducible'),
+          s.measure_due ??
+          (!s.recommendation ||
+            s.recommendation.strength === 'unknown' ||
+            s.recommendation.reasons.some(r => r.code === 'handshake_not_reproducible')),
       ).length,
     [servers],
   )

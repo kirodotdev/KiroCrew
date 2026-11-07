@@ -160,6 +160,28 @@ def _probe_currency() -> dict[str, bool]:
     return {s.name: cached_probe_is_current(s) for s in list_servers()}
 
 
+def _probe_view() -> tuple[dict[str, bool], frozenset[str]]:
+    """``_probe_currency``, plus the names a measure pass can probe. BLOCKING.
+
+    One ``list_servers()`` read for both. A row gets the handshake its verdict
+    needs only from a probe of its exact name, and a pass never probes a row that
+    is switched off, has no command, is left out by ``probe_all`` after repeated
+    failures (a pre-flight does not fill the probe cache), or names a
+    ``secret://`` value in its env (``probe_server`` refuses that one every time).
+    """
+    from kiro_crew.mcp_discovery import _spawn_excluded, list_servers
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    servers = list_servers()
+    held = _spawn_excluded()
+    probeable = frozenset(
+        s.name
+        for s in servers
+        if not s.disabled and s.command and s.name not in held and not secret_reference_keys(s.env)
+    )
+    return {s.name: cached_probe_is_current(s) for s in servers}, probeable
+
+
 def _recheck_routed(rows: list[dict[str, Any]], servers: list[McpServerInfo]) -> None:
     """Re-ask the gateway routing for every ``routed`` row; blocking.
 
