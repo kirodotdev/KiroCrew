@@ -109,6 +109,27 @@ describe('WorkflowLibraryTab', () => {
     ).toHaveAttribute('data-line-numbers', 'true')
   })
 
+  it('marks the selected workflow in the list with aria-pressed', async () => {
+    // A screen reader has to hear which saved workflow is open in the editor; the
+    // accent background of the chosen row conveys that to a sighted user only.
+    const OTHER = { ...DEFINITION, id: 'wfd_2', slug: 'other-flow', name: 'Other Flow' }
+    mockApi.workflowDefinitions.mockResolvedValue({ definitions: [DEFINITION, OTHER] })
+    renderTab()
+
+    // The `/workflow <slug>` line is unique to the list row, so it scopes the
+    // button even after the selected name is echoed in the editor header too.
+    const firstRow = (await screen.findByText('/workflow debug-project')).closest('button')!
+    const otherRow = screen.getByText('/workflow other-flow').closest('button')!
+    // The tab auto-selects the top row, so exactly one reads pressed and the
+    // other reads not-pressed -- the attribute tracks selection, not a constant.
+    expect(firstRow.getAttribute('aria-pressed')).toBe('true')
+    expect(otherRow.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(otherRow)
+    await waitFor(() => expect(otherRow.getAttribute('aria-pressed')).toBe('true'))
+    expect(firstRow.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('shows saved TaskRunner plans as YAML workflows', async () => {
     mockApi.workflowDefinitions.mockResolvedValue({
       definitions: [
