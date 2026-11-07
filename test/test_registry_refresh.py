@@ -9,7 +9,7 @@ Three contracts, asserted separately because they fail differently:
    store silently degrades to the seed listing with nothing the user can do
    about it from the UI.
 
-2. The refresh handler drops all three published-document caches and never
+2. The refresh handler drops all four published-document caches and never
    fetches: the follow-up ``GET /api/apps/registry`` pays the fetch on the
    exact same code path as a cold start, so refresh cannot behave differently
    from the load it is trying to repair.
@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from kiro_crew.apps import catalog_ranking
 from kiro_crew.apps import official_catalog as oc
 from kiro_crew.apps import official_category_order as oco
 from kiro_crew.apps import official_editorial as oe
@@ -96,6 +97,7 @@ def _stubbed_lists(monkeypatch):
     monkeypatch.setattr(routes, "list_catalog_apps", _no_catalog)
     monkeypatch.setattr(routes, "load_category_order", lambda: [])
     monkeypatch.setattr(routes, "load_sections", lambda: [])
+    monkeypatch.setattr(catalog_ranking, "load_ranking_document", lambda: None)
     monkeypatch.setattr(routes, "get_server_platform", lambda: {"os": "linux", "arch": "x86_64"})
 
 
@@ -105,6 +107,7 @@ def _forget_counter(monkeypatch):
     monkeypatch.setattr(routes.official_catalog, "forget_cache", lambda: calls.append("catalog"))
     monkeypatch.setattr(routes, "forget_category_order_cache", lambda: calls.append("order"))
     monkeypatch.setattr(routes, "forget_editorial_cache", lambda: calls.append("editorial"))
+    monkeypatch.setattr(catalog_ranking, "forget_cache", lambda: calls.append("ranking"))
     return calls
 
 
@@ -114,11 +117,11 @@ def _body(resp: Any) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 class TestRegistryRefreshEndpoint:
-    async def test_refresh_drops_all_three_document_caches(self, _forget_counter):
+    async def test_refresh_drops_all_four_document_caches(self, _forget_counter):
         resp = await routes.handle_registry_refresh(_FakeRequest())  # type: ignore[arg-type]
         assert resp.status == 200
         assert _body(resp) == {"ok": True}
-        assert sorted(_forget_counter) == ["catalog", "editorial", "order"]
+        assert sorted(_forget_counter) == ["catalog", "editorial", "order", "ranking"]
 
     async def test_the_listing_get_never_drops_a_cache(self, _stubbed_lists, _forget_counter):
         # The read path must stay read-only: a state-changing GET would be
