@@ -17,6 +17,8 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_icons import _is_single_emoji, _is_valid_folder_color
 from kiro_crew.dashboard.chat_folders_paths import (
@@ -36,6 +38,7 @@ from kiro_crew.dashboard.token_auth import (
 )
 from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
@@ -59,6 +62,9 @@ MAX_CHAT_FOLDERS = 500
 #: collapsing it to look past it, or a drag that renumbers its siblings. They are
 #: also the only fields a mate's home folder takes from anyone.
 LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
+
+#: The data-home file :func:`migrate_folder_member_labels` writes once it has run.
+FOLDER_MEMBER_LABELS_MARKER = "folder_member_labels_migrated"
 
 
 def _validate_folder_tags(state: DashboardState, raw: Any) -> tuple[list[str] | None, str | None]:
@@ -727,6 +733,47 @@ async def create_folder_record(
     if create_err == "reused":
         return reused[0]
     return folder
+
+
+async def migrate_folder_member_labels(state: DashboardState, cfg: KiroCrewConfig) -> None:
+    """Rewrite each folder Default agent that holds a crewmate's label to that crewmate's key.
+
+    The folder picker once listed crewmates by key, so a person who knew a crewmate
+    by its label saved the label, and the create route binds a label as a template,
+    without the crewmate's model, workspace or memory. A label that is itself a key,
+    or that two crewmates share, is left as saved. Runs once per data home
+    (:data:`FOLDER_MEMBER_LABELS_MARKER`): a template picked later under the same
+    name is the person's choice and stays. A config whose crewmates could not be
+    read, or a failed write, leaves the marker unwritten, so the next start tries
+    again. Never raises.
+    """
+    marker = config_dir() / FOLDER_MEMBER_LABELS_MARKER
+    try:
+        if {DEGRADED_WHOLE_CONFIG, "agents"} & cfg.degraded_sections:
+            return
+        if await asyncio.to_thread(marker.exists):
+            return
+        shown_by: dict[str, list[str]] = {}
+        for key, agent in cfg.agents.items():
+            if agent.display_name and agent.display_name not in cfg.agents:
+                shown_by.setdefault(agent.display_name, []).append(key)
+
+        def _rewrite(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+            changed = False
+            for folder in folders:
+                keys = shown_by.get(str(folder.get("default_agent") or ""), [])
+                if len(keys) == 1:
+                    folder["default_agent"] = keys[0]
+                    changed = True
+            return changed, changed
+
+        if await state.mutate_folders(_rewrite):
+            state.push_slots_update()
+        await asyncio.to_thread(marker.touch, mode=OWNER_ONLY_FILE_MODE)
+    except Exception:
+        logger.warning(
+            "folder Default agent migration failed; it runs again next start", exc_info=True
+        )
 
 
 def _caller_reaches_a_channel(request: web.Request, caller_key: str) -> bool:
