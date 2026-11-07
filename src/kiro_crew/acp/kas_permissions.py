@@ -59,7 +59,11 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
 )
 from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform import allowed_paths as allowed_paths_mod
-from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
+from kiro_crew.platform.tool_names import (
+    KIRO_CLI_NAME_BY_KAS_TOOL,
+    KIRO_TOOL_ALIASES,
+    canonical_kiro_cli_tool_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +264,7 @@ def shell_denies_by_default(tools_settings: Any) -> bool:
     return False
 
 
-#: The exact names :func:`allowed_tools_grant_shell` compares an ``allowedTools``
+#: The names :func:`allowed_tools_grant_shell` compares a folded ``allowedTools``
 #: entry against: the shell tool's own name and its short spelling
 #: (:data:`KIRO_TOOL_ALIASES`).
 _SHELL_TOOL_NAMES = frozenset({"execute_bash", "shell"})
@@ -271,12 +275,15 @@ _BUILTIN_PREFIX = "@builtin"
 
 
 def allowed_tools_grant_shell(allowed_tools: Any) -> bool:
-    """Whether *allowed_tools* names the shell by its exact name.
+    """Whether *allowed_tools* names the shell by name.
 
-    True when an entry is ``@builtin`` / ``@builtin/`` / ``@builtin/*``, or when an
-    entry (or the part after ``@builtin/``) is exactly ``execute_bash`` or
-    ``shell``. Any other entry, one holding ``*`` or ``?`` included, grants
-    nothing here, so the ``denyByDefault`` restriction stays (fail closed).
+    True when an entry is ``@builtin`` / ``@builtin/`` / ``@builtin/*``, or when
+    :func:`canonical_kiro_cli_tool_name` folds the whole entry to ``execute_bash``
+    or ``shell``: bare ``executeCmd`` and ``execute_cmd`` count, and after
+    ``@builtin/`` only the names kiro-cli accepts there (``execute_bash``,
+    ``execute_cmd``, ``shell``). Any other entry, one holding ``*`` or ``?``
+    included, grants nothing here, so the ``denyByDefault`` restriction stays
+    (fail closed).
     """
     if not isinstance(allowed_tools, list):
         return False
@@ -286,9 +293,7 @@ def allowed_tools_grant_shell(allowed_tools: Any) -> bool:
         entry = raw.strip()
         if entry in (_BUILTIN_PREFIX, f"{_BUILTIN_PREFIX}/", f"{_BUILTIN_PREFIX}/*"):
             return True
-        if entry.startswith(f"{_BUILTIN_PREFIX}/"):
-            entry = entry[len(_BUILTIN_PREFIX) + 1 :]
-        if entry in _SHELL_TOOL_NAMES:
+        if canonical_kiro_cli_tool_name(entry) in _SHELL_TOOL_NAMES:
             return True
     return False
 
