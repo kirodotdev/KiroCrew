@@ -11149,10 +11149,13 @@
       },
       "phasedView": {
         "cancelled": "रद्द किया गया",
+        "done": "पूर्ण",
         "failed": "विफल",
+        "in_progress": "प्रगति में",
         "none": "कोई नहीं",
         "skipped": "छोड़ा गया",
-        "task": "कार्य"
+        "task": "कार्य",
+        "to_do": "करना है"
       },
       "taskDetailPanel": {
         "approve": "स्वीकृत करें",
