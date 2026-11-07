@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.messaging.attachments import Attachment
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.wecom.client import WeComInbound
 from kiro_crew.wecom.commands import ConversationState, parse_command
@@ -370,6 +371,39 @@ class TestTurn:
         assert sessions.failures == []
 
     @pytest.mark.asyncio
+    async def test_a_shutdown_refusal_spools_the_attachment_names(self, monkeypatch) -> None:
+        import kiro_crew.messaging.dispatch as dispatch
+        from kiro_crew.wecom.attachments import to_attachments
+
+        spooled: list = []
+
+        async def capture(*, channel_type, route):
+            spooled.append(route)
+
+        monkeypatch.setattr(dispatch, "spool_refused_turn", capture)
+        sessions = FakeSessions(FakeProvider([]))
+        sessions.reserve_inbound_callback = lambda: None
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        inbound = _inbound("")
+        inbound.attachments = to_attachments(
+            {
+                "msgtype": "mixed",
+                "mixed": {
+                    "msg_item": [
+                        {"msgtype": "file", "file": {"url": "https://cdn/a", "filename": "a.pdf"}},
+                        {"msgtype": "image", "image": {"url": "https://cdn/b"}},
+                    ]
+                },
+            }
+        )
+
+        await d.handle_message(inbound)
+
+        assert [(r.attachments_dropped, r.attachment_names) for r in spooled] == [
+            (2, ("a.pdf", "wecom-image"))
+        ]
+
+    @pytest.mark.asyncio
     async def test_soft_threshold_notice_is_separate_and_unpersisted(self) -> None:
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
@@ -597,7 +631,7 @@ class TestCommands:
         client = FakeClient()
         d = _dispatcher(sessions, FakeCtx(), client)
         inbound = _inbound("look at this")
-        inbound.attachments = [("att", "key")]
+        inbound.attachments = [(Attachment(name="shot.png"), "key")]
 
         await d.handle_message(inbound)
 

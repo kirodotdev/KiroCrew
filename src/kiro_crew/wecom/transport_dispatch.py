@@ -202,6 +202,7 @@ class WeComDispatcher:
             user_id=userid,
             message_id=inbound.msgid or inbound.req_id,
             attachments_dropped=original_attachments,
+            attachment_names=tuple(att.name for att, _aeskey in inbound.attachments),
         )
         if not await admit_inbound_callback(
             self.sessions,

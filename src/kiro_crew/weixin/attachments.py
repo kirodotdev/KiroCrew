@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # ingest+append pair (mirrors discord/telegram).
 __all__ = [
     "append_attachment_context",
+    "attachment_names",
     "process_weixin_attachments",
 ]
 
@@ -148,6 +149,11 @@ def _to_attachment(item: dict[str, Any]) -> tuple[Attachment, str] | None:
         Attachment(name=name, mimetype=mimetype, size=size, url=param, suffix_hint=suffix),
         aes_key,
     )
+
+
+def attachment_names(items: list[Any]) -> tuple[str, ...]:
+    """The name each media item is ingested under: a file's own, else its kind."""
+    return tuple(_describe(item)[0] for item in items)
 
 
 def _voice_transcript(item: Any) -> str | None:

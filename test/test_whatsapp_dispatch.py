@@ -228,7 +228,7 @@ class FakeTransport:
         self.pending_verdicts: dict[int, GroupVerdict] = {}
         self.group_gate = FakeGroupGate()
         self.pending_message_id: dict[int, str] = {}
-        self.pending_original: dict[int, tuple[str, int]] = {}
+        self.pending_original: dict[int, tuple[str, tuple[str, ...]]] = {}
         self.pending_voice_note: set[int] = set()
         #: Text and voice sends in order, so a test can see which landed first.
         self.outbound: list[str] = []
@@ -350,7 +350,7 @@ def test_update_pause_spools_dm_new_before_generation_side_effects(monkeypatch):
     d, _client, sessions, transport = _make(provider=FakeProvider())
     sessions.reserve_inbound_callback = lambda: None
     inbound = _msg("/new")
-    transport.pending_original[id(inbound)] = ("/new", 0)
+    transport.pending_original[id(inbound)] = ("/new", ())
     spooled: list[tuple[str, Any]] = []
 
     async def capture(*, channel_type, route):
@@ -782,13 +782,14 @@ def test_dm_route_spools_the_pre_ingestion_original_not_the_prompt(monkeypatch):
     d, _client, _sessions, transport = _make()
     inbound = _msg("look at this\n\n/tmp/kc-att/img-1.jpg")
     inbound.attachments = ["/tmp/kc-att/img-1.jpg"]
-    transport.pending_original[id(inbound)] = ("look at this", 1)
+    transport.pending_original[id(inbound)] = ("look at this", ("image.jpg",))
 
     turn = _captured_turn(monkeypatch, d, inbound)
 
     assert turn is not None and turn.inbound_route is not None
     assert turn.inbound_route.text == "look at this", "the ingested prompt was spooled"
     assert turn.inbound_route.attachments_dropped == 1
+    assert turn.inbound_route.attachment_names == ("image.jpg",)
     assert turn.inbound_route.conversation_id == _DM
 
 
@@ -805,7 +806,7 @@ def test_group_route_is_never_declared(monkeypatch):
     """``may_send_to`` knows nothing of the group roster, so groups are not spooled."""
     d, _client, _sessions, transport = _make()
     inbound = _msg("hi group", conv=_GROUP)
-    transport.pending_original[id(inbound)] = ("hi group", 0)
+    transport.pending_original[id(inbound)] = ("hi group", ())
     transport.pending_verdicts[id(inbound)] = GroupVerdict(respond=True)
 
     turn = _captured_turn(monkeypatch, d, inbound)
