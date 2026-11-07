@@ -49,6 +49,14 @@ const LINK_ERROR_KEYS = {
   caller_session_expired: 'pages.settings.mobileLoginCard.session_expired_sign_in_again_to_create_a_link',
 } as const
 
+/** Handler error code → catalog key for the phone-access QR mint. A code
+ *  missing here gets the generic "try again" line, so only codes a retry can
+ *  never clear are listed. */
+const QR_ERROR_KEYS = {
+  governance_denied: 'components.mobileConnect.phone_connection_is_disabled_by_policy_on_this_dep',
+  caller_device_bound: 'components.mobileConnect.this_session_is_tied_to_this_device_so_a_code_made',
+} as const
+
 /**
  * "Connect your phone" — the sidebar entry's centered dialog (mockup A1).
  *
@@ -330,9 +338,10 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
         <ErrorNotice
           variant="inline"
           className="text-[11.5px] mb-2"
-          message={linkErrorCode(mintQr.error) === 'governance_denied'
-            ? t('components.mobileConnect.phone_connection_is_disabled_by_policy_on_this_dep')
-            : t('components.mobileConnect.could_not_generate_a_code_try_again')}
+          message={t(
+            QR_ERROR_KEYS[linkErrorCode(mintQr.error) as keyof typeof QR_ERROR_KEYS] ||
+              'components.mobileConnect.could_not_generate_a_code_try_again',
+          )}
           askAgent
           report={findReport(mintQr.error?.message)}
           onHandoff={onClose}

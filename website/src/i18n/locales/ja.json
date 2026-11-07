@@ -9817,7 +9817,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "コードで自動的にサインインでき、約{{minutes}}分で期限切れになります。",
       "copy_failed_select_the_link_and_copy_it_manually": "コピーできませんでした。リンクを選択して手動でコピーしてください。",
       "could_not_create_a_link_try_again": "リンクを作成できませんでした。再試行してください。",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "このデプロイメントでは、ポリシーにより電話の接続が無効になっています。"
+      "phone_connection_is_disabled_by_policy_on_this_dep": "このデプロイメントでは、ポリシーにより電話の接続が無効になっています。",
+      "this_session_is_tied_to_this_device_so_a_code_made": "このセッションはこのデバイスに固定されているため、ここで作成したコードではこの同じデバイスにしかサインインできません。別のデバイスでサインインするには、ダッシュボードが動いているコンピューターでローカルアドレスから「スマートフォンからのアクセス」を開いてください。"
     },
     "filePathMenu": {
       "copy_failed": "パスをコピーできませんでした",

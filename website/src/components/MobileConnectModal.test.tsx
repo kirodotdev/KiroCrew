@@ -269,6 +269,19 @@ describe('MobileConnectModal', () => {
     await screen.findByText(/Could not generate a code/)
   })
 
+  it('tells a device-pinned session where to show the code instead of retrying', async () => {
+    mocks.tailnetMobileQr.mockRejectedValue(
+      Object.assign(new Error('caller device bound'), {
+        body: JSON.stringify({ code: 'caller_device_bound' }),
+      }),
+    )
+    mount(['tailnet_qr'])
+    fireEvent.click(await screen.findByText('Show QR code'))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('This session is tied to this device')
+    expect(alert).not.toHaveTextContent('try again')
+  })
+
   it('a failed link mint reports the error inline', async () => {
     mocks.mobileLoginLink.mockRejectedValue(new Error('no external origin'))
     mount(['login_link'])

@@ -10046,7 +10046,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "কোডটি স্বয়ংক্রিয়ভাবে সাইন ইন করে এবং প্রায় {{minutes}} মিনিটে মেয়াদ শেষ হয়ে যায়।",
       "copy_failed_select_the_link_and_copy_it_manually": "কপি করা যায়নি — লিঙ্কটি নির্বাচন করে হাতে কপি করুন।",
       "could_not_create_a_link_try_again": "লিঙ্ক তৈরি করা যায়নি — আবার চেষ্টা করুন।",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "এই ডিপ্লয়মেন্টে নীতি অনুযায়ী ফোন সংযোগ নিষ্ক্রিয় করা আছে।"
+      "phone_connection_is_disabled_by_policy_on_this_dep": "এই ডিপ্লয়মেন্টে নীতি অনুযায়ী ফোন সংযোগ নিষ্ক্রিয় করা আছে।",
+      "this_session_is_tied_to_this_device_so_a_code_made": "এই সেশনটি এই ডিভাইসের সাথে বাঁধা, তাই এখানে তৈরি কোড শুধু এই ডিভাইসেই সাইন ইন করতে পারবে। অন্য ডিভাইসে সাইন ইন করতে, যে কম্পিউটারে ড্যাশবোর্ড চলে সেখানে তার লোকাল ঠিকানা দিয়ে ফোন অ্যাক্সেস খুলুন।"
     },
     "filePathMenu": {
       "copy_failed": "পাথ কপি করা যায়নি",

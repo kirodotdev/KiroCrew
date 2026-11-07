@@ -10504,7 +10504,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "Код выполняет вход автоматически и истекает примерно через {{minutes}} мин.",
       "copy_failed_select_the_link_and_copy_it_manually": "Не удалось скопировать — выделите ссылку и скопируйте её вручную.",
       "could_not_create_a_link_try_again": "Не удалось создать ссылку — повторите попытку.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "Подключение телефона отключено политикой в этом развёртывании."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "Подключение телефона отключено политикой в этом развёртывании.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "Этот сеанс привязан к этому устройству, поэтому созданный здесь код сможет войти только с этого же устройства. Чтобы войти с другого устройства, открой «Доступ с телефона» на компьютере, где работает панель, через его локальный адрес."
     },
     "filePathMenu": {
       "copy_failed": "Не удалось скопировать путь",

@@ -10275,7 +10275,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "O código faz login automaticamente e expira em cerca de {{minutes}} minutos.",
       "copy_failed_select_the_link_and_copy_it_manually": "Falha ao copiar — selecione o link e copie-o manualmente.",
       "could_not_create_a_link_try_again": "Não foi possível criar o link — tente novamente.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "A conexão do telefone está desativada por política nesta implantação."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "A conexão do telefone está desativada por política nesta implantação.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "Esta sessão está vinculada a este dispositivo, então um código criado aqui só poderia conectar este mesmo dispositivo. Para conectar outro dispositivo, abra o Acesso pelo telefone no computador onde o painel é executado, pelo endereço local dele."
     },
     "filePathMenu": {
       "copy_failed": "Não foi possível copiar o caminho",

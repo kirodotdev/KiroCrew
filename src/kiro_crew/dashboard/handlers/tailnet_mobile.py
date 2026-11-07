@@ -889,7 +889,8 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     forbids. On top of the machine state, the CALLER's own session bounds are
     enforced via ``_shared._caller_bounds`` (the same helper the mobile-link
     mint uses): the minted token never out-scopes the session authorizing it,
-    and a caller with no lifetime left to lend is refused.
+    and a caller with no lifetime left to lend is refused. So is a caller pinned
+    to one device, whose code could sign in only that device.
     """
     refusal = _guard(request)
     if refusal is not None:
@@ -1140,6 +1141,24 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
                     "link can be issued. Sign in again, then scan."
                 ),
                 "code": "caller_session_expired",
+            },
+            status=403,
+        )
+    # The child carries this pin. Only a login-scoped one can be redeemed by another
+    # device (``peer_pin_key_for_claim``), so any other pin would mint a dead code.
+    caller_pin = carried.get("peer_key", "")
+    if caller_pin and not caller_pin.startswith("ts:login:"):
+        await _audit_async(request, "tailnet.mobile.qr", "denied", "caller-device-bound")
+        return web.json_response(
+            {
+                "error": (
+                    "This session is tied to this device, so a code made here could "
+                    "only sign in this same device. To sign in another device, open "
+                    "Phone access on the computer the dashboard runs on, through its "
+                    "local address rather than its tailnet name, and scan the code "
+                    "it shows there."
+                ),
+                "code": "caller_device_bound",
             },
             status=403,
         )
