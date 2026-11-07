@@ -618,6 +618,7 @@ class HarnessAdapter(LaunchAdapter):
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -633,6 +634,11 @@ class HarnessAdapter(LaunchAdapter):
 
         ``engine_features`` is :func:`kiro_crew.acp.kas_engine_features.advertised`
         of this process's ``initialize`` answer. Only the KAS projection reads it.
+
+        ``session_cwd`` is the session's own working directory, which can differ
+        from *work_dir* (the runtime's) for a session opened in another checkout.
+        A host that reads workspace settings beside the session reads them there;
+        one that projects nothing ignores it.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
