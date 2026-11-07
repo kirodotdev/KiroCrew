@@ -544,6 +544,7 @@ class TestRedactCredentials:
         result, warnings = redact_credentials(text)
         assert "abc123.def-456_ghi/jkl+mno==" not in result
         assert "[REDACTED: credential]" in result
+        assert result == "Authorization: Bearer [REDACTED: credential]"
         assert len(warnings) == 1
 
     def test_redacts_json_shaped_authorization_bearer(self) -> None:
@@ -557,6 +558,8 @@ class TestRedactCredentials:
         result, warnings = redact_credentials(text)
         assert "abc123.def-456_ghi/jkl+mno==" not in result
         assert "[REDACTED: credential]" in result
+        assert json.loads(result) == {"Authorization": "Bearer [REDACTED: credential]"}
+        assert redact_credentials(result) == (result, [])
         assert len(warnings) == 1
 
     def test_redacts_authorization_bearer_no_space(self) -> None:
@@ -582,7 +585,7 @@ class TestRedactCredentials:
         text = f"Authorization: Bearer {self._JWT}"
         result, warnings = redact_credentials(text)
         assert self._JWT not in result
-        assert "Bearer" not in result
+        assert result == "Authorization: Bearer [REDACTED: credential]"
         assert len(warnings) == 1
 
     def test_jwt_prefix_without_structure_not_redacted(self) -> None:
