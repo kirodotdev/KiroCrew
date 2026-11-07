@@ -788,7 +788,7 @@ function InteractionPlugin({
       // A held ↑ scrolling up through the user's own draft stops at its start;
       // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
       if (direction === 'up' && event.repeat && !cursor && current !== '') return false
-      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current)
+      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current, blocksRef.current)
       if (!step) return false
       event.preventDefault()
       historyCursorRef.current = step.cursor
@@ -796,6 +796,7 @@ function InteractionPlugin({
       // key so the caret does not jump, but leave the value alone.
       if (step.cursor === null || step.text !== current || cursor === null) {
         onChange(step.text)
+        onBlocksChange?.(step.pastes ?? [])
         moveToEndAfterRecall(step.text)
       }
       return true

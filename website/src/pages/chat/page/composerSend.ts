@@ -441,7 +441,7 @@ export function useComposerSend({
     // the knowledge block, and the quoted message opening both texts. An app
     // launch (`isolated`) sends its own text verbatim, folder tokens included.
     const turn = isolated
-      ? { wire: raw, bubble: raw, inlined: raw, meta: {}, storedPaste: undefined, typedOnly: true }
+      ? { wire: raw, bubble: raw, inlined: raw, meta: {}, pastes: [], storedPaste: undefined, typedOnly: true }
       : buildOutgoingTurn({ text: raw, files: sentFiles, pastes: activePastes, sessionRefs: sentSessionRefs, knowledge: knowledgeBlock, quote: sentQuote, project: currentProjectRef.current || '' }, 'send')
     if (!isolated) knowledgeFetchRef.current.clearPending()
     storeSentPastes(turn.storedPaste)
@@ -746,7 +746,7 @@ export function useComposerSend({
       else dispatch(appendMessage(bubble))
       // The composer is already empty, so this record is the prompt's only
       // copy if the bubble later leaves the transcript; ↑ reads it.
-      if (slot && !isolated) dispatch(recordSendAttempt({ slot, text: turn.bubble, sendId }))
+      if (slot && !isolated) dispatch(recordSendAttempt({ slot, text: turn.bubble, sendId, pastes: turn.pastes }))
     }
     if (!isolated) window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false
