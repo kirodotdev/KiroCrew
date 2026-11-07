@@ -6131,7 +6131,7 @@
         "annotation_note": "flag only, did not allow or block",
         "confidence_title": "Jev's confidence in its own answer, from 0 to 1",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "Feedback only",
         "rate_right_jev": "Jev read the risk right",
         "rate_wrong_jev": "Jev read the risk wrong",
         "tier_caution": "worth a look",

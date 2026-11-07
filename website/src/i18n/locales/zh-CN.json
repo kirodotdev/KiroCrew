@@ -12940,7 +12940,7 @@
         "annotation_note": "仅作标记，没有放行或拦截",
         "confidence_title": "Jev 对自己答案的把握，取值 0 到 1",
         "labelled_tier": "Jev：{{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "仅作反馈",
         "rate_right_jev": "Jev 判断的风险是对的",
         "rate_wrong_jev": "Jev 判断的风险是错的",
         "tier_caution": "值得看一眼",
