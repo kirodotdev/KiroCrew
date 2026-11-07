@@ -88,6 +88,9 @@ class _ChatTurn:
     _directive_self_wake: "bool"
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
+    # The loop whose own cycle this turn is, for its fault counts: the delivered
+    # wake's, or the one a recovery entry carried (``_recovered_wake``).
+    _wake_cycle: "tuple[str, int] | None"
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
     _directive_source_channels: "tuple[str, ...]"
@@ -359,6 +362,7 @@ class _ChatTurn:
         _directive_self_wake: "bool",
         _directive_loop_id: "str",
         _directive_loop_gen: "int",
+        _recovered_wake: "tuple[str, int] | None",
         _skill_trigger_text: "str | None",
         _directive_channel_origin: "bool",
         _directive_owner_origin: "bool",
@@ -393,6 +397,9 @@ class _ChatTurn:
         self._directive_self_wake = _directive_self_wake
         self._directive_loop_id = _directive_loop_id
         self._directive_loop_gen = _directive_loop_gen
+        self._wake_cycle = (
+            (_directive_loop_id, _directive_loop_gen) if _directive_self_wake else _recovered_wake
+        )
         self._skill_trigger_text = _skill_trigger_text
         self._directive_channel_origin = _directive_channel_origin
         self._directive_source_channels = tuple(_directive_source_channels)
