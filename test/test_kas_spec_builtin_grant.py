@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 from test_tool_call_classification_kas import _kas_builtin_flow
 
-from kiro_crew.acp import kas_agents
+from kiro_crew.acp import kas_agents, kas_spec_carry
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
@@ -265,6 +265,42 @@ def test_the_projection_records_the_grants_and_relays_no_allow_rule() -> None:
     assert out[CREW_ANSWERED_BUILTINS_KEY] == ["code", "execute_bash", "fs_read", "glob", "grep"]
     rules = out.get("permissions", {}).get("rules", [])
     assert not [r for r in rules if r["capability"] in ("shell", "fs_read", "fs_write")]
+
+
+def test_a_use_aws_deny_travels_and_keeps_the_shell_grant() -> None:
+    settings = {"use_aws": {"deniedServices": ["iam", "S3; rm", "x" * 2000]}}
+    spec = _spec(tools=["*"], allowedTools=["shell"], toolsSettings=settings)
+    out = kas_agents.to_client_custom_agent("a", spec, "p")
+    assert out[CREW_ANSWERED_BUILTINS_KEY] == ["execute_bash"]
+    rules = out["permissions"]["rules"]
+    assert {"capability": "shell", "match": ["aws iam *"], "effect": "deny"} in rules
+    # Named still: a global option before the service slips the shell deny.
+    assert "toolsSettings.use_aws.deniedServices" in kas_agents.spec_keys_without_carrier(
+        spec, translates_tools_settings=True
+    )
+
+
+def test_use_aws_service_names_accepted_and_refused_are_unchanged() -> None:
+    accepted = ["s3", "ec2-instance-connect", "0x", "a-", " iam\n", "x" * 128]
+    refused = ["-s3", "S3", "s3 *", "s3_x", "s3.x", "", " ", "ｓ3", "é", "s3*", "x" * 129, 3]
+    block = kas_spec_carry.use_aws_shell_denies({"use_aws": {"deniedServices": accepted + refused}})
+    assert block == {
+        "rules": [
+            {
+                "capability": "shell",
+                "match": [
+                    "aws s3 *",
+                    "aws ec2-instance-connect *",
+                    "aws 0x *",
+                    "aws a- *",
+                    "aws iam *",
+                    f"aws {'x' * 128} *",
+                ],
+                "effect": "deny",
+            }
+        ]
+    }
+    assert kas_spec_carry.use_aws_shell_denies({"use_aws": {"deniedServices": refused}}) is None
 
 
 def test_no_grant_means_no_key() -> None:
