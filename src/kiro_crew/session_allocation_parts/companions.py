@@ -69,6 +69,11 @@ def _collect_parent_runtime_kwargs(
     tool_search = provider.tool_search_settings
     if tool_search is not None:
         kwargs["tool_search"] = tool_search
+    # The Bot pin the parent's own selection used, so a KAS companion takes the
+    # route the parent's choice allows.
+    harness_pin = provider.harness_pin
+    if harness_pin:
+        kwargs["harness_pin"] = harness_pin
     # The parent's session tree keeps ONE work directory across every process
     # it spans: a companion runtime is handed the parent's ``$KIROCREW_SCRATCH``
     # as a second private window into the masked scratch root, so a brief the

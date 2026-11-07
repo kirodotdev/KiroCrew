@@ -1499,7 +1499,7 @@ class KiroCrewConfig:
             # step logs why.
             # circular import: members sits above config in the layering.
             from kiro_crew.acp_backends import ACP_BACKEND_KAS
-            from kiro_crew.crewmate_harness import crewmate_backend_pin
+            from kiro_crew.crewmate_harness import crewmate_backend_pin, route_pin
             from kiro_crew.members import select_provider_backend
 
             # A crewmate's own harness pin outranks the member route and fails
@@ -1629,6 +1629,8 @@ class KiroCrewConfig:
                 channel_id=channel_id,
                 extra_env=extra_env,
                 acp_backend=_backend,
+                # The pin the selection above used, for KAS's route rule 2.
+                harness_pin=route_pin(self, session_key, backend_override),
                 effort_per_model=_eff_per_model,
                 unbound_effort=_unbound_effort,
                 inherited_effort=_inherited_effort,

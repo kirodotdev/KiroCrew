@@ -13,8 +13,8 @@ Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
 ``_history_replay_needed``, ``_shared_scratch``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
-``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``, ``member_context``,
-``memory_mode``, ``owning_app``, ``start_priority``.
+``_harness_pin``, ``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``,
+``member_context``, ``memory_mode``, ``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
@@ -597,6 +597,7 @@ async def _start_kiro_runtime_impl(
         # subagent runs in, so the second window has to be mounted HERE.
         shared_scratch=self._shared_scratch,
         launch_agent=_launch_agent(self),
+        harness_pin=self._harness_pin,
     )
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
@@ -841,6 +842,7 @@ async def _start_kiro_runtime_impl(
                     # joins it (above): its sessions' work is there.
                     shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
                     launch_agent=_launch_agent(self),
+                    harness_pin=self._harness_pin,
                 )
                 if remote is not None:
                     await attach_remote_workspace(runtime)

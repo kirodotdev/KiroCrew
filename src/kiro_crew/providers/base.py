@@ -798,6 +798,14 @@ class LLMProvider(ABC):
         return None
 
     @property
+    def harness_pin(self) -> str:
+        """The Bot pin this provider's runtimes carry for KAS's route rule 2, ``""`` for none.
+
+        Read by a companion runtime built on this provider's behalf (H14).
+        """
+        return ""
+
+    @property
     def work_scratch_dir(self) -> "Path | None":
         """The ``$KIROCREW_SCRATCH`` directory the RUNTIME serving this session
         exposes, or ``None`` when it has none.
