@@ -600,9 +600,10 @@ class TestRestart:
         assert "reason=service_installed_not_running" in audit["resources"]
 
     def test_stopped_system_alias_is_not_mistaken_for_our_stopped_unit(self, tmp_path, capsys):
-        # The system unit file is a symlink to another, inactive unit: the
-        # manager's canonical Id is not ours, so restart keeps today's path
-        # instead of printing a start command that would start that other unit.
+        # The system unit file is a symlink to another, inactive unit and no
+        # per-user unit of ours is installed: the manager's canonical Id is not
+        # ours, so restart keeps today's path instead of printing a start
+        # command that would start that other unit.
         from kiro_crew import cli_server
         from kiro_crew.service import linux as svc_linux
 
@@ -620,6 +621,7 @@ class TestRestart:
                 return_value=system_unit,
             ),
             patch("kiro_crew.service.linux.system_unit_is_ours", return_value=False, create=True),
+            patch("kiro_crew.service.linux.user_unit_path", return_value=None),
             patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
             patch(
                 "kiro_crew.cli_server.lock_holder",
@@ -635,6 +637,49 @@ class TestRestart:
         out = capsys.readouterr().out
         assert "start it with your service manager" not in out
         assert "systemctl start" not in out
+
+    def test_system_alias_does_not_hide_our_stopped_user_unit(self, tmp_path, capsys):
+        # A stopped system alias of another unit sits beside our canonical
+        # per-user unit, also stopped: restart refuses and names the user unit
+        # instead of starting a gateway outside it.
+        from service_helpers import _DEAD, _fake_systemctl
+
+        from kiro_crew import cli_server
+        from kiro_crew.service import linux as svc_linux
+
+        system_unit = tmp_path / "kirocrew.service"
+        user_unit = tmp_path / "user.service"
+        user_unit.write_text("[Service]\n")
+        run = _fake_systemctl(
+            system=_DEAD, system_id="other.service", user=_DEAD, user_fragment=str(user_unit)
+        )
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch.object(svc_linux, "UNIT_PATH", system_unit),
+            patch("kiro_crew.service.linux.subprocess.run", side_effect=run),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.installed_unit_path",
+                return_value=system_unit,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.lock_holder",
+                return_value=LockHolder(pid=None, alive=False, source="none"),
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+        assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        assert f"kirocrew user service is installed ({user_unit})" in capsys.readouterr().out
+        audit = mock_sel.log_api_access.call_args.kwargs
+        assert "reason=service_installed_not_running" in audit["resources"]
 
     def test_unloadable_system_unit_keeps_todays_path(self, tmp_path, capsys):
         # A unit whose file fails to load cannot be started, so restart must not
