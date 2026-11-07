@@ -1007,8 +1007,9 @@ one "working" state for two operations says nothing about either), and a job tha
 outlived its gateway would claim a delete is running when no thread is.
 
 Its shape is `job_id`, `running`, `total_bytes`, `freed_bytes`, `error`, `skipped`.
-`total_bytes` is what the staged manifests say the resolved batches hold — the same
-figure the trash listing showed — so it is a denominator, not a remeasurement.
+`total_bytes` counts what the delete counts in `freed_bytes`: what each resolved batch's
+manifest lists and its crew-log staging (the trash listing's figure), plus the manifest
+file itself. Listed files are sized from the manifest, not re-stat'd.
 Progress is counted in BYTES, not sessions: the delete walks files and a session is
 more than one file.
 
