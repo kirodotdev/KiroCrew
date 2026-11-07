@@ -131,7 +131,7 @@ class ConnectionStatus(TypedDict, total=False):
     #: Connect and on a connected row; it never blocks the mint, which runs on
     #: kiro-cli and writes a grant kiro-cli chats use.
     backendLacksOauth: bool
-    #: True while Crew holds this Connection's sign-in (``connections.crew_oauth``
+    #: True while Crew holds this Connection's sign-in (``dashboard.feature_previews.crew_oauth``
     #: on KAS). Present only when true. Test runs on kiro-cli's grant and is
     #: refused for such a row, so the card does not offer it.
     crewHeld: bool
@@ -464,7 +464,7 @@ def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:
 
 
 def _crew_managed_slugs(providers: list[Provider]) -> frozenset[str]:
-    """The slugs whose OAuth Crew owns (``connections.crew_oauth``). Blocking.
+    """The slugs whose OAuth Crew owns (``dashboard.feature_previews.crew_oauth``). Blocking.
 
     Same check as routing: a configured entry that keeps its own credential
     header stays on its native grant, so the card matches the bridge.

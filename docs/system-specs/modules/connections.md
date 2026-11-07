@@ -1230,7 +1230,7 @@ sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
 copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
 
-A row whose sign-in Crew holds (`connections.crew_oauth` on KAS) carries
+A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) carries
 `crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.

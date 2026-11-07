@@ -2200,6 +2200,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.github-sign-in-by-kiro-crew",
+    "label": "GitHub sign-in by Kiro Crew",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_oauth",
+    "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
+    "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.jev-api-key",
     "label": "Jev API key",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",
