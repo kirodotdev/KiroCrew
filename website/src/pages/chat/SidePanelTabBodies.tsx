@@ -31,7 +31,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useAppSelector } from '../../store'
 import { mcpAppKey } from '../../store/chatSlice'
@@ -145,7 +145,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   /** Disk-originated content (file watch / Refresh): the panel routes it here
    *  so the tab's saved baseline moves with the buffer it just replaced, and the
    *  binary verdict of that read moves with both. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
@@ -250,7 +250,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
  * this placeholder and that page ask for costs one GET and yields one answer
  * rather than two racing reads of the same file.
  */
-function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean, placeholder?: boolean) => void }) {
+function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void }) {
   const [error, setError] = useState<string | null>(null)
   const qc = useQueryClient()
   // Held in a ref so a new callback identity from the parent's render does not
@@ -272,7 +272,7 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
           staleTime: FILE_READ_STALE_MS,
         })
         if (ac.signal.aborted) return
-        if (r.ok) { applyRef.current(r.text, r.binary, isPartialRead(r)); return }
+        if (r.ok) { applyRef.current(r.text, r.binary, partialReadCause(r)); return }
         if (r.status === 404) {
           applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false, false, true)
           return
@@ -318,7 +318,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean, placeholder?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
   onRevealConsumed: () => void

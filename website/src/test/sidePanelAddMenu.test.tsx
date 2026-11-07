@@ -467,7 +467,7 @@ describe('workspace tab close menu', () => {
     fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
     renderPanel()
     act(() => {
-      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: true })
+      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: 'truncated' })
       panelController.openView('browser')
     })
     fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
