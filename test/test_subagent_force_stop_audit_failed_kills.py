@@ -203,6 +203,45 @@ class TestReaperRecordsAFailedKill:
         assert "kill failed" not in info.error
 
     @pytest.mark.asyncio
+    async def test_a_gone_root_s_unrecorded_grandchild_is_named_not_signalled(self) -> None:
+        """The cron reaper's case on the sub-agent reaper: 8181 under recorded 6161 is named."""
+        manager, info, key = _overdue_run("escaped1", pid=5151)
+        manager._sessions._sessions[key].provider._client._child_pids = {6161: ("111", b"node")}
+        _hanging_reset(manager)
+        swept: list[dict[int, Any]] = []
+
+        def _start_ids(pid: int) -> str | None:
+            # The root is gone; 6161 reads back until the sweep ends it; 8181 runs on.
+            return {6161: None if swept else "111", 8181: "888"}.get(pid)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
+            patch(
+                "kiro_crew.acp.client._get_child_pids",
+                side_effect=lambda pid, *_: [8181] if pid == 6161 else [],
+            ) as walk,
+            patch(
+                "kiro_crew.acp.client._kill_escaped_children",
+                side_effect=lambda pids: swept.append(dict(pids)),
+            ),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=_start_ids),
+            patch("kiro_crew.platform_compat.pid_exists", side_effect=lambda pid: pid != 5151),
+            patch("kiro_crew.platform_compat.pid_is_zombie", return_value=False),
+            patch("kiro_crew.subagent.write_tombstone"),
+        ):
+            await manager._force_reap("escaped1", info, 7200.0)
+
+        walk.assert_called_once_with(6161)
+        assert swept == [{6161: ("111", b"node")}], "the unrecorded grandchild was signalled"
+        named = "unrecorded descendant pid 8181 of a recorded child still running"
+        assert named in info.error, info.error
+        audit = _audit(mock_sel, "reaper_force_kill")
+        assert audit["outcome"] == "failed"
+        assert named in audit["metadata"]["kill_failed"]
+
+    @pytest.mark.asyncio
     async def test_a_user_stop_whose_kill_failed_stays_stopped_but_names_the_failure(
         self,
     ) -> None:

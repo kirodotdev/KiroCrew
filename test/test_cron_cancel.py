@@ -236,6 +236,7 @@ class TestCronServiceCancel:
         assert (
             audit["outcome"] == "failed"
         ), "the SEL audit says the run was cancelled while its process group is still alive"
+        assert "kill_process_group: refusing" in audit["metadata"]["kill_failed"]
 
     @pytest.mark.asyncio
     async def test_cancel_kills_the_process_a_hung_reset_had_already_unmapped(
