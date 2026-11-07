@@ -14400,6 +14400,8 @@
       "not_models": "{{models}} नहीं",
       "hide_sessions_using_model": "{{name}} का उपयोग करने वाले सत्र छिपाओ",
       "broadcast_menu": "संदेश का प्रसारण…",
+      "refresh_pr_status": "PR की स्थिति रिफ़्रेश करो",
+      "refresh_pr_status_failed": "PR की स्थिति रिफ़्रेश नहीं कर सके",
       "broadcast_title": "संदेश का प्रसारण",
       "broadcast_message_label": "प्रसारित करने का संदेश",
       "broadcast_placeholder": "भेजने के लिए संदेश लिखो…",

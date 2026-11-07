@@ -187,6 +187,9 @@ function ChatSidebar({
   // remoteCrewError below, but lives above the list rather than in the menu,
   // because the plain entries close the menu on select.
   const [newChatError, setNewChatError] = useState('')
+  // A refused "Refresh PR status": same placement as newChatError, for the same
+  // reason (the row closes the menu on select).
+  const [prStatusRefreshError, setPrStatusRefreshError] = useState('')
   // Inline failure reason for "New chat on crew" — a crew create can 502 and
   // leave nothing behind, so its reason is shown in the submenu rather than lost.
   const remoteCrewErrorId = useId()
@@ -952,7 +955,7 @@ function ChatSidebar({
     historySearchScan, hoverPinRef, ime, installedAgents, instanceSessions, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, isMobile, isStaleExempt, lane, laneRowWindow, laneScrollMemory, laneSlots,
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
-    moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane,
+    moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane, prStatusRefreshError,
     onDropSessionRef, canStageSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
@@ -964,7 +967,7 @@ function ChatSidebar({
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
     setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
     setHistoryFilter, setHistoryOpen, setLaneScrollEl, setBroadcastOpen, setManageTagsOpen, setModelFilterExcluded,
-    setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
+    setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey: pickSort, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
     manualOrderError, setManualOrderError,
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,

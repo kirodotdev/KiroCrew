@@ -114,7 +114,7 @@ const API_KEY_ORDER = [
   'capabilityPluginsList', 'capabilityPluginsSync', 'capabilityMcpRegistry', 'sttConfig',
   'saveSttConfig', 'sttStatus', 'sttVocabularies', 'sttPrepare', 'sttFfmpegDownload',
   'sttPrewarm', 'sttPolish', 'sttTranscribe', 'pullRequestSource',
-  'pullRequestChecks', 'pullRequestStatuses', 'resolvePullRequestThread', 'unresolvePullRequestThread',
+  'pullRequestChecks', 'pullRequestStatuses', 'refreshPullRequestStatuses', 'resolvePullRequestThread', 'unresolvePullRequestThread',
   'replyToPullRequestThread', 'commentOnPullRequest', 'enablePullRequestAutoMerge', 'markPullRequestReady',
   'pullRequestPendingReview', 'submitPullRequestReview', 'fetchIssueSource', 'appContributors',
   'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewPause', 'crewResume', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',

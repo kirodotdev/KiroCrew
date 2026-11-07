@@ -7952,6 +7952,8 @@
       "not_models": "Not {{models}}",
       "hide_sessions_using_model": "Hide sessions using {{name}}",
       "broadcast_menu": "Broadcast message…",
+      "refresh_pr_status": "Refresh PR status",
+      "refresh_pr_status_failed": "Could not refresh PR status",
       "broadcast_title": "Broadcast message",
       "broadcast_message_label": "Message to broadcast",
       "broadcast_placeholder": "Write the message to send…",

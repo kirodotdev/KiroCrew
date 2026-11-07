@@ -14763,6 +14763,8 @@
       "not_models": "Tranne {{models}}",
       "hide_sessions_using_model": "Nascondi le sessioni che usano {{name}}",
       "broadcast_menu": "Invia a più sessioni…",
+      "refresh_pr_status": "Aggiorna lo stato delle PR",
+      "refresh_pr_status_failed": "Non è stato possibile aggiornare lo stato delle PR",
       "broadcast_title": "Invia a più sessioni",
       "broadcast_message_label": "Messaggio da inviare",
       "broadcast_placeholder": "Scrivi il messaggio da inviare…",

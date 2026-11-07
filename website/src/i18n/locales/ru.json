@@ -15126,6 +15126,8 @@
       "not_models": "Кроме {{models}}",
       "hide_sessions_using_model": "Скрыть сессии, использующие {{name}}",
       "broadcast_menu": "Разослать сообщение…",
+      "refresh_pr_status": "Обновить статус пул-реквестов",
+      "refresh_pr_status_failed": "Не удалось обновить статус пул-реквестов",
       "broadcast_title": "Разослать сообщение",
       "broadcast_message_label": "Сообщение для рассылки",
       "broadcast_placeholder": "Напиши сообщение…",

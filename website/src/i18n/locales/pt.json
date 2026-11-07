@@ -14763,6 +14763,8 @@
       "not_models": "Exceto {{models}}",
       "hide_sessions_using_model": "Ocultar as sessões que usam {{name}}",
       "broadcast_menu": "Transmitir mensagem…",
+      "refresh_pr_status": "Atualizar o status dos PRs",
+      "refresh_pr_status_failed": "Não foi possível atualizar o status dos PRs",
       "broadcast_title": "Transmitir mensagem",
       "broadcast_message_label": "Mensagem a transmitir",
       "broadcast_placeholder": "Escreva a mensagem a enviar…",

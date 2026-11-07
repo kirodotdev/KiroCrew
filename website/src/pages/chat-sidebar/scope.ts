@@ -179,6 +179,8 @@ export interface SidebarScope {
   setFolderOfflineNotice: SetState<string>
   newChatError: string
   setNewChatError: SetState<string>
+  prStatusRefreshError: string
+  setPrStatusRefreshError: SetState<string>
   remoteCrewErrorId: string
   remoteCrewError: string
   setRemoteCrewError: SetState<string>
