@@ -498,6 +498,26 @@ def test_a_transient_read_failure_does_not_brick_an_unchanged_store(tmp_path: Pa
     assert b'"after-outage"' in store.read_bytes()
 
 
+def test_a_kept_record_does_not_come_back_once_the_unreadable_store_is_moved_aside(
+    tmp_path: Path,
+) -> None:
+    """The kept records came from the store the operator moved aside, like the jobs."""
+    store = tmp_path / "crons.json"
+    document = json.loads(_loadable_store(tmp_path, "old"))
+    document["jobs"].append({"id": "kept", "message": "m", "schedule": {"kind": "every"}})
+    store.write_text(json.dumps(document), encoding="utf-8")
+    svc = CronService(base_dir=tmp_path)
+    assert [j.name for j in svc._jobs] == ["old"], "precondition: the record must LOAD"
+
+    with _read_failures_on(store):
+        with pytest.raises(CronStoreUnreadable):
+            svc.add_job(name="during-outage", message="m", every_secs=3600)
+    store.unlink()
+
+    svc.add_job(name="fresh", message="m", every_secs=3600)
+    assert [rec.get("name") for rec in json.loads(store.read_bytes())["jobs"]] == ["fresh"]
+
+
 # ── The TEARDOWN contract: an empty owned set is not an authoritative one ──
 #
 # `_load` degrades an unreadable store to an empty list, so uninstall would read

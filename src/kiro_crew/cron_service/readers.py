@@ -42,7 +42,10 @@ def referenced_skill_names() -> set[str]:
     out: set[str] = set()
     try:
         for j in _read_job_records(seams.config_dir() / _CRONS_FILE)[0]:
-            msg = j.get("message") or ""
+            msg = j.get("message")
+            # One malformed record (the store keeps those) must not drop every job's skills.
+            if not isinstance(msg, str):
+                continue
             for m in _SKILL_TOKEN_RE.finditer(msg):
                 tok = m.group(1)
                 if any(c.isalpha() for c in tok):
