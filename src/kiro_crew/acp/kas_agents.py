@@ -64,7 +64,6 @@ the field absent, which is the all-``ask`` case above.
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 from collections.abc import Mapping
 from pathlib import Path
@@ -78,22 +77,40 @@ from kiro_crew.acp.kas_app_identity import (
     without_noop_restrictions,
 )
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
-from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_literal
-from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
+from kiro_crew.acp.kas_env_literals import (  # noqa: F401 - re-exported
+    _loggable_key_names,
+    _relayable_literal,
+)
+from kiro_crew.acp.kas_env_withhold import (  # noqa: F401 - re-exported
+    _ENV_REFERENCE,
+    _MANAGED_ENV_KEYS_KEPT,
+    _carries_env_reference,
+    _is_relayed_reference,
+    _withhold_credential_fields,
+)
+from kiro_crew.acp.kas_grant_only_settings import (
+    without_grant_only_settings,
+    without_shell_grant_keys,
+    without_write_grant_keys,
+)
 from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
     resolve_managed_entries,
 )
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
+    CREW_ANSWERED_PATHS_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
+    CREW_SHELL_READONLY_KEY,
     CREW_SPEC_DENIES_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
     HOOK_GATEABLE_CAPABILITIES,
     allowed_tools_to_permissions,
     crew_answered_builtins,
     crew_answered_commands,
+    crew_answered_paths,
     merge_user_permissions,
+    shell_denies_carried,
     spec_shell_allowlist,
     spec_write_allowlist,
     tools_settings_to_permissions,
@@ -113,6 +130,7 @@ from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_p
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
 from kiro_crew.acp.kas_spec_denies import spec_denies_record
+from kiro_crew.acp.kas_spec_grants import _entry_shell_readonly, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
@@ -184,26 +202,6 @@ NOT_RUN_REGISTRY_IF_GOVERNED = "registry-if-governed"
 #: A plain ``http`` url to a non-loopback host, which KAS refuses.
 NOT_RUN_INSECURE_URL = "insecure-url"
 
-#: The ONLY env key that survives for one of Crew's own managed servers. It pins
-#: the data home, so dropping it would have the shims read a different one than
-#: the gateway — that is the whole reason managed ``env`` is not simply withheld.
-#:
-#: Everything else is withheld even on a managed server. "Crew authored this
-#: server" is not "Crew authored every key now in its env": the entry lives in a
-#: user-editable agent file, so a hand-added secret is reachable under a managed
-#: name and would otherwise be the one credential path left onto the wire.
-_MANAGED_ENV_KEYS_KEPT = frozenset({"KIROCREW_HOME"})
-
-#: An ``env`` value that is exactly one variable reference, ``${NAME}``. KAS
-#: starts a stdio server with a fixed minimal environment (``HOME``, ``PATH``,
-#: ``SHELL`` and a few more) plus the entry's own ``env``, and expands
-#: ``${NAME}`` there from its own environment, so a reference is the only way a
-#: launcher's per-process value reaches an MCP child, and the wire carries the
-#: name, never the value. Only names the edition lists through
-#: ``McpToolingProvider.kas_relayed_env_references`` are relayed: the KAS
-#: environment holds credentials of its own, the CLI's ``KIRO_API_KEY`` among
-#: them. The public default lists none.
-_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 #: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
 #: unknown field can fail a strict schema, and it means nothing to the backend.
@@ -273,7 +271,7 @@ def spec_keys_without_carrier(
     if (
         isinstance(tools_settings, dict)
         and crew_answered_commands(tools_settings)
-        and _allowed_commands_withheld(spec, None)
+        and _allowed_commands_withheld(spec, None, tools_settings)
         and not _commands_lifted_by_denies(spec)
     ):
         # Every entry is usable, but the session answers none of them: name each
@@ -284,10 +282,25 @@ def spec_keys_without_carrier(
             if isinstance(tools_settings.get(key), dict)
             and tools_settings[key].get("allowedCommands")
         )
+    if (
+        isinstance(tools_settings, dict)
+        and crew_answered_paths(tools_settings)
+        and _allowed_commands_withheld(spec, None, tools_settings, "fs_write")
+    ):
+        lost.extend(
+            f"toolsSettings.{key}.allowedPaths"
+            for key in ("fs_write", "write")
+            if isinstance(tools_settings.get(key), dict) and tools_settings[key].get("allowedPaths")
+        )
     return sorted(set(lost))
 
 
-def _allowed_commands_withheld(spec: dict[str, Any], policy: dict[str, Any] | None) -> bool:
+def _allowed_commands_withheld(
+    spec: dict[str, Any],
+    policy: dict[str, Any] | None,
+    tools_settings: Any,
+    tool: str = "execute_bash",
+) -> bool:
     """Whether *spec*'s usable ``shell.allowedCommands`` go unanswered on KAS.
 
     They do when the governance ceiling withholds the shell grant at the gate, or
@@ -295,15 +308,17 @@ def _allowed_commands_withheld(spec: dict[str, Any], policy: dict[str, Any] | No
     in *policy* or the raw ``permissions`` block, or another shell setting): the
     same reading a shell grant in ``allowedTools`` gets. The ``allowedCommands``
     key itself is the grant, so it is not read as a restriction. One reader for the
-    projection and the session-start notice, so the two cannot disagree.
+    projection and the session-start notice, so the two cannot disagree. With
+    *tool* ``fs_write`` the same for the write ``allowedPaths``.
     """
-    if not may_grant_builtin_at_gate_now("execute_bash"):
+    if not may_grant_builtin_at_gate_now(tool):
         return True
+    strip = without_shell_grant_keys if tool == "execute_bash" else without_write_grant_keys
     return not withhold_answered_under_authored_rules(
-        {"execute_bash"},
+        {tool},
         policy,
         authored_permissions=spec.get("permissions"),
-        tools_settings=without_grant_only_settings(spec.get("toolsSettings")),
+        tools_settings=strip(tools_settings),
     )
 
 
@@ -877,89 +892,6 @@ def _project_mcp_servers(
     return out
 
 
-def _withhold_credential_fields(
-    projected: dict[str, Any],
-    *,
-    managed: bool,
-    relayed: frozenset[str] = frozenset(),
-    dropped_env: list[str] | None = None,
-) -> list[str]:
-    """Strip credential-bearing fields from one projected server entry in place.
-
-    *dropped_env*, when given, is extended with the ``env`` key names withheld.
-
-    Returns the FIELD NAMES something was withheld from, for the caller's log —
-    never a value. For a server Crew did not author the ``env`` entry also names
-    the withheld keys (:func:`_loggable_key_names`), so a missing setting can be
-    found; a key name that is not a plain word the redactor leaves alone is
-    counted, never printed.
-
-    A value that is exactly ``${NAME}`` with *NAME* in *relayed* survives on
-    every server (:data:`_ENV_REFERENCE`); *managed* also keeps ``_MANAGED_ENV_KEYS_KEPT``, but only as a
-    literal: KAS expands ``${...}`` wherever it appears in a value, so a kept
-    key holding ``${KIRO_API_KEY}`` would carry the credential under a managed
-    name. A server Crew did not author also keeps every literal
-    :func:`_relayable_literal` passes (a boolean flag), so such a flag reaches
-    it as it does on kiro-cli, which reads the spec off disk.
-    Everything else goes either way, ``headers`` included. A managed server has
-    no legitimate ``headers`` (all four are local stdio processes), so retaining
-    it would only forward whatever a hand edit put there. ``env`` is reported
-    withheld when any key was dropped, so a server that kept its references but
-    lost a literal is still named in the caller's log.
-    """
-    withheld: list[str] = []
-    if projected.get("headers"):
-        projected.pop("headers", None)
-        withheld.append("headers")
-
-    env = projected.get("env")
-    if not env:
-        projected.pop("env", None)
-        return withheld
-    if not isinstance(env, dict):
-        # A malformed env cannot be filtered key-by-key.
-        projected.pop("env", None)
-        withheld.append("env")
-        return withheld
-
-    kept: dict[str, Any] = {}
-    dropped: list[str] = []
-    for k, v in env.items():
-        if not isinstance(k, str):
-            continue
-        if managed and k in _MANAGED_ENV_KEYS_KEPT:
-            keep = isinstance(v, str) and "${" not in v
-        else:
-            keep = _is_relayed_reference(v, relayed) or (not managed and _relayable_literal(k, v))
-        if keep:
-            kept[k] = v
-        else:
-            dropped.append(k)
-    if dropped_env is not None:
-        dropped_env.extend(dropped)
-    if len(kept) != len(env):
-        # A third-party server's withheld keys are named so the operator can see
-        # which setting went missing; a name that is not itself a plain word the
-        # redactor leaves alone is counted instead. A managed server's are not:
-        # any extra key on Crew's own entry is a hand edit.
-        withheld.append(
-            f"env ({_loggable_key_names(dropped)})" if dropped and not managed else "env"
-        )
-    if kept:
-        projected["env"] = kept
-    else:
-        projected.pop("env", None)
-    return withheld
-
-
-def _is_relayed_reference(value: Any, relayed: frozenset[str]) -> bool:
-    """Whether *value* is exactly ``${NAME}`` for a *NAME* in *relayed*."""
-    if not relayed or not isinstance(value, str):
-        return False
-    match = _ENV_REFERENCE.fullmatch(value)
-    return match is not None and match.group(1) in relayed
-
-
 def to_client_custom_agent(
     agent_id: str,
     spec: dict[str, Any],
@@ -1123,7 +1055,8 @@ def to_client_custom_agent(
     # `toolsSettings` has no wire slot, but KAS's `permissions` is its
     # replacement. The translated block goes through the same merge as an
     # authored one: its denies travel, its allows meet the ceiling.
-    translated, _ = tools_settings_to_permissions(spec.get("toolsSettings"))
+    tools_settings = spec.get("toolsSettings")
+    translated, _ = tools_settings_to_permissions(tools_settings)
     untranslated_policy = permissions  # what a checked deny is lifted against
     permissions = merge_user_permissions(
         permissions,
@@ -1173,8 +1106,8 @@ def to_client_custom_agent(
     # Asked of the ceiling as the shell tool, which is what the call runs, and
     # withheld under the same authored restrictions as a shell grant. The
     # `allowedCommands` key itself is the grant, so it is not read as one of them.
-    answered_commands = crew_answered_commands(spec.get("toolsSettings"))
-    if answered_commands and not _allowed_commands_withheld(spec, authored_policy):
+    answered_commands = crew_answered_commands(tools_settings)
+    if answered_commands and not _allowed_commands_withheld(spec, authored_policy, tools_settings):
         out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
     # What only a `deniedCommands` / write `deniedPaths` held back, with the denies
     # the gate checks first (`kas_spec_denies`).
@@ -1197,6 +1130,16 @@ def to_client_custom_agent(
     )
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
+        # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel.
+        if shell_auto_allows_readonly(tools_settings) and shell_denies_carried(
+            tools_settings, authored_policy
+        ):
+            out[CREW_SHELL_READONLY_KEY] = True
+    answered_paths = crew_answered_paths(tools_settings)
+    if answered_paths and not _allowed_commands_withheld(
+        spec, authored_policy, tools_settings, "fs_write"
+    ):
+        out[CREW_ANSWERED_PATHS_KEY] = answered_paths
     # `toolsSettings.fs_write.fallbackAction: "deny"`: the only paths the write
     # tool may touch, as the spec wrote them. Recorded whatever the ceiling says,
     # like the shell's; the gate refuses every other write of this agent
@@ -1562,6 +1505,17 @@ def switched_shell_allowlist(custom_agents: Any, mode_id: str) -> tuple[str, ...
     return _entry_shell_allowlist(_switched_entry(custom_agents, mode_id))
 
 
+def projected_shell_readonly(custom_agents: Any, agent_id: str) -> bool:
+    """Whether *agent_id*'s registered entry lets a read-only command past its
+    ``denyByDefault`` allowlist, matched like :func:`projected_shell_allowlist`."""
+    return _entry_shell_readonly(_registered_entry(custom_agents, agent_id))
+
+
+def switched_shell_readonly(custom_agents: Any, mode_id: str) -> bool:
+    """That once a KAS mode switch moves the session to *mode_id*."""
+    return _entry_shell_readonly(_switched_entry(custom_agents, mode_id))
+
+
 def projected_crew_answered(custom_agents: Any, agent_id: str) -> frozenset[str]:
     """The built-ins Crew answers itself for *agent_id*'s registered entry.
 
@@ -1710,19 +1664,6 @@ def _pin_legacy_negotiation(servers: list[dict[str, Any]]) -> list[dict[str, Any
             element = {**element, "_meta": {**meta, "kiro": kiro}}
         out.append(element)
     return out
-
-
-def _carries_env_reference(entry: Any) -> bool:
-    """Whether a projected entry's ``env`` holds a ``${NAME}`` reference.
-
-    KAS expands a reference in an agent-block entry but passes a session-level
-    ``mcpServers`` element's env to the child verbatim (measured on the 0.66.33
-    bundle), so such an entry must keep the block path on ``session/load`` too.
-    """
-    env = entry.get("env") if isinstance(entry, dict) else None
-    return isinstance(env, dict) and any(
-        isinstance(v, str) and _ENV_REFERENCE.search(v) for v in env.values()
-    )
 
 
 def _managed_first(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:

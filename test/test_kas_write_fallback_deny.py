@@ -335,8 +335,8 @@ def test_the_notice_no_longer_names_fallback_action() -> None:
         _spec(toolsSettings=_settings("out")), translates_tools_settings=True
     )
     assert "toolsSettings.fs_write.fallbackAction" not in lost
-    # A covered write still prompts on KAS, so the allow list stays named.
-    assert "toolsSettings.fs_write.allowedPaths" in lost
+    # Crew's gate answers a covered write, so the allow list is not named either.
+    assert "toolsSettings.fs_write.allowedPaths" not in lost
 
 
 def test_the_session_record_follows_the_active_agent_and_a_mode_switch() -> None:

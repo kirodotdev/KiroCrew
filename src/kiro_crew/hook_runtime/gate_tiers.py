@@ -1218,6 +1218,26 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     return _command_matches_any(call.command, call.spec_granted_commands)
 
 
+def _spec_write_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
+    """Whether a spec's write ``allowedPaths`` grants this call.
+
+    Only a file write (kiro-cli's ``fs_write`` among its names, so never a
+    deny-only alias such as ``delete_file``) whose every target one of
+    ``spec_granted_paths`` covers, as written and symlink-resolved
+    (:func:`_write_target_uncovered`, the ``spec-write-allowlist`` row's own
+    reading). A write whose targets cannot all be read grants nothing.
+    """
+    if not call.spec_granted_paths or "fs_write" not in names:
+        return False
+    candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
+    if candidates.truncated or candidates.unanchored or not candidates:
+        return False
+    return all(
+        _write_target_uncovered(target, call.spec_granted_paths, call.spec_write_cwd) is None
+        for target in candidates
+    )
+
+
 def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
     """Whether a shell call is kept from *patterns* only by its shell composition
     (:func:`kiro_crew.platform.allowed_commands.composition_blocks_match`). It only
@@ -1267,6 +1287,11 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         return None
     if _command_matches_any(call.command, allowlist):
         return None
+    if call.spec_shell_readonly and _command_is_read_only(call.command):
+        # `autoAllowReadonly: true`: kiro-cli runs a read-only command its
+        # allowlist does not match. It goes on to the rows below, where the
+        # read-only row answers it, and nothing a deny row refused comes back.
+        return None
     if _spec_command_composed(call, ("execute_bash",), allowlist):
         return ToolHookResult.deny_policy(
             "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
@@ -1279,6 +1304,14 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
     )
+
+
+def _command_is_read_only(command: str | None) -> bool:
+    """Whether *command* is one the read-only row answers: recovered, not running
+    git, and read-only by the bash classifier (:func:`_tier_read_only`)."""
+    if not command:
+        return False
+    return not command_invokes_git(command) and is_read_only_bash(command)
 
 
 def _is_spec_write_call(call: ToolCall) -> bool:
@@ -1457,7 +1490,9 @@ def grant_spec_builtin(
         return None
     call = facts.call
     granted = call.spec_granted_builtins
-    if not (granted or call.spec_granted_commands or call.spec_denied_grant):
+    if not (
+        granted or call.spec_granted_commands or call.spec_denied_grant or call.spec_granted_paths
+    ):
         return None
     if not call.kas_builtin_ids or not call.identity_trusted:
         return None
@@ -1470,6 +1505,7 @@ def grant_spec_builtin(
         not any(name in granted for name in names)
         and not _spec_command_granted(call, names)
         and not denied_grant_applies(call, names)
+        and not _spec_write_granted(call, names)
     ):
         if _spec_command_composed(call, names, call.spec_granted_commands):
             from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
