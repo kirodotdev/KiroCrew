@@ -81,6 +81,16 @@ describe('CrewModeChip', () => {
     expect(bolt()).toHaveAttribute('fill', 'currentColor')
   })
 
+  it('is grey while off and wears the accent only while on', () => {
+    const { rerender } = render(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} />)
+    const chip = () => screen.getByTestId('crew-mode-chip')
+    const bolt = () => chip().querySelector('.lucide-zap')!
+    expect(chip()).toHaveClass('text-muted')
+    expect(bolt()).not.toHaveClass('ultra-accent')
+    rerender(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} pressed />)
+    expect(bolt()).toHaveClass('ultra-accent')
+  })
+
   it('keeps the accessible name Ultra Mode', () => {
     render(<CrewModeChip onTurnOn={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Ultra Mode', pressed: false })).toBeInTheDocument()
