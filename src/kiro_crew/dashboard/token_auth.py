@@ -1468,6 +1468,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AGENT_HOOK_PATH,
         AGENT_HOOK_STATUS_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
+        RELAY_VIEWER_TOKEN_PATH,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,
         UPDATE_REVALIDATE_PATH,
