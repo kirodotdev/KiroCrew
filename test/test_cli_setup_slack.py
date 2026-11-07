@@ -265,6 +265,71 @@ class TestSetupSlackTokens:
         assert fake_slack.calls == []
 
 
+@pytest.mark.usefixtures("fake_slack")
+class TestOtherSpellingsOfASavedName:
+    """On Windows ``slack_bot_token`` IS ``SLACK_BOT_TOKEN``, and boot keeps the
+    first non-empty spelling in ``.env``; on POSIX they are separate variables."""
+
+    _OLD = (
+        "slack_app_token=xapp-old\n"
+        "slack_bot_token=xoxb-old\n"
+        "kirocrew_owner_id=U0OLDOWNER1\n"
+        "OTHER_KEY=keep\n"
+    )
+
+    def _run(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch, *, windows: bool
+    ) -> list[list[str]]:
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", windows)
+        env_file.write_text(self._OLD, encoding="utf-8")
+        _tty(monkeypatch, True)
+        _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "U03T18B4Y23")
+
+        cs._setup_slack_tokens()
+
+        return [line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines()]
+
+    def test_on_windows_the_new_values_replace_every_spelling(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lines = self._run(env_file, monkeypatch, windows=True)
+
+        assert sorted(lines) == [
+            [CRED_OWNER_ID, "U03T18B4Y23"],
+            ["OTHER_KEY", "keep"],
+            [CRED_SLACK_APP_TOKEN, "xapp-new"],
+            [CRED_SLACK_BOT_TOKEN, "xoxb-new"],
+        ]
+
+    def test_on_windows_enter_keeps_the_owner_in_force_behind_an_empty_spelling(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", True)
+        env_file.write_text(f"{CRED_OWNER_ID}=\nkirocrew_owner_id=U0SAVED0001\n", encoding="utf-8")
+        _tty(monkeypatch, True)
+        prompts = _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "")
+
+        cs._setup_slack_tokens()
+
+        assert "[U0SAVED0001]" in prompts[-1]
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        assert [ln for ln in lines if ln.upper().startswith(CRED_OWNER_ID + "=")] == [
+            f"{CRED_OWNER_ID}=U0SAVED0001"
+        ]
+
+    def test_on_posix_a_differently_cased_name_is_left_alone(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lines = self._run(env_file, monkeypatch, windows=False)
+
+        assert lines[:4] == [line.split("=", 1) for line in self._OLD.splitlines()]
+        assert dict(lines[4:]) == {
+            CRED_SLACK_APP_TOKEN: "xapp-new",
+            CRED_SLACK_BOT_TOKEN: "xoxb-new",
+            CRED_OWNER_ID: "U03T18B4Y23",
+        }
+
+
 class TestVerifySlackSecret:
     """The token check mirrors the dashboard's: two calls, three verdicts."""
 
