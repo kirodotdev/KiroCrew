@@ -335,7 +335,7 @@ async def test_supervisor_reap_goes_through_the_identity_check(tmp_path: Path) -
         patch.object(platform_compat, "kill_process_group") as kill,
         patch.object(platform_compat, "kill_process_tree_pinned") as kill_win,
     ):
-        await manager._reap_orphaned_backends()
+        await manager._reap_orphaned_backends("test")
     assert not backend_record.record_path(sock).exists()
     kill.assert_not_called()
     kill_win.assert_not_called()
