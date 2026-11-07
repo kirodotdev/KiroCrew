@@ -1705,12 +1705,11 @@
             "cli_issue_radar_keeps_no_credentials": "CLI — Issue Radar\n                  keeps no credentials.",
             "configure_triage": "Configure triage",
             "connect_another_repo": "Connect another repo",
-            "identity_and_the_repositories_issue_radar_watche": "identity and the repositories Issue Radar watches.",
+            "your_provider_identity_and_watched_repos": "Your {{provider}} identity and the repositories Issue Radar watches.",
             "in_your_terminal": "in your terminal.",
             "not_signed_in_the": "Not signed in — the",
             "repositories": "Repositories",
-            "settings": "Settings",
-            "your": "Your"
+            "settings": "Settings"
           },
           "gitlabGroups": {
             "title": "GitLab groups",
@@ -1754,7 +1753,7 @@
             "it_refreshes_here_after_the_next_sync": ". It refreshes here after the next sync.",
             "loading_members": "Loading members…",
             "loading_this_repo_s_saved_settings": "Loading this repo's saved settings…",
-            "local_triage_settings_for_this_repo_they_teach_i": "Local triage settings for this repo — they teach Issue Radar how",
+            "local_triage_settings_intro": "Local triage settings for this repo — they teach Issue Radar how {{repo}} organises its issues and are never written back to {{provider}}.",
             "members": "Members",
             "membership_is_read_from": "Membership is read from",
             "new_issue": "new issue",
@@ -1763,7 +1762,6 @@
             "notify_me_when_a": "Notify me when a",
             "open_on": "Open on",
             "open_tagging": "Open Tagging",
-            "organises_its_issues_and_are_never_written_back": "organises its issues and are never written back to",
             "recommending_a_taxonomy_and_applying_it_to_issue": "Recommending a taxonomy and applying it to issues are two halves of one job, so they share a\n          page. This settings page keeps the local definitions above — which of",
             "refresh": "Refresh",
             "removes": "Removes",
