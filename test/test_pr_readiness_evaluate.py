@@ -403,8 +403,8 @@ def runner(tmp_path: Path) -> Runner:
 
 class TestPendingLanesAreNamedInTheStatus:
     """A monitored lane can produce ZERO runs for an immutable head when
-    GitHub does not create the run, and no event creates one on an unchanged
-    commit. Such a lane sits `(not started)` and the required "PR Readiness"
+    GitHub does not create the run, and only a new pull request event creates
+    one. Such a lane is not started and the required "PR Readiness"
     status stays `pending`. The status description names the waiting lane(s),
     bounded to the commit-status API's 140-char limit, so the culprit is
     legible at a glance and a human can re-run that lane instead of pushing an
@@ -425,10 +425,10 @@ class TestPendingLanesAreNamedInTheStatus:
         assert outputs["label"] == "readiness: checking"
         # ...but the description now NAMES the lane instead of only counting it.
         assert "1 readiness check(s) still pending" in outputs["description"]
-        assert "CI (not started)" in outputs["description"]
+        assert "CI (not started on this head; push or reopen)" in outputs["description"]
         # The lane-state log line names it; the status a human sees on the PR
         # names it too.
-        assert "CI (not started)" in _lane_log(proc)
+        assert "CI (not started on this head; push or reopen)" in _lane_log(proc)
 
     def test_the_named_description_never_exceeds_the_api_limit(self, runner: Runner):
         # Every lane empty -> the widest possible waiting list. The commit-status
