@@ -163,6 +163,7 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     "DSH_HOME",
     # GitHub Copilot CLI relocates its whole home, plaintext token file included.
     "COPILOT_HOME",
+    "VIBE_HOME",
 )
 
 

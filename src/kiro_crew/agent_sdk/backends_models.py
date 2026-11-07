@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_MISTRAL_VIBE,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -56,6 +57,8 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # ``[provider, model]`` pair -- ``["deepseek-official", "deepseek-v4-flash"]`` -- so
 # the value is passed through exactly as advertised rather than parsed. That is what
 # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` membership is for.
+#
+# ``ACP_BACKEND_MISTRAL_VIBE``: ``model`` select advertised on session/new, accepted via set_config_option (captured).
 ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -64,6 +67,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -161,6 +165,8 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        # vibe: ``thinking`` select on session/new, Crew levels spelled identically (captured on 3.0.3).
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -198,6 +204,7 @@ EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_GOOSE: "thinking_effort",
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
+    ACP_BACKEND_MISTRAL_VIBE: "thinking",
 }
 
 #: The spelling used by every backend without a row in
@@ -261,8 +268,15 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # on no concrete id (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``) is the one case the
 # registry cannot name, and there the option the adapter built for that model
 # answers instead.
+# vibe: foreign catalog ids + own ``thinking`` select, as deepseek/goose (captured).
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
-    {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_MISTRAL_VIBE,
+    }
 )
 
 # Backends whose unpinned session serves a pseudo-model rather than a concrete
@@ -442,6 +456,8 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        # vibe: model ids come from the advertised ``configOptions`` select, not from the registry.
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -601,6 +617,7 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # strands gets its own key: its ids are ``provider/model`` strings (or bare
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
+    ACP_BACKEND_MISTRAL_VIBE: "mistral-vibe",
 }
 
 

@@ -29,6 +29,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_MISTRAL_VIBE,
 )
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -281,6 +282,18 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         missing_hint=(
             "Install the official Strands CLI; its default --acp-server profile is "
             "not used, Kiro Crew starts it on a Python project it gates."
+        ),
+    ),
+    ACP_BACKEND_MISTRAL_VIBE: SelfServedLaunch(
+        label="Mistral Vibe",
+        binary="vibe-acp",
+        acp_args=(),
+        bin_env_var="MISTRAL_VIBE_ACP_BIN",
+        install_command="pip install mistral-vibe",
+        protocol_version=1,
+        missing_hint=(
+            "This is a Python package, not an npm adapter: install it with "
+            "pip or uv (uv tool install mistral-vibe)."
         ),
     ),
 }

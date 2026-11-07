@@ -28,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_MISTRAL_VIBE,
 )
 
 # ── Capability: where a harness gets its MCP servers ──
@@ -158,6 +159,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -398,6 +400,7 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # project's own, vended or MCP -- which the CLI forwards as
 # ``session/request_permission``, so ``_deny_zero_tools`` sees each one; it is
 # mirrored, enforced (``Routing.VERIFIED_GATE_EXTENSION``) and ``AcpClient``-served.
+# vibe: enforced routing + broker-only projection; capture at mistral-vibe 3.0.3 holds the permission emission.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -408,6 +411,7 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 

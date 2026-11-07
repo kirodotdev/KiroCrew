@@ -15415,6 +15415,7 @@
         "mcp_deny_manage_link": "Abrir la lista de servidores MCP en Conexiones",
         "mcp_deny_rule": "Apagar una herramienta MCP en {{name}} detiene todas las herramientas del mismo servidor, no solo la que apagaste.",
         "missing_components": "Falta en esta máquina: {{components}}",
+        "mistral_vibe": "Mistral Vibe",
         "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Una sesión ya abierta conserva el agente con el que se inició: cambiarlo aquí no la modifica a mitad de sesión.",
         "not_offered_by_this_build": "Esta compilación no ofrece este agente.",
         "note_crew_command_channel": "Los comandos con barra viajan por el canal de comandos de {{productName}}.",

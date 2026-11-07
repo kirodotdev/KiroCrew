@@ -1454,3 +1454,56 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         redacted_payload, _ = redact_credentials(redacted_payload)
         logger.debug("Permission toolCall payload: %s", redacted_payload)
     return event
+
+
+def _verify_mistral_vibe_routing(self: AcpClient, resp: dict) -> None:
+    """Read the resolved profile off the ``modes`` block of the session response.
+
+    ``VIBE_*`` (seeded by ``MistralVibeLaunch.resolve_spawn``) outranks Vibe's
+    config files, so the response reports the effective posture. Both halves are
+    required: ``currentModeId == "ask"`` AND the advertised mode list exactly
+    ``ask`` -- the clamp variables remove the auto-approving profiles, so an extra
+    mode means a config source outranked the seed (the bypass a mode read-back
+    alone cannot see). An omitted ``modes`` block is INDETERMINATE, not a pass.
+
+    What this does NOT establish: that Vibe honours the profile per tool call.
+    Live captures: ``test/fixtures/acp_frames/mistral-vibe/routing-live.jsonl``.
+
+    Raises ``AcpToolGateUnroutable`` when the asking posture is not in force.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_MISTRAL_VIBE
+
+    if self.backend == ACP_BACKEND_MISTRAL_VIBE:
+        _verify_mistral_vibe_routing_body(self, resp)
+
+
+def _verify_mistral_vibe_routing_body(self: AcpClient, resp: dict) -> None:
+    """The body of :func:`_verify_mistral_vibe_routing`, keyed on the POSITIVE identity
+    (harness-parity H5): ``== ACP_BACKEND_MISTRAL_VIBE``, never ``!=``."""
+    from kiro_crew.acp.harness.mistral_vibe import MISTRAL_VIBE_REQUIRED_MODE_IDS
+
+    ids, current_mode, advertised = parse_session_modes(resp)
+    # An omitted modes block is INDETERMINATE rather than a pass.
+    observed = current_mode if advertised else ""
+    issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
+    if not issue and advertised:
+        advertised_ids = {mode_id for mode_id in ids if isinstance(mode_id, str)}
+        if advertised_ids != set(MISTRAL_VIBE_REQUIRED_MODE_IDS):
+            issue = (
+                f"the harness advertises modes {sorted(advertised_ids)!r} rather than "
+                f"exactly {sorted(MISTRAL_VIBE_REQUIRED_MODE_IDS)!r}, so an auto-approving "
+                "profile is still selectable and a config source outranked Kiro "
+                "Crew's seed"
+            )
+    if not issue:
+        return
+    try:
+        acp_tool_gate.enforce_runtime_routing(
+            self.backend,
+            issue,
+            remedy=acp_tool_gate.remediation_for(self.backend),
+        )
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        # Translated to the ACP-layer type the sibling refusals use, so
+        # ensure_ready catches it and reaps the failed spawn.
+        raise AcpToolGateUnroutable(str(exc)) from None

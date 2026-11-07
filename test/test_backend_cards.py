@@ -372,6 +372,7 @@ def test_core_counts_per_harness_are_pinned() -> None:
         # Crew's tools, read-only side chat, and effort and model (both moved by a
         # relaunch that reloads the session): no member dispatch, no steer, no compact.
         "strands": 4,
+        "mistral-vibe": 4,
     }
     assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 

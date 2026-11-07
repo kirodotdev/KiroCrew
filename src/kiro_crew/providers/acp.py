@@ -53,6 +53,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
@@ -651,6 +652,11 @@ class AcpProvider(LLMProvider):
     def is_strands_backend(self) -> bool:
         """True when this ACP provider talks to the Strands CLI (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_STRANDS
+
+    @property
+    def is_mistral_vibe_backend(self) -> bool:
+        """True when this ACP provider talks to Mistral Vibe (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_MISTRAL_VIBE
 
     @property
     def is_kas_backend(self) -> bool:
