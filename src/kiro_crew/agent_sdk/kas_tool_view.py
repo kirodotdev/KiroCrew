@@ -164,6 +164,26 @@ def permission_allow_derivable(rule: dict[str, Any]) -> bool:
     return kas_permissions._deriver_could_emit(rule)
 
 
+def builtin_allow_tool(rule: dict[str, Any]) -> str:
+    """The ``allowedTools`` name KAS's projection derives built-in allow *rule* from.
+
+    Only an unscoped allow (``capability`` and ``effect`` alone) on a capability
+    exactly one Crew tool name stands for (``kas_permissions.CAPABILITY_BY_TOOL``,
+    ``use_subagent`` for ``subagent``) has one; any other rule answers ``""``, so
+    a name-scoped allow is never widened to the whole capability.
+    """
+    from kiro_crew.acp import kas_permissions
+
+    if set(rule) != {"capability", "effect"} or rule.get("effect") != "allow":
+        return ""
+    names = [
+        tool
+        for tool, capability in kas_permissions.CAPABILITY_BY_TOOL.items()
+        if capability == rule.get("capability")
+    ]
+    return names[0] if len(names) == 1 else ""
+
+
 def tools_settings_family(tool: Any) -> str:
     """The tool family a ``toolsSettings`` key belongs to (every kiro-cli spelling
     of one tool is one: ``execute_bash``, ``shell``, ``executeBash``), else the

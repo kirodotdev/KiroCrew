@@ -309,7 +309,8 @@ the session's ACP id, as `KIRO_SESSION_ID` in the environment and as
 `session_id` on stdin, the same names kiro-cli uses. The older stdin key
 `acp_session_id` carries the same value. Before the session has an id, all of
 them are left out. A subagent's Stop hooks get it too. Hooks-page hooks and
-other subagent events do not.
+other subagent events do not. Kiro Crew runs up to 64 of one spec's own hooks;
+any past that are named in one warning and do not run.
 
 When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
 Kiro Crew runs in the harness's place (as on KAS) also get
