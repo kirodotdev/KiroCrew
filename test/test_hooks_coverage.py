@@ -1227,6 +1227,18 @@ class TestSafeReadPrefix:
         assert safe_read_prefix(str(tmp_path / "gone"), 4) is None
         assert safe_read_prefix(str(Path.home() / ".aws" / "config"), 4) is None
 
+    def test_refuse_judges_the_kernel_path_of_the_opened_file(self, tmp_path):
+        f = _write(tmp_path / "a.txt", "abcdef")
+        seen: list[str] = []
+
+        def refuse(opened: str) -> bool:
+            seen.append(opened)
+            return True
+
+        assert safe_read_prefix(str(f), 3, refuse=refuse) is None
+        assert [os.path.normcase(p) for p in seen] == [os.path.normcase(os.path.realpath(f))]
+        assert safe_read_prefix(str(f), 3, refuse=lambda _opened: False) == b"abc"
+
 
 class TestIsAccessControlXattr:
     @pytest.mark.parametrize("attr", ["system.posix_acl_access", "system.posix_acl_default"])
