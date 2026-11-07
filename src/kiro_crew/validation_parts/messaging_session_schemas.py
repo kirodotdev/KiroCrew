@@ -133,6 +133,7 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         FieldSpec("channel_type", str, max_len=16, pattern=re.compile(r"^[a-z]+$")),
         FieldSpec("target_id", str, max_len=512, pattern=_TARGET_ID_RE),
         FieldSpec("title", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("format", str, max_len=16, pattern=re.compile(r"^(plain|markdown)$")),
         FieldSpec("blocks", list, item_type=dict, max_items=50),
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
         FieldSpec("user", str, max_len=USER_MAX_LEN, pattern=USER_ID_RE),

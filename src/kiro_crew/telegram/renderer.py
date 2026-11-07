@@ -49,6 +49,7 @@ import os
 import re
 import sys as _sys
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import _facade_mirror
@@ -228,7 +229,9 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     return {"inline_keyboard": buttons}
 
 
-def _split_markdown(text: str, limit: int) -> list[str]:
+def _split_markdown(
+    text: str, limit: int, redactor: Callable[[str], str] | None = None
+) -> list[str]:
     """Split markdown into <=``limit`` chunks, keeping fenced code blocks balanced.
 
     A cut inside a ``` fence leaves the chunk unbalanced, the per-chunk HTML pass
@@ -258,9 +261,10 @@ def _split_markdown(text: str, limit: int) -> list[str]:
     the boundaries as the reader sees them and moves the cut instead, which keeps
     every character. Nothing here asks for the prefix-stable mode: a rotation
     replaces the buffer with the retained tail, so text already sealed is never
-    part of a later cut.
+    part of a later cut. *redactor* defaults to ``_default_redactor``; a caller
+    whose text was already graded with a wider one passes that one.
     """
-    return split_markdown_safe(text, limit, redactor=_default_redactor)
+    return split_markdown_safe(text, limit, redactor=redactor or _default_redactor)
 
 
 # Telegram renders a small HTML subset (<b>/<i>/<code>/<pre>/<a>) far more
@@ -383,7 +387,9 @@ def _rendered_len(source: str) -> int:
     return len(_md_to_telegram_html(source))
 
 
-def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
+def _split_markdown_bounded(
+    text: str, rendered_limit: int, redactor: Callable[[str], str] | None = None
+) -> list[str]:
     """Split markdown so every chunk's RENDERED HTML fits ``rendered_limit``.
 
     ``_split_markdown`` budgets the *source*, but ``_md_to_telegram_html``
@@ -406,12 +412,16 @@ def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
     chunk over the budget, and this channel's client truncates a larger payload
     after every scan has run. The bound cuts that answer back and grades the
     sequence it actually produced.
+
+    *redactor* grades every boundary and defaults to ``_default_redactor``. A
+    caller whose text the composed grader (``redact_via_context``) already split
+    passes that grader, so this second split cannot sever a credential only the
+    wider grader knows.
     """
+    grader = redactor or _default_redactor
     src_limit = max(_MIN_SPLIT_LIMIT, rendered_limit)
     while True:
-        chunks = bounded_for_delivery(
-            _split_markdown(text, src_limit), src_limit, _default_redactor
-        )
+        chunks = bounded_for_delivery(_split_markdown(text, src_limit, grader), src_limit, grader)
         worst = max((_rendered_len(c) for c in chunks), default=0)
         if worst <= rendered_limit or src_limit <= _MIN_SPLIT_LIMIT:
             return chunks

@@ -206,6 +206,12 @@ wherever a Telegram target id is accepted (for example, ask the agent to send a
 job's report there). Only a topic in the private chat of a user in
 `allowed_user_ids` is accepted.
 
+Proactive messages (a cron's report, an agent's `send_message`) are plain text by
+default, so `**bold**` arrives with its asterisks. Pass `format="markdown"` to
+`send_message`, or to `ctx.notify(...)` in a cron script, to get bold, italics,
+code and links rendered. In that mode a `*` or `_` in the text itself (a file
+name, a figure) is read as markup too.
+
 ## Settings reference
 
 Everything lives in the `telegram` section of `config.json`:
