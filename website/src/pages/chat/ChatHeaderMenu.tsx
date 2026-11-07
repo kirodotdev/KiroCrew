@@ -79,7 +79,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   // Per-tool loaded/deferred state is derived client-side (no endpoint): the
   // full server list carries each server's tool names + disabledTools, and the
   // "loaded this session" set comes from scanning this slot's tool_search
-  // results in the chat store. See deriveLoadedMcpTools for the caveats.
+  // results and MCP tool calls in the chat store. See deriveLoadedMcpTools for
+  // the caveats.
   const { data: fullServers = [] } = useQuery<McpServer[]>({
     queryKey: ['mcp-servers-full'],
     queryFn: () => api.mcpServers(),
