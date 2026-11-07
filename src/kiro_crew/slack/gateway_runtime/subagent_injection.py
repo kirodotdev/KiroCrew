@@ -56,7 +56,6 @@ if TYPE_CHECKING:
         run_in_embed_pool,
         save_conversation_turn_off_loop,
         session_store_for_turn,
-        settles_at_release,
         subagent_event_slot,
     )
 
@@ -64,7 +63,7 @@ if TYPE_CHECKING:
 def _delivered_inline(mgr: Any, carried: tuple[str, ...]) -> bool:
     """True when every member *carried* names already reached its parent inline.
 
-    The one question each completion route asks before it injects. A member
+    The first question :func:`_inline_verdict` asks for every route. A member
     counts only when its live record carries ``_collected_inline``, which
     ``POST /api/spawn/mark-collected`` sets once the parent's own blocking
     ``spawn_sub_agents`` reply holding it was written to the parent's pipe. An
@@ -80,16 +79,15 @@ def _delivered_inline(mgr: Any, carried: tuple[str, ...]) -> bool:
     return True
 
 
-#: The three answers :func:`_inline_verdict` gives a route whose parent settles at
-#: release (``settles_at_release``).
+#: The three answers :func:`_inline_verdict` gives a completion route: every
+#: parent settles at the release of the turn that received its returned results.
 INLINE_CONFIRMED = "confirmed"
 INLINE_PENDING = "pending"
 INLINE_DELIVER = "deliver"
 
 
 def _inline_verdict(mgr: Any, sessions: Any, carried: tuple[str, ...]) -> tuple[str, Any]:
-    """What a route does with an announce whose parent settles at release:
-    ``(verdict, holding)``.
+    """What a route does with an announce: ``(verdict, holding)``.
 
     * ``confirmed`` -- every member it carries was returned inline in a turn that
       has landed (``kiro_crew.parent_turns``): acknowledge it, no second turn.
@@ -207,9 +205,9 @@ def _settle_inline(
     its new state before anything else runs, and a re-routed completion of a cron
     parent is counted in ``_cron_injecting`` before the cron ``finally`` decides
     whether to reset the session it is delivered into. A landed turn's marks also
-    settle their children on a tab that shows the parent, as the mark itself does
-    for a dashboard-born parent (``_settle_collected_on_slot``): a completion of
-    theirs already queued there is removed, never played as a second turn.
+    settle their children on a tab that shows the parent
+    (``_settle_collected_on_slot``): a completion of theirs already queued there
+    is removed, never played as a second turn.
     """
     mgr = self.subagent_mgr
     confirmed: dict[str, set[str]] = {}
@@ -613,12 +611,12 @@ async def _route_subagent_to_tab(
 
     The completion becomes a queued card. An idle tab drains it into a turn at
     once; a busy one first waits for its turn, then queues it for that turn's
-    drain. An announce whose every carried member the blocking spawn tool
-    already returned is skipped; a tab that closed gets the bell. Every exit
-    hands the completion off or settles it. A parent that is not dashboard-born
-    (a cron job's tab, a channel conversation's) skips only once the turn that
-    returned the result has landed, and parks it while that turn still holds
-    the session, as the cron and channel routes do (``_inline_verdict``).
+    drain. A tab that closed gets the bell. Every exit hands the completion off
+    or settles it. An announce whose every carried member the blocking spawn
+    tool already returned is skipped only once the turn that returned it has
+    landed, and parked while that turn still holds the session, as the cron and
+    channel routes do (``_inline_verdict``). That holds for a dashboard tab's
+    own turn too: one the user stops before it lands still gets the result.
     """
     assert self.dashboard_state is not None
     _slot_name = _injection_slot_name
@@ -637,18 +635,6 @@ async def _route_subagent_to_tab(
     body, _ = redact_credentials(body)
 
     if _injection_slot:
-        # Whether the announce's members were returned inline, asked the way its
-        # parent settles: at the release of the turn that received them, or, for a
-        # dashboard-born parent, on the mark itself.
-        _settles_at_release = settles_at_release(parent_key)
-
-        def _inline_now() -> tuple[str, Any]:
-            if _settles_at_release:
-                return _inline_verdict(self.subagent_mgr, self.sessions, carried)
-            if _delivered_inline(self.subagent_mgr, carried):
-                return INLINE_CONFIRMED, None
-            return INLINE_DELIVER, None
-
         # ── Fix 2 (B1): arm a one-shot post-fan-out synthesis turn ──
         # When this is the LAST outstanding sub-agent for the parent,
         # flag the slot so that once every completion has been
@@ -670,7 +656,7 @@ async def _route_subagent_to_tab(
             _arm_synthesis = (
                 _mgr is not None
                 and not _flush_only
-                and _inline_now()[0] == INLINE_DELIVER
+                and _inline_verdict(_mgr, self.sessions, carried)[0] == INLINE_DELIVER
                 and _mgr.running_agents_for(parent_key) == []
                 and not _mgr.has_in_memory_pending_work_for(parent_key, exclude_id=info.id)
             )
@@ -705,7 +691,7 @@ async def _route_subagent_to_tab(
         # tab is waited on first and asked again -- see the second
         # check after the busy-wait below.
         def _skip_collected(when: str) -> bool:
-            _verdict, _holding = _inline_now()
+            _verdict, _holding = _inline_verdict(self.subagent_mgr, self.sessions, carried)
             if _verdict == INLINE_PENDING:
                 # Returned to the turn still holding the session: parked until its
                 # release settles it, never waited on inside ``_on_done``.

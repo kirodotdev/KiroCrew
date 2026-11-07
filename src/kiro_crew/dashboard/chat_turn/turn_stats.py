@@ -1071,7 +1071,7 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
             # Only a turn that ran to its end, as every engine notes it: this
             # attempt's release then confirms the inline results the turn
             # received (``kiro_crew.parent_turns``), so a child it read back
-            # plays no second turn on a cron or channel tab. Any other end
+            # plays no second turn on any tab. Any other end
             # revokes them and the completion is delivered. A recovery this
             # turn re-queues is its own claim, so it never confirms these.
             note_turn_landed(state.sessions, session_key)
