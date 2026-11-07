@@ -1579,6 +1579,34 @@ class TestProseMentioningSteeringSurvives:
         assert visible == "see [STEERING acknowledgment format"
         assert steer == []
 
+    def test_a_whole_text_strip_keeps_long_unclosed_prose(self):
+        """``strip_steering_markers`` reads a finished text, so an unclosed
+        ``[Steering`` prose tail longer than the marker bound stays, and a marker
+        deep inside a long text still goes."""
+        prose = "Turn the [Steering wheel left, " + "x" * 20_000
+        assert driver.strip_steering_markers(prose) == prose
+        straddling = "a" * 4090 + "[STEERING steer-83cc1f2a: done]" + "b"
+        assert driver.strip_steering_markers(straddling) == "a" * 4090 + "b"
+
+    @pytest.mark.parametrize(
+        "answer",
+        ["[", "[S", "[steer", "see [STEERING", "see [STEERING steer-83cc1f2a: half"],
+    )
+    def test_a_whole_text_strip_keeps_an_unclosed_tail(self, answer):
+        """A finished answer ending in a marker prefix is the answer's own text:
+        only complete frames go, and nothing is held back for a later chunk."""
+        assert driver.strip_steering_markers(answer) == answer
+
+    def test_a_whole_text_strip_counts_from_the_original_text(self):
+        """``ß`` upper-cases to two letters, so a strip that indexed the
+        upper-cased copy would cut the wrong span."""
+        text = "Straße [steering steer-83cc1f2a: ok] end"
+        assert driver.strip_steering_markers(text) == "Straße  end"
+
+    def test_channel_replay_still_drops_a_cut_marker(self):
+        """The channel path keeps the stream filter's fail-closed flush."""
+        assert driver.sanitize_channel_replay_text("ok [STEERING steer-83cc1f2a: half") == "ok "
+
 
 class TestRealMarkersAreStillConsumed:
     """Negative controls. A filter that kept prose by keeping everything would
