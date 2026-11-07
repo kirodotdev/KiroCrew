@@ -19,7 +19,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render as rtlRender, act } from '@testing-library/react'
-import { useLayoutEffect, type RefObject } from 'react'
+import { startTransition, useLayoutEffect, type RefObject } from 'react'
 
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 
@@ -51,17 +51,22 @@ function Row({ index, measure }: { index: number; measure: (el: HTMLElement | nu
 
 type RetainRange = ReturnType<typeof useVirtualChat<Item>>['retainRange']
 
-function Harness({ items, scrollerRef, commits, retainRef }: {
+// Thrown by a render that must never commit (see `discard` below).
+const NEVER = new Promise<never>(() => {})
+
+function Harness({ items, scrollerRef, commits, retainRef, suspend = false }: {
   items: Item[]
   scrollerRef: RefObject<HTMLDivElement | null>
   commits: Commit[]
   retainRef: { current: RetainRange | null }
+  suspend?: boolean
 }) {
   const v = useVirtualChat<Item>({
     items, sessionId: 'tail-append-same-render', getKey, overscan: OVERSCAN,
     externalScrollerRef: scrollerRef, estimatedHeight: ESTIMATE_H,
   })
   retainRef.current = v.retainRange
+  if (suspend) throw NEVER
   const keys = v.virtualItems.map((it) => String(it.key))
   // No deps: runs once per COMMIT, so it records exactly what reached the DOM.
   useLayoutEffect(() => { commits.push({ keys, after: v.offsetAfter }) })
@@ -157,7 +162,9 @@ describe('useVirtualChat: a tail append under a followed reader mounts in the sa
     let scrollTop = 0
     let clientHeight = CLIENT
     let items = mkItems(30)
-    const harness = (list: Item[]) => <Harness items={list} scrollerRef={scrollerRef} commits={commits} retainRef={retainRef} />
+    const harness = (list: Item[], suspend = false) => (
+      <Harness items={list} scrollerRef={scrollerRef} commits={commits} retainRef={retainRef} suspend={suspend} />
+    )
     const view = rtlRender(harness(items))
     const el = scrollerRef.current!
     const contentHeight = installFakeLayout(el)
@@ -190,7 +197,15 @@ describe('useVirtualChat: a tail append under a followed reader mounts in the sa
     }
     // A backgrounded tab / display:none pane: the box has no height.
     const collapse = () => { clientHeight = 0 }
-    return { el, commits, append, collapse, retainRef }
+    // The page hands the transcript in through a deferred value, so React can
+    // render a longer list and then throw that render away. A transition that
+    // suspends after the hook ran is that discarded render, made deterministic.
+    const discard = (rows: Item[]) => {
+      act(() => { startTransition(() => { view.rerender(harness([...items, ...rows], true)) }) })
+    }
+    // An urgent update re-rendering the list still on screen.
+    const repaint = () => { act(() => { view.rerender(harness([...items])) }) }
+    return { el, commits, append, collapse, retainRef, discard, repaint }
   }
 
   it('mounts the sent prompt in the first commit that holds it', () => {
@@ -201,6 +216,19 @@ describe('useVirtualChat: a tail append under a followed reader mounts in the sa
     // Every commit that sees the new row renders it as a row, never as spacer.
     for (const c of commits) {
       expect(c.keys).toContain('sent')
+      expect(c.after).toBe(0)
+    }
+  })
+
+  it('opens no spacer for a sent prompt whose render was discarded', () => {
+    const { commits, discard, repaint } = mountTranscript()
+    discard([{ id: 'sent' }])
+    repaint()
+
+    expect(commits.length).toBeGreaterThan(0)
+    // The prompt never committed, so nothing below the last row may price it.
+    for (const c of commits) {
+      expect(c.keys).not.toContain('sent')
       expect(c.after).toBe(0)
     }
   })
