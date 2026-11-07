@@ -136,6 +136,22 @@ class TestExport:
         assert any("2026-05-17.md" in n for n in names)
         zf.close()
 
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS, reason="only ntpath has the \\\\?\\ spelling"
+    )
+    def test_export_includes_files_under_extended_length_home(self, patched_config_dir):
+        # The SQLite backup builds a file URI that rejects this spelling; it is a separate path.
+        for db in ("memory.db", "memory_index.db"):
+            (patched_config_dir / db).unlink()
+        prefixed = "\\\\?\\" + os.path.realpath(patched_config_dir)
+        with patch.dict(os.environ, {"KIROCREW_HOME": prefixed}):
+            zip_bytes, manifest = create_export_zip()
+        assert manifest["contents"]["workspace_files"] >= 4
+        assert manifest["contents"]["plan_memory_files"] == 1
+        assert manifest["contents"]["skill_count"] == 1
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            assert any("preferences.md" in n for n in zf.namelist())
+
     def test_export_includes_skills(self, patched_config_dir):
         zip_bytes, manifest = create_export_zip()
         assert manifest["contents"]["skill_count"] >= 1
