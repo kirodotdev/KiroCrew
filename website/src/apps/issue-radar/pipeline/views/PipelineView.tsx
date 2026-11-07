@@ -224,13 +224,15 @@ function PageChrome({
           <div className="flex items-center gap-2">
             {onRefresh && (
               <IconButton
-                // Disabled while a read runs, so the name carries the reason: a
-                // disabled "Refresh the pipeline" reads as unavailable, not busy.
+                // Inert while a read runs, so the name carries the reason: an
+                // inert "Refresh the pipeline" reads as unavailable, not busy.
+                // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+                // order and drops a keyboard user's focus to the page while it runs.
                 aria-label={refreshing ? i18nT('apps.autoTriagePipeline.pipeline.refreshing') : i18nT('apps.autoTriagePipeline.pipeline.refresh')}
                 title={refreshing ? i18nT('apps.autoTriagePipeline.pipeline.refreshing') : i18nT('apps.autoTriagePipeline.pipeline.refresh')}
-                onClick={onRefresh}
-                disabled={refreshing}
-                className="border border-border h-8 w-8 flex items-center justify-center"
+                onClick={() => { if (!refreshing) onRefresh?.() }}
+                aria-disabled={refreshing || undefined}
+                className="border border-border h-8 w-8 flex items-center justify-center aria-disabled:opacity-30 aria-disabled:cursor-default"
               >
                 <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
               </IconButton>
@@ -294,7 +296,12 @@ function PipelineDashboard({ repo }: { repo: RepoRef }) {
               messagePlacement="below"
               className="w-full"
             />
-            <Btn disabled={fabricQuery.isFetching} onClick={() => void fabricQuery.refetch()}>
+            {/* aria-disabled plus the guard, NOT disabled: see the header Refresh. */}
+            <Btn
+              aria-disabled={fabricQuery.isFetching || undefined}
+              className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+              onClick={() => { if (!fabricQuery.isFetching) void fabricQuery.refetch() }}
+            >
               {i18nT('apps.autoTriagePipeline.pipeline.retry')}
             </Btn>
           </Card>
