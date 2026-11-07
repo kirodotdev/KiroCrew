@@ -23,6 +23,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
@@ -727,6 +728,142 @@ def get_or_create_slot(
             )
     self.push_slots_update()
     return slot
+
+
+def _session_key_of(slot: Any) -> str:
+    """``chat_utils.effective_session_key`` read from its owner module.
+
+    These tier helpers run once or more per slot in every slots flush, and a
+    read through the ``chat_utils`` facade costs a mirrored-module lookup each
+    time (``test_facade_read_budget``). A module import, not a from-import, also
+    skips the ``__path__`` probe.
+    """
+    # Lazy: chat_utils_slots imports the state module at module scope.
+    import kiro_crew.dashboard.chat_utils_slots as _cus
+
+    return _cus.effective_session_key(slot)
+
+
+def queue_lane_of(slot: Any) -> str:
+    """The subagent-dispatch lane *slot*'s spawns queue in.
+
+    The dispatcher files a root spawn under
+    ``lanes.lane_key_for(parent_session_key)``, and a chat's spawns carry the
+    session its turns run on (:func:`chat_utils.effective_session_key`, so a
+    channel-born slot answers for its channel key). Every slot on one session
+    therefore maps to one lane, and a cron- or hook-bound chat maps to the
+    shared ``system`` lane.
+    """
+    # Lazy: kiro_crew.taskq must not load on a dashboard import
+    # (test_dashboard_handlers_lazy_tasks).
+    from kiro_crew.taskq import lanes as _lanes
+
+    return _lanes.lane_key_for(_session_key_of(slot))
+
+
+def queue_tier_exempt(slot: Any) -> bool:
+    """Whether *slot* is a cron- or hook-bound chat, which has no tier of its own.
+
+    Read from the session key alone. With no lane resolver installed, this is
+    True for exactly the slots whose lane is the shared ``system`` lane.
+    """
+    from kiro_crew.taskq import lanes as _lanes
+
+    return _lanes.is_automation_key(_session_key_of(slot))
+
+
+def _live_session_lanes(self: DashboardState) -> dict[str, str]:
+    """``{session key: lane}`` for every live slot a tier may apply to."""
+    out: dict[str, str] = {}
+    for slot in list(getattr(self, "_slots", {}).values()):
+        if not queue_tier_exempt(slot):
+            out[_session_key_of(slot)] = queue_lane_of(slot)
+    return out
+
+
+def lane_queue_priorities(self: DashboardState) -> dict[str, str]:
+    """``{lane: priority}`` for every lane with a non-default tier that a
+    live slot still maps to.
+
+    Empty while a lane resolver is installed (Shared Crew's admission gate is
+    on). The resolver maps a session to the lane of the person whose turn ran
+    last, so a stored tier would move to that person's whole lane. With no
+    resolver, a lane is one session, so a tier is exactly per chat.
+
+    The tier is stored per session (``_session_queue_priority``) and mapped to
+    the session's current lane here. When several sessions map to one lane,
+    the most recently set tier wins: a write re-inserts its key, so the map's
+    order is write order.
+
+    The subagent dispatcher's lane priority source. An entry whose session
+    has no live slot left is not reported, so a closed chat stops ranking.
+    May run on the task store's writer thread, so it reads only ``list()``
+    snapshots and never mutates the map.
+    """
+    stored = list(dict(getattr(self, "_session_queue_priority", {})).items())
+    if not stored:
+        return {}
+    from kiro_crew.taskq import lanes as _lanes
+
+    if _lanes.lane_resolver_installed():
+        return {}
+    live = _live_session_lanes(self)
+    out: dict[str, str] = {}
+    for session, tier in stored:
+        lane = live.get(session)
+        if lane is not None:
+            out[lane] = tier
+    return {lane: tier for lane, tier in out.items() if tier != "medium"}
+
+
+def queue_priority_of(
+    self: DashboardState, slot: Any, *, tiers: Mapping[str, str] | None = None
+) -> str | None:
+    """The agent-queue tier *slot* runs at: ``"low"``, ``"medium"`` or ``"high"``.
+
+    ``None`` for a cron- or hook-bound chat: they share one lane, so no one
+    chat's tier may apply to it. ``None`` for every chat while a lane resolver
+    is installed, because no lane carries a tier then
+    (:func:`lane_queue_priorities`). Every slot on one lane reads the lane's
+    tier, including one that joined after the pick.
+
+    *tiers* is that map when the caller already holds it: a slots flush reads
+    it once for every row instead of walking every slot for each one.
+    """
+    from kiro_crew.taskq import lanes as _lanes
+
+    if queue_tier_exempt(slot) or _lanes.lane_resolver_installed():
+        return None
+    if tiers is None:
+        tiers = lane_queue_priorities(self)
+    return tiers.get(queue_lane_of(slot), "medium")
+
+
+def set_queue_priority(self: DashboardState, slot: Any, tier: str) -> bool:
+    """Set the tier of *slot*'s lane to *tier*; True when the lane's tier changed.
+
+    Writes the tier for every live session on the lane, so they agree, and
+    drops the entries of sessions with no live slot left, so the map never
+    holds more entries than there are live slots. ``medium`` is stored as an
+    entry too, so it outranks an older tier of a session that joins the lane
+    later; :func:`lane_queue_priorities` leaves it out of what it reports.
+    The caller has already refused an exempt slot, and refuses every slot
+    while a lane resolver is installed.
+    """
+    store: dict[str, str] | None = getattr(self, "_session_queue_priority", None)
+    if store is None:  # a __new__-built state (tests) never ran __init__
+        store = self._session_queue_priority = {}
+    old = queue_priority_of(self, slot)
+    lane = queue_lane_of(slot)
+    live = _live_session_lanes(self)
+    own = _session_key_of(slot)
+    members = {session for session, other in live.items() if other == lane} | {own}
+    for stale in [key for key in store if key not in live and key != own]:
+        del store[stale]
+    for session in members:
+        store.pop(session, None)
+        store[session] = tier
+    return old != tier
 
 
 def live_slot_count(self: DashboardState) -> int:

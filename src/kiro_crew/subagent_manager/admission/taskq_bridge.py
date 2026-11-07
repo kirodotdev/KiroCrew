@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
 
     from ...subagent import SubagentInfo, asyncio
+    from .types import CapacityView
 
 
 class _TaskqBridgeMixin(ManagerComponent):
@@ -84,6 +85,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         def entry_is_child(params: Mapping[str, Any]) -> bool: ...
 
         def fairness_settings(self) -> FairnessSettings: ...
+
+        def lane_priorities(self) -> dict[str, int]: ...
+
+        def capacity_view(self) -> CapacityView: ...
 
         def lane_of_entry(
             self, params: Mapping[str, Any], resolved: Mapping[str, str] | None = None

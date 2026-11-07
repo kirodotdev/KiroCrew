@@ -1084,6 +1084,67 @@ starts even and is never owed a burst. Inside a lane the order is FIFO by
 Weights use `agent.lane_weights{lane: w}` (1..64), including `system`.
 Every unlisted lane has weight 1.
 
+Above the weights sits a strict **priority tier** per lane: `low`, `medium`
+(the default) or `high`. `LaneScheduler.priorities` maps a lane to its rank,
+and a pick considers only the contending lanes of the highest tier present;
+the weighted round-robin runs inside that tier, and a lower tier neither wins
+nor accrues credit while a higher one has work. With every lane `medium` the
+order is exactly the weighted round-robin above. The tiers come from the
+manager's lane priority source (`SubagentManager.set_lane_priority_source`),
+which the dashboard installs as `DashboardState.lane_queue_priorities`. The
+owner sets a chat's tier through `PATCH /api/chat/slots/{slot}/queue-priority`,
+and the dashboard stores it once per session, in
+`DashboardState._session_queue_priority` (keyed by the session the chat's
+turns run on; `medium` is stored too, so the latest write wins).
+`lane_queue_priorities` maps each entry to `lane_key_for` of its session and
+leaves `medium` out. Every slot on that session reads the one entry when it is
+serialized (`queue_priority_of`), so tabs sharing a session cannot disagree
+and a slot that joins the session later reports its tier with no extra step;
+the route patches every live slot on the lane. A chat bound to the `system`
+lane (a cron- or hook-linked chat) has no tier: the route answers 409
+`queue_priority_system_lane`, the slot serializes `queue_priority: null`, and
+the menu hides the picker. **Chat tiers are off while Shared Crew's lane
+resolver is installed** (`lanes.lane_resolver_installed()`, see Per-person
+lanes below): the resolver files a session under the person whose turn ran
+last, so a stored tier would move to that person's whole lane.
+`lane_queue_priorities` then reports `{}`, every slot serializes
+`queue_priority: null`, and the route answers 409 `queue_priority_shared_crew`
+and stores nothing. With no resolver a lane is one session or `system`, so a
+tier is exactly per chat.
+`lane_queue_priorities` reports only lanes that a live slot still maps to, so
+a closed chat's entry stops ranking; it never mutates the map, because it runs
+on the task store's writer thread. The tier
+lives in gateway memory only and every chat starts at `medium` after a restart:
+transcript metadata is agent-writable, so a tier restored from it would let an
+agent move its own chat past the owner-only route. The
+source is asked on every pick and every refill (both balances), so a change
+reaches the next dispatch; a failing source reads as all-`medium`. **The tier
+applies to picks for a free ROOT slot only.** A pick under the child reserve
+(`tiered=False`, and the `children_only` refill, which is handed a scheduler
+with the tiers cleared) is the plain weighted round-robin: the reserve is the
+capacity a tree already in flight depends on to finish, so a `high` chat that
+keeps a nested spawn queued cannot hold it pass after pass and leave another
+chat's running tree waiting on its own child. Strict
+tiers can starve a lower tier while a higher one keeps spawning, which is the
+point of choosing `low`. The `system` lane (cron, hooks, heartbeat) has no
+chat to raise, so the tier filter never drops it: it takes part in every
+tiered pick and keeps its weighted share beside the top tier's lanes, so a
+`high` chat that keeps spawning cannot hold automation back indefinitely.
+The delay is not one round in general: `system` carries its credit across
+picks, so after it last won against a heavy lane (weight 64) a weight-1 `high`
+lane can take 17 starts before the next automation grant. Against `low` chats
+alone the `system` lane still ranks `medium`.
+
+The bounded dispatch window uses the tier only to choose which rows enter it.
+The refill's scheduler is tiered, so the fetch hydrates the highest absent
+tier's head first. The `children_only` refill uses the tiered fetch too while
+a root slot is free, and is untiered only when capacity is reserve-only, like
+the reserve pick. Each refill pass reads `lane_priorities()` once, on the
+loop, and hands that mapping to the fetch's scheduler. The eviction that makes
+room for lanes waiting only in the store (`_refill_make_room`,
+`_evict_for_lanes`) is tier-blind, so when more lanes wait than the window has
+places, a `high` root can start one refill late.
+
 Two store readers serve the dispatcher: `pending_lanes(kind, exclude_ids,
 children_only)` → `{lane: eligible count}`, and `fetch_dispatchable_fair(kind,
 limit, scheduler, exclude_ids, children_only, lanes, per_lane_limit)` — each
@@ -1113,7 +1174,8 @@ While Shared Crew fair admission is on, the admission gate installs
 `lanes.set_lane_resolver`: a root session whose running work has an initiator maps to
 the lane `principal:<id>`, so the same round-robin is fair across people and one
 person's many sessions share one lane. A key the resolver does not know keeps its
-session lane; children still inherit their root's lane. See
+session lane; children still inherit their root's lane. While the resolver is
+installed no lane carries a chat priority tier (see Fairness lanes above). See
 [shared-crew.md](shared-crew.md) section 4.
 
 ## Deferral (memory pressure)
