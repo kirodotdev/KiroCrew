@@ -6,6 +6,7 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 """
 
 import argparse
+import io
 import json
 import os
 import socket
@@ -156,6 +157,60 @@ class TestStatus:
         out = capsys.readouterr().out
         assert "running" in out
         assert "token auth" in out
+
+    def test_status_reads_the_stats_as_the_owner_on_a_token_auth_gateway(self, monkeypatch, capsys):
+        """A refused bare read is retried with a minted owner token through the peer proof."""
+        import kiro_crew.cli_server as cs
+
+        answers = [{"token": "tok"}, {"gateway_rss_mb": 241, "watchdog_rss_max_mb": 4096}]
+        sent = []
+
+        def _proven(req, port, timeout, *, operation):
+            sent.append((req.full_url, req.get_header("X-local-secret"), operation))
+            return io.BytesIO(json.dumps(answers.pop(0)).encode())
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _proven)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            cs._status(self._make_args())
+        out = capsys.readouterr().out
+        assert "  Memory:      241 MiB rss, session ceiling 4096 MiB" in out
+        assert "token auth" not in out
+        assert sent == [
+            ("http://127.0.0.1:5476/api/token/local?ttl=1m", "s3cret", "gateway_token"),
+            ("http://127.0.0.1:5476/api/status?token=tok", None, "gateway_status"),
+        ]
+
+    @pytest.mark.parametrize("refusal", ["http-403", "peer-refused"])
+    def test_status_keeps_the_token_auth_line_when_the_owner_sign_in_is_refused(
+        self, monkeypatch, capsys, refusal
+    ):
+        """An agent's shell or an unproven peer gets no stats, and the command still exits 0."""
+        import kiro_crew.cli_server as cs
+        from kiro_crew.cli_server_peer import _GatewayPeerRefused
+
+        def _refuse(req, port, timeout, *, operation):
+            if refusal == "peer-refused":
+                raise _GatewayPeerRefused("not this install's gateway")
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _refuse)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            assert cs._status(self._make_args()) is None
+        out = capsys.readouterr().out
+        assert "Kiro Crew gateway is running (token auth enabled)." in out
+        assert "Memory:" not in out
 
     def test_status_other_http_error(self, capsys):
         """Non-auth HTTP errors should report gateway as running with code."""
