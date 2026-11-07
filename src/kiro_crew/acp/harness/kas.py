@@ -837,6 +837,7 @@ class KasHarness(MembershipHarness):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1007,6 +1008,7 @@ class KasHarness(MembershipHarness):
                 skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
+                engine_features=engine_features,
             )
             # Every per-tool switch, the global settings file's included: the spec
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.
