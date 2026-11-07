@@ -670,7 +670,14 @@ class TestEverySeamControlsItsCallSites(_Home):
     # -- get_registry ---------------------------------------------------------------------
 
     async def test_get_registry_is_read_by_every_handler_that_resolves_a_provider(self) -> None:
+        # An automated (internal-auth) resolve of a claimed webhook incident reads the registry
+        # for the push-only guard.
+        automated_resolve = _request(
+            {"id": self._claim().incident_id, "status": models.STATUS_RESOLVED}
+        )
+        automated_resolve.get = lambda key, default=None: {"internal_auth": True}.get(key, default)
         cases: dict[str, Callable[[], Any]] = {
+            "transition": lambda: routes._handle_transition(automated_resolve),
             "state": lambda: routes._handle_state(_request()),
             "handover": lambda: routes._handle_handover(_request()),
             "signals": lambda: routes._handle_signals(_request()),

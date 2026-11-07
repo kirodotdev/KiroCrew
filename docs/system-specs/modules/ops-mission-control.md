@@ -603,6 +603,8 @@ returns nothing at all. So the app could report a suppression or a resolve as ap
 the alarm kept firing, with no code anywhere in a position to notice — the silent lie an
 ops agent must not tell, and the reason `use_count` meant "was shown" rather than "worked".
 
+Server guard: an automated (internal_auth) resolve of a push-only incident with no spooled cleared event is refused with 409 `recovery_evidence_required`, and the dispatch heartbeat resolves a push-only incident itself when its sender delivers a cleared event.
+
 **Five persisted, default-empty fields on `Incident`:** `last_action`, `last_action_at`,
 `verify_after`, `verification`, `verification_detail`. Empty `verification` means *no action
 was ever executed* — which is the truth for every incident already on disk, and is
@@ -646,6 +648,58 @@ poll that SUCCEEDED still proves nothing in two further cases, and neither may r
   question. The attribution in the detail comes from **this poll**, not from
   `Incident.signal` — that snapshot was taken at claim time, before anyone parked it, so it
   names nobody in exactly the case that needs a name.
+
+**The same rule holds for a RESOLVE, enforced on the server.** The push-spool absence above
+is also the steady state the reconcile cron sees, so an agent that read "missing from
+`firing`" as recovery would close a live webhook incident on a successful poll. Three parts
+keep it closed:
+
+- **The guard on `POST /incident/transition`.** A `status=resolved` request from an
+  automated caller (`request["internal_auth"] is True`: the reconcile cron and every agent
+  call reach the gateway through `ops_mission_control_api`, which sends the internal secret;
+  the dashboard button does not) runs `lifecycle._PushOnlyCheck` inside `store.transition`.
+  On the incident as STORED, read under the index lock in the same write that would resolve
+  it: a terminal incident is left to the unguarded path (`resolved -> resolved` stays the
+  same-status field edit, `escalated -> resolved` the existing illegal transition); a
+  source for which `registry.is_snapshot_source` is True is unchanged; otherwise the resolve
+  is refused unless the LATEST spooled entry for the signal id has `state == ok`. A refusal
+  answers 409 `{"error": refusal_text, "code": "recovery_evidence_required"}`, writes nothing,
+  audits `incident_transition` as `denied` with that code, and touches no Slack call. An
+  allowed one stores `cleared_event_resolution` (the evidence sentence, the undiagnosed
+  caveat once when there is no diagnosis on the stored record or in the body, then the
+  caller's note), and that stored text is what the Slack thread receives. The guard never
+  reads the route's earlier `get_incident`: that display read answers None on an
+  unreadable index, while the locked read raises, so the route answers its
+  `_store_read_refusal` (503 unreadable, 500 corrupt, 409 version skew) and never an
+  unchecked 200. An operator (no `internal_auth`) is never refused, so a webhook incident
+  with no cleared event can still be resolved by hand.
+- **The store hooks.** `store.transition` takes two keyword-only hooks, both applied inside
+  the lock after the unknown-id test and before any change. `require_open=True` raises
+  `IncidentClosed` (a `ValueError`) on a terminal stored status and writes nothing.
+  `check(stored)` returns field updates that override the keyword ones, or raises
+  `TransitionRefused(message, code)` (deliberately not a `ValueError`, so no existing arm
+  maps it to `illegal_transition`), which propagates with nothing written. Without either
+  keyword the call is the unguarded one.
+- **The dispatch resolve.** `run_cycle` acks every id an open incident owns, whatever the
+  entry's state, so a cleared delivery for an open webhook incident never survives to the
+  15-minute reconcile run. `_resolve_on_cleared_push_events` therefore runs before that ack:
+  for each open incident of a non-snapshot source whose latest polled entry is `ok`, it
+  resolves with `require_open=True` and a check that writes `cleared_event_resolution`
+  from the locked record's diagnosis. An incident closed in between keeps its closer's
+  resolution and is acked; one whose stored status has no legal move to resolved
+  (`IllegalTransition`, a `ValueError`; for example a hand-edited `unclaimed`) is left
+  open, logged once, and acked, because a retry could never succeed; a failed store read
+  or write (an `OSError`, an id gone from the index) keeps that id's entries spooled for
+  the next cycle, and a corrupt index escapes the cycle with the spool intact; an absent signal or a latest `firing` entry resolves nothing; a snapshot source
+  is never resolved here. `CycleResult.resolved` lists the ids, is not part of `changed`,
+  and each resolve is mirrored to Slack like a route resolve.
+
+The latest-entry rule depends on spool order, so `webhook.peek()` copies the spool under
+`_queue_lock` (see § Webhook ingress); the guard calls it while holding the index lock, and
+no holder of `_queue_lock` takes the index lock. The residuals are on the safe side: an
+`ok` delivery that lands after the cycle's poll but before its ack is dropped unseen, and a
+firing and a cleared entry both spooled before the first claim are acked together, each
+leaving the incident open for a later cleared delivery or an operator.
 
 **A SIMULATED action schedules no recheck at all.** `ActionResult.simulated` (default
 `False`) marks a sink that RECORDED the intent instead of performing it — `NoopActionSink`,
@@ -925,6 +979,8 @@ exactly like "resolved", and reconcile would close live incidents into a *termin
 carrying "signal cleared at the provider", recoverable only when the alarm fired again as
 brand-new work.
 
+Server guard: an automated (internal_auth) resolve of a push-only incident with no spooled cleared event is refused with 409 `recovery_evidence_required`, and the dispatch heartbeat resolves a push-only incident itself when its sender delivers a cleared event.
+
 Two mechanisms, both in `registry`:
 
 - **`poll_health()`** — per source, whether the LAST poll attempt succeeded, with the
@@ -953,6 +1009,12 @@ Two mechanisms, both in `registry`:
   `reconcile.md` Pass 1 step 3 requires `snapshot != false` on top of `ok`. Rendered on the
   Signals source row and qualified into the "every source answered" banner, because that
   banner is the line an operator reads before trusting a quiet board.
+
+  `registry.is_snapshot_source(source_id)` reads the same declaration for the resolve guard
+  and the dispatch cleared-event resolve (contract 3b), with one difference: it is False for
+  an id with NO registered source, where the private `_is_snapshot` defaults True. A
+  companion whose install failed, or a source removed from config, therefore counts as
+  push-only there, so its automated resolve needs a cleared event — the safe direction.
 - **An adapter must RAISE on a fault, never return a short list.** `poll_all` records a
   source as unhealthy only when `poll()` raises, so an adapter that catches its own failure
   and returns `[]` is recorded as a *successful* poll that saw nothing — which is precisely
@@ -1982,7 +2044,9 @@ traceback and never reaches the refusal. Same shape as
 `apps.proxy_auth.verify_proxy_request` and the `dev_fleet` inline copy.
 
 **A read never consumes the spool — only a claim does.** `poll()` calls `peek()`, and
-`dispatch.run_cycle` calls `webhook.ack({claimed ids})` after the claim loop. `poll_all`
+`dispatch.run_cycle` calls `webhook.ack` after the claim loop with the ids it claimed and
+the ids an open incident owns, minus any id whose cleared-event resolve failed (§ Dispatch
+engine, steps 5a and 5b). `poll_all`
 has three callers and only ONE of them claims: the heartbeat, `GET /signals` (the Signals
 tab's "Poll now"), and the `POST /incident/claim` authorization re-poll. A draining `poll()`
 would let the other two destroy delivered alerts outright — an operator refreshing the board
@@ -2019,6 +2083,13 @@ oldest — which can be the alert `enqueue` just accepted. So `ack` holds a modu
 around its `extend`. A plain `threading.Lock`, not the cross-process file lock the store and
 ledger use: this is same-process loop-vs-thread contention over an in-memory spool, so there is
 nothing on disk to serialize. A test pins both `enqueue` and `ack` holding it.
+
+`peek()` copies the spool under the same lock, because its readers decide on ORDER: the last
+entry for an id is its most recent delivery, which is what the push-only resolve guard and
+the dispatch cleared-event resolve read (contract 3b). A copy taken mid-rotation — the manual
+claim route acks from a worker thread — can show a kept `ok` entry behind a later `firing`
+one. The guard calls `peek()` while holding the dispatch index lock; nothing that holds
+`_queue_lock` takes the index lock, so that nesting cannot deadlock.
 
 The test harness hooks `signal.id in signal_ids` — the one operation **both** a rotating and an
 iterating implementation perform per entry — not the traversal. Hooking `popleft` alone would
@@ -2363,10 +2434,20 @@ heartbeat's cost flat at a 2-minute cadence.
    second occurrence of a failure cheaper than the first; without it the ledger is
    decorative. `record_use` returns the UPDATED entry so a brief cannot report
    "used 0×" for a pattern the same incident just used.
-5b. **`webhook.ack({claimed ids})`** — the ONE place the push spool shrinks, and only for
-   ids that have an incident on disk. Anything the cap deferred, anything already
-   owned, and anything lost to a claim race stays spooled for a later cycle. See § Webhook ingress
-   for why draining on `poll` loses data.
+5a. **`_resolve_on_cleared_push_events`** — for each open incident of a non-snapshot
+   source whose LATEST polled entry is a cleared delivery (`state == ok`), resolve it with
+   `store.transition(..., require_open=True, check=...)` and the cleared-event resolution.
+   It runs before the ack because the ack drops a cleared delivery unseen. An incident
+   closed since the index read is left as its closer wrote it, and one whose stored status
+   has no legal move to resolved (`store.IllegalTransition`) is left open with one warning;
+   both stay ackable. A store read or write that fails lands its id in a failed set. See
+   contract 3b.
+5b. **`webhook.ack((claimed ids | owned ids) - failed ids)`** — the ONE place the push spool
+   shrinks, and only for ids that have an incident on disk: the ids this cycle claimed and
+   the ids an open incident already owns (a redelivery for work already in flight). An id
+   whose 5a resolve failed on the store keeps its entries for the next cycle to retry. Anything the cap
+   deferred and anything lost to a claim race stays spooled for a later cycle. See
+   § Webhook ingress for why draining on `poll` loses data.
 6. **`verify_pending_actions`** — for every incident whose post-action recheck has come
    due, re-read whether its signal is still firing, using the poll THIS cycle already
    made (so no extra provider call) and the same `poll_health` map. A source that did not
@@ -2378,7 +2459,10 @@ heartbeat's cost flat at a 2-minute cadence.
    nothing.** Silence-by-default is a hard requirement, not an optimization — it
    is why the modeled channel stayed readable. `changed` counts a `still_firing`
    verification (the app retracting a claim it made) and deliberately not a `cleared`
-   or `unknown` one.
+   or `unknown` one, nor a 5a resolve (`CycleResult.resolved`), which starts no work and
+   already shows on the board and in Slack. The cycle's SEL `dispatch_cycle` entry is
+   written when anything was claimed, released or resolved, with resources
+   `claimed=[...] released=[...] resolved=[...]`.
 
 `investigation_brief()` renders the claim's facts (signal, mode, matched patterns,
 fast-path flag, authority reminder) deterministically, so an investigating agent
@@ -3216,6 +3300,15 @@ line-anchored so a genuinely internal reference in that file is still caught.
   reaches no verdict. That last one is the important guard — the property is invisible in
   the code, so a later "simplify the health check" would look harmless and would start
   reporting every unreachable source as a confirmed fix.
+- `test_push_only_resolve.py` — the push-only resolve rule (contract 3b): the rule
+  functions and the exact cleared-event resolution, the store hooks, the transition guard
+  (refused without a latest `ok` entry, also when the display read fails and for a source
+  that is not loaded; an operator, a snapshot source and an already-resolved incident are
+  unchanged; the spool read happens under its lock), and the dispatch resolve (on a
+  cleared event only, never on absence, a close in between kept, a failed write or an
+  unreadable or corrupt index keeping the spool, an illegal move to resolved acked rather
+  than piled up). `test_sop_facts.py` pins the cron message, the SOP sentences and the two
+  sections of this spec that state the guard.
 - `test_store_and_gate_ledger.py::TestLedger` also pins the **track record** (contract 2b): the
   use floor, one-miss re-lock, and the three laundering doors — a re-POST, a simulated real
   `git merge` producing duplicate ids, and hygiene's own dedupe — each of which must take

@@ -28,7 +28,7 @@ import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
@@ -530,29 +530,89 @@ def claim(
 _KEEP_STATUS = object()
 
 
-def transition(incident_id: str, new_status: Any, **updates: Any) -> Incident:
+class IncidentClosed(ValueError):
+    """``transition(..., require_open=True)`` found the incident terminal under the lock.
+
+    A ``ValueError`` so every existing ``except ValueError`` arm still treats it as a refused
+    transition; a caller that wants "someone else already closed it" catches it first.
+    """
+
+    def __init__(self, incident_id: str) -> None:
+        super().__init__(f"{incident_id} is already closed")
+        self.incident_id = incident_id
+
+
+class IllegalTransition(ValueError):
+    """``transition`` found no ``LEGAL_TRANSITIONS`` edge from the stored status to the new one.
+
+    A ``ValueError`` so every existing arm still maps it to ``illegal_transition``. It is a
+    fact about the stored record, not a store fault, so retrying the same move cannot
+    succeed; a caller that must tell it from a read or write failure catches it first.
+    """
+
+
+class TransitionRefused(Exception):
+    """A ``transition`` check refused the change; nothing was written.
+
+    Deliberately NOT a ``ValueError``: the routes map ``ValueError`` to ``illegal_transition``,
+    and a refusal carries its own ``code`` that the caller must see instead.
+    """
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+
+#: A guard ``transition`` runs under the index lock on the STORED incident. It returns field
+#: updates that override the caller's keyword updates, or raises ``TransitionRefused``.
+TransitionCheck = Callable[[Incident], dict[str, Any]]
+
+
+def transition(
+    incident_id: str,
+    new_status: Any,
+    *,
+    require_open: bool = False,
+    check: TransitionCheck | None = None,
+    **updates: Any,
+) -> Incident:
     """Move an incident to ``new_status``, refusing illegal transitions.
 
-    Raises ``KeyError`` for an unknown incident and ``ValueError`` for a
-    transition the grammar does not allow. Extra keyword arguments update
+    Raises ``KeyError`` for an unknown incident and ``IllegalTransition`` (a
+    ``ValueError``) for a transition the grammar does not allow. Extra keyword arguments update
     matching ``Incident`` fields in the same locked write, so a caller never has
     to do a second read-modify-write to attach a diagnosis or a slot key.
 
     ``new_status`` may be ``_KEEP_STATUS`` (see ``update_fields``): a field-only edit that
     must not assert any status, so it cannot revert a concurrent transition.
+
+    The two keyword-only hooks decide on the record as STORED, read under the same lock as
+    the write, so no read the caller made earlier can be stale by the time the write lands:
+
+    - ``require_open``: raise ``IncidentClosed`` and write nothing when the stored status is
+      terminal. Without it a resolve of an already-resolved incident is the same-status
+      field edit, which would overwrite whoever closed it first.
+    - ``check``: called with the stored incident before any change. Its returned fields
+      override ``updates``; a ``TransitionRefused`` it raises propagates with nothing
+      written. It must not mutate the incident it is handed.
     """
     with _IndexLock():
         index = _read_index_for_update()
         incident = index.get(incident_id)
         if incident is None:
             raise KeyError(incident_id)
+        if require_open and incident.status in TERMINAL_STATUSES:
+            raise IncidentClosed(incident_id)
+        if check is not None:
+            updates = {**updates, **check(incident)}
 
         if new_status is _KEEP_STATUS:
             new_status = incident.status
         if new_status != incident.status:
             allowed = LEGAL_TRANSITIONS.get(incident.status, frozenset())
             if new_status not in allowed:
-                raise ValueError(
+                raise IllegalTransition(
                     f"illegal transition {incident.status!r} -> {new_status!r} "
                     f"for {incident_id}"
                 )

@@ -13,7 +13,9 @@ One cycle:
 3. **Match each claim's fingerprint against the knowledge ledger** and attach the
    hits, so the investigation opens already knowing what this failure was last
    time. This step is the whole point.
-4. Release investigations that have gone idle, so a dead agent cannot hold a
+4. Resolve an open push-only incident whose sender delivered a cleared event, before
+   the spool ack that would otherwise drop that event unseen.
+5. Release investigations that have gone idle, so a dead agent cannot hold a
    signal claimed and therefore unworked.
 
 The cycle is deliberately *not* an agent turn. It is deterministic Python the cron
@@ -32,7 +34,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import (
     ledger,
@@ -44,7 +46,9 @@ from kiro_crew.apps.builtins.ops_mission_control.backend import (
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     OPEN_VERIFICATIONS,
     STATE_FIRING,
+    STATE_OK,
     STATE_SUPPRESSED,
+    STATUS_RESOLVED,
     STATUS_STALE,
     TERMINAL_STATUSES,
     VERIFY_CLEARED,
@@ -102,6 +106,102 @@ MAX_BRIEF_EVIDENCE_CHARS = 8000
 #: Characters of any single evidence item, so one huge log dump cannot crowd out the
 #: alarm history that would have explained it.
 MAX_BRIEF_EVIDENCE_ITEM_CHARS = 4000
+
+#: The ``code`` of a refused automated resolve of a push-only incident. ``reconcile.md`` and
+#: ``investigate.md`` name it, so an agent reading the 409 knows not to retry.
+RECOVERY_EVIDENCE_REQUIRED = "recovery_evidence_required"
+
+#: The phrase ``reconcile.md`` Pass 2 tells the agent to write for an undiagnosed clear.
+#: ``cleared_event_resolution`` adds its own sentence only when the note does not carry it.
+_CLEARED_WITHOUT_DIAGNOSIS = "cleared without diagnosis"
+_CLEARED_WITHOUT_DIAGNOSIS_SENTENCE = "Cleared without diagnosis, may recur."
+
+
+# ---------------------------------------------------------------------------
+# Push-only recovery evidence
+#
+# A push source (the webhook spool) announces a fault and never re-asserts it, so the
+# absence of its signal says nothing about recovery. The one positive evidence it can give
+# is an explicit cleared delivery (`state == ok`) for the same id. The resolve guard on
+# `POST /incident/transition` and the dispatch cycle's own resolve both decide with these
+# functions, so the two cannot disagree about what counts.
+# ---------------------------------------------------------------------------
+
+
+def latest_entry(signals: list[Signal], signal_id: str) -> Signal | None:
+    """The LAST entry of ``signals`` whose id is ``signal_id``, or None.
+
+    The spool keeps deliveries in arrival order and never merges them by id, and
+    ``poll_all`` keeps each source's order, so the last entry is the most recent delivery.
+    """
+    latest: Signal | None = None
+    for signal in signals:
+        if signal.id == signal_id:
+            latest = signal
+    return latest
+
+
+def cleared_event(signals: list[Signal], signal_id: str) -> Signal | None:
+    """The latest entry for ``signal_id`` when it is a cleared delivery, else None.
+
+    None covers both "no entry at all" (absence, which is not evidence) and "the latest
+    entry is not ok" (a cleared event followed by a new firing).
+    """
+    entry = latest_entry(signals, signal_id)
+    if entry is not None and entry.state == STATE_OK:
+        return entry
+    return None
+
+
+def refusal_text(incident: Incident) -> str:
+    """Why an automated resolve of a push-only incident was refused, and what to do instead.
+
+    True for every refused case: no spooled entry, a latest firing entry after an ok one,
+    and a source that is not loaded.
+    """
+    return (
+        f"Not resolved: {incident.incident_id} comes from {incident.signal.source}, which is "
+        "not a polled snapshot source, so the absence of its signal is not evidence of "
+        f"recovery, and the latest spooled event for {incident.signal.id} is not a cleared "
+        "event (state ok). Leave it open for the dispatch heartbeat, which resolves it when "
+        "the sender delivers a cleared event, or set needs_human with your diagnosis so a "
+        "person can resolve it from the dashboard."
+    )
+
+
+def push_only_resolve_refusal(
+    incident: Incident, *, snapshot_source: bool, spooled: list[Signal]
+) -> str:
+    """The refusal for an automated resolve of ``incident``, or "" when it is allowed.
+
+    Allowed when the source is a declared snapshot source (its absence rule lives in
+    ``reconcile.md`` and is unchanged) or when the latest spooled entry for the signal is a
+    cleared delivery.
+    """
+    if snapshot_source:
+        return ""
+    if cleared_event(spooled, incident.signal.id) is not None:
+        return ""
+    return refusal_text(incident)
+
+
+def cleared_event_resolution(signal: Signal, *, note: str, diagnosed: bool) -> str:
+    """The stored resolution of an incident resolved on a cleared push delivery.
+
+    The evidence sentence always comes first, so the board and the postmortem name what the
+    resolve stood on. The undiagnosed caveat is added once: not when the caller's note
+    already carries it.
+    """
+    text = note.strip()
+    parts = [
+        f"Resolved on an explicit cleared event: {signal.source} delivered state=ok "
+        f"for {signal.id}."
+    ]
+    if not diagnosed and _CLEARED_WITHOUT_DIAGNOSIS not in text.lower():
+        parts.append(_CLEARED_WITHOUT_DIAGNOSIS_SENTENCE)
+    if text:
+        parts.append(text)
+    return " ".join(parts)
 
 
 @dataclass
@@ -170,6 +270,11 @@ class CycleResult:
     #: a genuinely quiet estate from one where three alarms are parked. That is the same
     #: looks-deliberate-does-nothing failure the state itself exists to fix.
     suppressed: int = 0
+    #: Incident ids this cycle resolved on an explicit cleared push delivery.
+    #:
+    #: Deliberately NOT part of ``changed``: the dispatch cron reads ``changed`` as "work
+    #: to start", and a resolve starts none. It already shows on the board and in Slack.
+    resolved: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -209,6 +314,7 @@ class CycleResult:
             "skipped_reason": self.skipped_reason,
             "suppressed": self.suppressed,
             "verifications": dict(self.verifications),
+            "resolved": list(self.resolved),
         }
 
 
@@ -625,6 +731,100 @@ async def _pull_shared_repo_safely() -> str:
         return ""
 
 
+def _cleared_resolution_check(entry: Signal) -> Callable[[Incident], dict[str, Any]]:
+    """The ``store.transition`` check that writes the cleared-event resolution.
+
+    ``diagnosed`` is read off the record handed in under the index lock, not off the cycle's
+    earlier index copy: a diagnosis an agent recorded after that read must still keep the
+    "may recur" caveat out of the resolution.
+    """
+
+    def _check(stored: Incident) -> dict[str, Any]:
+        return {
+            "resolution": cleared_event_resolution(entry, note="", diagnosed=bool(stored.diagnosis))
+        }
+
+    return _check
+
+
+async def _resolve_on_cleared_push_events(
+    signals: list[Signal],
+    index: dict[str, Incident],
+    owned: set[str],
+    registry: Any,
+) -> tuple[list[Incident], set[str]]:
+    """Resolve each open push-only incident whose latest polled entry is a cleared delivery.
+
+    Returns ``(resolved incidents, failed signal ids)``. Runs BEFORE ``webhook.ack``, and that
+    order is the reason it exists: the ack drops every spooled entry an open incident owns,
+    whatever its state, so a cleared delivery for an open webhook incident never survives
+    to the next 15-minute reconcile run. This cycle is the only reader that sees it.
+
+    Only positive evidence resolves. An id with no entry this poll (absence) and an id whose
+    latest entry is firing are left alone, and a snapshot source is never touched here (its
+    cleared signals stay reconcile's work).
+
+    ``require_open``: an incident closed between the cycle's index read and this write (by
+    reconcile, the dashboard or an agent) keeps the resolution its closer wrote, and its id
+    stays ackable, and so does one whose stored status has no legal move to resolved
+    (``IllegalTransition``), which a retry could never fix. A write that failed for any other
+    tolerated reason (an unreadable index, an ``OSError``) puts the id in the failed set, so
+    the caller keeps its spooled entries for the next cycle to retry.
+    """
+    resolved: list[Incident] = []
+    failed: set[str] = set()
+    for incident in index.values():
+        signal_id = incident.signal.id
+        if incident.status == STATUS_STALE or incident.status in TERMINAL_STATUSES:
+            continue
+        if signal_id not in owned or registry.is_snapshot_source(incident.signal.source):
+            continue
+        entry = cleared_event(signals, signal_id)
+        if entry is None:
+            continue
+        try:
+            closed = await asyncio.to_thread(
+                store.transition,
+                incident.incident_id,
+                STATUS_RESOLVED,
+                require_open=True,
+                check=_cleared_resolution_check(entry),
+            )
+        except store.IncidentClosed:
+            logger.debug(
+                "ops-mission-control: %s closed before its cleared event was applied",
+                incident.incident_id,
+            )
+            continue
+        except store.IllegalTransition:
+            # The stored status has no edge to resolved (a hand-edited `unclaimed`, say). That
+            # is a fact about the record, not a store fault, so a retry can never succeed:
+            # keeping the id spooled would pile up one entry and one warning per cycle. Left
+            # open and acked, like a close in between; the next cleared delivery logs again.
+            logger.warning(
+                "ops-mission-control: %s cannot be resolved from %r on its cleared event; "
+                "left open for an operator",
+                incident.incident_id,
+                incident.status,
+            )
+            continue
+        except json.JSONDecodeError:
+            # Corruption escapes the cycle, as it does in `verify_pending_actions`; it is a
+            # `ValueError` and would otherwise be swallowed by the arm below.
+            raise
+        except (KeyError, ValueError, OSError):
+            logger.warning(
+                "ops-mission-control: could not resolve %s on its cleared event; its spooled "
+                "entries are kept for the next cycle",
+                incident.incident_id,
+                exc_info=True,
+            )
+            failed.add(signal_id)
+            continue
+        resolved.append(closed)
+    return resolved, failed
+
+
 async def run_cycle(
     *,
     max_claims: int | None = None,
@@ -839,7 +1039,16 @@ async def run_cycle(
     # Safe by the same argument the durability rule rests on: an id in `owned` has an incident
     # on disk, so dropping the spooled copy loses nothing — and if that incident later goes
     # terminal or stale, the id leaves `owned` and the next genuine delivery is claimable again.
-    acked = webhook.ack({result.incident.signal.id for result in claimed} | owned)
+    #
+    # The one exception is an id whose cleared-event resolve just failed on a store read or
+    # write: its entries, the cleared one included, stay spooled so the next cycle retries
+    # the resolve. An illegal move to resolved is not a failure here (a retry cannot fix it).
+    resolved, resolve_failed = await _resolve_on_cleared_push_events(
+        signals, index, owned, registry
+    )
+    acked = webhook.ack(
+        ({result.incident.signal.id for result in claimed} | owned) - resolve_failed
+    )
     if acked:
         logger.debug("ops-mission-control: acked %d webhook signal(s) after claim", acked)
 
@@ -880,6 +1089,13 @@ async def run_cycle(
     # tolerant internally.
     if claimed:
         await slack_out.publish_all([c.incident for c in claimed], slack_client)
+    # Resolves get the same mirror a resolve through `POST /incident/transition` gets: the
+    # board line moves to resolved, and the stored resolution (the evidence sentence) goes
+    # into the thread.
+    if resolved:
+        await slack_out.publish_all(resolved, slack_client)
+        for incident in resolved:
+            await slack_out.post_detail(incident, incident.resolution, slack_client)
 
     # Desktop notifications for the two things this cycle can discover that nobody is
     # otherwise told about. Deliberately NOT one per claim: a claim is the heartbeat
@@ -888,13 +1104,15 @@ async def run_cycle(
     # mirror, so a bus fault can cost neither.
     _notify_cycle_changes(state, health_before, registry.poll_health(), released)
 
-    if claimed or released:
+    resolved_ids = [incident.incident_id for incident in resolved]
+    if claimed or released or resolved:
         sel().log_api_access(
             caller="core:ops-mission-control",
             operation="dispatch_cycle",
             outcome="success",
             resources=(
-                f"claimed={[c.incident.incident_id for c in claimed]} " f"released={released}"
+                f"claimed={[c.incident.incident_id for c in claimed]} "
+                f"released={released} resolved={resolved_ids}"
             ),
         )
 
@@ -906,6 +1124,7 @@ async def run_cycle(
         errors=errors,
         suppressed=suppressed,
         verifications=verifications,
+        resolved=resolved_ids,
     )
 
 
