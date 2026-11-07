@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.terminal_lifecycle import _kill_session, _sess_alive, _sess_pid
+from kiro_crew.dashboard.handlers.terminal_lifecycle import (
+    _kill_session,
+    _sess_alive,
+    _sess_pid,
+    _shell_to_evict,
+)
 from kiro_crew.dashboard.handlers.terminal_session import (
     _MAX_SESSION_ID_LEN,
     _MAX_SESSIONS,
@@ -62,7 +68,10 @@ async def api_terminal_create(request: web.Request) -> web.Response:
     cfg = _get_config(request)
     max_sessions = cfg.get("max_sessions", _MAX_SESSIONS)
 
-    if len(registry) >= max_sessions:
+    # The WebSocket open this id is for makes room at the cap by ending the
+    # longest-detached shell, so refuse only when it could not.
+    now = time.monotonic()
+    if len(registry) >= max_sessions and _shell_to_evict(registry, max_sessions, now) is None:
         _sel().log_api_access(
             caller=caller,
             operation="terminal.session.create",
