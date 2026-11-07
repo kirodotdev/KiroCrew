@@ -945,6 +945,46 @@ class TestDashboardRunnerHonoursTheSignal:
             assert violations == []
 
     @pytest.mark.asyncio
+    async def test_text_held_for_a_requeued_steer_is_dropped(self, tmp_path, monkeypatch, caplog):
+        """A person steered into a quiet-ended turn, the model wrote the filler,
+        and the turn ended cancelled with no consumption echo. The steer is
+        requeued and answered by its own turn, so the filler held for it is no
+        answer: not streamed, not saved as an assistant row, only counted."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("steer-requeued")
+        slot._titled = True
+        steer = "are you still there?"
+        admit = object()
+        events = [
+            _core_call("nothing_to_do", "tc-quiet"),
+            _result(
+                session_directive.encode("nothing_to_do", {}, "Quiet end requested."), "tc-quiet"
+            ),
+            admit,
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="(No assistant response was recorded.)"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="cancelled"),
+        ]
+
+        def _stream():
+            for ev in events:
+                if ev is admit:
+                    slot._pending_steers.append(steer)
+                    continue
+                yield ev
+
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            queue_calls = await _drive_turn(state, slot, _stream(), monkeypatch)
+        assert [m for m in slot.messages if m.get("role") == "assistant"] == [], slot.messages
+        assert not any("No assistant response" in str(m.get("content", "")) for m in slot.messages)
+        assert not any(
+            c.args and c.args[0] == "chat_chunk" for c in state.broadcast_ws.call_args_list
+        )
+        assert slot._pending_steers == []
+        assert any(steer in args for args, _kwargs in queue_calls), queue_calls
+        violations = [r for r in caplog.records if "Turn-end contract violation" in r.getMessage()]
+        assert len(violations) == 1 and "1 model event(s)" in violations[0].getMessage()
+
+    @pytest.mark.asyncio
     async def test_a_compacted_quiet_end_queues_no_continuation(self, tmp_path, monkeypatch):
         """An automatic compaction completed mid-turn, then the turn ended on
         ``nothing_to_do`` and the model echoed the filler. The dropped text
