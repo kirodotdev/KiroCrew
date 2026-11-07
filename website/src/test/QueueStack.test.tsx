@@ -639,6 +639,11 @@ describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
     expect(isNonInteractiveQueued(queued('[Empty response — automatic recovery]\n…', 'q5'))).toBe(true)
   })
 
+  it("excludes the gateway's workflow follow-up prompt", () => {
+    const followup = queued('[Workflow `nightly` finished: finished] Its result was just posted above.', 'q1')
+    expect(isNonInteractiveQueued({ ...followup, meta: { ...followup.meta, kind: 'workflow_followup' } })).toBe(true)
+  })
+
   it('keeps real user-typed messages interactive', () => {
     expect(isNonInteractiveQueued(queued('please also check the docs', 'q1'))).toBe(false)
     // A user quoting the prefix mid-sentence is still a user message.

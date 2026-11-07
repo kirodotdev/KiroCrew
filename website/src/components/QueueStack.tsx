@@ -24,18 +24,24 @@ export function isSystemDelivery(m: ChatMessage): boolean {
 }
 
 /** A queued entry that must NOT render as an interactive (edit/cancel) user
- *  card. Two families qualify, both machine orchestration rather than user
+ *  card. Three families qualify, all machine orchestration rather than user
  *  speech:
- *    - sub-agent completion deliveries (isSystemDelivery), and
+ *    - sub-agent completion deliveries (isSystemDelivery),
  *    - synthetic turn-recovery continuations (tool refusal / stalled turn /
  *      stalled tool / interrupted / empty response), which the gateway
  *      re-queues automatically and which surface as a compact RecoveryCard in
- *      the transcript once dequeued.
- *  Editing or cancelling either would corrupt an automatic effect, so they are
+ *      the transcript once dequeued, and
+ *    - the gateway's follow-up prompt after a workflow result
+ *      (`meta.kind` `workflow_followup`), a collapsed note once dequeued.
+ *  Editing or cancelling any of them would corrupt an automatic effect, so they are
  *  filtered out of the QueueStack (sub-agent deliveries are still counted for
  *  the progress line via isSystemDelivery). */
 export function isNonInteractiveQueued(m: ChatMessage): boolean {
-  return isSystemDelivery(m) || parseRecoveryMessage(m.content || '') !== null
+  return (
+    isSystemDelivery(m) ||
+    parseRecoveryMessage(m.content || '') !== null ||
+    m.meta?.kind === 'workflow_followup'
+  )
 }
 
 /** An MCP-App ui/message entry waiting in the queue. It stays VISIBLE in the

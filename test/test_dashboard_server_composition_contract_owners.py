@@ -820,6 +820,9 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     )
     prompt = slot.enqueue_or_run_prompt.call_args.args[0]
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
+    # The gateway's words: an inject row, run as a synthetic payload.
+    assert slot.enqueue_or_run_prompt.call_args.kwargs == {"workflow_followup": True}
+    assert slot.enqueue_or_run_prompt.call_args.args[1].keywords == {"_synthetic_payload": True}
     state.push_slots_update.assert_called_once_with()
     assert state._background_tasks == set()
 
