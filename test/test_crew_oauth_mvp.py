@@ -494,7 +494,7 @@ async def test_the_proxy_injects_the_bearer_and_gates_tool_calls(proxy_env):
 
 @pytest.mark.asyncio
 async def test_a_bridge_survives_disconnect_and_works_again_after_reconnect(tmp_path, monkeypatch):
-    """#31149 item 1: Disconnect blocks calls until reconnect; it does not orphan the bridge."""
+    """Disconnect blocks a live bridge's calls until reconnect, then it works again."""
     import kiro_crew.dashboard.origin as origin
     import kiro_crew.mcp_gateway.socketsec as socketsec
 

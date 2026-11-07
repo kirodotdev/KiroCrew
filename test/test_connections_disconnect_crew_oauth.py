@@ -98,7 +98,7 @@ async def test_disconnect_always_revokes_the_crew_grant(
     assert body["grantCensusIncomplete"] is False
     assert body["crewGrantRemoved"] is True and body["upstreamRevoked"] is True
     assert "crewGrantKept" not in body
-    # #31149 item 1: live bridges stay registered, so a reconnect revives them.
+    # Live bridges stay registered, so a reconnect revives them.
     assert called == ["disconnect"], "Crew's grant was not revoked, or bridges were cut"
 
 

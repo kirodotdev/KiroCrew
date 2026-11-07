@@ -895,8 +895,8 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
         # Disconnect always revokes it upstream and deletes the vault entry. Live
         # bridges stay registered: with no stored pair the proxy answers each call
         # "reconnect it" (409) and sends nothing upstream, and a later Connect
-        # makes the same bridges work again (#31149 item 1). The native-artifact
-        # census above governs only the runtime's own grant.
+        # makes the same bridges work again. The native-artifact census above
+        # governs only the runtime's own grant.
         try:
             crew_result = await crew_oauth.disconnect(slug)
         except Exception as exc:  # noqa: BLE001 -- reported, never silently skipped
