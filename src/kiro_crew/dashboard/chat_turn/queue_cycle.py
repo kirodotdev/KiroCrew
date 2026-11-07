@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
-from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE, SUBAGENT_SYNTHESIS_PROMPT
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -72,6 +72,7 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
         slot._pending_synthesis = False
         slot._synthesis_rechecks = 0
         slot._synthesis_completion_turns = 0
+        slot._synthesis_final_turn_ran = False
         # Same successor boundary as the queue drain (see the finalize comment in
         # `_start_next_queued_turn`): this dispatch is reached from the previous
         # turn's tail without a `chat_done`, so the predecessor's streaming row
@@ -141,18 +142,22 @@ def _launch_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
 
 
 def _drop_single_turn_synthesis(slot: _ChatSlot) -> bool:
-    """Consume a cleared arm whose whole batch reached the slot in one turn.
+    """Consume a cleared arm whose batch was already reported.
 
-    That turn (a lone sub-agent's completion, or a wave digest) already
-    reported every result, so the synthesis prompt would only restate it.
-    Exactly one counted turn drops it. Any other count fires, including 0:
+    One counted turn (a lone sub-agent's completion, or a wave digest)
+    reported every result. Two or more drop it only when the turn that took
+    the last result ended successfully on reply text after its last tool call
+    (``_synthesis_final_turn_ran``): that reply is the consolidated report,
+    so the synthesis prompt would only ask for it again. A count of 0 fires:
     an arm nothing counted is not judged.
     """
-    if slot._synthesis_completion_turns != 1:
+    turns = slot._synthesis_completion_turns
+    if turns != 1 and not (turns > 1 and slot._synthesis_final_turn_ran):
         return False
     slot._pending_synthesis = False
     slot._synthesis_rechecks = 0
     slot._synthesis_completion_turns = 0
+    slot._synthesis_final_turn_ran = False
     return True
 
 
@@ -922,4 +927,19 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
             "nudge_turn": _directive_self_wake and turn._turn_landed,
         },
         quiet_end=turn._terminal_directive_applied and not _turn_full_reply_text(turn)[0].strip(),
+    )
+    # Every turn end rewrites this, so it describes the newest turn: one that
+    # took the arming result and ended successfully on reply text written
+    # after its last tool call has written the consolidated report
+    # (``_drop_single_turn_synthesis``, read only after the fire gate's store
+    # read answers clear); a quiet end (``nothing_to_do``), a failed or refused
+    # turn, or a turn whose only text is narration before a tool call has none.
+    # ``turn.assistant_text`` is that trailing segment: every tool boundary
+    # flushes and resets it, and the end-of-turn flush leaves it in place.
+    turn.slot._synthesis_final_turn_ran = (
+        turn._incoming_message.rstrip().endswith(SUBAGENT_FINAL_COMPLETION_NOTE)
+        and turn._turn_landed
+        and turn._stop_class.is_success
+        and isinstance(turn.assistant_text, str)
+        and bool(turn.assistant_text.strip())
     )
