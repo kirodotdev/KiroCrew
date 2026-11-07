@@ -210,7 +210,11 @@ of the two:
 
 So a teammate's or maintainer's turn can never be granted something the owner's
 own turn in the same app, task or surface context would be refused. The role
-profile is a narrowing on top, never a substitute. Shipped default profiles:
+profile is a narrowing on top, never a substitute. Unlike the default fail-open
+behaviour of the PreToolUse hooks gate, the role-profile evaluation MUST fail
+closed: an evaluation error, an unresolvable profile or a missing role definition
+refuses the tool call instead of falling through to permissive access. Shipped
+default profiles:
 
 - `teammate`: `filesystem.write` none; `folders.read` = the channel workspace;
   `tools` read-only kinds; `capabilities.spawn`, `cron`, `messaging`,
@@ -278,13 +282,16 @@ owner-approved; Phase 6 needs Phase 5 and an answer to open question 1.
 2. **Teammates, read-only.** The read-only role file with `users.info`
    admission; `principal` bind type; shipped `teammate` profile; owner-only
    surfaces enforced on both paths; roles refused when `agent.sandbox` is `off`.
+   The role-profile evaluation fails closed on error or unresolvable profile.
    Exit: for every scope in `SCOPE_CATALOG`, a test proves a teammate turn is
    never permitted an item the owner's turn in the same app/task/surface context
-   is refused (the role intersects, never replaces); tests prove a teammate can
-   read the channel workspace and nothing outside it (relative paths, searches
-   without a path, a cwd that is not the workspace), cannot write, run a shell,
-   spawn, cron, DM, click a button, route
-   into a linked slot or run a command; a teammate DM is dropped before the
+   is refused (the role intersects, never replaces); tests prove an evaluation
+   error fails closed; each supported harness declares whether Crew sees every call,
+   and tests verify roles are refused on any harness that does not see every call
+   and is not confined; tests prove a teammate can read the channel workspace and
+   nothing outside it (relative paths, searches without a path, a cwd that is not
+   the workspace), cannot write, run a shell, spawn, cron, DM, click a button,
+   route into a linked slot or run a command; a teammate DM is dropped before the
    native/transport split.
    A write to the role file from inside the sandbox fails in every sandbox mode,
    the file-edit tool refuses it, and a non-empty role file with
