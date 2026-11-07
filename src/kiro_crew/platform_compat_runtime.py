@@ -445,6 +445,26 @@ def isolated_python_argv(
     return [resolved, "-s", *args]
 
 
+def _soften_non_utf8_streams() -> None:
+    """Stop a POSIX ASCII stdout/stderr from raising on the first glyph.
+
+    Under ``LANG=C LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0`` the interpreter
+    opens both streams as ASCII with ``errors="strict"``, so ``kirocrew setup``
+    and ``kirocrew service install`` die with ``UnicodeEncodeError`` on their
+    first emoji. That terminal can't render UTF-8, so keep its encoding and only
+    switch the error handler: an un-encodable glyph prints as an escape.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("_", "-")
+        if stream is None or encoding in ("utf-8", "utf8") or encoding.startswith("utf-8-"):
+            continue
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def ensure_utf8_console() -> None:
     """Keep Kiro Crew's process tree UTF-8 and repair current Windows streams.
 
@@ -458,10 +478,13 @@ def ensure_utf8_console() -> None:
     ``PYTHONIOENCODING`` can otherwise override POSIX UTF-8 defaults too.  On
     Windows, best-effort reconfigure (Python 3.7+) the current streams to UTF-8
     with backslashreplace so a stray un-encodable char degrades to an escape
-    instead of crashing. Idempotent and safe to call once at startup.
+    instead of crashing. On POSIX, a non-UTF-8 stream keeps its encoding but
+    gets the same backslashreplace handler (see ``_soften_non_utf8_streams``).
+    Idempotent and safe to call once at startup.
     """
     _ensure_utf8_process_environment()
     if not IS_WINDOWS:
+        _soften_non_utf8_streams()
         return
     # Repair the current streams below, and separately make the invariant
     # inheritable by MCP/session children and any later re-exec.  Environment

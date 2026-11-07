@@ -1309,6 +1309,66 @@ class TestUtf8Console:
             log.removeHandler(handler)
         assert errors == []
 
+    def test_ascii_posix_streams_escape_emoji_instead_of_raising(self, monkeypatch):
+        # LANG=C LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 opens stdout and
+        # stderr as strict ASCII; `kirocrew setup` then died on its first emoji.
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        streams = {}
+        for name in ("stdout", "stderr"):
+            streams[name] = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+            monkeypatch.setattr(sys, name, streams[name])
+
+        pc.ensure_utf8_console()
+
+        for name, stream in streams.items():
+            assert stream.encoding == "ascii"  # an ASCII terminal stays ASCII
+            print("✅ kirocrew service installed and started.", file=stream)
+            stream.flush()
+            assert stream.buffer.getvalue() == (
+                b"\\u2705 kirocrew service installed and started.\n"
+            ), name
+
+    def test_utf8_posix_streams_are_left_alone(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        pc.ensure_utf8_console()
+
+        assert (stream.encoding, stream.errors) == ("utf-8", "strict")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX stream handling")
+    def test_ascii_subprocess_prints_emoji_without_crashing(self, tmp_path):
+        # End to end in a fresh interpreter whose stdio really is strict ASCII.
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        env = {
+            **os.environ,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONUTF8": "0",
+            "PYTHONCOERCECLOCALE": "0",
+            "PYTHONIOENCODING": "ascii",
+            "PYTHONPATH": os.pathsep.join(
+                p for p in (source_root, os.environ.get("PYTHONPATH", "")) if p
+            ),
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from kiro_crew.platform_compat import ensure_utf8_console\n"
+                "ensure_utf8_console()\n"
+                "print('\\U0001f47b setup')\n",
+            ],
+            capture_output=True,
+            cwd=tmp_path,
+            env=env,
+            timeout=default_timeout(),
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert result.stdout == b"\\U0001f47b setup\n"
+
 
 class _TtyTextIOWrapper(io.TextIOWrapper):
     """A text stream that answers like a terminal and counts reconfigure calls."""
