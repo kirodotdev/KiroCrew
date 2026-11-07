@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
+from kiro_crew.apps import credential_masks
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
@@ -740,6 +741,9 @@ def update_app(
             # beside the missing file would approve everything declared.
             if not existing.approvedGrantsStored and _approved_grants_path(name).is_file():
                 _write_installed(name, existing)
+            # The old manifest leaves with the old tree below while the data waits aside:
+            # its credential masks must stand in the record first (apps.credential_masks).
+            credential_masks.remember_declaration(name)
             if _owned_data_dir(data_dir):
                 shutil.move(str(data_dir), str(tmp_data))
                 preserved_data = True

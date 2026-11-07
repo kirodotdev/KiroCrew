@@ -1923,6 +1923,50 @@ be answerable from the manifest, as `spawn` and `jobs` are.
 > enforcement is tracked in
 > [rfc-app-sandbox-isolation.md](../request-for-change/rfc-app-sandbox-isolation.md).
 
+## Credential masks
+
+### `credentialMasks` — Files the Sandbox Hides
+
+An app that stores a credential on disk (a provider token, a session cookie) lists the
+files, relative to its own data directory (`<data home>/apps/<name>/data/`):
+
+```json
+{
+  "credentialMasks": ["secrets.json", "tokens/oauth.json"]
+}
+```
+
+Every sandboxed process (agent shells, MCP servers, other apps' backends) then sees
+each file masked, as Kiro Crew's own credential files are. A symlink at a listed file,
+or at a directory between the data home and it, refuses every sandboxed spawn until it
+is replaced with a real file or directory, and so does a second hard link outside the
+data home. Your app's own backend still reads and writes the files, and so does any
+in-gateway code your app runs.
+
+- An entry is a relative path inside your data directory: no leading `/`, no `.`, `..`
+  or empty segment, no backslash, colon, control character or lone surrogate, no segment
+  starting or ending with a space or ending with a dot, at most 240 bytes and 16
+  segments. At most 32 entries.
+- It can only add masks. A listed path outside your data directory is refused, and the
+  field never makes anything visible that the sandbox hides.
+- On Linux the mask is placed when a sandboxed process starts, so a file created after
+  that is not masked for that process. A temp file you write beside a listed file is not
+  listed either.
+- An entry names a file. A directory at a listed path refuses every sandboxed spawn, so
+  list the files inside it instead (`"tokens/oauth.json"`).
+- Your backend gets a listed file back only while it is absent or has a single name. A
+  file with a second hard link stays masked for your backend too, until the extra link is
+  removed.
+- The masks follow your data when Kiro Crew moves it: during an update, and after an
+  uninstall that keeps your data. Kiro Crew keeps a copy of the list beside your app
+  folder for that, `apps/.<name>-credential-masks.json`.
+- On macOS a sandboxed process cannot rename or remove the folders above a listed file
+  (`apps/<name>/data` and the ones between); it can still create and edit files in them.
+- The installed app folder is writable from inside the sandbox, so this protects your
+  file from an agent that reads it, not from one that rewrites your `app.json`.
+- Hosts at App Kit seam level 3 or later honour the field; read `ctx.sdk_level` and
+  treat a lower level as "nothing masks the file".
+
 ## Notification channels
 
 ```json
@@ -2344,6 +2388,8 @@ before it runs your command, which is the same silent failure:
 - All required fields must be non-empty strings
 - `config_keys` must be an array of at most 200 non-empty strings, each at most
   200 characters long
+- `credentialMasks` must be an array of at most 32 paths relative to the app's data
+  directory (see [Credential masks](#credential-masks))
 - Each cron entry must specify either `every` or `cron_expr`
 - A non-empty `crons` requires `"cron": true` under `permissions`. Install,
   update and self-registration refuse the manifest otherwise; an app already

@@ -222,6 +222,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
         # Parser diagnostics reject a manifest; they are not declarations copied
         # into a valid builtin's persisted manifest.
         declared.discard("config_keys_error")
+        declared.discard("credential_masks_errors")
 
         manifest = AppManifest.from_dict(
             {
@@ -241,6 +242,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "tags": ["t"],
                 "mcpServers": {"m": {"command": "c"}},
                 "config_keys": ["probe-owned"],
+                "credentialMasks": ["secrets.json"],
                 "platform": {"requiresDesktopApp": True},
                 "permissions": {"storage": True},
                 "ui": {"entry": "ui/dist/index.js"},

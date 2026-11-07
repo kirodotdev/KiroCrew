@@ -1480,8 +1480,10 @@ the shared embedder, structural routes (see `backend.hooks.routes` in
 listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
 adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle), agent turns (`ctx.turns`),
 the untrusted-text controls (`ctx.untrusted`) and the manifest's `agentTools`
-block (see [manifest-reference.md](manifest-reference.md)) to everything level 1 has;
-each level includes every level below it. Read it
+block (see [manifest-reference.md](manifest-reference.md)) to everything level 1 has,
+and level 3 adds the manifest's `credentialMasks` (see
+[manifest-reference.md](manifest-reference.md#credential-masks)); each level includes
+every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
