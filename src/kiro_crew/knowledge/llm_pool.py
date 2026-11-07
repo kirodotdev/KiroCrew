@@ -553,7 +553,7 @@ class AcpWorker(Worker):
         logger.info(
             "AcpWorker: starting with agent=%s backend=%s",
             AGENT_NAME,
-            POLICY_ID_BY_BACKEND.get(acp_backend, acp_backend),
+            _label(acp_backend),
         )
         self._client, authored_before_spawn = await self._spawn_client(acp_backend, sandbox_mode)
         # A zero-tool spec must be CONFIRMED, not assumed. A backend that is not
@@ -566,7 +566,7 @@ class AcpWorker(Worker):
             logger.warning(
                 "AcpWorker: backend=%s session did not confirm the zero-tool spec "
                 '("tools": [] missing, malformed, or shadowed); restarting worker on %s',
-                POLICY_ID_BY_BACKEND.get(acp_backend, acp_backend),
+                _label(acp_backend),
                 ACP_BACKEND_KIRO,
             )
             try:
@@ -628,7 +628,7 @@ class AcpWorker(Worker):
                 'AcpWorker: agent=%s backend=%s spec does not declare "tools": []; '
                 "refusing to start the worker",
                 AGENT_NAME,
-                POLICY_ID_BY_BACKEND.get(acp_backend, acp_backend),
+                _label(acp_backend),
             )
             try:
                 await self._client.shutdown()
@@ -752,7 +752,7 @@ class AcpWorker(Worker):
                 logger.warning(
                     "AcpWorker: effort=%s unsupported on backend=%s; using provider default",
                     requested,
-                    POLICY_ID_BY_BACKEND.get(backend, backend),
+                    _label(backend),
                 )
                 return
             # Resolved per backend, like every other effort site: writing the
