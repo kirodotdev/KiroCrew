@@ -775,7 +775,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
                         break
                     time.sleep(0.05)
                 self._invalidate_session_mcp_projection()
-                self._log_declined_share(local_settings)
+                # The same guarded exclusion as a file that was there before.
+                if not self._exclude_foreign_local_settings(local_settings, payload):
+                    self._log_declined_share(local_settings)
                 return
             with os.fdopen(fd, "wb") as handle:
                 handle.write(payload.encode("utf-8"))
