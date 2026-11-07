@@ -165,7 +165,7 @@ class TestScenarioReplanStepSessionReset:
         ]
 
         # Mock _decompose to return 1 new step
-        async def _mock_decompose(spec, work_dir="", task_id=""):
+        async def _mock_decompose(spec, work_dir="", task_id="", agent=""):
             return [Step(index=1, title="Fix", description="fix it")]
 
         with (
@@ -293,7 +293,7 @@ class TestScenarioReplanSessionNotLeaked:
             Step(index=2, title="Fail", description="d", status=StepStatus.FAILED, error="err"),
         ]
 
-        async def _mock_decompose(spec, work_dir="", task_id=""):
+        async def _mock_decompose(spec, work_dir="", task_id="", agent=""):
             return [Step(index=1, title="Fix", description="fix")]
 
         with (
@@ -521,7 +521,7 @@ class TestScenarioReplanDependsOnReindexing:
             Step(index=2, title="Fail", description="d", status=StepStatus.FAILED, error="err"),
         ]
 
-        async def _mock_decompose(spec, work_dir="", task_id=""):
+        async def _mock_decompose(spec, work_dir="", task_id="", agent=""):
             return [
                 Step(index=1, title="Fix A", description="d"),
                 Step(index=2, title="Fix B", description="d", depends_on=[1]),

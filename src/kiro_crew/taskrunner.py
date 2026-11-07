@@ -332,7 +332,6 @@ class TaskRunner:
         # mirrors lifecycle and progress for one unified management surface.
         self._workflow_service = workflow_service
         self._workflow_initializing = False
-        self._agent: str = ""
         # Durable task queue (``taskq``): attached by the gateway once the
         # SubagentManager's store is open. None keeps the legacy behaviour --
         # a fixed run cap and no rows. See ``attach_task_admission``.
@@ -398,6 +397,11 @@ class TaskRunner:
             _override = _resolve_workspace_dir(workspace_dir)
             if _override and run.status == "planned":
                 run.work_dir = _override
+            # The agent follows the same rule: a run that has begun keeps the agent its
+            # steps ran with, so resuming it (the Projects page sends its selector with
+            # Resume too) or adopting it after a restart cannot switch it.
+            if agent and run.status == "planned":
+                run.agent = agent
 
             # Guard: limit concurrent running tasks — check BEFORE mutating state.
             # With the task queue attached the cap is the lane's: excess steps
@@ -426,7 +430,6 @@ class TaskRunner:
             await self._grant_run_trust(run, bool(auto_approve))
             await self._apersist_runs()
 
-            self._agent = agent
             history_key = await self._bound_history_key(run, f"taskrunner:run:{task_id}")
         except BaseException:
             self._release_start(task_id)
@@ -597,6 +600,7 @@ class TaskRunner:
                 run.finished_at,
                 run.started_at,
                 run.last_task_time,
+                run.agent,
             )
             previous_tasks = [
                 (task, task.status, task.error, task.result, task.verification, task.attempts)
@@ -613,6 +617,9 @@ class TaskRunner:
                 run.error = ""
                 run.finished_at = 0.0
                 run.started_at = run.last_task_time = time.time()
+                # An explicit agent re-targets the retried steps; none keeps the run's.
+                if agent:
+                    run.agent = agent
                 # The global timeout counts from here; the watchdog and the executor
                 # both read this one age of it, so they cannot disagree after a step.
                 _MonotonicAge.of_run_start(run, fresh=True)
@@ -621,14 +628,18 @@ class TaskRunner:
                 # Persistence drains its worker even on repeated cancellation.
                 # Restore in place: callers may retain the Project/Task objects.
                 # Restore live state until a later snapshot succeeds.
-                run.status, run.error, run.finished_at, run.started_at, run.last_task_time = (
-                    previous_run
-                )
+                (
+                    run.status,
+                    run.error,
+                    run.finished_at,
+                    run.started_at,
+                    run.last_task_time,
+                    run.agent,
+                ) = previous_run
                 for task, status, error, result, verification, attempts in previous_tasks:
                     task.status, task.error, task.result = status, error, result
                     task.verification, task.attempts = verification, attempts
                 raise
-            self._agent = agent
         except BaseException:
             self._release_start(task_id)
             raise

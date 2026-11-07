@@ -9,10 +9,9 @@ plan goes here.
 
 Instance fields written: ``_stall_cancelled_ids``.
 
-Instance fields read: ``_agent``, ``_auto_test``, ``_ctx``, ``_global_timeout``,
-``_max_parallel_steps``, ``_on_approval``, ``_on_tool_approval``, ``_require_verification``,
-``_sessions``, ``_task_admission``, ``_test_cmd``, ``_token_budget``, ``_work_dir``,
-``_workflow_service``.
+Instance fields read: ``_auto_test``, ``_ctx``, ``_global_timeout``, ``_max_parallel_steps``,
+``_on_approval``, ``_on_tool_approval``, ``_require_verification``, ``_sessions``,
+``_task_admission``, ``_test_cmd``, ``_token_budget``, ``_work_dir``, ``_workflow_service``.
 """
 
 from __future__ import annotations
@@ -227,7 +226,7 @@ async def _build_task_prompt(self: TaskRunner, run: Project, task: Task, attempt
 async def self_review(self: TaskRunner, run: Project, task: Task, session_key: str = "") -> bool:
     """Delegate to standalone self_review for backward compat."""
     return await self_review_fn(
-        run, task, self._sessions, self._agent, session_key=session_key, ctx=self._ctx
+        run, task, self._sessions, run.agent, session_key=session_key, ctx=self._ctx
     )
 
 
@@ -304,7 +303,7 @@ async def _execute_single_task(
             history_key=history_key,
             sessions=self._sessions,
             ctx=self._ctx,
-            agent=self._agent,
+            agent=run.agent,
             on_notify=self._notify,
             on_approval=self._on_approval,
             on_tool_approval=self._on_tool_approval,
@@ -405,7 +404,7 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
         f"## Failed Task\n- \u274c {failed_task.title}: {err_detail}\n{may_have_run}\n"
         f"{memory_ctx}\n\nRe-plan the REMAINING work."
     )
-    new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id)
+    new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id, agent=run.agent)
     if not new_tasks:
         if self._stopping():
             # The stop most likely took the planning session away; resumed on restart.
