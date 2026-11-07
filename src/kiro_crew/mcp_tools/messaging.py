@@ -451,7 +451,17 @@ def schemas() -> list[dict[str, Any]]:
                     "path": {"type": "string", "description": "Absolute path to the file to send"},
                     "description": {
                         "type": "string",
-                        "description": "Brief description of what the file is",
+                        "description": (
+                            "Preamble for the file. On the Slack leg it is the "
+                            "file's initial_comment — a signature or a request to "
+                            "review — so the report and its note land as ONE chat "
+                            "item. On the non-Slack leg it is the caption the "
+                            "channel shows with the file. Markdown is fine; it is "
+                            "redacted like any outbound text. Keep it within the "
+                            "target channel's message limit (Slack ~3900, Telegram "
+                            "1024, Discord 2000 chars): a longer preamble is "
+                            "refused with a 400 naming the limit, not sliced."
+                        ),
                     },
                     "channel": {
                         "type": "string",
@@ -956,7 +966,19 @@ def _describe_slack_skip(reason: str) -> str:
 
 def file_send(name: str, args: dict[str, Any]) -> str:
     src = Path(args.get("path", ""))
+    # The preamble. Redacted on the way in, exactly like the legacy description, so
+    # a report's note cannot carry a credential or an exfiltration URL to any
+    # audience. ONE field, every leg: the Slack leg posts it as the file's
+    # ``initial_comment`` and the native-channel leg as its ``send_document``
+    # caption — both read ``description`` by the same name, so they cannot drift.
+    # This is the first of two redactions: each endpoint re-applies its own
+    # display-form floor (redact_for_display) on top of this literal one, so the
+    # legs stay defence-in-depth rather than relying on a single scrub.
     desc = redact(args.get("description", ""))
+    # The result string is a one-line summary, not the preamble itself: cap what
+    # the caller sees so a long preamble does not balloon the tool result. The
+    # legs still receive the full ``desc`` above.
+    echo_desc = desc if len(desc) <= 120 else desc[:117] + "..."
     try:
         raw = safe_read_file_bytes(str(src))
     except FileTooLargeError as e:
@@ -1064,7 +1086,9 @@ def file_send(name: str, args: dict[str, Any]) -> str:
         )
         if channel_resp.get("delivered"):
             via = channel_resp.get("channel_type") or "channel"
-            msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
+            msg = (
+                f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
+            )
             return f"{msg} (delivered to {via})"
         if channel_resp.get("error"):
             channel_warning = f" (channel upload failed: {channel_resp['error']})"
@@ -1119,6 +1143,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
                 "filename": dest.name,
                 "thread_ts": thread_ts,
                 "channel": args.get("channel", ""),
+                "description": desc,
             },
         )
         if slack_resp.get("error"):
@@ -1132,7 +1157,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             # every resolved identity (owner DM, session-map thread, tracked
             # channel) — not just Slack-linked threads.
             slack_warning = " (delivered to Slack)"
-    msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
+    msg = f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
     return msg + channel_warning + slack_warning
 
 

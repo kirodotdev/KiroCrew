@@ -1376,6 +1376,46 @@ class TestFileSend:
             out = _call_tool("file_send", {"path": str(src)})
         assert out == "File sent: report.txt (Slack upload failed: not in channel)"
 
+    def test_slack_leg_forwards_description_into_upload_body(self, tmp_path):
+        # The ``description`` the caller supplies is redacted then placed in the
+        # Slack upload body, where the endpoint posts it as the file's
+        # ``initial_comment`` — the one-chat-item shape the report job wants.
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        slack_bodies: list[dict] = []
+
+        def _post(path: str, body: dict | None = None, **_kw: object) -> dict:
+            if path == "/api/slack/upload-file":
+                assert body.get("description") == "Review before launch"
+                slack_bodies.append(body or {})
+            return {"ok": True}
+
+        with patch.object(mcp_core, "_post", side_effect=_post):
+            out = _call_tool(
+                "file_send",
+                {"path": str(src), "description": "Review before launch"},
+            )
+        assert out == "File sent: report.txt (Review before launch) (delivered to Slack)"
+        assert len(slack_bodies) == 1
+
+    def test_no_description_forwards_none_to_slack_body(self, tmp_path):
+        # No description -> the body carries an empty/absent description, so the
+        # endpoint forwards an omitted ``initial_comment``: the legacy voice-reply
+        # upload, undisturbed by the new feature.
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        slack_bodies: list[dict] = []
+
+        def _post(path: str, body: dict | None = None, **_kw: object) -> dict:
+            if path == "/api/slack/upload-file":
+                assert not (body or {}).get("description")
+                slack_bodies.append(body or {})
+            return {"ok": True}
+
+        with patch.object(mcp_core, "_post", side_effect=_post):
+            _call_tool("file_send", {"path": str(src)})
+        assert len(slack_bodies) == 1
+
     def test_channel_delivery_takes_precedence_over_slack(self, tmp_path, monkeypatch):
         # A caller linked to a Telegram chat or Discord DM gets the file THERE;
         # the Slack owner-DM leg is the fallback, not a second copy.
@@ -1513,6 +1553,20 @@ class TestValidateArgs:
 
         with pytest.raises(ValidationError):
             _validate_args("workflow_status", {"run_id": "bad id/../etc"})
+
+    def test_file_send_accepts_a_long_preamble_up_to_the_floor(self):
+        # The schema caps ``description`` at a generous floor (MAX_MEDIUM_STRING =
+        # 5000), not at any leg's ceiling: a real preamble (a paragraph, a
+        # signature, a request to review) must pass the boundary. The per-leg
+        # ceiling is enforced at the endpoint, not here.
+        _validate_args("file_send", {"path": "report.txt", "description": "x" * 5000})
+
+    def test_file_send_rejects_a_preamble_over_the_floor(self):
+        # Only a preamble above the generous floor is refused up front.
+        from kiro_crew.validation import ValidationError
+
+        with pytest.raises(ValidationError):
+            _validate_args("file_send", {"path": "report.txt", "description": "x" * 5001})
 
     def test_call_tool_surfaces_validation_errors_as_text(self):
         out = _call_tool("workflow_status", {"run_id": "bad id/../etc"})
