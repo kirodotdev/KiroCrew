@@ -178,6 +178,9 @@ def _patch_row(state: Any, slot: Any, row: dict[str, Any], updates: dict[str, An
     meta = dict(row.get("meta") or {})
     card = dict(meta.get("card") or {})
     card.update({k: v for k, v in updates.items() if v is not None})
+    # The dashboard keeps the higher-``rev`` copy of this row; the row is agent-writable.
+    rev = card.get("rev")
+    card["rev"] = (rev if isinstance(rev, int) else 0) + 1
     meta["card"] = card
     mid = meta.get("mid") if isinstance(meta.get("mid"), str) else None
     try:

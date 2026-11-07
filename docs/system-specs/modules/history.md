@@ -596,8 +596,12 @@ status the gateway recorded (`summary` on a finished change card; `actions` ids 
 a guide). It never carries a parameter, an edited field or a typed value. When the
 card or guide store publishes a new status for it, the row is patched in place by
 `mid` and a `chat_message_update` frame carries the patch, so a finished card is
-still drawn in its final state after the store prunes it. The same step writes the
-`card/*` / `guide/*` crew-log entries ([crew-log-core](crew-log-core.md) section 5,
+still drawn in its final state after the store prunes it. Each patch bumps
+`meta.card.rev`, and the dashboard's slot-detail merge
+(`preserveSettledUpsertRows`) keeps the copy with the higher revision, so a
+snapshot taken before a patch cannot redraw the card's earlier status, whichever
+way that status moved (a guide replay takes `completed` back to `offered`).
+The same step writes the `card/*` / `guide/*` crew-log entries ([crew-log-core](crew-log-core.md) section 5,
 "Cards and guides").
 
 Two surfaces record a change the agent already made, so they have no store

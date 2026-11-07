@@ -1204,6 +1204,22 @@ def test_a_re_claim_after_a_lapsed_lease_is_not_a_second_start(guide_log):
     assert [e.type for e in guide_log("guide/started")] == ["guide/started"]
 
 
+def test_each_patch_bumps_the_rows_revision_so_a_replay_outranks_the_completion(guide_log):
+    """A replay takes the row from ``completed`` back to ``offered``; only the revision orders them."""
+    from kiro_crew.dashboard import chat_cards
+
+    state = FakeState()
+    slot = _live_slot(state)
+    guide = {"guide_id": "g1", "slot_key": "chat-1", "actions": [{"id": "crewmate.create"}]}
+    chat_cards.record_guide_offered(state, guide)
+    seen = []
+    for status in ("completed", "offered"):
+        chat_cards.record_guide_status(state, {**guide, "status": status})
+        (row,) = _rows(slot)
+        seen.append((row["meta"]["card"]["status"], row["meta"]["card"].get("rev")))
+    assert seen == [("completed", 1), ("offered", 2)]
+
+
 def test_a_conversation_that_refuses_the_row_never_breaks_the_guide(guide_log):
     """A slot whose append or update raises leaves the guide alone, quietly."""
     from types import SimpleNamespace
