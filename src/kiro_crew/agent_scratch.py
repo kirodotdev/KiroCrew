@@ -87,6 +87,7 @@ import re
 import secrets
 import shutil
 import stat
+import tempfile
 import threading
 import time
 from collections.abc import Iterable, MutableMapping
@@ -859,6 +860,30 @@ def drop_inherited_scratch_env(env: MutableMapping[str, str]) -> tuple[str, ...]
             del env[key]
             dropped.append(key)
     return tuple(dropped)
+
+
+def drop_own_inherited_scratch_env() -> None:
+    """At gateway start: :func:`drop_inherited_scratch_env` on this process's own environment.
+
+    ``tempfile`` caches its default directory once per process, so after a drop the
+    cache is cleared and re-resolved past the tree, instead of every ``tempfile`` write
+    in the gateway raising ``ENOENT`` once the sweep reclaims it. A dropped temp key is
+    re-pointed at that default rather than left unset, as ``_clean_cron_env`` does for a
+    cron child: a native Windows child with no ``TMP``/``TEMP`` puts its temp files in
+    the user's profile directory. A host with no usable temp directory keeps them unset.
+    """
+    dropped = drop_inherited_scratch_env(os.environ)
+    if not dropped:
+        return
+    logger.info("agent-scratch: dropped inherited %s naming the scratch root", ", ".join(dropped))
+    tempfile.tempdir = None
+    try:
+        temp = tempfile.gettempdir()
+    except OSError:
+        return
+    for key in dropped:
+        if key in ("TMPDIR", "TMP", "TEMP"):
+            os.environ[key] = temp
 
 
 def cap_kiro_cli_logs(

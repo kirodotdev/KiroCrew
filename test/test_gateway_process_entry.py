@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -20,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import agent_scratch
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.dashboard import side_readonly_spec
 from kiro_crew.slack import gateway as gw
@@ -105,6 +110,7 @@ def _seams(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> SimpleNamespace:
         gw,
         "agent_scratch",
         SimpleNamespace(
+            drop_own_inherited_scratch_env=MagicMock(),
             sweep_dead_scratch=seams.scratch,
             cap_kiro_cli_logs=seams.log_cap,
             KIRO_CLI_LOG_CAP_INTERVAL_SECONDS=300,
@@ -178,3 +184,38 @@ async def test_a_failing_step_is_logged_and_the_next_step_still_runs(
         "kiro-cli log cap failed",
     ):
         assert line in caplog.text, line
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_stops_naming_an_inherited_scratch_tree_as_its_temp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Started from an agent shell, the gateway resolves its temp past that shell's tree, off-loop.
+
+    ``tempfile`` already cached the tree, as an earlier boot step can.
+    """
+    tree = agent_scratch.scratch_root() / "runtime-0badc0de"
+    tree.mkdir(parents=True)
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(key, str(tree))
+    monkeypatch.setattr(tempfile, "tempdir", str(tree))
+    loop_thread = threading.get_ident()
+    drop_threads: list[int] = []
+    real_drop = agent_scratch.drop_inherited_scratch_env
+
+    def drop(env: Any) -> tuple[str, ...]:
+        drop_threads.append(threading.get_ident())
+        return real_drop(env)
+
+    monkeypatch.setattr(agent_scratch, "drop_inherited_scratch_env", drop)
+    booted = RuntimeError("booted")
+    monkeypatch.setattr(gw, "configure_default_executor", MagicMock())
+    monkeypatch.setattr(gw, "set_publish_disabled", MagicMock(side_effect=booted))
+
+    with pytest.raises(RuntimeError, match="booted"):
+        await gw.run_gateway(MagicMock(name="cfg"))
+
+    assert len(drop_threads) == 1 and drop_threads[0] != loop_thread
+    temp = tempfile.gettempdir()
+    assert Path(temp) != tree and agent_scratch.scratch_root() not in Path(temp).parents
+    assert [os.environ[key] for key in ("TMPDIR", "TMP", "TEMP")] == [temp] * 3
