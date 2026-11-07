@@ -1378,8 +1378,23 @@ RENDERED form and then mention defang — so this egress cannot be sanitised
 differently from the ones beside it, and it adds no new sink to
 `security_posture._REDACTION_SINKS`.
 
-Four properties are load-bearing:
+Five properties are load-bearing:
 
+- **The bell's copy is the Markdown reading of a Slack-bound text.** One send
+  reaches two renderers with two grammars: Slack renders mrkdwn, the bell
+  renders Markdown (`send_notification` documents its body as markdown), and
+  they disagree exactly where a message carries meaning — `<url|label>` is a
+  link on Slack and unreadable plain text in the bell, and the emphasis sigils
+  map to different weights. `_deliver_send_message_fallback` converts the
+  BELL's copy only (`slack/mrkdwn_markdown.py::mrkdwn_to_markdown`; code spans
+  and URL-shaped spans — existing Markdown links, bare URLs — kept verbatim),
+  gated on `send_to_slack`: false whenever a `channel_target`/`channel_type`
+  send carries another channel's format (that text reaches the bell verbatim),
+  true when the send is Slack-routed. The cron owner-DM default keeps it true
+  even on an install with no Slack client, where the body may already be
+  Markdown — accepted, because the converter passes Markdown constructs
+  through and only single-delimiter emphasis (`*x*`, mrkdwn bold) changes
+  weight. Every delivery leg still sends the caller's own bytes.
 - **A named channel is not a Slack fallback.** `channel_type` suppresses the
   Slack leg outright, including the cron-to-owner-DM default. A failed channel
   delivery falling through to Slack would post the message to an audience the
