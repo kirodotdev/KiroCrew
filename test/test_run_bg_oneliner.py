@@ -28,6 +28,10 @@ from kiro_crew.acp.types import (
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers import run_bg_oneliner
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 class _FakeSession:
     def __init__(self, events, *, raise_on_prompt=False, turn_credits=0.0, prior_credits=0.0):
@@ -272,6 +276,58 @@ async def test_propagates_error_and_destroys():
     with pytest.raises(RuntimeError, match="boom"):
         await run_bg_oneliner(_FakeSessions(sess), "p")
     assert sess.destroyed is True
+
+
+class _AcquireRecorder:
+    """Hands out an answering session from both helper entry points, recording each acquire."""
+
+    def __init__(self) -> None:
+        self.acquired: list[str] = []
+
+    def _session(self) -> _FakeSession:
+        return _FakeSession(
+            [
+                SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="ok"),
+                SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+            ]
+        )
+
+    async def get_bg_session(self, start_priority=None):
+        self.acquired.append("get_bg_session")
+        return self._session()
+
+    async def get_or_create(self, key, **_kw):
+        self.acquired.append(key)
+        return self._session(), False, False
+
+
+@pytest.mark.asyncio
+async def test_background_helpers_do_not_start_while_memory_is_critical(monkeypatch, caplog):
+    """A helper turn nobody waits on starts no session while host memory is critical.
+
+    Both entry points raise before acquiring and log the skip; a one-liner a person
+    waits on (FOREGROUND) still starts, and so does background work once memory frees.
+    """
+    import kiro_crew.resource_status as resource_status
+    from kiro_crew.llm_helpers import background_turn
+    from kiro_crew.start_priority import StartPriority
+
+    sessions = _AcquireRecorder()
+    monkeypatch.setattr(resource_status, "_read_available_gb", lambda: 0.5)
+    with caplog.at_level("INFO", logger="kiro_crew.llm_helpers"):
+        with pytest.raises(RuntimeError, match="'chat_title' not started"):
+            await run_bg_oneliner(sessions, "p", sel_source="chat_title")
+        with pytest.raises(RuntimeError, match="'consolidation' not started"):
+            async with background_turn(sessions, task="consolidation", session_key="_consolidate"):
+                pass
+    assert sessions.acquired == []
+    skips = [r.getMessage() for r in caplog.records if "not started" in r.getMessage()]
+    assert len(skips) == 2 and all("critical" in line for line in skips), skips
+
+    assert await run_bg_oneliner(sessions, "p", start_priority=StartPriority.FOREGROUND) == "ok"
+    monkeypatch.setattr(resource_status, "_read_available_gb", lambda: 8.0)
+    assert await run_bg_oneliner(sessions, "p") == "ok"
+    assert sessions.acquired == ["get_bg_session", "get_bg_session"]
 
 
 # ── Reactive retry-on-model-rejection (option A) ──

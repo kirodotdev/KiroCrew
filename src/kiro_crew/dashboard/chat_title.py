@@ -804,6 +804,7 @@ async def _generate_title_via_kiro(
     messages: list[dict[str, Any]],
     *,
     session_key: str = "",
+    memory_gate: bool = True,
 ) -> str:
     """Generate a title using the shared background kiro-cli session.
 
@@ -811,6 +812,7 @@ async def _generate_title_via_kiro(
     in that session's crew log as well as the usage store. It is optional because
     the title's own correctness does not depend on it: a caller that cannot name
     the owner still gets a title, and the crew log simply records nothing.
+    ``memory_gate`` is passed to :func:`run_bg_oneliner` unchanged.
     """
 
     # Off-loop: the config read behind _ui_language() is synchronous file IO
@@ -834,6 +836,7 @@ async def _generate_title_via_kiro(
         timeout=_TITLE_TIMEOUT_SECS,
         crew_log_kind="title",
         crew_log_session_key=session_key,
+        memory_gate=memory_gate,
     )
     title = _validate_title_reply(text)
     if not title:
@@ -1742,8 +1745,13 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
         # Same label as the automatic paths: the key the title already leads
         # with, else the opening message's.
         key = await _ticket_key_if_enabled(_current_ticket_key(slot.title, convo))
+        # Ungated: a person is waiting, and a memory refusal would replace the
+        # current title with the heuristic fallback below.
         title = await _generate_title_via_kiro(
-            state, convo[-_TITLE_PROMPT_WINDOW:], session_key=effective_session_key(slot)
+            state,
+            convo[-_TITLE_PROMPT_WINDOW:],
+            session_key=effective_session_key(slot),
+            memory_gate=False,
         )
         return _with_ticket_prefix(title, key)
     except Exception:

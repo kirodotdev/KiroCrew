@@ -27,6 +27,10 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_
 from kiro_crew.messaging import auto_title
 from kiro_crew.testing.wait import finished
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 _KEY = "telegram:kirocrew:direct:4242"
 
 
