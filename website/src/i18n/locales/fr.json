@@ -7081,6 +7081,7 @@
       "copy_failed": "Échec de la copie",
       "copy_selection": "Copier la sélection",
       "disconnected_message": "Terminal déconnecté",
+      "displaced_enter_hint": "Appuie sur Entrée pour l’utiliser ici",
       "displaced_message": "Une autre fenêtre a pris le contrôle de ce terminal",
       "failed_retry": "Échec — réessayer",
       "invalid_cwd_message": "Le répertoire de travail du terminal « {{cwd}} » est indisponible. Restaure-le et reconnecte-toi, ou utilise le répertoire de démarrage du terminal.",

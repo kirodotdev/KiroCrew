@@ -6898,6 +6898,7 @@
       "copy_failed": "Kopieren fehlgeschlagen",
       "copy_selection": "Auswahl kopieren",
       "disconnected_message": "Terminal getrennt",
+      "displaced_enter_hint": "Mit Enter hier verwenden",
       "displaced_message": "Ein anderes Fenster hat dieses Terminal übernommen",
       "failed_retry": "Fehlgeschlagen — wiederholen",
       "invalid_cwd_message": "Das Terminal-Arbeitsverzeichnis „{{cwd}}“ ist nicht verfügbar. Stelle es wieder her und verbinde dich erneut, oder verwende das Startverzeichnis des Terminals.",

@@ -6715,6 +6715,7 @@
       "copy_failed": "コピーに失敗しました",
       "copy_selection": "選択部分をコピー",
       "disconnected_message": "ターミナルが切断されました",
+      "displaced_enter_hint": "Enterでここで使用",
       "displaced_message": "別のウィンドウがこのターミナルを引き継ぎました",
       "failed_retry": "失敗 — 再試行",
       "invalid_cwd_message": "ターミナルの作業ディレクトリ「{{cwd}}」を利用できません。復元して再接続するか、ターミナルの開始ディレクトリを使用してください。",
