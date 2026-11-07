@@ -19,11 +19,15 @@ import zlib
 BOMB_INFLATED_BYTES = 1200 * 1024 * 1024
 
 
-def make_pdf(stream: bytes, *, compressed: bool = False) -> bytes:
+def make_pdf(
+    stream: bytes, *, compressed: bool = False, font_objs: list[bytes] | None = None
+) -> bytes:
     """A complete single-page PDF (catalog, page tree, page, content, font, xref).
 
     *stream* is the page's content stream; with *compressed* it is already
     Flate-encoded and declared so, which is how a real writer stores it.
+    *font_objs* replaces the Helvetica font: its first entry is object 5 (the
+    page's /F1) and the rest follow as objects 6, 7, ...
     """
     objs = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -33,7 +37,7 @@ def make_pdf(stream: bytes, *, compressed: bool = False) -> bytes:
     ]
     filt = b" /Filter /FlateDecode" if compressed else b""
     objs.append(b"<< /Length %d%s >>\nstream\n%s\nendstream" % (len(stream), filt, stream))
-    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    objs.extend(font_objs or [b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"])
     out = io.BytesIO()
     out.write(b"%PDF-1.4\n")
     offsets = []
