@@ -6863,7 +6863,7 @@
       "that_request_already_timed_out_and_was_denied": "Essa solicitação de {{source}} já expirou e foi negada — o job não está mais aguardando. Consulte o feed de aprovações para ver o registro.",
       "total": "Total",
       "dictation_added": "Ditado adicionado à sua mensagem",
-      "mic_in_use_elsewhere": "Microfone em uso em outra conversa",
+      "mic_in_use_elsewhere": "Microfone em uso em outro lugar",
       "mic_in_use_in": "Microfone em uso em “{{chat}}”",
       "type_label": "Digitar em vez disso",
       "transcribing": "Transcrevendo…",
