@@ -25,8 +25,8 @@ def test_row_context_follows_the_string_cache_context(monkeypatch):
     original_render = cu._prepare_messages_scoped
     calls = []
 
-    def key(text, *base):
-        (digest, length), size = original_key(text, *base)
+    def key(text, *base, **snapshot):
+        (digest, length), size = original_key(text, *base, **snapshot)
         return (digest + bytes([version["value"]]), length), size
 
     def render(*args, **kwargs):
