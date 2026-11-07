@@ -568,6 +568,95 @@ async def test_the_worker_list_is_the_roots_tree_with_status_and_item(_open_gate
 
 
 @pytest.mark.asyncio
+async def test_each_row_says_where_its_worker_runs(_open_gate, monkeypatch):
+    """A local worker carries no ``remote_crew`` (the page says "This machine"); a
+    worker remote dispatch placed on a crew is listed, named by the registry,
+    keyed by its item (never the peer's slot key), with the stored liveness. A
+    stored pending approval outranks running, and a closed item is closed even
+    when the last stored pull said running."""
+    from kiro_crew import work_ledger
+
+    crew_workers = _open_gate
+
+    def key(item_id: str) -> str:
+        return crew_workers.REMOTE_KEY_PREFIX + item_id
+
+    def remote(item_id: str, crew: str, title: str, terminal: bool = False) -> Any:
+        item = SimpleNamespace(
+            item_id=item_id, worker_instance_id=crew, is_terminal=terminal, retired_bindings=[]
+        )
+        progress = crew_workers.GROUP_DONE if terminal else ""
+        return crew_workers.LedgerFacts(
+            item_id, title, progress, crew=crew, board="root", title=title, work_item=item
+        )
+
+    monkeypatch.setattr(
+        crew_workers,
+        "_ledger_items",
+        lambda root: {
+            "w1": crew_workers.LedgerFacts("it_1", "Writing the haiku"),
+            key("it_r"): remote("it_r", "inst-1", "Fix CI"),
+            key("it_g"): remote("it_g", "inst-gone", "Old"),
+            key("it_a"): remote("it_a", "inst-1", "Needs a yes"),
+            key("it_x"): remote("it_x", "inst-1", "Cancelled", terminal=True),
+        },
+    )
+    stored = {
+        "it_r": work_ledger.RemoteState(running=True),
+        "it_a": work_ledger.RemoteState(running=True, pending_approval=True),
+        "it_x": work_ledger.RemoteState(running=True),
+    }
+    monkeypatch.setattr(
+        work_ledger, "read_remote_state", lambda board, item_id: stored.get(item_id)
+    )
+    state = _state(_TREE)
+    state.instances_registry = SimpleNamespace(
+        list=lambda: [SimpleNamespace(id="inst-1", name="Build box")]
+    )
+    resp = await crew_workers.api_crew_workers(_req("GET", "/x", state, {"slot": "root"}))
+    by_key = {w["key"]: w for w in json.loads(resp.text)["workers"]}
+    assert "remote_crew" not in by_key["w1"]
+    row = by_key[key("it_r")]
+    assert row["remote_crew"] == "Build box"
+    assert (row["title"], row["summary"], row["ledger_item"]) == ("Fix CI", "Fix CI", "it_r")
+    assert (row["status"], row["group"]) == ("working", "working")
+    # A crew missing from the registry is named by its instance id.
+    assert by_key[key("it_g")]["remote_crew"] == "inst-gone"
+    assert by_key[key("it_g")]["status"] == "idle"
+    assert (by_key[key("it_a")]["status"], by_key[key("it_a")]["group"]) == (
+        "needs_approval",
+        "approval",
+    )
+    assert (by_key[key("it_x")]["status"], by_key[key("it_x")]["group"]) == ("closed", "done")
+
+
+def test_a_remote_item_is_keyed_by_its_item_not_the_peer_slot(monkeypatch):
+    from kiro_crew.dashboard.handlers import crew_workers, work_ledger_board
+
+    items = [
+        SimpleNamespace(
+            item_id="it_r",
+            worker_session_key="dashboard:w1",
+            worker_instance_id="inst-1",
+            title="Fix CI",
+            summary="",
+            status="question",
+            is_terminal=False,
+        ),
+    ]
+    monkeypatch.setattr(work_ledger_board, "task_records", lambda key: (None, items))
+    out = crew_workers._ledger_items("root")
+    # The peer's slot key can equal a local one: it never becomes a local row.
+    assert list(out) == [crew_workers.REMOTE_KEY_PREFIX + "it_r"]
+    facts = out[crew_workers.REMOTE_KEY_PREFIX + "it_r"]
+    assert (facts.crew, facts.title, facts.progress) == (
+        "inst-1",
+        "Fix CI",
+        crew_workers.GROUP_WITH_CONDUCTOR,
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_grandchild_is_grouped_by_the_ledger_its_sub_conductor_keeps(
     _open_gate, monkeypatch
 ):
@@ -930,7 +1019,7 @@ def test_a_workers_item_comes_from_the_roots_own_ledger_through_the_board_seam(m
     monkeypatch.setattr(work_ledger_board, "task_records", _records)
     out = crew_workers._ledger_items("root")
     assert list(out) == ["w1"]
-    item, line, _progress = out["w1"]
+    item, line = out["w1"].item, out["w1"].line
     assert item == "it_1"
     # The latest report's line, through the board's egress redactor.
     assert line.startswith("Draft done") and _FAKE_KEY not in line
