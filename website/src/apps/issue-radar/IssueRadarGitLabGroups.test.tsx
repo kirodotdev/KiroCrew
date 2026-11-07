@@ -343,6 +343,22 @@ describe('Dashboards rail entry', () => {
     expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual(['Overview', 'Graph', 'Tagging', 'Pipeline', 'CI runs'])
   })
 
+  it('marks only the dashboard on screen as the current page', async () => {
+    serve(groupsRoute([]))
+    renderWithClient(<DashboardsSection />)
+    await waitFor(() => expect(calls()).toEqual([`GET ${API}/gitlab-groups`]), CHAIN_WAIT)
+    expect(screen.getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Graph' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('marks no row current while another view is on screen', async () => {
+    serve(groupsRoute([]))
+    ctx.value = { ...ctx.value, mainView: 'issues' }
+    renderWithClient(<DashboardsSection />)
+    await waitFor(() => expect(calls()).toEqual([`GET ${API}/gitlab-groups`]), CHAIN_WAIT)
+    expect(screen.getAllByRole('button').filter((b) => b.hasAttribute('aria-current'))).toEqual([])
+  })
+
   it('offers Review requests once a group is followed', async () => {
     serve(groupsRoute([{ host: 'gitlab.com', path: 'acme' }]))
     renderWithClient(<DashboardsSection />)
