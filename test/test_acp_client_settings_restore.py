@@ -606,6 +606,32 @@ class TestCreateRaceLoserPoll:
         assert loser._permission_surface_governed is False
         assert path.read_text(encoding="utf-8") == winners_payload
 
+    def test_a_foreign_file_that_wins_the_create_race_is_excluded_like_a_pre_existing_one(
+        self, tmp_path, monkeypatch
+    ):
+        """A foreign file landing under the ``O_EXCL`` open gets the same guarded exclusion.
+
+        The pre-existing-file branch leaves a project-owned file out of the session's
+        setting sources; a file that arrives during the create must reach that too.
+        """
+        loser = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        loser._claude_adapter_disk_version = "0.84.0"
+        path = tmp_path / ".claude" / "settings.local.json"
+        foreign = '{"model": "other", "availableModels": ["other"]}'
+        fired = self._winner_holds_the_name(monkeypatch, path, foreign)
+        declines: list[Path] = []
+        self._poll_clock(monkeypatch, lambda _poll: None, poll_cost=0.45)
+        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+
+        loser._write_claude_local_settings()
+
+        assert fired, "the race window must have been exercised"
+        assert loser._claude_local_settings_excluded is True
+        assert loser._permission_surface_governed is True
+        assert loser._claude_settings_authored is False
+        assert declines == []
+        assert path.read_text(encoding="utf-8") == foreign
+
     def test_a_contended_provenance_lock_is_waited_out_and_is_not_a_poll(
         self, tmp_path, monkeypatch
     ):
