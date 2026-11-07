@@ -515,5 +515,9 @@
   "apps.designCritique.designCritiquePage.flow_screens_count",
   "pages.mcpManagement.resolve_all_failed",
   "pages.mcpManagement.resolve_ready",
-  "pages.settings.securityPanel.rule_count"
+  "pages.settings.securityPanel.rule_count",
+  "pages.chat.gatewayNotice.turn_limit_minutes",
+  "pages.chat.gatewayNotice.turn_limit_hours",
+  "pages.chat.gatewayNotice.background_turn_waited",
+  "pages.chat.gatewayNotice.eager_spawn_stopped"
 ]
