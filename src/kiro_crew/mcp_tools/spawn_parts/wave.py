@@ -278,7 +278,6 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     max_wait = max(60.0, min(7200.0, max_wait))  # clamp: 1 min .. 2 hours
     return _SubAgentsStep(
         sa_ids=[],
-        sa_deferred=set(),
         sa_errors=[],
         parent_session=parent_session,
         max_wait=max_wait,
@@ -309,7 +308,6 @@ class _SubAgentsStep(DeferredTool):
         self,
         *,
         sa_ids: list[str],
-        sa_deferred: set[str],
         sa_errors: list[str],
         parent_session: str,
         max_wait: float,
@@ -329,7 +327,6 @@ class _SubAgentsStep(DeferredTool):
         self.call_id = call_id
         self._submit_index = 0
         self.sa_ids = sa_ids
-        self.sa_deferred = sa_deferred
         self.sa_errors = sa_errors
         # Members whose POST failed in transport: the gateway may have accepted
         # them, so they are neither ids nor plain refusals, and a retry could
@@ -451,10 +448,7 @@ class _SubAgentsStep(DeferredTool):
                     f"{redact(prompt)[:60]}: {redact(data['error'])}"[:_SA_ERROR_MAX_CHARS]
                 )
             elif data.get("id"):
-                aid = data["id"]
-                self.sa_ids.append(aid)
-                if data.get("status") == "queued":
-                    self.sa_deferred.add(aid)
+                self.sa_ids.append(data["id"])
             else:
                 self.sa_errors.append(
                     f"{redact(prompt)[:60]}: spawn returned no agent id"[:_SA_ERROR_MAX_CHARS]
@@ -563,41 +557,32 @@ class _SubAgentsStep(DeferredTool):
                 else:
                     never_started[aid] = _queued_why(sa_st)
                 continue
-            if sa_st.get("error"):
-                errored += 1
-                failure: dict[str, Any] = {
-                    "agent": label,
-                    "status": "error",
-                    "error": redact(sa_st["error"]),
-                }
-                if sa_st.get("done"):
-                    # On a finished run ``error`` is why it ended badly, sent next to
-                    # the output the run retained (a timed-out run keeps its partial
-                    # work). This call marks the child collected, so its completion
-                    # event is not injected either: the reply is where that output
-                    # reaches the caller.
-                    failure["text"] = self._inline_result(aid, sa_st.get("result", ""))
-                # The hint goes on a deferred child that is not done, and on any child
-                # whose answer carries no ``done`` at all: that is the error _get()
-                # returns when the gateway does not answer, so no row was read and the
-                # child, accepted at spawn time, may still be running.
-                if not sa_st.get("done") and (aid in self.sa_deferred or "done" not in sa_st):
-                    failure["hint"] = (
-                        "accepted at spawn time; its state couldn't be read now; "
-                        "check spawn_status before re-spawning"
-                    )
-                # Settled only when done is also true (confirmed terminal state).
-                # An "error" without "done" could be a transport failure from
-                # _get(): the agent may still be running.
-                if sa_st.get("done"):
-                    _block_of[aid] = len(sa_results)
-                sa_results.append(json.dumps(failure))
-            elif not sa_st.get("done"):
+            if not sa_st.get("done"):
                 still_running += 1
-                if sa_st.get("awaiting_approval"):
+                if sa_st.get("error"):
+                    # The gateway sends ``error`` only on a finished row, so this is a
+                    # read that failed (a timeout, a 404, a 503) and says nothing about
+                    # the child, which may still be running. Reported as an error, the
+                    # caller would move on and its completion would land in a busy turn.
+                    _unsettled[aid] = "unread"
+                elif sa_st.get("awaiting_approval"):
                     _unsettled[aid] = "waiting_permission"
                 else:
                     _unsettled[aid] = "running"
+            elif sa_st.get("error"):
+                errored += 1
+                # ``error`` is why the run ended badly, sent next to the output the
+                # run retained (a timed-out run keeps its partial work). This call
+                # marks the child collected, so its completion event is not injected
+                # either: the reply is where that output reaches the caller.
+                _block_of[aid] = len(sa_results)
+                failure = {
+                    "agent": label,
+                    "status": "error",
+                    "error": redact(sa_st["error"]),
+                    "text": self._inline_result(aid, sa_st.get("result", "")),
+                }
+                sa_results.append(json.dumps(failure))
             else:
                 completed += 1
                 result_text = self._inline_result(aid, sa_st.get("result", ""))
@@ -615,13 +600,15 @@ class _SubAgentsStep(DeferredTool):
                 _block_of[aid] = len(sa_results)
                 sa_results.append(json.dumps(record))
         if _unsettled:
+            # The wait can end before max_wait (a failed read settles its pass).
+            waited = mcp_core.time.monotonic() - (self.deadline - self.max_wait)
             sa_results.append(
                 json.dumps(
                     {
                         "status": "still_running",
                         "task_ids": list(_unsettled),
                         "states": _unsettled,
-                        "waited_secs": int(self.max_wait),
+                        "waited_secs": int(min(self.max_wait, waited)),
                         "query": "spawn_status/spawn_list",
                         "note": (
                             "The blocking wait ended; these sub-agents were NOT cancelled and "

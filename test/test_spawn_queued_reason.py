@@ -162,13 +162,13 @@ class TestSpawnSubAgentsNamesTheDeferral:
         assert not [c for c in post.call_args_list if c.args[0] == "/api/spawn/mark-collected"]
         return [json.loads(chunk) for chunk in out.split("\n\n")]
 
-    def test_a_not_found_answer_is_an_error_never_a_queued_member(self, monkeypatch) -> None:
+    def test_a_not_found_answer_is_unread_never_a_queued_member(self, monkeypatch) -> None:
         """ "Held" is read off ``queued: true`` only, never off a 404's prose: a
         gone row or a refused lookup is not "queued, nothing was cancelled"."""
         records = self._call(monkeypatch, {"error": "not found"})
-        assert not [r for r in records if r.get("status") == "queued"]
-        errors = [r for r in records if r.get("status") == "error"]
-        assert len(errors) == 1 and "check spawn_status" in errors[0]["hint"]
+        assert not [r for r in records if r.get("status") in ("queued", "error")]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert still and still[0]["states"] == {"q1": "unread"}
 
     def test_a_capacity_wait_does_not_repeat_the_accept_time_sentence(self, monkeypatch) -> None:
         """Deferred for memory at accept, now waiting behind the concurrency cap
@@ -216,24 +216,19 @@ class TestSpawnSubAgentsNamesTheDeferral:
         assert still and still[0]["states"] == {"q1": "running"}
         assert not [r for r in records if r.get("status") == "queued"]
 
-    def test_a_transport_failure_is_still_an_error(self, monkeypatch) -> None:
-        """An unreachable gateway says nothing about the row: the member keeps
-        its error entry, and because it was accepted (deferred) at spawn time,
-        a hint not to re-spawn it blind."""
+    def test_a_transport_failure_is_unread_not_an_error(self, monkeypatch) -> None:
+        """An unreachable gateway says nothing about the row: the member was
+        accepted at spawn time, so it is listed as unread, never as failed."""
         records = self._call(monkeypatch, {"error": "connection refused"})
-        errors = [r for r in records if r.get("status") == "error"]
-        assert len(errors) == 1
-        assert errors[0]["hint"] == (
-            "accepted at spawn time; its state couldn't be read now; "
-            "check spawn_status before re-spawning"
-        )
-        assert not [r for r in records if r.get("status") == "queued"]
+        assert not [r for r in records if r.get("status") in ("queued", "error")]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert still and still[0]["states"] == {"q1": "unread"}
 
 
-class TestSpawnSubAgentsHintsEveryUnreadChild:
+class TestSpawnSubAgentsListsEveryUnreadChild:
     """A child that STARTED (not gate-deferred) and whose final read is the
-    gateway not answering keeps its error entry, and gets the same hint not to
-    re-spawn it blind; a child that finished with an error gets its text only."""
+    gateway not answering is listed as still running, with its id, so the caller
+    waits for it; a child that finished with an error gets its text."""
 
     @staticmethod
     def _call(monkeypatch, status: dict) -> list[dict]:
@@ -277,18 +272,16 @@ class TestSpawnSubAgentsHintsEveryUnreadChild:
             )
         return [json.loads(chunk) for chunk in out.split("\n\n")]
 
-    def test_a_started_child_the_gateway_did_not_answer_for_gets_the_hint(
+    def test_a_started_child_the_gateway_did_not_answer_for_is_still_running(
         self, monkeypatch
     ) -> None:
         records = self._call(
             monkeypatch, {"error": "<urlopen error [Errno 111] Connection refused>"}
         )
-        errors = [r for r in records if r.get("status") == "error"]
-        assert len(errors) == 1
-        assert errors[0]["hint"] == (
-            "accepted at spawn time; its state couldn't be read now; "
-            "check spawn_status before re-spawning"
-        )
+        assert not [r for r in records if r.get("status") == "error"]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert len(still) == 1
+        assert still[0]["task_ids"] == ["s1"] and still[0]["states"] == {"s1": "unread"}
 
     def test_a_child_that_finished_with_an_error_gets_its_text_and_no_hint(
         self, monkeypatch
