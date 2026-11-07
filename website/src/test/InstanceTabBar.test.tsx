@@ -545,6 +545,169 @@ describe('InstanceTabBar', () => {
     expect(within(notice).getByText('owner only')).toBeInTheDocument()
   })
 
+  describe('active chip opens the crew menu', () => {
+    // A single connected crew is active, so it is the leading chip and the other
+    // destination (Local) lives in the menu.
+    const activeChipSetup = () => {
+      vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+      return createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      })
+    }
+
+    it('opens the menu when the active chip is clicked, the same as the caret', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      // The active chip is the on-screen crew; its menu is closed until clicked.
+      const chip = await screen.findByRole('button', { name: /Cloud One/i })
+      expect(chip).toHaveAttribute('aria-haspopup', 'menu')
+      expect(chip).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByRole('menuitemradio', { name: /Local/i })).toBeNull()
+
+      await u.click(chip)
+      // The destinations the menu holds are now reachable, and the chip says so.
+      expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+      expect(chip).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('closes the menu on a second click of the chip, with no close-then-reopen flicker', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      const chip = await screen.findByRole('button', { name: /Cloud One/i })
+      await u.click(chip)
+      expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+
+      // Clicking the chip while the menu is open closes it: the outside-press
+      // dismissal is excluded for the chip, so the chip's own toggle is the one
+      // that acts rather than close-then-reopen.
+      await u.click(chip)
+      await waitFor(() => expect(screen.queryByRole('menuitemradio', { name: /Local/i })).toBeNull())
+      expect(chip).toHaveAttribute('aria-expanded', 'false')
+    })
+
+    it('returns focus to the chip after the chip-opened menu closes on Escape', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      const chip = await screen.findByRole('button', { name: /Cloud One/i })
+      await u.click(chip)
+      expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+
+      // Escape closes the menu. Radix would return focus to its own trigger (the
+      // caret); because the chip opened the menu, focus returns to the chip so a
+      // keyboard user lands where they started, not one stop to the right.
+      await u.keyboard('{Escape}')
+      await waitFor(() => expect(screen.queryByRole('menuitemradio', { name: /Local/i })).toBeNull())
+      expect(chip).toHaveFocus()
+    })
+
+    it('leaves focus on the caret after the caret-opened menu closes on Escape', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      const caret = await screen.findByRole('button', { name: /Switch crew/i })
+      await u.click(caret)
+      expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+
+      // The caret opened it, so the chip-opener override does not fire and Radix's
+      // default focus-to-trigger (the caret) stands.
+      await u.keyboard('{Escape}')
+      await waitFor(() => expect(screen.queryByRole('menuitemradio', { name: /Local/i })).toBeNull())
+      expect(caret).toHaveFocus()
+    })
+
+    it('does not steal focus back to the chip when the menu is dismissed by an outside click', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(
+        <>
+          <button type="button">elsewhere</button>
+          <InstanceTabBar />
+        </>,
+        { store },
+      )
+
+      const chip = await screen.findByRole('button', { name: /Cloud One/i })
+      await u.click(chip)
+      expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+
+      // Dismiss by clicking an element outside both the menu and the chip. The
+      // chip opened the menu, but an outside click is the user moving focus on
+      // purpose: focus must stay on what they clicked, not snap back to the chip.
+      const outside = screen.getByRole('button', { name: /elsewhere/i })
+      await u.click(outside)
+      await waitFor(() => expect(screen.queryByRole('menuitemradio', { name: /Local/i })).toBeNull())
+      expect(chip).not.toHaveFocus()
+    })
+
+    it('does not switch crews when the active chip is clicked (it opens the menu instead)', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      await u.click(await screen.findByRole('button', { name: /Cloud One/i }))
+      // Still on the same crew — the chip is a menu trigger now, not a re-select.
+      expect(store.getState().instances.activeId).toBe('cd-1')
+    })
+
+    it('still opens the menu from the caret', async () => {
+      const store = activeChipSetup()
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+      expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+    })
+
+    it('still reconnects the active instance when its row is selected from the menu (errored chip)', async () => {
+      // The active chip no longer reconnects on click (it opens the menu). When
+      // the active instance is errored, the reconnect must stay reachable: its
+      // own row in the menu reconnects it, so the behavior is relocated, not lost.
+      const down = conn({
+        status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        was_connected: true,
+      })
+      vi.mocked(api.listInstances).mockResolvedValue(listResp([down]))
+      vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: 'cd-1', state: 'connected', local_port: 7778, token: 'fresh' })
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'stale' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      // Open the menu from the (errored) active chip, then select its own row.
+      await u.click(await screen.findByRole('button', { name: /Cloud One/i }))
+      await u.click(await screen.findByRole('menuitemradio', { name: /Cloud One/i }))
+      // Selecting an errored instance reconnects it (state !== 'connected'),
+      // despite the lingering warm entry.
+      await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
+    })
+
+    it('still switches instance when a pinned (non-active) chip is clicked', async () => {
+      // Local pinned, Cloud One active: the Local chip is a plain switch button,
+      // not a menu trigger, so clicking it navigates.
+      setCrewPins(['__local__'])
+      vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<InstanceTabBar />, { store })
+
+      const row = await screen.findByTestId('crew-chip-row')
+      const localChip = within(row).getByRole('button', { name: /Local/i })
+      expect(localChip).not.toHaveAttribute('aria-haspopup')
+      await u.click(localChip)
+      await waitFor(() => expect(store.getState().instances.activeId).toBeNull())
+    })
+  })
+
 })
 
 describe('resolvePinnedPref', () => {
