@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
 import re
 import threading
 from typing import Any
@@ -158,9 +159,10 @@ def _context_snippet(content: str, q_lower: str) -> str:
 
 
 #: Cache of loaded+stripped artifact content, keyed by slug. The cache key
-#: tuple is (version, updated_at) — version bumps on every content change,
-#: so a stale entry can never be served. Bounded TWO ways: a per-item size cap
-#: keeps huge bodies read-through (never cached), and a cumulative byte budget
+#: comes from :func:`_content_cache_key`: (version, updated_at), plus the
+#: source file's (mtime_ns, size) for a live file pointer, whose file can be
+#: edited outside the store without moving version or updated_at. Bounded
+#: TWO ways: a per-item size cap keeps huge bodies read-through (never cached), and a cumulative byte budget
 #: drops the whole cache if churn ever exceeds it (which also ages out entries
 #: for deleted artifacts). All access is serialized by
 #: :data:`_content_cache_lock` — scans run on executor worker threads, so two
@@ -168,12 +170,12 @@ def _context_snippet(content: str, q_lower: str) -> str:
 #: (guaranteed hazard on free-threaded builds, latent one elsewhere).
 _CONTENT_CACHE_MAX_ITEM_BYTES = 256 * 1024
 _CONTENT_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
-_content_cache: dict[str, tuple[tuple[int, str], str, str]] = {}
+_content_cache: dict[str, tuple[tuple[Any, ...], str, str]] = {}
 _content_cache_bytes = 0
 _content_cache_lock = threading.Lock()
 
 #: Cache of the redacted prefix snippet, keyed by slug under the same
-#: (version, updated_at) key as the content cache. The snippet path redacts
+#: :func:`_content_cache_key` key as the content cache. The snippet path redacts
 #: the FULL stripped body (see :func:`_snippet_from`), which is too expensive
 #: to repeat for every listed artifact on every debounced request — memoizing
 #: under the version key pays that pass once per artifact version. Entries are
@@ -183,12 +185,28 @@ _content_cache_lock = threading.Lock()
 #: cache uses); shares :data:`_content_cache_lock` (same executor-thread
 #: access pattern).
 _SNIPPET_CACHE_MAX_ENTRIES = 4096
-_snippet_cache: dict[str, tuple[tuple[int, str], str]] = {}
+_snippet_cache: dict[str, tuple[tuple[Any, ...], str]] = {}
 
 
-def _cached_snippet(a: Any, stripped: str) -> str:
-    """The redacted prefix snippet for artifact *a*, memoized per version."""
-    key = (a.version, a.updated_at)
+def _content_cache_key(a: Any) -> tuple[Any, ...]:
+    """Cache key for artifact *a*'s current content.
+
+    A live file pointer (``source_path`` set, not ``source_copy_only``) reads
+    its file on every get, so the key also carries that file's
+    ``(st_mtime_ns, st_size)``; an unreadable file contributes ``None``.
+    """
+    if not (a.source_path and not a.source_copy_only):
+        return (a.version, a.updated_at)
+    try:
+        st = os.stat(os.path.expanduser(a.source_path))
+        stamp: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+    except (OSError, ValueError):
+        stamp = None
+    return (a.version, a.updated_at, stamp)
+
+
+def _cached_snippet(a: Any, stripped: str, key: tuple[Any, ...]) -> str:
+    """The redacted prefix snippet for artifact *a*, memoized under *key*."""
     with _content_cache_lock:
         hit = _snippet_cache.get(a.slug)
         if hit and hit[0] == key:
@@ -215,9 +233,9 @@ def _scan_artifacts(
     """Content-match + snippet scan over listed artifacts.
 
     Runs OFF the event loop (sync file IO + regex stripping — see the
-    run_in_executor call site). Content reads hit a (version, updated_at)-keyed
-    cache so repeated queries (every debounced keystroke) only re-read files
-    whose content actually changed.
+    run_in_executor call site). Content reads hit a cache keyed by
+    :func:`_content_cache_key` so repeated queries (every debounced keystroke)
+    only re-read files whose content actually changed.
     """
     global _content_cache_bytes
     # No live-slug pruning here: ``items`` may be a FILTERED subset (?tag=,
@@ -230,8 +248,9 @@ def _scan_artifacts(
     for a in items:
         raw = ""
         stripped = ""
+        cache_key: tuple[Any, ...] = ()
         if need_content:
-            cache_key = (a.version, a.updated_at)
+            cache_key = _content_cache_key(a)
             with _content_cache_lock:
                 hit = _content_cache.get(a.slug)
             if hit and hit[0] == cache_key:
@@ -263,7 +282,7 @@ def _scan_artifacts(
             d["snippet"] = (
                 _context_snippet(raw, q_lower)
                 if (do_content and q_lower)
-                else _cached_snippet(a, stripped)
+                else _cached_snippet(a, stripped, cache_key)
             )
         out.append(d)
     return out
