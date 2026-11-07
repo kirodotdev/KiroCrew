@@ -6105,6 +6105,16 @@ names no app anywhere in this machinery: the pin table is data, and
 `test_builtin_adoption_pins.py` fails on a shipped built-in name in any adoption
 module.
 
+**What the swap keeps is `data/`, so a built-in keeps its state there before it
+is pinned.** Everything else in the record's directory is retired with the old
+tree, and the swap runs at a start before any route registers, so a built-in that
+kept a file beside `app.json` copies it into `data/` itself, from a startup hook
+that runs whether or not the app is enabled, in a release before its pin row is
+added; core grows no per-app carry list. Nothing at the swap enforces that order:
+a user who never starts that release loses the file, so the app's pin row lands
+with a refusal or carry at the swap for it. Research Lab's campaigns database is
+the worked case (knowledge.md § 7); its test fails while the app is pinned.
+
 **Pins.** `apps/adoption-pins.json` (packaged; each row is the output of
 `scripts/adoption_pin.py compute`, re-checked with `adoption_pin.py verify`, and the
 whole table is pinned by
