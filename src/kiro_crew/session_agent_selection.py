@@ -143,7 +143,9 @@ def resolve_session_agent_bindings(
     once, but a non-owner create (an app token) leaves the first send to resolve
     from the stamp alone.
     """
-    execution = read_session_execution(session_key)
+    execution = read_session_execution(
+        session_key, repair_project=project_dir[0] if project_dir else None
+    )
     # A crewmate's worker runs on its crewmate's backend: publishing the key here,
     # on the read every turn and resume prefetch makes before allocating, is what
     # the backend selection then reads (``members.select_provider_backend``).
