@@ -26,6 +26,7 @@ import { noteHostOrigin, setHostElectronReader } from '../lib/hostRelay'
 
 const MAC_INSET_CLASS = 'embedded-mac-inset'
 const WIN_INSET_CLASS = 'embedded-win-inset'
+const LINUX_INSET_CLASS = 'embedded-linux-inset'
 const WIN_CAPTION_RESERVE_PROP = '--mc-win-caption-reserve'
 // Whole-pixel lengths only: the value crosses a postMessage boundary and is
 // written into this document's inline style.
@@ -102,6 +103,8 @@ export function parseHostModel(data: unknown): HostModel | null {
     winCaptionReserve: typeof d.winCaptionReserve === 'string' && WIN_CAPTION_RESERVE_RE.test(d.winCaptionReserve)
       ? d.winCaptionReserve
       : undefined,
+    // Same absence rule as `winInset`: an older host has nothing to relay.
+    linuxInset: !!d.linuxInset,
     // Tri-state on purpose: `false` and "the host never sent the field" must
     // not collapse. An older host omits it AND ignores the pane's echoed
     // `mc-set-focus-mode`, so coercing absence to `false` would revert a
@@ -194,6 +197,7 @@ export default function EmbeddedHostBridge() {
       )
       document.documentElement.classList.toggle(MAC_INSET_CLASS, model.macInset)
       document.documentElement.classList.toggle(WIN_INSET_CLASS, model.winInset)
+      document.documentElement.classList.toggle(LINUX_INSET_CLASS, model.linuxInset)
       // Adopt the host's zoom-aware reserve; without one the pane's own :root
       // default (142px) applies.
       if (model.winInset && model.winCaptionReserve) {
@@ -227,6 +231,7 @@ export default function EmbeddedHostBridge() {
       for (const t of retryTimers) window.clearTimeout(t)
       document.documentElement.classList.remove(MAC_INSET_CLASS)
       document.documentElement.classList.remove(WIN_INSET_CLASS)
+      document.documentElement.classList.remove(LINUX_INSET_CLASS)
       document.documentElement.style.removeProperty(WIN_CAPTION_RESERVE_PROP)
       setFocusModeEnabled(false, { echo: false })
       noteClipboardRelayHost(null, false)
