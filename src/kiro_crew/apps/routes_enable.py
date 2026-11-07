@@ -299,6 +299,10 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             # same "no body" path as malformed JSON, not a 500.
             pass
     session_approval_consent = body.get("sessionApprovalConsent") is True
+    # Whether the disclosure the owner confirmed named member threads. Consent
+    # covers only what was shown, so it travels with the request rather than
+    # being inferred from the manifest at write time (``enable_app``).
+    member_threads_consent = session_approval_consent and body.get("memberThreadsConsent") is True
     # The entries the owner was shown, as {"api": [...], "events": [...], ...}.
     # Anything else approves nothing: a bare flag cannot say what was seen.
     raw_grants = body.get("grantsConsent")
@@ -346,6 +350,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             enable_app,
             name,
             session_approval_consent=session_approval_consent,
+            member_threads_consent=member_threads_consent,
             grants_consent=grants_consent,
         )
         if not result.ok:

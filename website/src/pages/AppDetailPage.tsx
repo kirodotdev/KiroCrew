@@ -25,7 +25,8 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
-  APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isTrustDeniedError, useTrustGate,
+  APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isSessionApprovalConsentRequiredError,
+  isTrustDeniedError, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
 } from '../components/appstore/TrustAppModal'
 import { isRegistrySourced } from '../components/appstore/types'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
@@ -678,9 +679,15 @@ export default function AppDetailPage() {
     return 'done'
   }
 
-  /** The single enable path — shared by the action buttons and the trust retry. */
-  const runEnable = useCallback(async (name: string) => {
-    const result = await api.enableApp(name, app?.sessionApprovalConsentPending === true)
+  /**
+   * The single enable path — shared by the action buttons and the trust retry.
+   * `memberThreads` is what the confirmed disclosure named; the trust retry
+   * passes none, so it falls back to the same `app` snapshot its modal showed.
+   */
+  const runEnable = useCallback(async (name: string, memberThreads?: boolean) => {
+    const consent = app?.sessionApprovalConsentPending === true
+    const shownMemberThreads = memberThreads ?? app?.manifest?.permissions?.memberThreads === true
+    const result = await api.enableApp(name, consent, undefined, consent && shownMemberThreads)
     recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
     setBackendRefusedMsg(backendRefusedNotice(app ? appDisplayName(app) : name, result))
     await load()
@@ -722,6 +729,7 @@ export default function AppDetailPage() {
         trustRepository: app.trustRepository,
         origin: app.origin,
         sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+        memberThreads: app.manifest?.permissions?.memberThreads === true,
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
         replacesInstalled: app.installed === true,
@@ -775,16 +783,31 @@ export default function AppDetailPage() {
         // the untrusted path alike, so the button has one ceremony: a dialog
         // that names the grant, then enable (the trust modal may still follow
         // for an untrusted repository).
+        // What the dialog names is what the enable consents to: an update that
+        // adds the scope while the dialog is open is refused, not lent this click.
+        const memberThreads = app.manifest?.permissions?.memberThreads === true
         if (app.sessionApprovalConsentPending) {
+          // The dialog is the consent moment, and for a trusted repository the
+          // only one (no trust modal follows), so it must name everything the
+          // grant reaches: when the manifest widens it to member threads --
+          // which may be the very reason re-consent is pending -- say so here,
+          // in the same words as the Permissions box and the trust modal.
           const ok = await confirmConsent({
             title: i18nT('pages.appDetailPage.session_approval_confirm_title', { name: appDisplayName(app) }),
-            body: i18nT('pages.appDetailPage.session_approval_desc'),
+            body: memberThreads
+              ? (
+                <>
+                  <p className="m-0">{i18nT('pages.appDetailPage.session_approval_desc')}</p>
+                  <p className="m-0 mt-1">{i18nT('pages.appDetailPage.session_approval_member_threads')}</p>
+                </>
+              )
+              : i18nT('pages.appDetailPage.session_approval_desc'),
             confirmLabel: i18nT('pages.appDetailPage.enable_and_allow_chat_control'),
             danger: false,
           })
           if (!ok) return
         }
-        await runEnable(app.name)
+        await runEnable(app.name, memberThreads)
         await load()
         return
       }
@@ -827,7 +850,13 @@ export default function AppDetailPage() {
           trustRepository: app.trustRepository,
           origin: app.origin,
           sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+          memberThreads: app.manifest?.permissions?.memberThreads === true,
         })
+      } else if (action === 'enable' && isSessionApprovalConsentRequiredError(e)) {
+        // The grant changed under the dialog (an update added a scope it did not
+        // name). Reload so the next click shows the grant as it now stands.
+        await load()
+        setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
       } else {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
       }
@@ -1009,6 +1038,14 @@ export default function AppDetailPage() {
         disabledTitle: i18nT('pages.appDetailPage.dismiss_notice_to_install_again'),
       }
   const installDisabledTitle = refusalCopy?.disabledTitle
+  // An enable refused for a `memberThreads` scope the dialog did not name shows
+  // the catalog's sentence, picked by the journal entry's code like the build
+  // refusal above; `error` keeps the server's English, the report's key. The
+  // grant's own pending refusal shares the code and keeps the server's text
+  // unless the reloaded manifest declares the scope.
+  const memberThreadsRefused = Boolean(error)
+    && errorReport?.code === SESSION_APPROVAL_CONSENT_REQUIRED
+    && app.manifest?.permissions?.memberThreads === true
 
   return (
     <>
@@ -1269,7 +1306,11 @@ export default function AppDetailPage() {
             className="mb-4 animate-rise"
           />
         ) : (
-          <ErrorNotice message={error} askAgent onDismiss={clearError} className="mb-4 animate-rise" />
+          <ErrorNotice
+            message={memberThreadsRefused ? i18nT('pages.appDetailPage.session_approval_member_threads_refused') : error}
+            report={memberThreadsRefused ? errorReport : undefined}
+            askAgent onDismiss={clearError} className="mb-4 animate-rise"
+          />
         )}
 
         {/* Third-party execution-trust consent. Opened when an enable OR a
@@ -1723,12 +1764,18 @@ export default function AppDetailPage() {
                       <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
                       <span>{i18nT('pages.appDetailPage.session_approval_desc')}</span>
                     </div>
+                    {app.manifest.permissions.memberThreads && (
+                      <div className="mt-1 text-text">
+                        {i18nT('pages.appDetailPage.session_approval_member_threads')}
+                      </div>
+                    )}
                     <SessionApprovalModes
                       className="mt-1.5 text-[12px]"
                       label={i18nT('pages.appDetailPage.session_approval_modes')}
                     />
                     <div className="mt-1.5 text-[11px] text-muted">
                       {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>sessionApproval</code>
+                      {app.manifest.permissions.memberThreads && <>, <code>memberThreads</code></>}
                     </div>
                   </div>
                 )}

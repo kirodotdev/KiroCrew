@@ -568,6 +568,13 @@ class Permissions:
     #: May send turns, choose response options, approve or deny pending tool
     #: requests, and change approval modes for user-owned sessions.
     sessionApproval: bool = False  # noqa: N815
+    #: Widens ``sessionApproval`` to a member's pinned DM thread (the live
+    #: ``member-*`` slot the owner opened): the same four actions, nothing else
+    #: about the Bot. Grants nothing without ``sessionApproval``, and a
+    #: manifest that newly declares it re-opens that grant's consent. Declared
+    #: rather than implied so "which apps can speak to my Bots" is
+    #: answerable from the manifest.
+    memberThreads: bool = False  # noqa: N815
     #: May spawn a background agent through the host's subagent manager.
     #: Declared rather than implicit so "which apps can start an agent" is
     #: auditable from the manifest instead of from an app's import graph.
@@ -603,6 +610,8 @@ class Permissions:
             d["cron"] = True
         if self.sessionApproval:
             d["sessionApproval"] = True
+        if self.memberThreads:
+            d["memberThreads"] = True
         if self.spawn:
             d["spawn"] = True
         if self.jobs:
@@ -635,6 +644,7 @@ class Permissions:
             memory=str(data.get("memory", "")),
             cron=data.get("cron") is True,
             sessionApproval=data.get("sessionApproval") is True,  # noqa: N815
+            memberThreads=data.get("memberThreads") is True,  # noqa: N815
             spawn=data.get("spawn") is True,
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815

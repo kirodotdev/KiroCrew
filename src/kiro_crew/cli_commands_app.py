@@ -176,6 +176,10 @@ _SESSION_APPROVAL_DESC = (
     "Can send messages and choose response options in your chats, approve or deny "
     "tool prompts, and switch a chat's approval mode."
 )
+# The dashboard's line for ``permissions.memberThreads``
+# (``pages.appDetailPage.session_approval_member_threads``), shown only when the manifest
+# declares that scope beside the grant.
+_MEMBER_THREADS_DESC = "This includes your own chats with your Bots."
 
 
 def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
@@ -197,6 +201,10 @@ def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
         manifest = get_app_manifest(app_name)
     except Exception:  # noqa: BLE001 - an unreadable manifest must not hide the link
         manifest = None
+    if manifest is not None and manifest.permissions.memberThreads:
+        # A second line of the Chats entry, as the dashboard shows it inside the
+        # same box: the scope widens that grant and is not a grant of its own.
+        print(f"              {_MEMBER_THREADS_DESC}", file=sys.stderr)
     if manifest is not None:
         # Manifest text is app-authored, so every line goes through the sanitizer.
         for line in format_permissions_summary(manifest).splitlines():

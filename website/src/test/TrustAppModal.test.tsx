@@ -297,6 +297,9 @@ describe('LibraryPage trust gate', () => {
     expect(screen.getByText(`${K}.session_approval_heading`)).toBeTruthy()
     expect(screen.getByText(`${K}.session_approval_desc`)).toBeTruthy()
     expect(screen.getByText(`${K}.session_approval_modes`)).toBeTruthy()
+    // Without `memberThreads` the grant stops at the person's own chats, and
+    // the box says nothing about Bots.
+    expect(screen.queryByText(`${K}.session_approval_member_threads`)).toBeNull()
     expect(screen.queryByText('sessionApproval')).toBeNull()
     expect(screen.getByText('components.approvalModePicker.normal_label')).toBeTruthy()
     expect(screen.getByText('components.approvalModePicker.normal_desc')).toBeTruthy()
@@ -318,6 +321,28 @@ describe('LibraryPage trust gate', () => {
     expect(text).toContain(`${K}.on_cancel LaunchDarkly`)
     expect(text).not.toContain(`${K}.install_outcome`)
     expect(text).not.toContain(`${K}.install_on_cancel`)
+  })
+
+  it('names the member threads in the session-approval box when the manifest widens the grant to them', async () => {
+    const [installed] = await listApps()
+    listApps.mockResolvedValue([{
+      ...installed,
+      manifest: {
+        ...installed.manifest,
+        permissions: { sessionApproval: true, memberThreads: true },
+      },
+    }])
+    enableApp.mockRejectedValue(TRUST_DENIED())
+    renderPage()
+    await clickEnable()
+
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+    // The scope is a line INSIDE the session-approval box, not a fourth
+    // capability row: it widens that grant and grants nothing on its own.
+    expect(screen.getByText(`${K}.session_approval_heading`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_desc`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_member_threads`)).toBeTruthy()
+    expect(screen.queryByText('memberThreads')).toBeNull()
   })
 
   it('says on the enable gate that a community registry listing was not vetted (#11159)', async () => {
