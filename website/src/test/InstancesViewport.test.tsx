@@ -1,7 +1,7 @@
 // The reactive token re-mint budget, the mc-switch-instance gate, the load-timeout
 // verdict, the iframe-mounted journal and mc-embedded-boot attribution are tested in
 // InstancesViewport.paneLoad.test.tsx; both suites share InstancesViewportTestUtils.tsx.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
@@ -15,6 +15,7 @@ import {
 } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 import { mockConnectedCd1 } from './InstancesViewportTestUtils'
+import { CHAT_COMPLETE_NOTIFY_KEY, saveChatCompleteNotify } from '../hooks/chatCompleteNotify'
 import { namedCeiling } from './namedCeiling'
 
 // The postinstall patch (scripts/patch-happy-dom-iframe.mjs) makes happy-dom's
@@ -653,6 +654,24 @@ describe('InstancesViewport', () => {
     })
     expect(focusModeEnabled()).toBe(true)
     __resetFocusMode()
+  })
+
+  it('relays the chat-complete toast opt-in and re-sends it when Settings flips it (#20191)', async () => {
+    onTestFinished(() => { localStorage.removeItem(CHAT_COMPLETE_NOTIFY_KEY) })
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    const post = vi.fn()
+    Object.defineProperty(document.querySelector('iframe'), 'contentWindow', { get: () => ({ postMessage: post }) })
+    const lastModel = () => post.mock.calls.at(-1)?.[0]
+
+    act(() => { saveChatCompleteNotify(true) })
+    await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: true }))
+    act(() => { saveChatCompleteNotify(false) })
+    await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: false }))
   })
 
   it('takes chrome visibility from the ACTIVE pane only', async () => {
