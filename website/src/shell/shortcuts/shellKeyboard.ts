@@ -7,7 +7,7 @@ import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSli
 import { isStaleProjectDirError } from '../../utils/folderAgent'
 import type { ChatFolder } from '../../types'
 import { newChatShortcutArgs } from './newChatArgs'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
@@ -78,9 +78,11 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // The one failure a folder create adds: the folder's project directory
       // is gone. The folder "+" says so under the folder header; the shortcut
       // has no header, so it uses the shell's transient notice, as an error
-      // like the folder's own.
+      // like the folder's own. Any other failure goes there too.
       if ('project' in args && args.project && isStaleProjectDirError(err)) {
         dispatch(setAgentSwitchNotice({ message: i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project }), error: true }))
+      } else {
+        reportCreateFailure(dispatch, err)
       }
     },
     onSuccess: (view) => {
