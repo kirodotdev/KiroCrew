@@ -70,6 +70,35 @@ def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
     return platform_compat.get_process_start_id(pid) == recorded
 
 
+def _release_stdin(process: asyncio.subprocess.Process) -> None:
+    """Close this gateway's write end of *process*'s stdin, discarding unsent bytes.
+
+    The kill's last word to a tree no signal reached. A root that exits before its
+    tree does -- the leader killed first, or a launcher that died under its agent --
+    leaves descendants holding the write ends of stdout and stderr, so asyncio's
+    transport never sees every pipe close, never finishes, and never closes stdin
+    either. The agent below then reads no EOF and outlives the session for as long
+    as the gateway runs. Where the leaderless group cannot be vouched
+    (``group_vouching_available`` is Linux-only), nothing else reaches it unless a
+    descendant was recorded before the root died, so on macOS this is the whole
+    teardown of a tree whose root died during the initialize handshake.
+
+    Signals nothing: only holders of the pipe's other end see the EOF, and those
+    are by construction this spawn's own tree. ``abort`` rather than ``close``,
+    because ``close`` waits for buffered bytes to drain into a reader that may
+    never read again, and the stdin pipe's transport rather than the subprocess
+    transport, whose ``close`` kills a root that is still running.
+    """
+    stdin = getattr(process, "stdin", None)
+    transport = getattr(stdin, "transport", None)
+    if transport is None or transport.is_closing():
+        return
+    try:
+        transport.abort()
+    except Exception:  # noqa: BLE001 - a teardown never fails on a pipe close
+        logger.debug("AcpRuntime kill: could not release the root's stdin", exc_info=True)
+
+
 def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
     """Untrack the descendants that are gone; return the ones still alive.
 
@@ -632,6 +661,9 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                 await asyncio.shield(escalate())
                 raise
             await escalate()
+        # Before the handle is dropped, whatever the ladder reached: see
+        # _release_stdin for the tree this is the whole teardown of.
+        _release_stdin(self._process)
         # Before the handle is dropped: the death line above was
         # written pre-signal and says returncode=<not reaped>.
         root_confirmed_dead = self._process.returncode is not None

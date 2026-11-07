@@ -179,7 +179,7 @@ names its responsibility, bound in the class under that owner's header.
 
 | Runtime owner | Owns |
 |---|---|
-| `acp/runtime_tree_kill.py` | the runtime's process tree and its teardown: proving the root is still the process it spawned, recording its descendants, signalling the tree, and `kill` with its reap and the release of what the process held |
+| `acp/runtime_tree_kill.py` | the runtime's process tree and its teardown: proving the root is still the process it spawned, recording its descendants, signalling the tree, and `kill` with its reap and the release of what the process held, the root's stdin pipe included |
 | `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
 | `acp/runtime_spawn_entry.py` | `spawn` under the cold-start admission, the one re-derive retry after a stale spawn spec, and the revive of a runtime whose start failed |
 | `acp/runtime_session_setup.py` | what `session/new` and `session/load` are built from and checked against: the working directory, the MCP server array (the mirrored projection, the stub session, the pooled and unpooled control planes, the member panel), KAS custom agents, the derived-spec and member-projection checks, the unresolved-reference guard, the session-open mount check, the start budget and the copy of the native launch sources |
@@ -4165,6 +4165,22 @@ visible in the field instead of reading as a teardown that worked. The verdict
 is deliberately three-valued: only a read that happened and disagreed may
 describe the root as no longer ours, while an unrecorded or unreadable identity
 refuses just as firmly but reports itself as unmeasured.
+
+**What no signal reached still reads EOF.** Once its signal ladder has run,
+whatever that reached, the POSIX kill releases the gateway's write end of the
+root's stdin before it drops the handle (`runtime_tree_kill._release_stdin`). A
+root that died first leaves descendants holding stdout and stderr, so asyncio's
+transport never sees every pipe close and never closes stdin by itself; the
+agent below then reads no EOF and runs for the life of the gateway. On macOS,
+where no member can vouch, that is the whole teardown of a tree whose root died
+before any descendant was recorded (a leader killed during the `initialize`
+handshake), and it is the stdin EOF, not a signal, that ends the agent and its
+engine, and with them any MCP server below them. It signals nothing: only
+holders of the pipe's other end see the EOF, and they are this spawn's own tree.
+It is the stdin pipe's `abort`, never its `close`, which waits for buffered
+bytes to drain into a reader that may never read again, and never the subprocess
+transport's `close`, which kills a root that is still running. Pinned by
+`test/test_acp_runtime_kill.py::test_kill_releases_stdin_so_the_tree_a_dead_root_left_reads_eof`.
 
 **The Windows half of that reaped root is closed, by different evidence.** The
 vouching read above is Linux-only (the environ read is), so macOS keeps the
