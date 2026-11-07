@@ -2574,7 +2574,7 @@ entries match. In an entry with any of that wider syntax an escape must be ASCII
 punctuation other than `<` `>` (Rust reads `\<` `\>` as word boundaries and refuses
 other escapes); an entry outside it, an over-long list,
 and a list the projection withholds are named in the session-start notice) only when
-`may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except `allowedCommands` itself, `kas_grant_only_settings.without_allowed_commands`, so a `deniedCommands` or `denyByDefault` beside it keeps every command prompting), the handle keeps them
+`may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except the ones that never turn a matched command into a prompt on kiro-cli, `kas_grant_only_settings.without_shell_grant_keys`: `allowedCommands` itself, `denyByDefault` (the `spec-shell-allowlist` row refuses an unmatched command first) and a boolean `autoAllowReadonly`; so any other key beside it keeps every command prompting, and a `deniedCommands` beside it is read under **KAS spec grant beside a checked deny** below), the handle keeps them
 (`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
 requests (`AcpEvent.spec_granted_commands`). In place of the built-in name, the row
 then needs a shell call (`execute_bash` among its names, `is_shell`) whose
@@ -2598,8 +2598,8 @@ can carry a separator into one argument and the parts would not be the commands 
 command as above and an entry matches each part whole, as kiro-cli asks about
 each command of a chain. The deny floor and the other deny tiers run on the
 whole line first, so a chain carrying a denied command is still refused, and a
-spec with `deniedCommands` or `denyByDefault` beside `allowedCommands` keeps the
-grant withheld as before. When an entry matches such a command whole or matches the plain command before
+spec with `deniedCommands` beside `allowedCommands` keeps the grant withheld
+unless Crew reads every deny entry (**KAS spec grant beside a checked deny** below). When an entry matches such a command whole or matches the plain command before
 its first composition character (`allowed_commands.composition_blocks_match`), the
 gate's fall-through `allow` carries `COMPOSITION_NOTICE` as its reason and the
 dashboard shows it ahead of the card; under `denyByDefault` the refusal names the
@@ -2645,8 +2645,13 @@ unattended job refuses an unlisted command instead of running it, and an
 interactive session refuses it at once instead of prompting. An entry outside the
 subset, or past the bound, allows nothing: the row fails closed and the
 session-start notice names `allowedCommands`. A malformed record reads as an
-empty allowlist. A listed command still prompts: the author's own
-`denyByDefault` withholds the `allowedCommands` grant, as above. No allowlist is
+empty allowlist. A listed command is answered by the grant row above, as on
+kiro-cli. With `autoAllowReadonly: true` on the same shell key (the literal
+`true` only) the projection also records `_crewShellReadonly`, stamped as
+`AcpEvent.spec_shell_readonly`, and the row lets past a command that is not
+matched but is one the read-only row answers (recovered, no git, read-only by
+`is_read_only_bash`), as kiro-cli's `eval_perm` runs a read-only command before it
+reads `denyByDefault`; the read-only row then approves it after every deny row. No allowlist is
 recorded when the spec's `allowedTools` names the shell by name
 (`kas_permissions.allowed_tools_grant_shell`: `@builtin`, `@builtin/`,
 `@builtin/*`, or an entry `canonical_kiro_cli_tool_name` folds to
@@ -2686,14 +2691,35 @@ followed as the filesystem follows it. Only for a spelling the entries do not
 cover are the entries' own directory parts resolved too, as kiro-cli
 canonicalizes them (bounded; a stall or failed resolution refuses). A write whose targets cannot be read (none, a truncated walk, a relative
 diff path, a relative target with no session directory) is refused. As a deny it holds
-under `ToolApprovalPolicy.AUTO_APPROVE`. A covered write still prompts on KAS, so
-the session-start notice keeps naming `allowedPaths`. On Windows, where kiro-cli's
+under `ToolApprovalPolicy.AUTO_APPROVE`. A covered write is answered by the grant
+below. On Windows, where kiro-cli's
 glob set reads `\` as a separator, entries and targets are matched in one form
 (`allowed_paths.to_glob_path`: `\` as `/`, ASCII letters case-folded, as NTFS
 compares them) and a drive root (`c:/`) is absolute; an entry with `%VAR%` or
 `$env:`, a UNC entry, and one whose `..` climbs off its drive cover nothing. The
 `kirocrew chat` CLI gate passes both spec allowlists (shell and write) to
-`on_tool_call`, so answering its prompt cannot run what they refuse. A remote
+`on_tool_call`, so answering its prompt cannot run what they refuse.
+
+**KAS spec write grant (`allowedPaths`)** — on kiro-cli a write every target of
+which a write `allowedPaths` entry covers runs unasked, whether or not
+`allowedTools` lists the write tool. The projection records the usable entries of
+both write keys (`kas_permissions.crew_answered_paths`, the subset and 64-entry
+bound above) under `_crewAnsweredPaths` only when
+`may_grant_builtin_at_gate_now("fs_write")` holds and no restriction the author
+wrote on the write tool withholds it (`kas_agents._allowed_commands_withheld` with `fs_write`, read
+over every write key except `allowedPaths` and `fallbackAction`,
+`kas_grant_only_settings.without_write_grant_keys`, so a `deniedPaths` or an `ask`/`deny`
+rule on `fs_write` keeps every write prompting). The handle anchors them like the
+write allowlist (`kas_write_allowlist.projected_answered_paths`, re-read on a mode
+switch), keeps them (`AcpSessionHandle.kas_crew_answered_paths`) and stamps them
+on its own agent's requests only (`AcpEvent.spec_granted_paths`). The
+`spec-builtin-grant` row then also approves a file write with `fs_write` among
+its names (so never a deny-only alias such as `delete_file`) whose every target
+`edit_target_candidates` names is covered as written and symlink-resolved, by the
+test the `spec-write-allowlist` row uses (`_write_target_uncovered`). A write whose
+targets cannot all be read grants nothing. Every other condition of the row still
+holds. An unusable entry, an over-long list and a withheld list are named in the
+session-start notice. A remote
 workspace turns the built-ins into MCP tools these rows do not bind, so
 `_remote_workspace_agents` refuses an agent carrying either allowlist
 (`REMOTE_AGENT_RESTRICTED`), as it refuses one with authored shell or file rules.

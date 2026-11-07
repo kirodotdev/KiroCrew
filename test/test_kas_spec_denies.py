@@ -148,6 +148,32 @@ def test_another_restriction_beside_the_deny_keeps_the_grant_at_the_prompt(besid
     assert grant is None or not grant.commands
 
 
+def test_a_grant_beside_denied_commands_and_deny_by_default_still_asks() -> None:
+    """Both readings at once: the ``allowedCommands`` answer keeps ``denyByDefault``
+    out of the restriction but still reads ``deniedCommands`` as one, and the deny
+    lift reads ``denyByDefault`` as a restriction. So neither answers the matched
+    command, and it asks (fail toward ask)."""
+    settings = {
+        "shell": {
+            "allowedCommands": ["make build"],
+            "deniedCommands": ["rm .*"],
+            "denyByDefault": True,
+        }
+    }
+    out, grant = _project(toolsSettings=settings)
+    assert CREW_ANSWERED_COMMANDS_KEY not in out
+    assert grant is None or not grant.commands
+    verdict = _judge(_shell("make build"), out, grant)
+    assert verdict.action != TOOL_AUTO_APPROVE and verdict.tier != "spec-builtin-grant"
+    # Without the deny, the same `denyByDefault` keeps the grant.
+    plain, plain_grant = _project(
+        toolsSettings={"shell": {"allowedCommands": ["make build"], "denyByDefault": True}}
+    )
+    assert plain[CREW_ANSWERED_COMMANDS_KEY] == ["make build"]
+    plain_verdict = _judge(_shell("make build"), plain, plain_grant)
+    assert (plain_verdict.action, plain_verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
 # ── write paths ───────────────────────────────────────────────────────────────
 
 

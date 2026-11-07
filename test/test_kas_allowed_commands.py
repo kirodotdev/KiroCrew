@@ -570,7 +570,7 @@ def test_the_projection_records_the_patterns_and_relays_no_shell_allow() -> None
     "extra",
     [
         {"permissions": {"rules": [{"capability": "shell", "effect": "ask"}]}},
-        {"toolsSettings": {"shell": {"allowedCommands": ["git status"], "denyByDefault": True}}},
+        {"toolsSettings": {"shell": {"allowedCommands": ["git status"], "timeout": 5}}},
         {"toolsSettings": {"shell": {"allowedCommands": ["git status"], "deniedCommands": ["x"]}}},
     ],
     ids=["authored-ask", "other-shell-setting", "denied-commands"],
@@ -583,15 +583,44 @@ def test_an_authored_shell_restriction_withholds_the_patterns(extra: dict[str, A
 
 
 def test_the_grant_itself_is_not_read_as_a_restriction() -> None:
-    from kiro_crew.acp.kas_grant_only_settings import without_allowed_commands
+    from kiro_crew.acp.kas_grant_only_settings import (
+        without_allowed_commands,
+        without_shell_grant_keys,
+        without_write_grant_keys,
+    )
 
     assert without_allowed_commands({"shell": {"allowedCommands": ["x"]}, "read": {"a": 1}}) == {
         "read": {"a": 1}
     }
+    # The `allowedTools` reading keeps every other shell key as a restriction.
     assert without_allowed_commands(
         {"execute_bash": {"allowedCommands": ["x"], "denyByDefault": True}}
     ) == {"execute_bash": {"denyByDefault": True}}
     assert without_allowed_commands("bad") == "bad"
+    # For the `allowedCommands` reading, `denyByDefault` and a boolean
+    # `autoAllowReadonly` never turn a matched command into a prompt on kiro-cli, so
+    # they go too; any other key stays.
+    assert (
+        without_shell_grant_keys(
+            {"execute_bash": {"allowedCommands": ["x"], "denyByDefault": True}}
+        )
+        == {}
+    )
+    assert without_shell_grant_keys(
+        {"shell": {"allowedCommands": ["x"], "autoAllowReadonly": True, "deniedCommands": ["y"]}}
+    ) == {"shell": {"deniedCommands": ["y"]}}
+    assert without_shell_grant_keys({"shell": {"autoAllowReadonly": "yes"}}) == {
+        "shell": {"autoAllowReadonly": "yes"}
+    }
+    assert without_shell_grant_keys("bad") == "bad"
+    # The write `allowedPaths` reading: `fallbackAction` only decides an uncovered
+    # write, so it goes; `deniedPaths` stays.
+    assert without_write_grant_keys(
+        {"write": {"allowedPaths": ["a/**"], "fallbackAction": "deny"}, "shell": {"x": 1}}
+    ) == {"shell": {"x": 1}}
+    assert without_write_grant_keys(
+        {"fs_write": {"allowedPaths": ["a/**"], "deniedPaths": ["a/x"]}}
+    ) == {"fs_write": {"deniedPaths": ["a/x"]}}
 
 
 def test_a_ceiling_that_withholds_the_shell_records_no_patterns(monkeypatch) -> None:

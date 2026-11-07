@@ -16,6 +16,7 @@ from typing import Any
 
 from kiro_crew.acp.kas_agents import _registered_entry, _switched_entry
 from kiro_crew.acp.kas_permissions import CREW_WRITE_ALLOWLIST_KEY
+from kiro_crew.acp.kas_spec_grants import _entry_crew_answered_paths
 
 
 def _entry_write_allowlist(entry: Any, cwd: str) -> tuple[str, ...] | None:
@@ -71,3 +72,19 @@ def projected_write_allowlist(
 def switched_write_allowlist(custom_agents: Any, mode_id: str, cwd: str) -> tuple[str, ...] | None:
     """That allowlist once a KAS mode switch moves the session to *mode_id*."""
     return _entry_write_allowlist(_switched_entry(custom_agents, mode_id), cwd)
+
+
+def projected_answered_paths(custom_agents: Any, agent_id: str, cwd: str) -> tuple[str, ...]:
+    """The write ``allowedPaths`` Crew answers for *agent_id*'s registered entry
+    (``kas_permissions.crew_answered_paths``), anchored at *cwd* like the
+    ``fallbackAction: "deny"`` allowlist. Empty grants nothing."""
+    return anchor_write_allowlist(
+        _entry_crew_answered_paths(_registered_entry(custom_agents, agent_id)), cwd
+    )
+
+
+def switched_answered_paths(custom_agents: Any, mode_id: str, cwd: str) -> tuple[str, ...]:
+    """Those paths once a KAS mode switch moves the session to *mode_id*."""
+    return anchor_write_allowlist(
+        _entry_crew_answered_paths(_switched_entry(custom_agents, mode_id)), cwd
+    )
