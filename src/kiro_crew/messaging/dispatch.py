@@ -1089,13 +1089,19 @@ class ChannelTurns:
                     driver_extra: dict[str, Any] = {"monitor_completion": monitor.hook}
                 else:
 
-                    def _begin_turn() -> None:
+                    def _require_admitted() -> None:
                         if asker.still_admitted is not None and not asker.still_admitted():
                             raise _SenderNoLongerAdmitted
+
+                    def _begin_turn() -> None:
+                        _require_admitted()
                         sessions.begin_turn(session_key)
 
                     closing_gate = turn_ceiling.gate(session_key, _begin_turn)
-                    driver_extra = {}
+                    # Asked again by the provider after its own pre-prompt awaits.
+                    driver_extra = (
+                        {} if asker.still_admitted is None else {"prompt_gate": _require_admitted}
+                    )
                 driver = TurnDriver(
                     provider,
                     retry_guard if retry_guard is not None else renderer,
@@ -1324,9 +1330,10 @@ class ChannelTurns:
             )
             verdict = Verdict.STALE
         except _SenderNoLongerAdmitted:
-            # Admitted on arrival, refused at the pre-stream gate: nothing was
-            # prompted or recorded, and the stand-in is what the ``finally`` closes,
-            # because a channel's close sends a placeholder for a turn with no output.
+            # Admitted on arrival, refused at the pre-stream gate or the provider's
+            # prompt gate: nothing was prompted or recorded, and the stand-in is what
+            # the ``finally`` closes, because a channel's close sends a placeholder for
+            # a turn with no output.
             logger.info("%s: sender no longer admitted for %s", channel, session_key)
             self._audit(asker, "denied")
             renderer = SilentRenderer()

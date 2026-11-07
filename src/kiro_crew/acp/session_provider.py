@@ -730,8 +730,13 @@ class AcpSessionProvider(LLMProvider):
         *,
         allow_image: bool = True,
         sign_in_ask: str = "",
+        prompt_gate: Callable[[], None] | None = None,
     ) -> AsyncIterator[LLMEvent]:
-        """Send a prompt and yield LLMEvent objects until the turn completes."""
+        """Send a prompt and yield LLMEvent objects until the turn completes.
+
+        ``prompt_gate`` is called after the pending MCP re-injection's awaits, just
+        before the prompt; whatever it raises ends the turn with nothing sent.
+        """
         # Re-establish this session's gateway claim before the turn can call a
         # tool. The shared identity publisher does the same at every surface that
         # drives a USER turn, and this is the boundary the sessions it cannot see
@@ -757,6 +762,8 @@ class AcpSessionProvider(LLMProvider):
         # close. Replaces ``self._handle`` on success; read it after this.
         try:
             await self.apply_pending_mcp_reinjection()
+            if prompt_gate is not None:
+                prompt_gate()
         except BaseException:
             # Outside the turn's own try below, so its claim is released here.
             await self._end_shared_turn(claim)
