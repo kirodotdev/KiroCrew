@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { deleteSlot, resumeFromHistory, setActiveSlot, setCloseRefused, sseChatMessage } from '../store/chatSlice'
+import chatReducer, { deleteSlot, deleteSlotCallerReported, resumeFromHistory, setActiveSlot, setCloseRefused, sseChatMessage } from '../store/chatSlice'
 import dashboardReducer, { addSlotOptimistic, fetchSlots, sseSlotPatch, sseSlots } from '../store/dashboardSlice'
 import { selectCloseNotice } from '../store/dashboard/closeWatch'
 import notificationsReducer from '../store/notificationsSlice'
@@ -83,6 +83,46 @@ describe('an uncoded close failure', () => {
     expect(chat(store).closeRefused).toMatchObject({ key: 'doomed', reason: 'failed' })
     expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
     expect(root(store).dashboard.closingSlots).toEqual({})
+  })
+
+  it('a caller-reported close raises no notice for its own failure, after the recovery read too', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(new TypeError('Failed to fetch'))
+    apiMock.chatSlots.mockResolvedValue([slotRow('doomed'), slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    expect((await deleteSlotCallerReported(store.dispatch, 'doomed')).type).toBe('chat/deleteSlot/rejected')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The row still comes back; only the sidebar notice is left to the caller.
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+    expect(chat(store).closeRefused).toBeNull()
+  })
+
+  it('a caller-reported close leaves another session\'s close notice up', async () => {
+    apiMock.deleteChatSlot.mockResolvedValue(undefined)
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setCloseRefused({ key: 'peer', title: 'Peer', reason: 'failed' }))
+
+    await deleteSlotCallerReported(store.dispatch, 'doomed')
+
+    expect(chat(store).closeRefused).toMatchObject({ key: 'peer' })
+  })
+
+  it('a caller-reported close covers only that one close', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(new TypeError('Failed to fetch'))
+    apiMock.chatSlots.mockResolvedValue([slotRow('doomed'), slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    await deleteSlotCallerReported(store.dispatch, 'doomed')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // A later close the person presses reports its own failure as usual.
+    await store.dispatch(deleteSlot('doomed'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chat(store).closeRefused).toMatchObject({ key: 'doomed', reason: 'failed' })
   })
 
   it('reports an uncoded close failure whose recovery list cannot be read', async () => {

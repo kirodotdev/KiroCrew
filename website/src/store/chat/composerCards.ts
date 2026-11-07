@@ -295,7 +295,7 @@ export const composerCardReducers = {
     if (!state.followups) state.followups = {}
     state.followups[slot] = { items, ts: ts ?? Date.now() / 1000 }
   },
-  // `ts` guards the async case: "Start in new worktree" clears the card only
+  // `ts` guards the async case: "Start in a separate copy" clears the card only
   // after its request resolves, and a NEWER card may have arrived for the same
   // slot meanwhile. Passing the ts the action started with means the newer card
   // survives instead of being clobbered by the older action's completion.

@@ -1,4 +1,4 @@
-"""Tests for POST /api/worktree/create (follow-up card "Start in new worktree").
+"""Tests for POST /api/worktree/create (follow-up card "Start in a separate copy").
 
 The endpoint shells out to git, so the tests exercise both halves: input
 rejection (branch grammar, non-repo paths, sensitive paths) and the real

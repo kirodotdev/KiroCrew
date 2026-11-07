@@ -1490,6 +1490,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "chat.selectable-models"
   },
   {
+    "id": "chat.send-follow-ups-with-one-click",
+    "label": "Send follow-ups with one click",
+    "labelKey": "pages.settings.chatPanel.followup_start_sends",
+    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.send-shortcut",
     "label": "Send shortcut",
     "labelKey": "pages.settings.chatPanel.send_shortcut",
