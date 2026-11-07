@@ -13,6 +13,7 @@ registry topics live beside this file: subprocess-timeout reaping in
 
 from __future__ import annotations
 
+import asyncio
 import importlib.machinery
 import importlib.util
 import json
@@ -643,6 +644,41 @@ class TestApplyTrustFields:
         assert "featured" not in rows["ext-app"]
         # The internal snapshot key never leaks into the API payload.
         assert all("_index_author" not in r for r in rows.values())
+
+    @pytest.mark.asyncio
+    async def test_list_registry_bounds_concurrent_manifest_resolves(self, monkeypatch):
+        """A large external registry must not resolve every manifest at once:
+        each cache miss spawns a git clone, and on Windows that spawn runs on
+        the event-loop thread, so an unbounded burst stalls the loop."""
+        from kiro_crew.apps.registry_pipeline.catalog import _MANIFEST_RESOLVE_CONCURRENCY
+
+        limit = _MANIFEST_RESOLVE_CONCURRENCY
+        ext = [{"name": f"ext-{i}", "_registry": "labs"} for i in range(limit * 5)]
+        release = asyncio.Event()
+        in_flight = peak = 0
+
+        async def _fake_resolve(entry):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            if in_flight >= limit:
+                # Deferred, so every resolve already started runs before release.
+                asyncio.get_running_loop().call_soon(release.set)
+            await release.wait()
+            in_flight -= 1
+            return entry
+
+        async def _fake_external():
+            return ext
+
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        rows = await asyncio.wait_for(registry.list_registry(), timeout=30)
+        assert {r["name"] for r in rows} >= {e["name"] for e in ext}
+        assert peak <= limit
 
 
 # ---------------------------------------------------------------------------
