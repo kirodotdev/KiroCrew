@@ -17411,6 +17411,7 @@
         "episodic_search_label": "Cerca nei ricordi episodici",
         "inspector_query_label": "Query di prova",
         "filter_by_tag": "Filtra per tag:",
+        "event_filter_label": "Tipo di evento",
         "inspector": "Ispettore",
         "key_e_g_pref_backend_framework": "Chiave (ad es. pref.backend.framework)",
         "load_more": "Carica altro…",

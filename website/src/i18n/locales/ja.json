@@ -16555,6 +16555,7 @@
         "episodic_search_label": "エピソード記憶を検索",
         "inspector_query_label": "テストクエリ",
         "filter_by_tag": "タグでフィルタ:",
+        "event_filter_label": "イベントの種類",
         "inspector": "インスペクタ",
         "key_e_g_pref_backend_framework": "キー（例：pref.backend.framework）",
         "load_more": "さらに読み込み…",

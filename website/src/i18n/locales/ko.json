@@ -16555,6 +16555,7 @@
         "episodic_search_label": "에피소드 기억 검색",
         "inspector_query_label": "테스트 쿼리",
         "filter_by_tag": "태그로 필터:",
+        "event_filter_label": "이벤트 유형",
         "inspector": "인스펙터",
         "key_e_g_pref_backend_framework": "키 (예: pref.backend.framework)",
         "load_more": "더 불러오기…",

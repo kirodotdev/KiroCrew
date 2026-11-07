@@ -17411,6 +17411,7 @@
         "episodic_search_label": "Pesquisar memórias episódicas",
         "inspector_query_label": "Consulta de teste",
         "filter_by_tag": "Filtrar por tag:",
+        "event_filter_label": "Tipo de evento",
         "inspector": "Inspetor",
         "key_e_g_pref_backend_framework": "Chave (ex.: pref.backend.framework)",
         "load_more": "Carregar mais…",
