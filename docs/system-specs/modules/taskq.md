@@ -618,7 +618,9 @@ stop's record and is refused. A release refused
 because the row moved on needs no retry. The
 registration and terminal writes (`taskq_mark`, `taskq_fail`, `taskq_settle`'s
 `finish`) are POSTED to the writer thread through `_post_store_write` /
-`store.run` -- the single worker keeps them in submission order, so
+`store.run`. `taskq_settle` builds the row's `result_ref` inside that posted job
+too, because `agent_dir_for_display` resolves the run directory, a filesystem
+call that must not run on the loop. The single worker keeps them in submission order, so
 `admitted -> starting` (written awaited by the off-loop claimer, posted by the
 inline one) lands before the run's later `running`, and a `starting`
 that did not land at all is replayed by that later mark's own store phase
