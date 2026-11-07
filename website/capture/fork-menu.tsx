@@ -13,6 +13,7 @@
  *                `forkHasLaterMessages` answers false, as ChatPage's does there. Without it a later user
  *                message follows the reply and it answers true.
  *   all=1        also pass `onSpeak` and `shareEnabled`, so Speak and Share join the menu.
+ *   regen=0      omit `onRegenerate`, as ChatPage does on every reply but the newest.
  */
 import { useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -37,6 +38,7 @@ const choice = params.get('choice') !== 'off'
 const inflight = params.get('inflight') === '1'
 const newest = params.get('newest') === '1'
 const all = params.get('all') === '1'
+const regen = params.get('regen') !== '0'
 const refuse = params.get('refuse')
 const REFUSAL: Record<string, [string, string]> = {
   'empty-tail': ['no_messages_after_fork_point', 'no messages after the fork point'],
@@ -109,7 +111,7 @@ function Scene() {
         </RowBox>
         <RowBox>
           <AssistantMessage content={REPLY} isStreaming={false} slotRunning={false} messageTs="2026-09-29T09:12:40Z" timestamp="09:12" timestampTitle="Today 09:12" slotKey="chat-1" slotTitle="Composer PR" onTogglePin={() => {}}
-            onRegenerate={() => {}} onQuoteMessage={() => {}}
+            onRegenerate={regen ? () => {} : undefined} onQuoteMessage={() => {}}
             onFork={onFork} forkIndex={1} forkMessageId="m2" forkDirectionChoice={choice} forkHasLaterMessages={() => !newest}
             onSpeak={all ? () => {} : undefined} shareEnabled={all} />
         </RowBox>
