@@ -82,6 +82,7 @@ from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_rela
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
 from kiro_crew.dashboard.chat_api import slot_create as _owner_slot_create
 from kiro_crew.dashboard.chat_api import slot_detail as _owner_slot_detail
+from kiro_crew.dashboard.chat_api import slot_discard as _owner_slot_discard
 from kiro_crew.dashboard.chat_api import slot_effort as _owner_slot_effort
 from kiro_crew.dashboard.chat_api import slot_guards as _owner_slot_guards
 from kiro_crew.dashboard.chat_api import slot_lifecycle as _owner_slot_lifecycle
@@ -278,6 +279,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
     api_chat_slots,
     api_chat_slots_unrestored,
 )
+from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
     _own_models_field,
@@ -1375,6 +1377,7 @@ _facade_compose(
         _owner_slot_approval,
         _owner_slot_create,
         _owner_slot_detail,
+        _owner_slot_discard,
         _owner_slot_effort,
         _owner_slot_guards,
         _owner_slot_lifecycle,

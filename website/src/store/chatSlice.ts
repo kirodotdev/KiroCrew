@@ -616,21 +616,28 @@ function closeRefusalCode(err: unknown): string | null {
   }
 }
 
+/** `discard`: the server closes the slot and deletes its history row only while the
+ *  session is empty, and its refusal is quiet: the caller never asked the user to
+ *  close anything. */
+export type DeleteSlotArg = string | { key: string; discard: true }
+
 export const deleteSlot = createAsyncThunk<
   string,
-  string,
+  DeleteSlotArg,
   // `alreadyGone` marks a close the server answered with 404: this request
   // closed nothing, so `deleteSlot.fulfilled` must not tear down the tab's
   // view state for a slot the close that did pop it may still restore.
   { fulfilledMeta: { alreadyGone: boolean } }
 >(
   'chat/deleteSlot',
-  async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
+  async (arg: DeleteSlotArg, { dispatch, getState, requestId, fulfillWithValue }) => {
+    const key = typeof arg === 'string' ? arg : arg.key
+    const discard = typeof arg !== 'string' && arg.discard === true
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
     const confirmationsAtStart = root.dashboard.closeConfirmations?.[key] ?? 0
-    // A new close press retires the last refusal's notice.
-    if (root.chat.closeRefused || root.dashboard.closeRestored) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    // A new close press retires the last refusal's notice; a discard is no press.
+    if (!discard && (root.chat.closeRefused || root.dashboard.closeRestored)) dispatch({ type: 'chat/setCloseRefused', payload: null })
     // Read before the optimistic removal takes the row away. An untitled row stores
     // null, not the localized label: the notice outlives a language switch.
     const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
@@ -700,7 +707,7 @@ export const deleteSlot = createAsyncThunk<
     // so it completes the close instead of failing it.
     let alreadyGone = false
     try {
-      await api.deleteChatSlot(key).catch((err: unknown) => {
+      await (discard ? api.discardChatSlot(key) : api.deleteChatSlot(key)).catch((err: unknown) => {
         if (!isNotFoundError(err)) throw err
         alreadyGone = true
       })
@@ -734,6 +741,8 @@ export const deleteSlot = createAsyncThunk<
       // Uncoded: the server may have popped the key, so only the refetch decides.
       dispatch(releaseCloseHold({ key, requestId, distrustInFlight: uncoded }))
       const recovery = dispatch(fetchSlots())
+      // A refused discard is quiet: the caller never asked the user to close anything.
+      if (discard) throw new Error('discard refused')
       if (uncoded) {
         const notice = () => dispatch({ type: 'chat/setCloseRefused', payload: { key, title: refusedTitle, reason: 'failed' } })
         const shouldNotice = (readFailed: boolean) => {
