@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import { useAppSelector } from '../store'
-import { SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
+import { SHORTCUTS_ENABLED_EVENT, SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
 import {
   chordMatchesEvent,
   hasCustomChord,
@@ -70,6 +70,32 @@ export const DOUBLE_SHIFT_WINDOW_MS = 250
 
 /** Live read of the global shortcuts toggle (default on; '0' means disabled). */
 const shortcutsEnabled = () => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0'
+
+function subscribePaletteShortcuts(onChange: () => void): () => void {
+  // `key === null` is a `localStorage.clear()` in another tab.
+  const onStorage = (e: StorageEvent) => { if (e.key === SHORTCUTS_ENABLED_KEY || e.key === null) onChange() }
+  window.addEventListener(SHORTCUTS_ENABLED_EVENT, onChange)
+  window.addEventListener('storage', onStorage)
+  return () => {
+    window.removeEventListener(SHORTCUTS_ENABLED_EVENT, onChange)
+    window.removeEventListener('storage', onStorage)
+  }
+}
+
+/**
+ * Whether the palette's keyboard bindings open it in this tab right now, as a
+ * render value. The keydown handler below reads the flag from storage on every
+ * keystroke, so a change made in ANOTHER tab applies here at once; this view
+ * follows the same read, re-rendering on the same-tab event Settings fires and
+ * on the `storage` event another tab's write fires. That differs on purpose
+ * from useShortcutsEnabled (useNavShortcutHint), which follows only the same-tab
+ * event because the chords it advertises do. Consumers that hide another route
+ * into the palette while the chord is live (the top-bar search trigger,
+ * useAppShell) read this one, so the route comes back the moment the chord stops.
+ */
+export function usePaletteShortcutsEnabled(): boolean {
+  return useSyncExternalStore(subscribePaletteShortcuts, shortcutsEnabled, shortcutsEnabled)
+}
 
 export interface UseCommandPalette {
   /** Whether the palette is currently shown. */
