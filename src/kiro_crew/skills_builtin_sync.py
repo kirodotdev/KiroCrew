@@ -447,8 +447,13 @@ def _copy_with_carried_skill_md(dest_dir: Path, carried: bytes) -> Callable[[str
     return _copy
 
 
-def _ensure_builtin_skills(base: Path) -> None:
+def _ensure_builtin_skills(base: Path) -> list[tuple[str, Path]]:
     """Sync built-in skills: copy new/updated, remove known-stale ones.
+
+    Returns ``(name, path)`` for each diverged skill directory (a user skill
+    sharing a builtin's name, or a locally edited builtin) moved aside so the
+    packaged copy could take its name, so the caller can tell the user where
+    it went.
 
     Supports nested directories (e.g. ``utils/tiny-url/SKILL.md``).
     Copies the entire skill directory (scripts, assets, etc.), not just SKILL.md.
@@ -472,6 +477,7 @@ def _ensure_builtin_skills(base: Path) -> None:
     """
     source_names: set[str] = set()
     supplied: set[str] = set()
+    set_aside: list[tuple[str, Path]] = []
     released = _released_skill_owners()
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
@@ -579,6 +585,7 @@ def _ensure_builtin_skills(base: Path) -> None:
                     # A failed finalize leaves the data at the dot-prefixed
                     # claim path (hidden but intact); installing the packaged
                     # version is still correct either way.
+                    set_aside.append((name, backup if backup is not None else claim))
                     logger.warning(
                         "Skill directory %s does not match the copy this sync "
                         "installed (user-authored or locally edited); preserved "
@@ -751,6 +758,7 @@ def _ensure_builtin_skills(base: Path) -> None:
                         old_skill_md,
                         exc_info=True,
                     )
+    return set_aside
 
 
 #: SHA-256 of the static outputs from the retired conductor skill generator.
@@ -915,13 +923,14 @@ def remove_retired_conductor_skill() -> bool:
         os.close(root_fd)
 
 
-def sync_builtins(self) -> None:
+def sync_builtins(self) -> list[tuple[str, Path]]:
     """Run the builtin-skill sync for this loader's directory.
 
     The explicit seam for callers that own an off-loop context (the
     gateway runs this in a worker thread as a background task after the
     dashboard socket binds). Construction-time sync skips itself on a
     running event loop, so without this seam a loop-thread process would
-    have no way to sync at all.
+    have no way to sync at all. Returns the skills it set aside, as
+    ``_ensure_builtin_skills`` does.
     """
-    _ensure_builtin_skills(self._dir)
+    return _ensure_builtin_skills(self._dir)

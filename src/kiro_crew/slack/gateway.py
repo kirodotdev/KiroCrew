@@ -767,6 +767,7 @@ class GatewayOrchestrator:
     channel_history: ChannelHistory | None
     dashboard_state: DashboardState | None
     _background_tasks: set[asyncio.Task]
+    _skills_sync_task: "asyncio.Task[list[tuple[str, Path]]] | None"
     _mcp_launch_approval_ready: asyncio.Event
     _memory_startup: MemoryStartup | None
     _memory_startup_task: asyncio.Task | None
