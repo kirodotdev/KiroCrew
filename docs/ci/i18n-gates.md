@@ -306,6 +306,14 @@ attributes and multiple catalog units inside one control. Ungrouped inline-flex
 content does not receive this boundary. Use these roles for actual control groups;
 they do not exempt text from translation checks.
 
+A `hidden` element is not page text. As a child it ends the run; nested inside an
+inline child, such as a `HoverTip` description copy, it is left out of that child's
+text, so two controls' hints never read as one spliced sentence. Such a copy, listed
+by its control's `aria-describedby`, is how an in-page hint stands in for a `title`
+inside the desktop window's drag band ([desktop-app](../build/desktop-app.md)), so
+it is treated as one: the attribute pass grades its words, and the layout check
+counts a clipped label inside that control as reachable in full.
+
 Locale-formatted machine timestamps may use a semantic `<time dateTime="...">`
 with `data-i18n-opaque` around only the formatted value. Keep surrounding labels
 in the catalog and keep active-locale formatting. Memory record fixture keys,

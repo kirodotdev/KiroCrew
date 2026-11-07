@@ -18,9 +18,14 @@ import { InstantTip, useInstantTip } from './InstantTip'
  * span would ALSO be read inline as page text (a heading would read as
  * "<title> Rename this artifact"). The child must not also carry a `title`, or
  * the native tooltip shows a second time.
+ *
+ * No `label` turns the hint off: the child renders untouched inside the
+ * same wrapper, so a caller may switch the hint on and off without remounting
+ * the control or changing the tree around it. The handlers stay on, so a
+ * pointer that leaves while the hint is off still closes it.
  */
 export default function HoverTip({ label, children }: {
-  label: ReactNode
+  label?: ReactNode
   children: ReactElement<{ 'aria-describedby'?: string }>
 }) {
   const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below' })
@@ -29,9 +34,11 @@ export default function HoverTip({ label, children }: {
   void _bubbleId
   return (
     <span data-hover-tip="" className="inline-flex" {...handlers}>
-      {isValidElement(children) ? cloneElement(children, { 'aria-describedby': descId }) : children}
-      <span id={descId} hidden>{label}</span>
-      <InstantTip tip={tip} tipId={tipId} className="whitespace-nowrap">{label}</InstantTip>
+      {label !== undefined && isValidElement(children) ? cloneElement(children, { 'aria-describedby': descId }) : children}
+      {label !== undefined && (<>
+        <span id={descId} hidden>{label}</span>
+        <InstantTip tip={tip} tipId={tipId} className="whitespace-nowrap">{label}</InstantTip>
+      </>)}
     </span>
   )
 }

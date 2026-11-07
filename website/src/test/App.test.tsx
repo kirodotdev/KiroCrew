@@ -1117,11 +1117,12 @@ describe('App routing', () => {
     expect(flow[0]).toHaveClass('tb-left')
     expect(flow[1]).toBe(centre)
     expect(flow[2]).toHaveClass('tb-right')
-    // The centre cell holds the trigger and the focus-mode toggle, and nothing
-    // else: a third control there is what website/AUTOSDE.yaml's
-    // max-two-buttons-per-row rule forbids.
+    // The centre cell holds the trigger and the focus-mode toggle (inside its
+    // hint's wrapper), and nothing else: a third control there is what
+    // website/AUTOSDE.yaml's max-two-buttons-per-row rule forbids.
     expect([...centre.children]).toHaveLength(2)
-    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle'))
+    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle').parentElement)
+    expect(centre.children[1]).toHaveAttribute('data-hover-tip')
     return shellSettled()
   })
 

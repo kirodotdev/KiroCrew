@@ -14,6 +14,7 @@ import {
 } from '../lib/routeHistoryPosition'
 import { routeHistoryMenuEntries, type RouteHistoryMenuEntry } from '../lib/routeHistoryLabels'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
+import HoverTip from './HoverTip'
 
 /**
  * Feed the route-history position store — mounted ONCE inside the router (next
@@ -110,7 +111,7 @@ export function NavHistoryArrows() {
         className={btn}
         disabled={!pos.canGoBack}
         label={i18nT('app.nav_back')}
-        title={backTitle}
+        hint={backTitle}
         keyshortcuts={backDef ? ariaKeyshortcutsFor(backDef) : undefined}
         step={step}
       >
@@ -121,7 +122,7 @@ export function NavHistoryArrows() {
         className={btn}
         disabled={!pos.canGoForward}
         label={i18nT('app.nav_forward')}
-        title={forwardTitle}
+        hint={forwardTitle}
         keyshortcuts={forwardDef ? ariaKeyshortcutsFor(forwardDef) : undefined}
         step={step}
       >
@@ -141,12 +142,12 @@ export function NavHistoryArrows() {
  * is then. Another navigation while it is open (browser Back, a chord) would
  * make those steps stale, so the menu is remounted closed instead.
  */
-function HistoryArrow({ direction, className, disabled, label, title, keyshortcuts, step, children }: {
+function HistoryArrow({ direction, className, disabled, label, hint, keyshortcuts, step, children }: {
   direction: -1 | 1
   className: string
   disabled: boolean
   label: string
-  title: string
+  hint: string
   keyshortcuts: string | undefined
   step: (delta: number) => void
   children: ReactNode
@@ -183,6 +184,9 @@ function HistoryArrow({ direction, className, disabled, label, title, keyshortcu
     <ContextMenu key={epoch} onOpenChange={onOpenChange}>
       {/* No aria-haspopup: the arrow's own activation is a step, not "open a
           menu", and announcing it as a menu button would promise Enter opens one. */}
+      {/* An in-page hint, not a native `title`: the desktop window's drag band
+          covers the top bar, and a native tooltip never paints inside it. */}
+      <HoverTip label={hint}>
       <ContextMenuTrigger asChild disabled={!hasEntries}>
         <button
           type="button"
@@ -199,12 +203,12 @@ function HistoryArrow({ direction, className, disabled, label, title, keyshortcu
           onContextMenu={e => { if (!hasEntries) e.preventDefault() }}
           disabled={disabled}
           aria-label={label}
-          title={title}
           aria-keyshortcuts={keyshortcuts}
         >
           {children}
         </button>
       </ContextMenuTrigger>
+      </HoverTip>
       <ContextMenuContent
         aria-label={i18nT(direction === -1 ? 'app.nav_back_history' : 'app.nav_forward_history')}
         data-testid="nav-history-menu"

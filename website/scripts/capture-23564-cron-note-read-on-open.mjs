@@ -94,7 +94,7 @@ try {
     await page.locator('[data-slot-key="cron-digest"]').getByText('Nightly digest').first().click()
     await page.getByText('Post the nightly digest.').first().waitFor({ timeout: 20_000 })
     await page.waitForTimeout(2500)
-    const title = await bell.getAttribute('title')
+    const title = await bell.evaluate(el => document.getElementById(el.getAttribute('aria-describedby') || '')?.textContent)
     const count = Number((title || '').match(/\d+/)?.[0] ?? 0)
     const ok = afterRestore.length === 0 && count === expected.count && JSON.stringify(acks) === JSON.stringify(expected.acks)
     console.log(`${NAME}/${theme}: restore acks=${JSON.stringify(afterRestore)} bell="${title}" acks=${JSON.stringify(acks)} -> ${ok ? 'ok' : 'FAIL'}`)
