@@ -569,6 +569,10 @@ class TestSteerRequeueOnTurnDeath:
         assert events.count("queue_push") == 2
         payloads = [c.args[1] for c in state.broadcast_ws.call_args_list]
         assert all(p["slot"] == "test" and p["queue_id"] for p in payloads)
+        # Each card says it is a requeued steer, so the client ties the row it
+        # drains into to the steer row; the queue entries themselves do not.
+        assert all(p["meta"]["requeuedSteer"] is True for p in payloads)
+        assert all("requeuedSteer" not in (item.get("meta") or {}) for item in slot._queue)
 
     @pytest.mark.asyncio
     async def test_no_pending_steers_is_noop(self, tmp_path, monkeypatch):
