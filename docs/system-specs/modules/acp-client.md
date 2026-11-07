@@ -4344,10 +4344,21 @@ selected it, and `resolve_spawn` decides the automatic half itself. Pinned by
 Choosing KAS means Kiro Crew's own engine and Kiro Crew's own sign-in. The
 route is `acp/kas_route.py`, one rule read by the harness and, through
 `agent_sdk.kas_bundle.kas_route()`, by every reader that describes a spawn:
-(1) `agent.kas_bundle` on is the bundle route; (2) a stored Kiro CLI pick
-(`agent.acp_backend == "kiro"`, `acp_backend_stored_as_kiro`) is the relay,
-because it runs on KAS only where kiro-cli itself offers v3
-([2026-10-28](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md));
+(1) `agent.kas_bundle` on is the bundle route; (2) a stored Kiro CLI pick is
+the relay, because it runs on KAS only where kiro-cli itself offers v3
+([2026-10-28](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)):
+the session's own Bot pin (`agents.<name>.acp_backend == "kiro"`) when it has
+one, else `agent.acp_backend == "kiro"` (`acp_backend_stored_as_kiro`). The
+spawn reads the pin from `SpawnContext.harness_pin`. The provider factory
+computes it (`crewmate_harness.route_pin`) in the selection's order: an
+explicit `backend_override` outranks the pin, so an overridden session carries
+none. The provider carries it (`LLMProvider.harness_pin`) into the runtimes it
+builds, and a companion runtime takes its parent provider's
+(`_collect_parent_runtime_kwargs`). The pin is the process's, not one
+session's, which is sound because a pinned Bot's DM and worker sessions never
+claim a warm-pool process (`bypass_member`) and a companion serves one parent.
+A session with no pin (the member route included), and every reader that
+describes the installation rather than one spawn, reads the global pick;
 (3) no kiro-cli resolves: the bundle route; (4) kiro-cli resolves, its own
 sign-in is PROVEN absent (`kiro_cli_signed_out`: no `KIRO_API_KEY` inherited or
 in the data home's `.env`, and `identity_fingerprint` read kiro-cli's store
@@ -4361,8 +4372,7 @@ the cause. An operator's `KIROCREW_KIRO_BIN` is never second-guessed
 resolver hands it through: on Windows that is its `realpath`, which turns an 8.3
 short name such as `RUNNER~1` into the long one. A kiro-cli
 that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
-Kiro CLI selected), and rule 2 reads only the installation's `agent.acp_backend`,
-not a Bot's own pin; both are tracked in issue 26629.
+Kiro CLI selected), tracked in issue 26629.
 The decision is per spawn, so a later kiro-cli install or sign-in moves the next
 process back. It is never silent: `kas_route.note_spawn_route` logs each change
 of route (WARNING when automatic) and keeps the last spawn's route in a process

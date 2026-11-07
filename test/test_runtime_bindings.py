@@ -68,8 +68,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime_class"),
     "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
     # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``),
-    # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``.
-    "__init__": ("function", False, "7da71c4f7900", "runtime_class"),
+    # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``,
+    # and ``harness_pin``: the session's own Bot pin, which KAS's route rule 2 reads.
+    "__init__": ("function", False, "e6317032e444", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -998,6 +999,7 @@ _INIT_HINTS = {
     "crew_agent": "<class 'str'>",
     "expect_mcp_reports": "<class 'bool'>",
     "extra_env": "dict[str, str] | None",
+    "harness_pin": "<class 'str'>",
     "max_age_secs": "<class 'float'>",
     "max_rss_mb": "<class 'float'>",
     "mcp_gateway_overlay": "str | pathlib.Path | None",
