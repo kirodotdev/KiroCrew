@@ -161,7 +161,12 @@ def test_full_replace_carries_over_open_reminders_the_new_plan_lacks() -> None:
 
 
 def test_incremental_update_adds_removes_then_modifies_and_skips_unknown_ids() -> None:
-    queue = {"mood": "calm", "tasks": [_task("a", title="A"), _task("b", title="B")]}
+    queue = {
+        "mood": "calm",
+        "narrative": "old",
+        "planner_notes": {"tip": 1},
+        "tasks": [_task("a", title="A"), _task("b", title="B")],
+    }
     params = {
         "tasks_to_add": [_task("c", title="C")],
         "tasks_to_remove": ["a"],
@@ -173,5 +178,6 @@ def test_incremental_update_adds_removes_then_modifies_and_skips_unknown_ids() -
     updated = qf.apply_update(queue, params, now_ms=NOW)["queue"]
     assert updated["tasks"] == [{"id": "b", "title": "B2"}, {"id": "c", "title": "C"}]
     assert (updated["mood"], updated["needs_replan"]) == ("excited", True)
-    assert "narrative" not in updated  # None leaves the key alone
+    assert "narrative" not in updated  # an explicit None clears the key
+    assert updated["planner_notes"] == {"tip": 1}  # an omitted key is left alone
     assert queue["tasks"][0] == {"id": "a", "title": "A"}  # the input queue is not mutated
