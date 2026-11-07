@@ -417,10 +417,10 @@ class TestPluginInstallCommand:
         assert "mktemp -d" in cmd
         assert "/tmp/session-manager-plugin" not in cmd
 
-    def test_rpm_family_installs_straight_from_the_url(self, monkeypatch):
+    def test_rpm_family_installs_the_checked_file_not_the_url(self, monkeypatch):
         cmd = self._cmd(monkeypatch, "Linux", "arm64", {"rpm", "dnf"})
         assert "linux_arm64/session-manager-plugin.rpm" in cmd
-        assert cmd.startswith("sudo dnf install -y")
+        assert '| sha256sum -c && sudo dnf install -y "$p"' in cmd
 
     def test_an_unsupported_platform_returns_nothing_rather_than_a_wrong_command(self, monkeypatch):
         assert self._cmd(monkeypatch, "Windows", "x86_64", set()) == ""

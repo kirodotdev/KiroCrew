@@ -253,7 +253,9 @@ code.
      mismatch. Compare each pin with upstream and bump the stale ones: pick a
      release at least 7 days old, record each artifact's sha256 (mise: its
      release `SHASUMS256.txt`; AWS: two downloads that match), keep
-     `AWSCLI_VERSION` equal to the crew runtime Dockerfile's, and run
+     `AWSCLI_VERSION` equal to the crew runtime Dockerfile's and the plugin
+     pins equal to the copy in `src/kiro_crew/cloud/ssm.py` (the gateway's own
+     installer), and run
      `test/test_installer_tool_pins.py`. The procedure is in each file's header. A
      stale pin is not a failure; the pinned artifacts stay downloadable.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
