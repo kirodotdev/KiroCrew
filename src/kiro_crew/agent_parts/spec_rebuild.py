@@ -803,6 +803,17 @@ def rebuild_agent_config(
             resolved=resolved,
             app_owned_at_start=_app_owned_at_start,
         )
+        from kiro_crew import mcp_dropped_servers
+        from kiro_crew.mcp_utils import mcp_server_alias
+
+        # Keep the report ordered with spec writes; aliases can still be mounted.
+        mcp_dropped_servers.record_rebuild_drops(
+            {
+                key: command
+                for key, command in resolved.unresolved_commands.items()
+                if mcp_server_alias(key) not in config["mcpServers"]
+            }
+        )
     logger.info("Installed agent config: %s", path)
     _claim_propagated_model(config, main_name)
     if guide_grant_pending:
