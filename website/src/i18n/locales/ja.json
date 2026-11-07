@@ -17215,7 +17215,7 @@
       "create_your_first_job": "最初のジョブを作成",
       "batchActions": {
         "actions_for_selected": "チェックしたジョブの操作",
-        "batch_failed_other": "{{count}} 件中 {{failed}} 件のジョブを更新できませんでした",
+        "batch_failed_other": "{{action}}：{{count}} 件中 {{failed}} 件のジョブが失敗しました。失敗したジョブは選択されたままです。",
         "run_confirm_body": "各ジョブが今すぐ新しい実行を開始します。一時停止中と実行中のジョブはスキップされます。",
         "run_confirm_title_other": "{{count}}件のジョブを今すぐ実行しますか？",
         "strict_off": "厳密なスケジュールをオフ",

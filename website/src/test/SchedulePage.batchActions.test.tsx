@@ -103,6 +103,13 @@ describe('SchedulePage batch actions', () => {
     expect(api.updateCron).toHaveBeenCalledTimes(1)
   })
 
+  it('says what each batch strict item changes', async () => {
+    await renderChecked(['Alpha job', 'Beta job'])
+    openMenu()
+    expect(menuItem('Strict schedule on')).toHaveAttribute('title', 'Enable strict schedule (no jitter)')
+    expect(menuItem('Strict schedule off')).toHaveAttribute('title', 'Disable strict schedule (allow jitter)')
+  })
+
   it('asks before Run now and runs only enabled, idle jobs', async () => {
     const api = await renderChecked(['Alpha job', 'Beta job', 'Gamma job'])
     openMenu()
@@ -163,7 +170,7 @@ describe('SchedulePage batch actions', () => {
     openMenu()
     fireEvent.click(menuItem('Pause'))
 
-    expect(await screen.findByText('1 of 2 jobs could not be updated')).toBeInTheDocument()
+    expect(await screen.findByText('Pause: 1 of 2 jobs failed. Failed jobs stay selected.')).toBeInTheDocument()
     const rowCheckbox = (name: string) =>
       within(screen.getByText(name).closest('tr') as HTMLElement).getByRole('checkbox')
     expect(rowCheckbox('Gamma job')).toBeChecked()
@@ -175,7 +182,7 @@ describe('SchedulePage batch actions', () => {
     vi.mocked(api).toggleCron.mockResolvedValue({ error: 'not your job' })
     openMenu()
     fireEvent.click(menuItem('Resume'))
-    expect(await screen.findByText('1 of 1 job could not be updated')).toBeInTheDocument()
+    expect(await screen.findByText('Resume: 1 of 1 job failed. Failed jobs stay selected.')).toBeInTheDocument()
   })
 
   it('disables an action no checked job would change', async () => {
