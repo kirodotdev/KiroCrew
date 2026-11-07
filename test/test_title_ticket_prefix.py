@@ -117,7 +117,7 @@ def _fresh_slot(text: str) -> _ChatSlot:
 
 
 def _patch_initial(monkeypatch, reply: str):
-    async def _fake(_state, _messages, *, session_key: str = ""):
+    async def _fake(_state, _messages, *, session_key: str = "", memory_gate: bool = True):
         return reply
 
     monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fake)

@@ -21,7 +21,9 @@ from kiro_crew.subagent_persistence import (
 )
 from kiro_crew.testing.wait import await_until
 
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+#: The consolidation tests start background helper turns, which are skipped while the
+#: host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "ample_host_free_memory")
 
 
 @pytest.mark.asyncio

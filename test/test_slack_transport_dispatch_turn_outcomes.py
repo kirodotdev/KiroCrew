@@ -33,6 +33,10 @@ from kiro_crew.slack import handler as _handler
 from kiro_crew.slack import transport_dispatch
 from kiro_crew.testing.wait import await_until
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 class TestConversationLogAgentMetadata:
     """The transport's user-turn write creates the session file — its metadata

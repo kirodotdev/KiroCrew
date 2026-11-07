@@ -7,6 +7,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import AsyncIterator, _make_folder_app, _make_state
 from dashboard_chat_helpers import _provider_mock
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 class TestFolderTags:
     """Folder `tags` — vocabulary-constrained list persisted on create/update,
