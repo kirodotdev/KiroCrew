@@ -139,6 +139,9 @@ class _ChatTurn:
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
+    # The sub-agent notices _turn_build_prompt took off the slot's queue, settled or
+    # put back in _turn_settle_debts. Set in __init__ so every exit can read it.
+    _drained_subagent_notices: "list[str]"
     _engine_fallback_walk: "EngineFallbackWalk"
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
@@ -388,6 +391,7 @@ class _ChatTurn:
         self._current_message = _current_message
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
+        self._drained_subagent_notices = []
 
     @property
     def assistant_text(self) -> str:

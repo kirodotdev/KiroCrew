@@ -202,10 +202,11 @@ def settle_drained_subagent_notices(state: Any, slot: Any, notices: list[str]) -
 
     A notice whose run owes a ``delivered`` tombstone is recorded on the slot's
     ledger under its own text when it is queued, and that run's folder stays
-    untombstoned until this drain, so a restart before it leaves the run to the
-    next start's orphan reconciliation. The parent's next turn calls this where
-    it takes the list. The manager writes the tombstones on a tracked task,
-    behind the same teardown gate as a queued announce.
+    untombstoned until this settles, so a restart before it leaves the run to
+    the next start's orphan reconciliation. The parent's turn that took the list
+    calls this once the model has consumed its prompt (``_turn_settle_debts``
+    in ``chat_turn/prompt_assembly.py``). The manager writes the tombstones on a
+    tracked task, behind the same teardown gate as a queued announce.
     """
     try:
         owed = slot.take_pending_subagent_deliveries(notices)
