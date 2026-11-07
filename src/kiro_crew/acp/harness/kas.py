@@ -60,7 +60,11 @@ from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_ide
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
-from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
+from kiro_crew.acp.kas_tool_limits import (
+    unmatched_disabled_globs,
+    unmatched_globs_notice,
+    with_switched_off_tools,
+)
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
     build_kas_argv,
@@ -1134,6 +1138,10 @@ class KasHarness(MembershipHarness):
             custom_agents = with_switched_off_tools(
                 custom_agents, session_mcp_disabled_tools(agent, spec=spec)
             )
+            # A spec glob KAS cannot match still runs its server; say so.
+            unmatched = unmatched_globs_notice(unmatched_disabled_globs(projected.get("mcpServers")))
+            if unmatched:
+                spec_notices.append(unmatched)
             # The mcp.json / cli.json reads the wire envelope finishes the block
             # from, read here off the loop and beside the session's own directory.
             declared = spec.get("mcpServers")

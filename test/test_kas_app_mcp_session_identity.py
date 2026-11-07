@@ -34,9 +34,9 @@ def _env(element):
     return {pair["name"]: pair["value"] for pair in element.get("env") or []}
 
 
-def _hoist(agents, launches, **kwargs):
+def _hoist(agents, launches):
     return hoist_servers_for_session(
-        agents, "mochi--mochi", [], session_token="tok-1", app_launches=launches, **kwargs
+        agents, "mochi--mochi", [], session_token="tok-1", app_launches=launches
     )
 
 
@@ -72,15 +72,6 @@ def test_an_app_server_without_a_shipped_launch_is_left_alone():
 
     assert array == []
     assert out_agents is agents
-
-
-def test_a_settings_declaration_does_not_block_the_hoist_on_load():
-    # On session/load a settings-file name is reserved; the resolver already
-    # judged the settings for app servers, so the reservation must not apply.
-    _, array = _hoist(_agents(), {APP: PINNED}, reserved_names=frozenset({APP}))
-
-    assert [e["name"] for e in array] == [APP]
-    assert _env(array[0])[STUB_SESSION_TOKEN_ENV] == "tok-1"
 
 
 def test_resolver_returns_the_launch_for_a_declared_app_server(monkeypatch, tmp_path):

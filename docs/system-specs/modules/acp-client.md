@@ -2365,36 +2365,16 @@ settings file restricts (`session_mcp.native_mount_withholding`), or every one
 when a settings file is unreadable, keeps its native declaration with no token.
 A tokened app element's env is the projected `KIROCREW_PORT` /
 `KIROCREW_SESSION_KEY`, the gateway's bound port, then the pinned `PYTHONPATH` /
-`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`. A settings-file
-name does not reserve an app server on load: the resolver already judged it.
-On `session/new` the move covers the active agent's managed names and those app
-servers only; on
-`session/load` it additionally hoists remaining user-declared names
-(`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
-re-initialises MCP servers from the session-level array only on load — not from
-agent-block declarations —
-so a spec edit adding a new MCP server is silently ignored on resume without the
-wider hoist. That load-only launch set was probed on released kiro-cli 2.31.0
-(the #17781 repro: `session/load` with a spec adding `@probe/beta` exposed no
-`beta` tool, `session/new` with the same spec did); the 2.18.0 and 2.20.0
-captures above did not probe which declaration site `session/load` launches
-from, so the premise is pinned to 2.31.0 alone. Exception: a user-declared server whose name a settings file
-kiro-cli reads also declares — the user's global `~/.kiro/settings/mcp.json` or
-the session cwd's `.kiro/settings/mcp.json`
-(`reserved_names=settings_server_names(session_work_dir)` at the `load_session`
-call site in `runtime_session_load.py`) — stays in the agent block, so the
-resumed session resolves that name by kiro-cli's own precedence, exactly as
-`session/new` did; a session-level injection would outrank both files.
-A second exception: a user-declared entry whose `env` keeps a `${NAME}`
-reference (a name the edition relays) stays in the agent block on load too.
-KAS expands such a reference in an agent-block entry but hands a session-level
-element's env to the child verbatim, so a hoisted copy started the server with
-the literal `${NAME}` text and it listed no tools on the resumed session. Probed
-on the 0.66.33 bundle with a stdio probe server: the block entry got the value
-on `session/new` and on `session/load` (including a server first declared at
-load), the hoisted element got the literal text.
-`session/new` (`create_session`) is unchanged. Non-managed entries hoisted on
-load travel as projected with no session token. On both paths: a name
+`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`.
+On `session/new` and `session/load` alike the move covers the active agent's
+managed names and those app servers only. User-declared servers stay in the
+agent block on load too: KAS launches block servers on `session/load`, a server
+first declared at load included (probed on the 0.66.33 bundle with a stdio
+probe server, and on 0.66.91 from a cold process), and only a block entry
+carries `timeout`. KAS's session-level element has no `timeout` slot, so a
+user server hoisted there got KAS's 60 s instead of the 120 s
+`kas_settings_mcp.finish_settings_mcp` gives the block. The earlier load-only
+user hoist rested on a kiro-cli 2.31.0 probe (#17781). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
 entry stays authoritative and a name appears once), and only a stdio entry whose
 keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,

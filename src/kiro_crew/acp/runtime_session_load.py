@@ -49,7 +49,7 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
 )
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS
-from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled, settings_server_names
+from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -314,24 +314,12 @@ async def load_session(
         withheld_notice = kas_extras.withheld_credentials_notice
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
-        # on load exactly as they did on new.  ``include_user_servers=True``
-        # additionally hoists user-declared (non-managed) servers: on session/load
-        # kiro-cli re-initialises servers from the session-level array only --
-        # agent-block declarations are re-registered but not re-launched -- so spec
-        # edits adding new MCP servers would be silently ignored without this.
-        # session/new (create_session) is unchanged: kiro-cli reads agent-block
-        # servers on its own there, and hoist_servers_for_session's default
-        # (include_user_servers=False) does not widen that path.
-        #
-        # A user-declared name that a settings file kiro-cli reads (the global
-        # ~/.kiro/settings/mcp.json or the checkout's .kiro/settings/mcp.json)
-        # also declares is NOT hoisted: left in the agent block, the resumed
-        # session resolves it by kiro-cli's own precedence, the same way
-        # session/new did. The checkout is the session's own cwd, the same one
-        # native_settings_sources reads beside: kiro-cli reads the workspace
-        # settings file from cwd whatever level its agent spec resolves at.
-        # Read off the loop thread like the other settings reads here.
-        reserved = await asyncio.to_thread(settings_server_names, session_work_dir)
+        # on load exactly as they did on new. User-declared servers stay in the
+        # agent block, as on new: KAS launches block servers on a cold
+        # session/load too, and only the block carries the 120 s ``timeout``
+        # (finish_settings_mcp); a session-level element has no ``timeout`` slot,
+        # so a hoisted server got KAS's 60 s. Probe record: the session/load
+        # hoist section of docs/system-specs/modules/acp-client.md.
         # Read BEFORE the hoist: it moves launcher entries out of the batch, and
         # the recorded batch then lacks the snapshots this projection wrote.
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
@@ -343,8 +331,6 @@ async def load_session(
             active_agent,
             mcp_servers,
             session_token=stub_token,
-            include_user_servers=True,
-            reserved_names=reserved,
             managed_entries=kas_extras.managed_entries,
             app_launches=kas_extras.app_launches,
         )
