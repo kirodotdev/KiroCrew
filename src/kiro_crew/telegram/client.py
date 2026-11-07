@@ -203,6 +203,25 @@ TELEGRAM_RICH_MAX_CHARS = 32768
 #: 20+-column table fails only itself -- so latch on a streak, not one answer.
 _RICH_400_LATCH = 3
 
+#: 400 descriptions that name a missing chat or topic. They answer for one
+#: destination, so they must not count toward the server-wide rich latch.
+_PER_CHAT_400_MARKERS = ("chat not found", "thread not found", "topic_closed", "topic_deleted")
+
+
+def _is_per_chat_refusal(code: object, description: object) -> bool:
+    """True when a Bot API error is about one chat, not about the server.
+
+    403 is always per chat (bot blocked by the user, kicked, no rights there).
+    A 400 is per chat when its description names a missing chat or topic.
+    """
+    if code == 403:
+        return True
+    if code != 400 or not isinstance(description, str):
+        return False
+    lowered = description.lower()
+    return any(marker in lowered for marker in _PER_CHAT_400_MARKERS)
+
+
 #: Telegram's supported HTML tag set. Anything we may have to re-close when a
 #: rendered message has to be truncated mid-document.
 _TG_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>")
@@ -892,6 +911,7 @@ class TelegramClient:
         message_thread_id: int | None = None,
         disable_notification: bool = False,
         reply_to_message_id: int | None = None,
+        err_out: dict[str, Any] | None = None,
     ) -> int | None:
         """Send a Rich Message (Bot API 10.1+). Returns message_id on success.
 
@@ -909,8 +929,11 @@ class TelegramClient:
         rejects every call identically, so re-probing it per table would burn a
         wasted round-trip forever; ``_rich_unsupported`` latches instead:
 
-        * **401/403/404 and any other 4xx except 400/429** -- server- or
+        * **401/404 and any other 4xx except 400/403/429** -- server- or
           auth-level, identical for every message: latch immediately.
+        * **403, and a 400 naming a missing chat or topic** -- an answer about
+          one destination (``_is_per_chat_refusal``): never latch, and leave
+          the 400 streak alone, because this client serves every chat.
         * **400** -- ambiguous. It is what a wrong payload shape returns (every
           call fails, so it must latch) but ALSO what one oversized or
           20+-column table returns (content-specific, so it must NOT latch or a
@@ -920,8 +943,15 @@ class TelegramClient:
           while one bad table is cleared by the next table that sends.
         * **429, 5xx, transport errors** -- transient: never latch, and clear
           the 400 streak so unrelated failures cannot accumulate into a latch.
+
+        ``err_out``, when supplied, receives the attempt's ``error_code`` and
+        ``description`` as ``send_message`` does, or ``rich_unsupported: True``
+        when the latch skipped the call. Either way a caller can tell "nothing
+        was posted" from a failure after which the message may be in the chat.
         """
+        err: dict[str, Any] = {} if err_out is None else err_out
         if self._rich_unsupported:
+            err["rich_unsupported"] = True
             return None
         params: dict[str, Any] = {
             "chat_id": chat_id,
@@ -935,12 +965,17 @@ class TelegramClient:
         if disable_notification:
             params["disable_notification"] = True
         _apply_reply_target(params, reply_to_message_id)
-        err: dict[str, Any] = {}
         result = await self._api("sendRichMessage", params, err_out=err)
         if result:
             self._rich_400_streak = 0
             return result.get("message_id")
         code = err.get("error_code")
+        if err.get("body_is_json", True) and _is_per_chat_refusal(code, err.get("description")):
+            # The answer is about this chat (bot blocked or removed, chat or
+            # topic gone), not about the server. Proactive sends reach chats
+            # that never messaged the bot, and this client is shared by every
+            # chat, so such an answer must not switch rich off for all of them.
+            return None
         # Only the Bot API's own answer can say the method is missing. An error
         # page from an edge or a proxy (a body that is not JSON) is a failed call
         # like a 5xx: it neither counts toward the 400 streak nor latches.
