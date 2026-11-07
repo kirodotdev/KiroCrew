@@ -158,7 +158,7 @@ export default function SkillsTab() {
   // justification that Context Budget is a deliberate, user-initiated path.
   // The doorway label is now static; the data is fetched when the user opens it.
 
-  const { data: skills = [], isLoading, isFetching, refetch } = useQuery<Skill[]>({
+  const { data: skills = [], isLoading, isFetching, refetch, error: listError } = useQuery<Skill[]>({
     queryKey: ['skills'],
     queryFn: () => api.skills(),
     // Fetch fresh on each mount so an approved/edited skill is reflected the
@@ -570,9 +570,11 @@ export default function SkillsTab() {
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
-          {/* Disabled while a refresh runs, so the name carries the reason: a
-              disabled "Refresh skills" reads as unavailable, not busy. */}
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          {/* Inert while a refresh runs, so the name carries the reason: an inert
+              "Refresh skills" reads as unavailable, not busy. `aria-disabled` plus
+              the guard, NOT `disabled`: `disabled` leaves the tab order and drops a
+              keyboard user's focus to the page for the whole refresh. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 
@@ -595,6 +597,12 @@ export default function SkillsTab() {
            of that draft. The hand-off returns as soon as no session holds a
            draft. */
         <ErrorNotice className="mb-3" askAgent={!detailEditing} message={deleteError?.message} report={deleteError?.report} onDismiss={() => setDeleteError(null)} testId="skill-delete-failure" />
+      )}
+      {/* A failed list read, first load or Refresh. The list below is the last good
+          read, so without this a failed refresh looks like one with no changes.
+          No hand-off: an open edit session may still hold the only copy of a draft. */}
+      {listError && (
+        <ErrorNotice className="mb-3" message={listError.message} testId="skill-list-failure" />
       )}
       {/* A save failure whose editor is NOT mounted: a viewport crossing
         * (desktop -> phone) can hide the detail pane while the edit session
