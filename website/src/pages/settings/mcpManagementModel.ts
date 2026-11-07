@@ -406,6 +406,20 @@ export function envKeyNames(envs?: readonly (readonly string[])[]): string[] {
   return [...names]
 }
 
+/**
+ * Split the names the stub writes skipped by whether they ended up stubbed anyway.
+ * Kiro Crew's own servers follow `kirocrew-core`'s stub decision, so one whose own
+ * write was skipped is stubbed once `kirocrew-core` is. `inEffect` is the latest
+ * write's `stub_servers` (the set in effect after it); without one, every skip stands.
+ */
+export function settleSkipped(
+  skipped: readonly string[],
+  inEffect: readonly string[] | undefined,
+): { stubbed: string[]; skipped: string[] } {
+  const set = new Set(inEffect ?? [])
+  return { stubbed: skipped.filter(n => set.has(n)), skipped: skipped.filter(n => !set.has(n)) }
+}
+
 /** Evidence tiers that argue AGAINST sharing, as opposed to merely not endorsing it. */
 export const CONTRARY_STRENGTHS = new Set(['refuted', 'disqualified'])
 
