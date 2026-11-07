@@ -176,6 +176,7 @@
   "components.searchBar.result_position",
   "components.skillBrowserModal.file",
   "components.skillBrowserModal.installed_files",
+  "components.skillBrowserModal.reinstalled_files",
   "components.tabCloseMenu.close_terminals_body",
   "components.webPreviewPanel.annotate_clear_confirm",
   "components.webPreviewPanel.annotations_count",
