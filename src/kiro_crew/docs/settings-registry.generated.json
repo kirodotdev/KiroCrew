@@ -905,6 +905,12 @@
       "hint": "While you scroll the session list, cut-off titles show in full"
     },
     {
+      "id": "chat.show-optimize-prompt",
+      "label": "Show Optimize Prompt",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.show-optimize-prompt"
+    },
+    {
       "id": "chat.show-pasted-text-in-full",
       "label": "Show Pasted Text in Full",
       "tab": "chat",

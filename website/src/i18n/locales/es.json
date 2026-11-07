@@ -19114,6 +19114,8 @@
         "inline_markdown_input_desc": "Muestra negrita, cursiva, tachado y código en línea en el campo de mensaje mientras escribes. Al activarlo, el campo de mensaje también pasa a un editor de texto enriquecido que aún está en beta; desactívalo para volver al campo simple. Las marcas de Markdown siguen visibles y el mensaje que envías no cambia.",
         "optimize_before_sending": "Optimizar antes de enviar",
         "optimize_before_sending_desc": "Enviar ejecuta primero Optimizar el prompt y deja la reescritura en el campo de mensaje. Revísala o edítala y vuelve a pulsar Enviar para enviarla; {{chord}} recupera lo que escribiste. Los comandos con barra, los mensajes enviados por voz y los enviados mientras el agente trabaja se envían tal cual. Cada mensaje añade una llamada al optimizador.",
+        "show_optimize_prompt": "Mostrar Optimizar el prompt",
+        "show_optimize_prompt_desc": "Muestra el botón “Optimizar el prompt” en el campo de mensaje y su fila en el menú +, y permite que {{chord}} optimice lo que escribiste. Desactívalo para ocultarlos; Optimizar antes de enviar también queda desactivado.",
         "show_pasted_text_in_full": "Mostrar el texto pegado completo",
         "show_pasted_text_in_full_desc": "Mantener un pegado largo como texto editable en el campo de mensaje, en lugar de plegarlo en una etiqueta de pegado. Cuando está desactivado, {{chord}} mantiene un solo pegado como texto. Un pegado muy grande puede ralentizar la escritura.",
         "show_pasted_text_in_full_desc_summary": "Un texto pegado muy grande puede ralentizar la entrada.",

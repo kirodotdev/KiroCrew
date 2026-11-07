@@ -179,3 +179,40 @@ describe('ChatInput: Optimize Before Sending', () => {
     expect(optimizerCalls(fetchMock)).toBe(0)
   })
 })
+
+/**
+ * Settings > Chat > Composer > Show Optimize Prompt: on by default, so the
+ * composer keeps its Optimize button. Off removes the button and the
+ * Cmd/Ctrl+Shift+Enter shortcut, and Optimize Before Sending stops optimizing.
+ */
+describe('ChatInput: Show Optimize Prompt', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.removeItem('mc-chat-config')
+  })
+
+  const chord = () => fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', ctrlKey: true, metaKey: true, shiftKey: true })
+
+  it('shows the Optimize button by default', () => {
+    vi.stubGlobal('fetch', stubFetch())
+    renderWithProviders(<Host initial={ORIGINAL} onSend={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Optimize prompt' })).toBeInTheDocument()
+  })
+
+  it('hides the button, ignores the shortcut and sends at once when turned off', () => {
+    saveChatConfig({ ...loadChatConfig(), showOptimizePrompt: false, optimizeBeforeSend: true })
+    const fetchMock = stubFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    const onSend = vi.fn()
+    renderWithProviders(<Host initial={ORIGINAL} onSend={onSend} />)
+    expect(screen.queryByRole('button', { name: 'Optimize prompt' })).not.toBeInTheDocument()
+
+    chord()
+    expect(optimizerCalls(fetchMock)).toBe(0)
+    expect(onSend).not.toHaveBeenCalled()
+
+    pressEnter()
+    expect(onSend).toHaveBeenCalledWith(ORIGINAL)
+    expect(optimizerCalls(fetchMock)).toBe(0)
+  })
+})
