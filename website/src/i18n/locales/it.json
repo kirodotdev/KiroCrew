@@ -6611,9 +6611,9 @@
       "additional_instruction": "Istruzione generale",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Clicca per copiare lo slug",
-      "comment_many": "{{count}} commenti",
-      "comment_one": "{{count}} commento",
-      "comment_other": "{{count}} commenti",
+      "comments_to_send_many": "{{count}} commenti da inviare a questa chat",
+      "comments_to_send_one": "{{count}} commento da inviare a questa chat",
+      "comments_to_send_other": "{{count}} commenti da inviare a questa chat",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Non è stato possibile caricare questo artefatto. Potrebbe essere stato eliminato oppure la richiesta di rete è fallita.",
       "couldn_t_send_your_comments_are_still_pending": "Invio non riuscito: i tuoi commenti sono ancora in attesa.",
       "couldn_t_send_your_comments_are_still_pending_reason": "Invio non riuscito: i tuoi commenti sono ancora in attesa. ({{error}})",
@@ -6628,7 +6628,6 @@
       "overall_instruction_hint": "Aggiungi un'istruzione valida per tutti i commenti in attesa",
       "show_comments": "Mostra i commenti",
       "submit": "Invia",
-      "to_send_to_this_chat": "per inviare a questa chat",
       "toggle_additional_instruction": "Aggiungi istruzione generale"
     },
     "askAgent": {

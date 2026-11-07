@@ -6279,7 +6279,7 @@
       "additional_instruction": "全体への指示",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "クリックしてスラッグをコピー",
-      "comment_other": "{{count}} コメント",
+      "comments_to_send_other": "このチャットに送信するコメント {{count}} 件",
       "couldn_t_load_this_artifact_it_may_have_been_del": "このアーティファクトを読み込めません。削除されたか、ネットワークリクエストが失敗している可能性があります。",
       "couldn_t_send_your_comments_are_still_pending": "送信できませんでした。コメントはまだ保留中です。",
       "couldn_t_send_your_comments_are_still_pending_reason": "送信できませんでした。コメントはまだ保留中です。 ({{error}})",
@@ -6294,7 +6294,6 @@
       "overall_instruction_hint": "保留中のすべてのコメントに適用する指示を1つ追加",
       "show_comments": "コメントを表示",
       "submit": "送信",
-      "to_send_to_this_chat": "このチャットに送信",
       "toggle_additional_instruction": "全体への指示を追加"
     },
     "askAgent": {
