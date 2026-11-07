@@ -853,7 +853,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                   hand-off while a HookForm (`creating` / `editing`) is open;
                   otherwise this read-only view holds nothing to lose. */}
               <ErrorNotice
-                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })}
+                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection })}
                 message={providerHookErr instanceof Error ? providerHookErr.message : String(providerHookErr)}
                 askAgent={handoffSafe}
                 className="flex-1"
@@ -948,7 +948,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
               </table>
             </div>
           ) : (
-            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
+            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
           )}
         </Card>
         )}
