@@ -250,12 +250,13 @@ class _SshTunnel:
         # _stderr_task too. ssh writes a line there for every forwarded connection
         # the far end refuses, so a long-lived tunnel fills the OS buffer.
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
-        # SSM on POSIX only: the process group the spawned ``aws`` wrapper leads,
-        # read at spawn while the wrapper is still un-reaped so the id cannot name
-        # anyone else's group. ``session-manager-plugin`` stays in this group after
-        # the wrapper exits, and ``os.getpgid`` of the reaped wrapper can no
-        # longer name it, so _terminate addresses the survivor through this id.
-        self._ssm_pgid: int | None = None
+        # POSIX only: the process group the spawned child leads, read at spawn
+        # while the child is still un-reaped so the id cannot name anyone else's
+        # group. Descendants stay in this group after the child exits -- SSM's
+        # ``session-manager-plugin``, or an ssh ``ProxyCommand``/``ProxyJump``
+        # process -- and ``os.getpgid`` of the reaped child can no longer name
+        # it, so _terminate addresses a survivor through this id.
+        self._child_pgid: int | None = None
         self._child_path = ""  # the PATH the last spawned child was given
         self.status = TunnelStatus(
             instance_id=instance_id,
@@ -337,15 +338,20 @@ class _SshTunnel:
                 # keeps its output discarded.
                 stdout=(asyncio.subprocess.PIPE if ssm else asyncio.subprocess.DEVNULL),
                 stderr=asyncio.subprocess.PIPE,
-                # SSM tunnels get process-group isolation (mirroring
-                # cloud.ssm.open_port_forward) so a later teardown can reap the aws
-                # wrapper's session-manager-plugin child too — see _terminate().
-                # Both kwargs are passed EXPLICITLY per the platform_compat spawn
-                # recipe: on POSIX start_new_session=True calls setsid (killpg reaps
-                # the group) and creationflags is 0; on Windows there is no setsid
+                # Process-group isolation (mirroring cloud.ssm.open_port_forward)
+                # so a later teardown can reap the child's descendants too: the
+                # aws wrapper's session-manager-plugin, or the processes an ssh
+                # ProxyCommand/ProxyJump starts. Either can hold the inherited
+                # pipes after the child exits, which keeps _monitor's wait() from
+                # returning — see _terminate(). Both kwargs are passed EXPLICITLY
+                # per the platform_compat spawn recipe: on POSIX
+                # start_new_session=True calls setsid (killpg reaps the group) and
+                # creationflags is 0; on Windows there is no setsid
                 # (start_new_session is silently ignored) and
-                # CREATE_NEW_PROCESS_GROUP is what makes the tree taskkill /T-reapable.
-                start_new_session=(ssm and platform_compat.IS_POSIX),
+                # CREATE_NEW_PROCESS_GROUP is what makes the tree taskkill
+                # /T-reapable. The ssh tunnel is unsupported on Windows, so the
+                # flag stays SSM-only there.
+                start_new_session=platform_compat.IS_POSIX,
                 creationflags=(platform_compat.CREATE_NEW_PROCESS_GROUP if ssm else 0),
                 # Both transports: the argv head is resolved absolutely, but the
                 # child then looks a tool up BY NAME on its own PATH — aws finds
@@ -385,7 +391,7 @@ class _SshTunnel:
             logger.error("Tunnel spawn failed for %s: %s", self._id, e)
             return False
 
-        self._ssm_pgid = self._spawned_group(self._proc) if ssm else None
+        self._child_pgid = self._spawned_group(self._proc)
 
         # Started BEFORE the readiness wait, so a child that closes during
         # startup still has its reason captured: _wait_until_ready can conclude
@@ -1031,14 +1037,26 @@ class _SshTunnel:
         which names no process once the wrapper is reaped. So on POSIX a child
         that has not settled (see :meth:`_child_settled`) after the signals above
         has the group recorded at spawn signalled directly, TERM then KILL.
+
+        The **SSH** transport has the same shape whenever the host's config
+        names a ``ProxyCommand`` or ``ProxyJump``: ssh exits on SIGTERM, but the
+        proxy processes it started keep its stderr pipe open, so the wait never
+        resolves and the tunnel sits CONNECTED with nothing listening. On POSIX
+        the ssh child leads its own group too, so it is reaped the same way.
         """
         proc = self._proc
         if proc is None:
             return
+        # The whole tree is signalled when the child is known to lead its own
+        # group (POSIX, both transports), and for SSM everywhere (Windows reaps
+        # the tree through ``taskkill /T``). An ssh child that does not lead its
+        # group gets a single-process signal: a group signal there would reach
+        # the gateway's own group.
+        tree = self._transport == "ssm" or self._child_pgid is not None
         term_sent = False
         if proc.returncode is None:
             group_signalled = False
-            if self._transport == "ssm":
+            if tree:
                 group_signalled = await self._signal_group_async(proc.pid, platform_compat.SIGTERM)
             term_sent = True
             try:
@@ -1046,7 +1064,7 @@ class _SshTunnel:
                     proc.terminate()
                 await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_SECS)
             except (asyncio.TimeoutError, ProcessLookupError):
-                if self._transport == "ssm" and await self._signal_group_async(
+                if tree and await self._signal_group_async(
                     proc.pid, platform_compat.SIGKILL
                 ):
                     with contextlib.suppress(Exception):
@@ -1072,7 +1090,7 @@ class _SshTunnel:
         """
         if proc.returncode is None:
             return False
-        pgid = self._ssm_pgid
+        pgid = self._child_pgid
         if pgid is None or not platform_compat.pgroup_exists(pgid):
             return True
         streams = (getattr(proc, "stdout", None), getattr(proc, "stderr", None))
@@ -1090,7 +1108,7 @@ class _SshTunnel:
     async def _reap_recorded_group(
         self, proc: asyncio.subprocess.Process, *, term_sent: bool
     ) -> None:
-        """Signal the SSM group recorded at spawn until the child settles (POSIX).
+        """Signal the group recorded at spawn until the child settles (POSIX).
 
         Reached only for a child that has not settled, which needs a recorded
         group with a live member. SIGTERM first unless this teardown already
@@ -1098,7 +1116,7 @@ class _SshTunnel:
         was read while the leader was un-reaped and a group id is not reused
         while any member lives, so it still names this tunnel's group.
         """
-        pgid = self._ssm_pgid
+        pgid = self._child_pgid
         if pgid is None:
             return
         signals = [platform_compat.SIGKILL]
@@ -1109,7 +1127,8 @@ class _SshTunnel:
                 platform_compat.kill_process_group(pgid, sig)
             except Exception as exc:  # the group emptied, or a member is unsignalable
                 logger.warning(
-                    "Could not signal the SSM forwarder group for %s: %s",
+                    "Could not signal the %s forwarder group for %s: %s",
+                    self._transport.upper(),
                     self._id,
                     type(exc).__name__,
                 )
@@ -1117,14 +1136,15 @@ class _SshTunnel:
             if await self._wait_settled(proc, _TERMINATE_WAIT_SECS):
                 return
         logger.warning(
-            "SSM forwarder for %s survived SIGKILL; port 127.0.0.1:%d may still be held",
+            "%s forwarder for %s survived SIGKILL; port 127.0.0.1:%d may still be held",
+            self._transport.upper(),
             self._id,
             self._local_port,
         )
 
     @staticmethod
     def _spawned_group(proc: asyncio.subprocess.Process) -> int | None:
-        """The process group a just-spawned SSM child leads, or ``None``.
+        """The process group a just-spawned tunnel child leads, or ``None``.
 
         Read while the child is un-reaped, so its pid still names it. Kept only
         when the child leads its own group (``pgid == pid``, which
