@@ -30,6 +30,24 @@ export interface PanelDocumentActionsOptions {
   onOpened?: () => void
 }
 
+/** Write a file's new content. `slot` names the chat, so the gateway refuses a
+ *  write for one that runs remotely. Shared with the file pop-out window. */
+export async function writeFile(filePath: string, content: string, slot: string | null | undefined): Promise<void> {
+  const res = await fetch('/api/file-write' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: filePath, content }),
+  })
+  if (!res.ok) {
+    // An owner-gated direct fetch: a session minted before the owner was
+    // configured is denied `401 stale_session_reauth`, which `j` would turn
+    // into the re-auth prompt. Raise it here too, then fail the save as usual
+    // so the editor keeps its unsaved buffer.
+    if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
+    throw new Error(`Save failed: ${res.status}`)
+  }
+}
+
 /**
  * The three document actions every SidePanel host needs — open a file as a
  * tab, open an artifact as a tab, save a file tab's buffer — shared by ChatPage
@@ -216,20 +234,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // draft we reconcile must be the one that owned this save, not whatever slot
     // is active when the write resolves.
     const requestSlot = slotRef.current ?? ''
-    // Names the chat, so the gateway refuses a write for one that runs remotely.
-    const res = await fetch('/api/file-write' + (requestSlot ? '?slot=' + encodeURIComponent(requestSlot) : ''), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: filePath, content }),
-    })
-    if (!res.ok) {
-      // An owner-gated direct fetch: a session minted before the owner was
-      // configured is denied `401 stale_session_reauth`, which `j` would turn
-      // into the re-auth prompt. Raise it here too, then fail the save as usual
-      // so the editor keeps its unsaved buffer.
-      if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
-      throw new Error(`Save failed: ${res.status}`)
-    }
+    await writeFile(filePath, content, requestSlot)
     // The saved bytes become the file tab's dirty baseline, so a later re-open
     // of the same path refreshes the buffer instead of (needlessly) preserving
     // it as if it still held unsaved work. The `file:` tab is the ONLY editable

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff, Folders } from 'lucide-react'
+import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, ExternalLink, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff, Folders } from 'lucide-react'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel } from '../apps/fileMenuContributions'
 import { pathOpenerLink, pathOpenerTarget, type PathOpenerTarget } from '../apps/pathOpener'
@@ -280,7 +280,7 @@ function usePathOpenerTarget(): PathOpenerTarget | null {
   return useMemo(() => pathOpenerTarget(apps), [apps])
 }
 
-export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload }: {
+export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onPopout, popoutDisabled, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload }: {
   filePath: string; content: string
   /** Where a failed row action (add to knowledge, promote, snapshot, save,
    *  download, open/reveal, an app-contributed row's dispatch) is reported: the
@@ -295,6 +295,9 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
    *  ⋯ menu is the single home for everything that isn't a mode toggle. */
   onRefresh?: () => void; refreshDisabled?: boolean; refreshTitle?: string
   onFullscreen?: () => void; fullscreen?: boolean
+  /** Open the file in its own window. Disabled, like Refresh, while the buffer
+   *  holds unsaved edits: the new window reads the file from disk. */
+  onPopout?: () => void; popoutDisabled?: boolean
   /** Editor view toggles (checkbox rows) — provided by the embedded panel. */
   wordWrap?: boolean; onToggleWordWrap?: () => void
   lineNums?: boolean; onToggleLineNums?: () => void
@@ -401,6 +404,11 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
           {onFullscreen && (
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { onFullscreen(); setOpen(false) }}>
               {fullscreen ? <Minimize2 size={14} className="lucide-inline" /> : <Maximize2 size={14} className="lucide-inline" />} {fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
+            </button>
+          )}
+          {onPopout && (
+            <button role="menuitem" data-option tabIndex={-1} className={`${menuRowCls} disabled:opacity-40`} disabled={popoutDisabled} title={popoutDisabled ? i18nT('components.markdownPanel.save_or_discard_changes_first') : undefined} onClick={() => { onPopout(); setOpen(false) }}>
+              <ExternalLink size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.pop_out_to_window')}
             </button>
           )}
           {/* View options are their own section: they change how the file is

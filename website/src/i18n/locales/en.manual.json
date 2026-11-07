@@ -3017,6 +3017,7 @@
       "failed_to_add_source": "Failed to add source",
       "file_too_large_to_add": "File is too large to add",
       "full_screen": "Full screen",
+      "pop_out_to_window": "Pop out to window",
       "no_changes_in_file": "No changes in this file",
       "no_results": "No results",
       "open_artifact": "Open artifact {{name}}",
