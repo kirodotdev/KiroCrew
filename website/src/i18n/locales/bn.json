@@ -15983,6 +15983,10 @@
       "installed_apps": "ইনস্টল করা অ্যাপ"
     },
     "logsPage": {
+      "level_debug": "ডিবাগ",
+      "level_info": "তথ্য",
+      "level_warning": "সতর্কতা",
+      "level_error": "ত্রুটি",
       "filter_logs": "লগ ফিল্টার করুন",
       "filter_logs_2": "লগ ফিল্টার করুন...",
       "latest_first": "সর্বশেষ: প্রথমে",
