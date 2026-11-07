@@ -435,6 +435,8 @@ async def _deliver_script_result(
 ) -> None:
     """Deliver a script cron result to the originating session. Optionally remove the job."""
     delivered = False
+    # `result_ts` names the stored result the note carries (`message` is it).
+    note_meta = {"job_id": job.id, "result_ts": job.last_result_ts}
     try:
         if message and not job.silent and self.dashboard_state and job.session_key:
             slot_key = job.session_key.removeprefix("dashboard:")
@@ -482,14 +484,12 @@ async def _deliver_script_result(
                     # Nothing in the full queue could give way, or the session
                     # closed meanwhile: the result goes out as a notification,
                     # as it does when the session is gone.
-                    self.dashboard_state.notify(
-                        "cron", f"⚡ {label}", message, meta={"job_id": job.id}
-                    )
+                    self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
             else:
-                self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})
+                self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
         elif message and not job.silent and self.dashboard_state:
             label = redact(job.name)
-            self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})
+            self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
         delivered = True
     except Exception as notify_exc:
         logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
