@@ -12,7 +12,7 @@ import { offlineProps } from '../utils/offline'
 import { Input } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { crudErrorMessage } from './tagMutationError'
-import { OfflineReasonRow } from './OfflineMenuReason'
+import { OfflineReasonRow, REASON_ROW_WIDTH } from './OfflineMenuReason'
 
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
@@ -711,7 +711,7 @@ export default function SlotTagPopover() {
         {!connected && (
           <OfflineReasonRow
             testId="tag-offline-reason"
-            className="mt-2 px-1"
+            className={`${REASON_ROW_WIDTH} mt-2 px-1`}
             message={i18nT('utils.offline.gateway_offline_reconnect', { action: offlineVerb })}
           />
         )}

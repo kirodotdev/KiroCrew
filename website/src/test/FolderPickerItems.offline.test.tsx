@@ -95,3 +95,22 @@ describe('a folder destination row, gateway offline', () => {
     expect(rows[1]['aria-disabled']).toBeUndefined()
   })
 })
+
+describe('the offline reason row, gateway offline', () => {
+  // The menu takes its width from its widest row and jsdom lays nothing out, so
+  // the claim is the classes that keep the sentence from being that row: no
+  // width of its own, then the menu's full width to wrap in.
+  it.each([
+    ['folder-move-offline-reason', undefined],
+    ['folder-move-new-folder-offline', vi.fn()],
+  ])('%s wraps inside the menu instead of widening it', (testId, onNewFolder) => {
+    render(
+      <Provider store={createTestStore()}>
+        <FolderPickerItems folders={folders} onPick={vi.fn()} Item={Item} onNewFolder={onNewFolder} newFolderLabel="New folder…" />
+      </Provider>,
+    )
+    const reason = document.querySelector(`[data-testid="${testId}"]`)
+    expect(reason?.classList.contains('w-0')).toBe(true)
+    expect(reason?.classList.contains('min-w-full')).toBe(true)
+  })
+})
