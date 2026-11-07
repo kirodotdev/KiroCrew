@@ -8,6 +8,7 @@ family that holds the name.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import time
@@ -42,6 +43,21 @@ _COST_CACHE_TTL = 30.0
 # refetch. The shown/total pair travels with the list either way, so truncation
 # is stated rather than implied.
 _COST_TOP_CONVOS = 500
+# How many sessions ``slot_spend`` keeps for the folder roll-up, one key set
+# shared by both periods. It rides the memoised payload, so it needs a count
+# bound like every retained list. :func:`_slot_spend` applies it once the rows
+# are read. Sessions past the cap are summed into ``unsorted``, so every credit
+# is still counted, just not attributed to a folder.
+_COST_SLOT_SPEND_CAP = 5000
+#: Longest session key ``slot_spend`` retains. The count cap above bounds what
+#: the cache holds only when each retained field is bounded too, and the key is
+#: a field: a slot name reaches the token rows from the API. A longer key is
+#: never kept; its spend goes to ``unsorted`` (counted in Unfiled, not
+#: attributed). Generous by design and the same bound as
+#: ``messaging/turn_ceiling.py``'s ``MAX_RETAINED_KEY_CHARS``: real keys are
+#: ``chat-<n>-<ts>``, ``cron:<job>:<run>``, ``task-review-<token>`` or a surface
+#: name plus provider ids, well inside it.
+_COST_SLOT_KEY_MAX_CHARS = 256
 
 
 # Below this, a per-turn growth slope is noise rather than a trend.
@@ -57,6 +73,83 @@ _COMPACTION_PCT = 90.0
 # does drift down by a fraction of a point between turns (what counts toward
 # `context_used` varies), which is why the threshold is not simply "any fall".
 _COMPACTION_DROP_PCT = 1.0
+
+
+def _per_turn(e: dict[str, Any]) -> float:
+    t = int(e["turns"])
+    return round(float(e["credits"]) / t, 1) if t else 0.0
+
+
+def rank_spend(
+    bucket: dict[str, dict[str, Any]], deltas: dict[str, float] | None, total: float
+) -> list[dict[str, Any]]:
+    """Rank one spend grouping, largest first, with share and period delta.
+
+    *bucket* maps a grouping key to ``{"name", "credits", "turns"}`` (plus any
+    extra identity fields, which are copied through); *deltas* maps the same key
+    to the preceding period's credits. The key and the displayed name differ only
+    for folders, whose names are not unique, so the delta is looked up by key.
+    """
+    out = []
+    for key, e in sorted(bucket.items(), key=lambda kv: -float(kv[1]["credits"])):
+        row = {
+            **{k: v for k, v in e.items() if k not in ("credits", "turns")},
+            "name": e["name"],
+            "credits": round(float(e["credits"]), 1),
+            "turns": int(e["turns"]),
+            "per_turn": _per_turn(e),
+            "share_pct": round(float(e["credits"]) / total * 100, 1) if total else 0.0,
+        }
+        if deltas is not None:
+            was = deltas.get(key, 0.0)
+            # A name with no prior spend has no percentage to report; the
+            # frontend renders that as "new" rather than a fake infinity.
+            row["delta_pct"] = (
+                round((float(e["credits"]) - was) / was * 100, 0) if was > 0 else None
+            )
+        out.append(row)
+    return out
+
+
+def _slot_spend(current: dict[str, dict[str, Any]], prior: dict[str, float]) -> dict[str, Any]:
+    """Cut the per-session spend of one pass down to what the cache may hold.
+
+    *current* maps a session key to its exact current-period ``credits`` and
+    ``turns`` (``cost_breakdown``'s ``convos``, plus ``""`` for rows with no
+    slot); *prior* maps a key to its exact prior-period credits. ONE key set
+    serves both periods, so a kept session keeps its prior spend and its
+    folder's delta compares like with like. The empty key is always kept: it is
+    Unfiled whatever happens. Of the rest, a key longer than
+    ``_COST_SLOT_KEY_MAX_CHARS`` is never kept, and the top
+    ``_COST_SLOT_SPEND_CAP`` by current credits, then prior credits, then key,
+    are. Every other session's credits, turns and prior credits are summed into
+    ``unsorted``, so kept plus ``unsorted`` is every credit and turn.
+    """
+    ranked = heapq.nsmallest(
+        _COST_SLOT_SPEND_CAP,
+        (k for k in {*current, *prior} if k and len(k) <= _COST_SLOT_KEY_MAX_CHARS),
+        key=lambda k: (
+            -float(current[k]["credits"]) if k in current else 0.0,
+            -prior.get(k, 0.0),
+            k,
+        ),
+    )
+    kept = {"", *ranked}
+    unsorted: dict[str, Any] = {"credits": 0.0, "turns": 0, "prior_credits": 0.0}
+    kept_current: dict[str, dict[str, Any]] = {}
+    for k, e in current.items():
+        if k in kept:
+            kept_current[k] = {"credits": float(e["credits"]), "turns": int(e["turns"])}
+        else:
+            unsorted["credits"] += float(e["credits"])
+            unsorted["turns"] += int(e["turns"])
+    kept_prior: dict[str, float] = {}
+    for k, credits in prior.items():
+        if k in kept:
+            kept_prior[k] = credits
+        else:
+            unsorted["prior_credits"] += credits
+    return {"current": kept_current, "prior": kept_prior, "unsorted": unsorted}
 
 
 def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) -> dict[str, Any]:
@@ -121,6 +214,11 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
     convos: dict[str, dict[str, Any]] = {}
     by_category: dict[str, dict[str, Any]] = {}
     prev_category: dict[str, float] = {}
+    # Per-session spend for the folder roll-up. The current period reads
+    # ``convos``; these hold what it does not: prior-period credits per session,
+    # and current spend on rows with no slot.
+    prev_slot: dict[str, float] = {}
+    no_slot = _blank()
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
 
     for shard_path in shard_paths:
@@ -169,6 +267,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                         prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
                         cat = session_category(slot)
                         prev_category[cat] = prev_category.get(cat, 0.0) + credits
+                        prev_slot[slot] = prev_slot.get(slot, 0.0) + credits
                         continue
 
                     cur_tot["credits"] += credits
@@ -211,6 +310,9 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                             pct = used / window * 100.0
                             c["peak_pct"] = max(float(c["peak_pct"]), pct)
                             c["_occ"].append((ts_epoch, pct))
+                    else:
+                        no_slot["credits"] += credits
+                        no_slot["turns"] = int(no_slot["turns"]) + 1
         except (OSError, UnicodeDecodeError):
             continue
 
@@ -220,33 +322,16 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
             _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS = result, cache_key, now
         return result
 
-    def _per_turn(e: dict[str, Any]) -> float:
-        t = int(e["turns"])
-        return round(float(e["credits"]) / t, 1) if t else 0.0
-
     total = float(cur_tot["credits"])
 
     def _rank(
         bucket: dict[str, dict[str, Any]], deltas: dict[str, float] | None
     ) -> list[dict[str, Any]]:
-        out = []
-        for e in sorted(bucket.values(), key=lambda x: -float(x["credits"])):
-            row = {
-                "name": e["name"],
-                "credits": round(float(e["credits"]), 1),
-                "turns": int(e["turns"]),
-                "per_turn": _per_turn(e),
-                "share_pct": round(float(e["credits"]) / total * 100, 1) if total else 0.0,
-            }
-            if deltas is not None:
-                was = deltas.get(str(e["name"]), 0.0)
-                # A model with no prior spend has no percentage to report; the
-                # frontend renders that as "new" rather than a fake infinity.
-                row["delta_pct"] = (
-                    round((float(e["credits"]) - was) / was * 100, 0) if was > 0 else None
-                )
-            out.append(row)
-        return out
+        return rank_spend(bucket, deltas, total)
+
+    slot_current: dict[str, dict[str, Any]] = dict(convos)
+    if int(no_slot["turns"]):
+        slot_current[""] = no_slot
 
     band_rows = []
     for idx in sorted(bands):
@@ -337,6 +422,12 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
             "by_model": _rank(by_model, prev_model),
             "by_channel": _rank(by_channel, prev_channel),
             "by_category": _rank(by_category, prev_category),
+            # Every session's own spend, current and preceding period, so a
+            # caller holding the dashboard state can group by something this
+            # module cannot see (the sidebar folder a session is filed in).
+            # Internal: the handler consumes and drops it before the payload
+            # leaves, since it is one entry per session in the window.
+            "slot_spend": _slot_spend(slot_current, prev_slot),
             "context_bands": band_rows,
             "conversations": convo_rows,
             "conversation_count": len(convos),
