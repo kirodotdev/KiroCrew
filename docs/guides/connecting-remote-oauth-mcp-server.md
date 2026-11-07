@@ -273,10 +273,10 @@ providers' MCP authorization servers plus the classic web-OAuth hosts.
 **Miro is in it** (`mcp.miro.com` + `/authorize`), so the public Miro MCP
 server needs no entry of your own; a host outside that set whose consent URL
 exceeds the query-length heuristic fails closed instead. The fix is
-agent-fenced with no dashboard writer, so two surfaces name it: the chat banner
+agent-fenced with no dashboard writer, so three surfaces name it: the chat banner
 that reports the rejection (`dashboard/chat_turn/mcp_session.py`) names the remedy inline,
-and the Connections card names the refused endpoint, shows the remedy line and
-links to this section.
+and the Connections card and the MCP table's **Sign in** control (`McpRowSignIn`)
+each name the refused endpoint, show the remedy line and link to this section.
 
 The remedy is the operator keystone **`oauth_endpoints.json`**, which extends
 the recognized set without weakening the gate. Create or edit it in the Kiro

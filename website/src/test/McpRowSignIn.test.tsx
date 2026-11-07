@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useEffect } from 'react'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 
 /* ── Mocks: must run before importing the component ── */
@@ -25,6 +26,7 @@ import { queryClient } from '../api/queryClient'
 
 import { ApiError } from '../api/client'
 import McpRowSignIn from '../pages/overview/McpRowSignIn'
+import { McpStagedEditsProvider, useSetMcpStagedEdits } from '../pages/connections/mcpStagedEditsContext'
 
 const VALID_RETURN = 'http://127.0.0.1:52100/?code=abc123'
 
@@ -169,6 +171,65 @@ describe('McpRowSignIn', () => {
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await tickPolls(1)
     expect(screen.getByRole('alert')).toHaveTextContent(/Could not start the sign-in/)
+  })
+
+  it('names the refused endpoint and the oauth_endpoints.json remedy when the gate rejects the URL', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({
+      slug: 'docsServer',
+      state: 'failed',
+      reason: 'mint_url_rejected',
+      rejected_endpoint: 'idp.example/oauth2/authorize',
+    })
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await tickPolls(1)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The approval address from idp.example/oauth2/authorize looked like it carried a credential',
+    )
+    expect(screen.getByText(/add it to oauth_endpoints\.json/)).toHaveTextContent('idp.example/oauth2/authorize')
+    expect(screen.getByRole('link', { name: /Documentation/ })).toHaveAttribute(
+      'href',
+      expect.stringContaining('connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized'),
+    )
+    expect(screen.getByRole('button', { name: /Try again/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
+  it('keeps the unnamed refusal, with no remedy link, when the backend could not name the endpoint', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({ slug: 'docsServer', state: 'failed', reason: 'mint_url_rejected' })
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await tickPolls(1)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/containing credential-like data/)
+    expect(screen.queryByRole('link', { name: /Documentation/ })).not.toBeInTheDocument()
+  })
+
+  it('withholds "Ask the agent" while the MCP table holds staged edits', async () => {
+    // Stands in for McpTab publishing its unapplied scope/tool edits.
+    function StagedEdits() {
+      const setStaged = useSetMcpStagedEdits()
+      useEffect(() => { setStaged(true) }, [setStaged])
+      return null
+    }
+    mockApi.connectionsMint.mockRejectedValue(new Error('boom'))
+    render(
+      <McpStagedEditsProvider>
+        <StagedEdits />
+        <McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />
+      </McpStagedEditsProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await flush()
+    expect(screen.getByRole('alert')).toHaveTextContent(/Could not start the sign-in/)
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/Apply or discard your MCP server edits/)).toBeInTheDocument()
   })
 
   describe('relay affordance', () => {
