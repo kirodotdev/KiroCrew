@@ -32,6 +32,17 @@ describe('CollapsibleMessage', () => {
     expect(screen.getByText(/a+…$/)).toBeInTheDocument()
   })
 
+  it('says whether the full message is showing', () => {
+    const { container } = render(<CollapsibleMessage message={'a'.repeat(120)} />)
+    const btn = container.querySelector('button')!
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(btn)
+    expect(container.querySelector('pre')).not.toBeNull()
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+  })
+
   // short messages (≤80 chars, else branch)
   it('collapses whitespace for short messages without ellipsis', () => {
     const { container } = render(<CollapsibleMessage message={'line one\n  line two'} />)
