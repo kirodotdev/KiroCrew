@@ -18,7 +18,7 @@ import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '..
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
 import { AppSessionMuteSection } from './AppSessionMuteSection'
-import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
+import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
@@ -372,7 +372,7 @@ function SystemNotificationsRow() {
 
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
-  const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
+  const notifyChatComplete = useChatCompleteNotify()
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
 
@@ -761,7 +761,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes')}
             hint={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
-            onChange={v => { setNotifyChatComplete(v); saveChatCompleteNotify(v) }}
+            onChange={saveChatCompleteNotify}
           />
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}
