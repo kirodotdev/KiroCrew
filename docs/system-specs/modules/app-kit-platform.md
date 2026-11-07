@@ -6012,6 +6012,20 @@ process and message), and when called on a running event loop. `run(func, *args,
 `executors.run_in_embed_pool`, so no keyword an app passes reaches the pool's own
 parameters. No method raises into the app.
 
+The batch members `embed_batch_sync(texts, instruction=None)` and its pooled
+`embed_batch` are ungated like the rest of `EmbedSDK`: no manifest key could gate
+them honestly while the single-text members load the same model, so fair use comes
+from the bulk priority and the batch cap. They return an `EmbedBatchResult` with
+`model_id`, `dim` and `embeddings_shared.embedding_space_signature(model_id, dim)`,
+or an empty result with a `reason` (`invalid_input`, `too_many_texts` past
+`MAX_BATCH_TEXTS` = 64, `on_event_loop`, `not_ready`, `failed`). They call the
+shared backend's `embed_batch` at `PRIORITY_BULK`, behind memory recall
+(`PRIORITY_INTERACTIVE`) and memory writes; a cold model answers bulk work with
+`None` while the load it kicked runs, which reads as `not_ready`. Each text is cut
+at `_MAX_EMBED_CHARS`, and an optional instruction (at most 512 characters) is
+prefixed as `Instruct: <instruction>\nQuery:`. No new route or listener: an app
+that serves vectors over HTTP does so from its own routes, behind its own auth.
+
 **Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
 `apps/manifest_sections.py`), preserved by `AppManifest.to_dict` and by the built-in
 discovery conversion. A locale key outside `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$`, a
