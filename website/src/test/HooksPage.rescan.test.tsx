@@ -5,7 +5,7 @@
  * refreshed list -- or says the config was not rewritten.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { NormalizedProviderHook } from '../providers/types'
@@ -65,6 +65,27 @@ describe('Provider hooks — rescan the hooks folder', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('the Logs page says why')
     expect(screen.getByText(SCRIPT)).toBeInTheDocument()
     expect(rescan).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps focus on Rescan while it runs, and ignores a second press', async () => {
+    let finish: (v: boolean) => void = () => {}
+    rescan.mockImplementationOnce(() => new Promise<boolean>(r => { finish = r }))
+    renderPage()
+    const btn = await screen.findByRole('button', { name: 'Rescan hooks folder' })
+    btn.focus()
+    // Two presses in the same tick, before any re-render, still start one rescan.
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(btn).toHaveAttribute('aria-busy', 'true'))
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).not.toBeDisabled()
+    expect(btn).toHaveFocus()
+    fireEvent.click(btn)
+    expect(rescan).toHaveBeenCalledTimes(1)
+
+    await act(async () => { finish(true) })
+    await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'false'))
   })
 
   it('says so when the config was not rewritten', async () => {
