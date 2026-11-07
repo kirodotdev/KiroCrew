@@ -2,9 +2,11 @@
 
 ``test/conftest.py`` re-exports :func:`pytest_ignore_collect`, which is how pytest finds
 it. The names come from ``windows-collect-ignore.txt`` (or ``macos-collect-ignore.txt``)
-rather than an inline list: the CI reduced-scope selector (scripts/ci-surface-tests.py)
-has to apply the same exclusion, because naming a file explicitly on the pytest command
-line bypasses this hook. One file, two readers, no drift.
+rather than an inline list: the selectors that name files explicitly on the pytest
+command line (scripts/ci-surface-tests.py for CI's reduced scope,
+scripts/run_scoped_tests.py for the local gate's related set) have to apply the same
+exclusion, because an explicit path bypasses this hook. One file, several readers, no
+drift.
 
 A hook, not a conftest ``collect_ignore`` list. pytest's own ``pytest_ignore_collect``
 turns a conftest's ``collect_ignore`` into a fresh list of absolute paths on EVERY
