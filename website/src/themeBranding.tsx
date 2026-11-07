@@ -3,7 +3,7 @@
  *
  * A theme can decorate the shell beyond its color tokens: a custom bot name and
  * logo, a browser favicon, a decorative top-bar element, an aside widget,
- * always-mounted overlays, and a one-shot activation side-effect. Rather than
+ * decorative overlays, and a one-shot activation side-effect. Rather than
  * hard-coding `colorTheme === 'x' ? … : colorTheme === 'y' ? …` chains in
  * App.tsx and WelcomeView, those components read this registry, so adding a
  * branded theme is ONE `registerThemeBranding()` call (plus the theme's CSS
@@ -39,7 +39,8 @@ export interface ThemeBranding {
   topBarAside?: ComponentType
   /** Hide topBar / topBarAside on narrow (mobile) viewports. Default false. */
   topBarHideOnMobile?: boolean
-  /** Always-mounted decorative overlays (widgets, transitions). */
+  /** Decorative overlays (widgets, transitions), mounted unless the user turns
+   *  Overlays off for that theme in Settings > Display > Theme > Experience. */
   overlays?: ComponentType[]
   /** Side-effect fired once when this theme becomes active (off→on switch),
    *  e.g. a boot chime. Must be idempotent / cheap. */
