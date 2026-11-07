@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_folders import (
     _audit_origin,
     _effective_request_app,
     _folder_history_counts,
+    _prune_icon_tasks_from_other_loops,
     _refuse_unattributable_caller,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -528,6 +529,7 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         removed = await state.mutate_folders(_prune, prepare=_prepare)
     except (_CronUnreadable, _ConfigUnreadable) as exc:
         return _unreadable(exc)
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     for fid in removed:
         _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
         pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)

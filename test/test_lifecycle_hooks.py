@@ -9,12 +9,13 @@ import asyncio
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+import kiro_crew.apps.lifecycle as lifecycle_mod
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manifest import app_name_error
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -22,6 +23,14 @@ from kiro_crew.testing.wait import async_wait_until, await_until
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_detached_hook_tasks() -> Iterator[None]:
+    # The registry is module-global and outlives each test's loop.
+    lifecycle_mod._DETACHED_HOOK_TASKS.clear()
+    yield
+    lifecycle_mod._DETACHED_HOOK_TASKS.clear()
 
 
 async def _thread_event_set(event: threading.Event, what: str) -> bool:
