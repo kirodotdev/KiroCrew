@@ -177,7 +177,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _IN_SANDBOX_MARKER _IN_SANDBOX_LEVEL_VAR _TIER_ORDINALS _mode_to_level _SANDBOX_MODE_ALIASES
         _CGROUP_AGENTS_SLICE
         effective_sandbox_mode _governance_sandbox_floor _clamp_sandbox_mode _floor_mandates_sandbox
-        _clamp_sandbox_mode_to_floor
+        _clamp_sandbox_mode_to_floor configured_readonly_layer warn_readonly_layer_unenforced
+        _READONLY_LAYER_CACHE _READONLY_LAYER_WARNED _readonly_layer_from
         """.split()),
     "kiro_crew.sandbox_precreate": tuple("""
         _CREW_PRECREATE_READONLY_DIR_LEAVES _CREW_NOFOLLOW_READONLY_DIR_LEAVES
@@ -245,7 +246,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _carveout_probes _plan_cwd _live_plan_host _spawn_plan _build_launcher_script
         _build_seatbelt_profile namespace_argv _pinned_env_bin sandbox_exec_argv
         _sandbox_env_scrub_keys _sandbox_env_unset_args cleanup_stale_sandbox_profiles
-        _ENV_BINARY_CANDIDATES _unset_env_argv
+        _ENV_BINARY_CANDIDATES _unset_env_argv _operator_layer_probes
         """.split()),
     "kiro_crew.sandbox_delegation": tuple("""
         _KIRO_INTERNAL_SETTINGS_PATH _KIRO_INTERNAL_SANDBOX_KEY _kiro_delegation_warned

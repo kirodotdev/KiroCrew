@@ -58,6 +58,7 @@ from kiro_crew.sandbox_tiers import (
     _governance_sandbox_floor,
     _mode_to_level,
     enterprise_policy_cache_view,
+    warn_readonly_layer_unenforced,
 )
 from kiro_crew.sandbox_unavailable import (
     UNSANDBOXED_BY_OPERATOR,
@@ -619,6 +620,9 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    if sys.platform == "win32":
+        # No OS backend exists here, so the operator's read-only layer cannot hold.
+        warn_readonly_layer_unenforced("Windows has no OS sandbox backend")
     # The caller resolved the SSH forward against its own floor read. Re-judge
     # it against the tier this wrap applies, so a floor raised in between can
     # only drop the socket. Never turns a False into True.

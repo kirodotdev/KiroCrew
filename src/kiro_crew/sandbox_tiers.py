@@ -1172,6 +1172,120 @@ def configured_sandbox_mode() -> str:
         return _SANDBOX_MODE_FALLBACK
 
 
+_READONLY_LAYER_CACHE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+_READONLY_LAYER_WARNED: set[tuple[str, str, bool]] = set()
+
+
+def configured_readonly_layer() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The operator's read-only paths and exceptions, with ``~`` expanded.
+
+    Read both config documents at each spawn without rewriting them. The local
+    overlay wins per key, and absent files or keys contribute nothing. Existing
+    documents must be JSON objects with an object-valued ``agent`` when present.
+    An unreadable document retains this process's last fully readable layer;
+    without one, the documents that did parse supply the layer, as the config
+    loader uses them. Each distinct
+    unreadable situation logs a SECURITY warning. Values are coerced to lists
+    of non-empty strings, as the config loader coerces them.
+
+    Import lazily to avoid the config import cycle. Never use ``KiroCrewConfig.load()``:
+    the plan reads after the pre-spawn pass records ``config.json``'s identity,
+    and a load can write the file back.
+    """
+    from kiro_crew.config.loader_locations import (
+        config_local_path,
+        config_path,
+        read_config_text,
+    )
+
+    stored: dict[str, object] = {}
+    unreadable: list[tuple[Path, str]] = []
+    for path in (config_local_path(), config_path()):
+        try:
+            document = json.loads(read_config_text(path))
+            if not isinstance(document, dict):
+                raise ValueError("config document must be a JSON object")
+            agent = document.get("agent", {})
+            if not isinstance(agent, dict):
+                raise ValueError("agent must be a JSON object")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            unreadable.append((path, str(exc)))
+            continue
+        for key in ("sandbox_readonly_paths", "sandbox_readonly_exceptions"):
+            if key in agent:
+                stored.setdefault(key, agent[key])
+
+    if unreadable:
+        cached = "layer" in _READONLY_LAYER_CACHE
+        for path, reason in unreadable:
+            situation = (str(path), reason, cached)
+            if situation in _READONLY_LAYER_WARNED:
+                continue
+            _READONLY_LAYER_WARNED.add(situation)
+            logger.warning(
+                "SECURITY: %s could not be read (%s); %s",
+                path,
+                reason,
+                (
+                    "keeping the last agent.sandbox_readonly_paths this process read"
+                    if cached
+                    else "applying agent.sandbox_readonly_paths from the documents that parsed"
+                ),
+            )
+        if cached:
+            return _READONLY_LAYER_CACHE["layer"]
+        # Nothing read whole yet: apply what the readable documents hold, as the
+        # config loader does, rather than no layer. Not cached, so the next whole
+        # read replaces it.
+        return _readonly_layer_from(stored)
+
+    layer = _readonly_layer_from(stored)
+    _READONLY_LAYER_CACHE["layer"] = layer
+    return layer
+
+
+def _readonly_layer_from(stored: dict[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``stored``'s two read-only keys as non-empty strings, with ``~`` expanded."""
+    paths, exceptions = (
+        (
+            [entry for entry in value if isinstance(entry, str) and entry]
+            if isinstance(value, list)
+            else []
+        )
+        for value in (
+            stored.get("sandbox_readonly_paths"),
+            stored.get("sandbox_readonly_exceptions"),
+        )
+    )
+    layer = (
+        tuple(os.path.expanduser(path) for path in paths),
+        tuple(os.path.expanduser(path) for path in exceptions),
+    )
+    return layer
+
+
+def warn_readonly_layer_unenforced(reason: str) -> None:
+    """Log once per process that the operator's read-only layer is not applied, and why.
+
+    For a spawn no Kiro Crew OS sandbox confines (Windows has no backend), so an
+    operator who set ``agent.sandbox_readonly_paths`` is told it does nothing there
+    rather than left to assume it holds.
+    """
+    if getattr(warn_readonly_layer_unenforced, "_warned", False):
+        return
+    paths, exceptions = configured_readonly_layer()
+    if not paths and not exceptions:
+        return
+    warn_readonly_layer_unenforced._warned = True  # type: ignore[attr-defined]
+    logger.warning(
+        "SECURITY: agent.sandbox_readonly_paths is set but NOT enforced: %s. The agent "
+        "can write to those directories.",
+        reason,
+    )
+
+
 # The single environment marker that proves this process is already INSIDE a
 # Kiro Crew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at

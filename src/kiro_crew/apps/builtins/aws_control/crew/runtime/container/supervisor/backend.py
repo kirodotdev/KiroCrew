@@ -318,6 +318,10 @@ FORCED_AGENT_SETTINGS: Mapping[str, object] = {
     "sandbox": "auto",
     "sandbox_allow_no_isolation": False,
     "sandbox_allow_unsandboxed_exec": False,
+    # Narrowing-only: an entry can only take write access away, so the container states
+    # the gateway's own default of none rather than letting a supplied file decide it.
+    "sandbox_readonly_paths": [],
+    "sandbox_readonly_exceptions": [],
 }
 
 #: What the INTERNAL-ONLY boundary loosens, applied over the baseline above and only

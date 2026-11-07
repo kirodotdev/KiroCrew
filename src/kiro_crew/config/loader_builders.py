@@ -717,6 +717,16 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             )
         ),
         apps_allow_third_party=section.read("apps_allow_third_party", _safe_bool),
+        sandbox_readonly_paths=(
+            [p for p in _ro_paths if isinstance(p, str) and p]
+            if isinstance(_ro_paths := section.get("sandbox_readonly_paths"), list)
+            else section.default("sandbox_readonly_paths")
+        ),
+        sandbox_readonly_exceptions=(
+            [p for p in _ro_exceptions if isinstance(p, str) and p]
+            if isinstance(_ro_exceptions := section.get("sandbox_readonly_exceptions"), list)
+            else section.default("sandbox_readonly_exceptions")
+        ),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]
             if isinstance(_trusted := section.get("apps_trusted"), list)

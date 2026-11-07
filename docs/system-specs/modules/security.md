@@ -419,6 +419,82 @@ credential, and its own `islink` refusal already rejects a link planted where th
 belongs. Recorded here rather than left implied, and pinned by
 `test_write_carveout_still_resolves_its_own_name_twice`.
 
+**The operator's read-only layer (`agent.sandbox_readonly_paths` /
+`agent.sandbox_readonly_exceptions`).** An operator-owned way to take write access away
+from the agent: each read-only entry is a directory the agent can read but not write, and
+each exception a directory strictly inside one that stays writable (`/mnt/c` read-only,
+`/mnt/c/Users/<me>/Documents` writable). It is the narrow first step toward a general
+write allowlist; a whole-filesystem allowlist is not this feature, and `/` is refused.
+
+- **Who owns it.** Both keys live in `config.json`, which is already a READONLY crew leaf
+  (`_CREW_READONLY_LEAVES`), so in-sandbox code reads its own boundary and cannot edit
+  it; no new leaf is added and no disposition changes. The planner reads them raw through
+  `sandbox_tiers.configured_readonly_layer()` (overlay first, coerced as the loader
+  coerces them), never through `KiroCrewConfig.load()`, because the read happens inside
+  the plan after the pre-spawn pass recorded `config.json`'s identity and a load can
+  write the file back. An unreadable document logs a SECURITY warning once per distinct
+  situation and retains the last fully readable layer in this process; a process that
+  has none applies the layer the documents that did parse hold, as the config loader
+  does, so a broken `config.local.json` never drops `config.json`'s entries. With no
+  entries the plan, launcher payload and Seatbelt profile are the ones the
+  layer never existed in: the payload keys `operator_readonly_dirs` /
+  `operator_writable_dirs` are emitted only when non-empty.
+- **Narrowing only.** No entry can re-open anything. An exception re-opens only part of
+  the operator's own read-only directory; `sandbox_plan.operator_readonly_layer` refuses
+  (logging a `SECURITY: ignoring agent.sandbox_readonly_...` line) an exception outside
+  every read-only entry, equal to one, holding a crew guard, or lying inside one -- the
+  same checks `writable_carveouts` applies to the crew carve-outs, with the operator's
+  read-only entries as the only carveable parents. A read-only entry that is relative,
+  absent, `/`, or holds `/run/user/<uid>` or `/dev/shm` (where the Linux launcher creates
+  every mask's stand-in) is refused too.
+- **Crew rules win by order.** The launcher runs `seal_operator_readonly` right after
+  window staging and before `seal_readonly`, `mask_sensitive` and `apply_carveouts`, so
+  every crew seal, mask and carve-out is a mount placed on top of the layer. The Seatbelt
+  profile emits the layer's rules first and every crew rule after them, and Seatbelt is
+  last-match-wins between an allow and a deny. The plan-time refusals are therefore the
+  log line an operator sees, not the only thing between an exception and a crew seal.
+- **Linux mechanics.** A read-only entry is bound over itself RECURSIVELY (a
+  non-recursive bind would hide a filesystem mounted below it, and the kernel refuses one
+  over mounts a user namespace has locked), its own mount is remounted `MS_RDONLY` through
+  the identity-checked `_seal_path` the crew seals use, and every mount point
+  `/proc/self/mountinfo` lists below it is remounted `MS_RDONLY` by name. Each of those
+  fails closed (`_mount_or_die`), except a mount the namespace cannot reach (a root-only
+  directory above it) and a record hidden by a later mount over a directory above it (its
+  name reaches a mount whose ID, from the pinned descriptor's `fdinfo`, is none of those
+  listed at that point), which are skipped. An exception containing such a skipped mount
+  stays read-only with a warning, so restoring traversal cannot expose an unsealed
+  writable mount. A read-only entry the gateway cannot probe for any reason but absence
+  stays in the plan, so it is still sealed rather than dropped. An exception is re-opened like a crew carve-out -- a
+  fresh bind remounted read-write, failing open so a refused mount leaves the path
+  read-only -- but recursive, and a filesystem mounted below an exception stays
+  read-only. The exception pair resolves its name twice, the residual the crew carve-out
+  documents above, with the same consequence: a lost race leaves the path read-only or
+  re-opens a directory inside the operator's own read-only entry, never a crew path.
+- **Seatbelt mechanics.** A read-only entry takes `file-write*` and `file-link` subpath
+  denies plus literal write denies on itself and each ancestor below `/`, so a rename of
+  a parent cannot move the tree out from under its path rule and a hardlink cannot give
+  one of its files a writable name; an exception is a `file-write*` (and `file-link`)
+  subpath allow. Within the layer the rules run shallowest path first, so each nested
+  entry decides over the one holding it (a read-only entry inside an exception stays
+  read-only, an exception inside that is writable again), the result Linux reaches by
+  mount order; the literal rename guards come after every allow, so even an exception
+  holding a read-only entry cannot be renamed away. Both
+  spellings (lexical and canonical) are emitted, as for every Seatbelt path rule.
+- **Where it does not hold.** Wherever Kiro Crew applies no sandbox of its own:
+  `agent.sandbox` `off`, a macOS spawn delegated to kiro-cli's internal sandbox, and
+  Windows, where `wrap_argv` logs one `SECURITY: agent.sandbox_readonly_paths is set but
+  NOT enforced` warning per process.
+- **Enterprise.** The layer is an operator setting and can only narrow, so it widens no
+  governed host. A governance-mandated list (a `sandbox.*` scope in
+  `security_policy.json` that config could only narrow further) is a possible follow-up
+  and does not exist today; `sandbox` in a policy still accepts only `min_level` and its
+  two reserved flags.
+
+Pinned by `test/test_sandbox_readonly_layer.py` (planner, both renderers, the launcher
+stage, the live adapter) and `test/test_sandbox_readonly_layer_real_sandbox.py` (EROFS in
+the read-only directory, a write landing in its exception, and a crew ceiling an
+exception names staying read-only, under the real namespace sandbox).
+
 **Scope: the Linux bind-mask path, plus the credential-leaf pass.** The aliased-leaf pass is
 called from `namespace_argv`, so it governs the Linux namespace launcher. The hard-link pass
 on credential leaves below also runs from `sandbox_exec_argv`. macOS fences the same leaves through Seatbelt subpath
