@@ -5959,6 +5959,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "이 컴퓨터에 새 크래시 기록 {{n}}개를 저장했습니다. 문제를 보고할 때 첨부해 주세요.",
       "dismiss": "닫기",
+      "native_log_off_disk_full": "chromium.log는 이전 세션의 파일입니다. 디스크가 가득 차서 이번 실행에서 새 로그를 시작하지 못했습니다.",
+      "native_log_off_in_use": "chromium.log는 이전 세션의 파일입니다. 다른 프로그램이 이전 파일을 열고 있어 이번 실행에서 새 로그를 시작하지 못했습니다.",
+      "native_log_off_no_access": "chromium.log는 이전 세션의 파일입니다. 앱에 이전 파일을 옮길 권한이 없어 이번 실행에서 새 로그를 시작하지 못했습니다.",
+      "native_log_off_other": "chromium.log는 이전 세션의 파일입니다. 이전 파일을 옮겨 둘 수 없어 이번 실행에서 새 로그를 시작하지 못했습니다.",
+      "native_log_off_unreadable": "chromium.log는 이전 세션의 파일입니다. 이전 파일을 읽을 수 없어 이번 실행에서 새 로그를 시작하지 못했습니다.",
       "report_issue": "문제 신고",
       "report_note": "앱이 예기치 않게 종료되었습니다. 이 기기에 저장된 새 충돌 기록: {{n}}개.",
       "reveal_failed": "폴더를 열 수 없습니다. 앱의 로그 디렉터리에서 crashes.log를 확인하세요.",

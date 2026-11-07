@@ -1861,6 +1861,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "New crash records saved on this machine: {{n}}. Attach them when you report the problem.",
       "dismiss": "Dismiss",
+      "native_log_off_disk_full": "chromium.log is from an earlier session. This launch couldn't start a new one because the disk is full.",
+      "native_log_off_in_use": "chromium.log is from an earlier session. This launch couldn't start a new one because another program has the old file open.",
+      "native_log_off_no_access": "chromium.log is from an earlier session. This launch couldn't start a new one because the app isn't allowed to move the old file.",
+      "native_log_off_other": "chromium.log is from an earlier session. This launch couldn't start a new one because the old file couldn't be moved aside.",
+      "native_log_off_unreadable": "chromium.log is from an earlier session. This launch couldn't start a new one because the old file couldn't be read.",
       "report_issue": "Report issue",
       "report_note": "The app closed unexpectedly. New crash records saved on this machine: {{n}}.",
       "reveal_failed": "Couldn't open the folder — look for crashes.log in the app's log directory.",

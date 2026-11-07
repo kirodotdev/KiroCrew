@@ -1301,6 +1301,28 @@ describe("crashNoticeSummary", () => {
   it("is safe on a scan that never ran", () => {
     assert.deepEqual(crashNoticeSummary(null), { newCount: 0 });
   });
+
+  it("adds the native-log-off cause only when the file sink is off this launch", () => {
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, { fileLogOffCause: "disk_full" }), {
+      newCount: 1,
+      nativeLogOff: "disk_full",
+    });
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, { fileLogOffCause: null }), { newCount: 1 });
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, null), { newCount: 1 });
+  });
+
+  it("carries nothing else from the native-logging result", () => {
+    const status = { fileLogOffCause: "in_use", logPath: "/Users/someone/Library/Logs/chromium.log", blocked: true };
+    assert.deepEqual(Object.keys(crashNoticeSummary(null, status)).sort(), ["nativeLogOff", "newCount"]);
+    assert.equal(JSON.stringify(crashNoticeSummary(null, status)).includes("/Users"), false);
+  });
+
+  it("drops anything that is not one of the closed-set cause codes", () => {
+    const sentence = "chromium.log could not be rotated (rotate failed (ENOSPC))";
+    assert.deepEqual(crashNoticeSummary(null, { fileLogOffCause: sentence }), { newCount: 0 });
+    assert.deepEqual(crashNoticeSummary(null, { fileLogOffCause: { path: "/x" } }), { newCount: 0 });
+    assert.deepEqual(crashNoticeSummary(null, { fileLogOffReason: "disk_full" }), { newCount: 0 });
+  });
 });
 
 // ---------------------------------------------------------------------------

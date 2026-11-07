@@ -685,6 +685,25 @@ function createTightLogFile(logPath, { fs, log = () => {} } = {}) {
 }
 
 /**
+ * Why the Chromium file sink is off this launch, as one of a closed set of codes
+ * the crash notice translates (it never shows the raw errno or an English
+ * sentence built here, so every catalog can phrase the cause in its own words).
+ */
+const NATIVE_LOG_OFF_CAUSES = Object.freeze(["disk_full", "no_access", "in_use", "unreadable", "other"]);
+
+/**
+ * The cause code of a failed fs call, from its errno code only. Never from
+ * `e.message`: Node puts the full path there, and this code reaches the renderer.
+ */
+function causeFromFsError(e) {
+  const code = e && e.code;
+  if (code === "ENOSPC" || code === "EDQUOT") return "disk_full";
+  if (code === "EACCES" || code === "EPERM" || code === "EROFS") return "no_access";
+  if (code === "EBUSY") return "in_use";
+  return "other";
+}
+
+/**
  * Start-of-boot rotation, which is what bounds this file's size.
  *
  * Neither Chromium's log file nor this app's `glog` has any rotation (glog is a
@@ -775,7 +794,13 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
       // The file stays, token and all, so at least its mode has to be owner-only.
       // A chmod changes no byte of the evidence, so it is safe on this path.
       tightenLogMode(logPath, { fs, log });
-      return { rotated: false, blocked: true, previousPath: null, redacted: false };
+      return {
+        rotated: false,
+        blocked: true,
+        previousPath: null,
+        redacted: false,
+        cause: redaction.skipped === "unreadable" ? "unreadable" : "other",
+      };
     }
     // Overwrites any older generation, which is the point: two files, not N.
     // `renameSync` replaces an existing destination on Windows too (libuv
@@ -796,7 +821,13 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
     log(`native log rotate failed at ${logPath}: ${e && e.message}`);
     // Same as the aborted branch: the un-rotated file stays, so tighten its mode.
     tightenLogMode(logPath, { fs, log });
-    return { rotated: false, blocked: true, previousPath: null, redacted: redactedHere };
+    return {
+      rotated: false,
+      blocked: true,
+      previousPath: null,
+      redacted: redactedHere,
+      cause: causeFromFsError(e),
+    };
   }
 }
 
@@ -812,7 +843,7 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
  * @param {(opts: object) => void} [deps.startCrashReporter]
  * @param {object} [deps.fs]                 Injected for the rotate step.
  * @param {(msg: string) => void} [deps.log]
- * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, switches: string[], crashReporter: boolean, tightenLiveLog: () => boolean}}
+ * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, fileLogOffCause: string|null, switches: string[], crashReporter: boolean, tightenLiveLog: () => boolean}}
  *   `tightenLiveLog` must be called once the app is ready, i.e. after Chromium
  *   has opened `--log-file`. Calling it earlier is harmless but pointless.
  */
@@ -829,11 +860,12 @@ function initNativeLogging({
   let blocked = false;
   let previousPath = null;
   let redacted = true;
+  let cause = null;
 
   // Before the switches: Chromium opens this path during initialization, so the
   // previous generation has to be moved aside first or it is appended to (or
   // clobbered) instead of preserved.
-  if (fs) ({ rotated, blocked, previousPath, redacted } = rotateNativeLog(logPath, { fs, log }));
+  if (fs) ({ rotated, blocked, previousPath, redacted, cause } = rotateNativeLog(logPath, { fs, log }));
 
   // Chromium creates `--log-file` at the process umask (0644 on a normal macOS
   // install) and records the dashboard session token on every renderer console
@@ -905,11 +937,17 @@ function initNativeLogging({
       `kept=${blocked ? (redacted ? "redacted" : "UNREDACTED") : "none"} ` +
       `switches=${applied.join(",") || "none"} minidumps=${crashReporter}`
   );
+  // Read by the crash notice when the sink is off this launch, so the user knows
+  // the chromium.log they are asked to attach is from an earlier session. A code
+  // from `NATIVE_LOG_OFF_CAUSES`, never a sentence or a path: it crosses into the
+  // renderer, which phrases it in the user's language.
+  const fileLogOffCause = blocked ? (NATIVE_LOG_OFF_CAUSES.includes(cause) ? cause : "other") : null;
   return {
     logPath,
     previousPath,
     rotated,
     blocked,
+    fileLogOffCause,
     switches: applied,
     crashReporter,
     tightenLiveLog,
@@ -928,6 +966,7 @@ module.exports = {
   tightenLogMode,
   openRegularFile,
   NATIVE_LOG_BASENAME,
+  NATIVE_LOG_OFF_CAUSES,
   NATIVE_LOG_PREVIOUS_BASENAME,
   SECRET_FILE_MODE,
   MAX_REDACT_BYTES,

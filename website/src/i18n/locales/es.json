@@ -6293,6 +6293,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Registros de fallo nuevos guardados en este equipo: {{n}}. Adjúntalos al informar del problema.",
       "dismiss": "Descartar",
+      "native_log_off_disk_full": "chromium.log es de una sesión anterior. Este inicio no pudo crear uno nuevo porque el disco está lleno.",
+      "native_log_off_in_use": "chromium.log es de una sesión anterior. Este inicio no pudo crear uno nuevo porque otro programa tiene abierto el archivo anterior.",
+      "native_log_off_no_access": "chromium.log es de una sesión anterior. Este inicio no pudo crear uno nuevo porque la app no tiene permiso para mover el archivo anterior.",
+      "native_log_off_other": "chromium.log es de una sesión anterior. Este inicio no pudo crear uno nuevo porque no se pudo apartar el archivo anterior.",
+      "native_log_off_unreadable": "chromium.log es de una sesión anterior. Este inicio no pudo crear uno nuevo porque no se pudo leer el archivo anterior.",
       "report_issue": "Reportar problema",
       "report_note": "La aplicación se cerró inesperadamente. Nuevos registros de fallos guardados en este equipo: {{n}}.",
       "reveal_failed": "No se pudo abrir la carpeta: busca crashes.log en el directorio de registros de la aplicación.",

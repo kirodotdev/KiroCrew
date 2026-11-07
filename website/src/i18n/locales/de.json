@@ -6126,6 +6126,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}. Fügen Sie sie Ihrer Fehlermeldung bei.",
       "dismiss": "Schließen",
+      "native_log_off_disk_full": "chromium.log stammt aus einer früheren Sitzung. Dieser Start konnte keine neue Datei anlegen, weil der Datenträger voll ist.",
+      "native_log_off_in_use": "chromium.log stammt aus einer früheren Sitzung. Dieser Start konnte keine neue Datei anlegen, weil ein anderes Programm die alte Datei geöffnet hat.",
+      "native_log_off_no_access": "chromium.log stammt aus einer früheren Sitzung. Dieser Start konnte keine neue Datei anlegen, weil die App die alte Datei nicht verschieben darf.",
+      "native_log_off_other": "chromium.log stammt aus einer früheren Sitzung. Dieser Start konnte keine neue Datei anlegen, weil die alte Datei nicht beiseitegelegt werden konnte.",
+      "native_log_off_unreadable": "chromium.log stammt aus einer früheren Sitzung. Dieser Start konnte keine neue Datei anlegen, weil die alte Datei nicht gelesen werden konnte.",
       "report_issue": "Problem melden",
       "report_note": "Die App wurde unerwartet beendet. Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}.",
       "reveal_failed": "Ordner konnte nicht geöffnet werden – suchen Sie im Log-Verzeichnis der App nach crashes.log.",

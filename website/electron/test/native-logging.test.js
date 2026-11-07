@@ -16,6 +16,7 @@ const {
   tightenLogMode,
   openRegularFile,
   NATIVE_LOG_BASENAME,
+  NATIVE_LOG_OFF_CAUSES,
   NATIVE_LOG_PREVIOUS_BASENAME,
   SECRET_FILE_MODE,
   MAX_REDACT_BYTES,
@@ -318,6 +319,9 @@ describe("rotateNativeLog", () => {
       blocked: true,
       previousPath: null,
       redacted: true,
+      // The fake's error carries no errno code, so the cause falls back to
+      // the catch-all code.
+      cause: "other",
     });
     assert.equal(fs.files.has(LIVE), true, "the live log must survive a failed rotate");
     assert.equal(lines.length, 1);
@@ -1249,6 +1253,53 @@ describe("initNativeLogging verdict line", () => {
   it("says nothing was kept on an ordinary rotation", () => {
     const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
     assert.match(verdictOf(fs), /kept=none/);
+  });
+});
+
+// The crash notice reads `fileLogOffCause` to tell the user the chromium.log
+// they attach is from an earlier session. It crosses into the renderer, so it is
+// a code from a closed set, never a sentence, a path or an fs error's message.
+describe("initNativeLogging fileLogOffCause", () => {
+  const init = (fs) => initNativeLogging({ logsDir: "/logs", appendSwitch: () => {}, fs });
+  const failingRename = (code) => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: "evidence\n" } });
+    fs.renameSync = () => {
+      const err = new Error(`${code}: rename '${LIVE}' token=abc.def`);
+      err.code = code;
+      throw err;
+    };
+    return fs;
+  };
+
+  it("is null when the sink is armed", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    assert.equal(init(fs).fileLogOffCause, null);
+    assert.equal(init(fakeFs({ present: [] })).fileLogOffCause, null);
+  });
+
+  it("is a closed-set code when redaction aborted the rotation", () => {
+    const fs = fakeFs({
+      present: [LIVE],
+      contents: { [LIVE]: TOKENED_LINE },
+      throwWriteOn: `${LIVE}.redact.tmp`,
+    });
+    assert.equal(init(fs).fileLogOffCause, "other");
+  });
+
+  it("maps a failed rename's errno code to a cause, never its message or path", () => {
+    assert.equal(init(failingRename("ENOSPC")).fileLogOffCause, "disk_full");
+    assert.equal(init(failingRename("EDQUOT")).fileLogOffCause, "disk_full");
+    assert.equal(init(failingRename("EACCES")).fileLogOffCause, "no_access");
+    assert.equal(init(failingRename("EPERM")).fileLogOffCause, "no_access");
+    assert.equal(init(failingRename("EBUSY")).fileLogOffCause, "in_use");
+    assert.equal(init(failingRename("EIO")).fileLogOffCause, "other");
+    assert.equal(init(failingRename("/home/someone/secret")).fileLogOffCause, "other");
+  });
+
+  it("only ever yields a code from NATIVE_LOG_OFF_CAUSES", () => {
+    for (const code of ["ENOSPC", "EACCES", "EBUSY", "EIO", "x"]) {
+      assert.ok(NATIVE_LOG_OFF_CAUSES.includes(init(failingRename(code)).fileLogOffCause));
+    }
   });
 });
 });

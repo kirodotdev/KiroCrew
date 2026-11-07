@@ -5959,6 +5959,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "この端末に新しいクラッシュ記録を {{n}} 件保存しました。問題を報告する際に添付してください。",
       "dismiss": "閉じる",
+      "native_log_off_disk_full": "chromium.log は以前のセッションのものです。ディスクがいっぱいのため、今回の起動では新しいログを開始できませんでした。",
+      "native_log_off_in_use": "chromium.log は以前のセッションのものです。古いファイルを別のプログラムが開いているため、今回の起動では新しいログを開始できませんでした。",
+      "native_log_off_no_access": "chromium.log は以前のセッションのものです。アプリに古いファイルを移動する権限がないため、今回の起動では新しいログを開始できませんでした。",
+      "native_log_off_other": "chromium.log は以前のセッションのものです。古いファイルを退避できなかったため、今回の起動では新しいログを開始できませんでした。",
+      "native_log_off_unreadable": "chromium.log は以前のセッションのものです。古いファイルを読み取れなかったため、今回の起動では新しいログを開始できませんでした。",
       "report_issue": "問題を報告",
       "report_note": "アプリが予期せず終了しました。このマシンに保存された新しいクラッシュ記録: {{n}} 件。",
       "reveal_failed": "フォルダーを開けませんでした。アプリのログディレクトリにある crashes.log を確認してください。",

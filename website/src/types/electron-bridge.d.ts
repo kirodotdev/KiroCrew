@@ -106,7 +106,8 @@ declare global {
   }
 
   interface CrashReportsAPI {
-    get: () => Promise<{ newCount: number }>
+    /** `nativeLogOff`: why Chromium's file log is off this launch, as a cause code; absent when it is on. */
+    get: () => Promise<{ newCount: number; nativeLogOff?: 'disk_full' | 'no_access' | 'in_use' | 'unreadable' | 'other' }>
     reveal: () => Promise<{ ok: boolean; error?: string }>
   }
 
