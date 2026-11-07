@@ -222,6 +222,7 @@ class _ChatSlot:
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
+        "_fallback_walk_refused",
         "_active_fallback_model",
         "_fallback_primary_model",
         "_fallback_slot_model",
@@ -600,6 +601,7 @@ class _ChatSlot:
     _infra_retries: int
     _fallback_candidate_idx: int
     _fallback_walked: list[str]
+    _fallback_walk_refused: bool
     _active_fallback_model: str
     _fallback_primary_model: str
     _fallback_slot_model: str
