@@ -5610,6 +5610,7 @@
         "add_accounts_search_placeholder": "搜索配置文件",
         "add_accounts_search_keeps_selected": "你选中的配置文件即使不匹配也会留在列表里。",
         "add_accounts_none": "所有本地配置文件都已注册。",
+        "add_accounts_no_profiles": "本机还没有 AWS 配置文件。请先创建一个（例如在终端中运行 aws configure），然后在这里注册。",
         "add_accounts_unsupported": "在 Windows 上，AWS Control 无法访问本机的 AWS 配置文件：访问 AWS 需要 Linux 或 macOS shell。请在 WSL (Windows Subsystem for Linux) 中运行 {{productName}} 网关，然后注册你在其中配置的 AWS 配置文件。",
         "add_accounts_count_other": "已注册 {{count}} / {{max}}",
         "add_accounts_cap_reached": "已达到 {{max}} 个密钥的上限。请先移除一个再添加。",

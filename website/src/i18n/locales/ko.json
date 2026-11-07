@@ -5610,6 +5610,7 @@
         "add_accounts_search_placeholder": "프로필 검색",
         "add_accounts_search_keeps_selected": "선택한 프로필은 검색어와 일치하지 않아도 목록에 남습니다.",
         "add_accounts_none": "모든 로컬 프로필이 이미 등록되어 있습니다.",
+        "add_accounts_no_profiles": "이 컴퓨터에는 아직 AWS 프로필이 없습니다. 먼저 프로필을 만든 뒤(예: 터미널에서 aws configure 실행) 여기에서 등록하세요.",
         "add_accounts_unsupported": "Windows에서는 AWS Control이 이 컴퓨터의 AWS 프로필에 접근할 수 없습니다. AWS 접근에는 Linux 또는 macOS 쉘이 필요합니다. WSL (Windows Subsystem for Linux)에서 {{productName}} 게이트웨이를 실행한 뒤 그곳에서 설정한 프로필을 등록하세요.",
         "add_accounts_count_other": "{{max}}개 중 {{count}}개 등록됨",
         "add_accounts_cap_reached": "키 {{max}}개 한도에 도달했습니다. 더 추가하려면 먼저 하나를 제거하세요.",

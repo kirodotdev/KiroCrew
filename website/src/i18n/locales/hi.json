@@ -5771,6 +5771,7 @@
         "add_accounts_search_placeholder": "प्रोफ़ाइल खोजो",
         "add_accounts_search_keeps_selected": "तुमने जो प्रोफ़ाइल चुनी हैं, वे मेल न खाने पर फी सूची में बनी रहती हैं।",
         "add_accounts_none": "सभी स्थानीय प्रोफ़ाइल पहले से पंजीकृत हैं।",
+        "add_accounts_no_profiles": "इस मशीन पर अभी कोई AWS प्रोफ़ाइल नहीं है। पहले एक बनाओ (उदाहरण के लिए, टर्मिनल में aws configure चलाओ), फिर उसे यहाँ पंजीकृत करो।",
         "add_accounts_unsupported": "Windows पर AWS Control इस मशीन के AWS प्रोफ़ाइल तक नहीं पहुँच सकता: AWS ऐक्सेस के लिए Linux या macOS शेल चाहिए। {{productName}} गेटवे को WSL (Windows Subsystem for Linux) में चलाएँ, फिर वहाँ सेट किए प्रोफ़ाइल रजिस्टर करें।",
         "add_accounts_count_one": "{{max}} में से {{count}} पंजीकृत",
         "add_accounts_count_other": "{{max}} में से {{count}} पंजीकृत",
