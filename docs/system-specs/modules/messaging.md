@@ -1734,7 +1734,7 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `agent_push.py` | `POST /api/notifications/agent`, an agent session's `send_notification` push |
 | `*_settings.py`, one per channel | that channel's settings API |
 | `channel_config_writes.py` | the channel-config transaction every channel saver commits through: `_LockedSectionWrite`, and `_write_env_or_roll_back`, the one `.env` write, rollback and environment sync (its off-loop drain, `_write_env_off_loop`, stays in `handlers/messaging.py`); plus `_mask_secret`, `_clean_id_list` and `_threshold_pct_rejection` |
-| `slack_workspace.py` | the Slack pin, reaction, profile and manifest routes |
+| `slack_workspace.py` | the Slack pin, reaction, history, profile and manifest routes |
 | `channel_folder_backfill.py` | `POST /api/channel-folders/backfill`, filing a channel's existing sessions |
 | `browser_routes.py` | the browser routes: attach token, the native panel's command bus, the Playwright CLI install, the browser view and open |
 

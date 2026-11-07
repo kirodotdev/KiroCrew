@@ -195,6 +195,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # A digest of the same transcript `session_read_message` returns, so it is
     # blocked for the same exfiltration reason.
     "session_summary",
+    # Reads another tracked channel's messages, which a channel agent would relay
+    # into a thread other people read; same exfiltration reason.
+    "read_slack_history",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's

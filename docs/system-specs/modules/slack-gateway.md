@@ -1194,6 +1194,7 @@ Available to all allowed users.
 - Tracked channels are capability-probed (`slack/scope_probe.py`, one `conversations.history` call with `limit=1`) after the socket connects at startup and whenever a channel is added to tracking. A `missing_scope`/`channel_not_found` result logs a warning and pushes a dashboard notification — a private channel tracked under an install predating `groups:history` would otherwise fail silently. Deferred (`asyncio.create_task`), best-effort: transient network errors report nothing
 - `/<command> @user` refuses for the same reason
 - `/<command> #channel` adds a tracking channel via owner approval
+- An agent reads a tracked channel's recent messages, or one thread's, with the `read_slack_history` MCP tool (`POST /api/slack-history`, `RealSlackClient.fetch_history`). A channel that is untracked, that the inbound gate's channels policy refuses, or whose home workspace the origin gate (`slack.allowed_enterprise_ids`) does not admit is refused, as is a caller whose own `channels` governance scope leaves out `slack`; the home workspace is looked up again on every read until it resolves, so one failed lookup does not refuse every later read. Bot posts are dropped before the limit applies, `oldest` keeps only later messages (a thread's parent included), and text comes back only for the owner's messages: anyone else's is listed with `admitted: false` and no text, so the read admits no sender the inbound gate refuses
 
 ## File Attachment Processing
 
