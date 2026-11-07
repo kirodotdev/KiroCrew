@@ -447,12 +447,11 @@ class TestTheLargeSitesStageUnderTheDataHome:
     ) -> None:
         """The import EXTRACTION stages under ``<data home>/staging``.
 
-        The large copy in the import path is the extracted tree, and that is what
-        stages off the system temp dir. The uploaded ``.zip`` spool does
-        NOT (``_read_upload_file`` keeps it in ``tempfile.gettempdir()``), so this
-        lock is on ``portability.apply_import_zip``'s own ``TemporaryDirectory``, not
-        on the upload. Driven through a real export->import round trip with a spy on
-        the module's ``tempfile`` so a revert to a bare ``TemporaryDirectory()`` fails.
+        This lock is on ``portability.apply_import_zip``'s own ``TemporaryDirectory``;
+        the uploaded ``.zip`` spool beside it is covered by
+        ``test_portability_import_spool.py``. Driven through a real export->import
+        round trip with a spy on the module's ``tempfile`` so a revert to a bare
+        ``TemporaryDirectory()`` fails.
         """
         from unittest.mock import patch
 

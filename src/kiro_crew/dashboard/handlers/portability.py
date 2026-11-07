@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
-import tempfile
+import os
 import threading
 import uuid
 from pathlib import Path
+from typing import IO
 
 from aiohttp import web
 from aiohttp.multipart import BodyPartReader
 
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers._shared import open_multipart, require_owner_dashboard_request
 from kiro_crew.portability import (
@@ -28,6 +31,7 @@ from kiro_crew.portability import (
 )
 from kiro_crew.sel import sel as _sel_fn  # circular import — sel imports lazily
 from kiro_crew.snapshot import NamedStoresInUse, SourceComponentUnsound
+from kiro_crew.staging import staging_dir
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +97,9 @@ def _abort_connection(request: web.Request) -> None:
 #: the largest value consistent with the guard downstream.
 _MAX_IMPORT_BYTES = 2 * 1024**3
 
+#: The one file in an import spool directory (`_open_import_spool`).
+_SPOOL_FILE = "import.zip"
+
 #: Export response header naming the agent templates the bundle does not carry.
 UNBUNDLED_TEMPLATES_HEADER = "X-Kirocrew-Unbundled-Templates"
 
@@ -147,7 +154,10 @@ def _requested_agent_templates(
 
 
 async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Response | None]:
-    """Read a multipart file upload into a temp file. Returns (path, None) or (None, error_response)."""
+    """Spool a multipart file upload under ``staging``. Returns (path, None) or (None, error_response).
+
+    The caller removes the spool with ``_discard_import_spool(path.parent)``.
+    """
     reader, not_multipart = await open_multipart(request)
     if reader is None:
         return None, not_multipart
@@ -157,22 +167,20 @@ async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Resp
             {"error": "file field required", "code": "file_field_required"}, status=400
         )
 
-    # A single path rather than a scratch directory: the callers below already
-    # own the returned file and unlink it in their `finally`, so a directory
-    # would be a second thing to clean and nobody is cleaning it.
-    #
-    # The uploaded spool stays in the system temp dir, not the data-home staging leaf.
-    # ``part_stream`` creates and discards this file with a synchronous ``os.open`` /
-    # ``close`` + ``unlink`` ON the serving event loop, a cancellation-safety invariant
-    # it shares with two other upload handlers (ownership must be synchronous). Pointing
-    # ``dir=`` at ``<data home>/staging`` would aim that on-loop create at a filesystem
-    # that may be NFS, where a stalled metadata op would freeze the gateway loop; an
-    # off-loop create needs a different ownership model in that shared module. The large
-    # EXTRACTION (``portability.apply_import_zip``) and the snapshot/restore work stage
-    # under the data home; this upload spool does not.
-    dest = Path(tempfile.gettempdir()) / f"kc_import_{uuid.uuid4().hex}.zip"
+    # The spool (up to the 2 GiB cap) goes to its own directory under the data home's
+    # ``staging`` leaf, not the system temp dir, which a tmpfs ``/tmp`` holds in RAM.
+    # A directory because ``staging.sweep_staging`` reclaims only directories, so a
+    # spool orphaned by a hard crash is still swept. The data home may be NFS, so no
+    # call on it runs on the loop: the create and the discard included.
+    root = await asyncio.to_thread(staging_dir)
+    spool = root / f"kc_import_{uuid.uuid4().hex}"
     try:
-        await part_stream.stream_part_to_file(part, dest, max_bytes=_MAX_IMPORT_BYTES)
+        await part_stream.stream_part_off_loop(
+            part,
+            functools.partial(_open_import_spool, spool),
+            functools.partial(_discard_import_spool, spool),
+            max_bytes=_MAX_IMPORT_BYTES,
+        )
     except part_stream.PartTooLarge:
         limit_mb = _MAX_IMPORT_BYTES // (1024 * 1024)
         return None, web.json_response(
@@ -182,7 +190,46 @@ async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Resp
             },
             status=413,
         )
-    return dest, None
+    return spool / _SPOOL_FILE, None
+
+
+def _open_import_spool(spool: Path) -> IO[bytes]:
+    """Create *spool* and the file in it, open for writing. Blocking.
+
+    The staging leaf is agent-writable, so the directory is opened through a pin on
+    the staging root and the file is created through that directory's descriptor:
+    a name swapped for a link is refused, never followed into a hidden leaf.
+    Windows has no ``dir_fd`` calls and no sandbox an agent could swap it from.
+    """
+    if not pinned_fs.supports_pinned_walk():
+        spool.mkdir(mode=0o700)
+        return open(spool / _SPOOL_FILE, "xb")
+    root_fd = platform_compat.pin_directory(spool.parent)
+    try:
+        dir_fd = pinned_fs.create_and_open_dir_at(root_fd, spool.name, what="import spool")
+    finally:
+        os.close(root_fd)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        fd = os.open(_SPOOL_FILE, flags, 0o600, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+    return os.fdopen(fd, "wb")
+
+
+def _discard_import_spool(spool: Path) -> None:
+    """Remove *spool* and its file through a pin on the staging root. Blocking.
+
+    A name swapped for a link is refused by the pinned open, ``unlink`` never
+    follows its final component, and ``rmdir`` takes only an empty directory, so
+    nothing outside the spool can go. Anything unexpected in it is left for
+    ``staging.sweep_staging``.
+    """
+    with contextlib.suppress(OSError), platform_compat.pinned_directory(spool.parent) as root:
+        with root.child(spool.name) as pinned:
+            with contextlib.suppress(FileNotFoundError):
+                pinned.unlink(_SPOOL_FILE)
+        root.rmdir(spool.name)
 
 
 async def api_portability_export(request: web.Request) -> web.StreamResponse:
@@ -614,7 +661,7 @@ async def api_portability_import(request: web.Request) -> web.Response:
             {"ok": False, "error": "Import failed", "code": "import_failed"}, status=500
         )
     finally:
-        zip_path.unlink(missing_ok=True)
+        await asyncio.shield(asyncio.to_thread(_discard_import_spool, zip_path.parent))
 
 
 async def api_portability_preview(request: web.Request) -> web.Response:
@@ -663,4 +710,4 @@ async def api_portability_preview(request: web.Request) -> web.Response:
             {"ok": False, "error": "Preview failed", "code": "preview_failed"}, status=500
         )
     finally:
-        zip_path.unlink(missing_ok=True)
+        await asyncio.shield(asyncio.to_thread(_discard_import_spool, zip_path.parent))
