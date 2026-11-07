@@ -113,6 +113,10 @@ class SubagentInfo:
     # its parent's depth + 1 for a child of a sub-agent. Set at admission,
     # which refuses a spawn past ``_MAX_SPAWN_DEPTH``.
     depth: int = field(default=1, kw_only=True)
+    # The session the spawn tree started from: a nested run's Subagents panel
+    # cards draw in its tab, since a ``subagent:<id>`` parent names none. Set at
+    # admission from the spawning run's record; "" reads as the parent's own key.
+    root_session_key: str = field(default="", kw_only=True)
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
