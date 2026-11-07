@@ -470,6 +470,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_fallback_pick_gen": ("value", "0"),
     "_fallback_primary_model": ("value", "''"),
     "_fallback_slot_model": ("value", "''"),
+    "_fallback_walk_refused": ("value", "False"),
     "_fallback_walked": ("value", "[]"),
     "_file_changes": ("value", "[]"),
     "_file_changes_flush": ("value", "None"),

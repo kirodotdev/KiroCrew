@@ -7,6 +7,7 @@ import type { ChatMessage, ToolActivity } from '../../types'
 import { slotIsRemoteBound } from '../dashboardSlice'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
+import { isModelUnavailable } from '../../lib/modelUnavailable'
 import type { InjectKind } from '../../pages/chat/RecoveryCard'
 import type { SendAttempt, SlotState } from './state'
 import { safeKey } from './wire'
@@ -303,8 +304,12 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
   let sawTrailingError = false
   let sawCompactionResult = false
   let sawLaterTool = false
+  // A drained sub-agent completion (role `subagent`) opens a turn of its own,
+  // so a refused-model card older than it settles only its own turn.
+  let sawLaterOpener = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
+    if (m.role === 'subagent') sawLaterOpener = true
     // A deliberate Stop ENDS the turn; it does not interrupt it. This must be
     // tested before the user/assistant check, because pressing Stop before the
     // reply produced any text leaves `[user, stop_event]` — shape-identical to
@@ -322,6 +327,10 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
     // past it; mirrors `saw_later_tool` in state_parts/transcript_rows.py).
     if (isQuietEndRow(m)) { if (!sawLaterTool) return false }
     else if (m.role === 'tool') sawLaterTool = true
+    // The card a refused model's spent ladder ends on settles the turn, like a
+    // Stop: Resume would send it to the same refused model again. Mirrors
+    // `is_model_unavailable_row` in state_parts/transcript_rows.py.
+    if (isModelUnavailable(m) && !sawLaterOpener) return false
     if (m.role === 'error') { sawTrailingError = true; continue }
     // An inject row that DISPATCHED a turn (a queued continuation, a recovery,
     // a synthesis, a cron prompt) opens it exactly as a user row does, so one

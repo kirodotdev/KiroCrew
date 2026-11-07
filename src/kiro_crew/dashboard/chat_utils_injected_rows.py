@@ -231,6 +231,16 @@ SEED_DECLINED_NOTICE_KIND = "seed_declined"
 #: entitlement.
 MODEL_UNENTITLED_KIND = "model_unentitled"
 
+#: Row-level kind for the terminal `error` row that ends a spent retry ladder
+#: on a model the backend refused for capacity or a region rollout ("Model 'X'
+#: is unavailable on the backend right now"). The ladder already re-sent the
+#: turn to that model and the ``agent.fallback_model`` chain found nothing that
+#: served it, so the frontend offers the model picker instead of Resume, and
+#: ``is_turn_interrupted`` reads the row as the turn's settled ending: a Resume
+#: would send the same turn to the same refused model, and each failed new chat
+#: would otherwise sit in the sidebar as an interrupted session.
+MODEL_UNAVAILABLE_KIND = "model_unavailable"
+
 #: Row-level kind for the terminal `error` row an ``AcpAuthRequired`` turn
 #: produces (the agent process reported it is not signed in). Like
 #: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
