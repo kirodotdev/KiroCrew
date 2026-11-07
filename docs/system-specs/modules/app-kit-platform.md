@@ -1428,18 +1428,30 @@ A link has no directory of its own to carry a provenance dotfile, so
 skills root, for tools that run without a gateway:
 `{"format": 1, "links": {"<app>/<skill>": {"app": "<app>"}, "<skill>": {"app": "<app>"}}}`.
 It runs after every link change in `_register_skills`, `_deregister_skills` and the
-`reconcile_app_skills` stale sweep, and rebuilds the whole file from disk under one lock,
-never reading it back: a `skills/<name>/<skill>` link counts only when `<name>` has an
+`reconcile_app_skills` stale sweep, and rebuilds the whole file from disk under one lock:
+a `skills/<name>/<skill>` link counts only when `<name>` has an
 install record (`apps/<name>/installed.json`), so a user's own folder of links is not an
 app, and a flat link belongs to the app whose namespaced link resolves to the same target.
-Nothing in Kiro Crew reads the file, and a write that fails with `OSError` is logged,
-never raised. The file is a published view of the layout above plus the install records,
+A write that fails with `OSError` is logged, never raised. The one read is the
+writer's own byte comparison (`_holds_exactly`), which opens the name without
+following a link and without blocking and reads it only when `fstat` says it is a
+regular file, so a FIFO or link planted there is replaced, never waited on. When the
+rebuilt body differs from the file's (or the file is not a readable regular file),
+the link set changed, and `skill_live_loaders.invalidate_loaders_of`
+clears the catalog of every open `SkillsLoader` of that skills root, as the loader's own
+create or delete would. So an app's skills enter and leave `GET /api/skills` and the
+agents' catalog with its enable, disable and uninstall, not a catalog TTL later, and
+the stored snapshot a restarted gateway would serve goes with them. An unchanged body
+(the boot reconcile re-linking what is already linked) writes nothing and keeps the
+snapshot, so a boot pays no cold walk for it. Another process (a CLI enable) has no
+loader of the gateway's to clear and converges on the catalog TTL. The file is a published view of the layout above plus the install records,
 versioned so that layout can change without breaking the scripts that read it. The user-facing list of provenance markers is
 `src/kiro_crew/docs/skills.md`.
 
 Writer: `apps/bridges_skills.py::_register_skills`, `_deregister_skills`,
-`reconcile_app_skills`, `_write_app_skill_links`. Shim: `platform_compat.symlink_or_junction` /
-`is_link_or_junction` / `unlink_link_or_junction`.
+`reconcile_app_skills`, `_write_app_skill_links`; the catalog
+clear, `skill_live_loaders.py` (each `SkillsLoader` tracks itself there). Shim:
+`platform_compat.symlink_or_junction` / `is_link_or_junction` / `unlink_link_or_junction`.
 
 ## 6. App window entries: discovery, nested routes
 
