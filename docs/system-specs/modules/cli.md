@@ -2280,9 +2280,17 @@ Without `--when-idle`, `restart` behaves as below.
      the `backend-dist` bundle (`_died_replacement_message`). Exit code and
      audit record are the same in both cases. One still running at the
      deadline prints `Replacement gateway (pid N) did not become ready within
-     Ns. It is still running but not serving port P.` and exits 1. The
-     readiness deadline is read from the environment each time the fork path
-     runs: it defaults to 60 s because a loaded install can take 25-35 s to
+     Ns. It is still running but not serving port P.` and exits 1. When the
+     last probe before the deadline got a 200 that `_replacement_is_serving`
+     could not tie to the replacement (for example the best-effort marker write
+     failed, so the marker is missing or still names the old pid), it prints
+     `Port P answers /api/ready, but within Ns restart could not confirm that
+     replacement gateway (pid N) is the one serving it.` instead, warns that a
+     re-run would stop it, names the `run/` directory to check for
+     writability, audits `reason=replacement_unconfirmed_within=Ns` and
+     exits 1. The readiness deadline is read from the environment each time
+     the fork path runs: it defaults to 60 s because a loaded install can take
+     25-35 s to
      boot; `KIROCREW_RESTART_READY_TIMEOUT` overrides it, fractional values
      round up to whole seconds, the result is clamped to 15..180 s, and an
      unset, non-numeric, non-finite, zero or negative value falls back to the
