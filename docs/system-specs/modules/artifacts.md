@@ -592,7 +592,14 @@ rename-safe membership id, tolerant-loaded for legacy meta.json.
 `~/.kiro/crew/artifact_folders.json` — create/rename/reparent (cycle- and
 depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
-rollback). Folder delete is an explicit choice: keep (re-parent direct children
+rollback). `POST /api/artifacts` with a `folder` path and `POST /api/artifact-folders`
+with a `parent` path refuse what their create would refuse before they mkdir -p, so
+a refused field, slug, color or depth leaves no folder behind (a slug that a concurrent
+save claims between the check and the create is refused after it): the save asks
+`ArtifactStore.check_create` first, and the folder create checks the color and
+resolves `parent` with `as_parent=True`, which refuses a missing segment too deep to
+hold the new folder.
+Folder delete is an explicit choice: keep (re-parent direct children
 to the parent) vs cascade (permanently delete the whole subtree, incl.
 descendant artifacts) — never silent. The file is tolerant-loaded: an entry
 with no id, or a list/object id, is dropped, and an `order` that `int()` cannot

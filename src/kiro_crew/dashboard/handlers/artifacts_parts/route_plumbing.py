@@ -266,12 +266,15 @@ def _audit(
         logger.debug("SEL audit failed for %s", tool, exc_info=True)
 
 
-def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | None]:
+def _resolve_folder_ref(
+    ref: Any, *, create_missing: bool, as_parent: bool = False
+) -> tuple[str, str | None]:
     """Resolve a folder reference (id or ``/``-separated human path) to a folder id.
 
     Returns ``(folder_id, error_message)``. ``None`` / ``""`` / ``"root"`` →
     ``""`` (unfiled/root). When ``create_missing`` is True, missing path
     segments are created (``mkdir -p``); otherwise an unknown path errors.
+    ``as_parent`` is :meth:`ArtifactFolderStore.resolve_path`'s.
     """
     if ref is None:
         return "", None
@@ -280,7 +283,9 @@ def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | N
     if len(ref) > 4096:
         return "", "folder reference too long"
     try:
-        fid = get_default_folder_store().resolve_path(ref, create_missing=create_missing)
+        fid = get_default_folder_store().resolve_path(
+            ref, create_missing=create_missing, as_parent=as_parent
+        )
     except ArtifactError as exc:
         # str(exc) can echo the raw LLM-supplied ref (e.g. "folder path not
         # found: <ref>"); redact before it reaches the dashboard via _err().
@@ -288,7 +293,9 @@ def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | N
     return fid, None
 
 
-async def _resolve_folder_ref_off_loop(ref: Any, *, create_missing: bool) -> tuple[str, str | None]:
+async def _resolve_folder_ref_off_loop(
+    ref: Any, *, create_missing: bool, as_parent: bool = False
+) -> tuple[str, str | None]:
     """Async wrapper for :func:`_resolve_folder_ref`.
 
     When ``create_missing`` is True the resolver may persist new folders
@@ -302,7 +309,7 @@ async def _resolve_folder_ref_off_loop(ref: Any, *, create_missing: bool) -> tup
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         subprocess_executor(),
-        lambda: _resolve_folder_ref(ref, create_missing=create_missing),
+        lambda: _resolve_folder_ref(ref, create_missing=create_missing, as_parent=as_parent),
     )
 
 

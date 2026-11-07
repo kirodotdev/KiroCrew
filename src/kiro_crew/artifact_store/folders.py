@@ -393,7 +393,9 @@ class ArtifactFolderStore:
                     by_id[fid]["order"] = int(entry["order"])
             self._save()
 
-    def resolve_path(self, ref: str, *, create_missing: bool = False) -> str:
+    def resolve_path(
+        self, ref: str, *, create_missing: bool = False, as_parent: bool = False
+    ) -> str:
         """Resolve a folder id OR a human path to a folder id.
 
         ``ref`` may be:
@@ -404,6 +406,10 @@ class ArtifactFolderStore:
           from the root by (case-insensitive) name. When ``create_missing``
           is True, missing segments are created (``mkdir -p`` semantics);
           otherwise a missing segment raises :class:`ArtifactNotFoundError`.
+
+        ``as_parent`` is for a path a new folder will be created under: a missing
+        segment too deep to hold that child is refused here, before anything is
+        saved, rather than by the create after the path was.
 
         Returns the resolved leaf folder id (``""`` for root).
         """
@@ -440,7 +446,7 @@ class ArtifactFolderStore:
                     if match is None:
                         if not create_missing:
                             raise ArtifactNotFoundError(f"folder path not found: {ref}")
-                        if parent and self._depth(parent) + 1 >= MAX_FOLDER_DEPTH:
+                        if parent and self._depth(parent) + 1 + as_parent >= MAX_FOLDER_DEPTH:
                             raise ArtifactValidationError(
                                 f"folder nesting exceeds max depth {MAX_FOLDER_DEPTH}"
                             )
