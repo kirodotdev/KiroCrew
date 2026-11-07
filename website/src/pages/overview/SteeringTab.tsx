@@ -822,9 +822,11 @@ export default function SteeringTab() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {/* Disabled while a refresh runs, so the name carries the reason: a
-              disabled "Refresh steering files" reads as unavailable, not busy. */}
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
+          {/* While a refresh runs the name says so, because an inert
+              "Refresh steering files" would read as unavailable, not busy. It is
+              `aria-disabled` plus the guard, NOT `disabled`, which leaves the
+              tab order and drops a keyboard user's focus while it runs. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </Btn>
         </div>

@@ -594,25 +594,34 @@ describe('SteeringTab', () => {
     await waitFor(() => expect(screen.getByTestId('md')).toHaveTextContent('# Personal body'))
   })
 
-  it('names the disabled refresh for the read in flight, then restores it', async () => {
-    // A disabled "Refresh steering files" reads as unavailable; while the refetch
+  it('names the busy refresh for the read in flight, keeps focus on it, then restores it', async () => {
+    // An inert "Refresh steering files" reads as unavailable; while the refetch
     // runs its name says it is busy instead.
     renderTab()
     const idle = await screen.findByRole('button', { name: 'Refresh steering files' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
 
     let release: (v: typeof FILES) => void = () => {}
     mockApi.steeringFiles.mockReturnValue(new Promise(resolve => { release = resolve }))
+    idle.focus()
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing steering files…' })
-    expect(busy).toBeDisabled()
+    // `aria-disabled`, not `disabled`: a disabled button leaves the tab order and
+    // drops a keyboard user's focus to the page for the whole refresh.
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).not.toBeDisabled()
+    expect(busy).toHaveFocus()
+    const calls = mockApi.steeringFiles.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.steeringFiles.mock.calls.length).toBe(calls)
     expect(screen.queryByRole('button', { name: 'Refresh steering files' })).toBeNull()
 
     await act(async () => { release(FILES) })
 
     const back = await screen.findByRole('button', { name: 'Refresh steering files' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+    expect(back).toHaveFocus()
   })
 
   it('shows an empty state naming both search roots when nothing is found', async () => {

@@ -570,9 +570,11 @@ export default function SkillsTab() {
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
-          {/* Disabled while a refresh runs, so the name carries the reason: a
-              disabled "Refresh skills" reads as unavailable, not busy. */}
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          {/* While a refresh runs the name says so, because an inert
+              "Refresh skills" would read as unavailable, not busy. It is
+              `aria-disabled` plus the guard, NOT `disabled`, which leaves the
+              tab order and drops a keyboard user's focus while it runs. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 

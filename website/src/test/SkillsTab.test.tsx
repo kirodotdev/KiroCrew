@@ -102,27 +102,36 @@ describe('SkillsTab', () => {
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
   })
 
-  it('names the disabled refresh for the read in flight, then restores it', async () => {
-    // A disabled "Refresh skills" reads as unavailable; while the refetch runs its
+  it('names the busy refresh for the read in flight, keeps focus on it, then restores it', async () => {
+    // An inert "Refresh skills" reads as unavailable; while the refetch runs its
     // name says it is busy instead.
     const rows = [{ key: 'foo', name: 'foo', description: 'a foo skill', source: 'kirocrew', loaded_by_agents: [] }]
     mockApi.skills.mockResolvedValue(rows)
     renderWithQuery()
     const idle = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
 
     let release: (v: typeof rows) => void = () => {}
     mockApi.skills.mockReturnValue(new Promise(resolve => { release = resolve }))
+    idle.focus()
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing skills…' })
-    expect(busy).toBeDisabled()
+    // `aria-disabled`, not `disabled`: a disabled button leaves the tab order and
+    // drops a keyboard user's focus to the page for the whole refresh.
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).not.toBeDisabled()
+    expect(busy).toHaveFocus()
+    const calls = mockApi.skills.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.skills.mock.calls.length).toBe(calls)
     expect(screen.queryByRole('button', { name: 'Refresh skills' })).toBeNull()
 
     await act(async () => { release(rows) })
 
     const back = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+    expect(back).toHaveFocus()
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {
