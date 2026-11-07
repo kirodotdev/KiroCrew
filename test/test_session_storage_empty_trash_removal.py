@@ -23,8 +23,13 @@ from session_storage_helpers import (  # noqa: F401 -- fixtures are requested by
     stores_fixture,
 )
 
-from kiro_crew import session_storage
+from kiro_crew import platform_compat, session_storage
 from kiro_crew.session_storage import SessionStorageError
+
+
+def _locked_unlink(self: platform_compat.PinnedDirectory, name: str) -> None:
+    """Refuse every file removal, the way a file held open does on Windows."""
+    raise PermissionError(13, "the file is held open", name)
 
 
 class TestEmptyTrashRemoval:
@@ -297,7 +302,7 @@ class TestEmptyTrashRemoval:
     def test_the_coarse_path_reports_only_bytes_that_went_away(
         self, stores: tuple[Path, Path]
     ) -> None:
-        """Windows takes rmtree with `ignore_errors`, which can leave the batch standing.
+        """Windows takes a sweep that carries on past a locked file, leaving the batch standing.
 
         The freed figure has to be measured after the attempt, not before it, or a
         locked file is reported as space reclaimed while it is still on disk.
@@ -311,9 +316,9 @@ class TestEmptyTrashRemoval:
 
         skips: list[str] = []
         with pytest.MonkeyPatch.context() as patched:
-            # Force the coarse path, and let rmtree fail the way a lock does: quietly.
+            # Force the coarse path, and let every file refuse the way a lock does.
             patched.setattr(session_storage, "_FD_SAFE_DELETE", False)
-            patched.setattr(session_storage.shutil, "rmtree", lambda *a, **k: None)
+            patched.setattr(platform_compat.PinnedDirectory, "unlink", _locked_unlink)
             freed = session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
 
         assert staged.is_dir(), "the batch must still be there for this to mean anything"
@@ -323,10 +328,10 @@ class TestEmptyTrashRemoval:
     def test_a_batch_that_survives_a_coarse_delete_reports_a_reason(
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The coarse path re-checks the directory, because rmtree tells it nothing.
+        """The coarse path re-checks the directory, because its sweep only logs survivors.
 
-        `rmtree(ignore_errors=True)` reports nothing, so a tree it could not remove left
-        the batch on the user's screen while the job said the delete had succeeded.
+        A tree the sweep could not remove would otherwise leave the batch on the user's
+        screen while the job said the delete had succeeded.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=40)
@@ -335,7 +340,7 @@ class TestEmptyTrashRemoval:
         )
 
         monkeypatch.setattr(session_storage, "_FD_SAFE_DELETE", False)
-        monkeypatch.setattr(session_storage.shutil, "rmtree", lambda *a, **k: None)
+        monkeypatch.setattr(platform_compat.PinnedDirectory, "unlink", _locked_unlink)
         skips: list[str] = []
         session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
 
