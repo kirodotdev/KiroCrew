@@ -82,11 +82,15 @@ from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_literal
 from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
 from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation
+from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
+    resolve_managed_entries,
+)
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_ANSWERED_WRITES_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
+    CREW_SPEC_DENIES_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
     HOOK_GATEABLE_CAPABILITIES,
     _entry_crew_answered,
@@ -117,6 +121,8 @@ from kiro_crew.acp.kas_prompt import (
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
+from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
+from kiro_crew.acp.kas_spec_denies import spec_denies_record
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
@@ -291,6 +297,7 @@ def spec_keys_without_carrier(
         isinstance(tools_settings, dict)
         and crew_answered_commands(tools_settings)
         and _allowed_commands_withheld(spec, None, tools_settings)
+        and not _commands_lifted_by_denies(spec)
     ):
         # Every entry is usable, but the session answers none of them: name each
         # shell key that carries one, so the operator learns why they prompt.
@@ -1135,6 +1142,7 @@ def to_client_custom_agent(
     # below sees one key per kiro-cli alias group, the one kiro-cli itself keeps.
     tools_settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
     translated, _ = tools_settings_to_permissions(tools_settings)
+    untranslated_policy = permissions  # what a checked deny is lifted against
     permissions = merge_user_permissions(
         permissions,
         translated,
@@ -1187,6 +1195,7 @@ def to_client_custom_agent(
     # spec's author wrote for a capability -- including one a merge refused or a
     # translation could not carry -- keeps its built-ins out of what Crew answers,
     # so the call prompts exactly as the author asked.
+    grant_candidates = crew_answered
     crew_answered = withhold_answered_under_authored_rules(
         crew_answered,
         authored_policy,
@@ -1205,6 +1214,18 @@ def to_client_custom_agent(
     answered_commands = crew_answered_commands(tools_settings, spec.get("permissions"))
     if answered_commands and not _allowed_commands_withheld(spec, authored_policy, tools_settings):
         out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
+    # What only a `deniedCommands` / write `deniedPaths` held back, with the denies
+    # the gate checks first (`kas_spec_denies`).
+    denies = spec_denies_record(
+        spec,
+        candidates=grant_candidates,
+        answered=crew_answered,
+        policy=untranslated_policy,
+        commands=answered_commands,
+        commands_answered=CREW_ANSWERED_COMMANDS_KEY in out,
+    )
+    if denies:
+        out[CREW_SPEC_DENIES_KEY] = denies
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
     # A restriction, so recorded whatever the ceiling says; the gate refuses every
     # other shell call of this agent (`spec-shell-allowlist` tier), unless
@@ -1907,30 +1928,6 @@ def hoist_servers_for_session(
             tokened.append(element)
         hoisted = tokened
     return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
-
-
-def resolve_managed_entries(
-    custom_agents: list[dict[str, Any]] | None,
-    agent_id: str,
-) -> dict[str, Any]:
-    """The managed invocation for each managed server the ACTIVE agent declares.
-
-    Blocking: :func:`~kiro_crew.agent.managed_mcp_spec_entry` resolves the
-    ``kirocrew`` launcher with filesystem and ``PATH`` probes. Call it off the
-    event loop and hand the result to :func:`hoist_servers_for_session`, which
-    then stays free of I/O. A name whose invocation does not resolve maps to
-    ``None``, the same answer the in-place lookup gives.
-    """
-    from kiro_crew.agent import managed_mcp_spec_entry
-
-    names: set[str] = set()
-    for descriptor in custom_agents or ():
-        if not isinstance(descriptor, dict) or descriptor.get("id") != agent_id:
-            continue
-        declared = descriptor.get("mcpServers")
-        if isinstance(declared, dict):
-            names.update(name for name in declared if name in MANAGED_MCP_SERVER_NAMES)
-    return {name: managed_mcp_spec_entry(name, include_opt_in=True) for name in sorted(names)}
 
 
 def _tokened_managed_element(
