@@ -285,6 +285,8 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         TCC_PROTECTED_HOME_DIRS,
         _build_renameat2_via_syscall,
         _clear_readonly_and_retry,
+        _grant_owner_write_to_parent,
+        _retry_removal,
         _statx_call,
         _statx_mnt_id_unreported,
         chmod_safe,
