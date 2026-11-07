@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Trans } from 'react-i18next'
@@ -340,7 +340,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const dismiss = () => { if (candidate && !required) verdict(snoozeRecord(candidate.version, Date.now() / 1000)) }
   const skip = () => { if (candidate && !required) verdict(skipRecord(candidate.version)) }
 
-  useEffect(() => {
+  // A layout effect, so Escape is armed in the commit that shows the modal: a
+  // passive effect can run a task later and miss a press made in between.
+  useLayoutEffect(() => {
     if (!open || required) return
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') dismiss() }
     window.addEventListener('keydown', handler)
