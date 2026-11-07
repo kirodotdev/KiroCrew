@@ -2358,6 +2358,16 @@ drain)` rather than aborting the loop: the
 waker has finished its own work by then, and one dead channel must not strand the
 others' accepted messages.
 
+**A turn no channel started ends with no drain at all.** A dashboard, cron or
+auto-nudge turn on a channel's session key releases the lease without running any
+channel's drain, so a message queued behind it waited for the person's next message.
+So every queueing `_handle_busy` calls `messaging/queue_drain.py::drain_when_free`,
+which runs the channel's drain once the lease is free (Telegram only when
+`_turn_chats` names no Telegram turn, above). Discord, Teams and Webex keep no such
+record and call it for every queued message. Behind their own turn, whichever of the
+tail drain and the retry runs second finds the queue empty or is folded into the
+first by `drain_until_quiet`.
+
 The receipt registry itself is still keyed on the session key alone, so one bubble can
 list lines from more than one conversation; that is shared cross-channel state and is
 tracked in #12575. What each transition may write to it is settled, by the surface's

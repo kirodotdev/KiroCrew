@@ -24,6 +24,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.discord.transport_dispatch_origin import _CHANNEL, _inbound_origin
+from kiro_crew.messaging.queue_drain import drain_when_free
 from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJI
 from kiro_crew.messaging.transport import InboundMessage
 
@@ -159,3 +160,9 @@ async def _handle_busy(
         person_origin=msg.person_origin,
     ):
         await self.handle_message(msg)
+    else:
+        # A turn Discord did not start (dashboard, cron, auto-nudge) ends without
+        # draining this queue, so drain once the lease is free. Behind a Discord
+        # turn, the later of this and that turn's own drain finds the queue empty
+        # or is folded into the other by ``drain_until_quiet``.
+        drain_when_free(channel=_CHANNEL, session_key=session_key, is_busy=self.sessions.is_busy)
