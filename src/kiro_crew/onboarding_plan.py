@@ -229,7 +229,7 @@ def _workspace_item(scan: _Scan, workspace: str) -> str | None:
     try:
         resolved = path.resolve(strict=True)
     except (OSError, RuntimeError):
-        scan.diagnostic("workspaces", "workspace_unavailable")
+        scan.diagnostic("workspaces", "workspace_unavailable", failed=True)
         return None
     if not resolved.is_dir():
         scan.diagnostic("workspaces", "workspace_not_directory")
