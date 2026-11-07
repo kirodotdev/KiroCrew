@@ -545,6 +545,25 @@ def _publish_gate_artifact(
     return target
 
 
+def _pi_cmd_literal(path: str) -> str:
+    """*path* as literal text inside a quoted ``.cmd`` token.
+
+    ``cmd.exe`` expands ``%NAME%`` in a batch file even inside quotes, so ``%``
+    doubles. A double quote or a newline cannot be expressed there at all and is
+    refused (the rule of ``pod/windows.py`` ``_cmd_literal``).
+
+    shortcut: the launcher's own path is not covered -- ``cmd.exe /c`` expands a
+    defined ``%NAME%`` in it before the batch runs; upgrade if a data home needs one.
+    """
+    if '"' in path or "\r" in path or "\n" in path:
+        raise AcpError(
+            f"the pi gate launcher cannot name {path!r}: it holds a double quote or a "
+            "newline, which cmd.exe cannot express in a batch file. Point "
+            "KIROCREW_HOME and the pi install at paths without them."
+        )
+    return path.replace("%", "%%")
+
+
 def _pi_gate_launcher_body(pi_bin: str, extension_path: str, program: tuple[str, ...] = ()) -> str:
     """The launcher pi-acp is told to run in place of ``pi``.
 
@@ -556,7 +575,8 @@ def _pi_gate_launcher_body(pi_bin: str, extension_path: str, program: tuple[str,
     pi's floor (:func:`~kiro_crew.acp.harness.pi_node.choose_pi_node`, POSIX only).
     """
     if platform_compat.IS_WINDOWS:
-        return f'@echo off\r\n"{pi_bin}" %* {_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
+        pi_lit, ext_lit = _pi_cmd_literal(pi_bin), _pi_cmd_literal(extension_path)
+        return f'@echo off\r\n"{pi_lit}" %* {_PI_EXTENSION_FLAG} "{ext_lit}"\r\n'
     run = " ".join(shlex.quote(part) for part in (program or (pi_bin,)))
     return f'#!/bin/sh\nexec {run} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
 
