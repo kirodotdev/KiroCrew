@@ -2818,6 +2818,7 @@ answers `tools/list` from):
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
 - **Messaging and notification:** `send_message`, `send_notification`,
+  `dismiss_notification`,
   `delete_message`, `update_message`, `file_send`, `read_slack_profile`,
   `read_slack_history`. `read_slack_history` reads a tracked channel or one
   thread on the bot token (`POST /api/slack-history` refuses any other channel,

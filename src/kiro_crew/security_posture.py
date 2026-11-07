@@ -98,6 +98,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # redacted text (the response is a fixed withheld constant), so it is a
         # refusal gate, not an egress sink.
         "secrets_mediation/dispatch.py",
+        # Gate-side: the agent notification push and dismiss routes run the note
+        # redactor on a caller's `key` only to REFUSE it (`400 key_would_be_redacted`)
+        # when redaction would change it, so a stored key is exactly what was sent.
+        # Nothing they return is redacted by this module, so it is a gate, not an
+        # egress sink.
+        "dashboard/messaging_api/agent_push.py",
         # Validator only: a dashboard package's model field NAME is run through the
         # redactor and the package is REFUSED when the output differs, because a
         # field name is served in the package's `fields` list and written into the

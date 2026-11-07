@@ -153,6 +153,12 @@ def _web_push_payload(note: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(tag, str) or not tag or _serialized_bytes(tag) > NATIVE_TAG_MAX_BYTES:
         tag = native_notification_tag(note)
     notification["tag"] = tag
+    key = note.get("key")
+    if isinstance(key, str) and key:
+        # A keyed note shares its tag with the earlier notes under its key, so a
+        # platform would swap a banner still on screen without alerting. Only a
+        # keyed note meant to announce reaches Web Push, so each one asks to.
+        notification["renotify"] = True
     return {"web_push": 8030, "notification": notification}
 
 
@@ -840,14 +846,22 @@ def unregister_sse(self: DashboardState, q: asyncio.Queue[dict[str, Any]]) -> No
     _notifications_for(self).unregister_sse(self, q)
 
 
-async def _rewrite_notifications_async(self: DashboardState) -> None:
-    """Rewrite notification storage after earlier FIFO append jobs."""
-    await _notifications_for(self).rewrite(self)
+async def _rewrite_notifications_async(self: DashboardState) -> bool:
+    """Rewrite notification storage after earlier FIFO append jobs.
+
+    Returns whether the file was written.
+    """
+    return await _notifications_for(self).rewrite(self)
 
 
 async def delete_notification(self: DashboardState, ts: str) -> bool:
     """Remove a single notification by timestamp and persist to disk."""
     return await _notifications_for(self).delete(self, ts)
+
+
+async def dismiss_notification(self: DashboardState, *, source: str, key: str) -> tuple[bool, bool]:
+    """Remove the note *source* published under *key*; ``(removed, persisted)``."""
+    return await _notifications_for(self).dismiss(self, source=source, key=key)
 
 
 async def ack_notification(self: DashboardState, ts: str) -> bool:

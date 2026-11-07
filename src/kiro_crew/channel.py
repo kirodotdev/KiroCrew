@@ -166,6 +166,7 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATION: tuple[str, str, str] = (
 CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "send_message",
     "send_notification",
+    "dismiss_notification",
     "session_stop",
     # Ending another session's wait moves that turn forward on a schedule the
     # channel's thread text would then be choosing; same containment reason.
