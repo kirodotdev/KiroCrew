@@ -1520,16 +1520,35 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     _prior_reserved = slot._turn_admission_reserved
     slot._turn_admission_reserved = True
     try:
+        from kiro_crew.apps.manifest import app_name_error
+        from kiro_crew.history_schema import EMBED_APP_META_KEY
+        from kiro_crew.shared_crew.host_hooks import ensure_slot_recorded
+
+        # A person's send from an app page's chat embed names that app. Only the line
+        # written for a conversation this send begins (no row yet, so the retry of a
+        # refused first send still begins it) records it, so uninstalling the app
+        # drops that conversation's resume pointer. It grants the app nothing.
+        embed_app = body.get("embed_app") if _person_send and not slot.messages else None
+        named = isinstance(embed_app, str) and not app_name_error(embed_app)
+        embed_line = {EMBED_APP_META_KEY: embed_app} if named else {}
         if admission_entry.admission_enforced():
             # The session is on disk before its work is: a crash right after the
             # accept cannot leave a work record for a session that is gone.
-            from kiro_crew.shared_crew.host_hooks import ensure_slot_recorded
-
-            if not await ensure_slot_recorded(state, slot):
+            if not await ensure_slot_recorded(state, slot, extra=embed_line):
                 from kiro_crew.shared_crew.admission_gate import Admission
 
                 slot._has_reader = False
                 return Admission(None, "rejected", store_unavailable=True).refusal_response()
+        elif embed_line and not await ensure_slot_recorded(state, slot, extra=embed_line):
+            # No later save can add the app, so the send is refused, not run without it.
+            slot._has_reader = False
+            return web.json_response(
+                {
+                    "error": "Could not save this conversation. Try again.",
+                    "code": "history_unavailable",
+                },
+                status=503,
+            )
         turn_admission = await admission_entry.admit_chat_turn(
             request,
             session_key=effective_session_key(slot),

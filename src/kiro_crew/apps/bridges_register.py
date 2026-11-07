@@ -420,9 +420,10 @@ def app_conversation_keys(app_name: str, *, mapped_keys: Iterable[str] | None = 
     a conversation from the previous installation.
 
     Ownership comes from the ``app`` field every save writes into the conversation's
-    metadata line. Live ``_ChatSlot._app`` (absent on the CLI path, gone for a closed
-    slot) and ``open_slots.json`` (drops closed tabs while the pointer stays) both miss
-    the common case of a closed slot before uninstall.
+    metadata line, or from ``embed_app``, the app whose page embed began it with a
+    person's send (``app`` is then empty). Live ``_ChatSlot._app`` (absent on the CLI
+    path, gone for a closed slot) and ``open_slots.json`` (drops closed tabs while the
+    pointer stays) both miss the common case of a closed slot before uninstall.
 
     A caller that owns a live map must pass *mapped_keys*
     (``mapped_session_keys() | session_keys()``, the second covering an allocation in
@@ -435,6 +436,8 @@ def app_conversation_keys(app_name: str, *, mapped_keys: Iterable[str] | None = 
     """
     if not app_name:
         return []
+    from kiro_crew.history_schema import EMBED_APP_META_KEY
+
     try:
         log = ConversationLog()
         candidates = SessionMap().mapped_sids_by_key() if mapped_keys is None else set(mapped_keys)
@@ -442,7 +445,7 @@ def app_conversation_keys(app_name: str, *, mapped_keys: Iterable[str] | None = 
         unreadable: list[str] = []
         for key in candidates:
             meta, readable = log.get_metadata_status(key)
-            if meta.get("app") == app_name:
+            if app_name in (meta.get("app"), meta.get(EMBED_APP_META_KEY)):
                 owned.append(key)
             elif not readable:
                 # A record that could not be READ is not a record that says "not this
