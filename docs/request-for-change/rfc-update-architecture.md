@@ -78,7 +78,10 @@ layout, the trees' names and the restart interpreter),
 `platform/wheel_engine_build_child.py` (one child process of the apply) and
 `platform/wheel_engine_transfer.py` (the bounded download of a release's
 bytes, where `_download_to_file` compares the wheel's SHA-256 to the signed
-digest; `download_verified_wheel` in the facade is its one caller).
+digest; `download_verified_wheel` in the facade is its one caller). Its
+connection opens through `asset_downloader.build_opener`, so a redirect stays on
+the CDN host, except while an operator's `KIROCREW_CDN_BASE` mirror is set, which
+may hand the transfer to another https host.
 
 **Landed in [#16202](https://github.com/kirodotdev/KiroCrew/pull/16202)** (with
 [#15838](https://github.com/kirodotdev/KiroCrew/pull/15838) stopping an in-flight
