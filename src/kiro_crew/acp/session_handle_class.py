@@ -120,6 +120,7 @@ class AcpSessionHandle:
     mcp_session_report = _sh_mcp.mcp_session_report
     wait_mcp_ready = _sh_mcp.wait_mcp_ready
     wait_for_declared_mcp = _sh_mcp.wait_for_declared_mcp
+    wait_mounted_mcp = _sh_mcp.wait_mounted_mcp
     _note_mcp_sign_in_status = _sh_mcp._note_mcp_sign_in_status
     _offer_mcp_sign_in = _sh_mcp._offer_mcp_sign_in
     want_mcp_sign_in_named = _sh_mcp.want_mcp_sign_in_named
