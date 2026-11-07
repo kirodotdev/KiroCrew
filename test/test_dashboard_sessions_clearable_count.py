@@ -59,7 +59,7 @@ def _fake_state(
     raising_keys = raising_keys or set()
 
     conv_log = MagicMock()
-    conv_log.list_sessions.return_value = sessions
+    conv_log.list_sessions_indexed.return_value = sessions
 
     def _get_metadata_status(k: str) -> tuple[dict, bool]:
         if k in raising_keys:
@@ -460,6 +460,45 @@ async def test_user_only_clear_deletes_exactly_the_listed_rows(tmp_path) -> None
 
     assert before - _on_disk(tmp_path) == listed_keys
     assert {"subagent_abc123", "secretary_daily"} <= _on_disk(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_user_only_clear_rechecks_content_after_the_indexed_listing(tmp_path) -> None:
+    """The user-content filter sees another process's write after the reconcile.
+
+    The pane, count, and clear share indexed rows and the index's content answer,
+    which costs no stat per row. Until the reconcile, the count and the clear
+    still read the transcript as empty, so they agree with the pane. After the
+    reconcile, each request sees the message and the clear removes the transcript.
+    """
+    from kiro_crew.dashboard.handlers import api_sessions
+    from kiro_crew.history_listing_index import SessionListingIndex
+
+    log = _seed_mixed_history(tmp_path)
+    jobs: list = []
+    log._listing_index = SessionListingIndex(log, clock=lambda: 0.0, submit=jobs.append)
+    state = _real_state(log)
+
+    listed = json.loads(
+        (await api_sessions(_query_request(state, {"user_only": "1"}))).body.decode("utf-8")
+    )
+    assert {row["key"] for row in listed["sessions"]} == {"dashboard_used"}
+    never_used = tmp_path / "dashboard_chat-3-1790874654.jsonl"
+    with never_used.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"role": "user", "content": "written by another process"}) + "\n")
+
+    count = await api_sessions_clearable_count(_query_request(state, {"user_only": "1"}))
+    assert json.loads(count.body.decode("utf-8")) == {"sessions": 1}
+    # The fixed clock never makes a reconcile due; run the one the pool would.
+    assert log._listing_index.reconcile()
+    count = await api_sessions_clearable_count(_query_request(state, {"user_only": "1"}))
+    assert json.loads(count.body.decode("utf-8")) == {"sessions": 2}
+    with patch("kiro_crew.dashboard.handlers.sel"):
+        resp = await api_sessions_clear(_query_request(state, {"user_only": "1"}))
+    body = json.loads(resp.body.decode("utf-8"))
+    assert (body["ok"], body["cleared"], body["skipped"]) == (True, 2, 0)
+    assert not never_used.exists()
+    assert jobs == []
 
 
 @pytest.mark.asyncio

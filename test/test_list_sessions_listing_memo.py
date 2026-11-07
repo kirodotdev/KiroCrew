@@ -124,6 +124,18 @@ def test_an_out_of_process_append_is_seen_after_the_ttl(tmp_path, stats, monkeyp
     assert len(stats) == 4
 
 
+def test_a_first_line_that_does_not_parse_keeps_the_listing_out_of_the_memo(
+    tmp_path, stats
+) -> None:
+    log = _log(tmp_path)
+    (tmp_path / "sessions" / "broken.jsonl").write_text("not json\n", encoding="utf-8")
+    first = log.list_sessions()
+    assert len(stats) == 3
+    assert log.list_sessions() == first
+    # Not stored: the repeat stats every transcript again.
+    assert len(stats) == 6
+
+
 def test_a_caller_cannot_change_the_memo(tmp_path) -> None:
     log = _log(tmp_path)
     for row in log.list_sessions():
