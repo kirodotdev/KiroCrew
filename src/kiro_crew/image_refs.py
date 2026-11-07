@@ -44,7 +44,9 @@ import logging
 import os
 import re
 import tempfile
+import unicodedata
 
+from kiro_crew.terminal_safe import _is_invisible
 from kiro_crew.widget_parse import mask_inline_code
 
 logger = logging.getLogger(__name__)
@@ -89,9 +91,6 @@ _SUFFIX_GROUP = r"(?:png|jpg|jpeg|gif|webp|bmp)"
 # than this stays text.
 _MAX_PATH_SCAN_CHARS = 512
 
-#: Space and tab only -- NEVER `\s`. See note 2 above.
-_PATH_CHARS = r"[\w./@~ \t()\-]"
-
 # Scan through symbols so unsupported path characters cannot hide later separators.
 # Punctuation ends a token: ASCII, Latin-1, General and Supplemental Punctuation,
 # the arrow blocks, and the CJK/fullwidth punctuation sub-ranges. Whitespace and
@@ -108,6 +107,28 @@ _TOKEN_BREAK = (
     r"\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65"
 )
 _RUN_CHARS = rf"[^{_TOKEN_BREAK}]"
+
+
+def _path_marks() -> frozenset[str]:
+    """Every visible combining mark (category M) that does not end a token.
+
+    ``\\w`` matches no mark and ``re`` has no ``\\p{M}``. Visible marks exist only in
+    planes 0 and 1; plane 14 holds invisible variation selectors alone.
+    """
+    breaks = re.compile(f"[{_TOKEN_BREAK}]")
+    return frozenset(
+        ch
+        for ch in map(chr, range(0x20000))
+        if unicodedata.category(ch)[0] == "M" and not breaks.match(ch) and not _is_invisible(ch)
+    )
+
+
+#: The combining marks both path bodies hold; upload names keep exactly these.
+PATH_MARKS = _path_marks()
+_MARKS = "".join(sorted(PATH_MARKS))
+
+#: Space and tab only -- NEVER `\s`. See note 2 above.
+_PATH_CHARS = rf"[\w{_MARKS}./@~ \t()\-]"
 
 #: A path begins at the text start or after a token break, never mid-token:
 #: rules out "https://host/...", a "/" already inside a longer path, and the
@@ -159,7 +180,7 @@ _POSIX_PATH_RE = re.compile(
 # such a temp dir stayed prose -- then its temp file was swept at end of turn,
 # leaving a dead reference. The POSIX class has always held ``~``; this keeps the
 # two grammars symmetric on the one character a real Windows temp path needs.
-_WINDOWS_PATH_CHARS = r"[\w\\/.@~ \t()\-]"
+_WINDOWS_PATH_CHARS = rf"[\w{_MARKS}\\/.@~ \t()\-]"
 # A drive colon glued into a token continues it: without this the colon ends
 # the run and a second absolute path glued on by prose hides from both guards,
 # so the first picture is attached alone where the POSIX grammar attaches none.
