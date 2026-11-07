@@ -465,11 +465,24 @@ def main() -> int:
         return 2
     try:
         payload = json.load(sys.stdin)
+    except Exception:
+        payload = None
+    document, code = evaluate_document(payload)
+    print(json.dumps(document, indent=2) if code == 0 else json.dumps(document))
+    return code
+
+
+def evaluate_document(payload) -> tuple:
+    """Evaluate one parsed ``{"items": [...]}`` document; return ``(document, exit code)``.
+
+    The whole contract behind stdin, so the ``kirocrew-work`` ``accept_eval`` tool
+    imports this rather than a copy of it: same kinds, same refusals, same output.
+    """
+    try:
         items = payload["items"]
         assert isinstance(items, list)
     except Exception:
-        print(json.dumps({"error": 'stdin must be JSON: {"items": [...]}'}))
-        return 2
+        return {"error": 'stdin must be JSON: {"items": [...]}'}, 2
     results = []
     for position, item in enumerate(items):
         # ID extraction happens INSIDE the guard. A non-object entry
@@ -487,8 +500,7 @@ def main() -> int:
         except Exception as exc:  # one bad spec must not hide the rest
             verdict, evidence = "error", f"evaluator bug on this item: {exc}"
         results.append({"id": item_id, "verdict": verdict, "evidence": evidence})
-    print(json.dumps({"results": results}, indent=2))
-    return 0
+    return {"results": results}, 0
 
 
 if __name__ == "__main__":
