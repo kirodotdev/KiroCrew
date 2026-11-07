@@ -20,6 +20,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Skeleton } from '../../components/ui'
 import { capabilityUsable, isUnknownPrincipal, principalName, sharedAccessConfigured, sharedCrewPreviewOn, someoneJoined } from '../../api/sharedCrewUi'
 import type { CreatorFilter as CreatorFilterValue } from '../../api/sharedCrew'
+import { isPermissionRefusal } from '../../api/apiError'
 import { creatorDisplay, effectiveMode, loadCreatorFilter, normalizeCreatorFilter, saveCreatorFilter, showsTeamAttribution, type CrewMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useSharedCrewSessionsPage } from '../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../i18n/t'
@@ -79,8 +80,13 @@ function listMode(
 }
 
 /** A read failed and has not succeeded since. A retry without cached data
- *  stays visibly failed while pending, rather than blinking out the notice. */
-function queryReadFailed(q: { isError: boolean; isPending: boolean; errorUpdateCount: number }): boolean {
+ *  stays visibly failed while pending, rather than blinking out the notice.
+ *  A permission refusal is not a failure: the mode and People reads answer 403
+ *  `owner_only` to a caller who is not the owner (a relay teammate), and a
+ *  "Try again" there can never succeed, so neither the bar nor a notice shows
+ *  for it (#32031). */
+function queryReadFailed(q: { isError: boolean; isPending: boolean; errorUpdateCount: number; error: unknown }): boolean {
+  if (isPermissionRefusal(q.error)) return false
   return q.isError || (q.isPending && q.errorUpdateCount > 0)
 }
 

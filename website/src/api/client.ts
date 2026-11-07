@@ -1260,6 +1260,18 @@ const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT
 const MEMBERS_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
 
+/**
+ * The seventh: `GET /api/apps` answering `relay_apps_teammate` to a teammate who
+ * reached the Crew through the Kiro relay, which refuses the app surface to
+ * teammates (`kiro_relay/limits.py`). The shell's app rail, the panel-tab
+ * registry and the composer's session controls all read that list on every page,
+ * and for a teammate the refusal means "no apps here", so journaling it filed one
+ * error report per page load (#32031). The `ApiError` is still thrown; any other
+ * failure, an `owner_only` 403 included, journals normally.
+ */
+const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teammate' }
+const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1526,6 +1538,7 @@ const transport: ClientTransport = {
   jSlotEnvironment,
   jSharedCrewPreview,
   jMembers,
+  jApps,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
