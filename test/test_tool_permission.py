@@ -1087,6 +1087,7 @@ async def test_spec_hooks_consult_the_gate_on_gated_and_ungated_turns():
             "Run: ls -la",
             '{"command": "ls"}',
             {
+                "event_tool_params": event.raw_tool_params,
                 "tool_identity": "execute_bash",
                 "mcp_server": "srv",
                 "harness_tool_id": "bash",
@@ -1805,6 +1806,7 @@ async def test_each_ladder_gives_its_spec_hooks_the_callers_identity(monkeypatch
             "Run: ls -la",
             event.tool_input,
             {
+                "event_tool_params": event.raw_tool_params,
                 "tool_identity": "execute_bash",
                 "mcp_server": "srv",
                 "harness_tool_id": "h1",

@@ -655,6 +655,7 @@ class SpecHooks:
                 self._spec.cwd,
                 event.title,
                 event.tool_input,
+                event_tool_params=event.raw_tool_params,
                 tool_identity=event.tool_name,
                 mcp_server=event.mcp_server_name,
                 harness_tool_id=event.harness_tool_id,

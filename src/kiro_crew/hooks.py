@@ -136,10 +136,12 @@ from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
     _spawn_policy_denial,
 )
 from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
+    _redact_leaves,
     fire_tool_hooks,
     get_global_hook_store,
     permission_pre_tool_block,
     persisted_hook_store,
+    pre_tool_hook_input,
     pre_tool_match_names,
     set_global_hook_store,
 )
