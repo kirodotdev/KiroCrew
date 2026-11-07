@@ -766,8 +766,10 @@ async def _resolve_on_cleared_push_events(
 
     ``require_open``: an incident closed between the cycle's index read and this write (by
     reconcile, the dashboard or an agent) keeps the resolution its closer wrote, and its id
-    stays ackable. A write that failed for any other tolerated reason puts the id in the
-    failed set, so the caller keeps its spooled entries for the next cycle to retry.
+    stays ackable, and so does one whose stored status has no legal move to resolved
+    (``IllegalTransition``), which a retry could never fix. A write that failed for any other
+    tolerated reason (an unreadable index, an ``OSError``) puts the id in the failed set, so
+    the caller keeps its spooled entries for the next cycle to retry.
     """
     resolved: list[Incident] = []
     failed: set[str] = set()
@@ -792,6 +794,18 @@ async def _resolve_on_cleared_push_events(
             logger.debug(
                 "ops-mission-control: %s closed before its cleared event was applied",
                 incident.incident_id,
+            )
+            continue
+        except store.IllegalTransition:
+            # The stored status has no edge to resolved (a hand-edited `unclaimed`, say). That
+            # is a fact about the record, not a store fault, so a retry can never succeed:
+            # keeping the id spooled would pile up one entry and one warning per cycle. Left
+            # open and acked, like a close in between; the next cleared delivery logs again.
+            logger.warning(
+                "ops-mission-control: %s cannot be resolved from %r on its cleared event; "
+                "left open for an operator",
+                incident.incident_id,
+                incident.status,
             )
             continue
         except json.JSONDecodeError:
@@ -1026,8 +1040,9 @@ async def run_cycle(
     # on disk, so dropping the spooled copy loses nothing — and if that incident later goes
     # terminal or stale, the id leaves `owned` and the next genuine delivery is claimable again.
     #
-    # The one exception is an id whose cleared-event resolve just failed: its entries, the
-    # cleared one included, stay spooled so the next cycle retries the resolve.
+    # The one exception is an id whose cleared-event resolve just failed on a store read or
+    # write: its entries, the cleared one included, stay spooled so the next cycle retries
+    # the resolve. An illegal move to resolved is not a failure here (a retry cannot fix it).
     resolved, resolve_failed = await _resolve_on_cleared_push_events(
         signals, index, owned, registry
     )

@@ -686,8 +686,11 @@ keep it closed:
   for each open incident of a non-snapshot source whose latest polled entry is `ok`, it
   resolves with `require_open=True` and a check that writes `cleared_event_resolution`
   from the locked record's diagnosis. An incident closed in between keeps its closer's
-  resolution and is acked; a failed write keeps that id's entries spooled for the next
-  cycle; an absent signal or a latest `firing` entry resolves nothing; a snapshot source
+  resolution and is acked; one whose stored status has no legal move to resolved
+  (`IllegalTransition`, a `ValueError`; for example a hand-edited `unclaimed`) is left
+  open, logged once, and acked, because a retry could never succeed; a failed store read
+  or write (an `OSError`, an id gone from the index) keeps that id's entries spooled for
+  the next cycle, and a corrupt index escapes the cycle with the spool intact; an absent signal or a latest `firing` entry resolves nothing; a snapshot source
   is never resolved here. `CycleResult.resolved` lists the ids, is not part of `changed`,
   and each resolve is mirrored to Slack like a route resolve.
 
@@ -2435,12 +2438,14 @@ heartbeat's cost flat at a 2-minute cadence.
    source whose LATEST polled entry is a cleared delivery (`state == ok`), resolve it with
    `store.transition(..., require_open=True, check=...)` and the cleared-event resolution.
    It runs before the ack because the ack drops a cleared delivery unseen. An incident
-   closed since the index read is left as its closer wrote it; a write that fails lands
-   its id in a failed set. See contract 3b.
+   closed since the index read is left as its closer wrote it, and one whose stored status
+   has no legal move to resolved (`store.IllegalTransition`) is left open with one warning;
+   both stay ackable. A store read or write that fails lands its id in a failed set. See
+   contract 3b.
 5b. **`webhook.ack((claimed ids | owned ids) - failed ids)`** — the ONE place the push spool
    shrinks, and only for ids that have an incident on disk: the ids this cycle claimed and
    the ids an open incident already owns (a redelivery for work already in flight). An id
-   whose 5a resolve failed keeps its entries for the next cycle to retry. Anything the cap
+   whose 5a resolve failed on the store keeps its entries for the next cycle to retry. Anything the cap
    deferred and anything lost to a claim race stays spooled for a later cycle. See
    § Webhook ingress for why draining on `poll` loses data.
 6. **`verify_pending_actions`** — for every incident whose post-action recheck has come
@@ -3300,8 +3305,9 @@ line-anchored so a genuinely internal reference in that file is still caught.
   (refused without a latest `ok` entry, also when the display read fails and for a source
   that is not loaded; an operator, a snapshot source and an already-resolved incident are
   unchanged; the spool read happens under its lock), and the dispatch resolve (on a
-  cleared event only, never on absence, a close in between kept, a failed write keeping
-  the spool). `test_sop_facts.py` pins the cron message, the SOP sentences and the two
+  cleared event only, never on absence, a close in between kept, a failed write or an
+  unreadable or corrupt index keeping the spool, an illegal move to resolved acked rather
+  than piled up). `test_sop_facts.py` pins the cron message, the SOP sentences and the two
   sections of this spec that state the guard.
 - `test_store_and_gate_ledger.py::TestLedger` also pins the **track record** (contract 2b): the
   use floor, one-miss re-lock, and the three laundering doors — a re-POST, a simulated real

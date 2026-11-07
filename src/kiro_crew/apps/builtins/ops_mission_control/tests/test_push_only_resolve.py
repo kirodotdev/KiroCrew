@@ -540,6 +540,71 @@ class TestClearedPushEvent(_Home):
         self.assertEqual(retried.resolved, [incident_id])
         self.assertEqual(webhook.queue_depth(), 0)
 
+    async def test_an_illegal_resolve_is_acked_not_piled_up(self) -> None:
+        """A stored status with no edge to resolved is acked, logged once, and left open.
+
+        Fails on the parent commit, which filed the ``IllegalTransition`` as a failed write:
+        the spool grew by one entry per cycle (1, 2, 3) and never drained.
+        """
+        incident_id = await self._claim_cycle()
+        with store._IndexLock():
+            index = store._read_index_for_update()
+            index[incident_id].status = models.STATUS_UNCLAIMED
+            store._write_index_unlocked(index)
+        self._patch_cycle_two()
+
+        depths: list[int] = []
+        warnings: list[list[str]] = []
+        for _cycle in range(3):
+            _spool(models.STATE_OK)
+            with self.assertLogs(dispatch.logger, level="WARNING") as logs:
+                result = await dispatch.run_cycle()
+            depths.append(webhook.queue_depth())
+            warnings.append([line for line in logs.output if incident_id in line])
+            self.assertEqual(result.resolved, [])
+            self.assertEqual(self._stored(incident_id).status, models.STATUS_UNCLAIMED)
+
+        self.assertEqual(depths, [0, 0, 0], "the cleared entries piled up instead of acking")
+        self.assertEqual([len(lines) for lines in warnings], [1, 1, 1], warnings)
+        for lines in warnings:
+            self.assertIn("cannot be resolved from 'unclaimed'", lines[0])
+
+    async def test_a_store_failure_on_the_resolve_keeps_the_spool(self) -> None:
+        """An unreadable or corrupt index under the resolve is not an illegal move: the
+        cleared entry stays spooled, and the next healthy cycle resolves it.
+
+        Fails on an ack that drops the id on every exception (the store failure included),
+        and on an ``IllegalTransition`` arm widened to any ``ValueError``, which would also
+        swallow the corrupt index (a ``JSONDecodeError``) instead of letting it escape.
+        """
+        incident_id = await self._claim_cycle()
+        _spool(models.STATE_OK)
+        self._patch_cycle_two()
+        cases = {
+            "unreadable": OSError(5, "Input/output error"),
+            "corrupt": models.CorruptDocumentError("index root is not a JSON object", "[]", 0),
+        }
+        for label, failure in cases.items():
+            with self.subTest(case=label):
+                # Expiry is the one for-update read before the resolve; with it out of the
+                # way the failure lands in the resolve's own `store.transition`.
+                with (
+                    mock.patch.object(store, "expire_stale_proposals", return_value=[]),
+                    mock.patch.object(store, "_read_index_for_update", side_effect=failure),
+                ):
+                    if isinstance(failure, models.CorruptDocumentError):
+                        with self.assertRaises(models.CorruptDocumentError):
+                            await dispatch.run_cycle()
+                    else:
+                        result = await dispatch.run_cycle()
+                        self.assertEqual(result.resolved, [])
+                self.assertEqual(webhook.queue_depth(), 1)
+                self.assertEqual(self._stored(incident_id).status, models.STATUS_DISPATCHED)
+
+        healthy = await dispatch.run_cycle()
+        self.assertEqual(healthy.resolved, [incident_id])
+        self.assertEqual(webhook.queue_depth(), 0)
+
     async def test_a_cleared_event_followed_by_a_new_firing_resolves_nothing(self) -> None:
         """Pin: the latest delivery is a live fault again."""
         incident_id = await self._claim_cycle()
