@@ -141,7 +141,8 @@ class HostConnection:
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._send_lock = asyncio.Lock()
         self._streams: Dict[int, Stream] = {}
-        #: Streams this side ended that are still registered until their task
+        #: Streams this side ended, by refusing or cancelling them or by their
+        #: own error frame, that are still registered until their task
         #: finishes; the relay's frames for them are ignored, so none answers
         #: a second error for one stream.
         self._ended_streams: Set[int] = set()
@@ -522,6 +523,7 @@ class HostConnection:
             monotonic=self._monotonic,
             request_credit=FEATURE_REQUEST_CREDIT in self.features,
             send_unless=self.send,
+            on_error=self._ended_streams.add,
         )
         self._streams[sid] = stream
         self.http_streams_idle.clear()

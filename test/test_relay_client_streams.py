@@ -582,3 +582,61 @@ async def test_the_frames_email_and_name_reach_the_ingress() -> None:
     plain.start()
     await await_until(asyncio.ensure_future(plain.wait()), what="the stream")
     assert [(r.user_email, r.user_name) for r in seen] == [("", "")]
+
+
+class _FailingMidBody:
+    """A response whose body fails after its head; closing it waits on *closing*."""
+
+    status = 200
+    headers: Dict[str, str] = {}
+
+    def __init__(self) -> None:
+        self.closing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def iter_body(self, chunk_size: int) -> Any:
+        raise RuntimeError("the web server went away")
+        yield b""  # pragma: no cover - makes this an async generator
+
+    async def aclose(self) -> None:
+        self.closing.set()
+        await self.release.wait()
+
+
+class _AnswersFailingMidBody(_NeverIngress):
+    def __init__(self, response: _FailingMidBody) -> None:
+        super().__init__()
+        self.response = response
+
+    async def open_http(self, request: Any, body: Any) -> Any:
+        return self.response
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        {"type": "request-chunk", "id": 7, "data": "QUJDRA==", "base64": True},
+        {"type": "request-end", "id": 7},
+    ],
+    ids=["over-long-chunk", "short-request-end"],
+)
+async def test_a_stream_that_sent_its_own_error_ignores_the_relays_later_frames(
+    ending: Dict[str, Any],
+) -> None:
+    socket = _RecordingSocket()
+    conn = _connection_on(socket)
+    response = _FailingMidBody()
+    conn._ingress = _AnswersFailingMidBody(response)  # type: ignore[assignment]
+    head = valid_message("frames/request", 0, method="POST", headers={"content-length": "3"})
+    for frame in (ready_frame(), head):
+        assert await conn._dispatch(json.dumps(frame)) is None
+    # The stream has sent its error frame and is still registered, closing
+    # the response, when the relay's malformed frames for it arrive.
+    await await_until(asyncio.ensure_future(response.closing.wait()), what="the error frame")
+    for frame in (ending, {"type": "request-end", "id": 7}):
+        assert await conn._dispatch(json.dumps(frame)) is None
+    errors = [f["message"] for f in socket.sent if f["type"] == "error" and f.get("id") == 7]
+    assert errors == ["the Crew's web server failed mid-body: RuntimeError"]
+    response.release.set()
+    await await_until(asyncio.ensure_future(conn._cancel_streams()), what="the streams to end")
+    assert not conn._streams and not conn._ended_streams
