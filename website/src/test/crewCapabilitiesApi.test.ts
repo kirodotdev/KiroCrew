@@ -26,7 +26,7 @@ beforeEach(() => {
 describe('crewCapabilitiesApi', () => {
   it('reads the member capability view, escaping the name', async () => {
     await expect(crewCapabilitiesApi.get('on call/1')).resolves.toEqual({ ok: true })
-    expect(transport.get).toHaveBeenCalledWith('/api/agents/on%20call%2F1/capabilities')
+    expect(transport.get).toHaveBeenCalledWith('/api/agents/b64/b24gY2FsbC8x/capabilities')
   })
 
   it('posts a draft to the preview route', async () => {
@@ -50,7 +50,7 @@ describe('crewWorkerKitApi', () => {
   it('reads, previews and applies the worker kit, escaping the name', async () => {
     const body = { template: 'release-bot' }
     await expect(crewWorkerKitApi.get('on call')).resolves.toEqual({ ok: true })
-    expect(transport.get).toHaveBeenCalledWith('/api/agents/on%20call/worker-kit')
+    expect(transport.get).toHaveBeenCalledWith('/api/agents/b64/b24gY2FsbA/worker-kit')
     await crewWorkerKitApi.preview('pixel', body)
     expect(transport.post).toHaveBeenCalledWith('/api/agents/pixel/worker-kit/preview', body)
     await crewWorkerKitApi.apply('pixel', { ...body, revision: 'r2' })

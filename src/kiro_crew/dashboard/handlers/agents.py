@@ -288,6 +288,7 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
     _UnverifiableLineage,
     _write_spec_file,
 )
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
@@ -1902,9 +1903,7 @@ _AVATAR_CONTENT_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image
 _AVATAR_MAX_BYTES = 1024 * 1024
 
 
-# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation --
-# moved to chat_utils so the files handler's staging copy can share the one
-# implementation; the local name is kept for its callers.
+# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation (``chat_utils``).
 _drained_to_thread = drained_to_thread
 
 
@@ -1918,7 +1917,8 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
     denied = await _require_owner(request, "agent.avatar_get")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    if (name := agent_route_name(request)) is None:
+        return invalid_agent_name_response()
     # The file is served only while the crew's config actually selects it —
     # a leftover file after an out-of-band config edit or a failed cleanup
     # must not remain silently retrievable. The file pin narrows that further:

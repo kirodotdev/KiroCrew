@@ -334,7 +334,7 @@ project checkout or the edition can supply a name the directory never declared.
 
 Every binding writer answers the same `409 lineage_unverifiable` when it cannot
 verify whether its target is another crew's private copy: crew create
-(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}`), the
+(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}` and `PUT /api/agents` (name in body)), the
 default-agent write, publish and reset. Its `error` sentence depends on the
 cause, which `_UnverifiableLineage.reason` classifies, because only one cause
 clears by itself:
@@ -684,6 +684,37 @@ delete is refused; **Create and edit** refetches the roster before selecting
 the new row, since the auto-select effect replaces a selection the roster does
 not list; the create dialog is titled **Duplicate <name>** when opened from a
 Duplicate affordance, so the three duplicate entry points read as one flow.
+
+## Crew names a proxy would mangle
+
+A crew name with a character that needs percent-encoding (a space becomes
+`%20`) never rides a URL path from the dashboard. A path-normalising reverse
+proxy decodes `%20` back to a bare space, the request-line delimiter, and
+answers 502 before the gateway sees the request (#19976). The record update
+takes the name in the body instead (`PUT /api/agents`, #19981). Every other
+crew route that names the crew in its path also answers under a base64url
+twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
+`[A-Za-z0-9_-]` (#20083): `DELETE`, `GET`/`POST .../avatar`,
+`GET`/`PUT .../capabilities`, `POST .../capabilities/preview`,
+`POST .../capabilities/detach`, `GET`/`PUT .../worker-kit` and
+`POST .../worker-kit/preview`.
+
+- **Encoding** (`kiro_crew/agent_url_path.py`): unpadded base64url of the
+  UTF-8 bytes. A segment that does not re-encode to itself (padding, spare
+  bits set, not UTF-8) is refused `400 name_segment_invalid`, so one name has
+  one spelling. The dashboard's `website/src/api/agentPath.ts` builds the same
+  spelling and keeps a plain name in path form.
+- **Same handler, same gate.** Each twin is registered to the handler of its
+  path-form route, so the owner check runs first and nothing after it changes
+  (`dashboard/agent_name_segment.py`, `agent_route_name`). No twin shares a
+  method and segment pattern with a path-form route, so a crew named `b64`
+  keeps its own routes; aiohttp tries the longer static prefix first, so
+  registration order alone would not guarantee it.
+- **Change cards.** A card's plan uses the same spelling (`agent_path`,
+  `agent_record_write`). The hook reads a twin as its path-form template
+  (`change_cards.route_key`, `B64_ROUTE_ALIASES`) and decodes the name for the
+  memory line (`route_match_info`), so a step, its memory line and its undo
+  guard see one route whichever spelling arrived.
 
 ## Owner-reviewed capability inheritance
 

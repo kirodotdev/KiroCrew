@@ -259,7 +259,9 @@ def _build_undo(
         if applied_steps > at and job_id:
             plan.append(step("DELETE", f"/api/crons/{_q(str(job_id))}"))
         name = ev(0).get("name") or p["name"]
-        plan.append(step("DELETE", f"/api/agents/{_q(str(name))}"))
+        from kiro_crew.agent_url_path import agent_path
+
+        plan.append(step("DELETE", agent_path(str(name))))
         return plan, None
     if kind == KIND_CREWMATE_UPDATE:
         fields = before.get("fields") or {}
@@ -273,8 +275,10 @@ def _build_undo(
         # The undo's expected mode is the one the card WROTE: a profile save
         # that landed since is a newer choice, and the route's compare-and-set
         # refuses to overwrite it (409 approval_mode_conflict).
+        from kiro_crew.agent_url_path import agent_record_write
+
         return [
-            step("PUT", f"/api/agents/{_q(p['name'])}", _crewmate_put_body(old, p["fields"]))
+            step("PUT", *agent_record_write(p["name"], _crewmate_put_body(old, p["fields"])))
         ], None
     if kind == KIND_CREWMATE_GOAL:
         # Back to the goals before the card, and only while the goal still reads
@@ -551,6 +555,11 @@ def describe_manual_change(
         return f"deleted schedule {s(name)}"
     if route == ("POST", "/api/agents"):
         return f"created Bot “{s(b.get('name'))}”"
+    if route == ("PUT", "/api/agents"):
+        # Body-form route: crew name comes from the request body.
+        body_name = s(b.get("name") or name)
+        update_fields = {k for k in b if k != "name"}
+        return f"updated Bot {body_name!s} ({', '.join(sorted(str(k) for k in update_fields)[:6])})"
     if route == ("PUT", "/api/agents/{name}"):
         return f"updated Bot {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
     if route == ("DELETE", "/api/agents/{name}"):
@@ -626,10 +635,16 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/crons/{job_id}"),
         ("DELETE", "/api/crons/{job_id}"),
         ("POST", "/api/agents"),
+        ("PUT", "/api/agents"),
         ("PUT", "/api/agents/{name}"),
         ("DELETE", "/api/agents/{name}"),
         ("POST", "/api/agents/{name}/capabilities/preview"),
         ("PUT", "/api/agents/{name}/capabilities"),
+        # The base64url twins (`kiro_crew/agent_url_path.py`); the hook reads
+        # each as its path-form template (`change_cards.route_key`).
+        ("DELETE", "/api/agents/b64/{name_b64}"),
+        ("POST", "/api/agents/b64/{name_b64}/capabilities/preview"),
+        ("PUT", "/api/agents/b64/{name_b64}/capabilities"),
         ("PATCH", "/api/agents/detail/{name}"),
         ("POST", "/api/agents/detail/{name}/mcp-additions"),
         ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
@@ -676,6 +691,11 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("POST", "/api/agents/detail/{name}/mcp-additions"),
     ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
     ("POST", "/api/agents/{name}/capabilities/preview"),
+    # The hook reads a base64url twin as its path-form route
+    # (``change_cards.route_key``), so only the path form is looked up here.
+    ("DELETE", "/api/agents/b64/{name_b64}"),
+    ("POST", "/api/agents/b64/{name_b64}/capabilities/preview"),
+    ("PUT", "/api/agents/b64/{name_b64}/capabilities"),
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
     ("POST", "/api/members/{slug}/dashboard/page-offer"),

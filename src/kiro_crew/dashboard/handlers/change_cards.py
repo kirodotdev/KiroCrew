@@ -1095,7 +1095,23 @@ def route_key(request: web.Request) -> tuple[str, str] | None:
     if not isinstance(template, str):
         return None
     key = (request.method.upper(), template)
-    return key if key in catalog.HOOKED_ROUTES else None
+    if key not in catalog.HOOKED_ROUTES:
+        return None
+    from kiro_crew.agent_url_path import B64_ROUTE_ALIASES
+
+    # A base64url crew route is the same route as its path-form twin: one
+    # template for the card step, its memory line and its undo guard.
+    return (key[0], B64_ROUTE_ALIASES.get(template, template))
+
+
+def route_match_info(request: web.Request) -> dict[str, str]:
+    """The matched path parameters, with a base64url crew name decoded into ``name``."""
+    info = dict(request.match_info)
+    if "name_b64" in info:
+        from kiro_crew.agent_url_path import decode_agent_name
+
+        info["name"] = decode_agent_name(info.pop("name_b64")) or ""
+    return info
 
 
 async def _read_body(request: web.Request) -> tuple[Any, bool]:
@@ -1388,7 +1404,8 @@ def _arm_card_undo_cron_guard(
     path = str(plan_step.get("path", ""))
     after = rec.get("after") or {}
     method = str(plan_step.get("method", "")).upper()
-    if method == "PUT" and path.startswith("/api/agents/") and kind == catalog.KIND_CREWMATE_UPDATE:
+    crew_put = path == "/api/agents" or path.startswith("/api/agents/")
+    if method == "PUT" and crew_put and kind == catalog.KIND_CREWMATE_UPDATE:
         from kiro_crew.dashboard.handlers.undo_identity_guard import (
             REQ_CARD_UNDO_CREWMATE_EXPECT,
         )
@@ -1461,10 +1478,10 @@ async def change_card_middleware(
         body, ok = await _read_body(request)
         if not ok:
             return await handler(request)
-        before = await _before_value(route, body, dict(request.match_info))
+        before = await _before_value(route, body, route_match_info(request))
         resp = await handler(request)
         if 200 <= resp.status < 300:
-            _record_memory(route, dict(request.match_info), body, before, "via settings page")
+            _record_memory(route, route_match_info(request), body, before, "via settings page")
         return resp
     return await _run_card_step(request, handler, route, card_id)
 
@@ -1571,7 +1588,7 @@ async def _run_card_step(
                 "changed_since_apply",
                 "this changed after the card was applied; undo refused",
             )
-        before = await _before_value(route, body, dict(request.match_info))
+        before = await _before_value(route, body, route_match_info(request))
         if mutates:
             # Persist-before-you-publish: the admission is on disk before the
             # route writes anything, so a gateway that stops mid-step reloads
@@ -1654,7 +1671,7 @@ async def _run_card_step(
     if route in catalog.MEMORY_ROUTES and not partial_unnamed:
         _record_memory(
             route,
-            dict(request.match_info),
+            route_match_info(request),
             memory_body,
             before,
             "via change card" if op == catalog.OP_APPLY else "via change card undo",

@@ -1307,9 +1307,9 @@ describe('crew avatar — uploaded picture', () => {
       <CrewAvatar seed="on call" avatar={{ kind: 'image', v: 1700000000 }} size={38} />,
     )
     const src = container.querySelector('img')!.getAttribute('src')!
-    // Name is a display string — it must be URI-encoded, and the stamp must
-    // ride along so a replaced picture busts the browser cache.
-    expect(src).toBe('/api/agents/on%20call/avatar?v=1700000000')
+    // A name that needs encoding rides as a base64url segment, and the stamp
+    // must ride along so a replaced picture busts the browser cache.
+    expect(src).toBe('/api/agents/b64/b24gY2FsbA/avatar?v=1700000000')
   })
 
   it('previews the editor draft picture without touching the network', () => {

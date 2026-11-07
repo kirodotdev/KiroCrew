@@ -1,3 +1,4 @@
+import { agentPath } from './agentPath'
 import { apiTransport } from './apiTransport'
 
 export type CapabilitySection = 'mcpServers' | 'tools' | 'allowedTools' | 'autoApprove' | 'skills' | 'prompt' | 'model' | 'resources'
@@ -62,7 +63,7 @@ export interface CapabilityPreview extends CapabilityView {
    * or Kiro Crew rebuilds that connection without approvals. */
   withheld_approvals?: (CapabilityRef & { reason: 'governed' | 'not_connected' | 'managed' | 'unexplained' })[]
 }
-const endpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/capabilities`
+const endpoint = (member: string) => agentPath(member, '/capabilities')
 const { get, post, put, j } = apiTransport
 export const crewCapabilitiesApi = {
   get: (member: string): Promise<CapabilityView> => get(endpoint(member)).then(j) as Promise<CapabilityView>,
@@ -102,7 +103,7 @@ export interface WorkerKitRequest {
   template: string
   revision?: string
 }
-const workerKitEndpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/worker-kit`
+const workerKitEndpoint = (member: string) => agentPath(member, '/worker-kit')
 export const crewWorkerKitApi = {
   get: (member: string): Promise<WorkerKitView> => get(workerKitEndpoint(member)).then(j) as Promise<WorkerKitView>,
   preview: (member: string, body: WorkerKitRequest): Promise<WorkerKitPreview> =>
