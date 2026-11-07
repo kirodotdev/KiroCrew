@@ -810,7 +810,8 @@ nothing writes a `steer` yet.
 
 A root session whose page is `goal-board` or `work-kanban` gets one more
 `[DASHBOARD]` line (`BOARD_IN_PANEL_LINE`): the page is the task board, so the
-reply carries no task board, table or `task-dashboard` artifact. The switch to the
+reply does not redraw the board or a per-task status list; other pictures (a
+comparison, a flow, a before/after) are still drawn as widgets. The switch to the
 conductor adopts `goal-board` on that page while nothing else is adopted, and each
 turn's `[DASHBOARD]` block then names it, so the conductor's task board lives there
 instead of in its replies.
