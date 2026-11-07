@@ -1036,14 +1036,17 @@ async def run(self: GatewayOrchestrator) -> None:
     self._install_shutdown_signal_handlers()
 
     # Warn when this gateway's code is a git work tree someone could rebase
-    # under it. Past KIROCREW_READY (no-new-work-on-gateway-boot-path),
-    # off-loop, fire-and-forget: it only logs.
+    # under it, and when it was started from inside an agent session. Past
+    # KIROCREW_READY (no-new-work-on-gateway-boot-path), off-loop,
+    # fire-and-forget: they only log.
     if not self._test_mode:
+        from kiro_crew.cloud.aws import warn_if_started_from_agent_session
         from kiro_crew.live_checkout import warn_if_running_from_git_checkout
 
-        _checkout_task = asyncio.create_task(asyncio.to_thread(warn_if_running_from_git_checkout))
-        self._background_tasks.add(_checkout_task)
-        _checkout_task.add_done_callback(self._background_tasks.discard)
+        for _warn in (warn_if_running_from_git_checkout, warn_if_started_from_agent_session):
+            _warn_task = asyncio.create_task(asyncio.to_thread(_warn))
+            self._background_tasks.add(_warn_task)
+            _warn_task.add_done_callback(self._background_tasks.discard)
 
     # Disable and mark pending any app whose sessionApproval grant was never
     # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
