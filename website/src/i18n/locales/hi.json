@@ -12112,7 +12112,7 @@
       "clear_context_done": "संदर्भ साफ़ हो गया।",
       "clear_context_channel_gone": "यह चैनल अब मौजूद नहीं है। चैनल सूची रीफ़्रेश करो।",
       "clear_context_agent_gone": "यह एजेंट अब चैनल में नहीं है। चैनल रीफ़्रेश करो।",
-      "clear_context_messages_deleted": "चैनल के संदेश भी हटा दिए गए।",
+      "clear_context_done_messages_deleted": "संदर्भ साफ़ हो गया। चैनल के संदेश भी हटा दिए गए।",
       "close": "बंद करें",
       "close_agents_panel": "एजेंट पैनल बंद करें",
       "close_channel": "चैनल बंद करें",
@@ -15030,7 +15030,6 @@
         "approval_unverified": "{{productName}} यह पक्का नहीं कर सकता कि यह एजेंट टूल चलाने से पहले पूछता है।",
         "approval_verified_gate_extension": "{{productName}} जो एक्सटेंशन लोड कर जाँचता है, उसके ज़रिये हर टूल से पहले पूछता है।",
         "approval_verified_seeded_settings": "हर टूल से पहले पूछता है। {{productName}} इसे सेट करता और पढ़कर पक्का करता है।",
-        "can_still_switch": "फिर भी इस पर जाया जा सकता है। यदि यह इंस्टॉल नहीं है, तो सेशन शुरू होते समय बता देगा।",
         "card_available": "उपलब्ध है।",
         "card_crew_tools": "{{productName}} के अपने टूल चैट में काम करते हैं",
         "card_manual_compact": "/compact कमांड काम करता है",
@@ -15057,6 +15056,7 @@
         "experimental": "प्रयोगात्मक",
         "in_use": "उपयोग में है।",
         "install_check_failed": "यह जाँचा नहीं जा सका कि यह इस मशीन पर इंस्टॉल है या नहीं।",
+        "install_check_failed_can_still_switch": "यह जाँचा नहीं जा सका कि यह इस मशीन पर इंस्टॉल है या नहीं। फिर भी इस पर जाया जा सकता है। यदि यह इंस्टॉल नहीं है, तो सेशन शुरू होते समय बता देगा।",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "kiro_runs_on_kas": "Kiro CLI अब Kiro Agent पर चलता है, इसलिए नए सत्र पहले से इसका उपयोग करते हैं। क्या Kiro Agent को अपनी सेटिंग के रूप में सहेजना है?",
@@ -17157,6 +17157,7 @@
         "not_recorded": "दर्ज नहीं"
       },
       "agentTemplatesTab": {
+        "model_auto_title": "मॉडल: auto (बैकएंड डिफ़ॉल्ट)",
         "title": "कस्टम एजेंट",
         "new_template": "नया कस्टम एजेंट",
         "new_template_intro": "~/.kiro/agents/<name>.json में सहेजा जाता है और चैट चयनकर्ता में तुरंत दिखता है। कोई Bot नामांकित नहीं होता।",

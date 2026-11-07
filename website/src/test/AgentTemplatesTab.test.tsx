@@ -74,6 +74,7 @@ vi.mock('../components/AgentSkillsEditor', () => ({
 }))
 
 import AgentTemplatesTab from '../pages/overview/AgentTemplatesTab'
+import { i18next } from '../i18n/all'
 import { defaultAgentQuery, type DefaultAgentReadout } from '../api/defaultAgentQuery'
 import type { TemplateRow } from '../pages/overview/AgentTemplatesTab'
 import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
@@ -239,6 +240,22 @@ describe('AgentTemplatesTab roster', () => {
     expect(within(dialog).getByText('Bot pr-bot')).toBeInTheDocument()
     fireEvent.click(within(dialog).getAllByRole('button', { name: /Open/ }).at(-1)!)
     expect(mockNavigate).toHaveBeenCalledWith('/members?member=pr-bot')
+  })
+
+  it('titles an unpinned model badge as one sentence in English', async () => {
+    renderTab()
+    expect((await screen.findAllByTitle('Model: auto (backend default)')).length).toBeGreaterThan(0)
+  })
+
+  it('titles an unpinned model badge in Japanese with no English colon', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      renderTab()
+      expect((await screen.findAllByTitle('モデル：auto（バックエンドのデフォルト）')).length).toBeGreaterThan(0)
+      expect(screen.queryAllByTitle(/モデル: /)).toHaveLength(0)
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('says plainly when no mate runs a template', async () => {

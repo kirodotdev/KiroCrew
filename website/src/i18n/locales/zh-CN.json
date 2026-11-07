@@ -11849,7 +11849,7 @@
       "clear_context_done": "上下文已清除。",
       "clear_context_channel_gone": "此频道已不存在。请刷新频道列表。",
       "clear_context_agent_gone": "此智能体已不在频道中。请刷新频道。",
-      "clear_context_messages_deleted": "该频道的消息也已删除。",
+      "clear_context_done_messages_deleted": "上下文已清除。该频道的消息也已删除。",
       "close": "关闭",
       "close_agents_panel": "关闭代理面板",
       "close_channel": "关闭频道",
@@ -14643,7 +14643,6 @@
         "approval_unverified": "{{productName}} 无法确认这个代理用工具前会不会先问。",
         "approval_verified_gate_extension": "通过 {{productName}} 装入并检查过的扩展，每次用工具前都会先问。",
         "approval_verified_seeded_settings": "每次用工具前都会先问。{{productName}} 写入这项设置，并读回来确认。",
-        "can_still_switch": "仍然可以切换到它。如果未安装，会话启动时会说明。",
         "card_available": "可用。",
         "card_crew_tools": "{{productName}} 自带的工具能在聊天里使用",
         "card_manual_compact": "/compact 命令可用",
@@ -14670,6 +14669,7 @@
         "experimental": "实验性",
         "in_use": "正在使用。",
         "install_check_failed": "无法检查本机是否已安装。",
+        "install_check_failed_can_still_switch": "无法检查本机是否已安装。仍然可以切换到它。如果未安装，会话启动时会说明。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "kiro_runs_on_kas": "Kiro CLI 现在运行在 Kiro Agent 上，所以新会话已经在用它。要把 Kiro Agent 保存为你的设置吗？",
@@ -16719,6 +16719,7 @@
         "not_recorded": "未记录"
       },
       "agentTemplatesTab": {
+        "model_auto_title": "模型：auto（后端默认）",
         "title": "自定义代理",
         "new_template": "新建自定义代理",
         "new_template_intro": "保存到 ~/.kiro/agents/<name>.json，并立即出现在聊天选择器中。不会登记为 Bot。",
