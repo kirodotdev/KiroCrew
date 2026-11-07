@@ -12683,8 +12683,8 @@
         "code_channel_worktree_not_ready": "此代码频道的 worktree 尚未就绪，因此未运行该消息。请稍后重新发送。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",
         "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。",
-        "kas_signed_out": "尚未登录 Kiro。请在“设置 → 代理运行框架 → Kiro 登录”中登录，然后开始新的聊天。",
-        "kas_signed_out_sign_in_below": "尚未登录 Kiro。请在下方登录，然后开始新的聊天。",
+        "kas_signed_out": "尚未登录 Kiro。请在“设置 → 代理运行框架 → Kiro 登录”中登录，然后重新发送你的消息。",
+        "kas_signed_out_sign_in_below": "尚未登录 Kiro。请在下方登录，然后重新发送你的消息。",
         "kas_route_relay": "你的代理通过 kiro-cli 运行。",
         "kas_route_bundle": "你的代理在 {{productName}} 自带的引擎上运行。",
         "kas_route_lead": "{{route}}{{message}}"

@@ -403,19 +403,23 @@ const LEGACY: readonly Legacy[] = [
 ]
 
 /**
- * The KAS signed-out sentences written before their token existed. Fixed text,
- * so they are matched as text: the bare sentence, the relay-led one, and the
- * one led by "KAS runs on Kiro Crew's own engine" with or without its reason.
+ * The KAS signed-out sentences a row carries without their token: rows stored
+ * before the token existed, and side-panel rows. Fixed text, so they are matched
+ * as text: the bare sentence, the relay-led one, and the one led by "KAS runs on
+ * Kiro Crew's own engine" with or without its reason, each in the older "start a
+ * new chat" ending and the current "send your message again" one.
  */
-/** The route a pre-token KAS signed-out row names (`''` for none), or null when it is not one. */
+/** The route a token-less KAS signed-out row names (`''` for none), or null when it is not one. */
 function legacyKasSignedOutRoute(content: string): '' | 'relay' | 'bundle' | null {
   // Stored English matched in place, not held in constants: it is wire text the
   // row carries, never shown here (the token's catalog copy is).
-  if (content === 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat.') return ''
-  if (content === "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat.") return 'relay'
+  if (!content.endsWith(', then start a new chat.') && !content.endsWith(', then send your message again.')) return null
+  const head = content.slice(0, content.lastIndexOf(', then '))
+  if (head === 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in') return ''
+  if (head === "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in") return 'relay'
   const bundle =
-    content.startsWith("KAS runs on Kiro Crew's own engine") &&
-    content.endsWith('. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat.')
+    head.startsWith("KAS runs on Kiro Crew's own engine") &&
+    head.endsWith('. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in')
   return bundle ? 'bundle' : null
 }
 

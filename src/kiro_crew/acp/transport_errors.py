@@ -1629,8 +1629,8 @@ def _format_acp_error_worded(
             )
         elif _is_session_expired(haystack):
             # Session expiry (401/403, or prose saying as much) — distinct from
-            # the Bedrock credential errors above. Retrying or switching models
-            # cannot succeed, so the message must not suggest either.
+            # the Bedrock credential errors above. Switching models cannot
+            # succeed, so the message must not suggest it.
             #
             # The sign-in half comes from the harness's own declaration: which
             # command re-authenticates is a per-harness fact. This arm HAS
@@ -1642,13 +1642,13 @@ def _format_acp_error_worded(
             # kiro id IS the empty string. That is correct rather than a fallback:
             # a caller reaching here with no backend in hand is on the shared
             # runtime, whose harnesses are the two on the host identity store.
-            # The retry verdict stays hard-coded -- that is this arm's own finding
-            # about the error, not sign-in advice.
+            # The model-switch verdict stays hard-coded -- that is this arm's own
+            # finding about the error, not sign-in advice.
             formatted = (
                 "Your session has expired. "
                 f"{host_auth.signed_out_message(backend)} "
-                "Retrying or switching models will not help — this is a "
-                "sign-in issue, not a backend error."
+                "Switching models will not help — this is a sign-in issue, not "
+                "a backend error."
                 f"{req_id_suffix}"
             )
         elif is_model_registry_unavailable(error.get("data")):
