@@ -1002,9 +1002,7 @@ export default function ChannelPage() {
   // disable the button on the one they moved to, which is a different operation.
   const clearBusyHere = channel?.id !== undefined && clearBusyTargets.includes(channel.id)
 
-  // NOT destructured as `confirm`: that shadows the global in this scope, and the close
-  // button's remaining `window.confirm` guard would then test a Promise, which is always truthy.
-  const { confirm: askConfirm, cancel: cancelConfirm, confirmDialog } = useConfirm()
+  const { confirm: askConfirm, cancel: cancelConfirm, confirmDialog, confirmOpen } = useConfirm()
   // The channel the open confirm was raised for. `channel` is recomputed every render, so
   // without pinning it a close mid-dialog redirects the confirm onto one nobody chose.
   // A per-agent confirm also pins its agent: a row that leaves mid-dialog withdraws it.
@@ -1069,7 +1067,7 @@ export default function ChannelPage() {
     }
   }
 
-  if (loading) return <div className="flex items-center justify-center h-full text-muted">{i18nT('pages.channelPage.loading_channels')}</div>
+  if (loading) return <>{confirmDialog}<div className="flex items-center justify-center h-full text-muted">{i18nT('pages.channelPage.loading_channels')}</div></>
 
   // The dialog stays open until the create lands (it then closes itself):
   // closing it first unmounted the typed topic and preset, so a refused create
@@ -1172,16 +1170,24 @@ export default function ChannelPage() {
                   : <RotateCcw className="lucide-inline" />} {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
               <Btn onClick={async () => {
-                if (!confirm(i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'))) return
+                if (confirmOpen) return
+                const channelId = channel.id
+                const ok = await askConfirm({
+                  title: i18nT('pages.channelPage.close_channel'),
+                  body: i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'),
+                  confirmLabel: i18nT('pages.channelPage.close'),
+                })
+                if (!ok) return
                 // A refused close keeps the channel in the list: removing it
                 // would show the action as done under a notice saying it failed.
-                try { await api.channelClose(channel.id) } catch (e) { fail('pages.channelPage.failed_to_close_channel', e); return }
-                setChannels(prev => prev.filter(c => c.id !== channel.id))
-                setActiveId(null)
+                try { await api.channelClose(channelId) } catch (e) { fail('pages.channelPage.failed_to_close_channel', e); return }
+                setChannels(prev => prev.filter(c => c.id !== channelId))
+                setActiveId(current => current === channelId ? null : current)
                 // Without this the narrow layout keeps the transcript pane while no
                 // channel exists: the list holding "+ New" stays hidden and the Back
-                // control unmounted with the channel, leaving no way out.
-                closeDetail()
+                // control unmounted with the channel, leaving no way out. A channel
+                // opened while the question or the close was pending keeps its pane.
+                if (renderedIdRef.current === channelId) closeDetail()
               }} danger title={i18nT('pages.channelPage.close_channel')}>
                 <X className="lucide-inline" /> {i18nT('pages.channelPage.close')}
               </Btn>

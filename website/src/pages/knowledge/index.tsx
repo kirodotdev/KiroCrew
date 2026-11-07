@@ -40,6 +40,7 @@ import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
 import { useRovingTabs } from '../../components/Tablist'
+import { useConfirm } from '../../components/ConfirmDialog'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
@@ -140,6 +141,7 @@ function BulkActions({ selectedIds, items, onDone, onActed }: { selectedIds: Set
     queryClient.invalidateQueries({ queryKey: ['knowledge-items'] }),
     queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] }),
   ])
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
 
   const bulkArchiveMutation = useMutation({
     mutationFn: async ({ status, ids }: { status: string; ids: string[] }) => {
@@ -214,8 +216,20 @@ function BulkActions({ selectedIds, items, onDone, onActed }: { selectedIds: Set
   // The rollback puts the rows back; this says why they came back.
   const failed = bulkArchiveMutation.isError ? bulkArchiveMutation : bulkDeleteMutation.isError ? bulkDeleteMutation : null
 
+  const handleBulkDelete = async () => {
+    if (pending || selectedIds.size === 0 || confirmOpen) return
+    const ids = Array.from(selectedIds)
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.index.delete'),
+      body: i18nT('pages.knowledge.index.delete_items_permanently', { count: ids.length }),
+      confirmLabel: i18nT('pages.knowledge.index.delete'),
+    })
+    if (ok) bulkDeleteMutation.mutate({ ids })
+  }
+
   return (
     <>
+    {confirmDialog}
     {/* Only the toolbar follows the selection. The optimistic update hides the
         selected rows, which empties the selection, so the notice and the
         mutations that own it must stay mounted without one. */}
@@ -223,7 +237,7 @@ function BulkActions({ selectedIds, items, onDone, onActed }: { selectedIds: Set
     <div className="flex items-center gap-2 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg mb-3">
       <span className="text-[13px] text-text-strong font-medium">{i18nT('pages.knowledge.index.selected_count', { count: selectedIds.size })}</span>
       <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate({ status: 'archived', ids: Array.from(selectedIds) })}>{i18nT('pages.knowledge.index.archive')}</Btn>
-      <Btn disabled={pending} onClick={() => { if (confirm(i18nT('pages.knowledge.index.delete_items_permanently', { count: selectedIds.size }))) bulkDeleteMutation.mutate({ ids: Array.from(selectedIds) }) }}>{i18nT('pages.knowledge.index.delete')}</Btn>
+      <Btn disabled={pending} onClick={() => { void handleBulkDelete() }}>{i18nT('pages.knowledge.index.delete')}</Btn>
       <Btn onClick={copySelected}><Copy size={12} /> {copied ? i18nT('pages.knowledge.index.copied') : i18nT('pages.knowledge.index.copy_content')}</Btn>
       <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.index.clear')}</button>
     </div>
@@ -481,8 +495,9 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         // Modal that closes it now (bubble-phase window listener, registered
         // when the dialog opened). This branch only has to keep the PRECEDENCE
         // the chain below documents: one Escape must not both dismiss the help
-        // and clear the page's selection underneath it.
-        if (showHelp) return
+        // and clear the page's selection underneath it. Any other open modal
+        // (such as a delete confirmation) owns Escape the same way.
+        if (showHelp || document.querySelector('[role="dialog"][aria-modal="true"]')) return
         if (selectedId) { setSelectedId(null); e.preventDefault() }
         else if (selectedItems.size > 0) { setSelectedItems(new Set()); e.preventDefault() }
       } else if (e.key === 'ArrowRight' && !e.altKey && !e.ctrlKey) {

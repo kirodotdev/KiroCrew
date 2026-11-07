@@ -10,8 +10,10 @@
  * folder branch (folder picker, ignore patterns, recursive toggle) and the
  * pending-confirmation dialog that stands between a folder and a large scan.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { i18nT } from '../i18n/t'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import SourcesList from '../pages/knowledge/SourcesList'
@@ -68,19 +70,12 @@ const callsTo = (path: string, method?: string) =>
   vi.mocked(api.knowledgeApi).mock.calls.filter(([p, opts]) =>
     p === path && (!method || (opts as RequestInit | undefined)?.method === method))
 
-let confirmSpy: ReturnType<typeof vi.spyOn> | undefined
-
 beforeEach(() => {
   handler = () => ({ ok: true })
   vi.mocked(api.knowledgeApi).mockReset()
   vi.mocked(api.knowledgeApi).mockImplementation(
     (async (path: string, opts?: RequestInit) => handler(path, opts)) as unknown as never,
   )
-})
-
-afterEach(() => {
-  confirmSpy?.mockRestore()
-  confirmSpy = undefined
 })
 
 describe('SourcesList — inline folder scan panel', () => {
@@ -231,7 +226,7 @@ describe('SourcesList — row actions', () => {
     const hint = screen.getByText(/added by agent/)
     expect(hint.getAttribute('title')).toMatch(/nothing to sync/)
 
-    expect(screen.getByLabelText('Remove source')).toBeTruthy()
+    expect(screen.getByLabelText('Remove source', { selector: 'button' })).toBeTruthy()
   })
 
   it('offers Pause on a watching folder and Resume on a paused one', async () => {
@@ -292,8 +287,7 @@ describe('SourcesList — row actions', () => {
     await waitFor(() => expect(callsTo('/sources/f1/confirm', 'POST')).toHaveLength(1))
   })
 
-  it('puts the row back when the delete fails', async () => {
-    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('puts the row back and shows the failure when the delete fails', async () => {
     handler = (path: string, opts?: RequestInit) => {
       if (path === '/sources') return [src()]
       if (path === '/sources/s1' && opts?.method === 'DELETE') throw new Error('gateway said no')
@@ -302,14 +296,18 @@ describe('SourcesList — row actions', () => {
     renderList()
     await screen.findByText('doc.md')
 
-    fireEvent.click(screen.getByLabelText('Remove source'))
+    fireEvent.click(screen.getByLabelText('Remove source', { selector: 'button' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Remove source' })
+    expect(within(dialog).getByText(i18nT('pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'), { selector: 'p' })).toBeInTheDocument()
+    await confirmAction('Remove source')
+    await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
     // The optimistic removal must be rolled back, or the source silently vanishes
     // from the UI while still being indexed.
     expect(await screen.findByText('doc.md')).toBeTruthy()
+    expect(await screen.findByTestId('source-delete-error')).toHaveTextContent('gateway said no')
   })
 
   it('a refused delete puts back only its own row, not one another delete removed meanwhile', async () => {
-    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     let refuse!: (e: Error) => void
     handler = (path: string, opts?: RequestInit) => {
       if (path === '/sources') return [src(), src({ id: 's2', name: 'other.md', uri: '/tmp/other.md' })]
@@ -320,6 +318,7 @@ describe('SourcesList — row actions', () => {
     await screen.findByText('doc.md')
     // The rows render in list order, so the first Remove control is doc.md's.
     fireEvent.click(screen.getAllByLabelText('Remove source')[0])
+    await confirmAction('Remove source')
     await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
     // A second delete lands while the first is in flight.
     act(() => { queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== 's2')) })
@@ -328,8 +327,32 @@ describe('SourcesList — row actions', () => {
     expect(screen.queryByText('other.md')).toBeNull()
   })
 
+  it('removes the confirmed source and permits another row removal while that write is pending', async () => {
+    let release!: () => void
+    handler = (path: string, opts?: RequestInit) => {
+      if (path === '/sources') return [src()]
+      if (path === '/sources/s1' && opts?.method === 'DELETE') {
+        return new Promise(resolve => { release = () => resolve({ ok: true }) })
+      }
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    fireEvent.click(await screen.findByLabelText('Remove source'))
+    const question = await screen.findByRole('dialog')
+    act(() => { queryClient.setQueryData(['knowledge-sources'], [src({ id: 's2', name: 'other.md' })]) })
+    fireEvent.click(screen.getByLabelText('Remove source', { selector: 'button' }))
+    expect(screen.getByRole('dialog')).toBe(question)
+    await confirmAction('Remove source')
+    await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
+    fireEvent.click(screen.getByLabelText('Remove source', { selector: 'button' }))
+    await screen.findByRole('dialog', { name: 'Remove source' })
+    await confirmAction('Remove source')
+    await waitFor(() => expect(callsTo('/sources/s2', 'DELETE')).toHaveLength(1))
+    expect(screen.queryByText('other.md')).not.toBeInTheDocument()
+    await act(async () => { release() })
+  })
+
   it('does not delete when the user declines the prompt', async () => {
-    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     handler = (path: string) => {
       if (path === '/sources') return [src()]
       return { ok: true }
@@ -337,7 +360,10 @@ describe('SourcesList — row actions', () => {
     renderList()
     await screen.findByText('doc.md')
 
-    fireEvent.click(screen.getByLabelText('Remove source'))
+    fireEvent.click(screen.getByLabelText('Remove source', { selector: 'button' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(0)
     expect(screen.getByText('doc.md')).toBeTruthy()
   })

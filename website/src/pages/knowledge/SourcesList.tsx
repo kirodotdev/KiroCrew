@@ -23,6 +23,7 @@ import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButt
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 /** A site name as the gateway compares it: lowercase, no trailing dot. */
 function normalizeSite(site: string): string {
@@ -626,6 +627,22 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     commitTypedProfile(profile)
   }
 
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const handleDelete = async (source: Source) => {
+    if (confirmOpen || (deleteMutation.isPending && deleteMutation.variables === source.id)) return
+    const id = source.id
+    // A Live row ingests nothing, so the shared "and all its ingested items"
+    // confirm would promise a deletion that cannot happen.
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.sourcesList.remove_source'),
+      body: i18nT(source.source_type === 'bedrock_kb'
+        ? 'pages.knowledge.sourcesList.remove_this_live_source'
+        : 'pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'),
+      confirmLabel: i18nT('pages.knowledge.sourcesList.remove_source'),
+    })
+    if (ok) deleteMutation.mutate(id)
+  }
+
   const handleAdd = () => {
     if (addType === 'bedrock_kb') {
       const kbIds = addKbIds.split(',').map(s => s.trim()).filter(Boolean)
@@ -747,10 +764,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     </div>
   )
 
-  if (loading) return <ContentSkeleton />
+  if (loading) return <>{confirmDialog}<ContentSkeleton /></>
 
   return (
     <div className="space-y-3">
+      {confirmDialog}
       {/* Stated unconditionally rather than only on the add-source dialog: the cost
           is ongoing, and a user who inherits a configured folder never sees that
           dialog at all. It also carries the fact that the charge is gradual, which
@@ -1129,9 +1147,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
                 </button>
               )}
-              {/* A Live row ingests nothing, so the shared "and all its ingested
-                  items" confirm would promise a deletion that cannot happen. */}
-              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { if (confirm(i18nT(isLiveSource ? 'pages.knowledge.sourcesList.remove_this_live_source' : 'pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'))) deleteMutation.mutate(s.id) }}
+              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { void handleDelete(s) }}
                 disabled={isDeleting}
                 className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated text-danger/70 hover:text-danger disabled:opacity-50 flex items-center gap-0.5">
                 {isDeleting ? <RefreshCw size={12} className="animate-spin" /> : <X size={12} />}

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -255,6 +256,18 @@ describe('KnowledgePage — help dialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getByText('1 selected')).toBeInTheDocument()
   })
+
+  it('Escape on the bulk-delete confirmation cancels it and keeps the selection', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    await userEvent.click(await screen.findByLabelText('Select Quarterly ledger notes'))
+    expect(await screen.findByText('1 selected')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await screen.findByRole('dialog', { name: 'Delete' })
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+  })
 })
 
 describe('KnowledgePage — keyboard shortcuts', () => {
@@ -406,23 +419,19 @@ describe('KnowledgePage — bulk actions', () => {
   })
 
   it('deletes the selection only after the confirm prompt is accepted', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     await selectFlatItem()
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction(/delete/i)
     await waitFor(() => expect(mutationCalls('DELETE')).toHaveLength(1))
     expect(mutationCalls('DELETE')[0][0]).toBe('/items/f1')
-    expect(confirmSpy).toHaveBeenCalled()
-    vi.unstubAllGlobals()
   })
 
   it('writes nothing when the delete prompt is dismissed', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => false))
     await selectFlatItem()
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Cancel')
     expect(mutationCalls('DELETE')).toHaveLength(0)
     expect(screen.getByText('1 selected')).toBeInTheDocument()
-    vi.unstubAllGlobals()
   })
 
   it('copies the content of the selected items', async () => {

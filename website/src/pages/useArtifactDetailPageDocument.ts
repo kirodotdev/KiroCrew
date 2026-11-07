@@ -33,7 +33,7 @@ import { useGuideSelection } from '../guide/guidePredicates'
 export function useArtifactDetailPageState() {
   const { slug = '' } = useParams<{ slug: string }>()
   const navigate = useNavigate()
-  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const { confirm, cancel: cancelConfirm, confirmDialog, confirmOpen } = useConfirm()
   // Claimed once from the library's "New Artifact" action, which creates the
   // document empty and hands it over here. Two behaviours hang off it: the editor
   // opens focused (so the user starts typing rather than hunting for an Edit
@@ -158,7 +158,7 @@ export function useArtifactDetailPageState() {
   const ime = useImeGuard()
 
   return {
-    slug, navigate, confirm, confirmDialog, confirmOpen, blankClaim, justCreatedBlank, renaming, setRenaming,
+    slug, navigate, confirm, cancelConfirm, confirmDialog, confirmOpen, blankClaim, justCreatedBlank, renaming, setRenaming,
     nameDraft, setNameDraft, queryClient, dispatch, theme, colorTheme, themeVersion, selectedVersion,
     setSelectedVersion, editing, setEditing, previewDuringEdit, setPreviewDuringEdit, readingWidth,
     toggleReadingWidth, mdPreviewStyle, editedContent, setEditedContent, saving, setSaving, saveError,
@@ -180,9 +180,9 @@ export function useArtifactDetailPageDocument({
 }) {
   const {
     slug, setRenaming, setNameDraft, theme, colorTheme, themeVersion, selectedVersion, setSelectedVersion,
-    editing, setEditing, setPreviewDuringEdit, mdPreviewStyle, editedContent, setEditedContent, setSaveError,
+    editing, setEditing, setPreviewDuringEdit, mdPreviewStyle, editedContent, setEditedContent, setSaveError, setSaving,
     editGenerationRef, editBaseTokenRef, overwriteTokenRef, setSaveConflict, setContextError,
-    setContextErrorIsRefresh, setAddingTag, setNewTag,
+    setContextErrorIsRefresh, setAddingTag, setNewTag, cancelConfirm,
   } = stateRead
   // Bidirectional anchor↔comment linking: flash a sidebar row when
   // its in-iframe highlight is clicked; scroll the iframe highlight when a
@@ -199,6 +199,10 @@ export function useArtifactDetailPageDocument({
   // exist), and stale edit state would leak into the new artifact.
   useEffect(() => {
     editGenerationRef.current += 1
+    // Withdraw a question raised for the artifact being left.
+    cancelConfirm()
+    // A revert still on the wire skips its own reset once the generation moves.
+    setSaving(false)
     setSelectedVersion(null)
     setEditing(false)
     setEditedContent('')
@@ -222,7 +226,7 @@ export function useArtifactDetailPageDocument({
     // No reset of the touched flag here -- it is keyed by slug, so a different
     // artifact already gets a fresh verdict, and clearing it at this point would
     // race the departing document's cleanup.
-  }, [slug, editBaseTokenRef, editGenerationRef, overwriteTokenRef, setAddingTag, setContextError, setContextErrorIsRefresh, setEditedContent, setEditing, setNameDraft, setNewTag, setPreviewDuringEdit, setRenaming, setSaveConflict, setSaveError, setSelectedVersion])
+  }, [slug, cancelConfirm, editBaseTokenRef, editGenerationRef, overwriteTokenRef, setAddingTag, setContextError, setContextErrorIsRefresh, setEditedContent, setEditing, setNameDraft, setNewTag, setPreviewDuringEdit, setRenaming, setSaveConflict, setSaveError, setSaving, setSelectedVersion])
 
   const detailQuery = useQuery<Artifact>({
     queryKey: ['artifact', slug],

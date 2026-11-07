@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
+import { i18nT } from '../i18n/t'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseConnected } from '../store/dashboardSlice'
@@ -72,6 +75,11 @@ const mkArtifact = (slug: string, overrides: Partial<Artifact> = {}): Artifact =
  */
 const kindTrigger = () => screen.getByRole('combobox', { name: 'Filter by kind' })
 const tagTrigger = () => screen.getByRole('combobox', { name: 'Filter by tag' })
+
+function ChangeArtifactScope() {
+  const navigate = useNavigate()
+  return <button onClick={() => navigate('/artifacts?touched_by=chat-b')}>Next scope</button>
+}
 
 describe('ArtifactsPage', () => {
   beforeEach(() => {
@@ -938,12 +946,102 @@ describe('ArtifactsPage', () => {
     })
     const deleteSpy = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).deleteArtifact = deleteSpy
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     const deleteBtn = screen.getByLabelText('Remove from artifacts library')
     await userEvent.click(deleteBtn)
-    expect(deleteSpy).toHaveBeenCalledWith('cr-queue')
+    const dialog = await screen.findByRole('dialog', { name: 'Remove from library' })
+    expect(Array.from(dialog.querySelectorAll('p'), p => p.textContent).join('\n\n')).toBe(i18nT('pages.artifactsPage.remove_artifact_confirm', { slug: 'cr-queue' }))
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('cr-queue'))
+    expect(nativeConfirm).not.toHaveBeenCalled()
+  })
+
+  it('keeps removal confirmation mounted while a new artifact scope loads', async () => {
+    const user = userEvent.setup()
+    const destination = deferred<{ artifacts: Artifact[] }>()
+    const artifactA = mkArtifact('artifact-a')
+    const artifacts = vi.fn().mockImplementation((filters?: { touchedBy?: string }) => {
+      if (filters?.touchedBy === 'chat-a') return Promise.resolve({ artifacts: [artifactA] })
+      if (filters?.touchedBy === 'chat-b') return destination.promise
+      return Promise.resolve({ artifacts: [artifactA] })
+    })
+    vi.mocked(api).artifacts = artifacts
+    const deleteSpy = vi.fn().mockResolvedValue({ ok: true })
+    vi.mocked(api).deleteArtifact = deleteSpy
+    renderWithProviders(
+      <><ChangeArtifactScope /><ArtifactsPage /></>,
+      { route: '/artifacts?touched_by=chat-a', store: connectedStore() },
+    )
+
+    expect(await screen.findByText('artifact a')).toBeInTheDocument()
+    await user.click(screen.getByLabelText('Remove from artifacts library'))
+    const question = await screen.findByText(/Remove artifact “artifact-a” from your library\?/)
+
+    await user.click(screen.getByRole('button', { name: 'Next scope' }))
+    await waitFor(() => expect(artifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ touchedBy: 'chat-b' }),
+    ))
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(question).toBeInTheDocument()
+
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledTimes(1))
+    expect(deleteSpy).toHaveBeenCalledWith('artifact-a')
+
+    await act(async () => { destination.resolve({ artifacts: [] }) })
+    expect(await screen.findByText('No artifacts match your filters.')).toBeInTheDocument()
+  })
+
+  it('keeps removal confirmation available while reporting a failed library refresh', async () => {
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [mkArtifact('cr-queue')] })
+    vi.mocked(api).deleteArtifact = vi.fn().mockResolvedValue({ ok: true })
+    const { queryClient } = renderWithProviders(<ArtifactsPage />)
+    fireEvent.click(await screen.findByLabelText('Remove from artifacts library'))
+    await screen.findByRole('dialog')
+    vi.mocked(api).artifacts = vi.fn().mockRejectedValue(new Error('library unavailable'))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['artifacts'] }) })
+    expect(await screen.findByText('library unavailable')).toBeInTheDocument()
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(vi.mocked(api).deleteArtifact).toHaveBeenCalledWith('cr-queue'))
+  })
+
+  it('ignores duplicate removal presses while the mutation is pending', async () => {
+    const removal = deferred<{ ok: boolean }>()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [mkArtifact('cr-queue')] })
+    vi.mocked(api).deleteArtifact = vi.fn().mockReturnValue(removal.promise)
+    renderWithProviders(<ArtifactsPage />)
+    fireEvent.click(await screen.findByLabelText('Remove from artifacts library'))
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(vi.mocked(api).deleteArtifact).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByLabelText('Remove from artifacts library'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(vi.mocked(api).deleteArtifact).toHaveBeenCalledTimes(1)
+    await act(async () => { removal.resolve({ ok: true }) })
+  })
+
+  it('ignores another removal press while a question is open and removes a second artifact while the first delete is pending', async () => {
+    const removal = deferred<{ ok: boolean }>()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [mkArtifact('cr-queue'), mkArtifact('other-doc')] })
+    vi.mocked(api).deleteArtifact = vi.fn().mockImplementation(slug => slug === 'cr-queue' ? removal.promise : Promise.resolve({ ok: true }))
+    renderWithProviders(<ArtifactsPage />)
+    await screen.findByText('cr queue')
+    const [first, second] = screen.getAllByLabelText('Remove from artifacts library')
+    fireEvent.click(first)
+    const question = await screen.findByRole('dialog')
+    expect(Array.from(question.querySelectorAll('p'), p => p.textContent).join('\n\n')).toBe(i18nT('pages.artifactsPage.remove_artifact_confirm', { slug: 'cr-queue' }))
+    fireEvent.click(second)
+    expect(screen.getByRole('dialog')).toBe(question)
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(vi.mocked(api).deleteArtifact).toHaveBeenCalledWith('cr-queue'))
+    fireEvent.click(second)
+    await confirmAction('Cancel')
+    expect(vi.mocked(api).deleteArtifact).not.toHaveBeenCalledWith('other-doc')
+    fireEvent.click(second)
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(vi.mocked(api).deleteArtifact).toHaveBeenCalledWith('other-doc'))
+    await act(async () => { removal.resolve({ ok: true }) })
   })
 
   it('does not delete when user cancels', async () => {
@@ -952,10 +1050,12 @@ describe('ArtifactsPage', () => {
     })
     const deleteSpy = vi.fn()
     vi.mocked(api).deleteArtifact = deleteSpy
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     await userEvent.click(screen.getByLabelText('Remove from artifacts library'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(deleteSpy).not.toHaveBeenCalled()
   })
 
@@ -1137,3 +1237,9 @@ describe('ArtifactsPage list-fetch failure', () => {
     expect(screen.queryByText(/No artifacts yet/i)).not.toBeInTheDocument()
   })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}

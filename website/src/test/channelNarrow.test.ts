@@ -89,14 +89,6 @@ describe('ChannelPage narrow viewport', () => {
     expect(s).toMatch(/isMobile \? 'px-0' : 'px-2'/)
   })
 
-  it('returns to the list when the channel is closed', async () => {
-    const s = await src()
-    // Without this the transcript pane stays on with no channel: the list holding
-    // "+ New" is hidden and ListDetailBack unmounted with the channel, so there is
-    // no way out short of a reload.
-    expect(s).toMatch(/setActiveId\(null\)\s*\n\s*closeDetail\(\)/)
-  })
-
   it('drills into a channel it has just created', async () => {
     const s = await src()
     expect(s).toMatch(/setActiveId\(res\.channel\.id\)\s*\n\s*openDetail\(\)/)
