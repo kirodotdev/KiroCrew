@@ -60,6 +60,7 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "approval_modes": (("normal", "trust", "trust_reads"), ("yolo",)),
     "app_versions": ((), ("any-app@1.0.0",)),
     "network.egress": ((), ("example.com",)),
+    "external_access.registry_hosts": ((), ("skills.sh",)),
     "channels": ((), ("slack",)),
     "approval_mode": (("interactive",), ()),
     "sandbox.min_level": (("strict",), ()),

@@ -3716,6 +3716,20 @@ Plugin sync asks `extensions:plugin:<package>` for each package `plugins_out_of_
 {"version": 1, "app_versions": {"mode": "allow", "allow": ["file-explorer@1.*"]}, "capabilities": {"extension_install": {"scopes": {"extensions": {"mode": "allow", "allow": ["mcp:github", "skill:*"]}}}, "app_dev_mode": {"enabled": false}}}
 ```
 
+### Discovery registries — `external_access.registry_hosts`
+
+The RFC [crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md) appendix row "Extension sources" ([#12677](https://github.com/kirodotdev/KiroCrew/issues/12677)). A ruleset with the `host` matcher, like `network.egress`, that lists the skill and MCP discovery registries the Discover surfaces may query.
+
+- **Where it is asked.** `dashboard/handlers/_shared_access.admits_registry`, the one gate all four registry call sites go through: skills.sh, GitHub and edition-contributed providers in `discover.py`, and the official MCP registry in `mcp_discover.py`. The agent's `skill_discover` reaches the registry through the gateway's discover endpoint, so the key binds it too. `extension_governance.registry_host_denied` asks `governance_permits` on the host key, fail-closed, and audits like the keys above. The edition's `external_access.admits_registry` is asked only after the key admits, so the stricter of the two wins; the key sits in the shared gate rather than in `DefaultExternalAccessPolicy` because an edition replaces that slot whole. The admission is then audited as before (`external_access:registry:<kind>`).
+- **Item asked.** `_url_host(api_base)`: the host of the provider's base URL, never its self-chosen name or the raw URL, so `skills.sh` matches `https://skills.sh/api` and a provider that repoints at another host stops being admitted. A provider with no network host is asked about `""`, which an allow list admits only through a pattern that matches it, such as `*`.
+- **One list for both catalogs.** The item is a host and the three built-in registries are on three different hosts, so one list can already admit one catalog and refuse the other. The cost: an allow list that names only skill hosts also refuses the official MCP registry (`registry.modelcontextprotocol.io`).
+- **Defaults.** `oss`: an unnamed key admits every registry, as before. Enterprise: the baseline is off, so no registry is queried until the policy names its hosts.
+- **When it binds.** Both catalogs build their provider registry once per process, on first use, in a worker thread (`asyncio.to_thread(_get_registry)`), and a refused provider is never registered. A policy change therefore binds at the next gateway start, as for `agent_backend`.
+
+```json
+{"version": 1, "external_access": {"registry_hosts": {"mode": "allow", "allow": ["skills.sh", "api.github.com", "registry.modelcontextprotocol.io"]}}}
+```
+
 ### "Share as image" — `capabilities.social_share`
 
 The chat's *More actions → Share as image* turns an assistant reply into a branded

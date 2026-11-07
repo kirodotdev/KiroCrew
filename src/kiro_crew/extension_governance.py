@@ -1,11 +1,13 @@
-"""Governance keys for extensions, plugins, app versions and app developer mode.
+"""Governance keys for extensions, plugins, app versions, app developer mode and
+extension sources.
 
 RFC ``rfc-crew-enterprise-edition``, appendix rows "Extension install", "Extension
-uninstall", "Plugin sync", "App versions" and "App developer mode". Each check asks
-the governance ceiling and the host profile, so a remote policy can turn the control
-on and a profile can only narrow it. In an enterprise build a scope the policy does
-not name answers the built-in baseline, where all three are off. In the ``oss``
-edition an unnamed scope permits, so nothing changes until a policy names one.
+uninstall", "Plugin sync", "App versions", "App developer mode" and "Extension
+sources". Each check asks the governance ceiling and the host profile, so a remote
+policy can turn the control on and a profile can only narrow it. In an enterprise
+build a scope the policy does not name answers the built-in baseline, where every
+one of them is off. In the ``oss`` edition an unnamed scope permits, so nothing
+changes until a policy names one.
 
 * :data:`EXTENSIONS_SCOPE` turns installing on or off. Its ``extensions`` list
   names what may be installed, as ``<kind>:<id>`` (``mcp:github``,
@@ -16,6 +18,10 @@ edition an unnamed scope permits, so nothing changes until a policy names one.
 * :data:`DEV_MODE_SCOPE` turns app developer mode on or off.
   :func:`developer_mode_permitted` is the one reader for any other developer-mode
   switch.
+* :data:`REGISTRY_HOSTS_SCOPE` lists the hosts of the skill and MCP discovery
+  registries the Discover surfaces may query (``skills.sh``,
+  ``registry.modelcontextprotocol.io``). :func:`registry_host_denied` is asked by
+  ``dashboard.handlers._shared_access.admits_registry``.
 
 Every check is fail-closed: an evaluation error denies. A denial and a governed
 permit are written to the SEL; a permit nothing governs is not, so an ungoverned
@@ -36,6 +42,7 @@ EXTENSIONS_SCOPE = "capabilities.extension_install"
 EXTENSIONS_LIST = "extensions"
 APP_VERSIONS_SCOPE = "app_versions"
 DEV_MODE_SCOPE = "capabilities.app_dev_mode"
+REGISTRY_HOSTS_SCOPE = "external_access.registry_hosts"
 
 #: Extension kinds an ``extensions`` list entry may name.
 EXTENSION_KINDS = frozenset({"mcp", "skill", "agent", "plugin"})
@@ -139,3 +146,20 @@ def developer_mode_permitted(*, audit: bool = False) -> bool:
     leave ``audit`` off.
     """
     return _denied(DEV_MODE_SCOPE, "", action="developer_mode", audit=audit) is None
+
+
+def registry_host_denied(kind: str, api_base: str) -> Optional[str]:
+    """Why governance refuses the discovery registry at *api_base*, or ``None``.
+
+    The item is the host of *api_base* (``https://skills.sh/api`` is
+    ``skills.sh``), never the provider's own name, so an allowlist stops admitting
+    a provider that repoints at another host. A base with no network host is
+    judged as ``""``, which an allow list admits only through a pattern that
+    matches it, such as ``*``. One list covers both catalogs: *kind* (``skill`` or
+    ``mcp``) only labels the audit record.
+
+    Reads the profile store: call it off the event loop.
+    """
+    from kiro_crew.platform.governance_parts.matching import _url_host
+
+    return _denied(REGISTRY_HOSTS_SCOPE, _url_host(api_base or ""), action=f"registry:{kind}")
