@@ -304,6 +304,28 @@ function ConnectForm() {
   )
 }
 
+/** After an email invite: Tailscale's email carries no Crew address, so the
+ *  owner sends the message that does, or is told which setting gives one. */
+function EmailInviteResult() {
+  const direct = useSharedCrewCapabilities({ fetchOnMount: false }).capabilities.tailnet_direct
+  const active = tailnetDirectActive(direct)
+  const off = direct?.state === 'off'
+  return (
+    <div className="flex flex-wrap items-center gap-2 min-w-0" data-testid="invite-email-result">
+      {direct && (
+        <span className="text-[13px] text-muted w-full" data-testid="invite-email-hint">
+          {active
+            ? i18nT('sharedCrew.invite_email_hint')
+            : off
+              ? i18nT('sharedCrew.invite_email_hint_off', { setting: i18nT('sharedCrew.adv_direct') })
+              : i18nT('sharedCrew.invite_email_hint_unavailable')}
+        </span>
+      )}
+      <CopyInviteMessage testId="invite-copy-email-message" />
+    </div>
+  )
+}
+
 function InviteForm({ disabled }: { disabled: boolean }) {
   const qc = useQueryClient()
   const { confirmShare, firstShareDialog, shareError } = useFirstShareGate()
@@ -423,11 +445,7 @@ function InviteForm({ disabled }: { disabled: boolean }) {
           <span className="text-[12px] text-muted w-full">{i18nT('sharedCrew.invite_link_warning')}</span>
         </div>
       )}
-      {sent && !lastLink && (
-        <div className="flex flex-wrap items-center gap-2 min-w-0" data-testid="invite-email-result">
-          <CopyInviteMessage testId="invite-copy-email-message" />
-        </div>
-      )}
+      {sent && !lastLink && <EmailInviteResult />}
     </form>
   )
 }
