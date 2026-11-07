@@ -415,6 +415,15 @@ made updatable or newly validated here; their underlying service behavior is
 unchanged. Existing app cron permission
 and runtime execution checks remain required.
 
+`CronSDK.run_job_async(job_id)` starts a manual run of an owned job now and leaves
+its schedule as it is. It shares `CronService.trigger_run` with the dashboard Run
+route: `False` when a run of the job is already in flight, `True` once the run is
+dispatched, which does not promise that it executes. Ownership is checked against
+the cache first (`PermissionError`, SEL-audited), then, as `set_enabled` does,
+against the store: the run does not start for a job gone or owned by another app
+by then. Like the Run button it runs a paused job, and the fire-time vet still
+applies. There is no sync form: the run starts as a task on the running loop.
+
 `CronSDK`'s three create methods share one closed keyword allowlist
 (`_add_job_kwargs`), so the fields an app can set at create are exactly the ones
 that allowlist threads — a field `CronService.add_job` accepts but the allowlist
