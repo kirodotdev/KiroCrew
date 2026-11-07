@@ -943,16 +943,15 @@ def start_meeting_meta(
     already holds it, which is why the lock is an RLock — see its comment.
     """
     config = store.read_config(root)
-    enabled = get_enabled_agents(config, agents_enabled)
     with store.meta_transaction():
-        return _start_meeting_meta_locked(meeting_id, agents_enabled, title, enabled, root)
+        return _start_meeting_meta_locked(meeting_id, agents_enabled, title, config, root)
 
 
 def _start_meeting_meta_locked(
     meeting_id: str,
     agents_enabled: list[str] | None,
     title: str,
-    enabled: list[dict[str, Any]],
+    config: dict[str, Any],
     root: Path | None,
 ) -> dict[str, Any]:
     """The read-modify-write itself. Caller holds ``store.meta_transaction()``."""
@@ -965,6 +964,11 @@ def _start_meeting_meta_locked(
     meta["started_at"] = store.utc_now_iso()
     if agents_enabled is not None:
         meta["agents_enabled"] = agents_enabled
+    # The roster this start runs is the one the metadata now holds: the request's,
+    # else the one the meeting already had, else the defaults. ``_init_agents_plan``
+    # reads it back from the same field, so the outputs seeded here, the live
+    # queues and the kickoff all name the same agents.
+    enabled = get_enabled_agents(config, meta.get("agents_enabled"))
 
     outputs: dict[str, str] = {}
     for agent_def in enabled:
