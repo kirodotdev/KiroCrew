@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
+from stray_line_helpers import too_deep_to_decode
 
 from kiro_crew.deploy import profiles as profiles_mod
 
@@ -83,6 +86,7 @@ def _fail_reads_of(path: Path, monkeypatch) -> None:
     monkeypatch.setattr(profiles_mod, "read_bytes_with_retry", held)
 
 
+@pytest.mark.usefixtures("cyclic_gc_quiesced")
 @pytest.mark.parametrize(
     "content",
     [
@@ -92,6 +96,10 @@ def _fail_reads_of(path: Path, monkeypatch) -> None:
         b'{"profiles": 5}',
         b'{"profiles": {"alpha": {"name": "alpha", "region": "us-east-1"}}}',
         b'{"profiles": "alpha"}',
+        # json.loads refuses these two with something other than a JSONDecodeError:
+        # a RecursionError, and a plain ValueError from int().
+        lambda: too_deep_to_decode().encode("ascii"),
+        b'{"profiles": [], "default": ' + b"9" * 5000 + b"}",
     ],
     ids=[
         "undecodable",
@@ -100,11 +108,15 @@ def _fail_reads_of(path: Path, monkeypatch) -> None:
         "non-iterable-profiles",
         "profiles-mapping",
         "profiles-string",
+        "nested-past-the-decoder",
+        "over-digit-limit",
     ],
 )
 def test_an_unreadable_registry_is_moved_aside_before_the_write(
-    registry: Path, content: bytes, caplog
+    registry: Path, content: bytes | Callable[[], bytes], caplog
 ) -> None:
+    if callable(content):
+        content = content()
     registry.write_bytes(content)
     with caplog.at_level(logging.WARNING, logger=profiles_mod.__name__):
         _add_gamma()

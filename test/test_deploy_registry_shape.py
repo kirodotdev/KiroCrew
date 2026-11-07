@@ -10,10 +10,28 @@ that reads the registry, including the deploy surface that predates aws-control.
 import json
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
+from stray_line_helpers import too_deep_to_decode
 
 from kiro_crew.deploy import profiles as profiles_mod
 
 EMPTY = {"version": 2, "profiles": [], "default": ""}
+
+
+def _over_digit_limit() -> str:
+    """A registry whose ``default`` is a number past the integer digit limit.
+
+    ``json.loads`` refuses it with a plain ``ValueError`` (not a ``JSONDecodeError``)
+    from ``int()``, which is a different exception from the one truncated JSON raises.
+    """
+    return '{"profiles": [], "default": ' + "9" * 5000 + "}"
+
+
+#: Files ``json.loads`` refuses with something other than a ``JSONDecodeError``.
+REFUSED = {
+    "nested-past-the-decoder": too_deep_to_decode,
+    "over-digit-limit": _over_digit_limit,
+}
 
 
 @pytest.mark.parametrize(
@@ -84,6 +102,54 @@ def test_undecodable_registry_files_read_as_empty(tmp_path, monkeypatch):
     except UnicodeDecodeError as exc:
         pytest.fail(f"an undecodable registry escaped load_registry: {exc!r}")
     assert out == EMPTY
+
+
+@pytest.mark.usefixtures("cyclic_gc_quiesced")
+@pytest.mark.parametrize("make", list(REFUSED.values()), ids=list(REFUSED))
+def test_a_registry_json_loads_refuses_reads_as_empty_at_every_step(tmp_path, monkeypatch, make):
+    """A file ``json.loads`` refuses outright degrades like one it cannot decode.
+
+    A file nested past the interpreter's recursion limit raises ``RecursionError``,
+    and one holding a number past the integer digit limit raises a plain
+    ``ValueError``; neither is a ``JSONDecodeError``. Each of the three reads must
+    fall through, so all three files being such still ends at the empty default
+    rather than raising out of ``load_registry`` and 500ing every route.
+    """
+    content = make()
+    primary = tmp_path / "profiles.json"
+    primary.write_text(content, encoding="utf-8")
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(content, encoding="utf-8")
+    config = tmp_path / "config.json"
+    config.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(profiles_mod, "_registry_path", lambda: primary)
+    monkeypatch.setattr(profiles_mod, "_legacy_registry_path", lambda: legacy)
+    monkeypatch.setattr(profiles_mod, "_legacy_config_path", lambda: config)
+
+    try:
+        out = profiles_mod.load_registry()
+    except (ValueError, RecursionError) as exc:
+        pytest.fail(f"a registry json.loads refuses escaped load_registry: {type(exc).__name__}")
+    assert out == EMPTY
+
+
+@pytest.mark.usefixtures("cyclic_gc_quiesced")
+@pytest.mark.parametrize("make", list(REFUSED.values()), ids=list(REFUSED))
+def test_a_refused_primary_still_falls_through_to_the_legacy_registry(tmp_path, monkeypatch, make):
+    """Same fallback chain as a mis-shaped primary: the legacy registry is consulted."""
+    primary = tmp_path / "profiles.json"
+    primary.write_text(make(), encoding="utf-8")
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(
+        json.dumps({"version": 2, "profiles": [{"name": "p", "region": "us-west-2"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(profiles_mod, "_registry_path", lambda: primary)
+    monkeypatch.setattr(profiles_mod, "_legacy_registry_path", lambda: legacy)
+    monkeypatch.setattr(profiles_mod, "_legacy_config_path", lambda: tmp_path / "nope.json")
+
+    out = profiles_mod.load_registry()
+    assert [p["name"] for p in out["profiles"]] == ["p"]
 
 
 def test_a_well_formed_registry_is_unaffected(tmp_path, monkeypatch):
