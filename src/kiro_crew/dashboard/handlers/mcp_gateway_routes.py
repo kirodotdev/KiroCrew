@@ -26,7 +26,7 @@ from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_roster, read_e
 from kiro_crew.dashboard.chat_utils import run_to_completion
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.mcp_config_files import _is_valid_mcp_name, _offload_config_write
-from kiro_crew.dashboard.handlers.mcp_probe import _probe_currency
+from kiro_crew.dashboard.handlers.mcp_probe import _probe_view
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import managed_server_is_session_bound, probe_metadata
@@ -34,7 +34,7 @@ from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_gateway.launch_approval import refused_servers, refused_shares
 from kiro_crew.mcp_gateway.rewriter import records_dir
-from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
+from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, Strength, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.sel import sel
 
@@ -643,7 +643,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     # dashboard and every chat sharing it, and would also let two rows in one
     # payload disagree about the same file.
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
-    probe_current = await asyncio.to_thread(_probe_currency)
+    probe_current, probeable = await asyncio.to_thread(_probe_view)
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -689,6 +689,22 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # must leave out a server that will share nothing once it is on, and
         # ``pooling_blocked_by_env`` reads false while sharing is off.
         nothing_shared = _env_blocks_every_share(row, forward_declared_env, identity_keys)
+        single_launch = len(row["launch_ids"]) <= 1
+        verdict = _assess_server(
+            name,
+            is_stdio=is_stdio,
+            env_names=tuple(sorted(row["env_names"])),
+            observed_hazards=observed.get(name, ()),
+            # A measurement describes ONE execution identity. When this
+            # name merged more than one distinct launch, the probe
+            # measured whichever definition won the merge, so serving that
+            # result here would tell the operator it is safe to share a
+            # backend nobody ran. Same invariant the cache-side check
+            # applies, enforced at the other place the information exists.
+            preflight=(preflights.get(name) if single_launch else None),
+            identity_keys=identity_keys,
+            probe_current=probe_current.get(name, True),
+        )
         result.append(
             {
                 "name": name,
@@ -709,24 +725,33 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # Advisory only. Never auto-applied: the evidence is weaker
                 # than proof (the probe handshakes as a different client than
                 # the gateway does), so the operator decides.
-                "recommendation": _assess_server(
-                    name,
-                    is_stdio=is_stdio,
-                    env_names=tuple(sorted(row["env_names"])),
-                    observed_hazards=observed.get(name, ()),
-                    # A measurement describes ONE execution identity. When this
-                    # name merged more than one distinct launch, the probe
-                    # measured whichever definition won the merge, so serving that
-                    # result here would tell the operator it is safe to share a
-                    # backend nobody ran. Same invariant the cache-side check
-                    # applies, enforced at the other place the information exists.
-                    preflight=(preflights.get(name) if len(row["launch_ids"]) <= 1 else None),
-                    identity_keys=identity_keys,
-                    probe_current=probe_current.get(name, True),
-                ).to_dict(),
+                "recommendation": verdict.to_dict(),
+                # What the Measure button counts. Rows come from every agent
+                # spec, but a pass probes only ``list_servers()``.
+                "measure_due": name in probeable
+                and _measure_due(verdict, name in preflights, single_launch),
             }
         )
     return web.json_response({"servers": result})
+
+
+def _measure_due(verdict: ShareVerdict, preflight_stored: bool, single_launch: bool) -> bool:
+    """Whether a measure pass would change *verdict*, for a server it can probe.
+
+    ``unknown`` waits on a probe; a ``handshake_not_reproducible`` row is
+    re-measured every pass by design. ``declared`` and ``no_objection`` are the
+    two tiers a pre-flight can still raise, and only while none is stored and the
+    row has one launch: with two, the row never shows the stored pre-flight.
+    """
+    if verdict.strength is Strength.UNKNOWN or any(
+        r.code == "handshake_not_reproducible" for r in verdict.reasons
+    ):
+        return True
+    return (
+        not preflight_stored
+        and single_launch
+        and verdict.strength in (Strength.DECLARED, Strength.NO_OBJECTION)
+    )
 
 
 def _load_shareability_state() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[bool, bool]]]:
