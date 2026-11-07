@@ -80,6 +80,11 @@ describe('McpTab — staged changes survive leaving the page (#25962)', () => {
 
     const second = renderTab()
     expect(await within(await waitFor(() => row('beta'))).findByRole('button', { name: 'Undo' })).toBeInTheDocument()
+    // At rest neither banner button may be the stock transparent Btn, which disappears on the warn tint.
+    for (const btn of [screen.getByRole('button', { name: /^Apply/ }), screen.getByRole('button', { name: /Discard/ })]) {
+      expect(btn).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(btn).not.toHaveClass('bg-transparent')
+    }
     fireEvent.click(screen.getByRole('button', { name: /Discard/ }))
     await waitFor(() => expect(screen.queryByRole('button', { name: /Discard/ })).toBeNull())
     second.unmount()
