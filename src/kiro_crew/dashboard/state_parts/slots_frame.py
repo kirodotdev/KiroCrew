@@ -146,6 +146,18 @@ def _published_queued_by_slot(subs: "SubagentManager | None") -> dict[str, int]:
     return by_slot
 
 
+def _published_queued_reason_by_slot(subs: "SubagentManager | None") -> dict[str, dict]:
+    """Each slot's ``subagents_queued_reason``: the wait label of the newest
+    labelled frame routed to it, so a client that missed that frame (a reload)
+    still shows why the rows wait. Routed like :func:`_published_queued_by_slot`."""
+    if not subs:
+        return {}
+    # circular import: chat_utils imports this module at load time.
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+    return {subagent_event_slot(p): label for p, label in subs.published_queued_labels().items()}
+
+
 def _attach_slot_parents(
     rows: "list[dict]", resolve_aliases: "Callable[[], dict[str, str] | None] | None" = None
 ) -> None:
@@ -936,6 +948,7 @@ def serialize_slots(
 
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
+    queued_reason_by_slot = _published_queued_reason_by_slot(subs)
     saved_creators: dict[str, str] = {}
     for s in self._slots.values():
         if s.key in under_construction:
@@ -949,6 +962,8 @@ def serialize_slots(
         )
         d["subagents_running"] = bool(subs and subs.running_agents_for(effective_session_key(s)))
         d["subagents_queued"] = queued_by_slot.get(s.key, 0)
+        if d["subagents_queued"] and s.key in queued_reason_by_slot:
+            d["subagents_queued_reason"] = queued_reason_by_slot[s.key]
         out.append(d)
     # The slot-key/session-key correspondence the lineage join needs, read the same
     # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over

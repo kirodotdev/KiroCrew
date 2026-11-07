@@ -965,6 +965,7 @@ class SubagentManager:
     queued_count_for = _run_surface.queued_count_for
     queued_count_for_async = _run_surface.queued_count_for_async
     published_queued_depths = _run_surface.published_queued_depths
+    published_queued_labels = _run_surface.published_queued_labels
     has_in_memory_pending_work_for = _run_surface.has_in_memory_pending_work_for
     has_unfinished_report_for = _run_surface.has_unfinished_report_for
     queued_count_or_none_async = _run_surface.queued_count_or_none_async
