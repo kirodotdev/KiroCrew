@@ -1,4 +1,4 @@
-"""The stdio MCP server KAS runs for a Crew-owned Connection (``connections.crew_oauth``).
+"""The stdio MCP server KAS runs for a Crew-owned Connection (``dashboard.feature_previews.crew_oauth``).
 
 Started by :mod:`kiro_crew.kas_env_shim` from a launch snapshot that names a
 ``connection`` instead of a url. It is :class:`kiro_crew.kas_http_bridge.Bridge`

@@ -460,7 +460,7 @@ def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:
 
 
 def _crew_managed_slugs(providers: list[Provider]) -> frozenset[str]:
-    """The slugs whose OAuth Crew owns (``connections.crew_oauth``). Blocking.
+    """The slugs whose OAuth Crew owns (``dashboard.feature_previews.crew_oauth``). Blocking.
 
     Same check as routing: a configured entry that keeps its own credential
     header stays on its native grant, so the card matches the bridge.

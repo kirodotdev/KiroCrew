@@ -196,7 +196,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/mediated-secret-request",
         _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
-    # Crew-owned Connection proxy (``connections.crew_oauth``): the in-session
+    # Crew-owned Connection proxy (``dashboard.feature_previews.crew_oauth``): the in-session
     # stdio bridge's only peer. Strict internal, Unix-socket only, off by default.
     _connection_proxy = _deferred("connection_proxy", "api_connection_proxy")
     app.router.add_post("/api/connection-proxy", _connection_proxy)
