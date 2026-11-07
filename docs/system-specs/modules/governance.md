@@ -547,16 +547,33 @@ in an oss build). One fetch is the Kiro control plane's
   host, and the reply's `manifest.hash` (SHA-256 of the body) when it carries one.
   There is no signature layer.
 - **Answer.** `ENABLED` carries Trust V2 YAML, which
-  `platform/enterprise_policy_translate.py` turns into a Crew document (today
-  `messaging_channel` to `channels.members`, `permission_mode` to `approval_modes`
-  with its floor kept, and the on/off `messaging`, `cron`, `memory_writes` and `theme_persona` to
-  the `capabilities.` row of the same name), re-read every 300 s. An on/off
-  capability is off on any deny or on a rule shape it does not know (`match`,
+  `platform/enterprise_policy_translate.py` turns into a Crew document, re-read
+  every 300 s. Its `MANAGED` rows: `messaging_channel` to `channels.members`,
+  `permission_mode` to `approval_modes` with its floor kept, `shell` to `commands`,
+  `fs_read` / `fs_write` to `filesystem.read` / `filesystem.write`, `network_egress`
+  to `network.egress`, `mcp` to `mcp`, `subagent` to `capabilities.spawn` (its
+  `agents` list), and the on/off `messaging`, `cron`, `memory_writes`, `theme_persona`,
+  `tailnet_origin`, `browser_use` and `theme_install` to `capabilities.messaging`,
+  `.cron`, `.memory_writes`, `.theme_persona`, `.tailnet_origin`, `.browse` and
+  `.theme_install`. A rule on a meta-capability
+  (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
+  `acp/kas_permissions.py` `META_CAPABILITY_EXPANSION`; a deny on `all` reaches
+  every managed capability, the stricter reading. An
+  on/off capability is off on any deny or on a rule shape it does not know (`match`,
   `exclude` or `when`), on on an allow with no deny, and unnamed (baseline) with no
   rule. A shape it does not know is off, not unnamed, because `capabilities.cron`
-  is an open control: unnamed, it keeps Crew's default. For a capability with a
-  resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
-  baseline keeps it off. The reply's settings (`body.configuration`, each entry's
+  is an open control: unnamed, it keeps Crew's default. A capability with a resource
+  that any rule names is governed, as the policy language reads it: a deny `exclude`
+  or an allow `match` says what is allowed, an allow with no `match` allows everything
+  but the deny `match` entries (a deny-list), and nothing granted allows nothing. Each
+  row converts a pattern into its Crew matcher's form: a pattern with no exact form is
+  dropped from an allowed set and widened in a denied one (a file deny matches either
+  case, an MCP tool glob covers its whole server), and a deny that cannot be widened
+  refuses the policy. A file pattern is read only when it is canonical: absolute
+  (`/`, `~` or `~/...`), one `/` between segments, no trailing `/`, no `.` or `..`
+  segment, and no `\`, drive letter, `~user`, `[`, `$` or extended glob
+  (`enterprise_policy_translate._non_canonical`, plain string checks); any other
+  shape refuses a deny and is dropped from an allow. The reply's settings (`body.configuration`, each entry's
   `value` the setting as JSON) are shape-checked and hashed when the reply declares a
   hash, and then a badly shaped entry refuses the reply. With no hash they are read
   leniently, as before, so an entry Crew does not read never refuses a reply, and a
