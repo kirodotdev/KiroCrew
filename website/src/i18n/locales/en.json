@@ -7297,6 +7297,8 @@
         "turn_diff": "Turn Diff"
       },
       "stopEventCard": {
+        "force_stopped": "Force stopped, session reset",
+        "force_stopped_2": "[Force Stopped, Session Reset]",
         "stop_failed_session_reset": "Stop failed, session reset",
         "stop_failed_session_reset_2": "[Stop Failed, Session Reset]",
         "stopped": "Stopped",

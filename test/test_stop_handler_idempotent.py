@@ -958,7 +958,7 @@ class TestStopCardTeardownRace:
         assert slot._stop_event_id == stop_id
 
         await _make_stop_resolver(state, slot, "hard", stop_id)()
-        assert _card_state(slot, stop_id) == "stop_failed_reset"
+        assert _card_state(slot, stop_id) == "force_stopped"
 
     @pytest.mark.asyncio
     async def test_teardown_does_not_erase_hard_kill_precedence(self):
@@ -986,7 +986,7 @@ class TestStopCardTeardownRace:
         assert slot._stop_event_id == stop_id
 
         await _make_stop_resolver(state, slot, "hard", stop_id)()
-        assert _card_state(slot, stop_id) == "stop_failed_reset"
+        assert _card_state(slot, stop_id) == "force_stopped"
         assert slot._stop_escalated_card_id is None
 
     def test_stopping_setter_leaves_the_escalation_marker_alone(self):
@@ -1092,6 +1092,20 @@ class TestStopCardTeardownRace:
         assert _card_state(slot, new_id) == "stopped"
         assert slot._stop_event_id is None
         assert slot._stop_state == "idle"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_escalation_marker_does_not_label_a_later_kill_forced(self):
+        """Only the escalated card reads force_stopped: a later card's timeout still failed."""
+        from kiro_crew.dashboard.chat_handlers import _make_stop_resolver
+
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        slot._stop_escalated_card_id = "stop-old"  # left behind by a swept, escalated card
+        new_id = _seed_stop_card(slot, stop_id="stop-new")
+
+        await _make_stop_resolver(state, slot, "hard", new_id)()
+
+        assert _card_state(slot, new_id) == "stop_failed_reset"
 
     @pytest.mark.asyncio
     async def test_cardless_hard_kill_still_releases_the_stop_posture(self):

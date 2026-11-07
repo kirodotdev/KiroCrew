@@ -400,6 +400,8 @@ class TestStopTurnSlotState:
         WS-echoed stop_state, which lags on a slow connection; the backend's
         own soft_pending state is authoritative, so any second press escalates.
         """
+        import json
+
         state = self._make_state(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
         slot.task = asyncio.ensure_future(asyncio.sleep(999))
@@ -423,9 +425,11 @@ class TestStopTurnSlotState:
             resp = await client.post("/api/chat/slots/s1/stop")
             assert resp.status == 200
 
-        # Backend escalated to a hard kill anyway.
+        # Backend escalated to a hard kill anyway, and the card says it was forced.
         assert force_called == [True]
         assert slot._stop_state == "idle"
+        cards = [json.loads(m["cls"]) for m in slot.messages if "stop_event" in m.get("cls", "")]
+        assert [(c["state"], c["outcome"]) for c in cards] == [("force_stopped", "hard")]
         slot.task.cancel()
 
     @pytest.mark.asyncio
