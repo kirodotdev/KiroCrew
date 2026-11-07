@@ -38,6 +38,7 @@ from kiro_crew.acp_backends import (
     selectable_backends,
     selectable_stored_backend_values,
 )
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
@@ -317,12 +318,16 @@ def build_agent_fn(
             **effort_kwargs,
             **backend_kwargs,
         )
-        # Wall clock for THIS agent turn only (not the whole workflow run):
-        # acp leaves TurnUsage.duration_ms at 0, so without this the row's
-        # duration_ms is a literal 0. Started after get_or_create so session
-        # setup is not charged to the turn.
-        _turn_t0 = time.monotonic()
         try:
+            if is_new:
+                # Nobody can reconnect a slow MCP server for a step, so its first
+                # prompt waits (bounded) for the agent spec's servers to report.
+                await wait_for_declared_mcp(provider, UNATTENDED_MCP_WAIT_SECS)
+            # Wall clock for THIS agent turn only (not the whole workflow run):
+            # acp leaves TurnUsage.duration_ms at 0, so without this the row's
+            # duration_ms is a literal 0. Started after the session is ready so
+            # session setup is not charged to the turn.
+            _turn_t0 = time.monotonic()
             from kiro_crew.messaging.identity import publish_turn_identity
 
             await publish_turn_identity(sessions, key)

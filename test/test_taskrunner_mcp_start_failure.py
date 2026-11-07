@@ -15,7 +15,8 @@ import pytest
 
 from kiro_crew import task_executor
 from kiro_crew.acp.mcp_session_report import McpSessionReport
-from kiro_crew.acp.types import EVENT_MCP_SERVER_INIT_FAILURE
+from kiro_crew.acp.types import EVENT_MCP_SERVER_INIT_FAILURE, EVENT_MCP_SERVER_INITIALIZED
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS
 from kiro_crew.dashboard.handlers import usage
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.task_models import SESSION_PREFIX, Project, Task
@@ -54,6 +55,32 @@ class _FakeClient:
         yield LLMEvent(kind=EVENT_COMPLETE)
 
 
+class _SlowServerClient(_FakeClient):
+    """A session whose spec declares a server that reports only if the step waits."""
+
+    def __init__(self, *, reports_when_waited: bool, fails_mid_turn: str = "") -> None:
+        report = _report(failed=False)
+        report.record_declared({"mcpServers": {"azure-devops": {"command": "node"}}})
+        super().__init__(report)
+        self._reports_when_waited = reports_when_waited
+        self._fails_mid_turn = fails_mid_turn
+        self.waits: list[float] = []
+        self.prompted_with_tools: bool | None = None
+
+    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+        self.waits.append(timeout)
+        if self._reports_when_waited:
+            self._report.record_event(EVENT_MCP_SERVER_INITIALIZED, "azure-devops")
+        return self._report.declared_not_ready()
+
+    async def stream(self, prompt: str):
+        self.prompted_with_tools = not self._report.declared_not_ready()
+        if self._fails_mid_turn:
+            self._report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, self._fails_mid_turn, "boom")
+        async for event in super().stream(prompt):
+            yield event
+
+
 @pytest.fixture()
 def quiet(monkeypatch: pytest.MonkeyPatch) -> None:
     # The usage row is not this test's subject; keep it off disk.
@@ -68,7 +95,7 @@ def quiet(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(task_executor, "build_task_prompt", AsyncMock(return_value="PROMPT"))
 
 
-async def _run(client: _FakeClient) -> tuple[bool, list[tuple[str, str]]]:
+async def _run(client: _FakeClient, *, is_new: bool = True) -> tuple[bool, list[tuple[str, str]]]:
     task = Task(index=1, title="do the thing", description="desc")
     run = Project(spec_path="spec.md", spec_content="body")
     run.task_id = _RUN_TASK_ID
@@ -76,7 +103,7 @@ async def _run(client: _FakeClient) -> tuple[bool, list[tuple[str, str]]]:
     run.branch_name = ""
     run.work_dir = ""
     sessions = MagicMock()
-    sessions.open_task_session = AsyncMock(return_value=(client, True, False))
+    sessions.open_task_session = AsyncMock(return_value=(client, is_new, False))
     sessions.record_success = MagicMock()
     sessions.check_context_usage = MagicMock()
     sessions.release = MagicMock()
@@ -126,3 +153,34 @@ async def test_a_clean_session_adds_no_notice(quiet) -> None:
 
     assert ok is True
     assert _mcp_notices(notices) == []
+
+
+@pytest.mark.asyncio
+async def test_a_new_step_session_waits_for_its_slow_server_before_prompting(quiet) -> None:
+    client = _SlowServerClient(reports_when_waited=True)
+    ok, notices = await _run(client)
+
+    assert ok is True
+    assert client.waits == [UNATTENDED_MCP_WAIT_SECS]
+    assert client.prompted_with_tools is True
+    assert _mcp_notices(notices) == []
+
+
+@pytest.mark.asyncio
+async def test_a_step_still_missing_a_server_names_it_in_its_notice(quiet) -> None:
+    """Named even when another server fails mid-turn and the end-of-step reading wins."""
+    client = _SlowServerClient(reports_when_waited=False, fails_mid_turn="jira")
+    ok, notices = await _run(client)
+
+    assert ok is True
+    [body] = _mcp_notices(notices)
+    assert "azure-devops" in body
+    assert "jira" in body
+
+
+@pytest.mark.asyncio
+async def test_a_reused_step_session_does_not_wait_again(quiet) -> None:
+    client = _SlowServerClient(reports_when_waited=True)
+    await _run(client, is_new=False)
+
+    assert client.waits == []
