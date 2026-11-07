@@ -114,6 +114,11 @@ REJECTED (install fails), so do not invent variables; the allowlist is
   `--term-cursor` and `--term-selection`; each falls back to `--bg`, `--text`,
   `--accent` and `--accent-subtle` respectively, so a pack that omits them keeps
   today's terminal colors.
+- The Settings section icon tiles follow your palette: each tile fills with
+  `--muted`, `--info`, `--ok`, `--accent`, `--warn`, `--aim` or `--danger`, and
+  its glyph uses the matching `-fg` ink. There is no tile variable to set. A
+  `-fg` you omit is derived to read on its fill (below); one you declare is used
+  as written, so check it against that fill.
 
 ### Omitted tokens are derived from your palette
 
