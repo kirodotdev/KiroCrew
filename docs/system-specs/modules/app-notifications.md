@@ -741,8 +741,8 @@ focus.
 
 ### Setting
 
-Settings › Notifications › Desktop alerts › "Show a banner for new
-notifications", default ON, `localStorage` key `mc-notification-banner`
+Settings › Notifications › Desktop alerts › "Show a banner while this window
+is open", default ON, `localStorage` key `mc-notification-banner`
 (`loadBannerEnabled` / `saveBannerEnabled`). A flip is announced same-window via
 `MC_BANNER_SETTING_CHANGED_EVENT` and cross-tab via the DOM `storage` event, so
 a mounted banner honours it immediately.
@@ -756,11 +756,12 @@ to the hub it reports `unsupported`: the pane's own verdict is not the user's
 switch (the hub's is), so both surfaces below unmount there. Two user-gesture
 surfaces call `request()`:
 
-- **Settings › Notifications › Desktop alerts › System notifications**
-  (`SystemNotificationsRow`): `granted` shows "Allowed" with a check and no
-  button; `default` offers "Allow system notifications"; `denied` states in
-  plain language that the browser blocked it and where to turn it back on.
-  Absent entirely when `Notification` is undefined.
+- **Settings › Notifications › Desktop alerts › System notifications when this
+  window is in the background** (`SystemNotificationsRow`): `granted` shows
+  "Allowed" with a check and no button; `default` offers "Allow system
+  notifications"; `denied` states in plain language that the browser blocked
+  it and where to turn it back on. Absent entirely when `Notification` is
+  undefined.
 - **Bell popover hint** (`NotificationPermissionHint`, in the mac controls
   card): one row — bell-ring icon, "Get alerted when you're away", "Allow",
   "Not now" — shown only while permission is `default`, the store holds at
