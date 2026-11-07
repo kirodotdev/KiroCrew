@@ -107,6 +107,23 @@ def _has_table(text: str) -> bool:
     )
 
 
+_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+\S", re.MULTILINE)
+
+
+def _has_heading(text: str) -> bool:
+    """True if *text* has an ATX markdown heading line (``# x`` .. ``###### x``).
+
+    The legacy HTML subset can only show a heading as bold text; Rich Markdown
+    renders it at heading size, so a heading picks the rich transport like a table.
+    """
+    return bool(_HEADING_RE.search(text or ""))
+
+
+def _wants_rich(text: str) -> bool:
+    """True when *text* needs Rich Markdown to render: a pipe table or a heading."""
+    return _has_table(text) or _has_heading(text)
+
+
 def _table_blocks(text: str) -> list[tuple[bool, list[str]]]:
     """Partition *text* into alternating ``(is_table, lines)`` blocks.
 

@@ -207,7 +207,9 @@ def schemas() -> list[dict[str, Any]]:
                             "on a channel that would otherwise show the markup "
                             "literally (Telegram), for channel_type, target_id and "
                             'channel-session sends. Default "plain" sends the text as '
-                            "written; Slack and the dashboard notification ignore it."
+                            "written, except that on Telegram text with a markdown "
+                            "heading or table goes out as a Rich Message; Slack and "
+                            "the dashboard notification ignore it."
                         ),
                     },
                     "unfurl_links": {

@@ -126,6 +126,7 @@ from kiro_crew.telegram.renderer_tables import (
     _has_table,
     _split_table_rows,
     _table_blocks,
+    _wants_rich,
 )
 
 if TYPE_CHECKING:
@@ -1101,7 +1102,7 @@ class TelegramRenderer(Renderer):
                 # replacement is sent silently -- otherwise every table reply buzzes
                 # twice where main buzzed once. When nothing streamed there was no
                 # earlier ping, so the rich send is the only notification and must fire.
-                if _has_table(text):
+                if _wants_rich(text):
                     mid = await self._client.send_rich_message(
                         self._chat_id,
                         text,
