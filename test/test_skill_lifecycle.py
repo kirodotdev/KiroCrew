@@ -141,6 +141,23 @@ def test_pin_write_failure_preserves_skill(loader, monkeypatch):
     assert skill_file.read_text(encoding="utf-8") == before  # untouched, not truncated
 
 
+def test_update_skill_routes_windows_dacl_preservation_through_atomic_write(loader, monkeypatch):
+    """A SKILL.md save keeps the file's own Windows DACL, like the other two overwrites."""
+    import kiro_crew.skills as S
+
+    loader.create_skill("hand/kept", "---\nname: hand/kept\n---\nbody")
+    captured: dict[str, object] = {}
+    original = S.atomic_write
+
+    def recording(target, content, **kwargs):
+        captured.update(kwargs)
+        original(target, content, **kwargs)
+
+    monkeypatch.setattr(S, "atomic_write", recording)
+    assert loader.update_skill("hand/kept", "---\nname: hand/kept\n---\nnew") is True
+    assert captured["preserve_windows_dacl"] is True
+
+
 def test_archive_refuses_non_auto(loader):
     loader.create_skill("hand/authored", "---\nname: hand/authored\n---\nbody")
     assert loader.archive_auto_skill("hand/authored") is False
