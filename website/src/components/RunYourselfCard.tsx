@@ -54,7 +54,7 @@ export default function RunYourselfCard({ code, summary }: { code: string; summa
 function RunYourselfCardInner({ code, summary, willCopy }: { code: string; summary?: string; willCopy: boolean }) {
   const terminalEnabled = useTerminalEnabled()
   // No `lang`: the fence names no shell, so the handler runs it as written.
-  const { status, noAnswer, clearNoAnswer, askToRun, dialog } = useRunInTerminal({ code, willCopy })
+  const { status, noAnswer, clearNoAnswer, askToRun, dialog } = useRunInTerminal({ code, willCopy, source: 'run_yourself' })
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
   // Only a run that got NO answer counts. An explicit refusal (a chat on a

@@ -477,6 +477,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/{slot}/crew-workers/resume", _deferred("crew_pause", "api_crew_resume")
     )
+    # What became of a Run in terminal: tells the owning crewmate thread, under the
+    # same owner-only, no-app gate as the side-panel routes above.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/terminal-run",
+        _deferred("mate_terminal_run", "api_slot_terminal_run"),
+    )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)

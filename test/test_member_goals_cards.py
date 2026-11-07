@@ -1438,6 +1438,42 @@ def test_confirming_a_milestones_card_always_tells_the_crewmate(
     assert told == [(slug, ORDINARY)]
 
 
+def _own_wake_seen(handler, seen: list):
+    """*handler*, recording whether it marked its card step's own wake."""
+    from kiro_crew.dashboard.mate_user_actions import REQ_CARD_OWN_WAKE
+
+    async def route(request):
+        resp = await handler(request)
+        seen.append(request.get(REQ_CARD_OWN_WAKE) is True)
+        return resp
+
+    return route
+
+
+def test_a_milestones_cards_nudge_is_its_note(tmp_path: Path, _floor_monkeypatch) -> None:
+    """The milestones nudge marks the step, so the card sends no second note."""
+    from kiro_crew.dashboard import goal_setup
+
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _reminder_state(tmp_path)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    _floor_monkeypatch.setattr(goal_setup, "schedule_milestones_nudge", lambda *a: None)
+    seen: list[bool] = []
+    handler = _own_wake_seen(_flagged(goal_routes.api_member_goals_key_results), seen)
+    body = {"member": ORDINARY, "items": [{"text": "notes out", "target": "yes"}], "expected": []}
+
+    async def go(c):
+        r = await c.request(
+            "PUT", f"/card/{slug}/goals/key-results", json=body, headers={"X-Test-Auth": "owner"}
+        )
+        return r.status
+
+    routes = [("PUT", "/card/{slug}/goals/key-results", handler)]
+    assert run_guide_app(go, state, extra_routes=routes) == 200
+    assert seen == [True]
+
+
 def test_a_goals_page_milestone_edit_sends_no_milestones_nudge(
     tmp_path: Path, _floor_monkeypatch
 ) -> None:

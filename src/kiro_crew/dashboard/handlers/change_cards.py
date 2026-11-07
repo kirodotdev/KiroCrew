@@ -1048,6 +1048,12 @@ async def api_cards_cancel(request: web.Request) -> web.Response:
         revert = store.snapshot(rec)
         store.cancel(rec, body.get("revision"))
         published = await _publish(request, rec, revert)
+        from kiro_crew.dashboard import mate_user_actions
+
+        # The user's Decline: saved, so the crewmate thread that raised it is told.
+        mate_user_actions.note_card(
+            request.app["state"], rec, mate_user_actions.CARD_DECLINED, own_wake=False
+        )
         if rec.get("kind") in catalog.WORKFLOW_KINDS:
             _audit(
                 str(request.get("user") or "owner"),
@@ -1466,7 +1472,51 @@ async def change_card_middleware(
         if 200 <= resp.status < 300:
             _record_memory(route, dict(request.match_info), body, before, "via settings page")
         return resp
-    return await _run_card_step(request, handler, route, card_id)
+    resp_status = 0
+    try:
+        resp = await _run_card_step(request, handler, route, card_id)
+        resp_status = resp.status
+        return resp
+    finally:
+        _note_card_step(request, card_id, resp_status)
+
+
+#: Request attribute: the card record as it was before this step was admitted.
+_REQ_CARD_BEFORE = "card_step_before"
+#: Request attribute: this step's route was called (a refusal before it changed nothing).
+_REQ_CARD_STEP_RAN = "card_step_ran"
+
+
+def _note_card_step(request: web.Request, card_id: str, resp_status: int) -> None:
+    """Tell the crewmate thread that raised the card what this step settled. Never raises.
+
+    Read from the record as saved: a transition whose save failed was put back, so
+    it settles nothing (:func:`mate_user_actions.step_outcome`).
+    """
+    before = request.get(_REQ_CARD_BEFORE)
+    if not isinstance(before, dict):
+        return
+    try:
+        from kiro_crew.dashboard import mate_user_actions
+
+        state = request.app["state"]
+        rec = card_store_for(state).get(card_id)
+        op = (request.headers.get(HEADER_CARD_OP) or "").strip().lower()
+        outcome = mate_user_actions.step_outcome(
+            before,
+            rec,
+            op,
+            refused=request.get(_REQ_CARD_STEP_RAN) is True
+            and (resp_status == 0 or resp_status >= 400),
+        )
+        mate_user_actions.note_card(
+            state,
+            rec,
+            outcome,
+            own_wake=request.get(mate_user_actions.REQ_CARD_OWN_WAKE) is True,
+        )
+    except Exception:
+        logger.debug("card %s answer note skipped", card_id, exc_info=True)
 
 
 async def _run_card_step(
@@ -1490,6 +1540,7 @@ async def _run_card_step(
         # The record as it was before this step was admitted: what disk holds
         # until the admission is saved, and what an unsaved verdict reverts to.
         revert = store.snapshot(rec)
+        request[_REQ_CARD_BEFORE] = revert
         admitted = store.begin_step(
             rec,
             revision=request.headers.get(HEADER_CARD_REVISION),
@@ -1588,6 +1639,7 @@ async def _run_card_step(
                     )
                 )
         handler_started = True
+        request[_REQ_CARD_STEP_RAN] = True
         _arm_card_undo_cron_guard(request, rec, op, plan_step)
         resp = await handler(request)
     except web.HTTPException as exc:
@@ -1801,29 +1853,31 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
     ):
         # A card press starts no turn: tell the crewmate, so the work that waited
         # on the capability moves to a worker that has it.
-        from kiro_crew.dashboard import goal_setup
+        from kiro_crew.dashboard import goal_setup, mate_user_actions
 
-        goal_setup.schedule_capabilities_nudge(
+        if goal_setup.schedule_capabilities_nudge(
             request.app.get("state"),
             rec["slot_key"],
             str(rec.get("title") or ""),
             card_member=str(params.get("member") or ""),
-        )
+        ):
+            request[mate_user_actions.REQ_CARD_OWN_WAKE] = True
     from kiro_crew import mate_tool_access
 
     if rec["kind"] == catalog.KIND_CREWMATE_UPDATE and mate_tool_access.is_tool_access_card(params):
         # The user turned the crewmate's preview on (Turn on): the request that
         # raised this card becomes its own capabilities card, and the conductor
         # is reloaded onto the request tools and told.
-        from kiro_crew.dashboard import goal_setup
+        from kiro_crew.dashboard import goal_setup, mate_user_actions
 
-        goal_setup.schedule_tool_access_nudge(
+        if goal_setup.schedule_tool_access_nudge(
             request.app.get("state"),
             rec["slot_key"],
             app=request.app,
             session_key=str(rec.get("session_key") or ""),
             card_member=str(params.get("name") or ""),
-        )
+        ):
+            request[mate_user_actions.REQ_CARD_OWN_WAKE] = True
 
 
 def register_change_card_routes(app: web.Application) -> None:

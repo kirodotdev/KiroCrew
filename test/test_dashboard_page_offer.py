@@ -230,6 +230,10 @@ def test_the_yes_wake_writes_saves_and_applies_with_one_message() -> None:
     assert "a page worth returning to" in text and "var(--text)" in text and "var(--bg)" in text
 
 
+#: Whether each page-offer request marked its card step's own wake (no second note).
+_OWN_WAKES: list[bool] = []
+
+
 async def _client(monkeypatch: Any, *, armed: bool, page: Any = None) -> TestClient:
     from kiro_crew.dashboard.handlers import member_page_offer as route
 
@@ -243,7 +247,11 @@ async def _client(monkeypatch: Any, *, armed: bool, page: Any = None) -> TestCli
         if armed:
             request[route.REQ_CARD_PAGE_OFFER_APPLY] = True
             request[route.REQ_CARD_PAGE_OFFER_PAGE] = page
-        return await handler(request)
+        resp = await handler(request)
+        from kiro_crew.dashboard.mate_user_actions import REQ_CARD_OWN_WAKE
+
+        _OWN_WAKES.append(request.get(REQ_CARD_OWN_WAKE) is True)
+        return resp
 
     app = web.Application(middlewares=[arm])
     app["state"] = object()
@@ -281,6 +289,8 @@ async def test_the_yes_starts_one_write_wake_and_writes_nothing(
     finally:
         await client.close()
     assert woken == [(SLUG, MEMBER)]
+    # The write wake is the card's note: the card hook sends no second one.
+    assert _OWN_WAKES[-1] is True
     # The yes only marks the record pending, and off the event loop: it is an fsync.
     assert page_offer.read_record(SLUG) == {
         "replaces": "Goal board",
