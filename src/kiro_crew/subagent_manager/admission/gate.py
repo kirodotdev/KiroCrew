@@ -351,6 +351,28 @@ class _GateMixin(ManagerComponent):
             _proven_depth = 1
         _carried_depth = _depth if type(_depth) is int else 0
         _depth = max(_carried_depth, _proven_depth)
+        # The chat the spawn tree started from: the root the parent's record holds
+        # (a running continuation on the key first, as above), or the parent's own
+        # key for a child of a root session or a gone record.
+        _parent_record = (
+            next(
+                (
+                    a
+                    for a in self._manager._agents.values()
+                    if not a.done
+                    and (getattr(a, "conversation_key", "") or f"subagent:{a.id}")
+                    == parent_session_key
+                ),
+                self._manager._agents.get(_parent_run_id),
+            )
+            if _parent_run_id
+            else None
+        )
+        _root_session_key = parent_session_key
+        if _parent_record is not None:
+            _root_session_key = (
+                getattr(_parent_record, "root_session_key", "") or _parent_record.parent_session_key
+            )
         # The second half of a claimed dispatch is never refused for depth: its
         # first half already was checked, and a refusal here would return the
         # claimed row to the store as claimable work the caller was told was
@@ -1549,6 +1571,7 @@ class _GateMixin(ManagerComponent):
             crew=crew,
             memory_mode=_memory_mode,
             depth=_depth,
+            root_session_key=_root_session_key,
             **run_fields,
         )
         info._start_price_gb = candidate_price
