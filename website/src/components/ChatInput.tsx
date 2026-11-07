@@ -1349,7 +1349,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`@container/composer ${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} relative transition-[color,background-color,border-color,border-radius] overflow-hidden ${inlineToolbarWhileFits ? 'shrink-0 ' : ''}${manualHeight !== null ? 'flex flex-col min-h-0' : inlineToolbar ? 'flex items-center' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
+        className={/* With the textarea, a manual height never goes below what its rows need (min-h-min). The text column carries the 44px of the textarea itself, because its 0% flex basis adds nothing to min-content. So a row shown in the box, like the list-indent hint, grows it instead of being painted over by the text. The rich-text editor keeps min-h-0: its draft would count toward min-content and grow the box. */ `@container/composer ${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} relative transition-[color,background-color,border-color,border-radius] overflow-hidden ${inlineToolbarWhileFits ? 'shrink-0 ' : ''}${manualHeight !== null ? `flex flex-col ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-min'}` : inlineToolbar ? 'flex items-center' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
 
         data-inline-toolbar={inlineToolbar ? 'true' : undefined}
         data-tree-drop-active={treeDrop.state === 'accept' ? 'true' : undefined}
@@ -1454,7 +1454,7 @@ function ChatInput({
         <motion.div
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
-          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
+          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
           // Composing in either editor (textarea or rich text) re-arms a
           // reclaimed session's resume prefetch; the sender throttles.
           onFocusCapture={() => emitComposeIntent(slotId)}
