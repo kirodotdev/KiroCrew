@@ -117,6 +117,12 @@ export interface HostModel {
    *  to `false` would leave the pane offering a toggle the host can never honor,
    *  so `null` orders by the pre-relay default AND hides the control instead. */
   stableOrder: boolean | null
+  /** The parent's "a background chat finished" toast opt-in (Settings ›
+   *  Notifications). Relayed because the pane's own cross-origin-iframe
+   *  localStorage is one the parent's toggle never writes; the pane follows it
+   *  unless that storage holds an explicit choice (`loadChatCompleteNotify`).
+   *  An older parent sends none, read as `false`. */
+  chatCompleteNotify: boolean
 }
 
 /**

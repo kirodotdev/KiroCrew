@@ -21,6 +21,7 @@ import { useAppDispatch, useAppStore } from '../store'
 import { setHostModel, type HostModel } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { setFocusModeEnabled } from '../hooks/useFocusMode'
+import { noteChatCompleteChanged, setChatCompleteHostReader } from '../hooks/chatCompleteNotify'
 import { noteClipboardRelayHost, PANE_CLIPBOARD_VERSION } from '../lib/paneClipboardRelay'
 import { noteHostOrigin, setHostElectronReader } from '../lib/hostRelay'
 
@@ -120,6 +121,9 @@ export function parseHostModel(data: unknown): HostModel | null {
     // pre-relay default AND withhold a toggle that host could never honor;
     // coercing to `false` would make the two cases indistinguishable.
     stableOrder: typeof d.stableOrder === 'boolean' ? d.stableOrder : null,
+    // Absence -> false, like `winInset`: an older host relays no opt-in, and
+    // the pane's own storage then decides, as it always did.
+    chatCompleteNotify: d.chatCompleteNotify === true,
   }
 }
 
@@ -133,6 +137,8 @@ export default function EmbeddedHostBridge() {
     // The pop-out controls ask whether the hub is the desktop app. They read
     // the stored host model through this getter, so the value has one home.
     setHostElectronReader(() => store.getState().instances.host?.electron === true)
+    // Same for the hub's "a background chat finished" toast opt-in.
+    setChatCompleteHostReader(() => store.getState().instances.host?.chatCompleteNotify === true)
 
     // Stop re-announcing ONLY on the parent's distinct `mc-embedded-ack`, not on
     // a host model. The parent broadcasts its model to every warm pane on any
@@ -183,6 +189,7 @@ export default function EmbeddedHostBridge() {
       const model = parseHostModel(e.data)
       if (!model) return
       dispatch(setHostModel(model))
+      noteChatCompleteChanged()
       // Where the tab bar's switch / pin / stable-order relays go: exactly the
       // origin this model came from, never '*'.
       noteHostOrigin(e.origin)
@@ -231,6 +238,7 @@ export default function EmbeddedHostBridge() {
       setFocusModeEnabled(false, { echo: false })
       noteClipboardRelayHost(null, false)
       setHostElectronReader(null)
+      setChatCompleteHostReader(null)
       dispatch(setHostModel(null))
     }
   }, [dispatch, store])

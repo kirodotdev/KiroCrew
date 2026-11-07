@@ -483,7 +483,9 @@ The opt-in "a background chat finished" toast (`hooks/chatCompleteNotify.ts`,
 constructed by the socket's turn-completion owner
 `website/src/hooks/websocket/turnCompletion.ts` on `chat_done`) is a separate, default-OFF
 surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
-predicate.
+predicate. In an embedded pane it reads the hub's opt-in from the host model,
+since the hub's Settings toggle cannot write the pane's storage
+([turn-complete-chime](turn-complete-chime.md)).
 
 An interactive chat's tool prompt (the chat runner's `permission` row, which has no feed note) is toasted by the socket's transcript owner `website/src/hooks/websocket/chatStream.ts` on the row's live arrival, behind the same gate as its chime (`shouldChimeOnPermissionRow`: not `resolved`, not a reconnect replay). It is on by default, posts only with the OS permission granted and while `isWindowAway()`, is `silent`, reads like the chat-complete toast (session title as the title, `Waiting for your approval: <tool>` as the body), and carries a `kirocrew-approval:<slot>:<request_id>` tag, so one pending prompt is one banner however many windows receive the row. Neither mute suppresses it, the session's own per-row mute or its creator's: a prompt is the session waiting on the user.
 
