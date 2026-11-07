@@ -113,9 +113,12 @@ class AcpError(Exception):
             self.rejected_model: str | None = None
         if not hasattr(self, "advertised"):
             self.advertised: list[str] = []
-        # Sign-in failure tag, set by :func:`_raise_acp_error` when the raw frame
-        # is a session-expiry / rejected-credential answer, so the dashboard's
-        # error row can offer the Kiro sign-in card instead of a retry.
+        # Sign-in failure tags, set by :func:`_raise_acp_error` when the raw frame
+        # is a session-expiry / rejected-credential answer. ``sign_in_needed`` is
+        # set for every harness, so the task queue fails the row as auth without
+        # reading the prose; ``auth_required`` only for a harness that signs in
+        # through Crew, so the dashboard's error row offers the Kiro sign-in card.
+        self.sign_in_needed: bool = False
         self.auth_required: bool = False
         # Spent-allowance tag, set by :func:`_raise_acp_error` when the raw
         # frame is a usage-limit answer ("The monthly usage limit has been
@@ -1637,8 +1640,11 @@ def _format_acp_error_worded(
             # runtime, whose harnesses are the two on the host identity store.
             # The model-switch verdict stays hard-coded -- that is this arm's own
             # finding about the error, not sign-in advice.
+            #
+            # No "Your session has expired." lead: these signals also fire for a
+            # host that was never signed in, and the signed-out message is true
+            # in both cases.
             formatted = (
-                "Your session has expired. "
                 f"{host_auth.signed_out_message(backend)} "
                 "Switching models will not help — this is a sign-in issue, not "
                 "a backend error."
@@ -1958,15 +1964,14 @@ def _raise_acp_error(
     # happens to carry a 401/403 is not a Kiro sign-in problem. Gated on the
     # harness signing in through Crew's own identity (harness parity H6): for a
     # harness with its own credential store the card would sign in the wrong
-    # thing, so its 401 stays a plain error carrying that harness's remedy.
-    if (
+    # thing, so its 401 carries only ``sign_in_needed`` and that harness's remedy.
+    err.sign_in_needed = (
         not rejected
-        and backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
         and _is_session_expired(raw_data)
         and not _RE_AUTH.search(raw_data)
         and not _RE_USAGE_LIMIT.search(raw_data)
-    ):
-        err.auth_required = True
+    )
+    err.auth_required = err.sign_in_needed and backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
     # Tag a spent plan allowance the same way: from the raw frame, and only when
     # the formatter reached its usage-limit branch -- an entitlement rejection
     # that happens to carry limit wording keeps its own (served-model) remedy.
