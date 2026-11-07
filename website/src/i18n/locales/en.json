@@ -11080,6 +11080,26 @@
         "who_can_message_the_bot": "Who can message the bot",
         "wxid": "wxid_…"
       },
+      "remoteControlCard": {
+        "title": "Remote Control",
+        "blocked": "Remote Control is set to on, but it is blocked and not connected.",
+        "on": "Remote Control is on. Your Kiro account can reach {{productName}} from your other devices.",
+        "restart_to_connect": "Remote Control is set to on but not connected. Restart {{productName}} to connect.",
+        "reason_api_key": "{{productName}} is signed in to Kiro with an API key, and that sign-in can't use Remote Control. Sign in with your own Kiro account to use it.",
+        "reason_external_idp": "{{productName}} is signed in to Kiro through an external identity provider, and that sign-in can't use Remote Control. Sign in with your own Kiro account to use it.",
+        "reason_not_signed_in": "{{productName}} is not signed in to Kiro.",
+        "reason_unknown_sign_in": "{{productName}} does not recognise this kind of Kiro sign-in.",
+        "reason_locked": "Remote Control is managed by this build and cannot be turned on here.",
+        "turn_off": "Turn off",
+        "turning_off": "Turning off…",
+        "keep_off": "Keep Remote Control off",
+        "off_saved": "Remote Control is off. It stays off until you turn it back on.",
+        "turn_on_hint": "To turn it on again, run <command/> in a terminal.",
+        "turn_off_disconnects": "Turning it off disconnects your other devices within a few seconds.",
+        "turn_off_needs_terminal": "Turning it back on needs the terminal command <command/>.",
+        "turn_off_failed": "Couldn't turn Remote Control off",
+        "load_failed": "Couldn't read the Remote Control setting"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Approve your sign-in code",

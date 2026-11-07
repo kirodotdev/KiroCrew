@@ -20693,6 +20693,26 @@
         "scan_status_poll_failing": "Impossibile verificare se il codice è stato scansionato. Nuovo tentativo in corso.",
         "groups_unavailable": "Impossibile caricare i gruppi a cui questo account ha aderito."
       },
+      "remoteControlCard": {
+        "title": "Controllo remoto",
+        "blocked": "Il controllo remoto è impostato su attivo, ma è bloccato e non è connesso.",
+        "on": "Il controllo remoto è attivo. Il tuo account Kiro può raggiungere {{productName}} dagli altri tuoi dispositivi.",
+        "restart_to_connect": "Il controllo remoto è impostato su attivo, ma non è connesso. Riavvia {{productName}} per connetterlo.",
+        "reason_api_key": "{{productName}} ha eseguito l'accesso a Kiro con una chiave API, e con questo accesso il controllo remoto non funziona. Accedi con il tuo account Kiro per usarlo.",
+        "reason_external_idp": "{{productName}} ha eseguito l'accesso a Kiro tramite un provider di identità esterno, e con questo accesso il controllo remoto non funziona. Accedi con il tuo account Kiro per usarlo.",
+        "reason_not_signed_in": "{{productName}} non ha eseguito l'accesso a Kiro.",
+        "reason_unknown_sign_in": "{{productName}} non riconosce questo tipo di accesso a Kiro.",
+        "reason_locked": "Il controllo remoto è gestito da questa build e non può essere attivato qui.",
+        "turn_off": "Disattiva",
+        "turning_off": "Disattivazione…",
+        "keep_off": "Lascia disattivato il controllo remoto",
+        "off_saved": "Il controllo remoto è disattivato. Resta così finché non lo riattivi.",
+        "turn_on_hint": "Per riattivarlo, esegui <command/> in un terminale.",
+        "turn_off_disconnects": "Disattivandolo, gli altri tuoi dispositivi vengono disconnessi entro pochi secondi.",
+        "turn_off_needs_terminal": "Per riattivarlo serve il comando da terminale <command/>.",
+        "turn_off_failed": "Impossibile disattivare il controllo remoto",
+        "load_failed": "Impossibile leggere l'impostazione del controllo remoto"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Approva il tuo codice di accesso",

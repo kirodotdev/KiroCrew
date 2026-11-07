@@ -56,6 +56,14 @@ def _named_cfg(**tunnel: object) -> KiroCrewConfig:
     return _cfg(**{**_NAMED, **tunnel})
 
 
+@pytest.fixture(autouse=True)
+def _a_personal_kiro_sign_in(_floor_monkeypatch) -> None:
+    """The relay starts only for a personal Kiro sign-in; these tests assume one."""
+    from kiro_crew.remote_control import policy
+
+    _floor_monkeypatch.setattr(policy, "current_decision", lambda: policy.Decision(True))
+
+
 class _EditionTunnel(DefaultTunnelProvider):
     """An edition's own tunnel provider."""
 

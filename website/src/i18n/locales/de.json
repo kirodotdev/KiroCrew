@@ -20201,6 +20201,26 @@
         "scan_status_poll_failing": "Ob der Code gescannt wurde, konnte nicht geprüft werden. Es wird weiter versucht.",
         "groups_unavailable": "Die Gruppen, denen dieses Konto beigetreten ist, konnten nicht geladen werden."
       },
+      "remoteControlCard": {
+        "title": "Fernsteuerung",
+        "blocked": "Die Fernsteuerung ist auf „an“ gestellt, aber blockiert und nicht verbunden.",
+        "on": "Die Fernsteuerung ist an. Dein Kiro-Konto kann {{productName}} von deinen anderen Geräten aus erreichen.",
+        "restart_to_connect": "Die Fernsteuerung ist auf „an“ gestellt, aber nicht verbunden. Starte {{productName}} neu, um die Verbindung herzustellen.",
+        "reason_api_key": "{{productName}} ist mit einem API-Schlüssel bei Kiro angemeldet, und mit dieser Anmeldung funktioniert die Fernsteuerung nicht. Melde dich mit deinem eigenen Kiro-Konto an, um sie zu nutzen.",
+        "reason_external_idp": "{{productName}} ist über einen externen Identitätsanbieter bei Kiro angemeldet, und mit dieser Anmeldung funktioniert die Fernsteuerung nicht. Melde dich mit deinem eigenen Kiro-Konto an, um sie zu nutzen.",
+        "reason_not_signed_in": "{{productName}} ist nicht bei Kiro angemeldet.",
+        "reason_unknown_sign_in": "{{productName}} erkennt diese Art der Kiro-Anmeldung nicht.",
+        "reason_locked": "Die Fernsteuerung wird von diesem Build verwaltet und kann hier nicht eingeschaltet werden.",
+        "turn_off": "Ausschalten",
+        "turning_off": "Wird ausgeschaltet…",
+        "keep_off": "Fernsteuerung aus lassen",
+        "off_saved": "Die Fernsteuerung ist aus. Sie bleibt aus, bis du sie wieder einschaltest.",
+        "turn_on_hint": "Um sie wieder einzuschalten, führe <command/> in einem Terminal aus.",
+        "turn_off_disconnects": "Beim Ausschalten werden deine anderen Geräte innerhalb weniger Sekunden getrennt.",
+        "turn_off_needs_terminal": "Zum Wiedereinschalten brauchst du den Terminal-Befehl <command/>.",
+        "turn_off_failed": "Die Fernsteuerung konnte nicht ausgeschaltet werden",
+        "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Anmeldecode bestätigen",

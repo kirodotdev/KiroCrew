@@ -20693,6 +20693,26 @@
         "scan_status_poll_failing": "No se pudo comprobar si el código fue escaneado. Se sigue intentando.",
         "groups_unavailable": "No se pudieron cargar los grupos a los que se ha unido esta cuenta."
       },
+      "remoteControlCard": {
+        "title": "Control remoto",
+        "blocked": "El control remoto está configurado como activado, pero está bloqueado y no está conectado.",
+        "on": "El control remoto está activado. Tu cuenta de Kiro puede acceder a {{productName}} desde tus otros dispositivos.",
+        "restart_to_connect": "El control remoto está configurado como activado, pero no está conectado. Reinicia {{productName}} para conectarlo.",
+        "reason_api_key": "{{productName}} ha iniciado sesión en Kiro con una clave de API, y con ese inicio de sesión no se puede usar el control remoto. Inicia sesión con tu propia cuenta de Kiro para usarlo.",
+        "reason_external_idp": "{{productName}} ha iniciado sesión en Kiro a través de un proveedor de identidad externo, y con ese inicio de sesión no se puede usar el control remoto. Inicia sesión con tu propia cuenta de Kiro para usarlo.",
+        "reason_not_signed_in": "{{productName}} no ha iniciado sesión en Kiro.",
+        "reason_unknown_sign_in": "{{productName}} no reconoce este tipo de inicio de sesión de Kiro.",
+        "reason_locked": "Esta compilación gestiona el control remoto y no se puede activar aquí.",
+        "turn_off": "Desactivar",
+        "turning_off": "Desactivando…",
+        "keep_off": "Mantener el control remoto desactivado",
+        "off_saved": "El control remoto está desactivado. Seguirá así hasta que lo vuelvas a activar.",
+        "turn_on_hint": "Para volver a activarlo, ejecuta <command/> en una terminal.",
+        "turn_off_disconnects": "Al desactivarlo, tus otros dispositivos se desconectan en unos segundos.",
+        "turn_off_needs_terminal": "Para volver a activarlo hace falta el comando de terminal <command/>.",
+        "turn_off_failed": "No se pudo desactivar el control remoto",
+        "load_failed": "No se pudo leer la configuración del control remoto"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Aprueba tu código de inicio de sesión",

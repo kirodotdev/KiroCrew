@@ -19709,6 +19709,26 @@
         "scan_status_poll_failing": "无法确认二维码是否已扫描。仍在重试。",
         "groups_unavailable": "无法加载此账号已加入的群组。"
       },
+      "remoteControlCard": {
+        "title": "远程控制",
+        "blocked": "远程控制已设置为开启，但已被阻止，未连接。",
+        "on": "远程控制已开启。你的 Kiro 账户可以从其他设备访问 {{productName}}。",
+        "restart_to_connect": "远程控制已设置为开启，但未连接。请重启 {{productName}} 以连接。",
+        "reason_api_key": "{{productName}} 使用 API 密钥登录 Kiro，这种登录方式无法使用远程控制。请使用你自己的 Kiro 账户登录以使用此功能。",
+        "reason_external_idp": "{{productName}} 通过外部身份提供商登录 Kiro，这种登录方式无法使用远程控制。请使用你自己的 Kiro 账户登录以使用此功能。",
+        "reason_not_signed_in": "{{productName}} 未登录 Kiro。",
+        "reason_unknown_sign_in": "{{productName}} 无法识别这种 Kiro 登录方式。",
+        "reason_locked": "远程控制由此版本统一管理，无法在此处开启。",
+        "turn_off": "关闭",
+        "turning_off": "正在关闭…",
+        "keep_off": "保持远程控制关闭",
+        "off_saved": "远程控制已关闭，在你重新开启之前会一直保持关闭。",
+        "turn_on_hint": "如需重新开启，请在终端中运行 <command/>。",
+        "turn_off_disconnects": "关闭后，你的其他设备会在几秒内断开连接。",
+        "turn_off_needs_terminal": "重新开启需要在终端中运行 <command/>。",
+        "turn_off_failed": "无法关闭远程控制",
+        "load_failed": "无法读取远程控制设置"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "批准你的登录代码",

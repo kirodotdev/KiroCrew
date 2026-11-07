@@ -20,6 +20,7 @@ so the relay client is never chosen over an edition's provider.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import os
@@ -278,6 +279,13 @@ class RelayTunnelProvider:
         if self._client is not None and self._client.running:
             return
         if not self._settings.enabled:
+            return
+        from kiro_crew.remote_control.policy import current_decision
+
+        decision = await asyncio.to_thread(current_decision)
+        if not decision.ok:
+            logger.warning("Remote Control relay not started: %s", decision.reason)
+            self._error = decision.notice
             return
         try:
             self._settings.validate()
