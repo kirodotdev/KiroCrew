@@ -12,8 +12,15 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import sandbox_leaves, sandbox_precreate
-from kiro_crew.browser_harness import HARNESS_VERSION, chromium, install
+from kiro_crew.browser_harness import HARNESS_VERSION, build_deps, chromium, install
 from kiro_crew.security import paths_lists
+
+
+@pytest.fixture(autouse=True)
+def _no_old_glibc(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here runs as on a host whose glibc the locked wheels cover, unless it says
+    otherwise: without the pin an old-glibc test host would refuse every install below."""
+    _floor_monkeypatch.setattr(build_deps, "refusal_for_this_host", lambda: None)
 
 
 def _ok(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
@@ -305,3 +312,61 @@ def test_the_installers_children_get_a_scrubbed_env_and_the_prefix_as_cwd(
     install._run([sys.executable, "-I", "-c", "pass"], 1.0, cwd=prefix)
     assert seen["cwd"] == str(prefix)
     assert "PYTHONPATH" not in seen["env"]  # type: ignore[operator]
+
+
+def _old_glibc_missing(monkeypatch, *missing: str) -> None:
+    text = build_deps.refusal(list(missing), glibc=(2, 26))
+    monkeypatch.setattr(build_deps, "refusal_for_this_host", lambda: text)
+
+
+def test_an_old_glibc_host_without_the_build_deps_is_refused_before_any_spawn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _gateway_ships(monkeypatch, "pip")
+    _old_glibc_missing(monkeypatch, "jpeglib.h")
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok(argv, timeout)
+
+    with pytest.raises(install.InstallError) as info:
+        install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert info.value.stage == install.STAGE_PREPARING
+    assert "pillow 12.3.0" in info.value.detail and "jpeglib.h" in info.value.detail
+    assert calls == []
+
+
+def test_a_refused_rebuild_leaves_the_existing_install_in_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The refusal comes before the marker is removed and the venv cleared."""
+    _gateway_ships(monkeypatch, "ensurepip")
+    prefix = tmp_path / install.PREFIX_LEAF
+    _current_install(prefix, venv_pip=False)
+    assert install.install_state(tmp_path).installed is True
+    _old_glibc_missing(monkeypatch, build_deps.MISSING_COMPILER)
+    with pytest.raises(install.InstallError):
+        install.install_sync(tmp_path, runner=_ok, components=(install.COMPONENT_HARNESS,))
+    assert install.install_state(tmp_path).installed is True
+
+
+def test_a_venv_that_already_holds_the_locked_pillow_needs_no_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Re-pressing Install on a host that once built pillow does not ask for a compiler."""
+    _gateway_ships(monkeypatch, "ensurepip")
+    prefix = tmp_path / install.PREFIX_LEAF
+    _current_install(prefix, venv_pip=True)
+    lib = "Lib" if install.IS_WINDOWS else "lib/python3.12"
+    dist_info = f"pillow-{build_deps.LOCKED_PILLOW}.dist-info"
+    (install.venv_dir(prefix) / lib / "site-packages" / dist_info).mkdir(parents=True)
+    _old_glibc_missing(monkeypatch, build_deps.MISSING_COMPILER, "jpeglib.h")
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok(argv, timeout)
+
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert len(calls) == 1 and "pip" in calls[0]

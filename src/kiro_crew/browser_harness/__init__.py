@@ -11,6 +11,7 @@ Harness's IPC (:mod:`.supervisor`).
 Module map, in the order a first run touches them:
 
 * :mod:`.install` -- the pinned venv at ``<home>/browser-harness`` and its lock file.
+* :mod:`.build_deps` -- whether this host can build the locked pillow, before pip tries.
 * :mod:`.chromium` -- the Kiro-owned Chromium download for hosts with no Chrome.
 * :mod:`.libcups` -- whether that Chromium can be the full build on this host.
 * :mod:`.discover` -- which browser to drive on this host.
