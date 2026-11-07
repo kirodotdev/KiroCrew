@@ -185,6 +185,7 @@ from kiro_crew.security import (  # noqa: F401 - read by the owners
     redact_exfiltration_urls,
     redact_local_paths,
 )
+from kiro_crew.security.text_redaction import ends_plain_sentence  # noqa: F401 - read by the owners
 from kiro_crew.sel import sel
 from kiro_crew.session import (
     _CIRCUIT_BREAKER_THRESHOLD,

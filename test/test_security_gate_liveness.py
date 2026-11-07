@@ -719,7 +719,10 @@ def _url_payload_command(n: int) -> str:
 #: scan as clean. No check was relaxed.
 #: Raised by 4, from 35,001, for the two endorsed-copy leaves on the read+write floor in
 #: ``paths_lists`` (copies of leaves already there). Re-measured.
-_PACKAGE_LINE_BUDGET = 35_005
+#: Raised by 31, from 35,005, for ``text_redaction.ends_plain_sentence``:
+#: the dashboard's sentence-end check moved here unchanged so the Slack stream
+#: shares it; the dashboard copy was deleted. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_036
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

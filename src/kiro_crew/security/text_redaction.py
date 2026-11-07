@@ -63,6 +63,37 @@ def redact(text: str) -> str:
     return redact_with_findings(text)[0]
 
 
+#: The letters of one short plain word closing a sentence ("settled.", "they've.").
+#: The text before a tool call usually ends this way, and holding the word made
+#: every such reply show without its last word until the model wrote again, often
+#: minutes later. No credential can start in or run through such a word: a
+#: credential's run either begins with a mixed-case, digit or symbol prefix this
+#: shape excludes (``AKIA``, ``eyJ``, ``SG.``, ``ghp_``, ``?token=``), or is an
+#: unbroken base64-class run, which a ``.`` ends. The length cap keeps the
+#: Discord shape ([MNO] then 22 or more characters, then ``.``) out as well.
+_ASCII_LETTERS = frozenset(string.ascii_letters)
+_ASCII_LOWERCASE = frozenset(string.ascii_lowercase)
+
+
+def ends_plain_sentence(run: str) -> bool:
+    """Whether *run*, the raw run a :class:`StreamRedactor` withholds at a display
+    boundary (a tool call, an approval prompt), is one plain word ending a
+    sentence, which no text after the boundary can turn into part of a
+    credential, so the boundary may release it at once: an ASCII letter, at most
+    18 lowercase letters, optionally ``'`` and 1 to 3 lowercase letters, then one
+    ``.``. Shared by the dashboard cut and the Slack stream so both apply one rule."""
+    stem, apostrophe, suffix = run[:-1].partition("'")
+    return (
+        run.endswith(".")
+        and 0 < len(stem) < 20
+        and stem[0] in _ASCII_LETTERS
+        and _ASCII_LOWERCASE.issuperset(stem[1:])
+        and (not apostrophe or 0 < len(suffix) < 4)
+        and _ASCII_LOWERCASE.issuperset(suffix)
+        and redact(run) == run
+    )
+
+
 # ── Streaming redaction ──
 # Per-chunk redaction misses a credential split across token/streaming
 # boundaries: a chunk ending ``...AKIA`` and the next starting ``IOSFODNN7...``
