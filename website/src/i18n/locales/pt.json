@@ -8619,6 +8619,7 @@
         "view_project": "Ver projeto"
       },
       "notificationFeed": {
+        "first_notification_prompt": "Primeira notificação de <name/>. Continuar recebendo estas?",
         "all": "Todas",
         "approve": "Aprovar",
         "clear": "Limpar",
@@ -8629,10 +8630,8 @@
         "clear_this_group": "Limpar este grupo",
         "dismiss_notification": "Descartar notificação",
         "expand_grouped_notifications": "Expandir {{count}} notificações agrupadas: {{title}}",
-        "first_notification_from": "Primeira notificação de",
         "hide_muted_count": "Ocultar silenciadas ({{count}})",
         "keep": "Manter",
-        "keep_receiving_these": ". Continuar recebendo estas?",
         "mark_all_as_read": "Marcar todas como lidas",
         "mute_channel": "Silenciar canal",
         "mute_failed": "Não foi possível silenciar este canal. Tente novamente.",
