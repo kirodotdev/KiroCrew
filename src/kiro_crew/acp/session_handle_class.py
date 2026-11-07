@@ -688,6 +688,7 @@ class AcpSessionHandle:
         # session's directory (``kas_agents.projected_write_allowlist``); None when
         # it does not. The gate refuses every other file write.
         self.kas_spec_write_allowlist: tuple[str, ...] | None = None
+        self.kas_spec_denies: Any = None
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.
