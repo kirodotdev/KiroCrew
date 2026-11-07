@@ -8720,7 +8720,7 @@
     "privacyChapter": {
       "continue": "Continuer",
       "eyebrow": "Confidentialité",
-      "subtitle": "Les cinq champs anonymes que {{productName}} envoie, et comment les désactiver.",
+      "subtitle": "Ce que {{productName}} envoie, qui le reçoit, et comment le désactiver.",
       "title": "Confidentialité"
     },
     "pierreEditorImpl": {
@@ -21983,6 +21983,9 @@
     "installReceiptBody": "Après une installation ou mise à jour réussie depuis le catalogue officiel de Kiro Crew, un reçu anonyme est envoyé. Les registres externes, apps locales et apps auto-enregistrées ne sont jamais signalés.",
     "installReceiptFields": "slug de l’app officielle · jeton anonyme par app (non corrélable entre apps) · nouvelle installation/mise à jour · version de Kiro Crew",
     "installReceiptTitle": "Reçus d’installation des apps officielles",
+    "gitUserAgentTitle": "Trafic Git des agents",
+    "gitUserAgentBody": "Quand un agent exécute git via HTTP ou HTTPS, la requête identifie son client comme Kiro Crew, afin que l'hôte git puisse compter combien de ses utilisateurs travaillent via Kiro Crew. L'hôte sait déjà qui s'est connecté ; ceci ajoute seulement l'outil utilisé. Rien n'est envoyé via SSH. Désactiver « {{toggle}} » l'arrête pour les sessions d'agent démarrées ensuite ; une session déjà en cours le conserve jusqu'à son redémarrage.",
+    "gitUserAgentFields": "En-tête User-Agent : git/2.0 KiroCrew/<version> · envoyé à l'hôte git vers lequel vous poussez ou depuis lequel vous récupérez · aucun ID d'installation, nom d'hôte ni session",
     "localDataBody": "Journaux d’usage et de contexte. Les métriques de performance sont désactivées par défaut.",
     "localDataTitle": "Reste sur ton appareil",
     "notSendingAlreadySentToday": "Le signal du jour a déjà été envoyé.",
@@ -21999,7 +22002,7 @@
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Invite de commandes Windows",
-    "toggleDescription": "Enregistré pour les lancements suivants.",
+    "toggleDescription": "Contrôle aussi le marqueur du trafic Git. Enregistré pour les lancements suivants.",
     "toggleLabel": "Envoyer le signal d'utilisation anonyme",
     "toggleSaveFailed": "Impossible d’enregistrer ton choix de télémétrie. Réessaie.",
     "envOverrideWithSettingRef": "Le heartbeat est désactivé car <settingRef/> est définie dans cet environnement. Supprimez-la pour gérer la télémétrie ici."

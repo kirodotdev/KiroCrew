@@ -8720,7 +8720,7 @@
     "privacyChapter": {
       "continue": "Continua",
       "eyebrow": "Privacy",
-      "subtitle": "I cinque campi anonimi che {{productName}} invia e come disattivarli.",
+      "subtitle": "Cosa invia {{productName}}, chi lo riceve e come disattivarlo.",
       "title": "Privacy"
     },
     "pierreEditorImpl": {
@@ -21983,6 +21983,9 @@
     "installReceiptBody": "Dopo un’installazione o un aggiornamento riuscito dal catalogo ufficiale di Kiro Crew, viene inviata una ricevuta anonima. Registri esterni, app locali e app autoregistrate non vengono mai segnalati.",
     "installReceiptFields": "slug dell’app ufficiale · token anonimo per app (non collegabile tra app) · nuova installazione/aggiornamento · versione di Kiro Crew",
     "installReceiptTitle": "Ricevute di installazione delle app ufficiali",
+    "gitUserAgentTitle": "Traffico Git degli agenti",
+    "gitUserAgentBody": "Quando un agente esegue git via HTTP o HTTPS, la richiesta identifica il client come Kiro Crew, così l'host git può contare quanti dei suoi utenti lavorano tramite Kiro Crew. L'host sa già chi ha effettuato l'accesso; questo aggiunge solo quale strumento è stato usato. Nulla viene inviato via SSH. Disattivando «{{toggle}}» l'invio si interrompe per le sessioni agente avviate in seguito; una sessione già in corso lo mantiene fino al riavvio.",
+    "gitUserAgentFields": "Intestazione User-Agent: git/2.0 KiroCrew/<version> · inviata all'host git su cui esegui push o fetch · nessun ID di installazione, nome host o sessione",
     "localDataBody": "Registri di utilizzo e contesto. Le metriche di prestazione sono disattivate per impostazione predefinita.",
     "localDataTitle": "Resta sul tuo dispositivo",
     "notSendingAlreadySentToday": "Il segnale di oggi è già stato inviato.",
@@ -21999,7 +22002,7 @@
     "shellMacOSLinuxLabel": "macOS / Linux",
     "shellPowerShellLabel": "Windows PowerShell",
     "shellWindowsCmdLabel": "Prompt dei comandi di Windows",
-    "toggleDescription": "Salvato per i prossimi avvii.",
+    "toggleDescription": "Controlla anche il contrassegno del traffico Git. Salvato per i prossimi avvii.",
     "toggleLabel": "Invia segnale di utilizzo anonimo",
     "toggleSaveFailed": "Non è stato possibile salvare la tua scelta sulla telemetria. Riprova.",
     "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui."

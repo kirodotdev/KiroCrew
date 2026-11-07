@@ -682,14 +682,16 @@ class BackgroundSessionRuntime:
             )
             return True
 
-    async def retire_for_agent_env_change(self) -> bool:
-        """Free the shared runtime's slot after an ``agent.env`` change.
+    async def retire_for_agent_env_change(self, reason: str = "agent.env changed") -> bool:
+        """Free the shared runtime's slot after a change its environment must reflect.
 
         The runtime is one long-lived process that every background and cron
         session demuxes onto, and it carries the environment it was spawned with.
-        Left in its slot it would serve the old ``agent.env`` until it went
-        stale (up to the 6 h age ceiling). Freeing the slot makes the next
-        ``get_bg_session`` spawn a replacement that reads the new map.
+        Left in its slot it would serve the old environment until it went stale
+        (up to the 6 h age ceiling): the old ``agent.env`` map, or the git
+        User-Agent tag a telemetry opt-out has since withdrawn. Freeing the slot
+        makes the next ``get_bg_session`` spawn a replacement that reads the new
+        values. ``reason`` is the detach log's wording.
 
         The runtime is PARKED, busy or idle, never killed here: its in-flight
         sessions finish on it, and the drain reap kills it once they have. It
@@ -708,7 +710,7 @@ class BackgroundSessionRuntime:
             if runtime is None:
                 return False
             mark_identity_parked(runtime, time.monotonic())
-            await self._detach_bg_runtime_locked(runtime, "agent.env changed", park_only=True)
+            await self._detach_bg_runtime_locked(runtime, reason, park_only=True)
             return True
 
     async def _provider_backed_bg_session(

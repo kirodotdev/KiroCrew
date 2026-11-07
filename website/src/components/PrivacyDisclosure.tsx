@@ -1,4 +1,4 @@
-import { EyeOff, HardDrive, PackageCheck, Radio } from 'lucide-react'
+import { EyeOff, GitBranch, HardDrive, PackageCheck, Radio } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { Toggle } from './ui'
@@ -259,6 +259,22 @@ export function PrivacyDisclosureSections() {
         </p>
         <p className="text-[12px] text-muted leading-relaxed mt-1.5">
           {i18nT('privacyDisclosure.installReceiptFields')}
+        </p>
+      </div>
+      <div>
+        <h3 className="text-sm font-semibold tracking-tight text-text-strong mb-1.5 flex items-center gap-2">
+          <GitBranch className="lucide-inline" aria-hidden="true" />
+          {i18nT('privacyDisclosure.gitUserAgentTitle')}
+        </h3>
+        <p className="text-sm text-muted leading-relaxed">
+          {/* The control this points at sits on another card on Settings ->
+              Privacy, so the copy names it by its own label. */}
+          {i18nT('privacyDisclosure.gitUserAgentBody', {
+            toggle: i18nT('privacyDisclosure.toggleLabel'),
+          })}
+        </p>
+        <p className="text-[12px] text-muted leading-relaxed mt-1.5">
+          {i18nT('privacyDisclosure.gitUserAgentFields')}
         </p>
       </div>
       <DisclosureSection

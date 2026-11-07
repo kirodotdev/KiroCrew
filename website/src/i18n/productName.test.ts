@@ -77,6 +77,11 @@ describe('productName interpolation variable', () => {
       'components.sessionPulseSurveyCard.email_disclosure',
       'privacyDisclosure.installReceiptBody',
       'privacyDisclosure.installReceiptFields',
+      // The git User-Agent tag: its body names the client token the git host
+      // receives and its field line spells the wire header, both fixed by the
+      // backend (outbound_user_agent.py) whatever the edition renders elsewhere.
+      'privacyDisclosure.gitUserAgentBody',
+      'privacyDisclosure.gitUserAgentFields',
       // Wire-format identifiers, not brand prose: the generated Slack app name
       // and the webhook signature header names are fixed by the backend, so a
       // rebranded UI must still spell them exactly.

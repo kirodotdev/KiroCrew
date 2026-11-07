@@ -15,8 +15,10 @@ from acp_client_helpers import _stop_stderr_drain
 from spawn_test_helpers import strip_spawn_shim
 
 import kiro_crew.acp.client as acp_client
+from kiro_crew import outbound_user_agent as ua_mod
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.outbound_user_agent import outbound_user_agent
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
@@ -824,6 +826,10 @@ class TestSpawnEnvScrub:
         # AWS account identity and a benign key are not denied.
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
         monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+        monkeypatch.setenv("GIT_HTTP_USER_AGENT", "git/9.9.9 host-shell")
+        # The tag rides the telemetry consent verdict, which reads this host's
+        # config; pin it so the assertion measures the spawn, not the machine.
+        monkeypatch.setattr(ua_mod, "git_user_agent_permitted", lambda: True)
 
         captured: dict[str, object] = {}
 
@@ -878,6 +884,10 @@ class TestSpawnEnvScrub:
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
         assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
         assert env.get("KIROCREW_RUNTIME_PYTHON") == sys.executable
+        # Every git the agent runs identifies its HTTP traffic as Kiro Crew's; the
+        # User-Agent the gateway's shell exported (an operator's proxy string) is
+        # kept and the Kiro Crew token appended to it.
+        assert env.get("GIT_HTTP_USER_AGENT") == f"git/9.9.9 host-shell {outbound_user_agent()}"
 
 
 def test_resolve_spawn_agent_argv_converts_a_refusal_to_acperror(tmp_path):

@@ -23,6 +23,7 @@ import argparse
 import json
 import logging
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -31,6 +32,7 @@ import pytest
 from _hot_reload_helpers import change as _change
 from test_update_provider import _UNALLOCATABLE_PID
 
+from kiro_crew import outbound_user_agent as ua_mod
 from kiro_crew.acp import agent_env as agent_env_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import runtime as runtime_mod
@@ -38,6 +40,7 @@ from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_ACP_RUNTIME, ACP_BACKENDS_KNOWN
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config import sections as sections_mod
+from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.sections import AgentConfig, agent_env_refusal, coerce_agent_env
 from kiro_crew.kiro_prerequisite import identity_park_grace_remaining
 from kiro_crew.session import SessionManager
@@ -889,3 +892,221 @@ class TestTheWriteFloor:
 
         written = json.loads((home / "config.json").read_text(encoding="utf-8"))
         assert written["agent"]["env"] == wanted
+
+
+class TestAWithdrawnTelemetryConsentReachesTheIdleAgentProcesses:
+    """Every agent process carries the git User-Agent tag it was spawned with. A
+    change that WITHDRAWS consent reaches the two populations that run no turn:
+    the idle warm pool (discarded and refilled through ``refresh_defaults``) and
+    the shared background runtime (parked, never killed). A grant, or a change
+    that leaves the verdict where it was, touches nothing. Foreground sessions
+    are never retired here: that would cancel running turns."""
+
+    @staticmethod
+    def _manager() -> SessionManager:
+        return SessionManager(KiroCrewConfig(), provider_factory=lambda *a, **kw: AsyncMock())
+
+    @staticmethod
+    def _runtime() -> AsyncMock:
+        rt = AsyncMock()
+        rt.pid = _UNALLOCATABLE_PID
+        rt.is_alive = lambda: True
+        rt.has_active_or_initializing_sessions = lambda: False
+        rt.kill = AsyncMock()
+        return rt
+
+    @staticmethod
+    def _consent(*, enabled: bool, acked: bool) -> KiroCrewConfig:
+        cfg = KiroCrewConfig()
+        cfg.telemetry.beacon_enabled = enabled
+        cfg.dashboard.privacy_acked = acked
+        return cfg
+
+    @staticmethod
+    def _permitted_env(monkeypatch) -> None:
+        # The verdict ladder reads the host (opt-out env, CI, the data home); pin
+        # every host-dependent rung open so only the two config inputs decide.
+        monkeypatch.setattr(ua_mod, "telemetry_permitted", _two_input_verdict)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["telemetry.beacon_enabled", "dashboard.privacy_acked"])
+    async def test_a_withdrawal_drains_the_pool_and_parks_the_runtime_and_cancels_no_turn(
+        self, monkeypatch, path
+    ) -> None:
+        """``refresh_defaults`` is the one path that discards the idle warm pool
+        and refills it from the new verdict; the shared background runtime is
+        parked (never killed) so cron and background git traffic drop the tag
+        at once; foreground sessions are left running, the same rule an
+        ``agent.env`` change follows, because retiring them would cancel
+        in-flight turns."""
+        self._permitted_env(monkeypatch)
+        mgr = self._manager()
+        rt = self._runtime()
+        mgr._bg_runtime = rt
+        refresh = AsyncMock()
+        drain = AsyncMock(return_value=0)
+        reload = AsyncMock()
+
+        old = self._consent(enabled=True, acked=True)
+        new = self._consent(enabled=False, acked=True)
+        with (
+            patch.object(mgr, "refresh_defaults", refresh),
+            patch.object(mgr, "drain_active_turns", drain),
+            patch.object(mgr, "reload_provider_factory", reload),
+        ):
+            await mgr._on_config_change(ConfigChange(old=old, new=new, changed=frozenset({path})))
+
+        refresh.assert_awaited_once_with(cfg=new)
+        assert mgr._bg_runtime is None
+        assert mgr._draining_bg_runtimes == [rt]
+        rt.kill.assert_not_awaited()
+        drain.assert_not_awaited()
+        reload.assert_not_awaited()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            # A grant: the first-run acknowledgement, or turning the toggle on.
+            ((True, False), (True, True)),
+            ((False, True), (True, True)),
+            # Already refused on both sides: nothing changes on the wire.
+            ((False, True), (False, False)),
+        ],
+        ids=["acknowledged", "enabled", "still-refused"],
+    )
+    async def test_a_grant_or_an_unchanged_verdict_leaves_every_process_alone(
+        self, monkeypatch, old, new
+    ) -> None:
+        self._permitted_env(monkeypatch)
+        mgr = self._manager()
+        rt = self._runtime()
+        mgr._bg_runtime = rt
+        refresh = AsyncMock()
+        reload = AsyncMock()
+
+        with (
+            patch.object(mgr, "refresh_defaults", refresh),
+            patch.object(mgr, "reload_provider_factory", reload),
+        ):
+            await mgr._on_config_change(
+                ConfigChange(
+                    old=self._consent(enabled=old[0], acked=old[1]),
+                    new=self._consent(enabled=new[0], acked=new[1]),
+                    changed=frozenset({"telemetry.beacon_enabled", "dashboard.privacy_acked"}),
+                )
+            )
+
+        refresh.assert_not_awaited()
+        reload.assert_not_awaited()
+        assert mgr._bg_runtime is rt
+        assert mgr._draining_bg_runtimes == []
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("degraded", ["telemetry", "dashboard"])
+    async def test_a_degraded_consent_section_skips_the_consent_step_alone(
+        self, monkeypatch, caplog, degraded
+    ) -> None:
+        """A degraded section holds DEFAULTS, and the default ``privacy_acked``
+        is false: read as a withdrawal it would drain the pool on a document the
+        loader discarded. The consent step is skipped with a warning, not
+        deferred (a degraded observation is sticky for the process, so a
+        deferral would re-raise on every later change), and every other step of
+        the same change still lands: the ``agent.*`` refresh and the watchdog
+        rebind, so a torn ``dashboard`` section (a wide one) never holds the
+        session manager's other work."""
+        self._permitted_env(monkeypatch)
+        mgr = self._manager()
+        rt = self._runtime()
+        mgr._bg_runtime = rt
+        refresh = AsyncMock()
+        rebind = AsyncMock()
+
+        old = self._consent(enabled=True, acked=True)
+        # ``privacy_acked`` false is the default a torn section falls back to.
+        new = replace(
+            self._consent(enabled=True, acked=False), _degraded_sections=frozenset({degraded})
+        )
+        with (
+            patch.object(mgr, "refresh_defaults", refresh),
+            patch.object(mgr, "_rebind_live_watchdogs", rebind),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.session"),
+        ):
+            await mgr._on_config_change(
+                ConfigChange(
+                    old=old,
+                    new=new,
+                    changed=frozenset(
+                        {"agent.model", "watchdog.stale_secs", "dashboard.privacy_acked"}
+                    ),
+                )
+            )
+
+        refresh.assert_awaited_once_with(cfg=new)
+        rebind.assert_awaited_once_with(new)
+        assert mgr._bg_runtime is rt
+        assert mgr._draining_bg_runtimes == []
+        assert any(degraded in rec.getMessage() for rec in caplog.records)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_consent_step_runs_after_the_watchdog_rebind(self, monkeypatch) -> None:
+        """A withdrawal in the same reload as a watchdog edit must not skip the
+        rebind: the consent step is the LAST step of the applier."""
+        self._permitted_env(monkeypatch)
+        mgr = self._manager()
+        mgr._bg_runtime = self._runtime()
+        order: list[str] = []
+
+        async def rebind(cfg) -> None:
+            order.append("rebind")
+
+        async def refresh(cfg=None) -> None:
+            order.append("refresh")
+
+        old = self._consent(enabled=True, acked=True)
+        new = self._consent(enabled=False, acked=True)
+        with (
+            patch.object(mgr, "refresh_defaults", refresh),
+            patch.object(mgr, "_rebind_live_watchdogs", rebind),
+        ):
+            await mgr._on_config_change(
+                ConfigChange(
+                    old=old,
+                    new=new,
+                    changed=frozenset({"watchdog.stale_secs", "telemetry.beacon_enabled"}),
+                )
+            )
+
+        assert order == ["rebind", "refresh"]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_telemetry_path_leaves_every_process_alone(self) -> None:
+        mgr = self._manager()
+        rt = self._runtime()
+        mgr._bg_runtime = rt
+        refresh = AsyncMock()
+        reload = AsyncMock()
+
+        with (
+            patch.object(mgr, "refresh_defaults", refresh),
+            patch.object(mgr, "reload_provider_factory", reload),
+        ):
+            await mgr._on_config_change(_change(KiroCrewConfig(), "telemetry.otlp_endpoint"))
+
+        refresh.assert_not_awaited()
+        reload.assert_not_awaited()
+        assert mgr._bg_runtime is rt
+        assert mgr._draining_bg_runtimes == []
+        await mgr.close_all()
+
+
+def _two_input_verdict(*, enabled: bool, acked: bool, audit_tool: str = ""):
+    """``telemetry_permitted`` with every host rung pinned open: the verdict is
+    exactly ``enabled and acked``, so a test controls it through config alone."""
+    from kiro_crew.beacon import Verdict
+
+    return Verdict(bool(enabled and acked), "pinned", "ready" if enabled and acked else "disabled")

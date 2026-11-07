@@ -82,6 +82,8 @@ _OPENCODE_CONFIG = '{"permission":"ask"}'
 VOLATILE_ENV = {
     "PATH": "<augmented-path>",
     "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+    # Carries the release version, which changes on every release.
+    "GIT_HTTP_USER_AGENT": "<user-agent>",
     "KIROCREW_PI_GATE_SESSION": "<nonce>",
     "KIROCREW_DSH_GATE_SESSION": "<nonce>",
     "KIROCREW_STRANDS_GATE_SESSION": "<nonce>",
@@ -524,6 +526,10 @@ def _default_home_pins(tmp_path: Path) -> list:
     return [
         patch.object(config_paths, "_resolve_default_home", lambda: tmp_path / "default-home"),
         patch.object(config_paths, "_write_recovery_breadcrumb", lambda _home: None),
+        # The git User-Agent tag rides the telemetry consent verdict, which reads
+        # the host's config and home; the golden records what a PERMITTED install
+        # contributes, so the verdict is pinned rather than read from this machine.
+        patch("kiro_crew.outbound_user_agent.git_user_agent_permitted", return_value=True),
     ]
 
 
