@@ -558,6 +558,19 @@ def _linux_loopback_listener_inodes(port: int, proc_root: Path) -> set[str] | No
     wildcard and IPv4-mapped wildcard-compatible rows are included because a
     successful loopback health probe can reach them too.
     """
+    if proc_root == Path("/proc"):
+        # This process's own table: ask the kernel over netlink, which answers in
+        # a fraction of the ~5 ms a /proc/net/tcp read costs on a busy host. The
+        # same four addresses as the rows below; any failure reads /proc.
+        from kiro_crew import sock_diag
+
+        listeners = sock_diag.listen_sockets(port)
+        if listeners is not None:
+            return {
+                str(inode)
+                for address, inode in listeners
+                if address in ("0.0.0.0", "127.0.0.1", "::", "::ffff:127.0.0.1")
+            }
     v4_addresses = {"00000000", "0100007F"}
     v6_addresses = {
         "0" * 32,

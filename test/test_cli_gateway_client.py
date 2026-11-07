@@ -529,7 +529,11 @@ class TestGatewayOwnsPort:
         return patch("kiro_crew.cli_server.run_marker.read_pid", return_value=pid)
 
     def _listeners(self, pids):
-        return patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=pids)
+        """The per-pid listener proof answers True only for a pid in *pids*."""
+        return patch(
+            "kiro_crew.cli_server.platform_compat.process_owns_loopback_listener",
+            side_effect=lambda pid, _port: pid in pids,
+        )
 
     def _owner(self, uid):
         return patch("kiro_crew.cli_server.platform_compat.process_owner_uid", return_value=uid)
@@ -634,12 +638,28 @@ class TestGatewayOwnsPort:
         ):
             assert _gateway_owns_port(6776) is False
 
-    def test_fails_closed_when_no_listener_or_lookup_tool(self):
-        """find_listening_pids folds a missing lsof/netstat into an empty list,
-        so both 'nothing there' and 'cannot tell' must deny."""
+    def test_fails_closed_when_no_listener(self):
         from kiro_crew.cli_server import _gateway_owns_port
 
         with self._sidecar(4242), self._listeners([]):
+            assert _gateway_owns_port(6776) is False
+
+    def test_fails_closed_when_the_host_cannot_tell(self):
+        """``None`` is "this host cannot make the observation" (no lookup tool,
+        an unreadable socket table or descriptor list): it must deny like False."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._posix(),
+            self._sidecar(4242),
+            patch(
+                "kiro_crew.cli_server.platform_compat.process_owns_loopback_listener",
+                return_value=None,
+            ),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server.os.getuid", return_value=self._me(), create=True),
+        ):
             assert _gateway_owns_port(6776) is False
 
     def test_fails_closed_when_lookup_raises(self):
@@ -648,11 +668,30 @@ class TestGatewayOwnsPort:
         with (
             self._sidecar(4242),
             patch(
-                "kiro_crew.cli_server.platform_compat.find_listening_pids",
-                side_effect=OSError("lsof exploded"),
+                "kiro_crew.cli_server.platform_compat.process_owns_loopback_listener",
+                side_effect=OSError("lookup exploded"),
             ),
         ):
             assert _gateway_owns_port(6776) is False
+
+    def test_proves_the_recorded_pid_without_listing_every_listener(self):
+        """The proof asks about the recorded pid only. A system-wide listener
+        scan (lsof on POSIX) costs 115-275 ms on a busy host, and a pooled
+        control-plane backend runs this proof on every call that posts back."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        scan = MagicMock(return_value=[4242])
+        with (
+            self._posix(),
+            self._sidecar(4242),
+            self._listeners([4242]),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", scan),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server.os.getuid", return_value=self._me(), create=True),
+        ):
+            assert _gateway_owns_port(6776) is True
+        scan.assert_not_called()
 
 
 class TestCliLoopbackAddress:

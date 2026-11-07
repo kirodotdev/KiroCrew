@@ -1816,17 +1816,20 @@ are talking to:
      1. the pid recorded in `run/gateway-<port>.pid` (written `0600` inside the
         `0700` `run/` dir, which is on the `is_sensitive_path` floor, so neither
         another local user nor an agent file tool can write it);
-     2. that pid must be among the pids listening on the port
-        (`platform_compat.find_listening_pids`), which is what makes a stale
-        recorded pid harmless;
+     2. that pid must itself hold a LISTEN socket that answers 127.0.0.1 on
+        the port (`platform_compat.process_owns_loopback_listener`), which is
+        what makes a stale recorded pid harmless. The question is asked of the
+        recorded pid alone, not by listing every listener: a pooled
+        control-plane backend runs this proof on every call that posts back,
+        and a system-wide `lsof` pass costs 115-275 ms on a busy host;
      3. that pid must be owned by the calling uid
         (`platform_compat.process_owner_uid`) and look like a KiroCrew process.
         The uid check is what closes pid *recycling* into a foreign user's
         process; argv is retained only as defense in depth.
 
      It **fails closed** at every step: no sidecar, an unparseable pid, a pid
-     that does not hold the port, an unresolvable uid, a missing `lsof` /
-     `netstat`, or a throwing lookup all deny, and discovery is skipped. A
+     that does not hold the port, an unresolvable uid, a host that cannot make
+     the per-pid observation (`None`), or a throwing lookup all deny, and discovery is skipped. A
      same-user attacker is out of scope by construction — they can already read
      `.local_secret` under their own uid.
 
