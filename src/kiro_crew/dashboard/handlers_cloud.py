@@ -50,7 +50,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.defaults import RecipientMoved
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
-from kiro_crew.sandbox import SandboxCeilingUnsealable
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
@@ -391,6 +391,61 @@ async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
 
 
+def _sandbox_unavailable_response(
+    op: str, exc: SandboxUnavailableError, what: str, *, request_id: str = ""
+) -> web.Response:
+    """The typed 503 for an ``aws`` call the sandbox refused to start.
+
+    Every cloud call runs the CLI through ``cloud.aws.run_aws``, which wraps it
+    with ``wrap_argv``. On a host with no sandbox backend and
+    ``allow_unsandboxed_exec`` unset that raises ``SandboxUnavailableError``
+    before any AWS request is made. The refusal stands, but uncaught it reaches
+    the browser as aiohttp's bare "500 Internal Server Error" page, and the setup
+    tab would blame credentials nobody read.
+    Same shape as deploy-web's profile discovery answer for the same
+    condition (``deploy/handlers.py``): a ``code`` the dashboard keys on, plus
+    the probe ``detail`` and ``remedy`` the exception carries.
+
+    The sentence follows ``exc.kind``: only ``no_backend`` means this host has no
+    sandbox. ``transient`` clears on a retry, and ``foreign_sandbox`` means an
+    outer sandbox confines the gateway while the host's own sandbox is fine.
+    """
+    logger.warning(
+        "cloud %s: aws call refused by the sandbox (kind=%s, detail=%s); returning 503",
+        op,
+        exc.kind,
+        exc.detail,
+    )
+    _audit(op, "failure", request_id=request_id, error=f"sandbox_unavailable: {exc.detail}")
+    not_sent = "nothing was sent to AWS and your credentials were not checked."
+    if exc.kind == "transient":
+        reason = (
+            "the sandbox for the aws command hit a temporary limit, so "
+            f"{not_sent} Try again in a moment."
+        )
+    elif exc.kind == "foreign_sandbox":
+        reason = (
+            "another sandbox already confines this gateway, so it cannot start its "
+            f"own sandbox for the aws command and {not_sent} Start the gateway "
+            "outside that sandbox."
+        )
+    else:
+        reason = (
+            f"this computer has no sandbox for the aws command, so {not_sent} "
+            "Run `kirocrew doctor` in a terminal for the fix."
+        )
+    return web.json_response(
+        {
+            "error": f"{what} could not run: {reason}",
+            "code": "sandbox_unavailable",
+            "kind": exc.kind,
+            "detail": exc.detail,
+            "remedy": exc.remedy,
+        },
+        status=503,
+    )
+
+
 # ── read endpoints ───────────────────────────────────────────────────────
 
 
@@ -401,7 +456,10 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
         return denied
     profile = request.query.get("profile", "")
     region = request.query.get("region", "")
-    reach = await _in_executor(iam.reachability_check, profile, region)
+    try:
+        reach = await _in_executor(iam.reachability_check, profile, region)
+    except SandboxUnavailableError as exc:
+        return _sandbox_unavailable_response("preflight", exc, "The AWS check")
     plugin = await _in_executor(ssm.session_manager_plugin_installed)
     # Installed but refused by the provenance check is not "not installed": the
     # install command would reinstall the same refused file. The row then shows the
@@ -677,6 +735,8 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
     except AWSError as e:
         _audit("launch_task", "failure", request_id=job.id, error=str(e))
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+    except SandboxUnavailableError as exc:
+        return _sandbox_unavailable_response("launch_task", exc, "The AWS call", request_id=job.id)
     _audit("launch_task", "success", request_id=job.id)
     return web.json_response(
         {
@@ -1530,6 +1590,8 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     except AWSError as e:
         _audit(op, "failure", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+    except SandboxUnavailableError as exc:
+        return _sandbox_unavailable_response(op, exc, "The AWS call", request_id=tag)
     _audit(op, "success", request_id=tag)
     return web.json_response(result)
 
