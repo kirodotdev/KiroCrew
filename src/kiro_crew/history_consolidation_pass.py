@@ -674,6 +674,7 @@ async def _consolidate(
         # to update and delete them. Fetching globally would show crew B the
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
+        refusal_notes: tuple[dict, ...] = ()
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
@@ -747,6 +748,18 @@ async def _consolidate(
                 for row in current_semantic
             }
             del current_semantic, semantic_entries
+            # Values an earlier pass of this session refused for size: its span is
+            # marked consolidated, so this note is the model's one chance to propose
+            # them again within the bound. Cleared below once this pass has written.
+            from kiro_crew.consolidation_refusal_notes import (
+                pending_refusals,
+                render_refusal_notice,
+            )
+
+            refusal_notes = await asyncio.to_thread(pending_refusals, vector_store, key)
+            semantic_json += render_refusal_notice(
+                refusal_notes, _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS
+            )
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -1123,6 +1136,23 @@ async def _consolidate(
                 messages=unconsolidated if include_history else chunk,
                 commit_state=commit_state,
             )
+
+        # The model has answered a prompt that listed these refused values and its
+        # answer is written, so the note has done its one job. Clearing it is a
+        # write like any other: under a publication hold, so memory writes turned
+        # off before the run's first commit keep the note for a later pass.
+        if refusal_notes and vector_store is not None:
+            stage = "refusal notes"
+            from kiro_crew.consolidation_refusal_notes import clear_reported
+
+            notes_store = vector_store
+
+            def _clear_refusal_notes_under_hold() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if clear_reported(notes_store, refusal_notes):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_clear_refusal_notes_under_hold)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal

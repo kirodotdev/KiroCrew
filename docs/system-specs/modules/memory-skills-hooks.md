@@ -605,6 +605,24 @@ its span's last allowed attempt (`_CONSOLIDATION_MAX_ATTEMPTS`) writes the
 history marker anyway and abandons the span, so, unless that marker write itself
 fails (it is reported, and new messages or a rotation later release the span for
 a new pass), no later pass prompts that fact again.
+A refused value is therefore carried to the session's next prompt instead
+(`consolidation_refusal_notes.py`): `_audit_oversized_semantic` also records each
+refused value whole, under the same hold, in one `memory_meta` row
+(`consolidation_refused_semantic`, a JSON list of `{session, key, value, chars}`,
+at most `MAX_REFUSAL_NOTES` (5) entries across the store, newest kept, an equal
+entry never twice). The same session's next consolidation prompt lists its
+entries under `## Semantic Values Refused Last Pass`, after the semantic table,
+and asks the model to propose a fact that is still true again as separate keys
+within the bound. Another session of the store is not shown them. Once that pass
+has written its answer the entries it showed are dropped, so a value the model
+proposes again unchanged and has refused again is not listed a third time, while
+a shortened value still over the bound is a new entry and is listed once more. A
+pass that ends before its writes (an unusable answer, a discarded result) keeps
+the note for the next one. Dropping them is a write under a publication hold, so
+memory writes turned off before the run's first commit keep the note. Both the
+record and the drop read the row inside a `BEGIN IMMEDIATE` transaction, so a
+second process updating the same store cannot interleave and lose an entry. A
+record that cannot be read or written costs the note, never the pass. There is no retry within a pass and no dashboard view.
 The number: one value plus the longest key fits the per-turn task-facts
 block on its own (`caps.semantic`, from `_SEMANTIC_MEMORY_CAP` in
 `context_assembly/budget.py`, the budget for all facts together; a test pins the

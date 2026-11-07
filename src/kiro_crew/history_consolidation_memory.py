@@ -507,7 +507,11 @@ def _audit_oversized_semantic(
     lease, write no row, and writes turned off after it (an earlier write, or on the V1
     path the history entry ``append_history`` appends before the writer runs) do not
     stop one, as they do not stop that write without the bound.
+
+    Each value is also recorded, whole, for the session's next consolidation prompt
+    (:func:`kiro_crew.consolidation_refusal_notes.record_refusals`), under the same hold.
     """
+    from kiro_crew.consolidation_refusal_notes import record_refusals
     from kiro_crew.vector_memory import SemanticRejectCode
 
     for oversized_item in oversized:
@@ -518,6 +522,11 @@ def _audit_oversized_semantic(
             f"consolidation:{key}",
             value_json=json.dumps(oversized_item.value, ensure_ascii=False),
         )
+    record_refusals(
+        vector_store,
+        key,
+        ((item.key, item.value, item.chars) for item in oversized),
+    )
 
 
 #: The keys a rerouted ``lesson.*`` semantic item may carry into a lesson, mapped
