@@ -56,6 +56,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_workers.py` | the `workers` slot fold (the worker sessions a Bot created) and its internal per-worker part `worker` (what one worker is doing), merged at read |
 | `crew_log/projection_work.py` | the `work` slot fold and the rebuild's `work_slots_naming_board` |
 | `crew_log/work_relay.py` | copies a bound worker's charges, and a sub-board's records, into the parent board's own log |
+| `crew_log/work_relay_feed.py` | the relay's consumer thread: decides each copy off the writer, keeps the per-unit relay cursor, catches up after a restart or an overflow |
 | `crew_log/projection_workstreams.py` | the `workstreams` slot fold and the own-units selection both board folds read (`_own_board_units`) |
 | `crew_log/projection_worktree.py` | the `worktree` tree fold |
 | `crew_log/projection_registry.py` | `_FOLDS`: what each fold touches, copies and retains, its eager or lazy posture, and the import-time checks over the registry |
@@ -504,6 +505,26 @@ gateway, the one writer of every log:
   `work/recorded` and `work/charged` up into its parent board's unit when that board's
   conductor is itself bound (`relay` names the origin). Copies are deduplicated per
   (origin, board) in memory and per `closer` in the fold.
+- The relay DECIDES off the writer (`work_relay_feed`, #31502). The append job only
+  queues the committed entry; the consumer thread reads the unit header, the binding
+  and the board's newest unit, then hands the writer one follow-on per board unit that
+  writes its copies with one `append_many` and one `work-unit-order` publish, on the
+  lane that holds the board's slot. Per source unit it keeps a cursor, the highest seq
+  at or below which every entry is decided and every copy landed, in the runtime file
+  `cursor.json` under the data home's `crew-log` relay directory (forward only, written
+  at most every 0.5 s and at shutdown). A restart, and a unit whose wake overflowed the
+  4096-wake queue, is caught up from that cursor, and a catch-up copy whose origin is
+  already in the board's units is not written again. An entry older than its worker's
+  binding file is never copied, on the live path and on a catch-up alike. A header or
+  binding read that fails, or a copy the writer could not write, holds the cursor and is
+  read again; a copy the store REFUSED is settled as decided, because the writer has
+  already dropped it under its loss-marker rule and a retry would only be refused again.
+  A board fold therefore lags its workers' charges by the relay's lag and no longer: a
+  missing copy shows as a charge not yet counted, never as a wrong one.
+  The cursor is advisory: a missing, unreadable or past-the-end cursor costs a rescan
+  of the bound span, deduped by origin. It is replaced whole (temp, fsync, rename), and
+  only the process holding the runtime lock `relay.lock` beside it writes it; another
+  one logs a warning and leaves the file alone.
 
 There is no migration: a bound open item whose report has not reached the conductor's
 log renders `summary: "waiting for next report"` (`WORK_AWAITING_REPORT`) until the

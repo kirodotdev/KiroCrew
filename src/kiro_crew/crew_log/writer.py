@@ -295,9 +295,11 @@ class WriteJob:
         return cls(run, what, JobKind.OPENING, 0, None, on_drop)
 
     @classmethod
-    def follow_on(cls, run: Callable[[], None], what: str) -> "WriteJob":
-        """Work a job queues for a unit from the writer thread. See :data:`_POLICY`."""
-        return cls(run, what, JobKind.FOLLOW_ON, 0, None, None)
+    def follow_on(
+        cls, run: Callable[[], None], what: str, *, after: Callable[[], None] | None = None
+    ) -> "WriteJob":
+        """Work queued for a unit behind what it owes, never inline. See :data:`_POLICY`."""
+        return cls(run, what, JobKind.FOLLOW_ON, 0, after, None)
 
 
 @dataclass
@@ -1079,7 +1081,8 @@ class CrewLogWriter:
         for job in jobs:
             if job.policy.requeue_on_drop:
                 self._uncount_one_requeued_drop(unit)
-                self.submit(unit, WriteJob(job.run, job.what, JobKind.REQUEUED))
+                after, job.after = job.after, None  # runs once the requeued copy resolves
+                self.submit(unit, WriteJob(job.run, job.what, JobKind.REQUEUED, 0, after))
             elif job.on_drop is not None:
                 hook = job.on_drop
                 job.on_drop = None
