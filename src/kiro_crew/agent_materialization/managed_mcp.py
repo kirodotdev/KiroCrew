@@ -784,12 +784,20 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
             entry[MERGED_MARK] = True
 
 
-def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: frozenset[str]) -> None:
+def register_managed_refs(
+    config: dict,
+    *,
+    fresh_install: bool,
+    gated_off: frozenset[str],
+    mounted_aliases: dict[str, str],
+) -> None:
     """Reference the managed servers in ``tools`` and audit the ones a gate withholds."""
     valid_servers: dict[str, Any] = config["mcpServers"]
     # On fresh installs, ensure managed MCP tools are in tools (but NOT
     # allowedTools — new MCPs may have destructive tools; user opts in).
     # On existing configs, don't touch tools/allowedTools — user controls those.
+    # An edition server first supplied on an existing config gets its ref once
+    # from ``guide_platform.grant_edition_refs_once`` instead.
     if fresh_install:
         added_refs: list[str] = []
         # Managed servers + edition-contributed servers both get their @ref
@@ -802,8 +810,9 @@ def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: froze
             n for n in agent_mod._extra_mcp_servers() if n not in agent_mod._MANAGED_MCP_SERVERS
         ]
         for mcp_name in _register_names:
-            ref = f"@{mcp_name}"
-            if mcp_name in valid_servers and ref not in config.get("tools", []):
+            alias = mounted_aliases.get(mcp_name, mcp_name)
+            ref = f"@{alias}"
+            if alias in valid_servers and ref not in config.get("tools", []):
                 config.setdefault("tools", []).append(ref)
                 added_refs.append(ref)
         if added_refs:
