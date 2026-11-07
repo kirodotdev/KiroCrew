@@ -45,6 +45,39 @@ are dropped with one log line; the rest of the manifest still loads. There is
 no host allowlist: each button shows the URL's host under its label, so the
 reader sees where it goes, and it opens in a new tab.
 
+### Writing `useCases`
+
+`highlights` lists what the app can do. `useCases` says when an operator should
+reach for it. Write each entry as a situation, in the shape "when X, do Y to get
+Z", not a restated feature list.
+
+- **Write 3-5 entries.**
+- **Ground every entry in what the app ships.** Each entry must follow from the
+  app's own `highlights` and from what it declares, such as its `agents`,
+  `skills` and `crons`, so a reviewer can check it against the manifest. Do not
+  describe a feature or an integration the app does not have.
+- **Name what the app declares.** If the app declares an agent, skill or cron,
+  at least one entry should show the operator using it, by name.
+
+Bad, because it restates the features and names no situation:
+
+```json
+"useCases": [
+  "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history."
+]
+```
+
+Good, for the same app (it declares no agent, skill or cron, so each entry rests
+on a highlight):
+
+```json
+"useCases": [
+  "When the morning queue fills up, read each new issue's AI summary and suggested labels, and apply the ones you agree with",
+  "When a pull request is ready, approve, merge or re-run CI from the app; the merge cannot land until the host's required reviews and checks pass",
+  "When a report looks familiar, open its investigation notes instead of investigating it again"
+]
+```
+
 ## Admission metadata
 
 | Field | Type | Description |
@@ -2183,7 +2216,13 @@ before it runs your command, which is the same silent failure:
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
   "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
-  "useCases": ["Keep a shared view of firing alerts and active investigations"],
+  "highlights": ["One board for firing alerts and active investigations"],
+  "useCases": [
+    "When you take over the on-call rotation, open the board to see every firing alert and active investigation in one place",
+    "When you would otherwise watch the queue, let the ticket-refresh cron check for new high-severity tickets every five minutes",
+    "When a new ticket needs a first read, ask the ticket-analyst agent to go through it before you do",
+    "When an alert matches a known failure, ask an agent to follow the oncall-runbook skill instead of rediscovering the fix"
+  ],
   "configuration": ["Connect an alert provider in Settings, then start in read-only mode"],
   "screenshots": ["ui/screenshots/board.png"],
   "agents": ["agents/ticket-analyst.json"],
