@@ -267,6 +267,19 @@ def test_unit_state_is_active_while_a_boot_producer_lives_before_its_gateway(cfg
     assert order == ["run", "pid"]
 
 
+def test_active_names_counts_a_boot_before_its_gateway_pid(cfg, monkeypatch):
+    """Removal with a working backend lists active names; a boot has only a run record."""
+    record = {"state": "preparing", "publisher": [4242, "77"]}
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+    win.runs.path(cfg, "smoke").write_text("{}")
+    monkeypatch.setattr(win.runs, "read", lambda c, n: record)
+    monkeypatch.setattr(win.jobs, "close_identity", lambda handle: None)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda pid, token: 9)
+    assert win.active_names(cfg) == {"smoke"}
+    monkeypatch.setattr(win.jobs, "open_identity", lambda pid, token: None)
+    assert win.active_names(cfg) == set()
+
+
 def test_unit_state_is_inactive_when_nothing_was_ever_recorded(cfg):
     assert win.unit_state(cfg, "smoke") == ("inactive", 0)
 

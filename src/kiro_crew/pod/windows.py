@@ -1331,24 +1331,28 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 
 def active_names(cfg: PodConfig) -> set[str]:
-    """Names of pods with a live gateway process.
+    """Names of pods with a live gateway process or a boot still in progress.
 
-    Enumerates this plane's pid records instead of listing tasks. A full
+    Enumerates this plane's pid and run records instead of listing tasks. A full
     ``schtasks /Query /FO CSV`` dump would have to be filtered on a localized
     status column, and it would also count a task that exists but whose process
-    is gone — which systemd's ``--state=active`` filter excludes for us.
+    is gone — which systemd's ``--state=active`` filter excludes for us. A boot
+    has no pid record until its gateway spawns, yet it is already using the
+    checkout, so its run record counts too (the same answer as :func:`unit_state`).
     """
     prefix = f"{cfg.unit_prefix}."
-    names: set[str] = set()
+    candidates: set[str] = set()
     try:
-        entries = list(cfg.pods_dir.glob(f"{prefix}*.winpid"))
+        for suffix in (".winrun", ".winpid"):
+            for path in cfg.pods_dir.glob(f"{prefix}*{suffix}"):
+                candidates.add(path.name[len(prefix) : -len(suffix)])
     except OSError:
-        return names
-    for path in entries:
-        candidate = path.name[len(prefix) : -len(".winpid")]
-        if candidate and supervised_pid(cfg, candidate) is not None:
-            names.add(candidate)
-    return names
+        return set()
+    return {
+        name
+        for name in candidates
+        if name and (_boot_in_progress(cfg, name) or supervised_pid(cfg, name) is not None)
+    }
 
 
 def journal_mark(cfg: PodConfig, name: str) -> dict[str, int]:
