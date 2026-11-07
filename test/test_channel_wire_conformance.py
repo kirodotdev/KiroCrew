@@ -1,26 +1,16 @@
 """Live vendor conformance -- the only test that can prove a fixture is true.
 
-Everything else in the channel suite runs against fixtures. Fixtures encode a
-claim about the vendor's API, and a claim can go stale silently: the vendor adds
-a field, retypes one, or changes a content type, and our whole green suite keeps
-agreeing with itself. This module closes that loop by replaying the recorded
-SHAPE against the real endpoint.
-
-It is opt-in and skipped by default -- it needs real credentials and makes real
-network calls, so it must never run in the normal suite or on a fork PR:
+Fixtures can go stale silently when the vendor changes a field, so this replays the
+recorded SHAPE against the real endpoint. Opt-in: it needs real credentials and the
+network, so it never runs in the normal suite or on a fork PR:
 
     KIROCREW_WIRE_PROBE=1 \\
     KIROCREW_WIRE_PROBE_WEIXIN_TOKEN=<bot token> \\
     pytest test/test_channel_wire_conformance.py -v
 
-On drift the failure names the exact field and both types (see
-``assert_same_shape``), which is the actionable form: re-probe, rewrite the
-fixture with a fresh ``live_probe`` provenance, and the whole stack re-verifies
-against the new shape.
-
-Only shapes are compared, never values -- tokens, ids and timestamps are
-volatile by design and pinning them would make this lane flaky rather than
-informative.
+On drift ``assert_same_shape`` names the field and both types; re-probe and rewrite
+the fixture with a fresh ``live_probe`` provenance. Only shapes are compared: tokens,
+ids and timestamps are volatile.
 """
 
 from __future__ import annotations
@@ -58,11 +48,10 @@ def _require(var: str) -> str:
 
 class TestWeixinConformance:
     def test_get_bot_qrcode_still_matches_the_recorded_shape(self) -> None:
-        """Re-verify the #711 contract against live iLink.
+        """Re-verify the QR-code response shape against live iLink.
 
-        This is the test that would have caught the original bug before it
-        shipped: if ``qrcode_img_content`` ever stops being a string URL, or the
-        response gains/loses fields, the fixture is stale and the diff says so.
+        If ``qrcode_img_content`` stops being a string URL, or fields change, the
+        fixture is stale and the diff says so.
         """
         from kiro_crew.weixin.client import WeixinClient
 
@@ -80,38 +69,18 @@ class TestWeixinConformance:
         live = asyncio.run(_probe())
 
         assert_same_shape(fixture.payload, live, context="weixin get_bot_qrcode")
-        # Restate the load-bearing semantic, not just the type: the field is a
-        # scannable URL. A string that stopped being a URL would pass a pure
-        # shape check but break the QR renderer exactly as #711 did.
+        # The field must be a scannable URL: a non-URL string passes the shape check
+        # but breaks the QR renderer.
         assert str(live["qrcode_img_content"]).startswith("http"), (
             "qrcode_img_content is no longer a URL -- the QR render path "
             "(server-side encode to PNG data URI) assumes it is"
         )
 
 
-# WeCom has NO live probe, and that is a decision rather than a gap.
-#
-# Every WeCom frame worth probing requires SUBSCRIBING with the bot's credentials,
-# and WeCom allows one subscription per bot: a second one replaces the incumbent, so
-# the running gateway is disconnected and its reconnect loop stops on
-# `disconnected_event`. Env-gating that is not a defence -- `no-test-side-effects` is
-# about the side effect existing at all, not how hard it is to reach -- and the
-# blast radius lands on a production channel, not on the test.
-#
-# Nothing is lost by omitting it, because none of the assertions needed the wire:
-#
-# * Frame SHAPES are asserted against the recorded fixtures on a fake socket in
-#   `test_wecom_wire.py`, which is where a shape assertion belongs.
-# * The cmd-less ACK's req_id echo -- the only thing that tells a pong from a
-#   stream-reply receipt -- is pinned by
-#   `test_wecom_client_cov80.py::test_pong_ack_clears_the_pending_pong`.
-# * The unverified vendor semantics that a probe WOULD settle are recorded as such
-#   in each fixture's `_provenance`, including the load-bearing one: whether a
-#   non-empty `body.chatid` really means "group", which `wecom/transport.py::receive`
-#   and `wecom/transport_dispatch.py::_route` both assume. Naming an assumption in
-#   the fixture that carries it is what keeps it from being forgotten; a probe nobody
-#   may safely run would not have settled it either.
-#
-# If a throwaway bot with its own credentials ever exists, the honest place for a
-# WeCom probe is against THAT, with the incumbent-subscription hazard stated in the
-# opt-in instructions.
+# WeCom has NO live probe on purpose: WeCom allows one subscription per bot, so a
+# probe would disconnect the running gateway (`no-test-side-effects` forbids that).
+# Frame shapes are pinned on a fake socket in `test_wecom_wire.py`, the pong ACK in
+# `test_wecom_client_cov80.py::test_pong_ack_clears_the_pending_pong`, and unverified
+# vendor semantics (e.g. non-empty `body.chatid` means "group", assumed by
+# `wecom/transport.py::receive`) are named in each fixture's `_provenance`.
+# A probe belongs only against a throwaway bot with its own credentials.

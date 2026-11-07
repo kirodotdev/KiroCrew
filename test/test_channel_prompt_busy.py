@@ -1,20 +1,13 @@
 """A prompt-busy channel session is replaced, not papered over with a card.
 
-When the ACP backend still holds an in-flight prompt it rejects every later
-prompt on that session with ``already in progress``. Answering that with a
-generic ``An error occurred`` card and returning without touching the session
-leaves the wedge in place: the agent then rejects every subsequent @mention
-identically, and the only recovery is a manual per-agent clear-context.
+An ACP backend with an in-flight prompt rejects later prompts with ``already in
+progress``, so an error card alone leaves the agent wedged. ``AcpPromptBusy``'s
+contract is that callers reset the session, as ``chat_runner`` and Slack's
+``handler`` do; this file pins the channel loop to it.
 
-``AcpPromptBusy``'s own contract is that callers reset the session so the next
-message cold-starts. The dashboard (``chat_runner``) and Slack (``handler``)
-paths honour it, and this file pins the channel loop onto the same contract.
-
-Bounded failure matters as much as the recovery: if the wedge survives the
-reset the agent is reported ONCE and stops consuming its inbox, and the
-abandoned replacement session is torn back down -- ``channel:``-keyed sessions
-are exempt from both session reapers, and ``api_channel_wake_agent`` would
-otherwise re-acquire the same wedged session out of the registry.
+If the wedge survives the reset, the agent is reported once and stops reading its
+inbox, and the replacement is torn down: ``channel:`` sessions are exempt from both
+reapers, and ``api_channel_wake_agent`` would re-acquire the wedged one.
 """
 
 from __future__ import annotations
@@ -534,10 +527,8 @@ async def test_a_replacement_registered_under_the_same_key_is_not_streamed_throu
     """A dequeued message must not reach the provider this member cached at spawn once the
     registry holds a DIFFERENT one under the same key.
 
-    Presence cannot answer this. An idle clear pops the key and shuts the cached provider down;
-    a surfaced dashboard tab can then be linked to the same key and register its own provider,
-    at which point a presence probe says "a session exists" and is satisfied, while the
-    object the member still holds is the dead one. Streaming into it loses the message.
+    After an idle clear, a linked dashboard tab can register its own provider under the
+    key, so a presence probe passes while the member still holds the dead one.
     """
     ch = Channel(id="c1", topic="review")
     agent = ch.add_agent(role="dev", agent_name="dev")

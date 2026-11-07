@@ -1,21 +1,11 @@
 """The capability matrix's two plumbing rows are pinned to the declarations.
 
-``channel-capabilities.md`` is the one page a reader consults INSTEAD of opening a
-transport, so a stale cell there is worse than an absent row: it answers the
-question confidently and wrongly. ``scripts/docs_lint.py`` gates the page's
-symbols and paths, never what its cells claim, and ``test_capability_ledger.py``
-compares the code to itself — neither one reads this file.
+``scripts/docs_lint.py`` checks the page's symbols, not its cells, and
+``test_capability_ledger.py`` never reads it. Only these two rows are pinned because
+nothing in the interface shows them, so manual use cannot catch a wrong cell.
 
-Two rows are pinned here rather than all fifteen, and that is deliberate. Most
-rows are user-visible behaviour a reader can check by using the channel
-(streaming, uploads, threads). ``returns_message_id`` and ``mention_grammars`` are
-not: nothing in the interface shows them, so a wrong cell survives every amount of
-manual use. They are also the two newest fields, which is exactly when a matrix
-drifts.
-
-The test reads the DOC and maps each cell through the header row, so a reordered
-column cannot silently re-point a value at the wrong channel, and it demands both
-rows exist — deleting a row is the other way a matrix stops being true.
+Cells map through the header row, so a reordered column cannot re-point a value,
+and both rows must exist.
 """
 
 from __future__ import annotations
@@ -149,13 +139,8 @@ class TestTheProseNamesTheTwoExceptions:
 class TestTheZeroWidgetSection:
     """The canonical no-buttons section, and the one channel that breaks its rule.
 
-    ``max_buttons=0`` does not mean one behaviour. Four channels route the whole
-    list through the shared helper and deliver it as numbered lines; WhatsApp's
-    renderer removes a completed trailer instead, so the choices are gone. The doc
-    says both, and both halves are pinned here: the membership of the zero-widget
-    set from the declarations, and WhatsApp's stripping from the function that does
-    it. A doc that said only the first half would be confidently wrong about the
-    one channel where the user loses the answers.
+    Four ``max_buttons=0`` channels deliver the list as numbered lines; WhatsApp's
+    renderer drops a completed trailer instead. Both halves are pinned to the code.
     """
 
     def test_the_zero_button_channels_are_the_five_named(self) -> None:
@@ -173,16 +158,9 @@ class TestTheZeroWidgetSection:
         for name in ("WeCom", "Weixin", "iMessage", "WhatsApp", "Feishu"):
             assert name in section, f"the zero-widget section does not name {name}"
 
-    #: Every file that records the WhatsApp strip, and the SHORTEST anchor that
-    #: proves it still does. One test owns all of them, so a change to the behaviour
-    #: reds ONE place whose message names every file to update, rather than leaving
-    #: copies to find by grep.
-    #:
-    #: The anchors are deliberately short and semantic rather than whole sentences: a
-    #: ratchet that reds on any rewording teaches authors to delete it. The four sites
-    #: that may name a private helper anchor on ``_strip_options``, which is the fact
-    #: itself; a user-facing doc must not, so those two anchor on the shortest phrase
-    #: that still carries the meaning.
+    #: Every file that records the WhatsApp strip, and the shortest anchor that proves
+    #: it. Anchors are short so a rewording does not red the check; user-facing docs
+    #: anchor on a phrase rather than the private ``_strip_options``.
     STRIP_SITES = {
         "src/kiro_crew/docs/channel-capabilities.md": "drops the list",
         "src/kiro_crew/docs/whatsapp-integration.md": "dropped, not numbered",
@@ -196,11 +174,8 @@ class TestTheZeroWidgetSection:
     def test_every_site_recording_the_strip_agrees_with_the_code(self) -> None:
         """All seven restatements, pinned together to the behaviour they describe.
 
-        The claim lives in seven files because a reader of the ``max_buttons``
-        honesty contract must see the exception inline rather than follow a link.
-        The cost of that is seven places to update, so this test is the single place
-        that goes red when the behaviour changes, and its failure message names every
-        file still carrying the stale sentence.
+        Readers must see the exception inline, so it lives in seven files; on a change
+        this one test fails and names every file still carrying the stale sentence.
         """
         from kiro_crew.whatsapp.turn_renderer import _strip_options
 

@@ -159,14 +159,8 @@ def test_tool_matcher_precision(rendered, expected):
 def test_every_session_control_tool_is_contained():
     """The whole session-control surface sits behind this boundary, not part of it.
 
-    Pinned against the advertised tool set rather than a hand-written list, so a
-    fourth verb fails here instead of shipping reachable from a channel agent. The
-    omission this guards against is not hypothetical: `session_create` was added
-    to the surface and missed here, and nothing else in the suite noticed.
-
-    Create earns its place for a different reason than the other two. It writes
-    nothing into an existing conversation, but it puts a persistent,
-    sidebar-visible session outside the containment this list holds.
+    Pinned against the advertised tool set, so a new verb fails here. `session_create`
+    belongs too: it makes a persistent, sidebar-visible session outside containment.
     """
     from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS
 
@@ -177,11 +171,8 @@ def test_every_session_control_tool_is_contained():
 def test_blocked_tools_cover_every_dispatch_verb():
     """The dispatch verbs reach the interactive guard through the same list.
 
-    They are appended to ``CHANNEL_AGENT_BLOCKED_TOOLS`` rather than respelled
-    there, so this asserts the concatenation actually happened: a verb present in
-    the dispatch tuple but absent from the rendered-title list would be refused
-    at MCP dispatch and approved at the permission prompt, which is two answers
-    to one question.
+    A verb missing from ``CHANNEL_AGENT_BLOCKED_TOOLS`` would be refused at MCP
+    dispatch yet approved at the permission prompt.
     """
     missing = sorted(set(CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS) - set(CHANNEL_AGENT_BLOCKED_TOOLS))
     assert not missing, f"dispatch verbs missing from the rendered-title list: {missing}"
@@ -257,11 +248,8 @@ def test_blocked_operations_are_real_operations_of_their_tool():
 def test_observe_and_teardown_verbs_stay_reachable(tool):
     """Their absence from the boundary is a decision, so it is asserted.
 
-    Each of these reads a context that already exists or ends one; none starts a
-    turn, so none is on the dispatch list. ``spawn_status`` is the one worth
-    naming: it returns a retained transcript, and how widely that read is scoped
-    is a question about read scope rather than about this boundary. A change that
-    decides to contain it should fail here and say so.
+    None starts a turn. ``spawn_status`` returns a transcript, but that is a read-scope
+    question, not this boundary's.
     """
     assert tool not in CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
 

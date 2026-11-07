@@ -334,12 +334,8 @@ def _write_config(document):
 async def _expire_one_card(monkeypatch, *, loader=None):
     """Run one approval to expiry; return (waited, steered reasons, client).
 
-    The module's own ``asyncio`` binding is replaced by a namespace that
-    delegates every other name to the real module, so ``wait_for`` reports the
-    window it was given and expires at once: no wall clock is involved. The
-    window is read from the ``config.json`` the test wrote. ``loader`` replaces
-    ``KiroCrewConfig`` on the module for the one case a real loader cannot
-    produce: a config read that raises.
+    The module's ``asyncio`` is swapped so ``wait_for`` records its window and expires at
+    once, with no wall clock. ``loader`` replaces ``KiroCrewConfig`` for a read that raises.
     """
     import asyncio
     import types

@@ -1,24 +1,11 @@
 """Every channel token save writes ``.env`` off the loop AND drains before unlocking.
 
-``_write_env_updates`` stats and reads the whole ``.env``, re-parses it line by
-line, then writes an owner-locked temp file and renames it. All of it is
-synchronous file I/O, and all six channel config-save handlers are ``async``
-request handlers on the shared gateway loop.
+``_write_env_updates`` is sync file I/O and the six save handlers are ``async`` on
+the gateway loop. Pinned: the write runs on a worker (checked on the thread it ran
+on, by wrapping ``_write_env_updates``), and a cancelled save drains that worker
+before releasing ``_get_config_lock()``, which a bare ``asyncio.to_thread`` does not.
 
-Two separate properties are pinned here, because the offload alone is not the
-whole contract:
-
-1. the write runs on a worker, not on the gateway loop -- asserted on the
-   thread the write ACTUALLY ran on, captured by wrapping
-   ``_write_env_updates`` itself, so it holds regardless of how a caller
-   reaches it;
-2. a cancelled save drains that worker before releasing ``_get_config_lock()``
-   -- the property a bare ``await asyncio.to_thread(...)`` does not have, and
-   the one the last test in this module covers.
-
-``.env`` and ``config.json`` are redirected into ``tmp_path`` and every token
-validator is stubbed to accept, so nothing here touches the network or a real
-credential file.
+``.env`` and ``config.json`` live in ``tmp_path`` and validators are stubbed.
 """
 
 from __future__ import annotations
@@ -137,16 +124,11 @@ def test_cancelling_a_save_drains_the_env_write_before_releasing_the_lock(
 ) -> None:
     """A cancelled save must not hand the config lock on mid-write.
 
-    Every channel save holds ``_get_config_lock()`` across the ``.env`` write, and
-    a thread cannot be cancelled. Without the drain, cancelling the request
-    unwinds the ``async with`` while the worker is still rewriting the file, so
-    the next channel save enters the critical section against a file still being
-    replaced and writes it back from lines it read before the first write landed
-    -- discarding whichever credential that save was persisting.
+    A thread cannot be cancelled, so without the drain the next save enters while
+    the file is mid-rewrite and drops the first save's credential.
 
-    Ordering is forced with events, never slept for: the worker parks inside the
-    write, the caller is cancelled while it is parked, and a second writer then
-    tries to proceed. It must not get through until the first worker finishes.
+    Ordering uses events, not sleeps: the worker parks, the caller is cancelled, and
+    a second writer must wait for the first worker.
     """
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
