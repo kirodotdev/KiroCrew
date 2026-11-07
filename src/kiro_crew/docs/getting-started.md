@@ -45,9 +45,14 @@ PyPI. To install with pip directly, point it at a release channel's index:
 
 ```bash
 umask 022
-pip install --pre kirocrew \
+pip install kirocrew \
   --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 ```
+
+Stable versions carry no prerelease suffix, so this needs no `--pre`. The
+`insider` and `nightly` indexes publish only prerelease versions and need
+`pip install --pre`, which also lets pip pick prerelease versions of
+third-party dependencies.
 
 `--extra-index-url` (not `--index-url`) is required, because the channel index
 carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
