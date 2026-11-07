@@ -3,8 +3,9 @@
 The minimum-version check, warning redaction, registering and deregistering an app off
 the event loop, starting a backend after an install and stopping one with its outcome
 observed, whether an app may run once installed, restoring an app after a failed update,
-suspending one for session-approval reconsent, the refusal while a startup hook still
-runs, and dropping an app's notification channels.
+re-installing an installed app from the registry, suspending one for session-approval
+reconsent, the refusal while a startup hook still runs, and dropping an app's
+notification channels.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -28,12 +29,15 @@ from kiro_crew.apps.backend import (
 )
 from kiro_crew.apps.bridges import (
     RegistrationResult,
+    _prune_stale_app_resources,
+    _registration_source,
     deregister_app,
     register_app,
     snapshot_app_agent_configs,
 )
 from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks
 from kiro_crew.apps.manager import get_app
+from kiro_crew.apps.registry import install_from_registry
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
@@ -180,11 +184,14 @@ async def _snapshot_agent_configs_off_loop(name: str) -> dict[str, dict[str, Any
     )
 
 
-async def _deregister_app_off_loop(name: str) -> RegistrationResult:
+async def _deregister_app_off_loop(name: str, *, keep_agents: bool = False) -> RegistrationResult:
     """Run ``deregister_app`` off the event loop (see ``_register_app_off_loop``)."""
-    return await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), deregister_app, name
+    job = (
+        partial(deregister_app, name, keep_agents=True)
+        if keep_agents
+        else partial(deregister_app, name)
     )
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), job)
 
 
 async def _stop_backend_and_observe(name: str) -> tuple[int | None, bool]:
@@ -274,6 +281,69 @@ async def _restore_app_after_failed_update(
     except Exception:
         logger.warning("Re-register after failed update failed for app %s", name, exc_info=True)
     return await _start_backend_after_install(name)
+
+
+async def _reinstall_from_registry(
+    name: str, registry_name: str, log_lines: list[str] | None = None
+) -> dict[str, Any]:
+    """Re-install installed *name* from the registry, taking it down only to replace it.
+
+    ``install_from_registry`` awaits the take-down right before it copies a managed
+    app's new files in, so a refusal or a failed clone, build or ``onInstall`` leaves
+    the app running. The take-down stops the backend (on Windows the copy fails while
+    it holds a file open under the tree), then deregisters all but the agent specs: the
+    app-kit-platform §17 order. The caller's registration rewrites each spec in place,
+    so one it does not rewrite keeps its last good copy; the specs the installed
+    manifest does not declare are pruned here. A failure after the take-down
+    restores the app (:func:`_restore_app_after_failed_update`), or removes the kept
+    specs of one that may not run. An install that makes a gateway-managed app
+    self-managed (``resources: "app"``) skips the take-down, so once the record says so
+    the backend is stopped and the app fully deregistered: it registers its own from
+    then on.
+    """
+    taken_down = False
+    loop = asyncio.get_running_loop()
+
+    async def _is_self_managed() -> bool:
+        return (await _read_app_record(name) or {}).get("resources") == "app"
+
+    was_self_managed = await _is_self_managed()
+
+    async def _take_down() -> None:
+        nonlocal taken_down
+        taken_down = True
+        await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        await _deregister_app_off_loop(name, keep_agents=True)
+
+    def _prune_dropped() -> None:
+        manifest, app_root = _registration_source(name)
+        if manifest is not None:
+            _prune_stale_app_resources(name, manifest, app_root)
+
+    result = await install_from_registry(
+        registry_name, log_lines=log_lines, before_replace=_take_down
+    )
+    if not taken_down:
+        if not was_self_managed and await _is_self_managed():
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+            await _deregister_app_off_loop(name)
+        return result
+    try:
+        await loop.run_in_executor(subprocess_executor(), _prune_dropped)
+    except Exception:
+        # The files are in place; the boot reconcile prunes what this missed.
+        logger.warning("Could not prune dropped resources for app %s", name, exc_info=True)
+    if result.get("ok"):
+        return result
+    if not await _app_may_run_after_install(name):
+        # A failure after the copy can leave the record disabled (a new
+        # ``sessionApproval``); the agent specs the take-down kept go with it.
+        await _deregister_app_off_loop(name)
+        return result
+    restore_refused = await _restore_app_after_failed_update(name)
+    if restore_refused:
+        result["backend_refused"] = restore_refused
+    return result
 
 
 async def _suspend_app_for_session_approval_reconsent(

@@ -2,8 +2,7 @@
 
 Every registry row is fetched with git. Without the preflight, a git-less host
 fails deep in the checkout (``git init failed`` on a fresh clone, an
-``unreadable_clone_origin`` refusal over a healthy checkout on an update), and
-the update route stops the app's backend and scrubs its resources first. These
+``unreadable_clone_origin`` refusal over a healthy checkout on an update). These
 tests take git off ``PATH`` for real rather than patching the lookup, so they
 exercise the same ``shutil.which`` answer the gateway gets.
 """
@@ -85,9 +84,8 @@ async def test_install_refuses_before_trust_manifest_or_clone(tmp_path, monkeypa
 async def test_registry_update_refuses_before_stopping_the_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The update route stops the backend and deregisters BEFORE it installs, so
-    its own preflight must run first: the app stays enabled, registered and
-    running, and the user reads the missing tool."""
+    """The update route asks before the install: the app stays enabled, registered
+    and running, and the user reads the missing tool."""
     _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
     enable_app(APP)
