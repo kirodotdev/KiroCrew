@@ -16,6 +16,8 @@ classes are dropped. What remains is the ungated refactor:
 
 from __future__ import annotations
 
+import re
+
 from kiro_crew.dashboard.chat_runner import drain_pending_context
 from kiro_crew.session_map import SessionMap
 
@@ -40,7 +42,7 @@ class TestPendingContextDrainContract:
 
         prefix = drain_pending_context(slot)
         assert '[Background context from "slack-thread"]' in prefix
-        assert "[End of background context]" in prefix
+        assert re.search(r"\n\[End of background context [0-9a-f]{12}\]\n", prefix)
         assert "the earlier thread discussion" in prefix
         # Drain is one-shot: the queue is cleared so a later turn isn't re-fed.
         assert slot._pending_context == []

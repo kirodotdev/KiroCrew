@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         _folder_steering_turn,
         _startup_query_prewarm_applies,
         drain_pending_context,
+        drop_session_notes_out_of_reach,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
@@ -781,6 +782,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             turn.message = message
         # Drain pending context injections (silent background context
         # from apps/subagents).  Expired entries are discarded.
+        drop_session_notes_out_of_reach(state, slot)
         _ctx_prefix = drain_pending_context(slot)
         if _ctx_prefix:
             message = _ctx_prefix + message

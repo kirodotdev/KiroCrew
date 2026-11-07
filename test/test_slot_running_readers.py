@@ -160,7 +160,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
                 # The model route's transaction; the in-turn /model <id> on KAS shares it.
                 ("chat_api/slot_model.py", "switch_slot_model"),
-                ("chat_api/slot_note.py", "api_chat_slot_note"),
+                ("chat_api/slot_note.py", "write_slot_note"),
                 # The project route arms a deferred reset when a start carrying
                 # the old cwd is already in flight; slot.running (the
                 # reservation) catches a cold-starting turn no provider has

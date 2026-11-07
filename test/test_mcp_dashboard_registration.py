@@ -365,6 +365,8 @@ class TestWhatThisSetGrants:
         # Tints only a session the caller created; the route's creator
         # fence is narrower than the rest of this group's.
         "session_set_color",
+        # Writes a note only into a session the caller created; same fence.
+        "session_set_note",
         "session_reload",
         # Relabels a session the caller may already stop, or itself; same gate.
         "session_rename",

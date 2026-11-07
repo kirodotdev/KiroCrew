@@ -1,11 +1,11 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, retry, continue, rename, retitle, close and revive
-another one, change its model, reload its agent process, color it, and take another one under
-itself in the sidebar. The tools come from the
+another one, change its model, reload its agent process, color it, leave it a note, and take another
+one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 39 of its tools, written for the agent that is about to use them.
+for all 40 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -13,7 +13,8 @@ owner modules. Two halves:
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
-  `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_broadcast`,
+  `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
+  `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
   `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -755,6 +756,30 @@ every caller. The caller itself is refused (`self_target`), and so are a
 person's own tabs (`not_creator`), even when session control is switched on
 for everyone. Everything else
 `authorize_target` refuses stays refused.
+
+### `session_set_note`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title of a session you created; your own session is refused `self_target` |
+| `note` | yes | The note text: a short statement of fact |
+
+Leaves a note without starting a turn, through the same code a cron or an app
+uses to post a note to a chat. Two things happen: a note line appears in the
+target's transcript, labelled as sent by `session_set_note`, and its next turn
+reads the same text once as background context from `"session_set_note"`. A running target holds both until its turn
+ends. The limits, redaction and reply are that note route's: a held note is
+capped at 4,000 characters (`deferred_note_too_large`), and a session holds at
+most ten notes from `session_set_note` for its next turn; past that the line is
+still written but its next turn does not read it, and the reply says so.
+
+State facts; do not ask questions. A question rides along as background
+context and may be answered on an unrelated turn.
+
+Reach is `session_set_color`'s: only sessions you created, for every caller,
+never your own session or the person's tabs, and nothing else `authorize_target`
+refuses. If the target is linked or mirrored to a channel before its next turn,
+that turn does not read the note; its transcript line stays.
 
 ### `session_revive`
 

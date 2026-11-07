@@ -822,6 +822,69 @@ async def api_session_control_set_color(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+# ``set_note`` folds to ``other`` the same way ``set_color`` does.
+@_counted("set_note")
+async def api_session_control_set_note(request: web.Request) -> web.Response:
+    """POST /api/session-control/set-note — leave a note on a session the caller created.
+
+    Written by ``POST /api/chat/slots/{slot}/note``'s own code, so its limits,
+    redaction, hold during a running turn and reply are that route's.
+    """
+    from kiro_crew.dashboard import chat_handlers  # circular: it imports this package
+
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        note = body.get("note", "")
+        invalid = chat_handlers._validate_content(note)
+        if invalid is not None:
+            return invalid
+        slot = await sc.authorize_created_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            operation="set_note",
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    # The containment this note is admitted under. No await since the gate, but a
+    # mirror can be linked off the loop after the gate's own read, so a mirror seen
+    # here is refused as the gate refuses it, never recorded as admitted.
+    admission = sc.containment_meta(state, slot)
+    if admission[sc.QUEUED_CONTAINMENT_META_KEY].get("mirrored"):
+        return _refusal(
+            sc.SessionControlError(
+                "sessions mirrored to a channel are not addressable",
+                status=403,
+                code="mirrored_target",
+            )
+        )
+    response = await chat_handlers.write_slot_note(
+        state,
+        slot,
+        content=note,
+        source=sc.SESSION_NOTE_SOURCE,
+        display_source=sc.SESSION_NOTE_SOURCE,
+        max_age=chat_handlers._NOTE_CONTEXT_MAX_AGE,
+        ephemeral=True,
+        caller=_read_session_key(request),
+        admission=admission,
+    )
+    if response.status == 200:
+        sc._audit(
+            caller_session_key=_read_session_key(request),
+            operation="set_note",
+            slot_key=slot.key,
+            outcome="allowed",
+        )
+    return response
+
+
 @_counted("close")
 async def api_session_control_close(request: web.Request) -> web.Response:
     """POST /api/session-control/close — archive another session (tab ✕)."""
