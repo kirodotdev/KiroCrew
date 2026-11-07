@@ -58,6 +58,8 @@ from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
+from kiro_crew.acp.kas_spec_carry import use_aws_notice
+from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
@@ -1001,6 +1003,11 @@ class KasHarness(MembershipHarness):
                     # Refused, never the bare base: what could not be read may
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
+            # KAS loads workspace steering itself, honouring each file's inclusion.
+            spec = with_kas_steering(spec, work_dir)
+            spec_notices.extend(
+                n for n in (inheritance_off_notice(work_dir), use_aws_notice(agent, spec)) if n
+            )
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds

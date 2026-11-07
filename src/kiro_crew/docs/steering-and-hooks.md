@@ -43,6 +43,14 @@ admitted only when its resolved target stays under its entry's anchor, so a
 project steering link to a file outside the project is not read. An entry that
 cannot be globbed skips only itself.
 
+KAS loads both roots itself and honours `inclusion: manual` and `fileMatch`. So
+on a KAS session the shipped `file://.kiro/steering/**/*.md` entry is not sent
+when KAS already loads every file it names; otherwise those files would load on
+every turn, and twice. The entry is still sent when the workspace tree may hold an
+`inclusion: auto` file, a link, or a file Crew cannot read. The tree is checked
+when the session starts, so such a file added during a session loads from the
+next session (`src/kiro_crew/acp/kas_steering.py`).
+
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
 creating a workspace document is refused with `steering_workspace_unavailable`.

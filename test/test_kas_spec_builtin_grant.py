@@ -267,6 +267,19 @@ def test_the_projection_records_the_grants_and_relays_no_allow_rule() -> None:
     assert not [r for r in rules if r["capability"] in ("shell", "fs_read", "fs_write")]
 
 
+def test_a_use_aws_deny_travels_and_keeps_the_shell_grant() -> None:
+    settings = {"use_aws": {"deniedServices": ["iam", "S3; rm", "x" * 2000]}}
+    spec = _spec(tools=["*"], allowedTools=["shell"], toolsSettings=settings)
+    out = kas_agents.to_client_custom_agent("a", spec, "p")
+    assert out[CREW_ANSWERED_BUILTINS_KEY] == ["execute_bash"]
+    rules = out["permissions"]["rules"]
+    assert {"capability": "shell", "match": ["aws iam *"], "effect": "deny"} in rules
+    # Named still: a global option before the service slips the shell deny.
+    assert "toolsSettings.use_aws.deniedServices" in kas_agents.spec_keys_without_carrier(
+        spec, translates_tools_settings=True
+    )
+
+
 def test_no_grant_means_no_key() -> None:
     out = kas_agents.to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
     assert CREW_ANSWERED_BUILTINS_KEY not in out
