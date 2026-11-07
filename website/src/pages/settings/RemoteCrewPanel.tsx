@@ -894,6 +894,11 @@ export function RemoteCrewPanel() {
   // the server's own refusal also counts.
   const launcherNeedsPosix = windowsGateway || (preflightQuery.error instanceof ApiError
     && parseErrorCode(preflightQuery.error.body) === 'posix_host_required')
+  // A cap the probe read as 0 is named for any kind: the ENOSPC verdict is
+  // `transient`, but no moment clears a disabled cap.
+  const preflightSandboxRemedy = preflightNoSandbox && preflightQuery.error instanceof ApiError
+    ? parseErrorField(preflightQuery.error.body, 'remedy')
+    : undefined
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
@@ -1412,11 +1417,13 @@ export function RemoteCrewPanel() {
               <ErrorNotice
                 className="mb-2"
                 message={preflightNoSandbox
-                  ? preflightSandboxKind === 'transient'
-                    ? i18nT('pages.settings.remoteCrewPanel.aws_check_sandbox_busy')
-                    : preflightSandboxKind === 'foreign_sandbox'
-                      ? i18nT('pages.settings.remoteCrewPanel.aws_check_outer_sandbox')
-                      : i18nT('pages.settings.remoteCrewPanel.aws_check_no_sandbox')
+                  ? preflightSandboxRemedy === 'userns_cap_zero'
+                    ? i18nT('pages.settings.remoteCrewPanel.aws_check_userns_cap_zero')
+                    : preflightSandboxKind === 'transient'
+                      ? i18nT('pages.settings.remoteCrewPanel.aws_check_sandbox_busy')
+                      : preflightSandboxKind === 'foreign_sandbox'
+                        ? i18nT('pages.settings.remoteCrewPanel.aws_check_outer_sandbox')
+                        : i18nT('pages.settings.remoteCrewPanel.aws_check_no_sandbox')
                   : errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
                 report={preflightNoSandbox ? reportForError(preflightQuery.error) : undefined}
                 askAgent

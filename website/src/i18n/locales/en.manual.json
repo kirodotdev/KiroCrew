@@ -2954,6 +2954,8 @@
       "rejected": "Rejected",
       "remedy_apparmor_service_install": "Install {{productName}} as a service. It also writes a narrow AppArmor profile (kirocrew-userns) that grants only the user-namespace permission, to the {{productName}} service alone — nothing else on the machine is loosened.",
       "remedy_max_user_namespaces": "User namespace creation hit the per-user cap, which usually means user.max_user_namespaces is 0 on a hardened host. Raise it, and persist the value in /etc/sysctl.d/ so it survives a reboot.",
+      "remedy_userns_cap_zero": "Raise the limit, then persist it in /etc/sysctl.d/ so it survives a reboot.",
+      "userns_cap_zero_body": "User namespaces are disabled on this host: user.max_user_namespaces is 0. That is a deliberate hardening setting on many CIS-hardened and IT-managed images, so check with whoever manages this host before raising it.",
       "remedy_mount_denied": "Run the container with AppArmor unconfined and a seccomp profile that permits unshare and mount (the Linux sandbox guide below provides kirocrew-seccomp.json); no root is needed. If the pod policy cannot change, set agent.sandbox_allow_unsandboxed_exec=true in config.json.",
       "remedy_mount_denied_docker": "Docker",
       "remedy_mount_denied_pod": "Kubernetes Pod",

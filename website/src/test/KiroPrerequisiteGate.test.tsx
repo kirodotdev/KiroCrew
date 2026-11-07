@@ -1245,6 +1245,42 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.getByText(/do not disable the sandbox/)).toBeInTheDocument()
   })
 
+  it.each([
+    ['transient', 'unshare(CLONE_NEWUSER) failed with errno 28 (ENOSPC)'],
+    ['no_backend', 'unshare(CLONE_NEWUSER) failed with errno 87 (EUSERS)'],
+  ])('names a cap read as 0 as disabled user namespaces on a %s verdict', async (kind, detail) => {
+    // The probe read user.max_user_namespaces as 0, so the cause is certain for
+    // either kind: not a temporary limit and not a host with no sandbox at all,
+    // and the fix is shown as a fix rather than as "if this keeps happening".
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: kind,
+      sandbox_detail: detail,
+      sandbox_remedy: 'userns_cap_zero',
+    }))
+
+    const { container } = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('How to fix')).toBeInTheDocument()
+    expect(screen.queryByText('If this keeps happening')).not.toBeInTheDocument()
+    expect(screen.queryByText(/temporary resource limit/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/provides no OS-level sandbox/)).not.toBeInTheDocument()
+    expect(screen.getByText(/User namespaces are disabled on this host/)).toBeInTheDocument()
+    // Both commands are copyable literals: raise the cap, then persist it.
+    expect(screen.getByText('sudo sysctl -w user.max_user_namespaces=15000')).toBeInTheDocument()
+    expect(
+      screen.getByText("echo 'user.max_user_namespaces=15000' | sudo tee /etc/sysctl.d/99-userns.conf"),
+    ).toBeInTheDocument()
+    // A host-level verdict, so the alarm tone, not the calm one a busy host gets.
+    const icon = container.querySelector('.h-11.w-11')
+    expect(icon).toHaveClass('bg-danger/10')
+    expect(icon).not.toHaveClass('bg-accent-subtle')
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
   it('names the AppArmor mechanism and the command that fixes it', async () => {
     // Issue #1660: the screen used to show `errno 1 (EPERM)` and a retry button.
     // The probe already knew this was Ubuntu's restricted-profile restriction —

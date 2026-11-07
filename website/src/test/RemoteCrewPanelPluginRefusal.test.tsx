@@ -58,7 +58,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const PLUGIN = '/usr/local/sessionmanagerplugin/bin/session-manager-plugin'
 const CHOWN = 'sudo chown -R root:wheel /usr/local/sessionmanagerplugin'
@@ -193,6 +193,37 @@ describe('RemoteCrewPanel refused plugin row', () => {
       session_manager_plugin_refused_owner_uid: 502,
     }))
     expect(within(row).queryByRole('link', { name: /Remote Crew on EC2 guide/ })).toBeNull()
+  })
+})
+
+describe('RemoteCrewPanel sandbox refusal copy', () => {
+  /** Open the setup tab with the AWS check refused by the sandbox, as the gateway's 503 says. */
+  async function openRefused(kind: string, remedy: string) {
+    vi.mocked(api.cloudPreflight).mockRejectedValue(new ApiError(503, 'x', JSON.stringify({
+      code: 'sandbox_unavailable', kind, detail: 'probe', remedy,
+    })))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  }
+
+  it.each(['transient', 'no_backend'])('names a cap read as 0 on a %s refusal', async (kind) => {
+    // The probe read user.max_user_namespaces as 0, so no moment clears it and the
+    // host does have a sandbox once the cap is raised: neither older sentence fits.
+    await openRefused(kind, 'userns_cap_zero')
+
+    const message = await screen.findByText(/user namespaces are disabled on this host/)
+    expect(message).toHaveTextContent(/kirocrew doctor/)
+    expect(screen.queryByText(/temporary limit/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Re-check in a moment/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/has no sandbox for the aws command/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the busy copy for the ambiguous cap token', async () => {
+    await openRefused('transient', 'max_user_namespaces')
+
+    expect(await screen.findByText(/temporary limit/)).toBeInTheDocument()
+    expect(screen.queryByText(/user namespaces are disabled on this host/)).not.toBeInTheDocument()
   })
 })
 

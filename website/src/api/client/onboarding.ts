@@ -77,7 +77,9 @@ export interface KiroPrerequisiteStatus {
   sandbox_detail: string
   /**
    * Machine-readable host mechanism behind a Linux user-namespace denial:
-   * 'apparmor_userns' | 'max_user_namespaces' | 'no_user_ns' | 'userns_denied' | ''.
+   * 'apparmor_userns' | 'max_user_namespaces' | 'userns_cap_zero' | 'no_user_ns' |
+   * 'userns_denied' | ''. 'userns_cap_zero' is the cap read as 0 (user namespaces
+   * disabled), on either failure kind.
    * Selects which concrete remedy the gate renders — the errno alone leaves the
    * user with nothing to act on.
    */
