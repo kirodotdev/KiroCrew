@@ -15,7 +15,7 @@ place:
   ``relay_credential_paths``) and the webhook bearers (each
   hands back a credential that outlives the relay session), the
   local-secret CLI routes and the secrets vault, whose values would otherwise cross
-  the relay in plaintext;
+  the relay in plaintext, and the relay viewer's routes under ``/api/relay-viewer``;
 * shutdown;
 * the app surface for a teammate, until an app opts in to remote teammates: an
   app's UI and backend proxy (``/apps/*``), every route an app or the app
@@ -113,6 +113,9 @@ _LOCAL_CREDENTIAL_EXACT = frozenset(
 #: Under these, every route manages a stored credential: the vault's entries and
 #: each webhook bearer.
 _LOCAL_CREDENTIAL_PREFIXES = ("/api/secrets/", "/api/webhooks/tokens/")
+#: The relay viewer: it calls the control plane with this machine's Kiro sign-in
+#: and mints relay access tokens, so a relayed caller reaches none of it.
+_RELAY_VIEWER = "/api/relay-viewer"
 #: The app secret exchange (``POST /api/apps/<name>/token``), any method.
 _APP_TOKEN_EXCHANGE_RE = re.compile(r"\A/api/apps/[^/]+/token/?\Z")
 
@@ -169,6 +172,8 @@ def remote_limit_for(
     if (path.rstrip("/") or "/") in _LOCAL_CREDENTIAL_EXACT:
         return LOCAL_CREDENTIAL
     if path.startswith(_LOCAL_CREDENTIAL_PREFIXES) or _APP_TOKEN_EXCHANGE_RE.match(path):
+        return LOCAL_CREDENTIAL
+    if _at_or_under(path, _RELAY_VIEWER):
         return LOCAL_CREDENTIAL
     if _at_or_under(path, _SHUTDOWN):
         return SHUTDOWN
