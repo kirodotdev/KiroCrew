@@ -13,6 +13,8 @@
  * tested there.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import LayoutEditor from '../components/crew/layout/LayoutEditor'
@@ -182,6 +184,16 @@ describe('LayoutEditor (core)', () => {
     fireEvent.keyDown(bar, { key: 'ArrowRight' })
     fireEvent.keyDown(bar, { key: 'ArrowUp' })
     expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps the bar\'s grab cursor on its role="button" drag handle', () => {
+    // The handle matches index.css's base `[role="button"]:not(:disabled) { cursor:
+    // pointer }` and covers the whole bar, so without a cursor of its own the bar
+    // shows a click pointer. jsdom applies no cascade: asserted on the stylesheet.
+    render(<LayoutEditor spec={baseSpec()} onChange={() => {}} />)
+    expect(screen.getByLabelText('Move Side panel').getAttribute('role')).toBe('button')
+    const css = readFileSync(resolve(__dirname, '../components/crew/layout/layoutEditor.css'), 'utf8')
+    expect(css).toMatch(/^\.le-bar-handle \{[^}]*\bcursor: inherit;/m)
   })
 })
 
