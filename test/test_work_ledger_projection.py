@@ -77,6 +77,37 @@ async def test_writes_are_refused_when_the_callers_unit_is_unknown(recorded, mon
     assert len(recorded) == before
 
 
+@pytest.mark.asyncio
+async def test_a_worker_with_no_live_unit_yet_reports_into_its_boards_unit(recorded, monkeypatch):
+    """A worker bound before its first turn has no live unit yet: its report is
+    recorded as the board's copy in the conductor's unit, with no mirror, and the
+    conductor's log is never cited as the worker's evidence."""
+    item_id = await _board()
+    monkeypatch.setattr(
+        routes,
+        "unit_for_session_key",
+        lambda sessions, key: routes.UNKNOWN if key == WORKER else f"unit:{key}",
+    )
+    cited: list[str] = []
+    monkeypatch.setattr(routes, "_crew_store", lambda slot: "crew-x")
+    monkeypatch.setattr(
+        routes.crew_log_emit,
+        "on_crew_report",
+        lambda store, data, *, cite_unit: cited.append(cite_unit) or 0,
+    )
+    before = len(recorded)
+
+    status, body = await _report(WORKER, {"status": "progress", "summary": "started"})
+    assert status == 200, body
+    assert [(unit, data["action"], data["by"]) for unit, data in recorded[before:]] == [
+        (f"unit:{CONDUCTOR}", "report", WORKER)
+    ]
+    assert recorded[-1][1]["board_copy"] is True
+    assert cited == [routes.UNKNOWN]
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.status == "progress"
+
+
 # -- one entry per mutation ----------------------------------------------------
 
 
