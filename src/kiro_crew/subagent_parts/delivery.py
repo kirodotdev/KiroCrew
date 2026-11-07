@@ -6,7 +6,7 @@ and its parked predicate, and the run ids the teardown gate holds.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     import time
@@ -102,10 +102,28 @@ class SpawnApprovalUnreachable(Exception):
     __module__ = "kiro_crew.subagent"
 
 
+class HostSpawnDecision(NamedTuple):
+    """A spawn-approval answer the HOST gave, with nobody asked.
+
+    Returned by a :class:`SpawnApprovalCallback` in place of a bare ``bool`` when
+    the gateway callback answered alone (see ``_interactive_approval``'s
+    ``on_host_decision``), so the gate records ``by: host`` rather than a person's
+    answer. *cause* is a ``DENY_CAUSE_*`` code when one names the host's reason (an
+    expired window), ``""`` otherwise.
+    """
+
+    approved: bool
+    cause: str = ""
+
+    def __bool__(self) -> bool:
+        # A tuple is truthy, so a host decline would read as a yes to a plain ``if``.
+        return self.approved
+
+
 class SpawnApprovalCallback(Protocol):
     async def __call__(
         self, request_id: str, description: str, parent_session_key: str = ""
-    ) -> bool:
+    ) -> bool | HostSpawnDecision:
         pass
 
 

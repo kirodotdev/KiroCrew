@@ -1752,6 +1752,7 @@ Background task approvals (subagent, cron, task runner, and AutoNudge) post appr
 3. Dashboard callback resolves Slack future on dashboard approve
 4. Slack button click resolves dashboard future
 5. `handle_interaction()` guards against None provider and double-set on futures
+6. A caller that passes `on_host_decision=` (the spawn gate in `subagent_wiring.py`) is told `(request_id, cause)` for every answer given with nobody asked: an auto-approve source, the `--approval` mode, the YOLO override, slot trust, no UI at all, or a Slack prompt whose window closed (`cause` is `approval_timeout` there, `""` otherwise). The spawn callback turns that into a `HostSpawnDecision`, so its crew-log decision says `by: host`. A dashboard-only prompt's expiry still returns a bare `False` (#31930).
 
 ### Background Deny-Fast (Unattended Sources)
 

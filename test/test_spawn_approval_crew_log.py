@@ -16,8 +16,8 @@ was cancelled rather than answered.
 
 Deliberately NOT covered, because the change does not make them: the child's own
 crew log (no subagent path opens one), the dashboard's rendering of the folded
-pending row, and the auto-approve rungs, which answer without a prompt and so have
-no approval to record.
+pending row, and the gate's own auto-approve rungs, which answer without a prompt
+and so have no approval to record.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from off_loop_helpers import off_loop
 from kiro_crew.crew_log import crew_log_path, emit
 from kiro_crew.crew_log.projection import fold_approvals
 from kiro_crew.crew_log.store import CrewLog
-from kiro_crew.subagent import SpawnApprovalUnreachable, SubagentManager
+from kiro_crew.subagent import HostSpawnDecision, SpawnApprovalUnreachable, SubagentManager
 
 SESSION = "acp-spawn-approval-1"
 ASKING_TURN = 6
@@ -278,6 +278,34 @@ async def test_a_declined_spawn_is_recorded_as_rejected(_pinned_parent):
     assert folded["by_decision"] == {"rejected": 1}
     assert folded["last"]["approval_id"] == f"spawn:{info.id}"
     assert folded["last"]["by"] == "", "a person declined; the host did not"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_the_callback_gave_with_nobody_asked_is_the_hosts(_pinned_parent):
+    """An expired window, an auto-approve source or YOLO is not a person's answer.
+
+    Red before: the gate wrote ``by``/``cause`` empty after any normal return, which
+    reads as a person deciding.
+    """
+    from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+
+    _open_session()
+
+    async def _expired(_rid: str, _desc: str, _parent: str = "") -> HostSpawnDecision:
+        return HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
+
+    mgr = _manager(_expired)
+    info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
+    assert info is not None
+    await _settle(info)
+    assert_drained()
+
+    (decided,) = _of("approval/decided")
+    assert decided["decision"] == "rejected"
+    assert decided["by"] == "host"
+    assert decided["cause"] == DENY_CAUSE_APPROVAL_TIMEOUT
+    assert info.done and info.error == "spawn rejected"
+    assert not HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT), "a host no is not a yes"
 
 
 @pytest.mark.asyncio
