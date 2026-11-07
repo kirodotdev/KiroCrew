@@ -5712,16 +5712,21 @@ asked, and would at best drop the frame as unattributable.
 On an identity-capable server, the upstream release of a caller's subscription
 to a URI is held while another stub of that caller is routed for the URI, or
 while a same-caller subscribe for it is in flight
-(`Backend._hold_identity_release`), whether or not anything was cancelled. The
-unsubscribing stub is answered locally, and with no such stub routed the first
-same-caller subscribe in flight inherits the release
-(`_PendingRequest.release_owed`). A grant that routes a stub discharges it,
-because the caller's one upstream subscription now serves that stub, whose own
-departure releases it. A refusal, an unknown verdict or a grant that routes no
-stub has the gateway send it as that caller, unless the rule still holds.
-When the unsubscribing stub was the last one routed for the URI, the URI is
-orphan-marked while the release waits, as detach does, so an update the
-server sends for the still-live subscription is dropped without a hazard.
+(`Backend._hold_identity_release`), whether or not anything was cancelled.
+This decides the release that falls due on a stub's final unsubscribe
+(answered locally when held), its detach, a warm-pool claim's eviction
+(`evict_stub_subscriptions`), and the release sentinel's grant of a subscribe
+no stub is left to receive. With no such stub routed the first same-caller
+subscribe in flight inherits the release (`_PendingRequest.release_owed`). A
+grant that routes a stub discharges it, because the caller's one upstream
+subscription now serves that stub, whose own departure releases it. A refusal,
+an unknown verdict or a grant that routes no stub has the gateway send it as
+that caller, unless the rule still holds. The rule is per caller, so a stub of
+another caller routed for the URI does not hold the release; a sentinel grant
+without caller identity, or for a subscribe with no caller, is released only
+when no stub is routed for the URI. While a release is held and no stub is
+routed for the URI, an update for that URI is dropped without a hazard,
+whichever caller's stub left last.
 
 ### Checklist for a new tool
 
