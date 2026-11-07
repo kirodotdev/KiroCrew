@@ -67,6 +67,22 @@ def test_bundled_recipes_are_read_only() -> None:
 
 
 @pytest.mark.parametrize(
+    ("recipe", "scope"),
+    [
+        (wire.Recipe(name="goal", source="bundled://goal"), wire.RECIPE_SCOPE_BUNDLED),
+        (wire.Recipe(name="kas", source="/ws/kas.json", built_in=True), wire.RECIPE_SCOPE_BUNDLED),
+        (wire.Recipe(name="mine", source="/ws/mine.workflow.json"), wire.RECIPE_SCOPE_WORKSPACE),
+        (wire.Recipe(name="home", source="/home/u/home.workflow.json"), wire.RECIPE_SCOPE_GLOBAL),
+        (wire.Recipe(name="none", source=None), wire.RECIPE_SCOPE_GLOBAL),
+    ],
+)
+def test_a_recipe_scope_is_bundled_when_read_only_else_workspace_or_global(
+    recipe: wire.Recipe, scope: str
+) -> None:
+    assert recipe.scope("/ws") == scope
+
+
+@pytest.mark.parametrize(
     "raw",
     [None, [], {"source": "bundled://x"}, {"name": "", "source": "a"}],
 )

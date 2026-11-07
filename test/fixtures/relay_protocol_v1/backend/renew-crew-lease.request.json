@@ -34,7 +34,7 @@
       "X-Amz-Target": "KiroControlPlaneBearerService.RenewCrewLease",
       "Content-Type": "application/x-amz-json-1.0",
       "Authorization": "Bearer <the caller's credential>",
-      "TokenType": "Optional, matched case-sensitively. Omitted for IAM Identity Center, AWS Builder ID and Kiro social sign-ins. EXTERNAL_IDP for a token issued directly by an external identity provider. KIRO_MACHINE_TOKEN for a Kiro-issued credential, including one of an external-IdP tenant. API_KEY is not accepted on this operation. SSO_OIDC is not accepted. An unrecognized value counts as an omitted header and fails as a generic authentication failure."
+      "TokenType": "Matched case-sensitively. A team Crew sends its crew API key as the Bearer, as is, with TokenType API_KEY. A personal Crew sends its owner's sign-in: TokenType omitted for IAM Identity Center, AWS Builder ID and Kiro social sign-ins, and EXTERNAL_IDP for an Okta or Microsoft Entra ID sign-in. KIRO_MACHINE_TOKEN is refused on this operation. SSO_OIDC is not accepted. An unrecognized value counts as an omitted header and fails as a generic authentication failure. With the backend's Crew-for-Teams switch on, anything but API_KEY is refused today, a personal Crew included, pending contract section 13 item 29."
     }
   },
   "fields": {

@@ -340,16 +340,9 @@ class TestSaveCredentialVerification:
     ) -> None:
         """Nothing unverified is stored, even when a concurrent save moved the other half.
 
-        The verification is a network round trip, so it cannot hold the repo-wide config
-        lock -- that lock serializes every writer in the process, and a hung Azure
-        endpoint would wedge them. So it verifies outside and CONFIRMS inside. Without
-        the confirmation, two concurrent saves (one changing the app id, one the secret)
-        each verify a triple containing the other's old value, pass, and then merge on
-        commit into a triple neither checked: a green "Saved." and a dead channel at the
-        next restart.
-
-        Simulated by having the verifier itself write a competing app id, which is what a
-        racing save would have done between the check and the commit.
+        Verification is a network call, so it runs outside the config lock and is
+        confirmed inside it; otherwise two racing saves merge into a triple neither
+        checked. The verifier itself writes a competing app id to simulate the race.
         """
         env, cfg_path = _isolate(monkeypatch, tmp_path)
         cfg_path.write_text(json.dumps({"teams": {"app_id": "app-original"}}), encoding="utf-8")
@@ -427,11 +420,8 @@ class TestSaveCredentialVerification:
     def test_env_write_failure_restores_prior_config(self, monkeypatch, tmp_path: Path) -> None:
         """A failed .env credential write must roll config.json back.
 
-        Config metadata is written BEFORE the .env credential. If the .env write
-        then fails, the new app_id would otherwise be left paired with the OLD
-        password on disk (a broken pair that fails Teams auth on restart). The
-        handler snapshots config before writing and restores it on .env failure,
-        so the persisted pair stays consistent (old app_id + old password).
+        Config is written before .env, so on .env failure the snapshot is restored;
+        otherwise the new app_id pairs with the old password and Teams auth fails.
         """
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(

@@ -5,6 +5,7 @@ import ChannelPage from '../pages/ChannelPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { i18next } from '../i18n/all'
 import { ApiError } from '../api/apiError'
 
 vi.mock('../api/client')
@@ -621,6 +622,38 @@ describe('ChannelPage — Clear Context', () => {
     const still = screen.queryByTestId('clear-context-error')
     expect(still).not.toBeNull()
     expect(still?.textContent).toContain('channel B failure')
+  })
+
+  it('words a clear that deleted messages as one sentence', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(api).channelClearContext = vi.fn().mockResolvedValue({
+      ok: true, cleared: ['Researcher'], messages_deleted: true,
+    })
+    renderWithProviders(<ChannelPage />)
+    await waitFor(() => screen.getByTitle('Clear all context'))
+    await confirmClearAll()
+    const done = await screen.findByTestId('clear-context-done')
+    expect(done.textContent).toContain("Context cleared. The channel's messages were deleted too.")
+  })
+
+  it('runs the Japanese deletion acknowledgment on with no English space', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      vi.mocked(api).channelClearContext = vi.fn().mockResolvedValue({
+        ok: true, cleared: ['Researcher'], messages_deleted: true,
+      })
+      renderWithProviders(<ChannelPage />)
+      const clearAll = i18nT('pages.channelPage.clear_all_context')
+      const confirmLabel = i18nT('pages.channelPage.clear_context_and_delete_messages')
+      await waitFor(() => screen.getByTitle(clearAll))
+      await userEvent.click(screen.getByTitle(clearAll))
+      await userEvent.click(await screen.findByRole('button', { name: confirmLabel }))
+      const done = await screen.findByTestId('clear-context-done')
+      expect(done.textContent).toContain('コンテキストを消去しました。チャネルのメッセージも削除されました。')
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('does not dress a clean deletion in the warning hue', async () => {

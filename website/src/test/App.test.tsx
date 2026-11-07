@@ -2,7 +2,7 @@
 // layout contract and the shell. App.topbarAndShortcuts.test.tsx covers the rest
 // with the same mocks: the top bar's readouts, the global shortcuts and two
 // App.tsx source contracts.
-import { afterAll, beforeEach, describe, it, expect, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
@@ -165,6 +165,9 @@ describe('App routing', () => {
   // Most rows read the expanded rail's labels; the rail starts collapsed, so
   // a test that needs the fresh-profile default removes this key itself.
   beforeEach(() => { localStorage.setItem('mc-nav', '0') })
+  // The backoff tests drive fake timers across awaits; put real ones back even
+  // when one fails before its own finally runs.
+  afterEach(() => { vi.useRealTimers() })
 
   it('reopens the foreign-agent import gate when server onboarding is incomplete', async () => {
     const { api } = await import('../api/client')
@@ -715,6 +718,34 @@ describe('App routing', () => {
       expect(screen.getByText('Retry App')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('does not retry the Apps-nav fetch after a permission refusal (#32031)', async () => {
+    // A teammate through the relay is refused /api/apps (`relay_apps_teammate`);
+    // asking again on the backoff only repeats the refusal. A real failure still
+    // retries (the test above).
+    vi.useFakeTimers()
+    try {
+      const { api } = await import('../api/client')
+      const { ApiError } = await import('../api/apiError')
+      const listApps = api.listApps as ReturnType<typeof vi.fn>
+      listApps.mockReset()
+      listApps.mockRejectedValue(new ApiError(
+        403, "Apps aren't available to teammates through the relay.",
+        JSON.stringify({ error: 'refused', code: 'relay_apps_teammate' }),
+      ))
+      renderWithProviders(<App />, { route: '/chat' })
+      await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      const afterMount = listApps.mock.calls.length
+      // Well past every backoff step the ladder would schedule.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(listApps.mock.calls.length).toBe(afterMount)
+    } finally {
+      vi.useRealTimers()
+      // Put back the file's default answer so a later test is not served the refusal.
+      const { api } = await import('../api/client')
+      ;(api.listApps as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue([])
     }
   })
 

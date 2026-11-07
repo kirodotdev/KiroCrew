@@ -9,7 +9,7 @@ import { markSlotUnread } from '../../store/dashboardSlice'
 import { setSlotStatusDetail, refreshSlot, warmSlotCache, selectSidebarSubagentCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../../store/chatSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
-import { isSlotMuted } from '../sessionMute'
+import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { takeTurnErrored } from '../turnError'
 import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
@@ -54,12 +54,17 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       if (data.slot) {
         const soundState = store.getState()
         const soundSlot = soundState.dashboard.slots.find(s => s.key === data.slot)
-        // A session muted from its own row, or by its creator's "mute sessions
-        // it opens" rule, produces no turn-done chime, no background-finished toast and no
+        // A session muted from its own row, by the user muting the app that
+        // opened it, or by its creator's "mute sessions it opens" rule, produces
+        // no turn-done chime, no background-finished toast and no
         // unread badge, from its first turn. A tool-approval prompt is NOT this
         // path (it flows through approvals.ts) and stays exempt, as criterion 2
         // requires. The creator keeps all of its own signals.
-        muted = isSlotMuted(soundState.dashboard.slots, data.slot)
+        muted = isSlotMuted(
+          soundState.dashboard.slots,
+          data.slot,
+          appsMutingSessions(queryClient.getQueryData(['kirocrewConfig'])),
+        )
         const workflows = selectSidebarWorkflowActive(soundState)
         const workflowActive = !!(
           workflows[normalizeRunSessionKey(data.slot)]

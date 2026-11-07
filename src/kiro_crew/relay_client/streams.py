@@ -168,11 +168,14 @@ class HttpStream:
         monotonic: Callable[[], float] = time.monotonic,
         request_credit: bool = False,
         send_unless: Optional[SendUnless] = None,
+        on_error: Optional[StreamDone] = None,
     ) -> None:
         self.id: int = head["id"]
         self._head = head
         self._send = send
         self._send_unless = send_unless
+        #: Told the stream's id before its own error frame is queued.
+        self._on_error = on_error
         self._ingress = ingress
         self._on_done = on_done
         self.credit = credit
@@ -337,8 +340,6 @@ class HttpStream:
             response = await self._open()
             if response is not None:
                 await self._relay_response(response)
-        except asyncio.CancelledError:
-            raise
         except ConnectionError:
             # The host socket closed under us; the relay has already ended the stream.
             pass
@@ -360,6 +361,8 @@ class HttpStream:
         """End this stream with an ``error`` frame; marked first, so it goes out once."""
         self._error_sent = True
         self._ended = True
+        if self._on_error is not None:
+            self._on_error(self.id)
         await self._send(build_error(code, message, stream_id=self.id))
 
     async def _open(self) -> Optional[IngressResponse]:
@@ -370,6 +373,8 @@ class HttpStream:
             query=head["query"],
             headers=tuple(head["headers"].items()),
             user=head["user"],
+            user_email=head.get("userEmail", ""),
+            user_name=head.get("userName", ""),
             credited_body=self._request_granted is not None,
         )
         body = self._iter_body() if self._has_body() else None
@@ -421,7 +426,7 @@ class HttpStream:
         try:
             async for piece in response.iter_body(BODY_CHUNK_RAW_BYTES):
                 await self._send_body(piece)
-        except (asyncio.CancelledError, ConnectionError):
+        except ConnectionError:
             raise
         except Exception as exc:
             # The head is out, so the viewer has a status already; an error frame
@@ -689,6 +694,8 @@ class WsStream:
             protocols=protocols,
             headers=tuple((k, v) for k, v in head.get("headers", [])),
             user=head["user"],
+            user_email=head.get("userEmail", ""),
+            user_name=head.get("userName", ""),
         )
         try:
             return await self._ingress.open_websocket(request)

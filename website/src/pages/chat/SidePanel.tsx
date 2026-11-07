@@ -52,6 +52,7 @@ import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import type { ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
+import { slotHasWorkflowRun } from './workflowRunsPoll'
 import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
@@ -157,6 +158,8 @@ interface SidePanelProps {
   selectedSourceUrl?: string
   onSelectSource?: (url: string) => void
   onReconcileSource?: (url: string) => void
+  /** Close a pull request's tab in the Changes strip for this session. */
+  onDismissSource?: (url: string) => void
   /** Issue links mentioned in this session (the `kind: 'issue'` half of the
    *  extractor's output). Separate props — not a merged list — so the Changes
    *  and Issues tabs each keep their own selection. */
@@ -264,7 +267,7 @@ interface SidePanelProps {
  */
 export default function SidePanel({
   tabsCtl, slot, slotOwner, persistSlot, onFileOpen, onOpenWorkingTreeDiff, onArtifactOpen, onAddToContext, onComposerInsert,
-  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
+  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, connected = true, onFileSave, onClose, panelHidden,
   pins, pinsLoading, onJumpToPin, onUnpin,
@@ -319,6 +322,16 @@ export default function SidePanel({
     retry: false,
   })
   const summaryEnabled = summaryMeta?.enabled !== false
+  // Whether to offer the Workflows row: once this chat has a run, listed (the
+  // command center's entry, which the socket refreshes) or live. Fails OPEN like
+  // Summary. No query-level options here: they would apply to that entry's reads.
+  const { data: workflowRunList, isSuccess: workflowRunsRead } = useQuery({
+    queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, enabled: !!slot,
+  })
+  const hasLiveWorkflowRun = useAppSelector(st => slotHasWorkflowRun(
+    Object.values(st.chat.workflowRuns ?? {}).map(r => r.sessionKey), slot))
+  const hasWorkflowRuns = !slot || !workflowRunsRead || hasLiveWorkflowRun
+    || slotHasWorkflowRun((workflowRunList?.runs ?? []).map(r => r.session_key), slot)
 
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side, and never list the pinned views (Changes / Files /
@@ -348,7 +361,7 @@ export default function SidePanel({
     summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
     crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModePreview && !hiddenViews?.has('workers'),
   })
-  const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hiddenViews, crewMode })
+  const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hasWorkflowRuns, hiddenViews, crewMode })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
@@ -575,13 +588,14 @@ export default function SidePanel({
     // clean, non-empty file target and asks before discarding one whose copy it
     // cannot confirm. A partial (truncated) buffer is still the only surviving
     // prefix once its disk copy is gone, so it is preflighted too — only binary
-    // buffers, which are an envelope rather than the file, are excluded. A
+    // buffers, which are an envelope rather than the file, and the seeded
+    // "file not found" placeholder, which is no copy at all, are excluded. A
     // working-tree diff tab carries the file's full text too, and its single ×
     // runs the same guard, so it is preflighted alongside file tabs. Dirty
     // tabs are named separately below.
     const cleanFiles = targets.filter(tab =>
       (tab.kind === 'file' || tab.kind === 'wtdiff') && tab.content === tab.savedContent
-      && !tab.binary && (tab.content ?? '') !== '' && !!tab.path)
+      && !tab.binary && !tab.placeholder && (tab.content ?? '') !== '' && !!tab.path)
     const lastCopy: PanelTab[] = []
     const unread: PanelTab[] = []
     await Promise.all(cleanFiles.map(async tab => {
@@ -707,7 +721,8 @@ export default function SidePanel({
             trailing strip controls — + menu, dock toggle, close — past the
             panel root's `overflow-hidden` edge, where nothing at that width
             brings them back. The chips inside stay `shrink-0`: they scroll,
-            they never squeeze. */}
+            they never squeeze. The group yields width only once the dynamic
+            group has none left. */}
         {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
             parent, not the scrolled group. min-w-0 keeps the scroller
             shrinkable (the group must stay shrinkable per the comment above). */}
@@ -777,9 +792,13 @@ export default function SidePanel({
         )}
         {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
             parent, not the scrolled group. min-w-0 keeps the scroller
-            shrinkable. The -mb-px (border overlap) stays on the group itself,
-            which the seam-hairline contract pins. */}
-        <div ref={dynamicWrapRef} className="relative min-w-0 flex items-end">
+            shrinkable; `shrink-[10000]` (flex shrinks by factor × base size)
+            spends all its width before the pinned group's, with no floor that
+            could push the controls into the caption reserve, and
+            `overflow-x-clip` keeps its squeezed padding and fades inside. The
+            -mb-px (border overlap) stays on the group itself, which the
+            seam-hairline contract pins. */}
+        <div ref={dynamicWrapRef} className="relative min-w-0 shrink-[10000] overflow-x-clip flex items-end">
         <Reorder.Group
           ref={tabNav.dynamicScrollerRef}
           axis="x"
@@ -1209,6 +1228,7 @@ export default function SidePanel({
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
                   onReconcileSource={onReconcileSource}
+                  onDismissSource={onDismissSource}
                   issues={issues}
                   selectedIssueUrl={selectedIssueUrl}
                   onSelectIssue={onSelectIssue}
@@ -1241,8 +1261,8 @@ export default function SidePanel({
                 slot={slot}
                 onClose={() => handleCloseTab(t.id)}
                 onPanelHandle={registerPanelHandle}
-                onContentChange={(c) => patchTab(t.id, { content: c })}
-                onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
+                onContentChange={(c) => patchTab(t.id, { content: c, placeholder: undefined })}
+                onDiskContent={(c, binary, partial, placeholder) => patchTab(t.id, { content: c, savedContent: c, placeholder, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
                 onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}

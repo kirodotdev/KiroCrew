@@ -5,8 +5,9 @@
  * eventually overflow the ~5 MB origin quota, white-screening the app.
  *
  * Two entry points:
- *   - `gcOrphanedStorage(liveIds)` — startup pass, removes keys for sessions
- *     that no longer exist.
+ *   - `gcOrphanedStorage(liveIds)` — removes keys for sessions that no longer
+ *     exist. Runs at boot, and again when a complete live slot list drops a
+ *     key (`utils/slotStorageSweep.ts`).
  *   - `gcSessionStorage(sessionKey)` — called when a session is deleted,
  *     removes that session's associated keys immediately.
  */
@@ -95,11 +96,16 @@ const isReservedName = (sessionId: string, prefix: string, sweep: 'orphan' | 'de
 
 /**
  * Remove localStorage keys belonging to sessions not in `liveSessionIds`.
- * Call once on app boot after fetching the slot list.
+ * `isKept` receives everything after the prefix and spares the key when it
+ * answers true, so a caller can keep keys whose slot key itself contains ':'
+ * or that it cannot list but must not lose.
  *
  * Returns the number of keys removed.
  */
-export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
+export function gcOrphanedStorage(
+  liveSessionIds: Set<string>,
+  isKept: (scoped: string) => boolean = () => false,
+): number {
   if (typeof localStorage === 'undefined') return 0
   let removed = 0
   // Collect doomed keys first — removing during iteration shifts indices.
@@ -110,8 +116,9 @@ export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
     for (const prefix of SESSION_PREFIXES) {
       if (key.startsWith(prefix)) {
         // Extract the session ID: everything after the prefix, before any further ':'
-        const sessionId = key.slice(prefix.length).split(':')[0]
-        if (sessionId && !isReservedName(sessionId, prefix, 'orphan') && !liveSessionIds.has(sessionId)) {
+        const scoped = key.slice(prefix.length)
+        const sessionId = scoped.split(':')[0]
+        if (sessionId && !isReservedName(sessionId, prefix, 'orphan') && !liveSessionIds.has(sessionId) && !isKept(scoped)) {
           doomed.push(key)
         }
         break

@@ -8,6 +8,7 @@ import AppConfirmHost from '../src/components/AppConfirmHost'
 import SlotTagPopover from '../src/components/SlotTagPopover'
 import { TagPopoverProvider } from '../src/hooks/useTagPopover'
 import { sseSlots } from '../src/store/dashboardSlice'
+import { confirmAction } from '../src/test/confirmAction'
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseConnected } from '../src/store/dashboardSlice'
 import { server } from './mocks/server'
@@ -410,6 +411,7 @@ describe('ChatSidebar tag/column UI', () => {
     await user.click(screen.getByTestId('column-edit-c1'))
     await waitFor(() => expect(screen.getByTestId('tag-delete-todo')).toBeInTheDocument())
     await user.click(screen.getByTestId('tag-delete-todo'))
+    await confirmAction('Delete tag')
     await waitFor(() => expect(backend.state.tags.find(t => t.id === 'todo')).toBeUndefined())
   })
 

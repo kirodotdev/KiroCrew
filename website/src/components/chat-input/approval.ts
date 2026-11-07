@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Trans } from 'react-i18next'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
 import { pendingQuestionFor, resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
@@ -111,7 +112,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   const hideApprovalNudge = useCallback(() => setApprovalNudgeSlot(null), [])
   // Non-null while the last approval decision failed. Rendered as a one-line
   // strip under the composer; auto-clears so it cannot become permanent chrome.
-  const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
+  const [approvalNotice, setApprovalNotice] = useState<ReactNode>(null)
   // The same notice slot carries two different things: STATUS about an
   // approval that expired (nothing failed on our side) and a FAILED decision
   // submit (a rejected request). Only the latter is an error surface.
@@ -304,7 +305,11 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
         setApprovalNoticeKind('granted')
         setApprovalNotice(decision === 'trust_base'
           ? i18nT('components.chatInput.trusted_base_until', { base: baseCommandLabel(approvalBaseCommand), time })
-          : i18nT('components.chatInput.trusted_command_until', { cmd: truncateCommandLabel(approvalFullCommand, 80), time }))
+          // The command is the <mono/> chip's child, never a `values` entry.
+          : createElement(Trans, {
+            i18nKey: 'components.chatInput.trusted_command_until', values: { time },
+            components: { mono: createElement('span', { className: 'bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border' }, truncateCommandLabel(approvalFullCommand, 80)) },
+          }))
       }
       // B2: tally manual one-shot approvals per slot. Only 'approved' counts —
       // a trust grant already reduces future prompts, and a rejection is not

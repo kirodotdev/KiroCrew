@@ -1,30 +1,16 @@
 """``_ingest_file`` must neither query per file nor await after the commit.
 
-Two defects meet in this one function, and the naive fix for the first creates
-the second -- so both are ratcheted here together.
+**The query.** Diffing the source's whole item-id set before and after each file
+reads ~20k rows twice per file on the event loop, which trips the loop-stall
+watchdog and crash-loops the gateway.
 
-**The query.** A naive scan learns which items a file produced by reading the
-source's entire item-id set BEFORE and AFTER every single file and diffing the two.
-``idx_items_source_id`` keeps each read an index scan rather than a table scan, but
-it still materializes one row per item in the SOURCE -- about 20k rows on a large
-folder source, measured at over a second per call -- twice per file, synchronously
-on the event loop. That trips the loop-stall watchdog, which exits the process; the
-supervisor respawns it, the boot scan re-enters the same reads, and the gateway
-crash-loops. Observed against a 2709-file source: four watchdog exits inside 17
-minutes, with 7-9s of loop lag still reported between them.
+**The orphan window.** Moving those reads to a thread adds an await after the
+pipeline's commit; ``_do_scan`` writes the ``folder_file_state`` row only after
+``_ingest_file`` returns, so a shutdown there leaves committed items no row names,
+and the next scan duplicates them.
 
-**The orphan window.** Merely moving those reads to a worker thread introduces a
-DIFFERENT bug, which is why this file also ratchets awaits. The pipeline commits
-the new items inside its own uncancellable ``run_to_completion`` finalize hop, and
-the caller (``_do_scan``) writes the ``folder_file_state`` row that NAMES them only
-after ``_ingest_file`` returns. Any await between that commit and this function's
-return is therefore a window where a gateway shutdown cancels the coroutine,
-committed items end up named by no state row, and the next scan re-ingests the file
--- duplicating them while the first group stays untracked and undeletable.
-
-Both are closed by the same change: the pipeline already reports its created ids
-through ``on_committed``, invoked INSIDE the finalize hop that commits them. Taking
-the ids from there means no read to offload and no post-commit await to cancel.
+The ids instead come from ``on_committed``, invoked INSIDE the finalize hop that
+commits them: no read to offload and no post-commit await to cancel.
 """
 
 from __future__ import annotations
@@ -133,10 +119,8 @@ def _misplaced_awaits(names: list[str]) -> list[str]:
 def test_ingest_file_issues_no_sqlite_call_on_the_event_loop():
     """Ratchet: the coroutine body runs no synchronous sqlite round-trip.
 
-    Scoped to this one coroutine on purpose. A repo-wide ban on synchronous
-    ``execute`` would light up hundreds of pre-existing sites and say nothing about
-    this defect; this function is the one that ran a full per-source id read twice
-    for every file in a scan, so it is the one that must stay clean.
+    Scoped to this one per-file coroutine: a repo-wide ban would flag hundreds of
+    unrelated sites.
     """
     tree = ast.parse(_WATCHER_SRC.read_text(errors="replace"))
     fn = _async_def(tree, "_ingest_file")
@@ -158,26 +142,13 @@ def test_ingest_file_issues_no_sqlite_call_on_the_event_loop():
 def test_ingest_file_never_awaits_after_the_pipeline_commits():
     """Ratchet: after the pipeline call, the only awaits are drained state writes.
 
-    This is the invariant that makes the orphan window unreachable rather than
-    merely unlikely. The caller writes the ``folder_file_state`` row naming the new
-    items only after this function RETURNS, so an await that a cancellation can
-    SKIP PAST -- a bare ``asyncio.to_thread`` hop added in good faith to get a
-    query off the loop -- lets a shutdown cancel the coroutine after the pipeline
-    has already committed. The items survive, nothing names them, and the next
-    scan re-ingests the file alongside them.
+    The caller writes the ``folder_file_state`` row only after this function
+    RETURNS, so an await a cancellation can skip past (a bare ``asyncio.to_thread``)
+    lets a shutdown orphan committed items and the next scan duplicate them.
 
-    ``_persist_state`` is admitted because it is the opposite shape: it is
-    ``run_to_completion``-backed, so the state write it carries runs to completion
-    even when the coroutine is cancelled mid-await -- the same guarantee the
-    pipeline's own finalize hop relies on. It is how the failure branches record
-    their terminal ``failed`` row without a synchronous sqlite call on the loop
-    (the sqlite ratchet above), and every such branch is one where the pipeline
-    never committed, so there is no committed group for the await to orphan.
-
-    A ``to_thread`` hop is admitted only BEFORE the pipeline call, where it runs
-    the ingest-time path re-check: nothing is committed yet, so a cancellation
-    there leaves the caller's 'scanning' marker exactly as a cancellation inside
-    the pipeline before its finalize hop does.
+    ``_persist_state`` is admitted: it is ``run_to_completion``-backed, and it
+    only runs on failure branches where nothing committed. A ``to_thread`` hop is
+    admitted only BEFORE the pipeline call, where nothing is committed yet.
     """
     tree = ast.parse(_WATCHER_SRC.read_text(errors="replace"))
     fn = _async_def(tree, "_ingest_file")
@@ -199,9 +170,8 @@ def test_ingest_file_never_awaits_after_the_pipeline_commits():
 def test_ingest_file_takes_its_item_ids_from_the_commit_callback():
     """The ids come from ``on_committed``, not from a read-back.
 
-    Guards the two ratchets above against passing because the bookkeeping was
-    simply deleted: a scan that reports no item ids silently stops attributing
-    items to files, which breaks deletion and re-ingest detection.
+    Keeps the two ratchets above from passing because the bookkeeping was deleted,
+    which would break deletion and re-ingest detection.
     """
     source = _WATCHER_SRC.read_text(errors="replace")
     assert "on_committed=" in source, (
@@ -224,10 +194,8 @@ def test_ingest_file_takes_its_item_ids_from_the_commit_callback():
 async def test_ingest_file_reports_the_committed_ids_without_touching_sqlite(tmp_path):
     """Behavioural: the right ids come back, and the loop's connection stays idle.
 
-    Asserted by tracing the LOOP THREAD's own sqlite connection rather than by
-    patching a method. ``store.db`` is per-thread, so that connection sees a
-    statement only if it was executed on the loop thread -- the exact property
-    under test, and one a lexical check cannot fake.
+    ``store.db`` is per-thread, so tracing the loop thread's connection sees only
+    statements executed on the loop.
     """
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     try:
@@ -304,10 +272,8 @@ async def test_ingest_file_reports_the_committed_ids_without_touching_sqlite(tmp
 async def test_ingest_file_reports_failure_when_the_pipeline_never_commits(tmp_path):
     """A silent rollback is still detected, without reading ``sync_status``.
 
-    The pipeline invokes ``on_committed`` only on the branch that actually commits
-    a group, so an unset callback IS the rollback signal. Losing this would make a
-    partial failure look like a successful ingest that produced no items: the file
-    would be recorded ``done`` and never retried.
+    ``on_committed`` fires only when a group commits, so an unset callback IS the
+    rollback signal; otherwise the file is recorded ``done`` and never retried.
     """
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     try:
@@ -331,8 +297,7 @@ async def test_ingest_file_reports_failure_when_the_pipeline_never_commits(tmp_p
                 include_paths=None,
                 included=None,
             ):
-                # Rolls back internally and does NOT raise -- exactly the shape
-                # the old sync_status read existed to catch.
+                # Rolls back internally and does NOT raise.
                 return "job-1"
 
             def get_job_status(self, job_id):
@@ -360,20 +325,12 @@ async def test_ingest_file_reports_failure_when_the_pipeline_never_commits(tmp_p
 
 @pytest.mark.asyncio
 async def test_ingest_file_still_reports_a_refused_duplicate_as_deduped(tmp_path):
-    """The duplicate branch is unaffected by sourcing ids from the callback.
+    """A refused duplicate is reported as 'deduped', not as a rollback.
 
-    The pre-ingest gate refuses the write and never commits a group, so
-    ``on_committed`` does not fire there either -- the same condition as a
-    rollback. The refusal is reported the same way the commit is: through
-    ``on_duplicate``, invoked inside the gate's own transaction (the only place
-    ``DUPLICATE_JOB_STATUS`` is ever written). The duplicate check must therefore
-    keep winning, or a legitimately refused file would be recorded ``failed`` and
-    retried on every scan.
-
-    The fake follows the real gate's contract and fires the callback. It also
-    exposes ``get_job_status`` and asserts it is never consulted: reading the
-    status back after the pipeline returned was a synchronous sqlite round-trip
-    on the event loop for every ingested file.
+    The gate never commits, so ``on_committed`` does not fire; the refusal
+    arrives through ``on_duplicate``. If it lost to the rollback check, the file
+    would be recorded ``failed`` and retried every scan. ``get_job_status`` must
+    not be consulted: that read-back is a sync sqlite call on the event loop.
     """
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     try:
@@ -461,10 +418,8 @@ async def test_ingest_file_forwards_the_refusal_to_the_callers_on_duplicate(tmp_
 async def test_ingest_file_lets_cancellation_through_without_a_failed_state_row(tmp_path):
     """A cancelled ingest must not be recorded as an ingest failure.
 
-    ``CancelledError`` is a ``BaseException``, so the function's ``except
-    Exception`` does not catch it and the file keeps its retryable ``scanning``
-    marker. Widening that handler would write a terminal ``failed`` row on every
-    gateway shutdown, and the next scan would skip a file that was never broken.
+    ``except Exception`` does not catch ``CancelledError``, so the file keeps its
+    retryable ``scanning`` marker; widening it would fail files on every shutdown.
     """
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     try:
@@ -504,14 +459,9 @@ async def test_ingest_file_lets_cancellation_through_without_a_failed_state_row(
 async def test_commit_callback_persists_the_state_row_before_returning(tmp_path):
     """The committed group reaches the state row INSIDE the callback.
 
-    Capturing the ids in memory is not enough: the pipeline awaits again after
-    its finalize hop (``generate_source_summary``), so a shutdown cancelling
-    there strands a committed group the caller never gets to record -- the
-    'scanning' marker survives and the next sweep re-ingests the file alongside
-    the untracked first group. This asserts the row is already terminal, and
-    names the group, at the moment ``on_committed`` returns -- observed from
-    inside the stand-in pipeline, before ``_ingest_file`` has a chance to run
-    any code after its await.
+    The pipeline awaits again after its finalize hop (``generate_source_summary``),
+    so a cancellation there would strand ids held only in memory. The row is
+    observed from inside the stand-in pipeline, before ``_ingest_file`` resumes.
     """
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     try:
@@ -587,14 +537,9 @@ async def test_commit_callback_persists_the_state_row_before_returning(tmp_path)
 async def test_a_failed_callback_persistence_does_not_poison_the_ingest(tmp_path):
     """The callback's state write is a durability upgrade, never a precondition.
 
-    It runs inside the pipeline's finalize hop, AFTER the group has committed
-    and the superseded items are deleted. If a writer-lock timeout (a large
-    concurrent import_bundle) made it raise, the exception would poison that
-    hop: the pipeline reports the whole ingest failed, the caller writes a
-    terminal 'failed' row, and the next sweep re-ingests alongside the
-    committed group -- exactly the duplication the write exists to prevent. So
-    a failed write must be swallowed: the ids still travel through memory and
-    the caller's own 'done' write persists them on the uncancelled path.
+    It runs after the group committed; raising on a writer-lock timeout would
+    mark the ingest failed and the next sweep would duplicate the group. The ids
+    still travel through memory to the caller's own 'done' write.
     """
 
     class _LockedConn:
@@ -678,10 +623,8 @@ async def test_a_failed_callback_persistence_does_not_poison_the_ingest(tmp_path
 async def test_scan_records_the_committed_group_on_the_state_row(tmp_path):
     """End to end: the ids the pipeline committed are what the state row names.
 
-    The unit tests above assert the value ``_ingest_file`` returns; this asserts
-    the value the SCAN persists, which is what the deleted-file path and re-ingest
-    detection actually read. A callback wired up but dropped on the way out would
-    pass every test above and still strand every ingested file.
+    This checks what the SCAN persists, which the deleted-file path reads; ids
+    dropped on the way out would pass every unit test above.
     """
     from unittest.mock import AsyncMock, MagicMock
 
@@ -750,11 +693,7 @@ async def test_scan_records_the_committed_group_on_the_state_row(tmp_path):
 
 
 def test_await_ratchet_would_catch_a_reintroduced_post_commit_hop():
-    """Negative control: the await detector fires on the shape just removed.
-
-    Without this, a detector bug that reports nothing would make the ratchet pass
-    forever. Feeds it the exact post-commit hop shape.
-    """
+    """Negative control: the await detector fires on a post-commit hop."""
     pre_fix = ast.parse(
         "class W:\n"
         "    async def _ingest_file(self):\n"
@@ -780,11 +719,7 @@ def test_await_ratchet_admits_a_pre_commit_hop_only():
 
 
 def test_await_ratchet_ignores_awaits_inside_nested_helpers():
-    """Negative control: an await in a nested frame is not this frame's await.
-
-    A detector that flagged those would make the correct shape unlandable and push
-    the next author back onto the loop.
-    """
+    """Negative control: an await in a nested frame is not this frame's await."""
     post_fix = ast.parse(
         "class W:\n"
         "    async def _ingest_file(self):\n"
@@ -799,7 +734,7 @@ def test_await_ratchet_ignores_awaits_inside_nested_helpers():
 
 
 def test_db_ratchet_would_catch_a_reintroduced_on_loop_query():
-    """Negative control for the sqlite detector, on the original pre-fix shape."""
+    """Negative control for the sqlite detector, on an on-loop id read."""
     pre_fix = ast.parse(
         "class W:\n"
         "    async def _ingest_file(self):\n"

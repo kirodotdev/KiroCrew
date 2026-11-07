@@ -83,13 +83,8 @@ class TestConfigPutRoundTrip:
     async def test_put_rejects_non_boolean_streaming(self, tmp_path, monkeypatch):
         """Non-boolean ``streaming`` values must be ignored, not coerced.
 
-        ``bool()`` of a JSON string is the trap: ``bool("false")`` is ``True`` and
-        ``bool("")`` is ``False``, so a coercing handler moves the setting on input
-        that expressed no choice. With streaming on by default the damage runs both
-        ways (a falsy non-bool would silently turn dictation's live text off, and a
-        truthy one would turn it back on under a user who opted out), so both
-        directions are pinned here. ``isinstance(body["streaming"], bool)`` is what
-        keeps the stored value where the user left it.
+        ``bool("false")`` is ``True`` and ``bool("")`` is ``False``, so coercion would
+        flip the setting either way; both directions are pinned.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.dashboard import handlers

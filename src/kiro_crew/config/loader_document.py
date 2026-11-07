@@ -538,27 +538,13 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
             path = path.resolve()
     except OSError:
         pass
-    # Decide the Windows lockdown HERE, before the stat and the mkdir below and
-    # before anything atomic_write does -- every one of those is a round-trip on a
-    # network-homed data home. A DACL write to a UNC or mapped-drive path is an
-    # unbounded SMB round-trip, so when it cannot be afforded it has to be ruled
-    # out before the work starts rather than part way through.
-    #
-    # But whether it can be afforded is a question about the CALLING THREAD, not
-    # about the volume. The volume was only ever a proxy: this function is
-    # synchronous and async dashboard handlers reach it inline, where an unbounded
-    # wait stalls the one loop the whole gateway shares. Off the loop there is
-    # nothing to stall -- a worker started by ``run_config_write`` /
-    # ``asyncio.to_thread``, a CLI invocation, a startup path all block only
-    # themselves -- so the same predicate ``atomic_write`` already gates its own
-    # unbounded-on-Windows step on decides here too, and a network-homed data home
-    # gets the DACL whenever its caller has offloaded the write.
-    #
-    # This sits just AFTER the symlink resolve rather than at the very top of the
-    # function, and deliberately: a config symlinked into a dotfiles repo (which
-    # the docstring above calls a normal setup) can point at a DIFFERENT volume
-    # than the link, so classifying before resolving would classify the wrong one.
-    # The resolve is two stats; the earliest CORRECT point is here.
+    # Decide the Windows lockdown HERE, before the stat, the mkdir and atomic_write:
+    # a DACL write to a UNC or mapped-drive path is an unbounded SMB round-trip, so
+    # it must be ruled out before the work starts. Whether it can be afforded depends
+    # on the CALLING THREAD: inline on the event loop it would stall the whole
+    # gateway, while off the loop (``run_config_write``, ``asyncio.to_thread``, the
+    # CLI, startup) it blocks only itself and always gets the DACL. Placed after the
+    # symlink resolve because a symlinked config can live on a different volume.
     lock_down = platform_compat.IS_POSIX
     if not platform_compat.IS_POSIX:
         if not on_event_loop():
@@ -589,7 +575,7 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     if is_owner_only_target(path):
         # Preserving never means keeping it readable by others: inside the data
         # home every file is owner-only (kiro_crew.owner_only_files), so a 0644
-        # left by an older version narrows to 0600 here. A config symlinked out of
+        # file narrows to 0600 here. A config symlinked out of
         # the home resolved to its target above and keeps the target's mode.
         mode &= ~GROUP_OTHER_BITS
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -609,16 +595,13 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     elif lock_down:
         # Windows: the mode bits above are inert (fchmod_safe is a documented
         # no-op), so there is nothing to preserve and no conflict with
-        # restrict_to_owner's implied 0600. Taking the lockdown here rather than
-        # leaving it to callers also closes the window a post-write lockdown
-        # would leave: atomic_write applies the DACL to the temp file BEFORE any
-        # content reaches it, so an inline credential never exists in a file
-        # readable by other local accounts.
+        # restrict_to_owner's implied 0600. atomic_write applies the DACL to the
+        # temp file BEFORE any content reaches it, so an inline credential never
+        # exists in a file readable by other local accounts.
         #
-        # restrict_on_error="warn", not the default "raise": config.json must not
-        # become unwritable because a DACL could not be applied. Same trade-off
-        # sel.py and dashboard/refresh_tokens.py already take, and strictly
-        # better than the previous behavior, which applied no DACL at all.
+        # restrict_on_error="warn", not "raise": config.json must not become
+        # unwritable because a DACL could not be applied (the same trade-off
+        # sel.py and dashboard/refresh_tokens.py take).
         atomic_write(
             path,
             payload,
@@ -627,12 +610,9 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
             restrict_on_error="warn",
         )
     else:
-        # Reached only by a write still INLINE ON THE LOOP whose volume is not
-        # local: exactly the write this branch did before the lockdown was added,
-        # so such a data home is no worse off than before. The residual is real and
-        # declared -- the file keeps the ACL it inherits from its parent -- but it
-        # is now per CALLER rather than per platform: offloading a caller moves it
-        # to the branch above and it gets the DACL with no change needed here.
+        # Reached only by a write INLINE ON THE LOOP to a non-local volume. The
+        # file keeps the ACL it inherits from its parent; offloading the caller
+        # moves it to the branch above, where it gets the DACL.
         atomic_write(path, payload, fsync=fsync, mode=mode)
 
 

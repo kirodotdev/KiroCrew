@@ -1247,6 +1247,7 @@ A child finished its work.
 | `agent_id` | string | required | The child's id. | |
 | `ms` | int | optional | Elapsed time. Omitted at 0. | |
 | `credits` | number | optional | What the child billed, cumulative across every attempted turn. Positive and finite; absent when the run was unmetered. | |
+| `child_sid` | string | optional | The session the child last ran in (an earlier attempt's when a recovery got none), for finding its transcript after `result.txt` is pruned. Absent when the run never got a session, and on the crash-repair closer. | |
 
 **Invariants** — Carries no `tokens`: the subagent runtime does not measure them.
 An absent `credits` means the provider reported no credit spend, not a free run.
@@ -1280,6 +1281,7 @@ rather than closed on a guess.
 | `reason` | string | optional | Redacted, clipped failure reason. | |
 | `ms` | int | optional | Elapsed time. Omitted at 0. | |
 | `credits` | number | optional | What the child billed before it stopped, cumulative across every attempted turn. Positive and finite; absent when the run was unmetered. | |
+| `child_sid` | string | optional | The session the child last ran in (an earlier attempt's when a recovery got none), for finding its transcript after `result.txt` is pruned. Absent when the run never got a session, and on the crash-repair closer. | |
 
 **Invariants** — This one type covers both non-success outcomes; `outcome` is what
 separates them. Like `subagent/completed`, it carries no `tokens`.

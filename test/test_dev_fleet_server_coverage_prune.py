@@ -13,6 +13,7 @@ removal in ``test_dev_fleet_server_coverage_untracked_discard.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,7 +21,7 @@ from dev_fleet_server_coverage_helpers import (  # noqa: F401 -- the autouse fix
     _pin_module_state,
 )
 
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, worktree_ops
+from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, runtime, worktree_ops
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -248,12 +249,13 @@ async def test_prune_candidates_surfaces_closed_unmerged_flag(monkeypatch):
         ),
     )
 
-    async def fake_prunable(path, branch):
+    async def fake_prunable(path, branch, pr_rows=None):
         if branch == "c":
             return {"ok": True, "code": "closed", "unmerged_commits": True}
         return {"ok": True, "code": "merged"}
 
     monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+    monkeypatch.setattr(worktree_ops, "_fetch_pr_rows", AsyncMock(return_value={}))
     out = await worktree_ops._prune_candidates()
     by_name = {c["name"]: c for c in out["candidates"]}
     assert by_name["wt-closed"]["code"] == "closed"
@@ -278,7 +280,7 @@ async def test_prune_candidates_closed_dirty_lands_in_kept_with_loss_counts(monk
         ),
     )
 
-    async def fake_prunable(path, branch):
+    async def fake_prunable(path, branch, pr_rows=None):
         return {
             "ok": False,
             "code": "closed_dirty",
@@ -290,6 +292,7 @@ async def test_prune_candidates_closed_dirty_lands_in_kept_with_loss_counts(monk
         }
 
     monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+    monkeypatch.setattr(worktree_ops, "_fetch_pr_rows", AsyncMock(return_value={}))
     out = await worktree_ops._prune_candidates()
     assert [c["name"] for c in out["candidates"]] == []
     kept = {k["name"]: k for k in out["kept"]}
@@ -306,7 +309,7 @@ async def test_prunable_passes_full_head_oid_to_pr_status_cached(monkeypatch, tm
     # The cache only knows the PR under the full OID, so the verdict below shows
     # which identity the lookup used.
     cache = AsyncMock(
-        side_effect=lambda branch, head: {"state": "CLOSED"} if head == full_head else None
+        side_effect=lambda branch, head, rows: {"state": "CLOSED"} if head == full_head else None
     )
     monkeypatch.setattr(fleet_state, "_pr_status_cached", cache)
     monkeypatch.setattr(repository, "_own_commits_count", AsyncMock(return_value=0))
@@ -318,7 +321,7 @@ async def test_prunable_passes_full_head_oid_to_pr_status_cached(monkeypatch, tm
 
     assert out["code"] == "closed_unverified"
     git.assert_awaited_once_with(str(tmp_path), "rev-parse", "HEAD")
-    cache.assert_awaited_once_with("feat", full_head)
+    cache.assert_awaited_once_with("feat", full_head, None)
 
 
 @pytest.mark.asyncio
@@ -335,11 +338,12 @@ async def test_prune_candidates_splits_and_skips_main(monkeypatch):
         ),
     )
 
-    async def fake_prunable(path, branch):
+    async def fake_prunable(path, branch, pr_rows=None):
         ok = branch == "a"
         return {"ok": ok, "code": "merged" if ok else "active"}
 
     monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+    monkeypatch.setattr(worktree_ops, "_fetch_pr_rows", AsyncMock(return_value={}))
     out = await worktree_ops._prune_candidates()
     assert out["scanned"] == 2
     assert [c["name"] for c in out["candidates"]] == ["wt-a"]
@@ -367,7 +371,7 @@ async def test_prune_candidates_scans_concurrently(monkeypatch):
     started = asyncio.Event()
     overlapped = asyncio.Event()
 
-    async def fake_prunable(path, branch):
+    async def fake_prunable(path, branch, pr_rows=None):
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
@@ -384,6 +388,7 @@ async def test_prune_candidates_scans_concurrently(monkeypatch):
 
     monkeypatch.setattr(repository, "_discover_worktrees", AsyncMock(return_value=wts))
     monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+    monkeypatch.setattr(worktree_ops, "_fetch_pr_rows", AsyncMock(return_value={}))
 
     out = await worktree_ops._prune_candidates()
 
@@ -427,13 +432,14 @@ async def test_prune_candidates_output_order_is_deterministic(monkeypatch):
     gates = {path: asyncio.Event() for path in delays}
     finished: list[str] = []
 
-    async def fake_prunable(path, branch):
+    async def fake_prunable(path, branch, pr_rows=None):
         await await_until(gates[path], timeout=30, what=f"gate for {path}")
         finished.append(path)
         return verdicts[path]
 
     monkeypatch.setattr(repository, "_discover_worktrees", AsyncMock(return_value=wts))
     monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+    monkeypatch.setattr(worktree_ops, "_fetch_pr_rows", AsyncMock(return_value={}))
 
     scan = asyncio.ensure_future(worktree_ops._prune_candidates())
     for path in sorted(delays, key=delays.get):
@@ -445,3 +451,66 @@ async def test_prune_candidates_output_order_is_deterministic(monkeypatch):
     assert [c["name"] for c in out["candidates"]] == ["wt-a", "wt-c"]
     assert [k["name"] for k in out["kept"]] == ["wt-b", "wt-d"]
     assert out["scanned"] == 4
+
+
+@pytest.mark.asyncio
+async def test_prune_candidates_batches_pr_lookups_and_keeps_per_head_verdicts(monkeypatch):
+    """The preview costs one gh call per _PR_BATCH_HEADS heads, not one or two
+    per worktree, and every verdict equals the one the per-head lookups give --
+    the reused head (a newer MERGED PR over an older OPEN one) included."""
+    head = "a" * 40
+    prs = {  # newest first, the order gh returns
+        "m": [{"state": "MERGED", "headRefOid": head}],
+        "c": [{"state": "CLOSED", "headRefOid": head}],
+        "o": [{"state": "OPEN", "headRefOid": head}],
+        "r": [{"state": "MERGED", "headRefOid": head}, {"state": "OPEN", "headRefOid": "b" * 40}],
+        "n": [],
+    }
+    wts = [{"path": f"/r/wt-{b}", "branch": b} for b in prs]
+    calls: list[list[str]] = []
+
+    async def gh(cmd, **_kw):
+        calls.append(cmd[:3])
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            fields = dict(cmd[i + 1].split("=", 1) for i, a in enumerate(cmd) if a == "-f")
+            nodes = {k: {"nodes": prs[v]} for k, v in fields.items() if k[0] == "h"}
+            return 0, json.dumps({"data": {"repository": nodes}}), ""
+        rows = prs[cmd[cmd.index("--head") + 1]][: int(cmd[cmd.index("--limit") + 1])]
+        return 0, json.dumps(rows), ""
+
+    monkeypatch.setattr(
+        repository,
+        "_discover_worktrees",
+        AsyncMock(return_value=[{"path": "/r", "is_main": True}, *wts]),
+    )
+    monkeypatch.setattr(repository, "_git", AsyncMock(return_value=head))
+    monkeypatch.setattr(
+        repository, "_own_commits_count", AsyncMock(side_effect=lambda p: int(p == "/r/wt-o"))
+    )
+    monkeypatch.setattr(repository, "_real_dirty", AsyncMock(return_value=False))
+    monkeypatch.setattr(fleet_state, "_get_owner_repo", AsyncMock(return_value="o/r"))
+    monkeypatch.setattr(worktree_ops, "_PR_BATCH_HEADS", 2)
+    monkeypatch.setattr(runtime, "_run_cmd", gh)
+
+    out = await worktree_ops._prune_candidates()
+    batched = {row["name"]: row["code"] for row in out["candidates"] + out["kept"]}
+    assert calls == [["gh", "api", "graphql"]] * 3  # ceil(5 heads / 2)
+
+    calls.clear()
+    monkeypatch.setattr(fleet_state, "_PR_CACHE", {})
+    per_head = {
+        w["path"].rsplit("/", 1)[1]: (await worktree_ops._prunable(w["path"], w["branch"]))["code"]
+        for w in wts
+    }
+    assert calls and all(c == ["gh", "pr", "list"] for c in calls)
+    assert (
+        batched
+        == per_head
+        == {
+            "wt-m": "merged",
+            "wt-c": "closed_unverified",
+            "wt-o": "active",
+            "wt-r": "merged_unverified",
+            "wt-n": "fresh",
+        }
+    )

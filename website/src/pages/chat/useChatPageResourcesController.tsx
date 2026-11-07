@@ -34,8 +34,10 @@ import { classifyDrop } from '../../utils/dropClassify'
 import { servedUploadMb, spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
 import {
   adoptSourceSelections,
+  commitDismissedSource,
   commitSourceSelection,
   isSourceSelectionKey,
+  loadDismissedSources,
   loadRevealedSources,
   loadSeenPullRequestLinks,
   loadSourceSelections,
@@ -62,6 +64,7 @@ import {
   registerComposerUpload,
   finishComposerAttachment,
   releaseComposerSend,
+  reportComposerUploadProgress,
   unregisterComposerUpload,
   useComposerUploadCount,
 } from '../../utils/composerSendHolds'
@@ -271,17 +274,38 @@ export function useChatPageResourcesController({
   const revealedForSlot = activeSlot ? revealedSources[activeSlot] : undefined
   const revealedChange = revealedForSlot?.change ?? null
   const revealedIssue = revealedForSlot?.issue ?? null
+  // The pull requests the user closed from the Changes strip, per slot. A slot
+  // this window has not written is read from storage when it is shown; a close
+  // or a reopen writes storage and keeps the slot's new list here.
+  const [dismissedBySlot, setDismissedBySlot] = useState<Record<string, ReadonlyMap<string, string>>>({})
+  const dismissedSources = useMemo(
+    () => (activeSlot ? dismissedBySlot[activeSlot] ?? loadDismissedSources(activeSlot) : new Map<string, string>()),
+    [activeSlot, dismissedBySlot],
+  )
+  const setSourceDismissed = useCallback((slot: string, url: string, dismissed: boolean) => {
+    const stored = commitDismissedSource(slot, url, dismissed)
+    setDismissedBySlot(previous => ({ ...previous, [slot]: stored }))
+  }, [])
+  const dismissSource = useCallback((url: string) => {
+    if (activeSlotRef.current) setSourceDismissed(activeSlotRef.current, url, true)
+  }, [activeSlotRef, setSourceDismissed])
+  // The scan without the closed pull requests: what the panel lists, and what
+  // may open the Changes tab when it grows.
+  const shownSourceLinks = useMemo(
+    () => (dismissedSources.size ? sourceLinks.filter(link => !dismissedSources.has(sourceLinkKey(link))) : sourceLinks),
+    [sourceLinks, dismissedSources],
+  )
   // Compared by `sourceLinkKey`, not url: a link revealed (and persisted) at an
   // older revision is the same review the scan now lists at its newest one, and
   // injecting it would show that review twice. The scan's url wins, since it
   // follows the transcript as new revisions are mentioned.
   const panelSources = useMemo(() => {
-    if (!revealedChange) return sourceLinks
+    if (!revealedChange) return shownSourceLinks
     const revealedKey = sourceLinkKey(revealedChange)
-    return sourceLinks.some(link => sourceLinkKey(link) === revealedKey)
-      ? sourceLinks
-      : [revealedChange, ...sourceLinks]
-  }, [sourceLinks, revealedChange])
+    return dismissedSources.has(revealedKey) || shownSourceLinks.some(link => sourceLinkKey(link) === revealedKey)
+      ? shownSourceLinks
+      : [revealedChange, ...shownSourceLinks]
+  }, [shownSourceLinks, revealedChange, dismissedSources])
   const panelIssues = useMemo(() => (
     revealedIssue && !issueLinks.some(link => link.url === revealedIssue.url)
       ? [revealedIssue, ...issueLinks]
@@ -444,7 +468,7 @@ export function useChatPageResourcesController({
   // budget), so each kind is recorded separately only to learn WHICH tab to open.
   const [seenSourceUrls] = useState(loadSeenPullRequestLinks)
   useEffect(() => {
-    const newChanges = recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)
+    const newChanges = recordNewPullRequestLinks(seenSourceUrls, activeSlot, shownSourceLinks)
     const newIssues = recordNewPullRequestLinks(seenSourceUrls, activeSlot, issueLinks)
     if (!newChanges && !newIssues) return
     persistSeenPullRequestLinks(seenSourceUrls)
@@ -456,7 +480,7 @@ export function useChatPageResourcesController({
     // tabsCtl is intentionally not a dependency: this effect reacts only to
     // source discovery, not tab focus or panel visibility changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, sourceLinks, issueLinks, seenSourceUrls])
+  }, [activeSlot, shownSourceLinks, issueLinks, seenSourceUrls])
 
   useEffect(() => {
     // An uncached slot temporarily has no messages while its history hydrates.
@@ -753,33 +777,44 @@ export function useChatPageResourcesController({
   }, [activeSlotRef])
 
   /** Upload files via browser File API (cross-platform) */
-  const uploadFiles = useCallback(async (files: File[], targetSlot?: string | null) => {
-    if (!files.length) return
+  // The client-side pre-checks that refuse a file set BEFORE anything is sent:
+  // too many files, or one over the cap. Returns the hint to show, or null when
+  // the set passes. Synchronous and side-effect-free so a caller (handleDrop)
+  // can decide the refusal in the same tick as the drop, rather than after an
+  // upload's network round-trip. Video is exempt: its server-side ceiling is
+  // far higher than this per-file cap, so the figure would be a lie for a
+  // recording; an over-cap recording's own 413 surfaces through the upload
+  // error branch instead. Until the config has served a usable cap there is
+  // nothing to check against, so the server's 413 is the only check.
+  const localUploadRefusal = useCallback((files: File[]): string | null => {
+    if (files.length > 20) return i18nT('pages.chatPage.too_many_files_max_20')
+    const maxMb = servedUploadMb(sourceHostCfg?.upload_max_mb)
+    const big = maxMb === null ? undefined : files.find(f => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
+    if (big) return i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })
+    return null
+  }, [sourceHostCfg])
+
+  // Resolves true when a client-side pre-check refused the files and set its
+  // own hint (too many, or one over the cap), so a caller that also wants to
+  // show a hint (a mixed drop carrying a refused folder) does not overwrite it.
+  const uploadFiles = useCallback(async (files: File[], targetSlot?: string | null): Promise<boolean> => {
+    if (!files.length) return false
     // Same slot-capture pattern as takeScreenshot — see note there. An explicit
     // targetSlot (e.g. the slot that initiated a snip) overrides the live slot
     // so an async capture lands where it started, not where the user switched to.
     const requestSlot = targetSlot !== undefined ? targetSlot : activeSlotRef.current
     setUploadError('')
     setUploadHint('')
-    if (files.length > 20) { setUploadHint(i18nT('pages.chatPage.too_many_files_max_20')); return }
-    // Video is deliberately exempt from this pre-check: it has a much larger
-    // server-side ceiling and streams to disk there, so the per-file figure
-    // this message states would be a lie for a recording. Its own 413 carries
-    // the real cap and surfaces through the `upload_failed_error` branch below,
-    // the same route every other server-side rejection already takes. The cap
-    // is the gateway's `dashboard.upload_max_mb` (same shared config query);
-    // until that query has served a usable figure, the server's own 413 is
-    // the only check.
-    const maxMb = servedUploadMb(sourceHostCfg?.upload_max_mb)
-    const big = maxMb === null ? undefined : files.find(f => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
-    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return }
+    const refusal = localUploadRefusal(files)
+    if (refusal) { setUploadHint(refusal); return true }
     setUploading(true)
     holdComposerSend(requestSlot)
     const controller = new AbortController()
     registerComposerUpload(requestSlot, controller)
     let completedPaths: string[] = []
     try {
-      const res = await api.uploadFiles(files, controller.signal)
+      const res = await api.uploadFiles(files, controller.signal,
+        (loaded, total) => reportComposerUploadProgress(controller, loaded, total))
       if (res.error) {
         setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {
@@ -808,7 +843,10 @@ export function useChatPageResourcesController({
       // alone deliberately -- the cancel control reads the registry, not this.
       setUploading(false)
     }
-  }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setResizedInfo, sourceHostCfg])
+    // The files were sent (a server-side refusal surfaces as an error above,
+    // not a local pre-check hint), so no local-refusal hint was set.
+    return false
+  }, [activeSlotRef, localUploadRefusal, setUploadError, setUploadHint, setUploading, setResizedInfo])
 
   /** The overlay's crop: `uploadFiles` takes its own hold synchronously (before
    *  its first await) and only then is the snip's released, so Send is never
@@ -873,7 +911,7 @@ export function useChatPageResourcesController({
     // plain browser no real path is visible, so classifyDrop leaves folders
     // on the upload route there (today's behaviour) rather than inserting a
     // misleading bare name.
-    const { files, dirPaths } = classifyDrop(dataTransfer)
+    const { files, dirPaths, refusedDirs } = classifyDrop(dataTransfer)
     if (dirPaths.length) {
       // Short relative form when the folder lies inside the project root,
       // absolute otherwise — exactly the picker's own fallback convention.
@@ -890,15 +928,39 @@ export function useChatPageResourcesController({
         setInput(spliced.value)
       }
     }
-    if (files.length) {
-      uploadFiles(files)
+    // Decide the files' local refusal SYNCHRONOUSLY, before the upload's
+    // network round-trip, so the folder hint is written in the same tick as the
+    // drop — not from an async callback that could land in another session or
+    // over a newer refusal if the user switches session or drops again while
+    // the upload runs.
+    const filesRefusedLocally = files.length > 0 && localUploadRefusal(files) !== null
+    if (files.length) uploadFiles(files)
+    // A dropped folder whose resolved path can't be written as a composer
+    // folder token (a space or `@`, or a filesystem root) is refused — nothing
+    // is uploaded or inserted — but the reason is the path, not the file type
+    // or size. Show it through the upload HINT (the same validation-refusal
+    // surface the too-many-files / file-too-large pre-checks use — nothing was
+    // sent), not the danger error banner. Set it AFTER uploadFiles' synchronous
+    // clear, and only when the files were NOT themselves refused locally: their
+    // refusal hint is the one the user must see in that case (#30416).
+    if (refusedDirs.length && !filesRefusedLocally) {
+      // A refused-folder-only drop skips uploadFiles, so clear any stale
+      // upload-error banner from a previous failed upload here (uploadFiles is
+      // what clears it otherwise) — the refusal is not that error. A mixed drop
+      // already cleared it synchronously inside uploadFiles, and a real upload
+      // failure from this drop surfaces later, so this does not wipe it.
+      if (!files.length) setUploadError('')
+      setUploadHint(i18nT('components.chatInput.tree_drop_folder_refused'))
     }
-  }, [composerLockedRef, currentProjectRef, inputRef, voiceCaretRef, voicePendingCaretRef, setInput, uploadFiles])
+  }, [composerLockedRef, currentProjectRef, inputRef, voiceCaretRef, voicePendingCaretRef, setInput, setUploadError, setUploadHint, uploadFiles, localUploadRefusal])
   /** The composer's own paste/attach entry: refused while it is locked, unlike
    *  a snip or panel annotation, which name the slot they land in. */
-  const composerUploadFiles = useCallback((files: File[]) => {
+  const composerUploadFiles = useCallback((files: File[]): Promise<void> | undefined => {
     if (composerLockedRef.current) return
-    return uploadFiles(files)
+    // The paste/attach entry does not carry a refused folder, so the local-
+    // refusal bool uploadFiles now returns is irrelevant here; discard it to
+    // keep this entry's Promise<void> contract.
+    return uploadFiles(files).then(() => {})
   }, [composerLockedRef, uploadFiles])
   const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
   return {
@@ -922,6 +984,8 @@ export function useChatPageResourcesController({
     reconcileSourceUrl,
     reconcileIssueUrl,
     setRevealedSources,
+    dismissSource,
+    setSourceDismissed,
     addSourceCommentToChat,
     colorThemeRef,
     handleFileOpen,

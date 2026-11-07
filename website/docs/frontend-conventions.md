@@ -264,6 +264,7 @@ so the panel's effects keep one order.
 |---|---|
 | `MarkdownPanel.tsx` | `Props`, the panel and its two layouts (side panel, full screen), the edit, save, close and navigate guards, comment drafts and their anchor highlight, the line reveal |
 | `MarkdownPanelHeader.tsx` | the header's controls: the breadcrumb, the artifact and knowledge toggles, the ⋯ menu |
+| `markdownPanelPrint.ts` | the ⋯ menu's Print or save as PDF: the live preview marked for the print stylesheet in `sidebar-and-side-panel.css`; Pierre's code wraps on paper through `PIERRE_PRINT_WRAP_CSS` (`pierre/config.ts`) |
 | `useMarkdownPanelFileState.ts` | the file's knowledge-library and artifact-library state |
 | `MarkdownPanelBody.tsx` | the body's blocks: comment hint, missing-file banner, empty-diff notice, diff view, comment overlay, find bar |
 | `markdownPanelSourcePos.ts` | where a selection sits in the source (`resolveSourcePos`, `findCoords`) |
@@ -593,6 +594,12 @@ with `window.open` on a plain click, because the frame's CSP `frame-src`
 refuses an in-place navigation to a custom scheme. Other pages keep in-place
 navigation. In the desktop app that call reaches the window-open handler in
 `website/electron/external-scheme.js`, which asks the user before opening it.
+`DiffBlock` sends that handler a `vscode://file` link to the file it probed when
+a Cmd+click (Ctrl+click off macOS) lands on its Open control or on a new-side
+line number, in a desktop-app window whose gateway the shell confirms is on this
+machine (`canPickFolderNatively`); a plain click is unchanged. A line number takes
+it only where every hunk header carries numbers, and never on a tool call's edit
+card, which counts the replaced text from 1.
 
 How a refused destination RENDERS is part of the contract (issue #9925): the
 transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
@@ -600,6 +607,23 @@ the label as inert text with **no anchor** — never `<a href="">`, whose empty
 href resolves to the current page — matching `md-notebook/Preview.tsx`'s
 `href ? <a …> : <span>` trade. A test that pins an anchor existing for a
 destination the transform rejects is pinning a defect.
+
+The inert label is not silent in the chat renderers (`MdAnchor` and Mochi's
+`ChatPanelMarkdown`): it wears a muted dotted underline built from existing
+tokens, and the generic reason `components.markdownRenderer.refused_link_destination`
+as its hover `title` and as visually-hidden text, so touch, keyboard and
+screen-reader users get it too. In `MdAnchor` that text is a `::after`
+pseudo-element fed from `data-refused-reason`, never a text node, so the
+label's DOM text stays what the source renders (inline commenting's
+`resolveSourcePos` aligns text nodes against the source span) and a copied
+message carries no reason; Mochi, which has no stylesheet for it, uses an
+unselectable visually-hidden span. The reason never names the destination. The
+cue covers every input that reaches the guard: the `''` sentinel, an href the
+sanitizer deleted (`javascript:`, `data:`), and a raw `<a>` with no href, which
+arrives in the same absent shape. A named in-page anchor (`name` or `id`) and
+an anchor with no content are targets, not links, and keep the plain span
+(`components/markdown/refusedLinkCue.ts`). `md-notebook/Preview.tsx` is not a chat
+renderer and keeps the plain span.
 
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — a drive-letter path) is passed through **for image
@@ -649,7 +673,7 @@ exposes it as `BASE_PATH` (`''` in the stock root build, so every helper is the
 identity).
 
 The transport shims (`installBasePathShims`) and DOM shims
-(`installBasePathDomShims`) rebase `fetch`, `WebSocket`, `EventSource` and
+(`installBasePathDomShims`) rebase `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource` and
 URL-valued attributes automatically, so most call sites need no change. But a
 dynamic `import()`, a `window.location` navigation, an `AudioWorklet.addModule`
 load and a direct `window.location.pathname` read reach neither hook: wrap a
@@ -909,9 +933,9 @@ files own it:
     the focus rings and the swatch hover cue. Strays: table striping, the
     follow-up chip width cap, the skill-load heading sizes and the highlight.js
     colours.
-  - `sidebar-and-side-panel.css` owns session and folder rows, the list dock and
-    the side-panel tab strip. Strays: the inline lucide icon size and the
-    panel-icon pane morph.
+  - `sidebar-and-side-panel.css` owns session and folder rows, the list dock,
+    the side-panel tab strip and the file preview's print layout. Strays: the
+    inline lucide icon size and the panel-icon pane morph.
   - `highlights-and-page-zoom.css` owns search, find and comment highlights and
     the coarse-pointer rules that stop page zoom. Strays: the artifact toolbar
     button heights and the mobile sessions-drawer width.
@@ -1089,6 +1113,13 @@ against `location.pathname` only, so a multi-segment, query, or hash route would
 register and then never resolve. The same constraint and the reasoning behind it
 are in [extension-seams](extension-seams.md), which covers registering routes and
 icons from a downstream edition instead of editing the seed maps.
+
+A builtin page still renders while its app is off, and the app's proxied API
+(`/apps/<name>/api/*`) then refuses every call with `code: "app_not_enabled"`.
+Throw `toApiError` from the page's fetch helpers so the code survives, test it
+with `isAppNotEnabledError` (`src/api/apiError.ts`), and show the disabled-app
+copy (`components.appHost.this_app_is_disabled`) with a way to Apps instead of
+the call's error. File Explorer and Workflows do this.
 
 ## Crew capability drafts
 

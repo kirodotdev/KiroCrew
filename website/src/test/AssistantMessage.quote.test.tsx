@@ -13,10 +13,14 @@ vi.mock('../components/MarkdownRenderer', () => ({
 vi.mock('../hooks/useSmoothStream', () => ({ useSmoothStream: (content: string) => content }))
 vi.mock('../utils/shareUrl', () => ({ copySessionLink: vi.fn().mockResolvedValue(true) }))
 import { copySessionLink } from '../utils/shareUrl'
-vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(true) }))
-import { copyToClipboard } from '../utils/clipboard'
+vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(true), copyRichToClipboard: vi.fn().mockResolvedValue(true) }))
+import { copyRichToClipboard, copyToClipboard } from '../utils/clipboard'
 
-beforeEach(() => { vi.useFakeTimers(); vi.mocked(copyToClipboard).mockReset().mockResolvedValue(true) })
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.mocked(copyToClipboard).mockReset().mockResolvedValue(true)
+  vi.mocked(copyRichToClipboard).mockReset().mockResolvedValue(true)
+})
 afterEach(() => { act(() => { vi.runAllTimers() }); vi.useRealTimers() })
 
 const LONG = 'A completed reply that is comfortably longer than twenty characters.'
@@ -247,7 +251,8 @@ describe('AssistantMessage copy on select', () => {
   it('copies a mouse selection when the setting is on', async () => {
     render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} onQuote={() => {}} onAsk={() => {}} copyOnSelect />)
     await dragOverReply()
-    expect(copyToClipboard).toHaveBeenCalledWith(LONG)
+    // The selection row's Copy over a reply: the same plain text, with the part as rich text.
+    expect(copyRichToClipboard).toHaveBeenCalledWith(LONG, LONG)
     expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
   })
 
@@ -256,5 +261,6 @@ describe('AssistantMessage copy on select', () => {
     await dragOverReply()
     expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
     expect(copyToClipboard).not.toHaveBeenCalled()
+    expect(copyRichToClipboard).not.toHaveBeenCalled()
   })
 })

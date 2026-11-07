@@ -17,7 +17,7 @@ import {
   pierreFileOptions,
   pierreThemeType,
 } from './config'
-import { activeWorkerPool, contentCacheKey, PierreShell, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
+import { activeWorkerPool, contentCacheKey, PierreShell, usePierreThemes, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
@@ -116,23 +116,25 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   className?: string
 }>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, className }, ref) {
   const dark = useIsDark()
+  const themes = usePierreThemes()
   const poolState = usePierreWorkerPool()
   useRegisterEditorSurface()
   const activePool = activeWorkerPool(poolState)
   const pierreActive = activePool !== undefined
   const resolved = useMemo(
-    () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
-    [dark, options],
+    () => pierreFileOptions({ theme: themes, themeType: pierreThemeType(dark), ...options }),
+    [dark, themes, options],
   )
   const resolvedDiff = useMemo(
     () => pierreDiffOptions({
+      theme: themes,
       themeType: pierreThemeType(dark),
       diffStyle: diffSplit ? 'split' : 'unified',
       ...(diffExpandUnchanged == null ? {} : { expandUnchanged: diffExpandUnchanged }),
       ...options,
       unsafeCSS: (options?.unsafeCSS ?? '') + PIERRE_EDIT_CARET_ALIGN_CSS,
     }),
-    [dark, options, diffSplit, diffExpandUnchanged],
+    [dark, themes, options, diffSplit, diffExpandUnchanged],
   )
   const surfaceId = useId()
   const recoveryStatusId = `${surfaceId}-recovery-status`

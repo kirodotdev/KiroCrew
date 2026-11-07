@@ -1,12 +1,8 @@
 """The comment-history gate must be real, wired into CI, and diff-scoped.
 
-``docs/system-specs/common/code-style.md`` forbids change history in comments and
-docstrings. ``scripts/check_comment_history.py`` is what makes that rule
-enforceable. These tests pin the halves that must stay true together: CI actually
-runs the gate (a gate that exists only on disk is not a gate), the detector reads
-comments and docstrings but NOT ordinary string literals, and the verdict covers
-exactly the lines a change adds -- a marker on a pre-existing line is the base
-branch's, and a marker on an added line fails whoever added it.
+``scripts/check_comment_history.py`` enforces the rule in
+``docs/system-specs/common/code-style.md``. Pins that CI runs it, that it reads
+comments and docstrings but NOT plain string literals, and that it judges only added lines.
 """
 
 from __future__ import annotations
@@ -262,12 +258,9 @@ class TestAddedLineVerdict:
 class TestEnforceDiff:
     """``enforce_diff`` end to end on a synthetic repo.
 
-    Builds a base commit carrying one legacy marker, a topic commit that appends
-    clean lines, then edits the working tree and asks the real gate -- scope
-    resolution through a fresh ``ratchet_scope`` pointed at the repo, detection
-    through ``violations_in_source``, verdict through ``added_line_violations``
-    -- the same pipeline ``enforce_diff`` wires together. A gate that only ever
-    saw its unit tests could still pass every PR through a mis-wired scope.
+    A base commit with one marker, a clean topic commit, then a working-tree edit run
+    through ``ratchet_scope``, ``violations_in_source`` and ``added_line_violations``,
+    so a mis-wired scope cannot pass unseen.
     """
 
     BASE_SOURCE = "# hotfix\nvalue = 1\n"

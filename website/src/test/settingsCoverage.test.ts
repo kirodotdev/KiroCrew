@@ -93,6 +93,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes); no setting and no control writes a config path',
   'PeopleAdvanced.tsx': 'the owner-only Advanced section of the People tab, which shows only under the Shared Crew preview; its controls write dashboard.shared_crew.* paths, but a search hit would deep-link to a tab that is hidden unless the preview is on, so they stay out of settings search',
   'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
+  'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
   'ReleasesPanel.tsx': 'read-only changelog viewer, zero persistent settings',
@@ -299,10 +300,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'writes a config path, so there is no row for settings search to find',
   },
   'PeopleAdvanced.tsx': {
-    counts: { Toggle: 2, Input: 1 },
+    counts: { Toggle: 3, Input: 1 },
     reason:
-      'the owner-only Advanced section of People: two switches and one number field rendered ' +
-      'by a per-field helper (three rows), each writing a dashboard.shared_crew.* path; kept out of ' +
+      'the owner-only Advanced section of People: three switches and one number field rendered ' +
+      'by a per-field helper (four rows), each writing a dashboard.shared_crew.* path; kept out of ' +
       'settings search because the People tab is hidden unless the Shared Crew preview is on',
   },
   'SecretsPanel.tsx': {
@@ -339,6 +340,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'SlackPanel.tsx': {
     counts: { Input: 1 },
     reason: "TagListEditor's internal draft input — part of a composite the extractor indexes whole",
+  },
+  'SsmInvite.tsx': {
+    counts: { Input: 1 },
+    reason:
+      'the alias field of the SSM invite form, an input to a one-shot action, not a ' +
+      'persistent setting: nothing here writes a config path, so there is no row for ' +
+      'settings search to find',
   },
   'TailscaleInvites.tsx': {
     counts: { Toggle: 1, Input: 2, input: 1, textarea: 1 },
@@ -413,6 +421,13 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'one model row per enabled app, labelled with that app\'s own display name; the ' +
       'set of apps is whatever is installed, so there is no fixed label to index. The ' +
       'rows sit on the Model page every chat.* model entry already deep-links to',
+  },
+  'AppSessionMuteSection.tsx': {
+    count: 1,
+    reason:
+      'one mute switch per enabled app, labelled with that app\'s own display name; ' +
+      'the set of apps is whatever is installed, so there is no fixed label to index. ' +
+      'The rows sit on the Notifications Sources page beside each app\'s channels',
   },
   'SessionEnvironmentsCard.tsx': {
     count: 8,

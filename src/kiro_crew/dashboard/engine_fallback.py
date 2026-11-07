@@ -18,8 +18,10 @@ from typing import Any
 from kiro_crew.agent_sdk.drivers.acp_vocab import (
     EngineFallbackWalk,
     ModelFallbackNotice,
+    engine_served_model,
     is_unpinned_pick,
     same_model,
+    tracker_of,
     walk_outcome,
 )
 from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR, pick_epoch_host
@@ -153,3 +155,22 @@ def finish_engine_fallback(
             slot.append("notice", line, "msg msg-info")
     except Exception:  # noqa: BLE001 - teardown must not raise
         logger.warning("engine fallback notice failed", exc_info=True)
+
+
+def hook_session_model(client: Any, *, in_prompt: bool) -> str | None:
+    """The model a hook fired now sees as ``KIROCREW_SESSION_MODEL``, or ``None``.
+
+    Inside a prompt the engine may have hopped to another model while a pinned
+    ``served_model`` still names the pin, so the engine's reading wins. Before
+    a prompt, a turn-scoped hop still standing is undone when the prompt
+    starts, so the model it moved off is the one named. Auto is no model.
+    """
+    served = getattr(client, "served_model", "")
+    model = served if isinstance(served, str) else ""
+    if in_prompt:
+        model = engine_served_model(client) or model
+    else:
+        tracker = tracker_of(client)
+        if tracker is not None:
+            model = tracker.next_prompt_model(model)
+    return model if model and model.strip().lower() != "auto" else None

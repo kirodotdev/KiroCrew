@@ -68,9 +68,7 @@ async def _no_op_executor(*args: Any, **kwargs: Any) -> None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # Builtin-service helpers (_sync_builtin_config / _notify_builtin_service)
-# ---------------------------------------------------------------------------
 
 
 class TestBuiltinServiceHelpers:
@@ -220,9 +218,7 @@ class TestUnregisterNotificationChannels:
         assert messages == [f"Unregistered 2 notification channel(s) for app {APP}"]
 
 
-# ---------------------------------------------------------------------------
 # GET /api/apps — backend status enrichment
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -588,9 +584,7 @@ async def test_list_apps_reports_a_tracked_but_exited_backend_as_not_running(
     assert entry["backend_status"]["healthy"] is False
 
 
-# ---------------------------------------------------------------------------
 # Migrated deploy-web compatibility redirects
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -612,9 +606,7 @@ async def test_deploy_web_redirects_to_canonical_endpoint(
         assert resp.headers["Location"] == location
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/install — validation
-# ---------------------------------------------------------------------------
 
 
 class TestInstallValidation:
@@ -880,9 +872,7 @@ class TestInstallValidation:
         assert calls == [(APP, True)]
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/register — self-managed app registration
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterExternal:

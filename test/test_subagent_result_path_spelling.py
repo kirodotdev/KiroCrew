@@ -99,6 +99,36 @@ class TestDisplayPathsUseTheDeclaredHome:
                 agent_dir_for_display(bad)
 
 
+class TestSymlinkedKirocrewHomeOverride:
+    """``data_home()`` resolves a ``KIROCREW_HOME`` override; the shown path must not."""
+
+    @pytest.fixture
+    def override(self, tmp_path, monkeypatch):
+        real = tmp_path / "real-crew"
+        real.mkdir()
+        link = tmp_path / "crew-link"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):  # pragma: no cover - platform guard
+            pytest.skip("symlinks unavailable on this platform")
+        monkeypatch.setenv("KIROCREW_HOME", str(link))
+        monkeypatch.setattr(subagent_persistence, "_SUBAGENTS_DIR", None)
+        return link, real
+
+    def test_display_helper_keeps_the_override_spelling(self, override):
+        link, real = override
+        assert agent_dir_for_display(_AGENT_ID) == link / "subagents" / _AGENT_ID
+        assert _agent_dir(_AGENT_ID) == real.resolve() / "subagents" / _AGENT_ID
+
+    def test_an_override_that_is_not_the_active_home_is_not_shown(
+        self, override, tmp_path, monkeypatch
+    ):
+        # A refused override, or a link repointed after the home was pinned.
+        active = tmp_path / "active-home"
+        monkeypatch.setattr(subagent_persistence, "data_home", lambda: active)
+        assert agent_dir_for_display(_AGENT_ID) == active / "subagents" / _AGENT_ID
+
+
 class TestEmittedResultPointersAreReadable:
     """Drives the real emission, not a copy of it.
 

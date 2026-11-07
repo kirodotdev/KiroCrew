@@ -261,18 +261,18 @@ def main() -> int:
     boot_platform(KiroCrewConfig.load())
     # This process is the SANDBOXED backend: the live-target pointer is masked from
     # it, so every pointer-derived read goes to the gateway's broker route. The
-    # bound port arrives from apps/backend.py; the app secret is the same material
-    # the HMAC middleware verifies proxied requests with. Installed before the app
-    # is built so the first fleet refresh already reads through the broker.
-    # Without a port (a foreground gateway that had not bound when it spawned us,
-    # or a hand-launched backend) the provider still installs and reports the
-    # outage on each read: silently answering "nothing is live" is the one thing
-    # the removal guards must never be told.
-    bound = os.environ.get("KIROCREW_BOUND_PORT", "")
+    # gateway origin arrives from apps/backend.py; the app secret is the same
+    # material the HMAC middleware verifies proxied requests with. Installed before
+    # the app is built so the first fleet refresh already reads through the broker.
+    # Without an origin (a gateway bound to a specific interface, or a
+    # hand-launched backend) the provider still installs and reports the outage on
+    # each read: silently answering "nothing is live" is the one thing the removal
+    # guards must never be told.
+    origin = os.environ.get("KIROCREW_GATEWAY_ORIGIN", "")
     broker: pointer_broker.GatewayPointerBroker | None = None
-    if bound.isdigit():
+    if origin:
         broker = pointer_broker.GatewayPointerBroker(
-            port=int(bound), app_secret=http_api._load_app_secret()
+            origin=origin, app_secret=http_api._load_app_secret()
         )
         live.install_pointer_provider(broker)
         live.install_removal_lease_client(
@@ -283,7 +283,7 @@ def main() -> int:
             )
         )
     else:
-        reason = "the Dev Fleet backend was started without KIROCREW_BOUND_PORT"
+        reason = "the Dev Fleet backend was started without KIROCREW_GATEWAY_ORIGIN"
         live.install_pointer_provider(pointer_broker.unconfigured_provider(reason))
         live.install_removal_lease_client(pointer_broker.unconfigured_lease_client(reason))
     app = create_app()

@@ -1,47 +1,23 @@
 """Close-vs-recreate race on the shared dashboard slot-close teardown.
 
-The defect these pin: both ``api_chat_slot_delete`` and
-``api_chat_slots_cleanup`` pop ``name`` out of ``state._slots`` and then run a
-sequence of AWAITS — cancel the task, ``save_slot_off_loop(..., closed=True)``,
-``state.sessions.remove(_history_key_for(name))``. A concurrent same-key
-recreate (a POST /api/chat, or the session_close MCP verb) can mint a
-REPLACEMENT slot for the same key inside that window. The original, still in
-flight, then (a) writes ITS transcript over the shared history key as closed and
-(b) tears down the session the replacement now uses. The failure arms compound
-it: they blindly ``state._slots[name] = <original>`` over whatever now owns the
-key.
+``api_chat_slot_delete`` and ``api_chat_slots_cleanup`` pop ``name`` and then await
+(cancel, closed=True save, ``sessions.remove``). A same-key recreate inside that window
+must not have its transcript archived, its session torn down, or its key overwritten
+by a failure-arm restore.
 
-The fix re-checks ownership after the pop, at BOTH sites, with TWO predicates
-because the destructive steps answer to two different owners. ``_slot_still_ours``
-(no DIFFERENT object owns ``name``) guards the KEY-scoped steps: ``sessions.remove``
-on ``dashboard:{name}``, the failure-arm restores, cleanup's ``archived`` report.
-``_replacement_shares_transcript`` (a different object owns ``name`` AND resolves the
-same file) guards the closed=True save, whose resource is the TRANSCRIPT rather than
-the key — a linked tab and an unbound same-name recreate hold one key and two files,
-and yielding the archive there would leave the original's transcript unarchived for
-the reconcile pass to resurface.
+Two predicates guard two owners. ``_slot_still_ours`` guards the KEY-scoped steps
+(``sessions.remove``, restores, cleanup's ``archived`` report).
+``_replacement_shares_transcript`` guards the closed=True save, whose resource is the
+TRANSCRIPT: a linked tab and an unbound same-name recreate share a key but not a file.
 
-These tests interleave a recreate across the teardown awaits (via an
-``asyncio.Event`` the monkeypatched ``save_slot_off_loop`` parks on) and assert the
-replacement's identity, history, and session survive, that the destructive step was
-skipped, that the original's own tail and archive were not paid for it, and that a
-tail that could NOT be persisted is reported rather than answered 200. Each would
-FAIL if its guard were reverted.
+Each polarity is pinned on its own because a backwards guard is silent. An absent key
+is the ORDINARY post-pop state, so ``get(name) is <popped>`` would skip every teardown.
+For the transcript, a divergent pair read as shared loses an archive, and a folded pair
+read as divergent stamps ``closed`` on a live file.
 
-Each predicate's polarity is pinned on its own, because getting either backwards is
-silent. For the key one, an absent key is the ORDINARY post-pop state, so a guard
-reading ``get(name) is <popped>`` would fire on EVERY close and skip the teardown it
-exists to protect — leaking the per-tab session, with a 200 either way. For the
-transcript one, both directions fail quietly: reading a divergent pair as shared
-loses an archive nothing else will make, and reading a folded pair as divergent
-stamps ``closed`` on a file a live slot is writing. The two ``ordinary`` tests below
-and the three predicate tests are that pin.
-
-What the hand-over owes a shared transcript's privacy line lives in
-``test_slot_close_recreation_race_privacy_ratchet.py``; what it leaves to the
-metadata line's own writer, and the close whose replacement shares no transcript,
-in ``test_slot_close_recreation_race_handover_metadata.py``; the shared fakes in
-``slot_close_recreation_race_helpers.py``.
+Privacy-line cases live in ``test_slot_close_recreation_race_privacy_ratchet.py``,
+metadata cases in ``test_slot_close_recreation_race_handover_metadata.py``, and the
+shared fakes in ``slot_close_recreation_race_helpers.py``.
 """
 
 from __future__ import annotations
@@ -114,12 +90,9 @@ def test_still_ours_treats_a_freed_key_as_ours(tmp_path) -> None:
 def test_shares_transcript_needs_a_replacement_and_the_same_file(tmp_path) -> None:
     """Only a DIFFERENT slot writing the SAME transcript makes the save yield.
 
-    Three answers, and each is a different guard site's decision. No replacement
-    (a freed key, or our own object still there) is the ordinary close, where the
-    archive must run. An unbound recreate over a LINKED tab is a replacement that
-    shares no file, where the archive must also run — on the original's own
-    transcript, which nothing else will ever archive. Only a replacement resolving
-    the same file may take the archive away.
+    No replacement is the ordinary close. An unbound recreate over a LINKED tab shares
+    no file, so the archive must still run on the original's transcript, which nothing
+    else will archive.
     """
     state = _make_state(tmp_path)
     original = state.get_or_create_slot(NAME)
@@ -144,13 +117,9 @@ def test_shares_transcript_needs_a_replacement_and_the_same_file(tmp_path) -> No
 def test_shares_transcript_compares_files_not_key_strings(tmp_path) -> None:
     """A channel stem and its canonical key are ONE file, and must read as shared.
 
-    ``history._safe_key`` folds ``slack:<ts>`` and the ``slack_<ts>`` filename stem
-    onto the same ``.jsonl``, so a bound original and a ``channel_origin``
-    replacement whose stem never resolved hold two DIFFERENT key strings for one
-    transcript. A string comparison would call that "not shared" and let the archive
-    stamp ``closed`` on the file the live replacement is writing — the exact harm the
-    guard exists for, and the asymmetric direction: over-reporting shared only
-    declines an archive the next close will make.
+    ``history._safe_key`` folds ``slack:<ts>`` and ``slack_<ts>`` onto one ``.jsonl``. A
+    string comparison would stamp ``closed`` on the live replacement's file;
+    over-reporting shared only declines an archive the next close will make.
     """
     state = _make_state(tmp_path)
     stem = "slack_1785370133.085469"
@@ -175,13 +144,8 @@ def test_shares_transcript_compares_files_not_key_strings(tmp_path) -> None:
 async def test_delete_recreate_during_save_preserves_replacement(tmp_path, monkeypatch) -> None:
     """(a) A recreate landing inside the closed=True save must survive intact.
 
-    While the close is parked inside ``save_slot_off_loop`` a concurrent
-    ``get_or_create_slot(NAME)`` mints a replacement. After the close returns the
-    replacement must still own the key, and ``sessions.remove`` must NOT have been
-    called for its key (the second identity re-check, before the remove, must see
-    the key is not ours and skip the destructive teardown). Without the
-    guard the close would run ``sessions.remove`` and tear down the session the
-    replacement now uses.
+    The re-check before ``sessions.remove`` must see the key is not ours and skip the
+    teardown of the session the replacement now uses.
     """
     state = _state_with_slot(tmp_path)
     original = state._slots[NAME]
@@ -223,16 +187,10 @@ async def test_delete_recreate_during_save_preserves_replacement(tmp_path, monke
 async def test_delete_recreate_during_task_cancel_hits_first_guard(tmp_path, monkeypatch) -> None:
     """(a2) A recreate landing in the task-cancel await hits the FIRST guard.
 
-    This is the ONLY window where the pre-save guard fires: the recreate is
-    minted while the close is parked in ``asyncio.wait_for(asyncio.shield(
-    slot.task), 2.0)`` — BEFORE ``save_slot_off_loop`` is reached — so the first
-    ``_slot_still_ours`` check (immediately after the cancel block) sees the key
-    is not ours and takes the early ``return {"ok": True}``. That means the
-    closed=True save is NEVER attempted for the original and ``sessions.remove``
-    is NEVER called: the replacement keeps its slot, its (unclosed) history, and
-    its session. Reverting ONLY the first guard would let the close fall through
-    to the save and the remove, so this case fails without it — the other cases
-    park inside the save and so exercise only the second/failure-arm guards.
+    This is the only window where the pre-save guard fires: the close is parked in
+    ``asyncio.wait_for(asyncio.shield(slot.task), 2.0)``, so neither the save nor
+    ``sessions.remove`` runs. The other cases park inside the save and exercise only the
+    later guards.
     """
     state = _state_with_slot(tmp_path)
     original = state._slots[NAME]
@@ -281,12 +239,8 @@ async def test_delete_first_guard_keeps_the_app_dismissal_and_says_so(
 ) -> None:
     """(a3) The pre-save guard keeps the app dismissal, and logs that it did.
 
-    This exit takes the same decision as the failure arm — the original is popped,
-    cancelled and not coming back, so its dismissal stands, and resuming the crew
-    would re-arm an autonomous worker onto the replacement's key. It is also the
-    MORE common of the two hand-overs, so the operator-visible record matters more
-    here than on the failure arm: without it the frequent case is the silent one and
-    a paused app worker has no trace explaining why.
+    Resuming the crew would re-arm an autonomous worker onto the replacement's key. This
+    is the more common hand-over, so the log line is what explains a paused app worker.
     """
     state = _state_with_slot(tmp_path)
     original = state._slots[NAME]
@@ -405,27 +359,16 @@ async def test_delete_failure_arm_skips_both_compensations_when_restore_skipped(
 ) -> None:
     """(c2) A skipped restore skips BOTH compensations owed to the original.
 
-    The failed close owes the ORIGINAL two rollbacks, and both are conditional on
-    the original getting its key back:
+    - The retired auto-nudge loop's admission check
+      (``lambda: state.get_slot(name) is slot``) is False, so
+      ``AutoNudgeService._add_unserialized`` raises ``NudgeAdmissionRefused`` and the
+      loop stays retired.
+    - ``notify_slot_close_undone`` must not fire: the crew watchdog resolves its
+      ``slot_key`` with a bare ``state.get_slot(slot_key)``, so a resume would hand the
+      auto-approve grant to the user-owned replacement.
 
-    - the retired auto-nudge loop goes through
-      ``_restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is
-      slot)``. With a replacement on ``name`` that admission check is False, so
-      ``AutoNudgeService._add_unserialized`` raises ``NudgeAdmissionRefused`` and
-      ``_restore_slot_nudge_loop`` swallows it — the loop stays retired.
-    - app-notify-undo (``notify_slot_close_undone``) is coupled to the ``_slots``
-      restore for the same reason. Resuming a crew re-arms an autonomous worker
-      whose ``slot_key`` its watchdog resolves with a bare
-      ``state.get_slot(slot_key)`` and no ownership test, so it would hand the
-      auto-approve grant — and then an unbounded nudge clock — to the user-owned
-      replacement now holding that key. The original is popped, cancelled and not
-      coming back, so the dismissal stands; the crew keeps its ``paused_reason``
-      row, which is the same state the pre-save guard leaves.
-
-    Gating on ``slot._app`` alone is what makes that escalation reachable, so this
-    pins the coupling in both directions: the undo must NOT fire here, and
-    ``test_delete_failure_arm_undoes_the_app_close_when_the_slot_is_restored``
-    pins that it still does on the ordinary restore.
+    ``test_delete_failure_arm_undoes_the_app_close_when_the_slot_is_restored`` pins that
+    the undo still fires on the ordinary restore.
     """
     state = _state_with_slot(tmp_path)
     original = state._slots[NAME]
@@ -593,14 +536,8 @@ async def test_cleanup_recreate_during_save_preserves_replacement(tmp_path, monk
 async def test_cleanup_recreate_during_task_cancel_hits_first_guard(tmp_path, monkeypatch) -> None:
     """(d2) Bulk path: a recreate in the task-cancel await hits the FIRST guard.
 
-    The stale slot has a live turn, so the per-iteration cancel block awaits
-    ``asyncio.wait_for(asyncio.shield(removed.task), 2.0)``. A recreate minted in
-    THAT await lands before the flush+save, so the first ``_slot_still_ours``
-    check takes the early ``continue`` — the flush and closed=True save never run
-    for the original, ``sessions.remove`` is never called, and NAME is NOT
-    appended to the archived ``keys`` (a live replacement must never be reported
-    archived-over). Reverting only the first guard would let the pass flush, save
-    onto the replacement's key, remove its session, and report it archived.
+    The first ``_slot_still_ours`` check takes the early ``continue``: no flush, no
+    save, no ``sessions.remove``, and NAME is not reported in the archived ``keys``.
     """
     state = _state_with_slot(tmp_path)
     original = _make_stale(state)
@@ -712,13 +649,10 @@ async def test_cleanup_ordinary_archive_still_saves_and_removes(tmp_path, monkey
 # --------------------------------------------------------------------------- #
 # the KEY-SCOPED restricted marker
 #
-# ``state._restricted_keys`` holds ``dashboard:{name}`` — a SESSION KEY, not a slot
-# identity — and ``_is_restricted_session`` tests that set BEFORE it looks at the
-# slot. So an incognito/guest original that yields its key to a persistent
-# replacement makes every memory, artifact and mcp-apps call on the replacement
-# answer 403 unless the marker is re-derived from the new owner. Each exit that
-# yields the key is pinned below, plus the fail-CLOSED direction (a restricted
-# replacement KEEPS the marker, so a blanket discard is not a legal fix).
+# ``state._restricted_keys`` holds ``dashboard:{name}``, a SESSION KEY, and
+# ``_is_restricted_session`` checks it before the slot. An incognito original yielding
+# its key must not leave a persistent replacement answering 403; a restricted
+# replacement KEEPS the marker, so a blanket discard is not a legal fix.
 # --------------------------------------------------------------------------- #
 
 
@@ -975,25 +909,17 @@ async def test_cleanup_failure_arm_hands_the_marker_to_the_replacement(
 # what the hand-over must NOT cost: the original's unpersisted tail
 # --------------------------------------------------------------------------- #
 #
-# Yielding the key preserves the replacement, and the object it yields from is the
-# only reference to whatever the original never committed: the periodic flush walks
-# ``state._slots``, so a popped, unreferenced slot has no retry path at all. These
-# drive the REAL ``save_slot_off_loop`` against a real ``ConversationLog`` and pin
-# BOTH halves at once — the replacement survives AND every row survives — because
-# either alone is satisfiable by a change that breaks the other: skipping the write
-# loses the tail, and doing the original write takes the replacement down with it.
+# The periodic flush walks ``state._slots``, so a popped slot has no retry path. These
+# drive the REAL ``save_slot_off_loop`` and pin both halves: the replacement survives
+# AND every row survives.
 
 
 @pytest.mark.asyncio
 async def test_delete_handover_persists_the_tail_and_keeps_the_replacement(tmp_path) -> None:
     """The pre-save hand-over exit must cost neither the replacement nor the tail.
 
-    This exit needs no store failure to reach: it returns BEFORE the save is
-    attempted, in a window that opens while a turn is in flight — so the rows at
-    risk are typically the reply the user was watching. The drain writes the same
-    window the close was about to write, with ``closed=False``, which is the one
-    difference that matters: the transcript gains the rows and does NOT gain the
-    archive flag on a key a live replacement holds.
+    This exit opens while a turn is in flight, so the rows at risk are usually the
+    reply the user was watching. The drain writes them with ``closed=False``.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
@@ -1030,19 +956,10 @@ async def test_delete_handover_persists_the_tail_and_keeps_the_replacement(tmp_p
 async def test_delete_handover_writes_a_linked_slot_own_transcript(tmp_path) -> None:
     """The drain must authorize the slot's OWN transcript, never a derived one.
 
-    A cron-, channel- or workflow-injected tab carries a ``linked_session_key``, and
-    that key — not ``dashboard:{name}`` — is where its conversation lives.
-    ``_save_slot_to_history`` resolves its write target through
-    ``slot_history_key(slot)`` and REFUSES the whole save when the caller's
-    ``expected_history_key`` names a different transcript, so a derived pin makes the
-    drain write nothing at all for exactly the slots whose transcript is shared with
-    something outside the dashboard — and names a row-less file in the report.
-
-    The recreate here is bound to the SAME linked key, which is what a cron
-    re-injecting the same job's tab produces. That is what puts both slots on one
-    transcript and so makes this the hand-over case at all; an UNBOUND recreate over
-    the same tab shares nothing and is
-    ``test_delete_divergent_transcript_still_archives_the_original``.
+    A linked tab lives at its ``linked_session_key``, and ``_save_slot_to_history``
+    refuses the whole save when ``expected_history_key`` names another transcript. The
+    recreate here binds the SAME linked key (a cron re-injecting its tab); the unbound
+    case is ``test_delete_divergent_transcript_still_archives_the_original``.
     """
     state = _make_state(tmp_path)
     linked = "cron:job7"
@@ -1081,14 +998,8 @@ async def test_delete_handover_write_failure_fails_the_close_and_names_the_rows(
 ) -> None:
     """A store that cannot take the tail owes the caller an error AND a row count.
 
-    The drain is the only path to durability on this exit, so when it fails the loss
-    is unrecoverable — and then the two things left that matter are that the caller
-    is not told the close succeeded, and that the loss is not silent. Returning 200
-    would claim durability this close does not have, with nothing left to retry it;
-    the ``history_save_failed`` code is the same one an ordinary failed archive
-    raises, because from the caller's side it is one thing. The count is derived the
-    way the drain derives it (``len(messages) - _disk_window_len``), so the log line
-    names the rows rather than just the slot.
+    Nothing is left to retry, so the close answers ``history_save_failed`` and logs the
+    lost row count, derived as ``len(messages) - _disk_window_len``.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
@@ -1159,12 +1070,8 @@ async def test_cleanup_handover_write_failure_is_reported_failed(tmp_path, monke
 async def test_delete_failure_arm_handover_persists_the_tail(tmp_path, monkeypatch) -> None:
     """The failure arm's "restore so data isn't lost" must hold for a hand-over too.
 
-    When the key went to a replacement the restore is skipped, and skipping it is
-    correct — but the reason the restore existed does not go away with it. The
-    original is unreferenced from that point, so the arm has to get its rows onto
-    the shared transcript itself. The seeded failure is the closed=True save only:
-    a real store that rejected one write can still take the next, and a lock lost
-    to the recreate is exactly that case.
+    The restore is skipped, so the arm writes the rows to the shared transcript itself.
+    Only the closed=True save fails: a store that rejected one write can take the next.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)

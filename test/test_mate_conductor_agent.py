@@ -44,7 +44,10 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     ):
         """Every other field matches ``build_agent_config()`` exactly, except the
         work-ledger mount (:class:`TestItMountsTheWorkLedger`), which only adds."""
-        from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+        from kiro_crew.agent_materialization.skill_resources import (
+            WIDGET_POINTER_SKILLS,
+            prompt_skill_uris,
+        )
 
         template = agent.build_agent_config()
         mounted = ("tools", "allowedTools", "mcpServers", "resources")
@@ -53,7 +56,7 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
                 continue
             assert installed.get(key) == value, key
         # The mounted ledger maps the skills its prompt names onto the template's own.
-        mapped = {*prompt_skill_uris("goal-conductor"), *prompt_skill_uris("dashboard")}
+        mapped = {*prompt_skill_uris("goal-conductor", "dashboard", *WIDGET_POINTER_SKILLS)}
         assert [r for r in installed["resources"] if r not in mapped] == template.get("resources")
         assert {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"} == (
             template["mcpServers"]
@@ -297,10 +300,15 @@ def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp
 
     spec = _install_with_work(tmp_path, monkeypatch)
     assert _goal_conductor_uri() in spec["resources"]
-    # The dashboard skill the crewmate prompt names stays in reach once mapping scopes.
-    from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+    # The dashboard skill the crewmate prompt names, and the skills its widget pointer
+    # names, stay in reach once mapping scopes.
+    from kiro_crew.agent_materialization.skill_resources import (
+        WIDGET_POINTER_SKILLS,
+        prompt_skill_uris,
+    )
 
-    assert prompt_skill_uris("dashboard")[0] in spec["resources"]
+    for uri in prompt_skill_uris("dashboard", *WIDGET_POINTER_SKILLS):
+        assert uri in spec["resources"]
     # The template's own resources keep their places.
     template = agent.build_agent_config()
     for entry in template.get("resources") or []:

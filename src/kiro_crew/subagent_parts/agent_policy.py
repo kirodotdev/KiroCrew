@@ -394,6 +394,12 @@ def spawn_allowlist(spec: Mapping[str, Any]) -> tuple[str, ...] | None:
     settings = spec.get("toolsSettings")
     if not isinstance(settings, Mapping):
         return None
+    # The one key of the sub-agent alias group kiro-cli reads (``crew``,
+    # ``agentCrew``, ``subagent``, ...), the same one the KAS projection reads.
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    settings, _ = canonical_tools_settings(dict(settings))
+    # The fold files every sub-agent spelling under `subagent`.
     subagent = settings.get("subagent")
     if not isinstance(subagent, Mapping) or "availableAgents" not in subagent:
         return None

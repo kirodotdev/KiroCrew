@@ -73,6 +73,28 @@ class RecordingSleep:
         await asyncio.sleep(0)
 
 
+#: The host token a :class:`MoveTokenSource` hands out for a move's dial alone.
+MOVE_TOKEN = TOKEN + "-move"
+
+
+class MoveTokenSource(StaticHostTokenSource):
+    """Hands out :data:`MOVE_TOKEN` on the second ``current()`` only: the move's dial.
+
+    Every other ask answers :data:`TOKEN`, so a test tells the move's dial from a
+    redial by the token the relay saw.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(HostCredential(TOKEN, crew_kind="personal", owner_user_id=OWNER))
+        self.calls = 0
+
+    async def current(self) -> HostCredential:
+        self.calls += 1
+        if self.calls == 2:
+            return HostCredential(MOVE_TOKEN, crew_kind="personal", owner_user_id=OWNER)
+        return await super().current()
+
+
 class FakeHostLeg:
     """One host connection, as the fake relay sees it."""
 
@@ -221,6 +243,7 @@ class FakeCrew:
 
             app.middlewares.append(build_host_canonical_redirect("localhost"))
             app.router.add_get("/", self._sessions)
+            app.router.add_get("/chat", self._sessions)
         app[RELAY_INGRESS_APP_KEY] = self.gateway
         app.router.add_route("*", "/api/sessions", self._sessions)
         app.router.add_post("/upload", self._upload)

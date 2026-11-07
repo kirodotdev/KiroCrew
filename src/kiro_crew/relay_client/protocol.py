@@ -17,6 +17,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple, TypeGuard
 from urllib.parse import urlsplit
 
@@ -28,14 +29,19 @@ MODE_HTTP = "http"
 #: credit for responses and its pause for WebSockets. ``request-credit`` is the
 #: client's own credit for request bodies (contract section 5.4): once the relay
 #: agrees it, the relay sends each request body only as far as the client has
-#: granted. ``opaque`` is reserved and never offered in version 1.
+#: granted. ``move-done`` asks the relay to say, on a connection it asked to
+#: move, when it will relay no more requests there (contract section 4.5), so
+#: the client closes that connection only once nothing more can be on its way.
+#: ``opaque`` is reserved and never offered in version 1.
 FEATURE_FLOW_CREDIT = "flow-credit"
 FEATURE_WS_FLOW = "ws-flow"
 FEATURE_REQUEST_CREDIT = "request-credit"
+FEATURE_MOVE_DONE = "move-done"
 OFFERED_FEATURES: Tuple[str, ...] = (
     FEATURE_FLOW_CREDIT,
     FEATURE_WS_FLOW,
     FEATURE_REQUEST_CREDIT,
+    FEATURE_MOVE_DONE,
 )
 
 # ── timing (contract section 11.2) ──
@@ -68,6 +74,10 @@ DRAIN_BACKSTOP_SECONDS = 90.0
 #: it stopped routing to it can still be on its way. Never past the drain backstop.
 #: Provisional, so it is the setting ``tunnel.relay_move_grace_seconds``.
 MOVE_QUIET_GRACE_SECONDS = 1.0
+#: Once ``move-done`` is agreed, how long after the new connection's ``ready``
+#: the old one waits for the relay's ``move-done`` before it falls back to the
+#: quiet grace above. Never past the drain backstop.
+MOVE_DONE_WAIT_SECONDS = 5.0
 #: The largest ``tunnel.relay_move_grace_seconds`` accepts.
 MOVE_QUIET_GRACE_MAX_SECONDS = 30.0
 
@@ -123,6 +133,19 @@ MAX_STREAMS_PER_CONNECTION = 256
 RESERVED_PATH_PREFIX = "/_kiro/relay/"
 #: The Kiro user ID grammar: ASCII, safe as a header value, at most 256 characters.
 USER_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:@+=/-]{0,255}\Z", re.ASCII)
+#: The person's email and name (contract section 5.1): optional, display only, never
+#: compared, logged or counted. A value outside this grammar is dropped, and the
+#: frame is still served (:func:`_display_fields`).
+DISPLAY_EMAIL_MAX_CHARS = 254
+DISPLAY_EMAIL_RE = re.compile(
+    r"\A[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+\Z", re.ASCII
+)
+#: Code points, and UTF-8 bytes, a display name may hold.
+DISPLAY_NAME_MAX_CHARS = 128
+DISPLAY_NAME_MAX_BYTES = 512
+#: Unicode categories a display name may never carry: controls, format characters
+#: (bidi overrides, zero-width), line and paragraph separators, lone surrogates.
+_DISPLAY_NAME_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
 #: An endpoint ID is one DNS label.
 ENDPOINT_ID_RE = re.compile(r"\A[a-z0-9]{20,63}\Z", re.ASCII)
 #: A Crew URL's host: lower-case DNS labels, at most 253 characters.
@@ -163,6 +186,7 @@ _INBOUND_TYPES = frozenset(
         "ping",
         "pong",
         "reconnect",
+        "move-done",
         "error",
         "request",
         "request-chunk",
@@ -210,6 +234,12 @@ def _is_int(value: Any) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def frame_stream_id(frame: Dict[str, Any]) -> Optional[int]:
+    """The frame's ``id`` when it is a valid stream id, else None."""
+    sid = frame.get("id")
+    return sid if _is_int(sid) and sid >= 0 else None
+
+
 def _require_int(frame: Dict[str, Any], key: str, *, minimum: int = 0) -> int:
     value = frame.get(key)
     if not _is_int(value) or value < minimum:
@@ -243,6 +273,41 @@ def _check_user(frame: Dict[str, Any], sid: int) -> None:
         raise FrameError(
             ERR_INVALID_MESSAGE, "the caller's user ID is missing or malformed", stream_id=sid
         )
+
+
+def is_display_email(value: object) -> TypeGuard[str]:
+    """Whether *value* is an email this client passes on as a display label."""
+    return (
+        isinstance(value, str)
+        and len(value) <= DISPLAY_EMAIL_MAX_CHARS
+        and DISPLAY_EMAIL_RE.match(value) is not None
+    )
+
+
+def is_display_name(value: object) -> TypeGuard[str]:
+    """Whether *value* is a name this client passes on as a display label.
+
+    1 to 128 code points and at most 512 UTF-8 bytes, not blank, and no control,
+    format, separator or lone-surrogate character. Not normalized.
+    """
+    if not isinstance(value, str) or not 1 <= len(value) <= DISPLAY_NAME_MAX_CHARS:
+        return False
+    if not value.strip():
+        return False
+    if any(unicodedata.category(ch) in _DISPLAY_NAME_FORBIDDEN_CATEGORIES for ch in value):
+        return False
+    return len(value.encode("utf-8")) <= DISPLAY_NAME_MAX_BYTES
+
+
+def _display_fields(frame: Dict[str, Any]) -> None:
+    """Drop a ``userEmail`` or ``userName`` outside the grammar; never refuse the frame.
+
+    Both are labels only, so a bad one costs the person their name, not their request.
+    """
+    if "userEmail" in frame and not is_display_email(frame["userEmail"]):
+        del frame["userEmail"]
+    if "userName" in frame and not is_display_name(frame["userName"]):
+        del frame["userName"]
 
 
 #: A path or query the client forwards: printable ASCII with no space, so it can
@@ -328,6 +393,7 @@ def _check_request(frame: Dict[str, Any]) -> None:
     if frame.get("streaming") is not True:
         raise FrameError(ERR_INVALID_MESSAGE, "requests always stream in version 1", stream_id=sid)
     _check_user(frame, sid)
+    _display_fields(frame)
     if "traceparent" in frame and not isinstance(frame["traceparent"], str):
         raise FrameError(ERR_INVALID_MESSAGE, "traceparent must be a string", stream_id=sid)
     if "initialCredit" in frame:
@@ -355,6 +421,7 @@ def _check_ws_upgrade(frame: Dict[str, Any]) -> None:
             )
         _check_header(pair[0], pair[1], sid)
     _check_user(frame, sid)
+    _display_fields(frame)
 
 
 def _check_ws_frame(frame: Dict[str, Any]) -> None:
@@ -418,6 +485,15 @@ def _check_reconnect(frame: Dict[str, Any]) -> None:
     _require_int(frame, "closeInSeconds", minimum=0)
 
 
+def _check_move_done(frame: Dict[str, Any]) -> None:
+    # ``lastId`` is for diagnostics only, so the client never depends on it. The
+    # contract still refuses a non-integer one with invalid_message, and a
+    # refused frame does not count as move-done, so the fallback timer keeps
+    # running.
+    if "lastId" in frame and (not _is_int(frame["lastId"]) or frame["lastId"] < 0):
+        raise FrameError(ERR_INVALID_MESSAGE, "move-done.lastId must be a stream id")
+
+
 def _check_error(frame: Dict[str, Any]) -> None:
     if not isinstance(frame.get("code"), str) or not frame["code"]:
         raise FrameError(ERR_INVALID_MESSAGE, "error frame without a code", answer=False)
@@ -444,6 +520,7 @@ _CHECKS = {
     "ping": _check_ping_pong,
     "pong": _check_ping_pong,
     "reconnect": _check_reconnect,
+    "move-done": _check_move_done,
     "error": _check_error,
     "request": _check_request,
     "request-chunk": _check_request_chunk,
@@ -475,16 +552,20 @@ def parse_inbound(text: str) -> Dict[str, Any]:
         raise FrameError(ERR_INVALID_MESSAGE, "frame is not a JSON object")
     kind = frame.get("type")
     if not isinstance(kind, str) or kind not in _INBOUND_TYPES:
-        sid = frame.get("id") if _is_int(frame.get("id")) and frame["id"] >= 0 else None
-        raise FrameError(ERR_UNSUPPORTED_FRAME, f"frame type {kind!r} is not agreed", stream_id=sid)
+        raise FrameError(
+            ERR_UNSUPPORTED_FRAME,
+            f"frame type {kind!r} is not agreed",
+            stream_id=frame_stream_id(frame),
+        )
     try:
         _CHECKS[kind](frame)
     except FrameError as exc:
         exc.frame_type = kind
         raise
     except (TypeError, ValueError, RecursionError):
-        sid = frame.get("id") if _is_int(frame.get("id")) and frame["id"] >= 0 else None
-        refusal = FrameError(ERR_INVALID_MESSAGE, "frame fields are malformed", stream_id=sid)
+        refusal = FrameError(
+            ERR_INVALID_MESSAGE, "frame fields are malformed", stream_id=frame_stream_id(frame)
+        )
         refusal.frame_type = kind
         raise refusal from None
     if kind == "reconnect" and frame["reason"] not in _RECONNECT_REASONS:

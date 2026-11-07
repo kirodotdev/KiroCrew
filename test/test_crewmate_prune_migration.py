@@ -1495,8 +1495,12 @@ class TestAwaitSettled:
         waiter = asyncio.ensure_future(
             server_mod.await_crewmate_prune_settled(state, before="cron")
         )
-        await asyncio.sleep(0.2)
-        assert state.crewmate_prune_abandon.is_set()
+        # Poll for the flag: a stalled loop can start the waiter late, so any
+        # fixed sleep can end before its 0.05 s budget does.
+        await async_wait_until(
+            state.crewmate_prune_abandon.is_set,
+            describe=lambda: "the prune gate never set crewmate_prune_abandon",
+        )
         assert not waiter.done()  # the writer does not start beside the pass
         state.crewmate_prune_settled.set()
         await await_until(waiter, what="the prune gate's waiter finishing")

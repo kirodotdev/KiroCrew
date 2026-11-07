@@ -11,6 +11,7 @@ const {
   bindGlobalHotkey: bindStoredGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
+  requestedGlobalHotkey,
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { initAutoUpdate } = require("./auto-update");
@@ -235,10 +236,12 @@ function createIpcRegistrar({
       });
     }
 
-    // The shortcuts UI reports what is ACTUALLY bound. Registration may have
-    // fallen back to the default or degraded to no shortcut at all.
+    // The shortcuts UI reports what is ACTUALLY bound beside what was asked
+    // for. Registration may have fallen back to the default or degraded to no
+    // shortcut at all.
     ipcMain.handle("global-hotkey:get", () => ({
       accelerator: currentGlobalHotkey(),
+      requested: requestedGlobalHotkey(),
       default: DEFAULT_GLOBAL_HOTKEY,
     }));
 
@@ -409,12 +412,13 @@ function createIpcRegistrar({
       return detectWsl();
     });
 
-    // What the main window's close button does. Deliberately narrower than
-    // `assertLocalDashboard`, which would hide the row from a main window on a
-    // configured remote host and leave that user no way to change it. The
-    // sender must be the main window's top frame, still on its assigned
-    // dashboard origin. That trusts the main window's dashboard, local or
-    // remote, with a visible, reversible two-valued preference.
+    // What the main window's close button does, and whether the tray icon
+    // shows. Deliberately narrower than `assertLocalDashboard`, which would
+    // hide the rows from a main window on a configured remote host and leave
+    // that user no way to change them. The sender must be the main window's
+    // top frame, still on its assigned dashboard origin. That trusts the main
+    // window's dashboard, local or remote, with visible, reversible two-valued
+    // preferences.
     const assertMainWindowDashboard = (event, channel) => {
       const refuse = (why) => {
         log(`${channel} rejected: ${why}`);
@@ -446,6 +450,14 @@ function createIpcRegistrar({
     ipcMain.handle("close-action:set", async (event, value) => {
       assertMainWindowDashboard(event, "close-action:set");
       return windows.closeAction.set(value);
+    });
+    ipcMain.handle("tray-icon:get", async (event) => {
+      assertMainWindowDashboard(event, "tray-icon:get");
+      return windows.trayIcon.get();
+    });
+    ipcMain.handle("tray-icon:set", async (event, show) => {
+      assertMainWindowDashboard(event, "tray-icon:set");
+      return windows.trayIcon.set(show);
     });
 
     // Open a file the chat referenced in the user's own editor, by handing its
@@ -896,8 +908,9 @@ function createIpcRegistrar({
               // On other platforms the app exits when the last window closes,
               // so clearing is safe. Only clear when another window is open
               // or we're not on macOS.
-              const { BrowserWindow } = electron;
-              const anyOpen = BrowserWindow && BrowserWindow.getAllWindows().length > 0;
+              // Dashboard windows are BaseWindows; BrowserWindow.getAllWindows() lists none of them.
+              const { BaseWindow } = electron;
+              const anyOpen = BaseWindow && BaseWindow.getAllWindows().length > 0;
               if (anyOpen || process.platform !== "darwin") {
                 const wasGoverned = policyGoverned;
                 policyGoverned = governanceSenders.size > 0;

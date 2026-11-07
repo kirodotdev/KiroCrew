@@ -688,7 +688,7 @@ recoverClaimedChatHandoffs()
 
 let _softNavigate: ((to: string) => void) | null = null
 let _maySoftNavigate: (() => boolean) | null = null
-let _hardExit: (() => void) | null = null
+let _hardExit: ((to: string) => void) | null = null
 const _handoffListeners = new Set<() => void>()
 
 /** Install (or clear, with `null`) the in-app navigator and its leave guard. Called by App.tsx. */
@@ -701,7 +701,8 @@ export function installSoftNavigate(
 }
 
 /**
- * Install (or clear, with `null`) how a hard exit to chat leaves this window.
+ * Install (or clear, with `null`) how a hard exit leaves this window. The sink
+ * gets the destination: an app-space path with any query.
  *
  * For a window that must never load the dashboard itself. The app pop-out
  * installs the frame's own exit hand-off (`AppPopoutFrame`), which drains the
@@ -710,8 +711,21 @@ export function installSoftNavigate(
  * load here. Both sides are plain JS, so a crashed React tree cannot take the
  * sink down with it, which is the whole point of `hard`.
  */
-export function installHardExit(fn: (() => void) | null): void {
+export function installHardExit(fn: ((to: string) => void) | null): void {
   _hardExit = fn
+}
+
+/**
+ * Leave this window for `to` (an app-space path with any query) by a full page
+ * load, or through the sink {@link installHardExit} installed when there is one.
+ * In an app pop-out that sink sends every `to` to the main window.
+ */
+export function hardNavigate(to: string): void {
+  if (_hardExit) {
+    _hardExit(to)
+    return
+  }
+  try { window.location.assign(withBase(to)) } catch { /* nothing left to try */ }
 }
 
 /**
@@ -772,11 +786,7 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGra
     return true
   }
   // After staging, not before: the installed sink drains the queue it forwards.
-  if (_hardExit) {
-    _hardExit()
-    return true
-  }
-  try { window.location.assign(withBase('/chat')) } catch { /* nothing left to try */ }
+  hardNavigate('/chat')
   return true
 }
 

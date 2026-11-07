@@ -28,7 +28,7 @@ import {
 } from './subagentCompletion'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { normalizeModelKey } from '../../lib/model'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 
 function outcomeLabel(outcome: SubagentOutcome): string {
   if (outcome === 'failed') return i18nT('pages.chat.subagentCompletionCard.failed')

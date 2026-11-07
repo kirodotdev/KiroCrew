@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Undo2, Archive } from 'lucide-react'
 import { api } from '../../api/client'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { Card, CardTitle, Btn, Badge, EmptyState } from '../../components/ui'
 import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'

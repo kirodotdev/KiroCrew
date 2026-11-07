@@ -1,12 +1,8 @@
 """``kirocrew cron add`` as a headless registration surface.
 
-The CLI is a thin front-end over ``CronService.add_job``: every field the
-flags capture is forwarded into that ONE locked build+persist, and the two
-zero-token kinds (``--script`` / ``--command``) go through the same
-storage-time security vet the MCP ``cron_add`` tool and the apps SDK apply.
-The contract an installer relies on -- validated up front, nothing written
-on refusal, the reason on stderr, exit 1 -- is pinned here alongside the
-argparse-level exclusivity of the schedule and job-kind flag groups.
+Every flag goes into the one locked ``CronService.add_job``, and ``--script`` /
+``--command`` get the same security vet as the MCP ``cron_add`` tool. On refusal
+nothing is written, the reason goes to stderr, and the exit code is 1.
 """
 
 from __future__ import annotations
@@ -116,9 +112,7 @@ def _refused(args: argparse.Namespace, capsys) -> str:
     return err
 
 
-# ---------------------------------------------------------------------------
 # One locked transaction, every field forwarded
-# ---------------------------------------------------------------------------
 
 
 class TestSingleTransaction:
@@ -270,9 +264,7 @@ class TestSingleTransaction:
         assert capsys.readouterr().out.startswith("Added job: ok1 ")
 
 
-# ---------------------------------------------------------------------------
 # --at one-shot
-# ---------------------------------------------------------------------------
 
 
 class TestOneShot:
@@ -407,9 +399,7 @@ class TestOneShot:
         assert job.schedule.cron_expr == "0 9 * * *"
 
 
-# ---------------------------------------------------------------------------
 # Refusals: nothing written, stderr, exit 1
-# ---------------------------------------------------------------------------
 
 
 class TestRefusals:
@@ -620,9 +610,7 @@ class TestRefusals:
         assert "No space left on device" in err
 
 
-# ---------------------------------------------------------------------------
 # Security refusals are audited; plain validation is not
-# ---------------------------------------------------------------------------
 
 
 class TestDenialAudit:
@@ -832,9 +820,7 @@ class TestDenialAudit:
         assert capsys.readouterr().out.startswith("Added job: j1 (job) [")
 
 
-# ---------------------------------------------------------------------------
 # End to end against the real store
-# ---------------------------------------------------------------------------
 
 
 class TestRealStore:
@@ -867,9 +853,7 @@ class TestRealStore:
         assert row["schedule"]["every_secs"] == 3600
 
 
-# ---------------------------------------------------------------------------
 # argparse: the flag groups are exclusive at parse time too
-# ---------------------------------------------------------------------------
 
 
 class TestArgparse:

@@ -296,8 +296,11 @@ class TestAgentDiscoveryIsOffloaded:
 
         from kiro_crew.apps import spawn_sdk
 
-        src = inspect.getsource(spawn_sdk.build_spawn_impl)
+        # Both the spawn and the continuation read the app's agents through it.
+        src = inspect.getsource(spawn_sdk._own_agents)
         assert "await asyncio.to_thread(list_agents)" in src
+        assert "_own_agents(" in inspect.getsource(spawn_sdk.build_spawn_impl)
+        assert "_own_agents(" in inspect.getsource(spawn_sdk.build_continue_impl)
 
 
 class TestSpawnSkipsTheScanWhenPrevalidated:

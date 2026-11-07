@@ -464,6 +464,8 @@ class TestErrorMessages:
             ({"tags": ["-bad"]}, "invalid tag '-bad': a tag must start with a letter or digit"),
             ({"kind": "movie"}, "invalid kind 'movie': must be one of"),
             ({"source": "fax"}, "invalid source 'fax': must be one of"),
+            ({"source": ["dashboard"]}, "source must be str, got list"),
+            ({"source": {"a": 1}}, "source must be str, got dict"),
             ({"slug": "Bad Slug"}, "invalid slug 'Bad Slug': must match"),
             (
                 {"source_path": "/p" * 300},

@@ -61,5 +61,5 @@
       "expect": "the Crew treats it as max-age"
     }
   ],
-  "crewDoes": "Dial a new connection with the same instance's current host token. Once it is ready, stop sending new work to the old one, let the old one's HTTP requests finish, then close the old one with 1000. Don't close the old one when closeInSeconds runs out: the relay closes it with 1012 if it is still open when its window ends."
+  "crewDoes": "Dial a new connection with the same instance's current host token. Once it is ready, stop sending new work to the old one and keep answering everything that arrives on it. When the old connection agreed move-done, close it with 1000 once move-done has arrived and every stream opened before it has finished. Without the feature, or without move-done 5 seconds after the new connection's ready, close the old one with 1000 once the HTTP requests it has received are done. Don't close the old one when closeInSeconds runs out: the relay closes it with 1012 if it is still open when its window ends."
 }

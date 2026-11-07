@@ -22,11 +22,16 @@ const degradedByProvider = new Map<string, boolean>()
 // one actionable sign-in message instead of the generic config-load failure.
 // Cleared on the next LIVE success, like the degraded flag.
 const authRequiredByProvider = new Map<string, boolean>()
+// The failed fetch's own error text, which the Settings ▸ Chat banner shows
+// under its lead. '' when the last fetch failed with no error (an empty list)
+// or did not fail.
+const reasonByProvider = new Map<string, string>()
 const subscribers = new Set<() => void>()
 
 /** Record whether the last fetch for a provider was degraded (fallback) or
- *  live. The adapter calls this on every fetch outcome. */
-export function markModelsDegraded(providerId: string, degraded: boolean): void {
+ *  live, and the error text of a failed one. The adapter calls this on every
+ *  fetch outcome. */
+export function markModelsDegraded(providerId: string, degraded: boolean, reason = ''): void {
   // A live success is the one event that clears the auth-required flag: the
   // list loaded, so whatever sign-in wall there was is gone. A degraded fetch
   // leaves the flag to `markModelsAuthRequired`, which the adapter calls with
@@ -34,6 +39,10 @@ export function markModelsDegraded(providerId: string, degraded: boolean): void 
   let changed = false
   if (!degraded && authRequiredByProvider.get(providerId)) {
     authRequiredByProvider.set(providerId, false)
+    changed = true
+  }
+  if ((reasonByProvider.get(providerId) ?? '') !== reason) {
+    reasonByProvider.set(providerId, reason)
     changed = true
   }
   if (degradedByProvider.get(providerId) !== degraded) {
@@ -64,6 +73,15 @@ export function useModelsAuthRequired(providerId: string): boolean {
     subscribe,
     () => modelsAuthRequired(providerId),
     () => false,
+  )
+}
+
+/** The degraded fetch's error text, or '' — reactive, for a banner. */
+export function useModelsDegradedReason(providerId: string): string {
+  return useSyncExternalStore(
+    subscribe,
+    () => reasonByProvider.get(providerId) ?? '',
+    () => '',
   )
 }
 

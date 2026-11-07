@@ -260,6 +260,17 @@ class AppSettingsConfig:
             "pin.",
         ),
     )
+    mute_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Mute sessions this app opens",
+            "Mute the chat sessions this app opens, as a session's own mute does: "
+            "a finished turn plays no chime, shows no toast and marks nothing "
+            "unread, and the notes those sessions post arrive silenced. A tool "
+            "approval, a question for you and a failed turn still reach you. "
+            "Your own sessions are unaffected.",
+        ),
+    )
 
 
 @dataclass
@@ -717,6 +728,20 @@ class McpGatewayConfig:
             restart=True,
         ),
     )
+    keep_alive_servers: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Keep-Alive Servers",
+            "MCP server names whose shared backend is kept for the whole gateway "
+            "run instead of being drained after idle_timeout_secs. For a server "
+            "that keeps its sign-in only in memory, this makes it sign in once per "
+            "run instead of again after each idle drain. Applies only to a server "
+            "that is stubbed (stub_servers) and shared (enabled); a server not "
+            "named here keeps the idle drain. The max_backends cap and a "
+            "credential-file change can still restart it. Empty by default.",
+            restart=True,
+        ),
+    )
     read_buffer_limit_bytes: int = field(
         default=64 * 1024 * 1024,
         metadata=_meta(
@@ -1081,8 +1106,11 @@ class TunnelConfig:
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
             "the caller named by the relay. Off by default. It connects only when "
             "Relay Lease Service URL and Relay Lease Credential are set, so the Crew "
-            "can hold a lease; without them it starts a relay client that reports it "
-            "cannot connect. While it is off, Crew starts no "
+            "can hold a lease. Without them no relay client starts and the tunnel "
+            "status names the missing setting. The one exception is no Relay Lease "
+            "Service URL with Relay Host URL and Relay Crew Domain both set: then the "
+            "client starts and reports that it has no host token. While it is off, "
+            "Crew starts no "
             "relay client, strips every x-kiro-relay-* header from every request and "
             "trusts none of them. To reach the relay and the lease service through a "
             "proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment "
@@ -1140,6 +1168,54 @@ class TunnelConfig:
             "for a secret stored under Settings > Secrets, or the absolute path of a "
             "file holding it. Never the credential itself; it is read for each call "
             "and never logged.",
+            restart=True,
+            # Masked like a secret, in case the credential itself is pasted in.
+            sensitive=True,
+        ),
+    )
+    relay_lease_token_type: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Token Type",
+            "The TokenType the Crew sends with its lease credential. Empty (the "
+            "default) sends none, for an IAM Identity Center, Builder ID or Kiro "
+            "sign-in. EXTERNAL_IDP for a token from an outside identity provider, "
+            "API_KEY for a team Crew's crew API key. Any other value keeps Remote "
+            "Control from starting.",
+            restart=True,
+        ),
+    )
+    relay_viewer_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Relay Viewer",
+            "Let the desktop app list the remote Crews you can reach through the Kiro "
+            "relay and open them. Off by default, and nothing reads it yet. This is "
+            "the viewer side only: a Crew you open still needs Kiro Relay on where it "
+            "runs.",
+            restart=True,
+        ),
+    )
+    relay_viewer_cps_url: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Control Plane URL",
+            "The base URL of the control plane the viewer lists remote Crews from and "
+            "gets access tokens from. Empty (the default) means not set up. Must be "
+            "https:// (http:// only for a loopback port-forward). A value that breaks "
+            "that rule is ignored with a warning.",
+            restart=True,
+        ),
+    )
+    relay_viewer_credential: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Credential",
+            "For testing only: where the viewer reads a test credential to use instead "
+            "of your Kiro sign-in, as secret://NAME for a secret stored under Settings "
+            "> Secrets or the absolute path of a file holding it. Never the credential "
+            "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
+            "reference is ignored with a warning that does not repeat it.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,

@@ -131,6 +131,7 @@ class AcpSessionHandle:
     drain_init = _sh_mcp.drain_init
     # What KAS speaks beyond ACP on a session: ``kiro_crew.acp.session_handle_kas``.
     discard_unanswered_prompt = _sh_kas.discard_unanswered_prompt
+    kas_command_call = _sh_kas.kas_command_call
     _is_kas_hooks_request = _sh_kas._is_kas_hooks_request
     _answer_kas_hooks_request = _sh_kas._answer_kas_hooks_request
     _answer_kas_hook_execute = _sh_kas._answer_kas_hook_execute
@@ -701,6 +702,9 @@ class AcpSessionHandle:
         # The upgrade notice when that batch's prompt is dropped by the KAS this
         # process runs (``harness.kas.kas_agent_prompt_issue``); "" otherwise.
         self.kas_agent_prompt_notice: str = ""
+        # Whether that KAS is known to apply the batch's prompts
+        # (``KasHarness.agent_prompt_applied``); False without that evidence.
+        self.kas_agent_prompt_applied: bool = False
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.

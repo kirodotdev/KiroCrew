@@ -285,8 +285,14 @@ async def _cron_run_sequence(
                         else ToolApprovalPolicy.HOOK_BASED
                     ),
                     hooks=self.ctx_builder.hooks,
+                    # The card's requester line ends with the user-authored job
+                    # name, so it cannot forge the id or agent before it.
                     on_tool_approval=(
-                        None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                        None
+                        if job.approval_mode == "auto"
+                        else self._interactive_approval(
+                            "cron", requester=f"cron job {job.id}, agent {step.alias}: {job.name}"
+                        )
                     ),
                     on_tool_gate=_gate.note,
                     on_complete=_seq_note_complete,
@@ -563,6 +569,40 @@ async def _cron_run_single(
 
         _single_cwd = await asyncio.to_thread(cron_session_cwd, job, _single_cwd)
         _dispatch_agent = _single_kagent or cron_agent or None
+        # ── Missing-agent guard ──
+        # A template name that resolves to no agent (renamed or uninstalled)
+        # would dispatch some other agent without its tool permissions, and
+        # the unattended run would stop on prompts. Fail the run with the name
+        # instead. A Bot's run is resolved by identity above, so it is skipped.
+        # Only a name the job itself stores is checked: an agent-less job runs the
+        # floor or the configured default, which this report is not about.
+        if (
+            _single_kagent is None
+            and _dispatch_agent
+            and (job.agent_id or "").strip()
+            and not job.member_id
+            and not cron_execution.member_id
+            and cron_execution.selection_kind != "member"
+        ):
+            from kiro_crew.config import live as _live
+            from kiro_crew.cron_service.agent_presence import (
+                cron_agent_missing,
+                unavailable_cron_agent_message,
+            )
+
+            _presence_cfg = _live.snapshot() or getattr(self, "_cfg", None)
+            if await asyncio.to_thread(
+                cron_agent_missing, _presence_cfg, _dispatch_agent, _single_cwd
+            ):
+                _missing = unavailable_cron_agent_message(_dispatch_agent)
+                logger.warning("Cron '%s': %s", job.name, _missing)
+                job.last_status = "error"
+                job.last_error = _missing
+                job.record_failure()
+                if self.cron_svc is not None:
+                    self.cron_svc.clear_active_session_key(job.id, session_key)
+                await self._alert_cron_failure(job, _missing)
+                return None
         # ── Retained-session agent guard (every single-agent job) ──
         # The key is the stable f"cron:{job.id}", and the run's `finally`
         # defers the reset while sub-agents are pending, so a session can
@@ -690,8 +730,16 @@ async def _cron_run_single(
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
+            # The job name ends the requester line, as on the sequence site.
             on_tool_approval=(
-                None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                None
+                if job.approval_mode == "auto"
+                else self._interactive_approval(
+                    "cron",
+                    requester=f"cron job {job.id}"
+                    + (f", agent {cap.gate_agent}" if cap.gate_agent else "")
+                    + f": {job.name}",
+                )
             ),
             on_tool_gate=_gate.note,
             on_complete=_note_complete,

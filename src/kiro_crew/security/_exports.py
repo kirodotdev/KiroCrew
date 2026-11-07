@@ -544,6 +544,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "is_sensitive_resolved_path",
     "is_sensitive_write_path",
     "is_unverifiable_path_refusal",
+    "iter_credential_matches",
     "json",
     "logger",
     "logging",

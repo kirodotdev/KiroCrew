@@ -256,19 +256,38 @@ CHANNEL_RECIPIENT_META_KEY = "channel_recipient"
 SEND_DROP_EXCERPT_CHARS = 120
 
 
-# The two deliberate discards of a queued entry that are not the drain's
-# authorization re-check: a person cancelling the entry's queue card, and a hard
-# stop clearing the whole queue. Each is passed as the ``cause`` of
-# :func:`notify_send_origin_discarded`, which words the sender's notice from it.
+# The deliberate discards that are not the drain's authorization re-check: a
+# person cancelling a queued entry's card, a hard stop clearing the whole queue,
+# and that hard stop ending the turn a peer's steer was still pending in. Each is
+# passed as the ``cause`` of :func:`notify_send_origin_discarded`, which words the
+# sender's notice from it.
 SEND_DISCARD_QUEUE_CANCEL = "queue_cancel"
 
 
 SEND_DISCARD_HARD_STOP = "hard_stop"
 
 
-# Sender-notice phrasing per discard cause. Neither discard changes a
-# constraint, so the drain's containment wording would describe nothing here.
+SEND_DISCARD_HARD_STOP_STEER = "hard_stop_steer"
+
+
+# Sender-notice phrasing per discard cause, after "Message you sent to <target> ".
+# No discard changes a constraint, so the drain's containment wording would
+# describe nothing here.
 _SEND_DISCARD_REASONS = {
+    SEND_DISCARD_QUEUE_CANCEL: "was discarded before it ran: it was cancelled from that "
+    "session's queue. It was not delivered and will not run.",
+    SEND_DISCARD_HARD_STOP: "was discarded before it ran: a hard stop of that session "
+    "discarded its queue. It was not delivered and will not run.",
+    # The turn may already have read a steer, so this one does not say it never ran.
+    SEND_DISCARD_HARD_STOP_STEER: "as a steer may not have run: a hard stop of that "
+    "session ended the turn it was steered into before that turn finished, and it will "
+    "not be queued to run later.",
+}
+
+# The bare cause for the rows the frontend words through the localized
+# ``send_discarded`` frame ("was discarded before it ran: {reason}. It was not
+# delivered and will not run."). A cause absent here keeps its English content.
+_SEND_DISCARD_FRAMED_REASONS = {
     SEND_DISCARD_QUEUE_CANCEL: "it was cancelled from that session's queue",
     SEND_DISCARD_HARD_STOP: "a hard stop of that session discarded its queue",
 }
@@ -709,15 +728,35 @@ def notify_send_origin_dropped(
     if sender is None:
         return False
     try:
-        excerpt = send_drop_excerpt(text)
+        from kiro_crew.dashboard.chat_utils import _redact_for_display
+        from kiro_crew.dashboard.gateway_notice import (
+            GATEWAY_NOTICE_SEND_DROPPED,
+            gateway_notice_meta,
+        )
+
+        # Redact the excerpt through the same egress chain the channel notice
+        # uses: it rides in meta.notice_args, which the dashboard renders
+        # verbatim and which the row's content-only redaction does not reach, so
+        # a credential in the dropped message must be removed here.
+        excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+        _change = describe_containment_change(constraints, mirror_unverified=mirror_unverified)
+        _excerpt_suffix = f' Text: "{excerpt}"' if excerpt else ""
         sender.append(
             "notice",
-            f"⚠️ Message you sent to {target_key} was dropped before it ran: "
-            + describe_containment_change(constraints, mirror_unverified=mirror_unverified)
-            + " after it was queued, so the authorization that admitted it no "
-            + "longer holds. It was not delivered and will not run."
-            + (f' Text: "{excerpt}"' if excerpt else ""),
+            f"⚠️ Message you sent to {target_key} was dropped before it ran: {_change}"
+            " after it was queued, so the authorization that admitted it no "
+            f"longer holds. It was not delivered and will not run.{_excerpt_suffix}",
             "msg msg-info",
+            meta=gateway_notice_meta(
+                GATEWAY_NOTICE_SEND_DROPPED,
+                target=target_key,
+                change=_change,
+                # The BARE redacted excerpt, never the English `` Text: "…"``
+                # wrapper: the frontend owns that label (its own catalog key), so
+                # every locale frames the quote in its own words. Empty string
+                # when there is nothing to quote, so the frontend drops the label.
+                excerpt=excerpt,
+            ),
         )
     except Exception:  # pragma: no cover - reporting must not block the drop
         logger.exception(
@@ -746,9 +785,12 @@ def notify_send_origin_discarded(
     would run later. Every other sign of the discard lands on the target, which
     the sender does not read.
 
-    *cause* is :data:`SEND_DISCARD_QUEUE_CANCEL` or :data:`SEND_DISCARD_HARD_STOP`
-    and selects the wording: a deliberate discard changes no authorization, so the
-    notice names what discarded the entry rather than a constraint.
+    *cause* is :data:`SEND_DISCARD_QUEUE_CANCEL`, :data:`SEND_DISCARD_HARD_STOP` or,
+    for a pending steer the hard stop drops with its turn,
+    :data:`SEND_DISCARD_HARD_STOP_STEER`, and selects the wording: a deliberate
+    discard changes no authorization, so the notice names what discarded the entry
+    rather than a constraint. For a steer, *entry_meta* is the admission it was
+    registered with.
 
     *entry_meta* is the discarded entry's own ``meta``, read here rather than by
     the caller so both discard sites read the stamp the way the drain does. The
@@ -766,14 +808,36 @@ def notify_send_origin_discarded(
         return False
     try:
         reason = _SEND_DISCARD_REASONS[cause]
-        excerpt = send_drop_excerpt(text)
+        from kiro_crew.dashboard.chat_utils import _redact_for_display
+        from kiro_crew.dashboard.gateway_notice import (
+            GATEWAY_NOTICE_SEND_DISCARDED,
+            gateway_notice_meta,
+        )
+
+        # Same redaction as the dropped-notice path: the excerpt rides in
+        # meta.notice_args, which the row's content-only redaction does not reach.
+        excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+        framed_reason = _SEND_DISCARD_FRAMED_REASONS.get(cause)
         sender.append(
             "notice",
-            f"⚠️ Message you sent to {target_key} was discarded before it ran: "
+            f"⚠️ Message you sent to {target_key} "
             + reason
-            + ". It was not delivered and will not run."
             + (f' Text: "{excerpt}"' if excerpt else ""),
             "msg msg-info",
+            # Only a cause whose sentence fits the localized "discarded before it
+            # ran" frame gets the token; the steer row keeps its English content.
+            meta=(
+                None
+                if framed_reason is None
+                else gateway_notice_meta(
+                    GATEWAY_NOTICE_SEND_DISCARDED,
+                    target=target_key,
+                    reason=framed_reason,
+                    # Bare redacted excerpt; the frontend owns the `` Text: "…"``
+                    # label. See the dropped-notice path for why.
+                    excerpt=excerpt,
+                )
+            ),
         )
     except Exception:
         logger.exception(

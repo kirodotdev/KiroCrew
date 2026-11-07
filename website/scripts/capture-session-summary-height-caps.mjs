@@ -117,10 +117,10 @@ function shortSummary() {
  *
  *  These go through `stubDashboardApi`'s `localStorageEntries`, NOT a separate
  *  `addInitScript`. The stub's own initializer calls `localStorage.clear()`, and
- *  init scripts run in registration order — so a caller that seeds through its
- *  own initializer is relying on having registered after the stub. Get that order
- *  wrong and the clear wipes the seeds, the panel never opens, and the capture
- *  fails as a role-lookup timeout that says nothing about the cause.
+ *  Playwright does not define the order of separately registered init scripts, so
+ *  a seed from a caller's own initializer races that clear. When the clear wins it
+ *  wipes the seeds, the panel never opens, and the capture fails as a role-lookup
+ *  timeout that says nothing about the cause.
  */
 const PANEL_SEEDS = {
   'mc-active-slot': SLOT,

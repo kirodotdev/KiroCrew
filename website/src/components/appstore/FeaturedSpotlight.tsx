@@ -26,7 +26,7 @@ import { Dialog, DialogBody, DialogContent, DialogTitle } from '../ui/dialog'
 import Clickable from '../Clickable'
 import AppIcon from '../AppIcon'
 import { gradientFor } from './gradient'
-import { categoryFor } from './categories'
+import { categoryFor, categoryLabel } from './categories'
 import { useHeroArt, type InstalledArtSource } from './useHeroArt'
 import { useEditorialArt, type EditorialArtwork } from './useEditorialArt'
 import { isVerified, type RegistryApp } from './types'
@@ -430,7 +430,7 @@ export default function FeaturedSpotlight({
             secondary={
               isCollection
                 ? appDescription(a)
-                : `${a.author} · ${categoryFor(a.tags)} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version}`
+                : `${a.author} · ${categoryLabel(categoryFor(a.tags))} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version}`
             }
             busy={busyName === a.name}
             /* Only a collection's rows are interactive; on a single-app card the

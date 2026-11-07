@@ -4,7 +4,7 @@
 // so grouping is where the real logic lives — and the reason the tab is usable at
 // all, since a reply separated from the line it answers says nothing.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -278,6 +278,47 @@ describe('writing', () => {
     await userEvent.type(screen.getByRole('textbox', { name: /Reply/ }), 'Agreed')
     await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
     await waitFor(() => expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull())
+  })
+
+  it.each([
+    ['Escape', async () => { await userEvent.keyboard('{Escape}') }],
+    ['Cancel', async () => { await userEvent.click(screen.getByRole('button', { name: 'Cancel' })) }],
+  ])('returns focus to the Reply button when %s closes the box', async (_how, closeBox) => {
+    mount(source([comment({ threadId: 'T1' })]))
+    await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
+    expect(screen.getByRole('textbox', { name: /Reply/ })).toHaveFocus()
+    await closeBox()
+    expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Reply$/ })).toHaveFocus()
+  })
+
+  it('returns focus to the Reply button once a reply lands', async () => {
+    mount(source([comment({ threadId: 'T1' })]))
+    await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
+    await userEvent.type(screen.getByRole('textbox', { name: /Reply/ }), 'Agreed')
+    await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull())
+    expect(screen.getByRole('button', { name: /^Reply$/ })).toHaveFocus()
+  })
+
+  it('leaves focus where the user moved it while a reply was still sending', async () => {
+    let land: (v: unknown) => void = () => {}
+    mockApi.replyToPullRequestThread.mockReturnValue(new Promise(r => { land = r }))
+    mount(source([
+      comment({ id: 'c1', threadId: 'T1' }),
+      comment({ id: 'c2', threadId: 'T2', body: 'Other thread' }),
+    ]))
+    const [first, second] = screen.getAllByRole('listitem')
+    await userEvent.click(within(first).getByRole('button', { name: /^Reply$/ }))
+    await userEvent.type(within(first).getByRole('textbox', { name: /Reply/ }), 'Agreed')
+    await userEvent.click(within(first).getByRole('button', { name: /^Reply$/ }))
+    await userEvent.click(within(second).getByRole('button', { name: /^Reply$/ }))
+    const otherBox = within(second).getByRole('textbox', { name: /Reply/ })
+    expect(otherBox).toHaveFocus()
+
+    await act(async () => { land({ posted: true }) })
+    await waitFor(() => expect(within(first).queryByRole('textbox', { name: /Reply/ })).toBeNull())
+    expect(otherBox).toHaveFocus()
   })
 
   it('offers reply on a GitLab merge request thread', () => {

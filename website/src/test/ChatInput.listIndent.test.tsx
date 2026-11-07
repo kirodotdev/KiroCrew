@@ -36,7 +36,7 @@ function typeWithCaret(marked: string) {
   const caret = marked.indexOf('|')
   const value = marked.replace('|', '')
   const ta = input()
-  ta.focus()
+  act(() => { ta.focus() })
   fireEvent.change(ta, { target: { value } })
   ta.setSelectionRange(caret, caret)
   return ta
@@ -213,6 +213,16 @@ describe('ChatInput: Tab indents list lines', () => {
     ta.setSelectionRange(2, 6)
     expect(tab(ta)).toBe(true)
     expect(ta.value).toBe('- item')
+  })
+
+  it('Tab over several lines indents each list line and keeps them selected', async () => {
+    renderWithProviders(<Host />)
+    const ta = typeWithCaret('- one\n- two|')
+    ta.setSelectionRange(2, '- one\n- two'.length, 'backward')
+    expect(tab(ta)).toBe(false)
+    expect(ta.value).toBe('  - one\n  - two')
+    await flushFrame()
+    expect([ta.selectionStart, ta.selectionEnd, ta.selectionDirection]).toEqual([4, '  - one\n  - two'.length, 'backward'])
   })
 
   it('Tab during IME composition is left alone', () => {

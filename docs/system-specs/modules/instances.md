@@ -1198,6 +1198,17 @@ persisted in the config dir — normally nothing, since nothing there could have
 created a job, though a config dir carried over from a POSIX host still reports
 its real jobs.
 
+**A host with no sandbox answers `503 sandbox_unavailable`, not a 500.** Every
+AWS CLI call goes through `cloud.aws.run_aws`, which wraps it with `wrap_argv`.
+On a host with no sandbox backend and `allow_unsandboxed_exec` unset that raises
+`SandboxUnavailableError` before anything reaches AWS. The refusal stands, but
+the preflight, the task read and stop/start/delete answer it as a `503` carrying
+`code: sandbox_unavailable`, the exception's `kind`, `detail` and `remedy`, and
+an `error` that says the credentials were not checked and points at `kirocrew
+doctor` (#32068). The Set-up tab keys on the code to show that sentence in the
+reader's language. When the preflight fails for any reason, its no-result line
+says the check did not run instead of "check your credentials".
+
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |
@@ -2200,7 +2211,10 @@ A corrupt or truncated stream answers `transfer_invalid_gzip`, distinct from
 document has a syntax error" send a reader to different places. A concatenated
 (multi-member) gzip is refused rather than decoded to its first member: the
 export writes exactly one member, so decoding one and dropping the rest would be
-a truncation nobody asked for.
+a truncation nobody asked for. A body opening with the zip signature
+(`PK\x03\x04`, the shape of a Kiro IDE session export) answers
+`transfer_unsupported_format`: the file is fine, its format is one the import
+does not read.
 
 **The session is filed under `Imported` / `from <sender>`.** The second rule, and
 the reason it lives beside the first: a gzipped file arriving from a person and a

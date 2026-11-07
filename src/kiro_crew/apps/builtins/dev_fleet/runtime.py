@@ -89,7 +89,8 @@ _RUN_DEADLINE_S = 1800
 #                    PLATFORM-NEUTRAL helpers (``prov.has_venv`` /
 #                    ``prov.has_dist``, both plain filesystem checks) may be
 #                    called. True on every platform unless the import failed.
-#   _POD_AVAILABLE — pods can actually RUN here, i.e. Linux with ``systemctl``.
+#   _POD_AVAILABLE — pods can actually RUN here: this platform's pod service
+#                    manager (systemd, launchd or Task Scheduler) is present.
 # Conflating the two reports every worktree as "not built" off Linux,
 # even though the build state is knowable everywhere.
 _POD_IMPORTED = False
@@ -102,8 +103,8 @@ try:
 
     _POD_IMPORTED = True
     # Pods are per-user service-manager units: systemd --user on Linux, launchd
-    # user agents on macOS. On a platform with neither, skip pod-state checks
-    # entirely instead of failing closed on every removal.
+    # user agents on macOS, scheduled tasks on Windows. On a platform with none,
+    # skip pod-state checks entirely instead of failing closed on every removal.
     #
     # NOTE this gate is about PODS only. Make-live (repointing the LIVE gateway's
     # unit) is a separate feature with its own Linux-only gates further down —
@@ -112,16 +113,24 @@ try:
         _POD_AVAILABLE = True
     elif sys.platform == "darwin" and shutil.which("launchctl"):
         _POD_AVAILABLE = True
+    elif sys.platform == "win32" and rt.win_backend.schtasks_bin():
+        _POD_AVAILABLE = True
     elif sys.platform == "darwin":
         _POD_ERROR = (
             "Pods are launchd user agents on macOS, but no `launchctl` was found " "on PATH."
         )
     elif sys.platform == "linux":
         _POD_ERROR = "Pods require `systemctl --user`, but no `systemctl` was found on PATH."
+    elif sys.platform == "win32":
+        _POD_ERROR = (
+            "Pods are per-user Task Scheduler tasks on Windows, but no trusted "
+            "`schtasks.exe` was found."
+        )
     else:
         _POD_ERROR = (
-            f"Pods need systemd --user (Linux) or launchd (macOS); this host is "
-            f"{sys.platform}. Preview a worktree with ./dev-backend.sh instead."
+            f"Pods need systemd --user (Linux), launchd (macOS) or Task Scheduler "
+            f"(Windows); this host is {sys.platform}. Preview a worktree with "
+            f"./dev-backend.sh instead."
         )
 except ImportError as exc:
     _POD_ERROR = f"the pod subsystem could not be imported: {exc}"
@@ -554,7 +563,9 @@ async def _run_cmd(
     # Pin executable + PATH to trusted system dirs: the inherited service
     # PATH begins with agent-writable dirs, where a planted git/gh shim
     # would otherwise run with workflow credentials on every auto-refresh.
-    if cmd and "/" not in cmd[0]:
+    # Only a bare name is resolved; an absolute path (``C:\...`` on Windows too)
+    # was chosen by the caller and runs as given.
+    if cmd and "/" not in cmd[0] and not os.path.isabs(cmd[0]):
         # A cache miss stats and resolves candidates under _TRUSTED_PATH: filesystem
         # work, so it hops off the loop like the preparation step below.
         trusted = await asyncio.get_running_loop().run_in_executor(

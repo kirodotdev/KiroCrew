@@ -150,6 +150,10 @@ class ProcessSession(Protocol):
     _launch_mcp_servers: list[Any] | None
     _mcp_relaunch_pending: bool
 
+    @property
+    def work_scratch_dir(self) -> Path | None:
+        """The child scratch window allocated by the shared launch tail."""
+
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
         tool-gate read-back and the launch tail see the same values."""
@@ -342,7 +346,8 @@ class SessionExtras:
     For a host whose payload carries the agent's servers over the ACP wire, where
     Crew withholds credential-bearing fields
     (``kas_agents.withheld_credentials_notice``). ``""`` on every other host and
-    when nothing was withheld.
+    when nothing was withheld. On KAS it also carries the line for a ``file://``
+    prompt the session runs without (``kas_prompt.prompt_unread_notice``).
     """
 
 
@@ -612,6 +617,7 @@ class HarnessAdapter(LaunchAdapter):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -624,6 +630,9 @@ class HarnessAdapter(LaunchAdapter):
         ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
         names of the stubs ``session/new`` injects for that session, from the
         caller's one overlay lookup. A host that projects nothing ignores it.
+
+        ``engine_features`` is :func:`kiro_crew.acp.kas_engine_features.advertised`
+        of this process's ``initialize`` answer. Only the KAS projection reads it.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:

@@ -9,6 +9,10 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 async def _seed_metadata(log, key: str, fields: dict) -> None:
     """Seed a session's metadata the way an async gateway caller must.

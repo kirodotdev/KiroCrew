@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from kiro_crew.dashboard import warm_task_brief
+from kiro_crew.dashboard import warm_task_brief, warm_task_brief_check
 
 
 @pytest.mark.parametrize(
@@ -860,8 +860,8 @@ def test_content_never_rejoins_a_marker_when_a_link_is_removed(body):
 
 
 def test_the_canonical_form_decodes_until_stable_and_strips_nothing():
-    assert warm_task_brief._canonical("&amp;amp;#65;") == "A"
-    assert warm_task_brief._canonical('<a title="x">&lt;b&gt;</a>') == '<a title="x"><b></a>'
+    assert warm_task_brief_check._canonical("&amp;amp;#65;") == "A"
+    assert warm_task_brief_check._canonical('<a title="x">&lt;b&gt;</a>') == '<a title="x"><b></a>'
 
 
 def test_a_body_with_no_secret_is_kept_and_not_flagged():

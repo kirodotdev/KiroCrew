@@ -599,9 +599,27 @@ class TestRedeliveryHandling:
             async def send_json(self, payload: dict) -> None:
                 raise ConnectionResetError("closed")
 
+        class _KeptTasks(set):
+            """The client's task set, also keeping every task it was given."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.every: list[asyncio.Task] = []
+
+            def add(self, task: asyncio.Task) -> None:
+                self.every.append(task)
+                super().add(task)
+
+        tasks = _KeptTasks()
+        c._handler_tasks = tasks
         c._ws = DeadWs()
         c._handle_frame(_frame())
-        await asyncio.gather(*c._handler_tasks, return_exceptions=False)
+        # The handler task starts the ack task before it ends, so the second round
+        # awaits the ack too; then read how each one ended.
+        for _ in range(2):
+            await asyncio.wait_for(asyncio.gather(*tasks.every, return_exceptions=True), timeout=30)
+        assert len(tasks.every) == 2, "the handler and its ack both ran"
+        assert [t.exception() for t in tasks.every] == [None, None]
 
     @pytest.mark.asyncio
     async def test_no_socket_means_no_ack_attempt(self, monkeypatch: pytest.MonkeyPatch) -> None:

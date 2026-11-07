@@ -343,7 +343,7 @@ class TestCIProgress(unittest.TestCase):
         self.assertNotIn("PYTEST_ADDOPTS", command)
         self.assertEqual(step["env"]["PYTHONPATH"], "${{ github.workspace }}")
         self.assertIn("-p scripts.ci_pytest_progress", command)
-        self.assertIn('--ci-progress-dir "$RUNNER_TEMP/pytest-progress"', command)
+        self.assertIn('--ci-progress-dir="$RUNNER_TEMP/pytest-progress"', command)
         self.assertIn("--max-worker-restart=0", command)
         self.assertEqual(command.count('"${PROGRESS[@]}"'), 4)
         self.assertEqual(command.count("--timeout=120"), 4)

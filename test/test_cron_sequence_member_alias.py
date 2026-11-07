@@ -668,15 +668,19 @@ async def test_each_sequence_step_hands_the_gate_its_alias_not_its_template(monk
     [
         # A private crewmate's alias builds from that crewmate's template.
         ("beta", "beta", "beta-mode"),
-        # A plain template name, and a name that is neither, pass through.
+        # A plain template name passes through. A name no agent declares is
+        # refused before dispatch (test_cron_agent_presence.py).
         ("kirocrew-lite", None, "kirocrew-lite"),
-        ("no-such-agent", None, "no-such-agent"),
     ],
 )
 @pytest.mark.asyncio
 async def test_single_agent_cron_builds_context_from_its_dispatched_template(
     monkeypatch, agent_id, member, expected
 ):
+    from kiro_crew.cron_service import agent_presence
+
+    # The test home holds no spec for the template name.
+    monkeypatch.setattr(agent_presence, "cron_agent_missing", lambda *_a: False)
     write_member_home(config_dir(), "alpha", "beta")
     loader._invalidate_config_cache()
     cfg = KiroCrewConfig.load()

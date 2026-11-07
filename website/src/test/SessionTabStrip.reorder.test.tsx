@@ -91,7 +91,7 @@ describe('SessionTabStrip mouse drag', () => {
 
   it('does not start a drag from the close button or a non-primary mouse button', () => {
     const { onClose, tabs } = renderStrip()
-    const close = tabs[0].querySelector('button') as HTMLElement
+    const close = tabs[0].querySelector('button:last-of-type') as HTMLElement
     fireEvent.pointerDown(close, { clientX: 90, pointerId: 1, button: 0, pointerType: 'mouse' })
     expect(tabs[0]).not.toHaveAttribute('data-dragging')
     fireEvent.click(close, { detail: 1 })
@@ -121,7 +121,7 @@ describe('SessionTabStrip mouse drag', () => {
         )
       }
       render(<Provider store={slotsStore()}><Harness /></Provider>)
-      const close = screen.getByTestId('session-tab-chat-1').querySelector('button') as HTMLElement
+      const close = screen.getByTestId('session-tab-chat-1').querySelector('button:last-of-type') as HTMLElement
       fireEvent.pointerDown(close, { pointerType: 'mouse', button: 0 })
       fireEvent.click(close, { detail: 1 })
       expect(screen.getByTestId('session-tab-strip')).toHaveAttribute('data-frozen', 'true')

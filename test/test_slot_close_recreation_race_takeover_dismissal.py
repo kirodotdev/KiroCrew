@@ -1,12 +1,9 @@
 """The dismissal a hand-over close leaves owed, and the incarnation it belongs to.
 
-A close whose archive lost to a takeover hands its key over with its ``closed``
-marker unwritten, and the marker belongs to the CONVERSATION the user closed,
-not to the name-derived key: a session can be permanently deleted and the same
-key created again while the dismissal is owed. These tests pin the incarnation
-witness the owed marker carries and what it does on a mismatch. Split out of
-``test_slot_close_recreation_race_takeover_retraction.py`` to respect the line
-cap; the stage helpers live there and the shared fakes in
+A close whose archive lost to a takeover leaves its ``closed`` marker owed, and the
+marker belongs to the CONVERSATION closed, not the key: the session can be deleted and
+the key created again meanwhile. Stage helpers live in
+``test_slot_close_recreation_race_takeover_retraction.py``, shared fakes in
 ``slot_close_recreation_race_helpers.py``.
 """
 
@@ -31,11 +28,8 @@ from kiro_crew.dashboard.slot_registry import SlotRegistry
 async def _recreate_the_key_under_a_new_incarnation(state, key: str, monkeypatch) -> str:
     """Delete the transcript permanently and create a fresh conversation under the same key.
 
-    Returns the new line's ``created_at``, which differs from the old one. The
-    new stamp is SET, one second past the old one, not read from the clock: a
-    host whose clock ticks coarsely (Windows, ~15.6 ms) can mint the same
-    ``created_at`` for a delete-and-recreate that completes inside one tick,
-    and this helper stages the incarnation change, not the clock's resolution.
+    Returns the new ``created_at``, SET one second past the old one rather than read
+    from the clock: a coarse clock (Windows, ~15.6 ms) could mint the same value.
     """
     from datetime import datetime, timedelta
 
@@ -62,13 +56,9 @@ async def test_an_owed_marker_is_not_written_onto_a_new_incarnation_of_the_key(
 ):
     """The dismissal belongs to the conversation the user closed, not to its key.
 
-    The close defers its dismissal; the transcript is permanently deleted and the
-    same name-derived key is created again, a different conversation; the pending
-    reopen is refused and its exit writes what the close left owed. Written by key
-    alone, the OLD dismissal lands on the NEW conversation: a brand-new tab marked
-    closed, with no recovery. The marker carries the closed transcript's
-    ``created_at`` and is dropped, settled as satisfied, when the line it would
-    stamp is another incarnation.
+    Written by key alone, the old dismissal would mark a brand-new conversation closed.
+    The marker carries the closed transcript's ``created_at`` and is dropped, settled as
+    satisfied, when the line is another incarnation.
     """
     state = _make_state(tmp_path)
     key, rehydrate, read_release, _unpark = await _close_handed_over_to_a_parked_taker(
@@ -181,13 +171,9 @@ async def test_a_resume_answered_by_another_keys_live_slot_does_not_settle_this_
 ):
     """A dedup to a slot under another key publishes nothing here; this key's dismissal stays owed.
 
-    Key A has an owed dismissal (its close handed the key to a taker whose read
-    is parked); B is live. ``POST /slots/A/resume {"key": "dashboard:B"}`` is
-    answered by B itself (``_live_slot_for_resume`` dedups by session identity
-    across slots) -- no refusal, but nothing published under A. Reading that as
-    "A published" settled A's dismissal and released its holder, so A's taker
-    later retracted into nothing and A came back at the next restart. The
-    publication test is occupancy: the slot answered with must now hold THIS key.
+    ``_live_slot_for_resume`` dedups across slots, so resuming ``dashboard:B`` under A
+    is answered by B and publishes nothing under A. The publication test is occupancy:
+    the slot answered with must now hold THIS key, or A would come back at restart.
     """
     state = _make_state(tmp_path)
     key_a, rehydrate, read_release, _unpark = await _close_handed_over_to_a_parked_taker(
@@ -255,14 +241,10 @@ async def test_a_plain_create_between_the_markers_guard_and_its_rename_is_unstam
 ):
     """A publication winning the key after the guard passed does not leave its line stamped closed.
 
-    The guard decides under the transcript lock, but a same-name create takes no
-    lock: ``put_slot`` can land between the guard's "still owed" and the rename,
-    settle the dismissal, and the rename then stamps ``closed`` onto the line of
-    a live tab -- hidden at the next restart. After the rename, still under the
-    lock, the writer reads the ownership again and un-stamps a marker a
-    publication has won against; the outcome is ``superseded`` and the tab stays
-    open. The resume side has its own ordering (``begin_resume_read``); this is
-    the publish side.
+    A same-name create takes no lock, so ``put_slot`` can land between the guard and the
+    rename. After the rename, still under the lock, the writer re-reads ownership and
+    un-stamps the marker; the outcome is ``superseded``. The resume side's ordering is
+    ``begin_resume_read``.
     """
     import threading
 
@@ -381,11 +363,8 @@ async def test_an_unstamp_that_fails_once_stays_owed_and_the_next_exit_clears_it
 ):
     """A superseded marker whose clear fails is retried by the next exit on the key, never left on.
 
-    The dismissal is already settled on the registry when the stamp must come
-    off, so a failed clear cannot ride the owed-dismissal retry; it is parked as
-    an owed un-stamp on the key's watch, and the next exit on the key (here a
-    refused rehydrate) clears it. Reporting the failure and moving on would
-    leave the created tab's line stamped closed: hidden at the next restart.
+    The dismissal is already settled, so the failed clear is parked as an owed un-stamp
+    on the key's watch; otherwise the live tab would be hidden at the next restart.
     """
     from kiro_crew.dashboard.slot_persistence import takeover_ordering
 
@@ -480,13 +459,9 @@ async def test_an_unstamp_never_removes_a_newer_close_of_the_created_tab(tmp_pat
 async def test_an_unstamp_keeps_a_newer_close_stamped_on_the_same_clock_tick(tmp_path, monkeypatch):
     """Two closes with an EQUAL ``closed_at``: the newer one survives the un-stamp.
 
-    ``closed_at`` is ``time.time()``, which on Windows advances in ~15.6 ms
-    steps, so a publication that supersedes an owed marker, the user closing the
-    new tab, and the un-stamp can all land on one tick with the same instant. A
-    clear keyed on the instant alone would take the legitimate close off and the
-    conversation would come back at the next restart. The close identity written
-    beside ``closed_at`` tells them apart: the un-stamp clears only the stamp
-    carrying the id it wrote, checked under the transcript lock.
+    ``closed_at`` is ``time.time()``, which steps ~15.6 ms on Windows, so two closes can
+    share an instant. The un-stamp clears only the stamp carrying the close id it wrote,
+    checked under the transcript lock.
     """
     from types import SimpleNamespace
 
@@ -581,14 +556,9 @@ async def test_a_rehydrate_whose_slot_is_deleted_during_its_exit_work_returns_no
 ):
     """The wrapper hands back the slot its key holds NOW, not the one it published.
 
-    ``rehydrate_slot_from_history_async`` publishes inside its body and then, in
-    its own exit work, awaits worker-thread writes (the owed-dismissal record,
-    the owed un-stamp retry). A permanent deletion landing in that window pops
-    the published slot and removes its transcript. Returning the retired slot
-    would hand a caller -- the outbox's file-card delivery rehydrates on a miss
-    and appends to what it gets back -- a tab no flush persists, audited as
-    delivered. The wrapper re-reads the key after its last await and answers
-    ``None`` instead; nothing is retracted, the publication did happen.
+    ``rehydrate_slot_from_history_async`` awaits worker-thread writes after publishing,
+    and a permanent delete in that window pops the slot. The outbox appends to what it
+    gets back, so the wrapper re-reads the key and answers ``None``.
     """
     import threading
 

@@ -216,6 +216,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_read_prompt_response": ("function", True, "b9663bcac669", "client_turn"),
     "_read_steer_answers": ("function", True, "68f218dcd574", "client_turn_control"),
     "_read_turn": ("function", "agen", "fc134720be48", "client_transport"),
+    "_record_sent": ("function", False, "60178f849457", "client_transport"),
     "_reassert_adapter_resolved_model": (
         "function",
         True,
@@ -353,6 +354,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "61b23cbd0173",
         "client_native_children",
     ),
+    "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
     "on_agent_turn": ("data", False, "", ""),
     "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "client_mcp_array"),
     "process_instance": ("property", False, "bb418bb7ece8", "client_class"),

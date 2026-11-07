@@ -124,7 +124,7 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
             <ErrorNotice message={cleanupError} askAgent className="mb-2" testId="cleanup-error" />
             <div className="flex items-center gap-2 justify-end">
               <Btn className="text-[12px] px-3 py-1" onClick={() => setCleanupOpen(false)}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-              <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => {
+              <Btn primary className="text-[12px] px-3 py-1" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => {
                 setCleanupError('')
                 cleanupMutation.mutate()
               }}>{cleanupMutation.isPending ? i18nT('pages.chatSidebar.archiving') : i18nT('pages.chatSidebar.archive_session', { count: archivable.length })}</Btn>

@@ -3,7 +3,8 @@
 The client classifies every end of a host connection before it retries, as the
 relay contract's Appendix C keepalive-and-backoff rules ask: an authentication
 failure renews the host token once and then stops, an expired token renews and
-backs off, another instance holding the Crew stops, a drain reconnects at once,
+backs off, another instance holding the Crew waits for a lease renewal that
+succeeds for this instance, a drain reconnects at once,
 and everything else, a socket that died with no close frame included, backs off.
 """
 
@@ -17,12 +18,9 @@ from typing import Optional, Sequence
 from kiro_crew.relay_client.protocol import (
     BACKOFF_STEPS_SECONDS,
     CLOSE_DRAIN,
-    CLOSE_NO_HELLO,
-    CLOSE_RATE_LIMITED,
     CLOSE_REPLACED,
     CLOSE_TOKEN_EXPIRED,
     CLOSE_TOKEN_REFUSED,
-    CLOSE_TRY_AGAIN_LATER,
 )
 
 
@@ -75,8 +73,9 @@ class CloseAction(enum.Enum):
     STOP_UPGRADE = "stop_upgrade"
     #: The relay refused the ``hello`` itself: retrying sends the same frame, so stop.
     STOP_PROTOCOL = "stop_protocol"
-    #: A different instance holds this Crew's endpoint: stop.
-    STOP_REPLACED = "stop_replaced"
+    #: A different instance holds this Crew's endpoint: renew the lease until it is
+    #: this instance's again, then dial.
+    WAIT_REPLACED = "wait_replaced"
     #: Something on this side refused to serve the connection: stop with its reason.
     STOP_LOCAL = "stop_local"
 
@@ -121,11 +120,11 @@ def classify(end: ConnectionEnd) -> CloseAction:
     if code == CLOSE_TOKEN_EXPIRED:
         return CloseAction.RENEW_THEN_BACKOFF
     if code == CLOSE_REPLACED:
-        return CloseAction.STOP_REPLACED
+        return CloseAction.WAIT_REPLACED
     if code == CLOSE_DRAIN:
         # A drain or a move reconnects at once, but only from a connection that
         # was serving: a 1012 before ready repeated at once would spin.
         return CloseAction.RECONNECT_NOW if end.reached_ready else CloseAction.BACKOFF
-    if code in (CLOSE_NO_HELLO, CLOSE_RATE_LIMITED, CLOSE_TRY_AGAIN_LATER):
-        return CloseAction.BACKOFF
+    # No hello (4408), rate limited (4429), try again later (1013), an unknown
+    # code and a socket that died with no close frame all back off.
     return CloseAction.BACKOFF

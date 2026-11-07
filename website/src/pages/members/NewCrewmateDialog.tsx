@@ -62,6 +62,7 @@ import CrewAvatar, { type CrewAvatarOverride } from '../../components/CrewAvatar
 import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
+import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -240,6 +241,34 @@ export const CACHE_WARM_BOUND_MS = 2500
  *  "unconfirmed" and unlocks instead of sitting on "Creating…". */
 export const RECONCILE_BOUND_MS = 2500
 
+/** Create refusals whose cause is this computer's storage: the Bot's memory
+ *  database or its own folder could not be made (`POST /api/agents`, 409). */
+const CREATE_STORAGE_CODES = new Set([
+  'member_memory_unavailable',
+  'workspace_dir_uncreatable',
+  'workspace_dir_not_a_directory',
+])
+/** The create refusal for a data home another account owns (409). */
+const DATA_HOME_NOT_OWNED = 'data_home_not_owned'
+
+/** A string field of a JSON refusal body, or `''`. */
+function errorBodyField(body: string, field: string): string {
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown>)?.[field]
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+/** Longest server reason shown after a create failure, in characters. */
+const CREATE_REASON_MAX = 200
+
+/** The server's reason as one short line, or `''` when it gave none. */
+function createFailureReason(reason: string | undefined): string {
+  const line = (reason ?? '').replace(/\s+/g, ' ').trim()
+  return line.length > CREATE_REASON_MAX ? `${line.slice(0, CREATE_REASON_MAX - 1)}…` : line
+}
+
 /** What the page needs to open the new crewmate's chat and seed its greeting. */
 export interface CreatedCrewmate {
   /** Exact crew name — MembersPage's `?member=` resolves by name. */
@@ -362,6 +391,9 @@ export default function NewCrewmateDialog({
   // marked on the Name field, since the field is what the answer is about.
   const [nameRefused, setNameRefused] = useState(false)
   const [error, setError] = useState('')
+  // The repair line the server sent with `data_home_not_owned`, shown under the
+  // notice to copy. Every other failure clears it (see `fail`).
+  const [fixCommand, setFixCommand] = useState('')
   // The one failure that is NOT "nothing was created": the request got no
   // answer and the roster could not be read to reconcile it. It is rendered
   // through the same notice as every other failure, but under its own lead
@@ -509,9 +541,17 @@ export default function NewCrewmateDialog({
   // Every failed create is said on the card AND reported up, so a card the
   // user left while it was busy cannot swallow the failure out of sight.
   const fail = useCallback((message: string) => {
+    setFixCommand('')
     setError(message)
     onFailedRef.current?.(message)
   }, [])
+  // A refusal the dialog has no plain-words copy for still says the server's
+  // short reason after the product's sentence, so a create that keeps failing
+  // carries something a person can report.
+  const failWithReason = useCallback((message: string, reason: string | undefined) => {
+    const short = createFailureReason(reason)
+    fail(short ? `${message} ${t('pages.membersPage.create_failed_details', { reason: short })}` : message)
+  }, [fail, t])
   const createMut = useMutation({
     mutationFn: async (body: CreateBody) => {
       // A guided create (the human pressed Start on a crewmate's guide and is now
@@ -527,8 +567,8 @@ export default function NewCrewmateDialog({
     },
     onSuccess: async ({ r, credited }, body) => {
       // A 2xx whose body still carries `error` is a refusal in the server's
-      // words; like every other failure it is said in the product's.
-      if (r?.error) { if (guided) guideSave.refused(); fail(t('pages.membersPage.create_failed')); return }
+      // words; it is said in the product's, with the server's short reason.
+      if (r?.error) { if (guided) guideSave.refused(); failWithReason(t('pages.membersPage.create_failed'), r.error); return }
       // Saved, but without the guide's headers (the guide had not reached its
       // Create step): the guide is closed honestly rather than left asking for
       // the press the user already made.
@@ -619,11 +659,31 @@ export default function NewCrewmateDialog({
           setNameRefused(true)
           return
         }
-        // Verbatim server text is reserved for the codes the dialog knows
-        // (above); every other answer — a 5xx, a refused body — is said in the
-        // product's words with its next step, never as the server's raw
-        // sentence. The server answered, so nothing was created.
-        fail(t('pages.membersPage.create_failed'))
+        // A name an agent template already holds: the name is what to change.
+        if (e.status === 409 && code === 'template_name_in_use') {
+          fail(t('pages.membersPage.create_name_reserved'))
+          setNameRefused(true)
+          return
+        }
+        // Every other answer is said in the product's words with its next
+        // step, followed by the server's short reason. The server answered,
+        // so nothing was created.
+        // Files another account owns: the cause and the repair line, which no
+        // retry from here can get past.
+        if (code === DATA_HOME_NOT_OWNED) {
+          fail(t('components.dataHomeOwnerNotice.message'))
+          setFixCommand(errorBodyField(e.body, 'fix_command'))
+          return
+        }
+        if (code === 'invalid_model') {
+          failWithReason(t('pages.membersPage.create_failed_model'), e.message)
+          return
+        }
+        if (code && CREATE_STORAGE_CODES.has(code)) {
+          failWithReason(t('pages.membersPage.create_failed_storage'), e.message)
+          return
+        }
+        failWithReason(t('pages.membersPage.create_failed'), e.message)
         return
       }
       // No server answer at all (a dropped connection, a parse error): the
@@ -674,6 +734,8 @@ export default function NewCrewmateDialog({
         fail(t('pages.membersPage.create_unconfirmed', { name: body.name }))
         return
       }
+      // No server answered, so there is no server reason to add; the
+      // browser's exception text ("Failed to fetch") tells a person nothing.
       fail(t('pages.membersPage.create_failed'))
     },
   })
@@ -863,6 +925,12 @@ export default function NewCrewmateDialog({
               id="crewmate-create-error"
               testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
             />
+            {fixCommand && (
+              <div data-testid="crewmate-create-fix-command">
+                <p className="mt-2 text-[13px] text-muted">{t('components.dataHomeOwnerNotice.run_this')}</p>
+                <CopyCommand><code>{fixCommand}</code></CopyCommand>
+              </div>
+            )}
           </div>
         )}
         {/* The secondary line, centred under the name: the Advanced settings

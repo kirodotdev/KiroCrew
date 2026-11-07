@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import aclosing
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,22 +23,29 @@ import pytest
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
+    EVENT_TOOL_CALL,
     METHOD_CANCEL,
     METHOD_SESSION_UPDATE,
     JsonRpcMessage,
 )
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until, finished
 
 
 class _Backend:
     """Answers each prompt with ``pong``; a ``/compact`` either ends at once or hangs.
 
     With ``hold_first_cancel`` the first ``session/cancel`` does not end the open turn:
-    its answer is still on the way when the next cancel arrives, which ends it.
+    its answer is still on the way when the next cancel arrives, which ends it. With
+    ``open_tool_call`` a prompt starts that tool call and stays open.
     """
 
     def __init__(
-        self, queue: asyncio.Queue, *, compact_ends: bool, hold_first_cancel: bool = False
+        self,
+        queue: asyncio.Queue,
+        *,
+        compact_ends: bool,
+        hold_first_cancel: bool = False,
+        open_tool_call: str = "",
     ) -> None:
         self.pid = None
         self.is_alive = MagicMock(return_value=True)
@@ -48,6 +56,7 @@ class _Backend:
         self._queue = queue
         self._compact_ends = compact_ends
         self._hold_first_cancel = hold_first_cancel
+        self._open_tool_call = open_tool_call
         self._open: int | None = None
         self._next_id = 0
         self.cancel_seen = asyncio.Event()
@@ -85,6 +94,21 @@ class _Backend:
             return req_id
         # One turn at a time: a turn still running ends before this one starts.
         self._end_open_turn("end_turn")
+        if self._open_tool_call:
+            update = {
+                "sessionUpdate": "tool_call",
+                "toolCallId": self._open_tool_call,
+                "title": "Writing notes.md",
+                "kind": "edit",
+                "_meta": {"kiro": {"toolName": "write"}},
+            }
+            self._queue.put_nowait(
+                JsonRpcMessage(
+                    method=METHOD_SESSION_UPDATE, params={"sessionId": "sA", "update": update}
+                )
+            )
+            self._open = req_id
+            return req_id
         self._queue.put_nowait(self._chunk("pong"))
         self._queue.put_nowait(JsonRpcMessage(id=req_id, result={"stopReason": "end_turn"}))
         return req_id
@@ -153,3 +177,33 @@ async def test_a_turn_cancelled_while_it_closes_the_abandoned_compact_leaves_the
         reply == "pong"
     ), f"the abandoned compact's output reached a later turn: {reply!r}; wire={backend.wire}"
     assert backend.wire == ["compact", METHOD_CANCEL, METHOD_CANCEL, "prompt"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_cut_mid_tool_names_the_open_call_and_the_session(caplog):
+    """The next prompt clears the open-call map, so the cut is the one moment that can
+    tie a later "prompt already in progress" on this session to the call still running."""
+    queue: asyncio.Queue = asyncio.Queue()
+    backend = _Backend(queue, compact_ends=True, open_tool_call="tc-write-1")
+    handle = AcpSessionHandle("sA", queue, backend, session_key="dashboard:slot-a")
+    tool_seen = asyncio.Event()
+
+    async def _consume_until_cut() -> None:
+        async with aclosing(
+            handle.prompt("write the notes", timeout=FALLBACK_TIMEOUT_SECS)
+        ) as events:
+            async for event in events:
+                if event.kind == EVENT_TOOL_CALL:
+                    tool_seen.set()
+                    await asyncio.Event().wait()
+
+    consumer = asyncio.ensure_future(_consume_until_cut())
+    with caplog.at_level("WARNING", logger="kiro_crew.acp.session_handle"):
+        await await_until(tool_seen, what="the tool call reaching the consumer")
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(consumer, what="the cut consumer unwinding")
+
+    assert "cut before its terminal" in caplog.text
+    assert "[session=dashboard:slot-a sid=sA]" in caplog.text
+    assert "open tool calls: 'tc-write-1' ('write', open " in caplog.text

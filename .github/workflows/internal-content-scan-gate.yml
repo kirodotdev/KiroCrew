@@ -7,9 +7,11 @@ name: Internal Content Scan Gate
 #
 # `pull_request` is the one that gates: a same-repo PR receives an OIDC token, so
 # the scan reaches a real verdict BEFORE the change can land. It carries the same
-# `branches:` filter as `ci.yml` and `fast-gate.yml`, so a stacked PR (one whose
-# base is another feature branch) never starts it -- `pr-readiness.yml` marks the
-# lane ineligible in that case, exactly as it does for CI, Fast Gate and CodeQL.
+# `branches:` filter as `ci.yml` and `fast-gate.yml`, so a hand-made stacked PR
+# (base set to another feature branch, no native stack) never starts it --
+# `pr-readiness.yml` marks the lane ineligible in that case, exactly as it does
+# for CI and Fast Gate. A PR in a GitHub-native stack on `main` DOES run it, and
+# readiness counts it there.
 #
 # `push` to main stays as the backstop for anything that reaches the branch
 # without a pull request.

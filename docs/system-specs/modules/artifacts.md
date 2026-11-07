@@ -288,7 +288,7 @@ in-app-browser hand-off below applies. Uploading the same file to Kiro Space is
 | `slug` | string | URL-safe handle. Derived from `name` when not given, resolving a collision by suffixing (`-2`, `-3`, …); an explicitly-passed slug is refused — never renamed — when it is already taken or malformed |
 | `name` | string | Human-readable display name |
 | `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image`, `dashboard` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)), except `dashboard`, which inference never returns and a caller passes explicitly (see [Dashboard packages](#dashboard-packages-kinddashboard)) |
-| `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown` |
+| `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown`; a non-string the store is asked to record is a validation error (400 on the create route). The create route still falls back to the request's own source for a falsy value (`{}`, `[]`), and a `source_path` dedup update never reads the field, both as before |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
 | `description` | string | Optional, ≤ 2,000 chars |
@@ -837,6 +837,20 @@ reads it from where it lives:
 The detail page does not call `/api/deploy/list`: that listing reads every
 registered profile's account, which is a cost paid when the Publish panel
 opens rather than on every detail view.
+
+The library page does read it, because a static artifact keeps its public-web
+link nowhere else and its entry is where people look for it again.
+`LiveSiteLink` renders the matched site's URL (through `safeHttpUrl`) as a link
+under the name, on the gallery card and the table row. The cost stays bounded:
+every entry shares the Publish panel's `['deploy-web', 'sites']` query, so the
+whole page makes one listing. It is re-read at most every 30 seconds, when an
+entry mounts (opening or scrolling the page), and whenever a deploy or destroy
+refreshes it, but never on window focus. It runs only with the Artifact Deploy
+preview on, and is not gated on cloud deployment being offered: a site an
+earlier deploy left public stays visible, as on the Artifact Deploy page.
+Nothing is stored: a destroyed or reaped site leaves the listing and takes the
+link with it. A recalled site keeps its infrastructure and stays listed, so it
+keeps its link, as on the Publish panel.
 
 ### Withdrawal is NOT best-effort
 
@@ -1828,6 +1842,10 @@ to this kind would store content no reader can parse.
   re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
   automatic re-mint: a second `load` also happens when a link inside an artifact
   navigates the frame, and silently pulling the reader back would fight them.
+  The crewmate Dashboard tab differs and re-mints by itself
+  (`useFrameAliveRecovery`): its links go through the host's link bridge, so its
+  frame has no navigation of its own to fight, and a document that does not
+  answer the host's ping after a `load` is re-minted, at most three times in a row.
   `/sandbox-doc/` is on the service worker's skip list for the same single-use
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget
@@ -2388,7 +2406,7 @@ only, mirrored by the server CSP `frame-src https://*.cloudfront.net`);
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available, base}`; `{available: false}` for every miss (no oracle). |
+| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available: true, base, expires_in}`. A caller that is not direct-local gets `{available: false}`; every other miss (no oracle) gets `{available: false, remote_framable}`, which tells the card whether it may frame the live deployment. Only Linux and macOS serve the local copy (`_PLATFORM_SUPPORTED`); elsewhere every mint is a miss. |
 | `GET` | `/artifact-app/{slug}/{token}/{path}` | HMAC path token (auth-middleware bypass) | Serve one static file from the app's web root — **`app_dir/public` is mandatory** (deploy-contract layout); an app_dir without a contained `public/` directory reports the preview unavailable, it is never served directly. Sandboxed preview iframes carry no cookies, so the token IS the auth. |
 
 Serve-time security (fail-closed 404 for every rejection): allow-listed local
@@ -2434,7 +2452,10 @@ Mutating routes fall into two categories:
   explicitly denied): `GET /api/deploy/pending`, `POST .../confirm`,
   `POST .../dismiss`. These routes support the two-step preview→confirm
   deploy flow — the gateway generates a pending entry at preview time and
-  the dashboard UI confirms or dismisses it.
+  the dashboard UI confirms or dismisses it. Each row shows the time left
+  until its `expires_at_epoch`, and the card stays on screen while a failed
+  confirm or dismiss error, or the publish acknowledgment, is still showing,
+  even after an expiry has emptied the list.
 
 All mutating routes require an unrestricted (non-restricted) session.
 

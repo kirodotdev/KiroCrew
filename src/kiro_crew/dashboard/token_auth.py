@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # The direct tailnet listener is preview-only: its module is imported at
     # request time, and only once a gate exists (no-new-work-on-gateway-boot-path).
+    import kiro_crew.dashboard.ssm_gate as ssm_gate_types
     import kiro_crew.dashboard.tailnet_direct as tailnet_direct_types
 
 from aiohttp import web
@@ -90,6 +91,7 @@ from kiro_crew.dashboard.token_auth_paths import (
 from kiro_crew.dashboard.token_auth_tokens import (
     LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
+    OWNER_MINT_CLAIM,
     _b64url_decode,
     _cookie_port_from_host,
     _ct_eq,
@@ -139,6 +141,7 @@ def token_auth_middleware(
     spa_shell_handler: Callable[..., Any] | None = None,
     tailnet_trust: TailnetTrust | None = None,
     tailnet_direct: tailnet_direct_types.DirectGate | tailnet_direct_types.GateRef | None = None,
+    ssm_gate: ssm_gate_types.GateRef | None = None,
 ) -> Callable[..., Any]:
     """Factory returning aiohttp middleware for token-based dashboard auth.
 
@@ -176,6 +179,12 @@ def token_auth_middleware(
     ``tailscale serve`` alike, runs the token flow unchanged. A
     :class:`~kiro_crew.dashboard.tailnet_direct.GateRef` is read per request,
     so the gateway can fill it in after the bind.
+
+    *ssm_gate* is the holder of the SSM listener's gate
+    (:mod:`kiro_crew.dashboard.ssm_gate`). A request whose local socket is the
+    SSM port is decided there, by a Crew invite alone, and never enters the token
+    flow: a forwarded connection looks like a loopback one, so the port, not the
+    request, says it is not the owner.
     """
 
     # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
@@ -317,6 +326,18 @@ def token_auth_middleware(
 
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
+        ssm = ssm_gate.gate if ssm_gate is not None else None
+        if ssm is not None and ssm.owns(request):
+            from kiro_crew.dashboard import ssm_gate as ssm_gate_module
+
+            return await ssm_gate_module.admit(
+                request,
+                handler,  # type: ignore[arg-type]
+                strict_internal=internal_path_matches(request.path, internal_paths)
+                and not internal_path_matches(request.path, mixed_internal_paths),
+                log_auth=_log_auth,
+                publish=lambda req: publish_actor(req, trust=tailnet_trust, serve_peer=None),
+            )
         gate = _current_direct_gate()
         if gate is not None and gate.owns(request):
             response, handler = await _direct_tailnet_gate(request, handler, gate)
@@ -336,6 +357,7 @@ def token_auth_middleware(
             _relay_refusal = admit_relay_caller(request, _relay_caller)
             if _relay_refusal is not None:
                 return _relay_refusal
+            await publish_actor(request, trust=None, serve_peer=None)
             return await handler(request)  # type: ignore[operator,no-any-return]
 
         # The agent socket (dashboard/agent_ipc.py) authenticates by a capability
@@ -1007,11 +1029,13 @@ def token_auth_middleware(
             _link_nonce = ""
             _embed_parent_port = ""
             _no_refresh = False
+            _owner_minted = False
             _session_peer_key = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
+                _owner_minted = str(data.get(OWNER_MINT_CLAIM, "")) == "1"
                 _link_nonce = str(data.get("nonce", ""))
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
@@ -1093,6 +1117,10 @@ def token_auth_middleware(
                 # refresh chain is still suppressed below by never being minted.
                 if _no_refresh:
                     _carried["no_refresh"] = "1"
+                # Carried so a former owner's session can be told to sign in
+                # again (see OWNER_MINT_CLAIM). Relabels a denial only.
+                if _owner_minted:
+                    _carried[OWNER_MINT_CLAIM] = "1"
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
@@ -1340,6 +1368,7 @@ def token_auth_middleware(
                         boot=str(data.get("boot", "")),
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
+                        owner_mint=_owner_minted,
                     )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:
@@ -1466,11 +1495,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         generate_app_secret,
         is_consumed,
         mark_consumed,
+        owner_mint_extra,
         parse_duration,
         proxied_pin_observed,
         revoke_access_cookie,
         revoke_all_sessions,
         token_embed_parent_port,
+        token_owner_minted_unverified,
         try_consume,
         validate_app_secret,
         validate_token,

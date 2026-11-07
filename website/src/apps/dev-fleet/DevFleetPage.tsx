@@ -31,7 +31,7 @@ import { ApiError, api as gatewayApi } from '../../api/client'
 import { restartExhaustedNotice } from '../../utils/backendStatus'
 
 import { i18nT } from '../../i18n/t'
-import { compareText, fmtRelative } from '../../i18n/format'
+import { compareText, fmtRelative, fmtUnit } from '../../i18n/format'
 import {
   readDismissedUndoKey, persistDismissedUndoKey, POLL_MS, sleep, filterStepMarkers, syncFailureTail,
   _activeSyncPolls, awaitGatewayBackGlobal, type Worktree, type UndoTarget, type FleetData, type SyncRun,
@@ -1356,7 +1356,9 @@ export default function DevFleetPage() {
     pruneProgress={pruneProgress} setPruneProgress={setPruneProgress}
   />
 
-  const diskGb = disk?.total_mb != null ? (disk.total_mb / 1024).toFixed(0) + ' GB' : '\u2026'
+  // Same whole-GB figure as before, with the digits and the unit in the
+  // reader's language.
+  const diskGb = disk?.total_mb != null ? fmtUnit(disk.total_mb / 1024, 'gigabyte', { maximumFractionDigits: 0 }) : '\u2026'
 
   return (
     <>

@@ -34,6 +34,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_coverage_helpers import (
     _write_index,
 )
 from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes as r
+from kiro_crew.testing.wait import finished
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -309,6 +310,41 @@ class TestHandleMessage:
         assert _body(out) == {"ok": True}
         assert _no_dispatch.call_args.args[2] == "draft it"
         assert r._load_index()["demo"]["updated_at"] > 200.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pasted", [True, False])
+    async def test_the_collapsed_pastes_ride_the_user_row(self, tmp_path, pasted):
+        # The stored user row is what the transcript folds back into the paste chip.
+        block = {"id": "p1", "seq": 1, "lines": 4, "content": "a\nb\nc\nd"}
+        _write_index({"demo": _entry(tmp_path / "demo")})
+        state = _State()
+
+        async def _passthrough(coro, *, state, slot):
+            return await coro
+
+        with (
+            _no_rehydrate(),
+            mock.patch("kiro_crew.dashboard.chat_runner._run_chat", mock.AsyncMock()),
+            mock.patch("kiro_crew.dashboard.turn_dispatch.bounded_chat_turn", new=_passthrough),
+        ):
+            out = await r._handle_message(
+                _mk(
+                    "POST",
+                    "specs/demo/message",
+                    state=state,
+                    match={"name": "demo"},
+                    body={
+                        "text": "look:\na\nb\nc\nd",
+                        **({"meta": {"pastes": [block]}} if pasted else {}),
+                    },
+                )
+            )
+            assert _body(out) == {"ok": True}
+            slot = state.get_slot("spec-builder-demo-0123abcd")
+            await finished(slot.task, "the message turn")
+        (row,) = slot.messages
+        assert row["role"] == "user" and row["content"] == "look:\na\nb\nc\nd"
+        assert row.get("meta") == ({"pastes": [block]} if pasted else None)
 
 
 # -- HTTP: handoff ------------------------------------------------------------

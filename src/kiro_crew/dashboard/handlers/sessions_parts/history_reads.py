@@ -190,32 +190,39 @@ def _is_machine_only_session(key: str) -> bool:
     return any(_in_namespace(key, ns) for ns in _MACHINE_NAMESPACES)
 
 
-def _has_user_content(log: object, row: dict) -> bool:
+def _has_user_content(log: object, row: dict, *, indexed: bool = False) -> bool:
     """True when *row* has something a reader could resume: a title or a message.
 
     ``list_sessions`` titles a session from its metadata or its first user
     message, and falls back to the key itself. A titled row is kept without a
     read, even when it has no messages: a title is a user signal. Only a row
-    whose title IS its key pays for a file read.
+    whose title IS its key pays for a check. *indexed* says the row came from
+    ``list_sessions_indexed``: the listing index's answer is then used with no
+    ``stat``, as current as the row itself.
     """
     key = row.get("key", "")
     if row.get("title", key) != key:
         return True
     try:
+        answer = log.indexed_has_messages(key) if indexed else None  # type: ignore[attr-defined]
+        if answer is not None:
+            return bool(answer)
         return bool(log.listing_has_messages(key))  # type: ignore[attr-defined]
     except OSError:
         # Unreadable is not empty: never hide what could not be read.
         return True
 
 
-def _is_user_listed_row(log: object, row: dict) -> bool:
+def _is_user_listed_row(log: object, row: dict, *, indexed: bool = False) -> bool:
     """True when the ``user_only`` listing shows *row*.
 
     ONE predicate, shared by ``GET /api/sessions?user_only=1`` and the
     ``user_only`` bulk clear, so the Older Sessions "Delete all" removes only
-    rows the reader could see in that pane.
+    rows the reader could see in that pane. Both pass ``indexed=True`` for rows
+    from ``list_sessions_indexed``, so both read the same answer.
     """
-    return not _is_machine_only_session(row.get("key", "")) and _has_user_content(log, row)
+    key = row.get("key", "")
+    return not _is_machine_only_session(key) and _has_user_content(log, row, indexed=indexed)
 
 
 _SHORT_SLOT_NAME_RE = re.compile(r"chat-\d+")
@@ -305,12 +312,18 @@ async def api_sessions(request: web.Request) -> web.Response:
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
     user_only = (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
     exclude_incognito = _wants_incognito_excluded(request)
+    request_app = str(request.get("app") or "")
     # list_sessions() globs, stats, and reads the first line of EVERY session file
     # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
     # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
     # the event loop freezes chat, heartbeat, and every other coroutine for the
-    # full duration. Offload to a worker thread.
-    all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
+    # full duration. Offload to a worker thread. The dashboard's own listing reads
+    # the listing index, which answers from memory once built and re-reads only
+    # the transcripts that changed. An app-scoped listing reads each row's owner
+    # marker below anyway, so it keeps the direct scan.
+    log = state.conversation_log
+    lister = log.list_sessions if request_app else log.list_sessions_indexed
+    all_sessions = await asyncio.to_thread(lister)
     if exclude_incognito:
         # BEFORE paging, so ``limit`` counts eligible rows and a restricted
         # session at the head of the list cannot hide an eligible one behind it.
@@ -324,7 +337,6 @@ async def api_sessions(request: web.Request) -> web.Response:
         all_sessions = _sessions_named(
             state.conversation_log._canonical_key, all_sessions, request.query["name"]
         )
-    request_app = str(request.get("app") or "")
     if request_app:
         # Before every count, so ``total`` and ``has_more`` describe the app's
         # own list rather than the size of everyone else's.
@@ -358,7 +370,7 @@ async def api_sessions(request: web.Request) -> web.Response:
                     except HistoryLockTimeout:
                         continue
                 return owned
-            return [s for s in sessions if _is_user_listed_row(log, s)]
+            return [s for s in sessions if _is_user_listed_row(log, s, indexed=True)]
 
         all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe

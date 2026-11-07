@@ -9,12 +9,16 @@ removes it from the connection; these tests pin that it is removed anyway.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Dict, List
+from unittest.mock import MagicMock
 
 import pytest
-from relay_client_helpers import valid_message
+from relay_client_helpers import OWNER, TOKEN, ready_frame, valid_message
 
+from kiro_crew.relay_client.connection import HostConnection, RelayTimings
 from kiro_crew.relay_client.streams import HttpStream, WsStream
+from kiro_crew.relay_client.token_source import HostCredential
 from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.asyncio
@@ -465,3 +469,174 @@ async def test_a_response_that_arrives_as_the_stream_is_cancelled_is_closed() ->
     # loopback connection after the stream's slot is released.
     assert ingress.closed == ["closed"]
     assert done == [stream.id]
+
+
+class _RecordingSocket:
+    """The relay's side of the socket: records each frame the client sends."""
+
+    closed = False
+
+    def __init__(self) -> None:
+        self.sent: List[Dict[str, Any]] = []
+
+    async def send_str(self, text: str) -> None:
+        self.sent.append(json.loads(text))
+
+
+def _connection_on(socket: _RecordingSocket) -> HostConnection:
+    conn = HostConnection(
+        session=MagicMock(),
+        url="ws://127.0.0.1:9/v1/host",
+        credential=HostCredential(TOKEN, crew_kind="personal", owner_user_id=OWNER),
+        ingress=_NeverIngress(),
+        binding=("personal", OWNER),
+        client_version="0.0.0-test",
+        timings=RelayTimings(),
+    )
+    conn._ws = socket  # type: ignore[assignment]
+    return conn
+
+
+@pytest.mark.parametrize(
+    "ending, expected_errors",
+    [
+        # The over-long chunk is refused; the request-end behind it must not
+        # be refused again as a body shorter than its content-length.
+        (
+            {"type": "request-chunk", "id": 7, "data": "QUJDRA==", "base64": True},
+            ["the request body is longer than its content-length"],
+        ),
+        # The relay cancelled the stream; nothing it sends after is answered.
+        ({"type": "request-cancel", "id": 7}, []),
+    ],
+    ids=["refused", "cancelled"],
+)
+async def test_a_stream_this_side_ended_ignores_the_relays_later_frames(
+    ending: Dict[str, Any], expected_errors: List[str]
+) -> None:
+    socket = _RecordingSocket()
+    conn = _connection_on(socket)
+    head = valid_message("frames/request", 0, method="POST", headers={"content-length": "3"})
+    # Back to back with no turn of the loop between them, as frames the relay
+    # sent together are read: the ended stream is still registered for the last.
+    for frame in (ready_frame(), head, ending, {"type": "request-end", "id": 7}):
+        assert await conn._dispatch(json.dumps(frame)) is None
+    errors = [f["message"] for f in socket.sent if f["type"] == "error" and f.get("id") == 7]
+    assert errors == expected_errors
+    await await_until(asyncio.ensure_future(conn._cancel_streams()), what="the streams to end")
+    assert not conn._streams and not conn._ended_streams
+
+
+async def test_the_frames_email_and_name_reach_the_ingress() -> None:
+    """A checked head's display labels travel beside the request, never as copied headers."""
+    from kiro_crew.relay_client.ingress import IngressUnreachable
+    from kiro_crew.relay_client.protocol import parse_inbound
+
+    seen: List[Any] = []
+
+    class _Capture(_NeverIngress):
+        async def open_http(self, request: Any, body: Any) -> Any:
+            seen.append(request)
+            raise IngressUnreachable("stop here")
+
+        async def open_websocket(self, request: Any) -> Any:
+            seen.append(request)
+            raise IngressUnreachable("stop here")
+
+    async def send(frame: Dict[str, Any]) -> None:
+        return None
+
+    labels = {"userEmail": "renee@example.com", "userName": "Ren\u00e9e \u00d8"}
+    http = HttpStream(
+        parse_inbound(json.dumps(valid_message("frames/request", 0, **labels))),
+        send=send,
+        ingress=_Capture(),
+        on_done=lambda _sid: None,
+        credit=None,
+        first_byte_seconds=50.0,
+    )
+    ws = WsStream(
+        parse_inbound(json.dumps(valid_message("frames/ws-upgrade", **labels))),
+        send=send,
+        ingress=_Capture(),
+        on_done=lambda _sid: None,
+        pause_watchdog_seconds=3600.0,
+    )
+    for stream in (http, ws):
+        stream.start()
+        await await_until(asyncio.ensure_future(stream.wait()), what="the stream")
+    assert [(r.user_email, r.user_name) for r in seen] == [
+        ("renee@example.com", "Ren\u00e9e \u00d8"),
+        ("renee@example.com", "Ren\u00e9e \u00d8"),
+    ]
+    # A head without labels hands over empty ones.
+    seen.clear()
+    plain = HttpStream(
+        valid_message("frames/request", 0),
+        send=send,
+        ingress=_Capture(),
+        on_done=lambda _sid: None,
+        credit=None,
+        first_byte_seconds=50.0,
+    )
+    plain.start()
+    await await_until(asyncio.ensure_future(plain.wait()), what="the stream")
+    assert [(r.user_email, r.user_name) for r in seen] == [("", "")]
+
+
+class _FailingMidBody:
+    """A response whose body fails after its head; closing it waits on *closing*."""
+
+    status = 200
+    headers: Dict[str, str] = {}
+
+    def __init__(self) -> None:
+        self.closing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def iter_body(self, chunk_size: int) -> Any:
+        raise RuntimeError("the web server went away")
+        yield b""  # pragma: no cover - makes this an async generator
+
+    async def aclose(self) -> None:
+        self.closing.set()
+        await self.release.wait()
+
+
+class _AnswersFailingMidBody(_NeverIngress):
+    def __init__(self, response: _FailingMidBody) -> None:
+        super().__init__()
+        self.response = response
+
+    async def open_http(self, request: Any, body: Any) -> Any:
+        return self.response
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        {"type": "request-chunk", "id": 7, "data": "QUJDRA==", "base64": True},
+        {"type": "request-end", "id": 7},
+    ],
+    ids=["over-long-chunk", "short-request-end"],
+)
+async def test_a_stream_that_sent_its_own_error_ignores_the_relays_later_frames(
+    ending: Dict[str, Any],
+) -> None:
+    socket = _RecordingSocket()
+    conn = _connection_on(socket)
+    response = _FailingMidBody()
+    conn._ingress = _AnswersFailingMidBody(response)  # type: ignore[assignment]
+    head = valid_message("frames/request", 0, method="POST", headers={"content-length": "3"})
+    for frame in (ready_frame(), head):
+        assert await conn._dispatch(json.dumps(frame)) is None
+    # The stream has sent its error frame and is still registered, closing
+    # the response, when the relay's malformed frames for it arrive.
+    await await_until(asyncio.ensure_future(response.closing.wait()), what="the error frame")
+    for frame in (ending, {"type": "request-end", "id": 7}):
+        assert await conn._dispatch(json.dumps(frame)) is None
+    errors = [f["message"] for f in socket.sent if f["type"] == "error" and f.get("id") == 7]
+    assert errors == ["the Crew's web server failed mid-body: RuntimeError"]
+    response.release.set()
+    await await_until(asyncio.ensure_future(conn._cancel_streams()), what="the streams to end")
+    assert not conn._streams and not conn._ended_streams

@@ -47,9 +47,7 @@ def _set_mtime(path: Path, when: float) -> None:
     os.utime(path, (when, when))
 
 
-# ---------------------------------------------------------------------------
 # The two ownership properties
-# ---------------------------------------------------------------------------
 
 
 class TestOwnership:
@@ -196,9 +194,7 @@ class TestOwnership:
         assert path is not None and path.read_bytes() == content.encode()
 
 
-# ---------------------------------------------------------------------------
 # Store semantics
-# ---------------------------------------------------------------------------
 
 
 class TestStore:
@@ -269,9 +265,7 @@ class TestStore:
         assert set(edits) == {"note-taker"}
 
 
-# ---------------------------------------------------------------------------
 # The read overlay
-# ---------------------------------------------------------------------------
 
 
 class TestOutputsOverlay:
@@ -370,9 +364,7 @@ class TestOutputsOverlay:
         assert "# Mine" not in body["outputs"].get("note-taker", "")
 
 
-# ---------------------------------------------------------------------------
 # Redaction
-# ---------------------------------------------------------------------------
 
 
 class TestRedaction:
@@ -402,9 +394,7 @@ class TestRedaction:
         assert body["outputs"]["note-taker"] == marker
 
 
-# ---------------------------------------------------------------------------
 # Request validation
-# ---------------------------------------------------------------------------
 
 
 class TestValidation:
@@ -516,9 +506,7 @@ class TestValidation:
             assert resp.status == 413
 
 
-# ---------------------------------------------------------------------------
 # The two caps have to agree
-# ---------------------------------------------------------------------------
 
 
 class TestBodyCaps:
@@ -569,9 +557,7 @@ class TestBodyCaps:
         assert body["outputs"]["note-taker"] == content
 
 
-# ---------------------------------------------------------------------------
 # Wiring
-# ---------------------------------------------------------------------------
 
 
 class TestWiring:

@@ -1260,6 +1260,18 @@ const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT
 const MEMBERS_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
 
+/**
+ * The seventh: `GET /api/apps` answering `relay_apps_teammate` to a teammate who
+ * reached the Crew through the Kiro relay, which refuses the app surface to
+ * teammates (`kiro_relay/limits.py`). The shell's app rail, the panel-tab
+ * registry and the composer's session controls all read that list on every page,
+ * and for a teammate the refusal means "no apps here", so journaling it filed one
+ * error report per page load (#32031). The `ApiError` is still thrown; any other
+ * failure, an `owner_only` 403 included, journals normally.
+ */
+const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teammate' }
+const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1346,14 +1358,16 @@ function isDeliberateAbort(error: unknown): boolean {
  * flush the ring. The original error is rethrown UNCHANGED: callers and tests
  * key off its own message, and the report rides on it via `attachReport` so a
  * notice resolves THIS request's endpoint rather than another rejection's.
+ * `send` replaces the global `fetch` for a request that needs another transport
+ * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
-function jfetch(input: string, init?: RequestInit): Promise<Response> {
+function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
   // Forward with the SAME argument shape the caller used: a raw read written on
   // `fetch('/api/…')` with no init must stay a one-argument call, because adding
   // a second `undefined` is a wire change the transport-contract tests pin (and
   // keeping the shapes identical means this wrapper is observable only on the
   // rejection path it exists for).
-  const request = init === undefined ? fetch(input) : fetch(input, init)
+  const request = init === undefined ? send(input) : send(input, init)
   return request.catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
@@ -1524,6 +1538,7 @@ const transport: ClientTransport = {
   jSlotEnvironment,
   jSharedCrewPreview,
   jMembers,
+  jApps,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,

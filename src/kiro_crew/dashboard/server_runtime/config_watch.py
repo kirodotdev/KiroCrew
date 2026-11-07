@@ -193,6 +193,7 @@ def _register_config_watch(
                         "agent",
                         "Default model applied",
                         "The saved default model is now active. New sessions will use it.",
+                        i18n={"id": "default_model_applied"},
                     )
                 except Exception:
                     logger.debug("default-model recovery notification failed", exc_info=True)
@@ -215,6 +216,7 @@ def _register_config_watch(
                         "The setting was saved but new sessions will keep using the "
                         "previous model. Kiro Crew retries automatically; "
                         "check the gateway logs if this persists.",
+                        i18n={"id": "default_model_failed"},
                     )
                 except Exception:
                     logger.debug("default-model failure notification failed", exc_info=True)
@@ -236,6 +238,12 @@ def _register_config_watch(
         # other open dashboard re-read it, so a switch flipped on one surface
         # reaches the others without a reload.
         if change.touched("dashboard.feature_previews"):
+            state.push_refresh("config")
+
+    def _push_app_settings(change: ConfigChange) -> None:
+        # The app session mute and the per-app model picker read ``apps`` off the
+        # ``kirocrewConfig`` query, which only a refresh frame invalidates.
+        if change.touched("apps"):
             state.push_refresh("config")
 
     # The workflow-run ceiling and the channel caps are not registered here:
@@ -279,6 +287,7 @@ def _register_config_watch(
             callback=_push_feature_previews,
             name="dashboard.feature_previews",
         ),
+        live.subscribe("apps", callback=_push_app_settings, name="apps"),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so
     # the registrations are visible (and cancellable) from tests.

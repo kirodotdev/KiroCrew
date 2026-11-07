@@ -24,6 +24,10 @@ from kiro_crew.session import BACKGROUND_KEY, CONSOLIDATE_KEY, HEARTBEAT_KEY, Se
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.testing.wait import await_until
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 #: Ceiling for a wait that only fails on a hang: these steps finish in
 #: milliseconds, so a test fails by name instead of losing the xdist worker.
 _HANG_CEILING_S = 30

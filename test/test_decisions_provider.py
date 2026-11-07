@@ -135,9 +135,7 @@ class _Answering:
         return out
 
 
-# ---------------------------------------------------------------------------
 # Protocol conformance and metadata
-# ---------------------------------------------------------------------------
 
 
 class TestEveryProviderConforms:
@@ -206,9 +204,7 @@ class TestEveryProviderConforms:
         assert not [n for n in names if "aiohttp" in n or "impl_" in n or "capability" in n]
 
 
-# ---------------------------------------------------------------------------
 # Registry selection
-# ---------------------------------------------------------------------------
 
 
 class TestRegistrySelection:
@@ -324,9 +320,7 @@ class TestResolutionMatchesLegacy:
         assert built == ([] if expected is None else [expected])
 
 
-# ---------------------------------------------------------------------------
 # Fallbacks: nothing constructed, nothing sent, the caller's path runs
-# ---------------------------------------------------------------------------
 
 
 class TestDisabledConstructsNothing:
@@ -487,9 +481,7 @@ class TestProviderFailureFallsBack:
         assert [row["error"] for row in no_rows] == [gate_mod.ERROR_PROVIDER]
 
 
-# ---------------------------------------------------------------------------
 # Stored spellings keep their meaning
-# ---------------------------------------------------------------------------
 
 
 class TestPersistedSpellings:
@@ -532,9 +524,7 @@ class TestPersistedSpellings:
         assert "jev" in FEEDBACK_SIDES
 
 
-# ---------------------------------------------------------------------------
 # The browser stack does not depend on decisions
-# ---------------------------------------------------------------------------
 
 
 def _browser_sources() -> list[Path]:

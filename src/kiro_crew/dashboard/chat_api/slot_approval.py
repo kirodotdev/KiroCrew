@@ -448,7 +448,12 @@ async def apply_approval_mode(
         not request_app
         and not cron_creator
         and mode != "yolo"
-        and (not slot_scoped_trust or safety_override().is_declared)
+        and (
+            not slot_scoped_trust
+            or safety_override().is_declared
+            # ``gateway --approval yolo``'s grant is declared at launch too.
+            or safety_override().is_cli_launch is True
+        )
     ):
         # deactivate() writes a SEL event, so it is offloaded exactly like the
         # sibling activate() — never run on the gateway loop. Safe after
@@ -706,7 +711,8 @@ async def apply_approval_mode(
     # to every slot sharing a session, so two slots addressing one key always agree
     # by the time this runs and iteration order cannot pick a winner.
     for slot in state._slots.values():
-        policy = "auto" if trust_reaches_subagents(slot) or safety_override().is_active() else ""
+        yolo = safety_override().is_active() and state.yolo_reaches(slot)
+        policy = "auto" if trust_reaches_subagents(slot) or yolo else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
@@ -717,6 +723,13 @@ def _sweep_pending_approvals(
     state: DashboardState, slot: _ChatSlot, mode: str, audit_caller: Callable[[str], str]
 ) -> None:
     """Approve *slot*'s pending tool prompts after a ``trust`` / ``yolo`` grant."""
+    if not slot._approval_futures:
+        # Nothing is waiting, so there is no row to read. A card is appended to
+        # the window before its future is registered, so a slot with no futures
+        # has no pending card. Reading its rows anyway would load a restored
+        # row's window on the event loop (``load_window_off_loop`` is what a
+        # reader awaits first), once per such slot on every all-slots grant.
+        return
     _elicitations = _pending_elicitation_ids(slot)
     for aid, fut in list(slot._approval_futures.items()):
         if aid in _elicitations or _is_deny_override_card(slot, aid):

@@ -22,7 +22,7 @@ import CrewAvatar from '../CrewAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
 import CrewAvatarButton from './CrewAvatarButton'
 import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
-import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, memberMemoryState } from './crewFields'
+import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, SessionColorField, memberMemoryState } from './crewFields'
 import ErrorNotice from '../ErrorNotice'
 import { useDialogConfirm } from './useDialogConfirm'
 import { effortLabel } from '../../lib/effort'
@@ -374,7 +374,7 @@ export default function CrewEditorNextDialog({
   }
 
   const {
-    editing, editingAgent, displayName, setDisplayName,
+    editing, editingAgent, displayName, setDisplayName, sessionColor, setSessionColor,
     kiroAgent, kiroAgentOptions, templateFieldLabel, persistTemplateSwitch, templateSwitchError,
     templateProvenance, capabilityDirty, capabilityBusy, capabilityLoading, capabilityReadFailed,
     editAvatar, openAvatarBuilder, avatarBuilderOpen, applyAvatar, closeAvatarBuilder, onAvatarImageError,
@@ -505,7 +505,7 @@ export default function CrewEditorNextDialog({
       ? i18nT('pages.kiroCrewAgentsPage.private_memory_owned')
       : memoryState === 'legacy'
         ? (editing === 'default' ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1') : i18nT('pages.kiroCrewAgentsPage.private_memory_legacy'))
-        : `${i18nT(memoryState === 'ownership_mismatch' ? 'pages.kiroCrewAgentsPage.memory_binding_mismatch' : 'pages.kiroCrewAgentsPage.memory_binding_unavailable')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
+        : i18nT(memoryState === 'ownership_mismatch' ? 'pages.kiroCrewAgentsPage.memory_binding_mismatch_diagnostic' : 'pages.kiroCrewAgentsPage.memory_binding_unavailable_diagnostic', { command: 'kirocrew doctor' })
 
   const memoryTabs: { key: MemoryTab; label: string }[] = [
     { key: 'profile', label: i18nT('crewEditorNext.tab_profile') },
@@ -597,6 +597,7 @@ export default function CrewEditorNextDialog({
                       wrappers wrapping components that already carry their own
                       label/hint. This is the layout these fields are built for. */}
                   <DisplayNameField value={displayName} onChange={setDisplayName} fallback={editing} />
+                  <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
 
                   {ownsFile ? (
                     <Field label={i18nT('crewEditorNext.section_capabilities')} hint={i18nT('crewEditorNext.built_from_mate_hint')}>

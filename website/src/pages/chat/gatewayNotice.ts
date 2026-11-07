@@ -106,6 +106,20 @@ const NOTICE_FAMILIES = {
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
+  queued_message_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
+  send_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
+  send_discarded: { role: 'notice', card: 'notice', tone: 'warn' },
+  eager_spawn_stopped: { role: 'error', card: 'error' },
+  turn_failed_before_start: { role: 'error', card: 'error' },
+  local_command_failed_before_start: { role: 'error', card: 'error' },
+  turn_timeout: { role: 'error', card: 'error' },
+  turn_timeout_native_pending: { role: 'error', card: 'error' },
+  background_turn_abandoned: { role: 'error', card: 'error' },
+  crew_turn_no_permit: { role: 'error', card: 'error' },
+  turn_interrupted_restart: { role: 'error', card: 'error' },
+  turn_interrupted_close: { role: 'error', card: 'error' },
+  capability_tool_limits_unsupported: { role: 'error', card: 'error' },
+  kas_signed_out: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -177,6 +191,20 @@ const COPY_KEY = {
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
+  queued_message_dropped: 'pages.chat.gatewayNotice.queued_message_dropped',
+  send_dropped: 'pages.chat.gatewayNotice.send_dropped',
+  send_discarded: 'pages.chat.gatewayNotice.send_discarded',
+  eager_spawn_stopped: 'pages.chat.gatewayNotice.eager_spawn_stopped',
+  turn_failed_before_start: 'pages.chat.gatewayNotice.turn_failed_before_start',
+  local_command_failed_before_start: 'pages.chat.gatewayNotice.local_command_failed_before_start',
+  turn_timeout: 'pages.chat.gatewayNotice.turn_timeout',
+  turn_timeout_native_pending: 'pages.chat.gatewayNotice.turn_timeout_native_pending',
+  background_turn_abandoned: 'pages.chat.gatewayNotice.background_turn_abandoned',
+  crew_turn_no_permit: 'pages.chat.gatewayNotice.crew_turn_no_permit',
+  turn_interrupted_restart: 'pages.chat.gatewayNotice.turn_interrupted_restart',
+  turn_interrupted_close: 'pages.chat.gatewayNotice.turn_interrupted_close',
+  capability_tool_limits_unsupported: 'pages.chat.gatewayNotice.capability_tool_limits_unsupported',
+  kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -199,6 +227,73 @@ const RESUME_KEY = {
 const RESTORED_KEY = 'pages.chat.transientNotice.restored'
 const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 const BACKEND_HICCUP_RESUME_KEY = 'pages.chat.errorCard.retry_backend_hiccup'
+
+/**
+ * The turn-limit and never-started cards are COMPOSED by the gateway
+ * (`turn_dispatch.py`): their English `content` is the channel/SSE/model
+ * fallback, and the dashboard words the variable parts itself from STRUCTURED
+ * args so no English fragment leaks into a localized card.
+ *
+ * - the limit phrase ("30-minute" / "1.5-hour") is a count + unit, worded with
+ *   the plural keys below (`Intl.PluralRules` picks the form INSIDE the call —
+ *   see `website/docs/i18n-catalog.md`, "Counts: never concatenate a plural
+ *   suffix"), never handed over pre-worded;
+ * - the remedy hint is one of two localized sentences chosen by `limit_scope`
+ *   (the session's own limit vs the global setting), so the card's remedy is
+ *   not the one English fragment in an otherwise-translated card;
+ * - the never-started wait is a count of minutes, worded the same way;
+ * - a dropped/discarded message's excerpt is quoted under a localized label.
+ *
+ * A pre-token row persisted on disk carries only its English capture groups
+ * (`limit`, `hint`, `waited`, the ` Text: "…"` suffix) and no structured field,
+ * so it keeps rendering those verbatim — the localization is for new rows.
+ */
+const TURN_LIMIT_PHRASE_KEY = {
+  minute: 'pages.chat.gatewayNotice.turn_limit_minutes',
+  hour: 'pages.chat.gatewayNotice.turn_limit_hours',
+} as const
+const TURN_LIMIT_HINT_KEY = {
+  session: 'pages.chat.gatewayNotice.turn_timeout_hint_session',
+  global: 'pages.chat.gatewayNotice.turn_timeout_hint_global',
+} as const
+const BACKGROUND_TURN_WAITED_KEY = 'pages.chat.gatewayNotice.background_turn_waited'
+const SEND_EXCERPT_KEY = 'pages.chat.gatewayNotice.send_excerpt'
+
+/**
+ * Word the variable parts a COMPOSED card carries, from its structured args,
+ * and return them as interpolation vars for the frame copy. Returns the vars
+ * unchanged for every other token, and for a legacy row that carries the old
+ * English captures instead of the structured fields (keyed on their presence),
+ * so the frame still interpolates those verbatim.
+ */
+function composedCardVars(token: GatewayNoticeToken, args: Args, vars: Record<string, string>): Record<string, string> {
+  if (token === 'turn_timeout' || token === 'turn_timeout_native_pending') {
+    const out = { ...vars }
+    if (typeof args.limit_value === 'number' && (args.limit_unit === 'minute' || args.limit_unit === 'hour')) {
+      out.limit = i18nT(TURN_LIMIT_PHRASE_KEY[args.limit_unit], { count: args.limit_value })
+    }
+    const scope = args.limit_scope === 'session' ? 'session' : 'global'
+    // The frame abuts `{{hint}}` directly ("…stopped.{{hint}}"), so the leading
+    // space lives here, not in the catalog value — a value with edge whitespace
+    // is a fragment the source-string gate rejects.
+    if (typeof args.limit_scope === 'string') out.hint = ` ${i18nT(TURN_LIMIT_HINT_KEY[scope])}`
+    return out
+  }
+  if (token === 'background_turn_abandoned' && typeof args.waited_minutes === 'number') {
+    return { ...vars, waited: i18nT(BACKGROUND_TURN_WAITED_KEY, { count: args.waited_minutes }) }
+  }
+  if (token === 'send_dropped' || token === 'send_discarded') {
+    // The structured arg is the BARE excerpt; a legacy row's `excerpt` is the
+    // whole ` Text: "…"` suffix, told apart because it opens with that label.
+    // The frame abuts `{{excerpt}}` ("…will not run.{{excerpt}}"), so the leading
+    // space is added here rather than carried in the (edge-whitespace-free) key.
+    const raw = typeof args.excerpt === 'string' ? args.excerpt : ''
+    if (raw && !/^ Text: "/u.test(raw)) {
+      return { ...vars, excerpt: ` ${i18nT(SEND_EXCERPT_KEY, { excerpt: raw })}` }
+    }
+  }
+  return vars
+}
 
 type Args = Readonly<Record<string, unknown>>
 
@@ -398,7 +493,80 @@ const LEGACY: readonly Legacy[] = [
     re: /^ℹ\uFE0F? Automatic retry was skipped because the fallback model \(`agent\.refusal_fallback_model`\) is the same as your current model — retrying the same model hits the same filter\. Pick a different model for the fallback to retry automatically\.$/u,
     token: 'refusal_fallback_same_model',
   },
+  {
+    re: /^⚠\uFE0F? Queued message dropped: (?<change>.+?) after it was queued, so the authorization that admitted it no longer holds\.$/u,
+    token: 'queued_message_dropped',
+  },
+  {
+    re: /^⚠\uFE0F? Message you sent to (?<target>.+?) was dropped before it ran: (?<change>.+?) after it was queued, so the authorization that admitted it no longer holds\. It was not delivered and will not run\.(?<excerpt>.*)$/u,
+    token: 'send_dropped',
+  },
+  {
+    re: /^⚠\uFE0F? Message you sent to (?<target>.+?) was discarded before it ran: (?<reason>.+?)\. It was not delivered and will not run\.(?<excerpt>.*)$/u,
+    token: 'send_discarded',
+  },
+  {
+    re: /^This chat's agent failed to start (?<failures>\d+) times in a row, so it will not be started again in the background\. Send a message to try again\. Last error: (?<detail>.+)$/u,
+    token: 'eager_spawn_stopped',
+  },
+  {
+    re: /^⚠\uFE0F? This message failed before it started\. The gateway log has the details\.$/u,
+    token: 'turn_failed_before_start',
+  },
+  {
+    re: /^⚠\uFE0F? `(?<command>.+?)` failed\. The gateway log has the details\.$/u,
+    token: 'local_command_failed_before_start',
+  },
+  {
+    re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit and was stopped\. Work already written to disk is still there — nothing was rolled back\. Send a message to continue from where it stopped\.(?<hint>.*)$/u,
+    token: 'turn_timeout',
+  },
+  {
+    re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit\. The native agent did not acknowledge the stop request, so its previous tool may still be finishing\. Do not resume this session until it becomes idle\. Work already written to disk is still there — nothing was rolled back\.(?<hint>.*)$/u,
+    token: 'turn_timeout_native_pending',
+  },
+  {
+    re: /^⏱\uFE0F? This turn never started: it waited (?<waited>.+?) for a free background-turn slot and gave up\. Nothing ran and nothing was rolled back; the next message or loop cycle starts a new turn\. If turns keep queueing at the cap, raise `dashboard\.max_background_turns`\.$/u,
+    token: 'background_turn_abandoned',
+  },
+  {
+    re: /^This crew's turn never started: it waited for a free background-turn slot and gave up\. Nothing ran and nothing was rolled back\. The crew gets another turn on its next signal or idle cycle; raise `dashboard\.max_background_turns` if the fleet is queueing at the cap\.$/u,
+    token: 'crew_turn_no_permit',
+  },
+  {
+    re: /^This turn was interrupted when the app restarted\. Review the partial output above, then resume to continue\.$/u,
+    token: 'turn_interrupted_restart',
+  },
+  {
+    re: /^This turn was interrupted when its chat was closed\. Review the partial output above, then resume to continue\.$/u,
+    token: 'turn_interrupted_close',
+  },
+  {
+    re: /^capability_tool_limits_unsupported: This (?:crew member's|Bot's) saved capabilities turn off single tools on an MCP server\. The backend its chats run on \((?<setting>[^)]*)\) cannot turn off single tools, so they would be on\. On the member's Capabilities page, turn the whole server off or turn those tools back on, then start a new chat\.$/u,
+    token: 'capability_tool_limits_unsupported',
+  },
 ]
+
+/**
+ * The KAS signed-out sentences a row carries without their token: rows stored
+ * before the token existed, and side-panel rows. Fixed text, so they are matched
+ * as text: the bare sentence, the relay-led one, and the one led by "KAS runs on
+ * Kiro Crew's own engine" with or without its reason, each in the older "start a
+ * new chat" ending and the current "send your message again" one.
+ */
+/** The route a token-less KAS signed-out row names (`''` for none), or null when it is not one. */
+function legacyKasSignedOutRoute(content: string): '' | 'relay' | 'bundle' | null {
+  // Stored English matched in place, not held in constants: it is wire text the
+  // row carries, never shown here (the token's catalog copy is).
+  if (!content.endsWith(', then start a new chat.') && !content.endsWith(', then send your message again.')) return null
+  const head = content.slice(0, content.lastIndexOf(', then '))
+  if (head === 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in') return ''
+  if (head === "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in") return 'relay'
+  const bundle =
+    head.startsWith("KAS runs on Kiro Crew's own engine") &&
+    head.endsWith('. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in')
+  return bundle ? 'bundle' : null
+}
 
 interface Shape {
   token: GatewayNoticeToken
@@ -417,7 +585,9 @@ function legacyShape(content: string, m?: ChatMessage): Shape | null {
     const token = entry.pendingWithRetryKind && m && isRetryNotice(m) ? entry.pendingWithRetryKind : entry.token
     return { token, args: { ...(match.groups ?? {}) }, hiccupResume: entry.hiccupResume }
   }
-  return null
+  const route = legacyKasSignedOutRoute(content)
+  if (route === null) return null
+  return { token: 'kas_signed_out', args: route ? { route } : {} }
 }
 
 function shapeOf(m: ChatMessage): Shape | null {
@@ -452,11 +622,36 @@ function resumeTextOf({ token, args, hiccupResume }: Shape): string | undefined 
 }
 
 function copyOf({ token, args }: Shape): string {
-  const vars = copyVars(args)
+  const vars = composedCardVars(token, args, copyVars(args))
   if (token in COUNTED_KEY && vars.n !== undefined && vars.max !== undefined) {
     return i18nT(COUNTED_KEY[token as keyof typeof COUNTED_KEY], vars)
   }
+  if (token === 'eager_spawn_stopped') {
+    // The failure count sits mid-sentence ("failed to start N times in a row"),
+    // and "times" agrees with it grammatically (ru: раз / раза / раз). Pass a
+    // numeric `count` so the catalog's plural keys pick the form — a bare
+    // {{failures}} in one fixed form reads "3 раз" in Russian. `count` must be a
+    // number: a legacy row carries it as a captured string, so coerce.
+    const n = typeof args.failures === 'number' ? args.failures : Number(vars.failures)
+    if (Number.isFinite(n)) return i18nT(COPY_KEY[token], { ...vars, count: n })
+  }
+  if (token === 'kas_signed_out') return withKasRoute(args, i18nT(COPY_KEY[token], vars))
   return i18nT(COPY_KEY[token], vars)
+}
+
+/**
+ * *message* led by the route the KAS engine took, in plain words, when the row
+ * names one: every KAS prompt names the real route
+ * (docs/decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md).
+ */
+function withKasRoute(args: Args, message: string): string {
+  const route =
+    args.route === 'relay'
+      ? i18nT('pages.chat.gatewayNotice.kas_route_relay')
+      : args.route === 'bundle'
+        ? i18nT('pages.chat.gatewayNotice.kas_route_bundle')
+        : ''
+  return route ? i18nT('pages.chat.gatewayNotice.kas_route_lead', { route, message }) : message
 }
 
 /**
@@ -528,6 +723,17 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
     }
   }
   return 'pending'
+}
+
+/**
+ * Copy for a KAS signed-out row drawn with the sign-in button under it, or null
+ * for any other row. The row's own copy names the Settings path, for a surface
+ * with no button; next to the button, the button is the way.
+ */
+export function kasSignedOutBesideButton(m: ChatMessage): string | null {
+  const shape = shapeOf(m)
+  if (shape?.token !== 'kas_signed_out') return null
+  return withKasRoute(shape.args, i18nT('pages.chat.gatewayNotice.kas_signed_out_sign_in_below'))
 }
 
 /**

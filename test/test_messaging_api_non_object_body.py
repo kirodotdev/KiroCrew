@@ -66,6 +66,7 @@ _ROUTES = [
     ("api_slack_pins", _with_slack, "action must be 'add', 'remove', or 'list'"),
     ("api_slack_reactions", _with_slack, "action must be 'add' or 'remove'"),
     ("api_slack_profile", _with_slack, "user required"),
+    ("api_slack_history", _with_slack, "invalid channel ID format"),
     ("api_spawn", _with_manager, "task is required"),
     ("api_spawn_continue", _with_manager_for("conv1"), "task is required"),
 ]

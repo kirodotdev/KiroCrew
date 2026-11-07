@@ -53,9 +53,7 @@ def _errors(**over: Any) -> list[str]:
     return SelectionActionConfig.from_dict(_item(**over)).validate()
 
 
-# ---------------------------------------------------------------------------
 # Manifest
-# ---------------------------------------------------------------------------
 
 
 def test_a_minimal_item_is_valid_and_serializes_its_defaults() -> None:
@@ -119,9 +117,7 @@ def test_the_block_caps_items_and_refuses_duplicates_and_bad_shapes() -> None:
     assert "selectionActions" in Contributes.from_dict({"selectionActions": [_item()]}).to_dict()
 
 
-# ---------------------------------------------------------------------------
 # Grant
-# ---------------------------------------------------------------------------
 
 
 def _manifest(**over: Any) -> dict[str, Any]:
@@ -193,9 +189,7 @@ def test_the_row_and_the_frame_resolver_read_the_same_approved_entries(
     assert sag.selection_action_grant_row(APP, {"contributes": {}}) == {}
 
 
-# ---------------------------------------------------------------------------
 # On the shared frame
-# ---------------------------------------------------------------------------
 
 
 def test_the_point_is_registered_on_the_shared_frame() -> None:

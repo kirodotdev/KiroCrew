@@ -27,9 +27,11 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
     LESSON_APPLIES_VALUES,
+    cjk_parts,
     contains_volatile_lesson_fact,
     render_lesson_tier,
     render_withheld_tier,
+    split_cjk_word,
     tighter_lesson_budget,
 )
 from kiro_crew.project_scope import (
@@ -622,6 +624,19 @@ def lesson_keywords(text: str) -> set[str]:
         "yes",
     }
     return {w for w in re.split(r"\W+", text) if len(w) > 2 and w not in stop}
+
+
+def _lesson_words(text: str) -> set[str]:
+    """The ``\\w+`` words of *text*, plus the ``cjk_parts`` of those holding CJK text.
+
+    An unspaced CJK sentence is one ``\\w+`` word that no other text shares.
+    """
+    return set(re.findall(r"\w+", text)) | cjk_parts(text)
+
+
+def _lesson_row_tokens(tokens: frozenset[str], parts: set[str]) -> frozenset[str]:
+    """A lesson's memoised row *tokens*, plus its stemmed ``cjk_parts`` *parts*."""
+    return tokens | _text_scoring._stem_words(parts) if parts else tokens
 
 
 def find_contradiction_candidates(
@@ -1291,14 +1306,16 @@ def _lesson_render_fields(key: str, value_json: object) -> tuple[str, str | None
 
 
 #: Request words in ``lesson_keywords``' stop list and words of two letters or
-#: fewer are ignored. Each remaining request word is matched once through its
-#: stem. A follow-up message earns a lesson only when they share at least
+#: fewer are ignored; a word holding CJK text adds its pieces under the same rule
+#: and its two-character pairs. Each remaining request word is matched once
+#: through its stem. A follow-up message earns a lesson only when they share at least
 #: ``_TURN_LESSON_TERMS`` distinct stems that are each rare: found in at most
 #: ``_TURN_LESSON_RARITY`` of the N stored lessons, and never fewer than one, so
 #: a small store still admits a lesson through words no other lesson carries.
 #: Rarity is a count of distinct stems, not a sum of their weights: a sum lets
 #: one word found in a single lesson admit it alone, and lets a store of a few
-#: hundred lessons count an ordinary word as rare.
+#: hundred lessons count an ordinary word as rare. One shared CJK run of three
+#: or more characters is two pairs, so it can admit a lesson alone.
 _TURN_LESSON_TERMS = 2
 _TURN_LESSON_RARITY = 0.01
 
@@ -1317,7 +1334,9 @@ def turn_lessons(
 
     Every eligible, in-scope lesson is a candidate, rules and findings alike,
     except those *shown* reports as already in the session. Request words in
-    ``lesson_keywords``' stop list and words of two letters or fewer are ignored.
+    ``lesson_keywords``' stop list and words of two letters or fewer are ignored;
+    a word holding CJK text adds its pieces under the same rule and every
+    two-character pair (``split_cjk_word``), as the lesson side does.
     Each remaining request word is matched once, through its stem. A lesson is
     admitted only when it shares at least ``_TURN_LESSON_TERMS`` distinct stems
     with the message, each found in at most ``_TURN_LESSON_RARITY`` of the stored
@@ -1334,7 +1353,12 @@ def turn_lessons(
     entries = _renderable_entries(lesson_rows, project_dir)
     if not entries:
         return []
-    query_stems = {_stem_one(word) for word in store._lesson_keywords(query_text.lower())}
+    lowered = query_text.lower()
+    query_words = store._lesson_keywords(lowered)
+    for word in re.split(r"\W+", lowered):
+        pieces, pairs = split_cjk_word(word)
+        query_words |= store._lesson_keywords(" ".join(pieces)) | pairs
+    query_stems = {_stem_one(word) for word in query_words}
     row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
     shared_by_row, sizes, document_frequency = _shared_lesson_stems(
         entries, query_stems, row_tokens
@@ -1472,7 +1496,7 @@ def rank_lessons(
     lexical score before recency; rows still tied after it keep the caller's
     newest-first order.
     """
-    request_words = set(re.findall(r"\w+", query_text.lower()))
+    request_words = _lesson_words(query_text.lower())
     if recall_query is not None:
         query_emb = recall_query.vector
     elif store.embed_fn:
@@ -1566,7 +1590,8 @@ def _lexical_lesson_weights(
     Rarity is ``log((N + 1) / (df + 0.5))`` over *entries*. Document frequency
     is counted only for tokens the request carries, over row token sets
     ``row_tokens`` already memoises, so no row is re-stemmed. A row's length is
-    its number of distinct words, so an inflection does not make it look longer.
+    its number of distinct words, CJK parts included, so an inflection does not
+    make it look longer.
     """
     shared_by_row, sizes, document_frequency = _shared_lesson_stems(
         entries, query_words, row_tokens
@@ -1587,10 +1612,11 @@ def _shared_lesson_stems(
     document_frequency: dict[str, int] = {}
     for _, text in entries:
         normalized_text = text.lower()
-        tokens = row_tokens(normalized_text)
+        parts = cjk_parts(normalized_text)
+        tokens = _lesson_row_tokens(row_tokens(normalized_text), parts)
         shared = tokens & query_words
         shared_by_row.append(shared)
-        sizes.append(len(set(re.findall(r"\w+", normalized_text))))
+        sizes.append(len(set(re.findall(r"\w+", normalized_text)) | parts))
         for token in shared:
             document_frequency[token] = document_frequency.get(token, 0) + 1
     return shared_by_row, sizes, document_frequency
@@ -1662,8 +1688,11 @@ def any_lesson_overlap(
     """
     if not entries or not query_text.strip():
         return False
-    query_words = _text_scoring._stem_words(set(re.findall(r"\w+", query_text.lower())))
+    query_words = _text_scoring._stem_words(_lesson_words(query_text.lower()))
     if not query_words:
         return False
     row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
-    return any(query_words & row_tokens(text.lower()) for _, text in entries)
+    return any(
+        query_words & _lesson_row_tokens(row_tokens(row_text), cjk_parts(row_text))
+        for row_text in (text.lower() for _, text in entries)
+    )

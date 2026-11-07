@@ -45,6 +45,17 @@ const WHEEL_STEP_MAX = 1.25
  *  produce a jump, only a slightly brisker or gentler notch. */
 const WHEEL_LINE_PX = 33
 
+/** One `wheel` event's zoom factor, shared so the file viewer's Alt+wheel steps
+ *  exactly like this hook's ctrl+wheel. `deltaY` is normalised to pixels first
+ *  (see the constants above); exponentiating keeps the step multiplicative. */
+export function wheelZoomFactor(e: WheelEvent): number {
+  const px =
+    e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX
+    : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || WHEEL_ZOOM_DIVISOR)
+    : e.deltaY
+  return Math.min(WHEEL_STEP_MAX, Math.max(1 / WHEEL_STEP_MAX, Math.exp(-px / WHEEL_ZOOM_DIVISOR)))
+}
+
 /** Safari's non-standard pinch events, which no DOM lib type covers. `scale` is
  *  cumulative from `gesturestart`, not per-frame. */
 type GestureEventLike = Event & { scale: number; clientX: number; clientY: number }
@@ -408,19 +419,7 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey || !inTarget(e)) return
       e.preventDefault()
-      // Exponentiating keeps the step multiplicative, so a given physical gesture
-      // covers the same proportion of the range at any current zoom. The clamp is
-      // what makes one event type serve two very different granularities: a
-      // trackpad emits many small deltas, while one mouse notch is ~100 and would
-      // otherwise jump by e^-1 in a single tick.
-      // `deltaY` carries no unit of its own — `deltaMode` names it. Normalise to
-      // pixels FIRST, or the same physical notch means different things per engine.
-      const px =
-        e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX
-        : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || WHEEL_ZOOM_DIVISOR)
-        : e.deltaY
-      const raw = Math.exp(-px / WHEEL_ZOOM_DIVISOR)
-      zoomAbout(Math.min(WHEEL_STEP_MAX, Math.max(1 / WHEEL_STEP_MAX, raw)), e.clientX, e.clientY)
+      zoomAbout(wheelZoomFactor(e), e.clientX, e.clientY)
     }
     const onGestureStart = (e: Event) => {
       if (!inTarget(e)) return
@@ -473,7 +472,7 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
   // the hook is the only place it belongs.
   return {
     zoom, setZoom, pan, setPan, pinching,
-    zoomRef, clampPan, contentCentre,
+    zoomRef, clampPan, contentCentre, zoomAbout,
     trackPointerDown, trackPointerMove, trackPointerUp,
     reset,
   }

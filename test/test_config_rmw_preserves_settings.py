@@ -1,10 +1,8 @@
 """A failed config read must never silently reset the user's settings.
 
-Every read-modify-write of ``config.json`` must never fall back to ``data = {}``
-on a read failure and then write that empty dict back, so one unreadable or
-mid-write file would turn "flip one toggle" into "erase every setting". These tests
-pin the fail-closed contract of ``read_config_for_update``: an unreadable
-existing config raises, and a genuinely absent one still starts from ``{}``.
+Pins ``read_config_for_update``: an unreadable existing config raises, and a truly
+absent one starts from ``{}``. Falling back to ``{}`` and writing it back would erase
+every setting.
 """
 
 from __future__ import annotations
@@ -59,11 +57,8 @@ class _OwnerRequest(dict):
 def _inline_on_the_loop(fn, /, *args, **kwargs):
     """Call *fn* from inside a running event loop, as an async handler does.
 
-    ``write_config_atomically`` is synchronous and several dashboard handlers
-    still reach it directly from a coroutine. That is the case its Windows volume
-    gate exists for, so a test about the gate has to actually be on a loop --
-    a plain test function is not, and would silently exercise the offloaded path
-    instead.
+    The Windows volume gate exists for on-loop callers; a plain test function has no
+    loop and would exercise the offloaded path instead.
     """
 
     async def _main():
@@ -307,15 +302,10 @@ class TestNoModeWideningConfigWriters:
 class TestNoRawOpenWriteOfConfig:
     """No module writes config.json / config.local.json through ``open(..., "w")``.
 
-    ``open(path, "w")`` TRUNCATES first and writes second, with no lock: a load
-    landing in between reads an empty or half-written file, degrades to defaults,
-    and anything that then writes back publishes them -- the torn read behind
-    "all my settings reset themselves". The voice-settings PUT wrote this way
-    (and swallowed its failures behind ``{"ok": true}``). The sibling ratchet
-    above sees ``write_text`` / ``atomic_write`` only, so this one matches the
-    ``open`` spelling: ``open(p, mode)`` and ``p.open(mode)`` with a writing mode,
-    where ``p`` is ``config_path()`` / ``config_local_path()`` or a name bound to
-    one in the same function. Baseline: empty.
+    ``open(path, "w")`` truncates before writing, with no lock, so a load in between
+    reads an empty file and degrades to defaults. Matches ``open(p, mode)`` and
+    ``p.open(mode)`` where ``p`` is ``config_path()`` / ``config_local_path()`` or a
+    name bound to one in the same function. Baseline: empty.
     """
 
     _PATH_FNS = ("config_path", "config_local_path")
@@ -474,13 +464,10 @@ class TestWriteConfigAtomically:
     def test_does_not_spawn_a_subprocess_on_the_event_loop(self, tmp_path, monkeypatch):
         """No spawn, on either platform.
 
-        This function runs inside async request handlers and KiroCrewConfig.save(),
-        so a blocking subprocess here would freeze the gateway's event loop — the
-        `no-blocking-call-on-event-loop` AUTOSDE rule. Pinned because the obvious
-        "harden the file" reflex can reintroduce it: the owner-only lockdown
-        was an icacls subprocess, which is why a naive version would skip it
-        entirely. It now applies the DACL in-process, so the ban is on SPAWNING,
-        not on hardening — hardening is asserted positively below.
+        It runs inside async handlers and KiroCrewConfig.save(), so a subprocess would
+        freeze the event loop. The owner-only lockdown was an icacls subprocess, so a
+        naive version skips hardening; the DACL is applied in-process, so the ban is
+        on spawning, not on hardening, which is asserted below.
         """
         import subprocess
 
@@ -502,11 +489,8 @@ class TestWriteConfigAtomically:
     def test_windows_applies_an_owner_only_dacl(self, tmp_path):
         """The Windows half of the guarantee the mode tests cover on POSIX.
 
-        config.json can hold inline provider tokens, and on Windows the mode bits
-        are inert — so without this the file lands under whatever DACL it inherits
-        from its parent, readable by every other local account. No mode assertion
-        can catch that (NTFS reports 0o666 regardless), so the descriptor itself
-        is the observable.
+        config.json can hold provider tokens, and NTFS reports 0o666 whatever the
+        DACL, so the security descriptor itself is checked.
         """
         from kiro_crew import windows_acl
         from kiro_crew.config.loader import write_config_atomically
@@ -523,23 +507,12 @@ class TestWriteConfigAtomically:
     def test_the_volume_is_classified_before_any_filesystem_work(self, tmp_path, monkeypatch):
         """Ordering IS the fix here, so it is asserted rather than the outcome alone.
 
-        This case is a write running INLINE ON THE LOOP -- the one that cannot
-        afford the unbounded SMB round-trip a DACL write to a UNC or mapped-drive
-        path costs, and so the one the volume gate exists for. A check placed
-        inside ``atomic_write`` -- where an earlier revision of this change put it
-        -- is already too late: the ``stat`` and the ``parent.mkdir`` below, plus
-        everything ``atomic_write`` does, each touch the target volume first, so the
-        loop would have parked on the network before the verdict landed.
+        An on-loop write must classify the volume before ``stat``, ``mkdir`` or
+        ``atomic_write`` touch it, or the loop parks on SMB first. Only the symlink
+        resolve may come earlier, since a link can point at another volume.
 
-        The one thing that legitimately precedes the gate is the symlink resolve: a
-        config symlinked into a dotfiles repo can point at a different volume than
-        the link, so classifying before resolving would classify the wrong volume.
-        That is asserted too, rather than left implied.
-
-        The write is driven through :func:`_inline_on_the_loop` deliberately. A
-        plain test function has no running loop, which is now the OFFLOADED case
-        and skips the classification entirely -- so calling directly here would
-        assert nothing about the gate.
+        Driven through :func:`_inline_on_the_loop`: without a running loop the
+        classification is skipped.
         """
         import kiro_crew.config.loader as loader
 
@@ -611,17 +584,11 @@ class TestWriteConfigAtomically:
         assert json.loads(path.read_text())["auto_update"] is True
 
     def test_an_offloaded_write_gets_the_dacl_on_a_non_local_volume(self, tmp_path, monkeypatch):
-        """The fix. A network-homed data home is protected once the caller offloads.
+        """A network-homed data home gets the DACL once the caller offloads.
 
-        The volume was never the thing that made the DACL unaffordable -- the
-        event loop was. A write handed to a worker thread (what
-        ``dashboard/chat_utils.run_config_write`` does for every config write it
-        owns) blocks nothing but that worker, so an unbounded SMB round-trip is
-        affordable and ``config.json`` gets the owner-only DACL even on a UNC or
-        mapped-drive path.
-
-        The volume must not even be classified here: its answer could only take
-        protection away, so asking would be both pointless and a round-trip.
+        A worker thread (``dashboard/chat_utils.run_config_write``) can afford the SMB
+        round-trip. The volume is not classified here: the answer could only remove
+        protection.
         """
         import kiro_crew.config.loader as loader
 
@@ -693,12 +660,9 @@ class TestWriteConfigAtomically:
     def test_the_predicate_answers_for_the_thread_that_actually_writes(self):
         """The link the fix hangs on, asserted directly rather than inferred.
 
-        ``on_event_loop`` is asked from deep inside a synchronous call stack, so
-        what matters is that it reports on the CALLING THREAD: True in a coroutine,
-        False in the worker ``asyncio.to_thread`` hands the write to. If that ever
-        inverted, every case above would still pass while the real behaviour
-        flipped -- an on-loop write would take the SMB stall and an offloaded one
-        would skip the DACL it can afford.
+        ``on_event_loop`` must report on the calling thread: True in a coroutine, False
+        in the ``asyncio.to_thread`` worker. If it inverted, the cases above would still
+        pass.
         """
         from kiro_crew.atomic_write import on_event_loop
 
@@ -788,32 +752,13 @@ class TestAutoUpdateToggleKeepsSettings:
 class TestEveryConfigWriterIsLocked:
     """No direct ``write_config_atomically(config_path())`` caller may reappear.
 
-    ``update_config_locked`` holds an advisory lock on a ``<path>.lock`` sidecar
-    for its whole read-modify-write. Its guarantee is only as strong as the set
-    of writers that participate: a writer that renames ``config.json`` without
-    taking that lock can land between a participant's read and write, and the
-    second rename wins with a document that never saw the other's change. The
-    loss is silent and the lost data is user configuration.
+    A writer that skips the ``<path>.lock`` sidecar lock of ``update_config_locked``
+    can land between a holder's read and write and silently drop its change.
 
-    That list was drained once by hand (the dashboard agents endpoint,
-    ``security.py``, the apps manager, the CLI setup wizard). Without a ratchet
-    it regrows: the write is one obvious line and nothing about it announces the
-    lock it is missing. So this walks the AST rather than asserting on a
-    hand-maintained list, in the shape ``TestNoFailOpenConfigWriters`` above
-    established.
-
-    **What it does NOT cover.** Only calls to ``write_config_atomically``. A
-    second family of writers reaches ``config.json`` through
-    ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s channel savers,
-    ``core_stt_settings.py``'s STT PUT, ``mcp.py``'s gateway-enable) and still bypasses the
-    lock; that family has its own ratchet,
-    :class:`TestTheAtomicJsonWriteConfigFamilyIsRatcheted` below, which holds it
-    to a baseline that may only shrink. :meth:`KiroCrewConfig.save`
-    (``updates.py``'s log-level PUT, the workspace CRUD in ``files.py``, several
-    ``agents.py`` CRUD endpoints) is NOT in that family: it holds the same
-    ``<path>.lock`` sidecar — see ``TestSaveHoldsTheAdvisoryLock``
-    in ``test_config_save_locking.py``. Green here does not mean every config
-    writer is locked -- it means this class of them is.
+    Covers only ``write_config_atomically``. The ``_atomic_json_write`` family has its
+    own ratchet, :class:`TestTheAtomicJsonWriteConfigFamilyIsRatcheted`, and
+    :meth:`KiroCrewConfig.save` holds the lock (``TestSaveHoldsTheAdvisoryLock`` in
+    ``test_config_save_locking.py``).
     """
 
     #: The primitive itself writes through ``write_config_atomically`` by
@@ -943,33 +888,13 @@ class TestEveryConfigWriterIsLocked:
 class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
     """The second config-writer family is empty and may not regrow.
 
-    ``TestEveryConfigWriterIsLocked`` above covers calls to
-    ``write_config_atomically``. A second family reached ``config.json``
-    through ``kiro_crew.agent._atomic_json_write``, takes no advisory lock on
-    the ``<path>.lock`` sidecar, and is therefore invisible to that scan. Such
-    a writer holds only the in-process asyncio
-    ``_get_config_lock()``, which serializes callers on this event loop and
-    nothing else, so it can land between a lock holder's read and write and
-    silently revert it.
+    ``kiro_crew.agent._atomic_json_write`` takes no sidecar lock, only the in-process
+    ``_get_config_lock()``, so it can silently revert a lock holder's write. Each new
+    channel saver in ``messaging.py`` is copied, so the unlocked write would spread.
 
-    The shape matters for channels specifically. Each per-channel settings
-    saver in ``messaging.py`` is a hand-copied credential-write skeleton, and
-    every new channel adds another copy. Without a ratchet the next one
-    inherits the unlocked write by copy-paste, and nothing about that line
-    announces the lock it is missing.
-
-    So this pins the family to a baseline that may only SHRINK. Adding an entry
-    means a new unlocked config writer, which the first test refuses; removing
-    an entry means a writer was converted, which the second test requires you
-    to record. Both directions are enforced, because a baseline that is allowed
-    to rot stops describing the code and starts hiding it.
-
-    The baseline is empty: every writer routes through ``update_config_locked``
-    (a channel saver through ``messaging._LockedSectionWrite``; see
-    ``api_feishu_config_save`` for the inline shape: stage the mutation in a
-    closure, return ``None`` to skip a no-op write, and map ``ConfigReadError``
-    to the handler's existing corrupt-config response). A new entry is a new
-    unlocked config writer and is refused, not recorded.
+    The baseline is empty and checked both ways. Writers route through
+    ``update_config_locked`` (channel savers via ``messaging._LockedSectionWrite``;
+    ``api_feishu_config_save`` shows the inline shape).
     """
 
     #: ``loader_document.py`` only names this family in prose; it owns the locked
@@ -999,13 +924,9 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
     def _write_target(cls, node):
         """The AST node holding the write target, or ``None`` if not a writer call.
 
-        Two spellings reach the same writer and both have to be seen. The direct
-        call passes the path first; the off-loop forms
-        (``asyncio.to_thread(_atomic_json_write, path, data)``,
-        ``functools.partial(_atomic_json_write, path, data)``) pass the WRITER
-        first and the path second. Matching only the direct form would miss
-        every channel saver in ``messaging.py``, which is the whole population
-        this guards.
+        The off-loop forms (``asyncio.to_thread(_atomic_json_write, path, data)``,
+        ``functools.partial(...)``) pass the path second; every channel saver in
+        ``messaging.py`` uses them.
         """
         called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
         if called == cls._WRITER and node.args:
@@ -1156,23 +1077,10 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
 class TestAutoUpdateToggleHoldsBothConfigLocks:
     """The auto-update toggle must exclude the LEGACY config writers too.
 
-    ``config.json`` has two writer generations that do not exclude each other.
-    ``update_config_locked`` takes the sidecar advisory flock, covering the CLI,
-    the boot refresh and a second gateway process. The legacy dashboard handlers
-    -- the core theme and settings PUTs, the agents endpoint, ``security.py``,
-    ``messaging.py``, ``mcp.py``, ``computer_use.py`` -- do their own
-    read-modify-write of the same file while holding ONLY the loop-side
-    ``_get_config_lock`` asyncio lock, which the flock does not exclude.
-
-    So a bare ``asyncio.to_thread(update_config_locked, ...)`` here is right about
-    the event loop and wrong about exclusion: a theme save landing between this
-    endpoint's read and its write commits from a snapshot taken before it and
-    silently reverts the flag the user just toggled. ``run_config_write`` is the
-    one entry point that holds both.
-
-    Probing the lock from INSIDE the worker is what makes this behavioural rather
-    than a shape assertion: it fails on the defect, not on the spelling of the
-    dispatch.
+    The sidecar flock does not exclude handlers that hold only ``_get_config_lock``,
+    so a bare ``asyncio.to_thread(update_config_locked, ...)`` lets a theme save
+    revert the toggle. ``run_config_write`` holds both; the lock is probed from inside
+    the worker.
     """
 
     class _Req(_OwnerRequest):

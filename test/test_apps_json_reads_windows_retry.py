@@ -2,11 +2,10 @@
 
 On Windows a read raises ``PermissionError`` (``WinError 32``) while a concurrent
 tmp-file-plus-rename writer holds the file open. Each reader below would fold that
-into "no data" (a key missing from ``list_keys``, an agent config read as absent, an
-app enabled with no crons) unless the read retries; each reads through
-``read_bytes_with_retry``, which retries that window, while a genuinely absent or
-damaged file still answers
-``None`` / ``[]``.
+into "no data" (a key missing from ``list_keys``, a stored value ``get`` reads as
+absent, an agent config read as absent, an app enabled with no crons) unless the
+read retries; each reads through ``read_bytes_with_retry``, which retries that
+window, while a genuinely absent or damaged file still answers ``None`` / ``[]``.
 """
 
 from __future__ import annotations
@@ -48,6 +47,14 @@ def test_digest_key_read_still_skips_a_damaged_file(windows, tmp_path: Path) -> 
     assert storage._read_digest_key(path) is None
 
 
+def test_storage_get_returns_the_stored_value(windows, tmp_path: Path) -> None:
+    storage = AppStorage("test-app", tmp_path)
+    storage.set("settings", {"theme": "dark"})
+    with read_sharing_violation(match="settings.json", times=2) as sim:
+        assert storage.get("settings") == {"theme": "dark"}
+    assert sim["n"] == 3
+
+
 def test_agent_config_read_returns_the_on_disk_object(windows, tmp_path: Path) -> None:
     path = tmp_path / "app--agent.json"
     path.write_text(json.dumps({"name": "app--agent", "model": "m"}), encoding="utf-8")
@@ -79,7 +86,7 @@ def test_cron_defs_read_still_answers_empty_for_a_damaged_file(
     assert bridges_crons.load_app_cron_defs("demo") == []
 
 
-# --- Official catalog caches -------------------------------------------------
+# Official catalog caches
 #
 # The store refreshes these caches through ``atomic_write`` with no lock, so two
 # store requests race every reader. A read folded into "no cache" makes

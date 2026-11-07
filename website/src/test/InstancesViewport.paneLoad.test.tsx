@@ -395,6 +395,40 @@ describe('InstancesViewport', () => {
     }
   })
 
+  it('puts every crew pane port in one ssh line, and not the dashboard port', async () => {
+    // One paste must fix every pane, not just the one that failed. A Fargate crew
+    // has no pane, so its port is left out. The dashboard port is left out too:
+    // the browser sees only the local end of the user's own forward.
+    const crew = (id: string, port: number, method: 'ssh' | 'ssm' | 'fargate') => ({
+      id, name: id, ssh_host: `${id}-alias`, remote_port: 7777, local_port: port, ttl: '20h', remote_bin: '',
+      connection_method: method,
+      status: { instance_id: id, state: 'connected' as const, local_port: port, remote_port: 7777 },
+    })
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [crew('cd-1', 7778, 'ssh'), crew('ft-1', 7790, 'fargate'), crew('cd-2', 7779, 'ssm')],
+      warm_set_cap: 5,
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      await act(async () => { await Promise.resolve() })
+      const notice = screen.getByTestId('instances-viewport-timeout-error')
+      expect(notice).toHaveTextContent('(ssh -L 7778:127.0.0.1:7778 -L 7779:127.0.0.1:7779 <gateway-host>)')
+      expect(notice).not.toHaveTextContent('7790')
+      expect(notice).not.toHaveTextContent(`-L ${window.location.port}:`)
+    } finally {
+      vi.useRealTimers()
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('keeps the existing timeout message when the port probe itself times out', async () => {
     // A probe that never answers proves nothing either way (a slow far end on
     // the SAME machine looks like this), so it must not claim a different machine.

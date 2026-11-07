@@ -752,6 +752,12 @@ class KiroPrerequisiteService:
 
         return bool(self._status.authenticated)
 
+    @property
+    def probe_timed_out(self) -> bool:
+        """Whether the latest probe timed out instead of answering. Never probes."""
+
+        return bool(self._status.probe_timed_out)
+
     async def login_verified(self, *, max_age_secs: float) -> bool:
         """Return the sign-in verdict, re-probing when it may be stale.
 

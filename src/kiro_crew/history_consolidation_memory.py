@@ -897,6 +897,7 @@ def _save_lessons(
     facets: "MemoryFacets | None" = None,
     key: str = "",
     commit_state: _RunCommitState | None = None,
+    changes_out: dict[str, int] | None = None,
 ) -> None:
     """Save extracted lessons from consolidation result.
 
@@ -933,6 +934,21 @@ def _save_lessons(
         )
         raw = raw[:max_lessons]
 
+    # Local, like this module's other late imports: a top-level import here would
+    # become a name the ``history_consolidation`` facade serves.
+    from kiro_crew.lesson_events import (
+        LESSON_SOURCE_CONSOLIDATION,
+        emit_lessons_changed,
+        lesson_write_action,
+    )
+
+    # Rows this pass changed, by kind, announced once it ends and only when the
+    # stores are this consolidator's own global handles: a silo's lessons are not
+    # what an app token's read returns (``kiro_crew.lesson_events``). The write
+    # child passes ``changes_out`` to collect them: it has no global handles and no
+    # observer, so the gateway announces what it reports back.
+    changes: dict[str, int] = changes_out if changes_out is not None else {}
+
     # Prefer vector store (dedup-aware) over JSONL
     if vector_store:
         count = 0
@@ -965,8 +981,15 @@ def _save_lessons(
                         publication.mark_committed()
                 if ok:
                     count += 1
+                    outcome_word = getattr(getattr(ok, "outcome", None), "value", "inserted")
+                    change = lesson_write_action(str(outcome_word), False)
+                    if change is not None:
+                        changes[change] = changes.get(change, 0) + 1
         if count:
             self._logger.info("Extracted %d lesson(s) from chat (vector store)", count)
+        if vector_store is getattr(self, "_vector_store", None):
+            for action, n in changes.items():
+                emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)
         return
 
     if not lesson_store:
@@ -1000,8 +1023,14 @@ def _save_lessons(
                     publication.mark_committed()
             if outcome != "refused":
                 count += 1
+                change = lesson_write_action(str(outcome), False)
+                if change is not None:
+                    changes[change] = changes.get(change, 0) + 1
     if count:
         self._logger.info("Extracted %d lesson(s) from chat", count)
+    if lesson_store is getattr(self, "_lesson_store", None):
+        for action, n in changes.items():
+            emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)
 
 
 def _write_structured_memory(
@@ -1015,6 +1044,7 @@ def _write_structured_memory(
     visible_keys: frozenset[str] | None = None,
     messages: list[dict] | None = None,
     commit_state: _RunCommitState | None = None,
+    changes_out: dict[str, int] | None = None,
 ) -> None:
     """Write semantic + episodic entries from consolidation result.
 
@@ -1060,6 +1090,9 @@ def _write_structured_memory(
     if isinstance(semantic_items, list):
         written = 0
         deleted = 0
+        # ``lesson.*`` rows this pass tombstoned, announced as ``lessons.changed``
+        # under the same default-store rule ``_save_lessons`` follows.
+        lessons_removed = 0
         skipped = 0
         refused = 0
         protected = 0
@@ -1138,6 +1171,8 @@ def _write_structured_memory(
                         )
                         if published:
                             deleted += 1
+                            if item["key"].startswith("lesson."):
+                                lessons_removed += 1
                         elif decision.checked_value_json is not None:
                             # The compare-and-delete lost: the row body moved
                             # between the guard's read and the UPDATE, so
@@ -1272,6 +1307,18 @@ def _write_structured_memory(
                 stale_skipped,
                 withheld,
             )
+        if lessons_removed:
+            # Local, like this module's other late imports (see ``_save_lessons``).
+            from kiro_crew.lesson_events import (
+                LESSON_REMOVED,
+                LESSON_SOURCE_CONSOLIDATION,
+                emit_lessons_changed,
+            )
+
+            if changes_out is not None:
+                changes_out[LESSON_REMOVED] = changes_out.get(LESSON_REMOVED, 0) + lessons_removed
+            if vector_store is getattr(self, "_vector_store", None):
+                emit_lessons_changed(LESSON_REMOVED, LESSON_SOURCE_CONSOLIDATION, lessons_removed)
 
     if routing.decisions:
         # Under the same hold as every other write of this pass: a switch turned

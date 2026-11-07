@@ -24,6 +24,12 @@ from kiro_crew.service.common import (
     system_restart_command_hint,
 )
 
+#: First line of the post-install hints. A service never opens a browser, so this
+#: is the only place a new user learns how to reach the dashboard. It names the
+#: command, not a URL: ``kirocrew token`` prints the link with the real port and a
+#: sign-in token, which a hard-coded ``http://localhost:5476`` would not.
+_OPEN_HINT = "   Open:   kirocrew token   (prints a sign-in link to the dashboard)"
+
 
 def _print_headless_auth_warning() -> None:
     """Surface a dropped API-key credential right after a successful install.
@@ -164,6 +170,7 @@ def install_service() -> int:
             print(f"   ⚠️ {linger_warning}")
         _print_headless_auth_warning()
         print()
+        print(_OPEN_HINT)
         print("   Status: kirocrew service status")
         print("   Logs:   kirocrew logs -f")
         print("   Remove: kirocrew service uninstall")
@@ -178,6 +185,7 @@ def install_service() -> int:
         print(f"   plist: {macos.PLIST_PATH}")
         _print_headless_auth_warning()
         print()
+        print(_OPEN_HINT)
         print("   Status: kirocrew service status")
         print(f"   Logs:   tail -f {macos.STDOUT_LOG}")
         print("   Remove: kirocrew service uninstall")

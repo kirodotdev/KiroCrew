@@ -224,7 +224,13 @@ export default function WorkerKitPane({
                 {done.approvals && ` ${i18nT('crewWorkerKit.done_approvals')}`}
               </span>
               {done.approvals && onOpenApprovals && (
-                <Btn onClick={onOpenApprovals} data-testid="worker-kit-open-approvals">
+                // The stock Btn is transparent with a `--border` edge, which
+                // vanishes on the translucent ok tint; an opaque fill reads at rest.
+                <Btn
+                  onClick={onOpenApprovals}
+                  className="border-border-strong bg-bg-elevated"
+                  data-testid="worker-kit-open-approvals"
+                >
                   {i18nT('crewWorkerKit.open_approvals')}
                 </Btn>
               )}

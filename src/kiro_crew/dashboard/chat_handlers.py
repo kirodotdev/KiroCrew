@@ -65,6 +65,7 @@ from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_close
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch
 from kiro_crew.dashboard.chat_api import app_admission as _owner_app_admission
 from kiro_crew.dashboard.chat_api import chat_send as _owner_chat_send
+from kiro_crew.dashboard.chat_api import conductor_close as _owner_conductor_close
 from kiro_crew.dashboard.chat_api import continue_turn as _owner_continue_turn
 from kiro_crew.dashboard.chat_api import followup_card as _owner_followup_card
 from kiro_crew.dashboard.chat_api import handover_drain as _owner_handover_drain
@@ -138,6 +139,10 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     mark_crew_steer,
     steer_is_auto,
     write_sse_or_abort,
+)
+from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
+    _close_managed,
+    _conductor_line,
 )
 from kiro_crew.dashboard.chat_api.continue_turn import (  # noqa: F401
     SlotContinueRefusal,
@@ -1325,6 +1330,7 @@ _facade_compose(
         _owner_agent_switch,
         _owner_app_admission,
         _owner_chat_send,
+        _owner_conductor_close,
         _owner_continue_turn,
         _owner_followup_card,
         _owner_handover_drain,

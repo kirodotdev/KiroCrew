@@ -36,6 +36,7 @@ from kiro_crew.mcp_discovery_probe_state import (
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
 from kiro_crew.mcp_gateway.secret_uri import remote_header_secret_ref_error
 from kiro_crew.mcp_grant import grant_observed
+from kiro_crew.mcp_grant_kas import kas_grant_observed
 
 logger = logging.getLogger("kiro_crew.mcp_discovery")
 
@@ -228,8 +229,26 @@ def _redirect_error(status: int, resp_headers: Mapping[str, str], url: str) -> s
     return f"{error}, redirects to {shown}"
 
 
-async def _runtime_grant_present(mcp_url: str, name: str) -> bool | None:
-    """Whether the kiro-cli runtime holds an OAuth grant for ``mcp_url``.
+async def _runtime_grant_present(
+    mcp_url: str, name: str, *, has_headers: bool = False
+) -> bool | None:
+    """Whether either runtime holds an OAuth grant for ``mcp_url``.
+
+    Two stores answer: kiro-cli's cache (below) and, for the KAS backend, the
+    grant vault Crew keeps for the engine (:mod:`kiro_crew.mcp_grant_kas`, checked
+    by entry name only). Either holding a grant is ``True``; ``False`` needs BOTH
+    to say definitively absent; anything else is ``None``. Both are consulted
+    whatever the configured backend: the backend can differ per agent and per
+    route, and a held grant is a fact about this machine either way. The KAS
+    lookup first resolves the fail-closed ``agent.kas_persist_mcp_sign_in`` setting
+    off the event loop. With persistence off it answers ``False`` without reading
+    the vault or emitting an SEL event: entries left there are not live grants.
+
+    ``has_headers``: a url entry with headers never reaches the engine as that url
+    with those headers (Crew strips them or turns the entry into a local bridge),
+    so the engine's key cannot be derived from the config. The KAS side then
+    answers ``None``, and such a row reads "Not verified" unless kiro-cli's cache
+    holds the grant.
 
     Three-valued on purpose. ``True``/``False`` are observations; **``None`` means
     the question could not be answered**, and the caller must not let that reach
@@ -270,11 +289,18 @@ async def _runtime_grant_present(mcp_url: str, name: str) -> bool | None:
     # the row into "Sign-in required". The mint's polling watcher keeps the
     # default, where only the acted-on TRUE is recorded.
     present = await grant_observed(mcp_url, audit_absence=True)
-    if present is None:
-        # ``name``, never ``mcp_url``: a user-added endpoint can carry a credential
-        # in its userinfo or query string, and this line lands in gateway.log.
-        logger.debug("MCP probe [%s]: grant presence unreadable", name)
-    return present
+    if present is True:
+        # Decided: the vault is not read, so no second SEL event is written.
+        return True
+    kas_present = None if has_headers else await kas_grant_observed(mcp_url)
+    if kas_present is True:
+        return True
+    if present is False and kas_present is False:
+        return False
+    # ``name``, never ``mcp_url``: a user-added endpoint can carry a credential
+    # in its userinfo or query string, and this line lands in gateway.log.
+    logger.debug("MCP probe [%s]: grant presence not verified", name)
+    return None
 
 
 async def _probe_remote(
@@ -397,7 +423,7 @@ async def _probe_remote(
                         # caller ACTS on.
                         if server.auth_challenge:
                             server.auth_grant_present = await _runtime_grant_present(
-                                server.url, server.name
+                                server.url, server.name, has_headers=bool(server.headers)
                             )
                     else:
                         server.status = "error"

@@ -84,6 +84,7 @@ pull_request
   |                     "Security Scope Review"  which legit ops a tightening refuses, blocking
   |-- sensitive-change-review.yml
   |                     "Sensitive Change Review"  reasoned review record on sensitive paths, advisory
+  |                                      (on pull_request_target, so it runs the default branch's copy)
   |-- codeql.yml        "CodeQL"  Analyze (<language>); replaces GitHub default setup
   |
   '-> pr-readiness.yml  "PR Readiness"  one commit status + one readiness: label
@@ -260,7 +261,8 @@ Three structural facts explain most of the rest:
   warning naming the PR on that run, never a red. `--pr <n>` answers the same
   question for any merged PR, exiting 1 on a bypass.
 - **A fork PR is aggregated like any other and can reach a passing readiness
-  state**; CodeQL is the one lane it cannot run. See [Fork PRs](#fork-prs).
+  state**; CodeQL is the one lane it cannot run. A fork PR into a non-default
+  base is the exception: it is held for a maintainer. See [Fork PRs](#fork-prs).
 
 Out-of-band lanes that never gate a PR:
 
@@ -490,12 +492,13 @@ branch protection stays the enforcement point for any required approval policy.
 
 From 2 December 2026 GitHub blocks `pull_request_target` in public repositories
 unless a repository Actions event policy allows it. That policy must
-allow it for four workflow files only: `pr-readiness.yml`,
-`fork-pr-description.yml`, `fork-workflow-guard.yml` and `fork-pr-label.yml`.
+allow it for these workflow files only: `pr-readiness.yml`,
+`fork-pr-description.yml`, `fork-workflow-guard.yml`, `fork-pr-label.yml` and
+`sensitive-change-review.yml`.
 Only a repository admin can set it up or change it, and Policy insights shows
 whether it would block any other run. A workflow outside the policy that uses
 the trigger is blocked rather than run, so
-`test/test_workflow_pull_request_target_pin.py` pins the same four and fails
+`test/test_workflow_pull_request_target_pin.py` pins the same list and fails
 when the set changes. Adding one takes both edits: the test's list in the PR,
 and the policy's workflow paths.
 
@@ -772,8 +775,12 @@ The plugin returns an empty collection report for files owned by another shard,
 before their collector imports them. It does not rewrite discovery into explicit
 file arguments, which would bypass `collect_ignore`. Within its owner, the
 ordinary Linux shard excludes only `ipv6_required` and the dedicated hosted lane runs
-those items; the macOS command passes no marker filter at all. Explicit reduced-scope targets keep their
-existing discovery semantics and are partitioned at the same file boundary.
+those items; the macOS command passes no marker filter at all. The reduced-scope
+list and the leaf-test corpus gates reach pytest as a file named by
+`--file-shard-targets=PATH`, never as arguments: discovery walks the configured
+roots as usual and skips every path that is not a listed file or a directory
+above one. Passed as arguments, pytest walks each file's directory once per
+argument, and the ~1,200 reduced-scope files took up to an hour to collect.
 Leaf-test corpus-gate passes load the file-sharding plugin (the same one as the
 full and reduced paths) so the ~814 gates are split across the matrix shards.
 Changed-file repetitions remain unsharded: each matrix job repeats every changed
@@ -924,7 +931,7 @@ These test preconditions do not promise production ordering under tied clocks.
 Test commands route only `ipv6_required` items to the hosted lane described above.
 This is one migration being validated, not eight already-proven shards
 or a rollout conditional on three green canaries.
-On CodeBuild the only remaining fan-out bound is the CodeBuild account concurrency (300 concurrent builds); `ci-runner-watchdog.yml` already treats saturating it as a known state.
+On CodeBuild the only remaining fan-out bound is the CodeBuild account concurrency, which is a per-compute-type quota rather than one account-wide number: each operating system and instance size (Linux or Windows, Medium or Large) has its own ceiling, so read the live quota in the fleet's account before reasoning against a number. Most routes draw on Linux/Medium; the routes that add `instance-size:large` (the `ci.yml` and `build.yml` resolvers and `codeql.yml`'s `analyze`) draw on Linux/Large. `ci-runner-watchdog.yml` already treats saturating it as a known state.
 
 The CI workflow requires this repository, a push, a merge-group event or an
 `opened`/`synchronize` same-repository PR event, and
@@ -962,9 +969,9 @@ off it -- on the `kirocrew-runners` group in this repository, and on
 `ubuntu-latest` in a fork, which cannot reach that group.
 Their permissions and triggers are unchanged. `sast` alone changed its steps:
 it dropped its job container and installs the pinned Semgrep on the runner.
-Sensitive Change Review uses the fleet on every PR and review event, not just
-`opened`/`synchronize`: it checks out only default-branch scripts and runs no
-PR code, so the head-code exposure above does not apply.
+Sensitive Change Review uses the fleet on every `pull_request_target` event,
+not just `opened`/`synchronize`: it checks out only default-branch scripts and
+runs no PR code, so the head-code exposure above does not apply.
 PR Readiness uses the same reasoning on its `pull_request_target` runs, about
 2,500 a day, with the fork check on `github.event.pull_request.head.repo.full_name`.
 Its `workflow_run` runs stay hosted: they carry the `in_progress` merge-guard
@@ -1114,7 +1121,6 @@ The sites that target the group with `group:` are, by workflow:
   `validate` and `publish`
 - the same-repo review lanes: `codex-review`, `claude-review`,
   `first-principles-review`, `design-review`, `ux-review`
-- `codeql.yml`
 - `docker-smoke.yml`, both jobs
 - `release.yml`: `version`, `resolve-promotion`, `stable-gate`,
   `github-release`, `record-promotion`
@@ -1164,7 +1170,7 @@ why they took the `group:` form.
 
 **This test governs what may be ADDED; it does not describe what the group
 already holds.** Several of the sites listed above can be started by a
-personal fork: the same-repo review lanes, `codeql.yml`'s `analyze` and
+personal fork: the same-repo review lanes and
 both `docker-smoke.yml` jobs all fire on `pull_request` with no head-repository
 check, and `release.yml`'s jobs start on a `v*` tag push, which a fork
 owner can make in their own fork. None of them was admitted under this test,
@@ -1193,18 +1199,50 @@ obtains the same short-lived, Bedrock-only OIDC credential it obtained on
 `secrets.AWS_BEDROCK_ROLE_ARN` it used there; moving the job does not widen,
 narrow or re-scope that credential.
 
-**Why CodeQL.** It is the largest single editable `runs-on` in the repository,
-and it already excludes forks through the `Analyze` job's own `if`. Its load is
-also permanent for an unrelated reason: GitHub's CodeQL default setup, which
-this workflow replaced, is off, so there is no second scan to fall back to.
+**Why CodeQL is not on this list.** It is the largest single editable `runs-on`
+in the repository, and its load is permanent: GitHub's CodeQL default setup,
+which this workflow replaced, is off, so there is no second scan to fall back
+to. That size is why it takes the CodeBuild fleet on an admitted actor's push
+or `opened`/`synchronize` pull request instead, and the fleet-fallback label
+below on every other event -- the weekly schedule and a manual dispatch carry no
+fleet-eligible action, and the schedule carries no live collaborator actor for
+the AWS webhook to admit either. The label reaches the same larger-runner
+definition the `group:` form reached, and names it specifically where the group
+would dispatch to any member. It also closes this lane's share of the
+fork-startable gap described above: in a personal fork the expression degrades
+to `ubuntu-latest` rather than queueing against a group that fork cannot reach.
 
-**Every review lane and CodeQL moved here can hold merges, so treat any stuck
-run as an immediate rollback.** (The label-routed fallbacks below hold no merge,
-apart from `pr-readiness.yml`'s own `readiness` job: the rest are not polled by
-`pr-readiness.yml` or `merge-queue-readiness.yml`, and none fires on
-`pull_request` or `merge_group`. The rollback rule still covers them. The
-`readiness` job does hold every merge -- see **PR Readiness reaches the group by
-LABEL** below, and roll that one back first.)
+**The fleet leg takes `instance-size:large`, because the default compute does
+not hold this scan.** A CodeBuild `BUILD_GENERAL1_MEDIUM` is 4 vCPU and 7 GB,
+and the `javascript-typescript` extractor does not fit in that: on the 16 GB
+runner this lane leaves, its own log reports `Memory for TypeScript process:
+7284 MB, and 400 MB reserve`, so one process sizes itself above a MEDIUM
+container's entire 7,168 MB. The `codeql-action` scales that figure from
+detected memory rather than failing outright, but the TypeScript compiler's
+heap requirement scales with program size, not with what the host has, so a
+MEDIUM leg would be expected to die during extraction with no query error.
+`instance-size:large` is 8 vCPU and 15 GB: essentially the memory this lane has
+today, and twice the CPU. The size also matters for wall time: at the default
+size the `python` leg ran about three and a half times as long as on the
+hosted group, over half of the job's `timeout-minutes: 60`.
+
+The size suffix is the same one `ci.yml` and `build.yml` emit from their
+resolvers, and `codeql.yml` is the first INLINE routing constant to carry it.
+`test_ci_fleet_routing_expression_parity.py` derives
+`_CANONICAL_ROUTING_EXPR_LARGE` from `_CANONICAL_ROUTING_EXPR` by substituting
+the label alone, so the two forms cannot differ in anything but the suffix and
+a change to the shared policy reaches both. Its three builds per run draw on
+the Linux/Large ceiling it shares with the `ci.yml` and `build.yml` large legs,
+not on the Linux/Medium one most routed lanes use.
+
+**Every review lane moved here can hold merges, so treat any stuck run as an
+immediate rollback.** (Two of the label-routed fallbacks below hold one as well:
+`pr-readiness.yml`'s own `readiness` job, and `codeql.yml`'s `analyze`, which
+sits in the per-lane loop named next. The rest are in neither that loop nor
+`merge-queue-readiness.yml`'s polled set, so their queueing holds no merge; the
+rollback rule still covers them. The `readiness` job holds every merge -- see
+**PR Readiness reaches the group by LABEL** below, and roll that one back
+first.)
 `pr-readiness.yml` resolves them all through one per-lane loop:
 `claude-review.yml`, `codex-review.yml`, `design-review.yml`, `ux-review.yml`,
 `first-principles-review.yml` and CodeQL sit in `workflow_specs` on the
@@ -1218,8 +1256,8 @@ CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
 once rather than waiting to see whether the queue clears -- for any
-group-targeted site, not just CodeQL. The fleet-fallback label sites below are
-covered by the same rule but have their own recipe, since a whole-line
+group-targeted site. The fleet-fallback label sites below, CodeQL among them,
+are covered by the same rule but have their own recipe, since a whole-line
 replacement there would take the fleet route out with it; the PR-time label
 sites take the plain replacement, since they carry no fleet route to preserve;
 and among the `ci.yml` label sites, the single-OS lanes take the plain
@@ -1347,10 +1385,12 @@ measure rather than assume.** The fleet branch admits the `pull_request` actions
 `opened` and `synchronize` only, and these workflows subscribe to more than
 that: `code-review.yml` adds `reopened` and `edited`, `pr-policy.yml` adds
 `reopened`, `edited`, `labeled` and `unlabeled`, `dependency-review.yml` adds
-`reopened`, `labeled` and `unlabeled`, and `macos-on-demand.yml` adds `reopened`
-and `labeled`. So every label a bot adds or removes, and every description edit,
-on an ordinary same-repository pull request from a listed actor misses the fleet
-and lands here. Measured over one 6-hour window on the two workflows carrying
+`reopened`, `labeled` and `unlabeled`, `macos-on-demand.yml` adds `reopened`
+and `labeled`, and `codeql.yml` adds `reopened` and `ready_for_review`. So every
+label a bot adds or removes, every description edit, and every draft marked
+ready for review, on an ordinary same-repository pull request from a listed
+actor, misses the fleet and lands here. Measured over one 6-hour window on the
+two workflows carrying
 most of it, 317 of 357 such jobs (88%) were same-repository runs on a
 non-admitted action and only 40 (11%) were fork pull requests. A merge group
 queued by an unlisted actor lands here too.
@@ -2894,7 +2934,13 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   save the description, no push), and the step writes the full steps to the job
   summary. Next, on the merge-base diff, it requires a reader list on take-away
   diffs (`.github/scripts/take_away_check.py`, skipped for dependabot); see
-  [take-away-changes.md](../system-specs/common/take-away-changes.md). Last, a
+  [take-away-changes.md](../system-specs/common/take-away-changes.md). A change to
+the wheel copy of an app `src/kiro_crew/apps/adoption-pins.json` pins
+(`apps/builtins/<dir>/`, `website/src/apps/<name>/`; deletions and test files exempt)
+must carry an `App repo: <owner>/<repo>@<sha>` or `App repo: <owner>/<repo>#<PR>`
+line naming the app repository's matching change, because adopted hosts never run
+the wheel copy (`.github/scripts/adopted_wheel_copy_check.py`, run from the base
+ref; see app-kit-platform.md § Former built-in adoption). Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other
   places with the same defect (`.github/scripts/sibling_list_check.py`, run from the
   base ref so a branch cannot weaken it; shape and path existence only, never
@@ -3193,9 +3239,11 @@ mislabelled form reached `BLOCK`; a pin deleted without a word slipped past as
 earlier ... pill spec" plus its pin tests, said nothing, and drew a soft verdict).
 
 **Each finding is stated once.** The lane's output is the verdict header, one bold
-reason (one to three sentences) that opens with the problem, the collapsed
-inventory, an optional `### Notes` list (at most three bullets, never read by the
-gate) and -- on `BLOCK` only -- `### Blockers`. Every Blocker carries a `Trigger:`
+reason (one to three sentences) that opens with the problem, an optional
+`Not checked:` line (its own paragraph, not a finding) naming a premise the
+reviewer could not read, the collapsed inventory, an optional `### Notes` list (at
+most three bullets, never read by the gate) and -- on `BLOCK` only --
+`### Blockers`. Every Blocker carries a `Trigger:`
 line (the situation that occurs in practice), an `Outcome:` line (the observable
 cost carried), a `Subtraction:` line where one exists and its own `Clears when:`
 line last (the kirocrew-prepare-pr extractor reads from `Clears when:` to the end
@@ -3334,10 +3382,21 @@ The markers are the **only** gate:
   header line. Any other word reads as no verdict, and a `BLOCK` with no `Trigger:`
   and no `Outcome:` line is published as `PASS`.
 
-A missing reviewed-marker for the current head fails the gate closed, because a
-no-output review must not look clean. A BLOCKING-labelled finding without the
-`[BLOCK-MERGE]` marker is only a non-gating **warning**, since a coherence
-check on that pairing mis-fires whenever the model quotes prior text.
+A missing reviewed-marker for the current head fails the Opus and GPT gates
+closed, because a no-output review must not look clean. A BLOCKING-labelled
+finding without the `[BLOCK-MERGE]` marker is only a non-gating **warning**, since
+a coherence check on that pairing mis-fires whenever the model quotes prior text.
+
+The whole-design lanes (Design, UX and First Principles, same-repo and fork) take
+a verdict only next to the current head's `[<LANE>-REVIEWED] <sha>` marker. With
+no marker, or another head's, every verdict reads as `UNKNOWN`, `BLOCK` included:
+the lane reports the review as incomplete (a warning on the same-repo status step,
+a neutral check-run on a fork) and does not fail. An unverified `BLOCK` is
+deliberately not kept. The guard cannot tell a marker lost to truncation from one
+copied out of an earlier run, so keeping it would also honour a `BLOCK` earned on
+other code. Asking for the marker first would not help on its own: each lane cuts
+everything above the verdict header before the guard reads it. Pinned by
+`TestAnUnverifiedBlockIsNotHonoured`.
 
 The Opus discovery pass has its own marker, `[OPUS-DISCOVERY] <sha>`, and the
 `Capture discovery candidates` step fails closed when it is absent, before
@@ -4162,17 +4221,23 @@ undo. Each answer needs at least three words. Either record counts:
 - **The PR author's comment.** The author has write access, posts the filled
   template as a PR comment, and names the current head SHA in it (the sticky
   comment pre-fills a `Head commit:` line). `sensitive-change-review-comment.yml`
-  fires on `issue_comment`, so it runs from the default branch, and re-runs the
-  newest Sensitive Change Review run for that head. The re-run reads the comment
-  and turns the check green with no push and no approver.
+  fires on `issue_comment` and re-runs the newest Sensitive Change Review run
+  for that head. The re-run reads the comment and turns the check green with no
+  push and no approver.
 - **A reviewer's approval.** A person with write access, not the author,
   approves the current head with the template in the review body.
+  `sensitive-change-review-approval.yml` fires on `pull_request_review` and
+  calls the comment workflow, which re-runs the check.
 
 Bots, another user's comment, and a comment or approval for an older commit do
 not count, and there is no waiver label. A new push resets the check. Merging
 still needs a second person's approval: the `main` ruleset enforces that, not
-this gate. CI never runs the sandbox here; it only checks the text. The checker
-always runs from the default branch, so a PR cannot weaken it.
+this gate. CI never runs the sandbox here; it only checks the text. The
+workflow runs on `pull_request_target`, so both it and its checker come from
+the default branch, and a PR that edits either cannot change what that run
+decides. A re-run executes that same default-branch run, whichever event asked
+for it. Only that run is the verdict: a PR can still add a workflow of its own
+that posts a check under the same name.
 
 A fork PR that touches a sensitive path is refused, whatever its approvals: a
 maintainer takes it over on a branch of this repository, credits the author
@@ -4181,10 +4246,10 @@ same-repository PR the gate keeps one sticky comment (by `github-actions[bot]`,
 marked `<!-- sensitive-change-review -->`) listing the sensitive files and the
 template to paste. That comment is why the job holds `pull-requests: write`.
 
-**Advisory for now.** `PR Readiness` does not read it yet. Enrolling it waits on
-the workflow itself running from default-branch context
-([#16870](https://github.com/kirodotdev/KiroCrew/issues/16870)); until then a PR
-can edit the workflow file to skip the check.
+**Advisory for now.** `PR Readiness` does not read it yet; enrolling it is the
+rest of [#16870](https://github.com/kirodotdev/KiroCrew/issues/16870). The
+enrolled lane has to read the `pull_request_target` run of
+`sensitive-change-review.yml`, never a check by its name.
 
 ## `pr-readiness.yml`: the aggregator
 
@@ -4198,9 +4263,15 @@ status plus one `readiness:` label**.
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
-  `branches: [main]` filter, so it sits in the same stacked-PR carve-out: on a PR
-  whose base is not the default branch it never starts, and a monitored lane that
-  reads `(not started)` would freeze the verdict at pending forever.
+  `branches: [main]` filter, so it sits in the same stacked-PR carve-out. The
+  aggregator judges that filter against the native-stack trunk (REST
+  `stack.base.ref`) when the PR is in a GitHub-native stack, and against the PR's
+  own base otherwise. GitHub runs the trunk's `pull_request` workflows on every PR
+  in a native stack, so a native stack on the default branch counts CI, Fast Gate,
+  Build and Internal Content Scan. A hand-made stack (base set to a feature branch,
+  no native stack) never starts them, so the aggregator skips them: a monitored
+  lane that reads `(not started)` would freeze the verdict at pending forever.
+  CodeQL does not follow the stack and stays judged against the PR's own base.
 - **Additionally required on a same-repo PR:** CodeQL, Opus 5.5 Review, GPT 6.1
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
@@ -4263,11 +4334,10 @@ status plus one `readiness:` label**.
   reviewer re-reviews: here the push is the author's answer. A review list it
   cannot read is `pending`, never red. A review reaches readiness on two paths.
   The fast one: a submitted, edited or dismissed review starts a Sensitive
-  Change Review run, and readiness lists that workflow for its
-  `pull_request_review` runs alone (the job gate skips its `pull_request`
-  runs). The readiness run its `in_progress` event starts reads the review
-  either way: if the Sensitive Change Review run is still going it holds the
-  verdict at `pending`, and that run's completion is check evidence on which
+  Change Review (approval) run, and readiness lists that workflow, which
+  runs on nothing else. The readiness run its `in_progress` event starts reads
+  the review either way: if that run is still going it holds the verdict at
+  `pending`, and that run's completion is check evidence on which
   the sweep recomputes; if it has already completed the hold writes nothing and
   the same readiness run goes on to the full evaluation, which reads the
   reviews. The fallback, for a review whose run never starts and a readiness
@@ -4346,6 +4416,22 @@ status plus one `readiness:` label**.
   many bodies has this slot held — and pays for the bodies themselves only when
   that count exceeds one, because a slot holding one body has nothing that could
   have been superseded. An unreadable count is not zero.
+- **A body the history lost reads as a block, never as clean.** GitHub
+  documents two ways a body leaves a comment's edit history, and both stay
+  visible in it: a revision the author or a writer deleted keeps its entry and
+  time but loses its body (`deletedAt` set or `diff` null), and once a history
+  holds 100 entries the edits between the original and the newest 99 may have
+  been removed. The reader counts each loss as a block for the head under review,
+  dated at its own entry (the cap's gap at the oldest entry kept after the
+  original), so `/ai-review override <lane> <head>` clears it like any replaced
+  block. A loss is excused only when a later body is this lane's verdict for
+  another head (stamped for that head and not for this one), because it then
+  predates this head. Two residuals are accepted external dependencies: an
+  earlier head's verdict that lands after this head's (the PR's head returned to
+  that sha, or a run landed late), where a lost block sits behind it and reads
+  clean, and any loss GitHub does not document. The readiness failure text still
+  says "replaced sample" for both causes; the gate's logged per-lane JSON tells
+  them apart, with `cause: lost-body` on the lane and `lost: true` on the sample.
 - **A sanctioned clear is read where a model cannot write, and only on the one
   lane that has one.** Adjudication clears a GPT block by rewriting
   `[BLOCK-MERGE] <head>` to `[BLOCK-MERGE-DOWNGRADED] <head>`; `/ai-review
@@ -4464,11 +4550,11 @@ Two subtleties:
   every branch of the `if:` below its leading non-`workflow_run` clause -- which the key
   omits only because the `format()` branch that clause would guard is unreachable for
   another event. Copying the attempt clause alone looks equivalent and is a defect: the
-  gate admits `dynamic` runs and Sensitive Change Review `pull_request_review` runs on a
-  FIRST attempt, so an attempt-only segment labels those `noop` and parks an admitted hold
-  in a cancelling group alongside the dispatches being gated. The next one cancels it and
-  then skips, publishing nothing, and the previous verdict -- possibly a success -- stands
-  until the sweep recomputes. Drift in either direction reopens the window, so
+  gate admits `dynamic` runs and Sensitive Change Review (approval) `pull_request_review`
+  runs on a FIRST attempt, so an attempt-only segment labels those `noop` and parks an
+  admitted hold in a cancelling group alongside the dispatches being gated. The next one
+  cancels it and then skips, publishing nothing, and the previous verdict -- possibly a
+  success -- stands until the sweep recomputes. Drift in either direction reopens the window, so
   `test_ai_review_workflows.py` compares the two expressions literally AND checks they
   agree on every row of the admission table.
 
@@ -4574,6 +4660,28 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **An edit waits for the lanes it restarts.** An edit (title, body or base) starts a
+  new run of every monitored workflow-run lane that triggers on `edited`
+  (`edited_lanes`, which a test pins to those triggers), and the `edited` readiness
+  run can read the runs page before GitHub has created those runs. On that run, such
+  a lane whose newest run was created before the event's `pull_request.updated_at`
+  reads `(edit re-run not started)` and the verdict stays pending; the new run's own
+  events and the sweep publish the real verdict. A runner-delayed `edited` run finds
+  the new run, created at or after the edit, so it keeps the verdict it reached, the
+  property the conditional sentinel above protects. One residual, in the safe
+  direction: GitHub starts no `pull_request` run while the PR has a merge conflict,
+  so an edit then leaves the verdict pending until the push that resolves the
+  conflict or a re-run of that lane.
+- **A lane that cannot start on this head says so, and still waits** (#5957). A lane
+  added to the monitored list after a head was pushed has no run on that head, and
+  only a new pull request event starts one: a `pull_request` run takes its workflow
+  from that event's merge commit. Passing it would let `passed` stand in for a review
+  that never ran, so it stays `pending`. But when another lane's run on the head has
+  completed, the events so far have fanned out without it, so it reads
+  `(not started on this head; push or reopen)` instead of `(not started)` and the step
+  summary names the way out: push a commit, or close and reopen the PR. The signal
+  comes from the runs read already made, and is not used on a `pull_request_target`
+  open, synchronize, reopen or edit, the events that start lanes.
 - **It reads each collection once, not once per lane.** All monitored workflow runs
   come from one paginated `actions/runs?event=pull_request&head_sha=` read (one run
   per `pull_request` workflow per head), selected per lane by
@@ -4584,8 +4692,8 @@ Two subtleties:
   `GITHUB_TOKEN` (15,000 requests an hour, the Enterprise Cloud ceiling). When that
   pool runs dry every AI lane fails closed and this job logs `API rate limit exceeded
   for installation`. The one cost of the
-  consolidated read is that a renamed monitored workflow file reads as
-  `(not started)` instead of a loud 404; `test_pr_readiness_evaluate.py` pins every
+  consolidated read is that a renamed monitored workflow file reads as a lane
+  that never starts instead of a loud 404; `test_pr_readiness_evaluate.py` pins every
   monitored file to `.github/workflows/`, so the rename fails its own PR instead.
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
@@ -4788,7 +4896,10 @@ rerun on an unchanged head leaves the previous attempt's row in place, so a
 name-only read could let a sibling PR's clean verdict — or a stale previous-attempt
 row — answer for this PR. Readiness derives the expected id from the newest run of
 the triggering workflow (`Fast Gate`); when no matching row exists yet the lane
-reads as pending, which holds the merge rather than borrowing an answer. A
+reads as pending, which holds the merge rather than borrowing an answer. The read
+passes `filter=all`: the endpoint's default can omit an older completed row of a
+name (measured in #10116), so a sibling PR's newer verdict on the shared SHA can
+hide this PR's own row and hold the lane pending. A
 human-override rerun (`gh api .../runs/<id>/rerun`) re-executes a lane's run
 directly without Fast Gate re-running, so the trigger-bound id stays identical
 between the stale failed attempt and the fresh rerun -- readiness resolves that by
@@ -4799,14 +4910,24 @@ is `workflow_run`-triggered, so it is barred from the trigger allowlist and its
 payload could not resolve a pull request anyway. The evaluation therefore reads
 check-runs at whatever state the triggering lane's event found them in, and a rerun
 whose fresh "Open check-run" row lands after that read still shows its OLD completed
-verdict until the next event. `pr-readiness-sweep.yml` mode 2 closes that within one
-sweep tick (~5 minutes, plus the 180-second publish lag) on the check evidence. The `WR_NAME = "Fork $cname"` branch in the evaluate
-step was written for this race and has never been reachable; its comment records that.
+verdict until the next evaluation. Before any `success` the publish step re-reads
+those rows, so a stale success also needs the row to land after that second read. At
+the latest the stale verdict lasts until the rerun's own completion: that is check
+evidence newer than the verdict, so `pr-readiness-sweep.yml` re-fires the recompute
+within one sweep tick (~5 minutes), mode 2 for a stale failure and mode 4 for a stale
+success the rerun turns red. That window is the accepted bound on this race.
 CodeQL is
 the single ineligible lane, reported as a non-blocking "Not eligible" note rather
 than a blocker. Readiness therefore says the same thing on a fork as anywhere else: the
 eligible automated validation passed for this revision. Human approval and branch
 protection remain separate gates.
+
+**A fork PR into a non-default base is held for a maintainer.** `Fast Gate` only
+runs on PRs to `main`, so on a fork PR into a release branch no `fork-*` lane
+starts. Readiness lists each lane that never ran as skipped and publishes the
+terminal `failure` `fork PR into a non-default base needs maintainer review`, which
+the self-heal sweep does not re-fire on age. Nothing in the product clears the
+hold; a maintainer reviews the PR and decides the merge.
 
 **The `fork-*` pipeline gives fork PRs AI review anyway, in two stages.**
 `fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml`,
@@ -4949,6 +5070,31 @@ exemption is an exact-shape allowlist (a `.txt` leaf directly under
 `coverage-baselines/`, or a top-level `*-baseline.txt`), not a directory prefix, so
 `.github/coverage-baselines/x/evil.yml` or `.github/workflows/foo-baseline.txt` are
 still caught.
+
+### `pull_request_target`: five workflows, allowed by name
+
+GitHub blocks the `pull_request_target` trigger by default in public repositories
+(brownouts on 2026-11-09 and 2026-11-16, enforced from 2026-12-02) unless a
+repository Actions policy allows it for named workflow paths. Five workflows use it,
+each because it needs the base context (a write token for a fork PR, or the
+default branch's copy of the workflow), and none of them checks out or runs PR
+code:
+
+| Workflow | Why it needs the base context |
+| --- | --- |
+| `pr-readiness.yml` | Publishes the `readiness` commit status branch protection requires. |
+| `fork-pr-description.yml` | Posts the description check-run on a fork PR. |
+| `fork-workflow-guard.yml` | Re-evaluates after the `allow-fork-workflow-change` label. |
+| `fork-pr-label.yml` | Adds the `fork` label at once; the hourly sweep backstops it. |
+| `sensitive-change-review.yml` | Runs the gate's file and checker from the default branch, so a PR cannot edit its own gate. |
+
+The repository Actions policy allows `pull_request_target` for exactly these five
+paths. Changing it needs a repository admin, and Policy insights should show nothing
+else blocked. `test/test_pull_request_target_allowlist.py` pins the same set: a new
+workflow that adds the trigger fails CI instead of being blocked silently on GitHub,
+and dropping one fails until it leaves both the test and the policy. Prefer
+`pull_request` or `workflow_run` for anything new. The test also fails when any of the
+five checks out the PR head, since that job holds a write token.
 
 ## `dependency-vulnerability.yml`: the production npm gate
 

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import PortabilityTab, { IMPORT_RESULT_KEY, chatImportLines, importedItemCount, keptSettingsFiles, refusalText, settingsFileLabel, refusedItems, unbundledTemplates } from './PortabilityTab'
 import { __resetUiPrefsSyncForTests, resumeUiPrefsSync } from '../../lib/uiPrefs'
+import { i18nT } from '../../i18n/t'
+import { confirmAction } from '../../test/confirmAction'
 
 // Spied, not replaced: the tab must hand the sync back exactly when it does not
 // reload, and the real pause/adopt behaviour still runs underneath.
@@ -131,7 +133,7 @@ describe('PortabilityTab template warnings', () => {
     render(<PortabilityTab />)
     fireEvent.click(screen.getByRole('button', { name: /download export/i }))
     const warning = await screen.findByTestId('portability-export-warning')
-    expect(warning.textContent).toContain('reviewer, writer, 3 more')
+    expect(warning.textContent).toContain('reviewer, writer, and 3 more')
     expect(warning.textContent).not.toContain('+3')
     expect(screen.getByText('Download started.')).toBeTruthy()
   })
@@ -351,7 +353,7 @@ describe('PortabilityTab restoring browser settings', () => {
     expect(screen.getByTestId('portability-import-refused').textContent)
       .toContain('Some items could not be imported and were left unchanged: ui-prefs.')
     expect(keptLine.textContent).toBe(
-      "This install kept its own agent and gateway settings, local settings overrides, notification settings. "
+      "This install kept its own agent and gateway settings, local settings overrides, and notification settings. "
       + "To use the archive's instead, change Merge to Replace next to Choose file, then import again. "
       + "Replace backs up this install first, then overwrites its settings with the archive's.",
     )
@@ -526,5 +528,73 @@ describe('PortabilityTab chat history', () => {
     fireEvent.click(importButton)
     const line = await screen.findByTestId('portability-import-chats')
     expect(line.textContent).toBe('Chats added: 2. Already on this install: 1.')
+  })
+})
+
+describe('PortabilityTab replace-import confirmation', () => {
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    __resetUiPrefsSyncForTests()
+  })
+
+  async function askToReplace() {
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('preview')
+        ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
+        : { ok: true, summary: { items: ['full replace'] } },
+    ), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<PortabilityTab />)
+    const input = screen.getByLabelText(/choose import file/i)
+    const file = new File(['PK'], 'original.zip')
+    fireEvent.change(input, { target: { files: [file] } })
+    const importButton = screen.getByRole('button', { name: /^import$/i })
+    await waitFor(() => expect(importButton).toBeEnabled())
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Mode' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Replace', exact: true }))
+    fireEvent.click(importButton)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveAccessibleName('Import')
+    const body = within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'), { selector: 'p' })
+    expect(body).toHaveStyle({ overflowWrap: 'anywhere' })
+    return { fetchMock, dialog, input, file, view }
+  }
+
+  it('does not import after cancellation', async () => {
+    const { fetchMock } = await askToReplace()
+    await confirmAction('Cancel')
+    expect(fetchMock.mock.calls.some(([url]) => url.includes('/import'))).toBe(false)
+  })
+
+  it('imports the original file after the chosen file changes during confirmation', async () => {
+    const { fetchMock, input, file } = await askToReplace()
+    fireEvent.change(input, { target: { files: [new File(['NEW'], 'replacement.zip')] } })
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url.includes('/preview'))).toHaveLength(2))
+    await confirmAction('Import')
+    await screen.findByText(/Import complete/)
+    const request = fetchMock.mock.calls.find(([url]) => url.includes('/import'))
+    expect(request?.[0]).toBe('/api/portability/import?mode=replace')
+    const options = (request as unknown as [string, RequestInit])[1]
+    expect((options.body as FormData).get('file')).toBe(file)
+  })
+
+  it('imports with the mode and memory selection captured before confirmation', async () => {
+    const { fetchMock } = await askToReplace()
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Mode' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Merge', exact: true }))
+    const memoryOnly = screen.getByRole('checkbox', { name: i18nT('pages.overview.portabilityTab.import_memory_only') })
+    await waitFor(() => expect(memoryOnly).toBeEnabled())
+    fireEvent.click(memoryOnly)
+    expect(memoryOnly).toBeChecked()
+    await confirmAction('Import')
+    await screen.findByText(/Import complete/)
+    expect(fetchMock.mock.calls.find(([url]) => url.includes('/import'))?.[0]).toBe('/api/portability/import?mode=replace')
+  })
+
+  it('cancels a pending replace import when its owner unmounts', async () => {
+    const { fetchMock, view } = await askToReplace()
+    view.unmount()
+    expect(fetchMock.mock.calls.some(([url]) => url.includes('/import'))).toBe(false)
   })
 })

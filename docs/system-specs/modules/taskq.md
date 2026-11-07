@@ -366,7 +366,8 @@ run -- write-before-ack, with the write off-loop. The same shape serves every
 other accept path: `continue_conversation_async` (the follow-up watcher
 and `POST /api/spawn/{id}/continue`; the sync `continue_conversation` shares its
 prelude, `_continue_prelude`), the app `SpawnSDK` (`apps/spawn_sdk.py`,
-which awaits `spawn_async` when the manager has it), and the CHANNEL keyword
+which awaits `spawn_async` when the manager has it, and
+`continue_conversation_async` for `ctx.spawn.continue_`), and the CHANNEL keyword
 spawn door -- `spawn <task>` / `bg <task>` from Slack and `/spawn <task>` from
 Telegram, which reach `messaging.commands.spawn_task_reply`. That helper and
 `spawn_command_reply` are `async` for exactly this reason, and
@@ -618,7 +619,9 @@ stop's record and is refused. A release refused
 because the row moved on needs no retry. The
 registration and terminal writes (`taskq_mark`, `taskq_fail`, `taskq_settle`'s
 `finish`) are POSTED to the writer thread through `_post_store_write` /
-`store.run` -- the single worker keeps them in submission order, so
+`store.run`. `taskq_settle` builds the row's `result_ref` inside that posted job
+too, because `agent_dir_for_display` resolves the run directory, a filesystem
+call that must not run on the loop. The single worker keeps them in submission order, so
 `admitted -> starting` (written awaited by the off-loop claimer, posted by the
 inline one) lands before the run's later `running`, and a `starting`
 that did not land at all is replayed by that later mark's own store phase
@@ -1101,7 +1104,9 @@ Metrics: a lane key is a session key and so never a metric attribute (the
 data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-lane
 `queued` / `running` / `waiting` / `weight`, the scheduler credit, and the
 `CapacityView` (`cap_total`, `roots_cap`, `running`, `child_reserve`,
-`reserve_active`, `waiting_parents`, `lifted_from`). A closed
+`reserve_active`, `waiting_parents`, `lifted_from`). A live run counts once:
+`waiting` when it has released its slot, else `running`. Its resume entry in the
+window (`entry_is_resident_resume`) is not also counted as `queued`. A closed
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to
 the health sampler.
 
@@ -1310,11 +1315,11 @@ the record on disk is the identity.
 `WaitLedger` (store-backed, stateless): `enter` (`running → state`, same
 generation -- only correct behind a LANDED `running` write, which is why
 `yield_slot` posts its `enter_wait` onto the same writer thread as the mark
-rather than hoping about timing), `wake` (`→ running`, generation+1, lease
-refreshed -- the
-re-admission fence: a callback from the wait period carries the old generation
-and is `stale_result`), `park` (`→ retry_wait`, the one write that ends the
-residency charge), `fail`, `on_child_terminal`, `cancel_tree` (children first),
+rather than hoping about timing), `wake` (generation+1 -- the re-admission
+fence: a callback from the wait period carries the old generation and is
+`stale_result`; the row lands in `retry_wait`, unleased and claimable at once,
+or with `resident=True` in `running` under a fresh lease), `park`
+(`→ retry_wait`, the one write that ends the residency charge), `fail`, `on_child_terminal`, `cancel_tree` (children first),
 `expire` (deadlines → `failed`), `signal`, `rebuild` (boot: wake parents whose
 awaited children are all terminal, cancel non-terminal children of a terminal
 parent -- `orphaned_children`, fail past deadlines; idempotent). `store.cancel`
@@ -1331,8 +1336,8 @@ half too -- a non-waiting row is refused); `park` and `fail` are the two whose
 refusal half is only reachable through the ledger, since the deadline sweep and
 `on_child_terminal` call them with no generation at all.
 
-**Re-admission never bypasses admission.** A wake writes `running` in the
-store but the run holds NO slot until the pump pops its `_resume_id` entry
+**Re-admission never bypasses admission.** A woken run holds NO slot, and its
+row does not reach `running`, until the pump pops its `_resume_id` entry
 (`admission.request_resume` / `resume_grant`): capacity and the stagger apply,
 so a dependency recovering for 500 waiting trees produces 500 rows eligible
 for re-admission, not 500 simultaneous runtimes. Resume entries sit at the

@@ -626,6 +626,19 @@ def _joined(names: list[str]) -> str:
     return f"{joined} (+{rest} more)" if rest > 0 else joined
 
 
+def _guard_entries(entries: Any) -> tuple[str, ...]:
+    """A guard's ``server (...)`` entries as a bucket: strings only, each sanitized
+    and bounded at :data:`_ERROR_CAP`, de-duplicated, capped at :data:`_BUCKET_CAP`."""
+    seen: list[str] = []
+    for raw in entries if isinstance(entries, (list, tuple)) else ():
+        if not isinstance(raw, str):
+            continue
+        entry = sanitize_sink_text(raw, _ERROR_CAP)
+        if entry and entry not in seen:
+            seen.append(entry)
+    return tuple(seen[:_BUCKET_CAP])
+
+
 @dataclass
 class McpSessionReport:
     """Mutable accumulator for one session's MCP registration frames.
@@ -655,6 +668,12 @@ class McpSessionReport:
     #: Affected servers past the guard's or this report's cap, counted rather
     #: than dropped without a word.
     header_secret_refs_omitted: int = 0
+    #: stdio servers whose ``env`` references a variable that is not set, each as
+    #: ``server ('NAME', ...)``; such a server starts with the literal text. Set by
+    #: :meth:`record_env_placeholder_refs`.
+    env_placeholder_refs: tuple[str, ...] = ()
+    #: Affected servers past the guard's cap, counted like the header bucket's.
+    env_placeholder_refs_omitted: int = 0
     #: Servers that started and that the spec grants, yet gave this session no
     #: tool (see :func:`servers_exposing_no_tools`). Usually a tool-name clash
     #: with another server: the backend kept the other server's tools and
@@ -711,6 +730,8 @@ class McpSessionReport:
         self.unresolved_refs = ()
         self.header_secret_refs = ()
         self.header_secret_refs_omitted = 0
+        self.env_placeholder_refs = ()
+        self.env_placeholder_refs_omitted = 0
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
@@ -871,15 +892,19 @@ class McpSessionReport:
         bounded at :data:`_ERROR_CAP`. *omitted* is the guard's own count of
         servers it did not list; the guard caps its entries below the bucket.
         """
-        seen: list[str] = []
-        for raw in entries if isinstance(entries, (list, tuple)) else ():
-            if not isinstance(raw, str):
-                continue
-            entry = sanitize_sink_text(raw, _ERROR_CAP)
-            if entry and entry not in seen:
-                seen.append(entry)
-        self.header_secret_refs = tuple(seen[:_BUCKET_CAP])
+        self.header_secret_refs = _guard_entries(entries)
         self.header_secret_refs_omitted = omitted if isinstance(omitted, int) and omitted > 0 else 0
+
+    def record_env_placeholder_refs(self, entries: Any, omitted: int = 0) -> None:
+        """Record the stdio servers whose ``env`` references an unset variable.
+
+        The twin of :meth:`record_header_secret_refs`, for
+        ``mcp_ref_guard.warn_unset_env_placeholders``.
+        """
+        self.env_placeholder_refs = _guard_entries(entries)
+        self.env_placeholder_refs_omitted = (
+            omitted if isinstance(omitted, int) and omitted > 0 else 0
+        )
 
     def record_no_tools(self, names: Any) -> bool:
         """Record the servers that started but gave this session no tool.
@@ -1063,6 +1088,7 @@ class McpSessionReport:
             self.configured
             or self.unresolved_refs
             or self.header_secret_refs
+            or self.env_placeholder_refs
             or self.no_tools
             or self._ready
             or self._failed
@@ -1100,7 +1126,9 @@ class McpSessionReport:
         control characters and length, none of which neutralizes a natural-language
         instruction. That is harmless in a log a person reads and is not harmless
         in a model's prompt, so the sink that feeds a model asks for the summary
-        without it instead of trusting a scrubber to disarm prose.
+        without it instead of trusting a scrubber to disarm prose. That reading
+        also leaves out the env-placeholder bucket: such a server did start, and
+        the model sink tells a run its servers are not mounted.
         """
         parts: list[str] = []
         if self._failed:
@@ -1142,6 +1170,17 @@ class McpSessionReport:
                 + (
                     f" (+{self.header_secret_refs_omitted} not listed)"
                     if self.header_secret_refs_omitted
+                    else ""
+                )
+            )
+        if self.env_placeholder_refs and include_reasons:
+            parts.append(
+                "stdio server env references a variable that is not set, so the server "
+                "starts with the literal ${NAME} text: "
+                + _joined(list(self.env_placeholder_refs))
+                + (
+                    f" (+{self.env_placeholder_refs_omitted} not listed)"
+                    if self.env_placeholder_refs_omitted
                     else ""
                 )
             )

@@ -264,26 +264,22 @@ def test_readiness_never_checks_out_pr_code():
 @pytest.mark.parametrize(
     "event,repo,pr_head,actor,actors,admitted",
     [
-        # A same-repository head from a listed actor uses the fleet, and the
-        # review event is admitted too: this policy names no event.
-        ("pull_request", _REPO, _REPO, "101", _ACTORS, True),
-        ("pull_request_review", _REPO, _REPO, "202", _ACTORS, True),
-        # Executing here but not admitted. On a review event the actor is the
-        # REVIEWER, who is commonly outside the list, so this is the ordinary
-        # path rather than an edge case.
-        ("pull_request", _REPO, _REPO, "999", _ACTORS, False),
-        ("pull_request_review", _REPO, _REPO, "999", _ACTORS, False),
-        ("pull_request", _REPO, _REPO, "101", "", False),
-        ("pull_request", _REPO, _REPO, "101", "[]", False),
+        # A same-repository head from a listed actor uses the fleet: this
+        # policy names no event, so every `pull_request_target` action is in.
+        ("pull_request_target", _REPO, _REPO, "101", _ACTORS, True),
+        ("pull_request_target", _REPO, _REPO, "202", _ACTORS, True),
+        # Executing here but not admitted.
+        ("pull_request_target", _REPO, _REPO, "999", _ACTORS, False),
+        ("pull_request_target", _REPO, _REPO, "101", "", False),
+        ("pull_request_target", _REPO, _REPO, "101", "[]", False),
         # A fork pull request against this repository executes HERE, so the
         # group is reachable even though the head is a fork's.
-        ("pull_request", _REPO, _FORK, "101", _ACTORS, False),
+        ("pull_request_target", _REPO, _FORK, "101", _ACTORS, False),
         # A fork running this workflow in its OWN repository cannot reach an
         # organization group. Dropping the middle branch's repository guard
-        # fails these two rows, which is the point: a job asking there for a
-        # label no runner carries waits out GitHub's pending limit.
-        ("pull_request", _FORK, _FORK, "101", _ACTORS, False),
-        ("pull_request_review", _FORK, _FORK, "101", _ACTORS, False),
+        # fails this row, which is the point: a job asking there for a label
+        # no runner carries waits out GitHub's pending limit.
+        ("pull_request_target", _FORK, _FORK, "101", _ACTORS, False),
     ],
 )
 def test_sensitive_change_review_route_truth_table(event, repo, pr_head, actor, actors, admitted):
@@ -338,6 +334,7 @@ def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
         ("build-wheel.yml", "build-wheel"),
         ("dependency-vulnerability.yml", "audit-production-dependencies"),
         ("pr-readiness.yml", "readiness"),
+        ("codeql.yml", "analyze"),
     ],
 )
 def test_additional_routes_have_no_container_or_cloud_credential_steps(filename, job_id):
@@ -356,36 +353,15 @@ def test_additional_routes_have_no_container_or_cloud_credential_steps(filename,
 def test_the_ratchet_audit_route_reaches_the_group_on_its_non_fleet_path():
     """`main-ratchet-audit.yml` takes the group label when the fleet declines it.
 
-    This assertion replaces the one that pinned the hosted tail here. That pin
-    existed so moving this policy would be a deliberate act rather than a side
-    effect, and the move was made deliberately: the merge-group leg is the thing
-    it asked to have settled, so settle it here.
+    `merge-queue-readiness.yml` polls this workflow and fails a merge group closed when
+    a queued run outlasts its budget, so a capped group can hold merges. That is
+    acceptable because no ruleset configures a merge queue, `ci.yml`, `fast-gate.yml`
+    and `build.yml` already wait on the same cap, and an actor in `CODEBUILD_ACTOR_IDS`
+    still takes the fleet. Before enabling a merge queue near the group's cap, restore
+    the literal hosted tail on this constant.
 
-    `merge-queue-readiness.yml` lists this workflow in its polled set. It polls
-    every merge group, counts a queued run as pending, and fails the group
-    closed when its budget runs out, so a queued run on a capped group does hold
-    merges. Three things decide that this is acceptable rather than reckless:
-
-    - The leg is dormant. A `merge_group` event needs a merge queue on the
-      branch, and no active ruleset configures one; all 1,099 `merge_group` runs
-      in this repository's history were created in one window, between
-      2026-10-02T18:17Z and 2026-10-03T00:03Z.
-    - It is not unique to this workflow. The queue polls `ci.yml`,
-      `fast-gate.yml` and `build.yml` as well, and their merge-group leg reaches
-      the group whenever the queuing actor is not on the allowlist. Several
-      `ci.yml` jobs reach it unconditionally, with no fleet branch at all. So
-      every merge group already waits on this cap.
-    - Only a merge group queued by an actor OUTSIDE `CODEBUILD_ACTOR_IDS` lands
-      here. An allowlisted queuer still takes the fleet.
-
-    Turning the merge queue back on is therefore the event that makes this live,
-    and it is the rollback trigger: restore the literal hosted tail on this
-    constant before enabling the queue if the group is anywhere near its cap.
-
-    Pinned DIRECTLY, like its predecessor, and not left to the truth table
-    above, because that table reads its expected value out of the expression
-    under test and so would carry along any later edit of the constant and the
-    workflow together.
+    Pinned directly, not via the truth table above, which reads its expected value out
+    of the expression under test.
     """
     assert parity._GROUP_THEN_HOSTED_TAIL in parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR, (
         "main-ratchet-audit.yml's non-fleet path is expected to take the "

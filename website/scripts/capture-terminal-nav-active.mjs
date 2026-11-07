@@ -71,9 +71,11 @@ async function main() {
         const page = await context.newPage()
         await stubDashboardApi(page, { slots, theme: s.theme })
         logPageProblems(page)
-        // Runs after the stub's own init script, so it survives its
-        // localStorage.clear(). `mc-color-theme` picks the kiro palette;
-        // `mc-nav` is the rail-collapsed flag App reads on mount.
+        // Registered after the stub, so it lands after the stub's
+        // localStorage.clear() only while Chromium runs init scripts in
+        // registration order: Playwright does not define that order.
+        // `mc-color-theme` picks the kiro palette; `mc-nav` is the
+        // rail-collapsed flag App reads on mount.
         await page.addInitScript(([attr, collapsed]) => {
           localStorage.setItem('mc-color-theme', attr)
           localStorage.setItem('mc-privacy-notice-v1', '1')

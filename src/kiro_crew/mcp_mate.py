@@ -194,9 +194,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "set_approval_mode",
             "description": (
-                "Ask the user to change how your own chat approves tools: normal (ask "
-                "before every action), trust_reads (act on reads, ask before changes) "
-                "or trust (act without asking). " + _CARD_NOTE
+                "Ask the user to change how your own chat approves tools: normal (look "
+                "things up on your own, ask before anything else), trust_reads (also "
+                "search your memory, past chats, skills and knowledge library on your "
+                "own) or trust (act without asking). " + _CARD_NOTE
             ),
             "inputSchema": {
                 "type": "object",

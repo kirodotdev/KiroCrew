@@ -4,30 +4,29 @@ name: Sensitive Change Review
 # redaction) needs a filled-in reasoning template for the CURRENT head: either
 # the PR author's own comment naming the head SHA, or a human approval on the
 # head carrying it. A bare "Approve" click stays red. The author's comment
-# re-runs this check through sensitive-change-review-comment.yml.
+# re-runs this check through sensitive-change-review-comment.yml, and a review
+# through sensitive-change-review-approval.yml.
 #
 # Format only, on purpose: no model and no sandbox run. Whoever ran the real
 # sandbox writes what they checked; this gate makes sure it is written down for
 # this exact commit. It cannot tell a true reason from a false one.
 #
-# The checker script is read from the DEFAULT branch, so a PR cannot change the
-# rule by editing the script. This workflow FILE still runs from the PR head
-# (a `pull_request` limit every gate here shares), so a PR could rewrite it to
-# skip the check. Listing it as sensitive does not stop that; running the gate
-# from the default branch would, and is left for a follow-up. No waiver label.
+# `pull_request_target` runs this FILE from the default branch, and the job
+# checks out only the default branch's checker, so a PR can change neither the
+# rule nor the verdict of this run. The job never checks out or runs PR code;
+# it reads the PR through the API. A review cannot start this workflow directly
+# (a `pull_request_review` run reads the file from the PR head), so the
+# approval workflow named above re-runs it instead. No waiver label.
 #
 # A fork PR that touches a sensitive path is refused: a maintainer takes it
 # over on a branch here. A same-repository PR gets one sticky comment with the
-# template to paste. `pull-requests: write` is for that comment only; on a fork
-# PR GitHub hands this job a read-only token anyway.
+# template to paste. `pull-requests: write` is for that comment only; the
+# checker writes nothing on a fork PR.
 
 on:
-  pull_request:
+  pull_request_target:
     # `edited` covers a base-branch retarget, which changes the file set.
     types: [opened, synchronize, reopened, edited]
-  # The approval itself must be able to turn this check green without a push.
-  pull_request_review:
-    types: [submitted, edited, dismissed]
 
 permissions:
   contents: read
@@ -46,10 +45,9 @@ jobs:
     # code, so the opened/synchronize limit other routes carry buys nothing.
     #
     # A run the fleet does not admit -- a fork pull request, or an actor outside
-    # CODEBUILD_ACTOR_IDS, which on a review event is the reviewer rather than
-    # the author -- takes the larger-runner group when it executes HERE, and
-    # `ubuntu-latest` when it executes in a fork's own repository, where an
-    # organization runner group is unreachable.
+    # CODEBUILD_ACTOR_IDS -- takes the larger-runner group when it executes
+    # HERE, and `ubuntu-latest` when it executes in a fork's own repository,
+    # where an organization runner group is unreachable.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:

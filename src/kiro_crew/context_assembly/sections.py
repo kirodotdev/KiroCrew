@@ -507,14 +507,17 @@ def runtime_refresh_blocks(session_key: str, runtime_source: str) -> list[str]:
 def widget_block(density: str) -> str:
     """What an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to on a dashboard surface.
 
-    ``density == "more"`` is the full pointer; every other value is the short one
-    that prefers plain markdown.
+    ``density == "more"`` is the full pointer, which says when to draw a widget
+    unasked; every other value is the short one that prefers plain markdown.
     """
     if density == "more":
         return (
             "## Inline Widgets\n\n"
             "You can render rich HTML inline using "
-            '`<mcwidget title="Title">HTML</mcwidget>` tags. Load the `widgets` '
+            '`<mcwidget title="Title">HTML</mcwidget>` tags. When an answer reads '
+            "better drawn (a status across several items, a comparison, a flow, "
+            "a before/after), draw it as one widget without being asked; plain "
+            "labels and numbers stay a markdown table. Load the `widgets` "
             "skill for theme variables, format rules, interactive widgets, and "
             "best practices when emitting one. The frame is themed: its body "
             "already carries the active theme's background and text color, so "

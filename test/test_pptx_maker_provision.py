@@ -25,9 +25,17 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from fake_child_helpers import (
+    read_child_records,
+    reap_recorded_children,
+    write_child_launcher,
+    write_recording_child,
+)
 
 from kiro_crew import env as env_mod
+from kiro_crew import sandbox
 from kiro_crew.apps.builtins.pptx_maker.backend import provision
+from kiro_crew.testing.wait import default_timeout
 
 
 def _json_strings(node: object) -> list[str]:
@@ -332,9 +340,29 @@ class TestRunSandboxing:
     """`_run` spawns third-party code (`uv` against a freshly fetched tree), so
     the environment it hands the child is security-relevant."""
 
-    def test_spawns_through_the_credential_scrubbing_chokepoint(self, tmp_path: Path):
+    def test_spawns_through_the_credential_scrubbing_chokepoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Not a bare `subprocess.run`: the child must get the scrubbed env from
         `sandboxed_spawn_argv`, or it inherits cloud creds and SSH_AUTH_SOCK."""
+        # One sandbox path on every host: CI runners have no backend.
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        # A real child first: what it actually received through the real chokepoint.
+        secret_key = "DISCORD_BOT_" + "TOKEN"
+        monkeypatch.setenv(secret_key, "fake-" + "bot-value")
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path / "gateway-site"))
+        child = write_recording_child(tmp_path / "child", env_values=("PYTHONPATH",))
+        try:
+            code, out = provision._run(child.argv, cwd=str(tmp_path), timeout=default_timeout())
+        finally:
+            reap_recorded_children(child)
+        assert code == 0, out
+        records = read_child_records(child)
+        assert len(records) == 1
+        assert secret_key not in records[0]["env_keys"]
+        assert records[0]["env"]["PYTHONPATH"] is None
+
         scrubbed = {"PATH": "/usr/bin"}
         with (
             mock.patch.object(
@@ -968,17 +996,35 @@ class TestProvision:
             outcome = provision.provision()
         assert "git" not in outcome.log
 
-    def test_the_resolved_uv_is_threaded_into_the_build(self):
+    def test_the_resolved_uv_is_threaded_into_the_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Resolved ONCE and passed down, so the fetch and the two uv calls can
         never disagree about which binary they are using."""
-        with (
-            mock.patch.object(provision, "resolve_uv", return_value="/opt/kirocrew/uv"),
-            mock.patch.object(provision, "_ensure_engine", return_value=True) as fetch,
-            mock.patch.object(provision, "_ensure_venv", return_value=False) as venv,
-        ):
-            provision.provision()
-        assert fetch.call_args.args[2] == "/opt/kirocrew/uv"
-        assert venv.call_args.args[2] == "/opt/kirocrew/uv"
+        # One sandbox path on every host: CI runners have no backend.
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        # The resolved "uv" is a real child that records the run and fails the
+        # resolve, so provisioning stops right after the first uv call.
+        child = write_recording_child(tmp_path / "uv-child", exit_code=3, stdout="resolve refused")
+        uv = write_child_launcher(child, name="uv")
+        mcp_dir = tmp_path / "engine" / "mcp-local"
+        mcp_dir.mkdir(parents=True)
+        try:
+            with (
+                mock.patch.object(provision, "resolve_uv", return_value=str(uv)),
+                mock.patch.object(provision, "_ensure_engine", return_value=True) as fetch,
+            ):
+                outcome = provision.provision()
+        finally:
+            reap_recorded_children(child)
+        assert fetch.call_args.args[2] == str(uv)
+        records = read_child_records(child)
+        assert [record["argv"][1:] for record in records] == [
+            ["sync", "--frozen", "--project", str(mcp_dir)]
+        ]
+        assert outcome.ok is False
+        assert "dependency resolve failed: resolve refused" in outcome.log
 
     def test_a_refused_engine_fetch_never_builds_a_venv(self):
         """The digest-pin refusal is worthless if the build runs anyway."""

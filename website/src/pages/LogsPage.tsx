@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useCallback, useContext, useMemo, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext, useMemo, useId, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { WsContext } from '../App'
 import { PageHeader } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { LAYOUT } from '../components/layout'
 
 import { i18nT } from '../i18n/t'
@@ -66,6 +67,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
     onSuccess: (level) => setChosenLevel(level),
   })
   const changeLevel = (level: string) => levelMutation.mutate(level)
+  const levelLabelId = useId()
 
   const { filtered, matchCount } = useMemo(() => {
     const levelIdx = LEVELS.indexOf(currentLevel as typeof LEVELS[number])
@@ -129,10 +131,14 @@ export function LogViewer({ compact }: { compact?: boolean }) {
   return (
     <div className={`flex-1 flex flex-col min-h-0 ${compact ? '' : 'px-4 md:px-6 pb-8'}`}>
       <div className={`flex ${sz.gap} flex-wrap items-center`}>
-        <span className={`${sz.label} text-muted mr-1`}>{i18nT('pages.logsPage.log_level')}</span>
-        {LEVELS.map(l => (
-          <button key={l} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
-        ))}
+        <span id={levelLabelId} className={`${sz.label} text-muted mr-1`}>{i18nT('pages.logsPage.log_level')}</span>
+        {/* One-of-four choice: a radio group, so the chosen level is announced
+            and not shown by colour alone. */}
+        <RadioChipGroup className={`flex flex-wrap items-center ${compact ? 'gap-1' : 'gap-1.5'}`} ariaLabelledBy={levelLabelId}>
+          {LEVELS.map(l => (
+            <button key={l} type="button" {...radioChip(currentLevel === l)} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
+          ))}
+        </RadioChipGroup>
         {/* A log panel holds no draft, so both failures offer the hand-off. */}
         <ErrorNotice message={levelQuery.isError ? errMsg(levelQuery.error) : ''} variant="inline" askAgent testId="logs-level-error" />
         <ErrorNotice message={levelMutation.isError ? errMsg(levelMutation.error) : ''} variant="inline" askAgent onDismiss={() => levelMutation.reset()} testId="logs-level-change-error" />
@@ -151,6 +157,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
         {search && (
           <>
             <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${matchesOnly ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+              aria-pressed={matchesOnly}
               onClick={() => setMatchesOnly(p => !p)}>{i18nT('pages.logsPage.matches_only')}</button>
             <span className={`${sz.label} text-muted whitespace-nowrap`}>{i18nT('pages.logsPage.matches_count', { count: matchCount })}</span>
           </>

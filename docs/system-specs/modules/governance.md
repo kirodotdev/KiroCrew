@@ -163,7 +163,7 @@ In an `oss` build a scope the policy does not name is ungoverned and permitted (
 
 - **Where it applies.** `evaluator._policy_level` fills the POLICY level only, in `resolve`. `_query_level` still permits a `None` control, because it also answers the profile level: a profile that does not name a scope must not impose the baseline again beneath a remote widening. For the same reason no baseline is added when a `Profile` sits in the ceiling slot (`governance_profiles` asks `may_skip_gate` about one profile alone) or when `gate_decision`'s alias-group pass asks the profile layer alone (`resolve(..., baseline=False)`). `policy_level_control` exposes the same lookup to readers that inspect a ceiling directly: `may_skip_gate` and `_ceiling_mentions_mcp_server` use it, so an auto-approve grant cannot skip the gate for an unnamed scope, the policy viewer (`GET /api/governance/policy`) reports the baseline instead of "ungoverned", and the member-dashboard script grant (`member_dashboard._egress_decision`) reads an unnamed `network.egress` as the baseline's off. A `folders.*` query finds the policy's `filesystem.*` rule before the baseline answers, because the parser stores it under the canonical scope.
 - **Who may widen.** The remote policy, by naming the scope. A profile only narrows.
-- **Not gated.** `BASELINE_UNGATED` lists, each with its reason, the scopes that keep Crew's own default: the two ordinals (`approval_mode`, `sandbox.min_level`) and the open controls of RFC D3 as amended on 2026-11-02 (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`; appendix "Crew default"). With the policy silent, an open control answers as in `oss`, ungoverned; a remote policy that names one still decides, and a local tier composed under a silent central policy still narrows it. A scope in neither table (one registered at run time) is denied.
+- **Not gated.** `BASELINE_UNGATED` lists, each with its reason, the scopes that keep Crew's own default: the two ordinals (`approval_mode`, `sandbox.min_level`) and the open controls of RFC D3 as amended on 2026-11-02 (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`; appendix "Crew default") and as amended on 2026-11-05 (`capabilities.memory_writes`, `capabilities.theme_persona`, `capabilities.milestones`, `capabilities.decisions_local`). Open means permitted, not switched on: a feature's preview flag or user setting, where it has one, keeps its `oss` default, and `capabilities.decisions_local` only narrows `capabilities.decisions`, which stays in the baseline off. `capabilities.app_dev_mode` and `app_versions` stay in `BASELINE_CONTROLS`. `edition_locks.policy_permits` (the process-wide switch milestones read) lets an open scope's `default`-layer permit stand; every other scope it answers still needs a policy-layer permit (`follows_policy`). With the policy silent, an open control answers as in `oss`, ungoverned; a remote policy that names one still decides, and a local tier composed under a silent central policy still narrows it. A scope in neither table (one registered at run time) is denied.
 - **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (the catalog floor; only `yolo` is off). `updates.source` is not a catalog scope and has no baseline.
 - **A proven non-shell call is judged in its own scopes.** `classify_tool_title` reads an unprefixed name as a command body and a tool name both, and kiro-cli titles an MCP call `Running: @server/tool`, so with `commands` off (a remote policy that turns it off) every built-in and every MCP call was refused. In an enterprise build `GateFacts.governance_own_scopes` proves, from the trusted identity of a call the client did not classify as shell, that the call is MCP-served (`("mcp",)`) or a host built-in whose `BUILTIN_TOOL_SCOPES` row has no `commands` (`("tools", *row)`; a KAS id through its admitting kiro-cli alias only, so `delete_file`, `run_command` and `code` stay unproven). `gate_decision(own_scopes=...)` then keeps every `commands` pair, the title's `tools` pair, an MCP identity's `tools` pair, and a built-in's argument pair outside its row as deny-only: an explicit deny there (a local `curl *` deny) still refuses, an allow-mode miss does not. Each scope in a built-in's row that its arguments name no target in is asked about `_NO_TARGET_ITEM`, so an allow-mode `filesystem.read` the remote policy names refuses a pathless `grep` or `glob` (it searches a directory the gate cannot see), and an allow-mode `filesystem.write` refuses a write that does not arrive as an edit. A relative path is anchored at the gateway's working directory, as for every `filesystem.*` rule. `oss` never sets `own_scopes`.
 - **Inner lists the remote leaves out.** `BASELINE_INNER_LISTS` names inner lists that keep their baseline even when the remote policy names their capability: today `capabilities.publish` `regions`, `audience` and `accounts`, all off. `parsing.with_inner_baseline` fills them into a remote-named gate, in `evaluator._policy_level` and in `tiers._with_enterprise_baseline` for a central authority, so a local tier cannot supply a list the remote left out.
@@ -547,16 +547,33 @@ in an oss build). One fetch is the Kiro control plane's
   host, and the reply's `manifest.hash` (SHA-256 of the body) when it carries one.
   There is no signature layer.
 - **Answer.** `ENABLED` carries Trust V2 YAML, which
-  `platform/enterprise_policy_translate.py` turns into a Crew document (today
-  `messaging_channel` to `channels.members`, `permission_mode` to `approval_modes`
-  with its floor kept, and the on/off `messaging` and `cron` to
-  `capabilities.messaging` and `capabilities.cron`), re-read every 300 s. An on/off
-  capability is off on any deny or on a rule shape it does not know (`match`,
+  `platform/enterprise_policy_translate.py` turns into a Crew document, re-read
+  every 300 s. Its `MANAGED` rows: `messaging_channel` to `channels.members`,
+  `permission_mode` to `approval_modes` with its floor kept, `shell` to `commands`,
+  `fs_read` / `fs_write` to `filesystem.read` / `filesystem.write`, `network_egress`
+  to `network.egress`, `mcp` to `mcp`, `subagent` to `capabilities.spawn` (its
+  `agents` list), and the on/off `messaging`, `cron`, `memory_writes`, `theme_persona`,
+  `tailnet_origin`, `browser_use` and `theme_install` to `capabilities.messaging`,
+  `.cron`, `.memory_writes`, `.theme_persona`, `.tailnet_origin`, `.browse` and
+  `.theme_install`. A rule on a meta-capability
+  (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
+  `acp/kas_permissions.py` `META_CAPABILITY_EXPANSION`; a deny on `all` reaches
+  every managed capability, the stricter reading. An
+  on/off capability is off on any deny or on a rule shape it does not know (`match`,
   `exclude` or `when`), on on an allow with no deny, and unnamed (baseline) with no
   rule. A shape it does not know is off, not unnamed, because `capabilities.cron`
-  is an open control: unnamed, it keeps Crew's default. For a capability with a
-  resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
-  baseline keeps it off. The reply's settings (`body.configuration`, each entry's
+  is an open control: unnamed, it keeps Crew's default. A capability with a resource
+  that any rule names is governed, as the policy language reads it: a deny `exclude`
+  or an allow `match` says what is allowed, an allow with no `match` allows everything
+  but the deny `match` entries (a deny-list), and nothing granted allows nothing. Each
+  row converts a pattern into its Crew matcher's form: a pattern with no exact form is
+  dropped from an allowed set and widened in a denied one (a file deny matches either
+  case, an MCP tool glob covers its whole server), and a deny that cannot be widened
+  refuses the policy. A file pattern is read only when it is canonical: absolute
+  (`/`, `~` or `~/...`), one `/` between segments, no trailing `/`, no `.` or `..`
+  segment, and no `\`, drive letter, `~user`, `[`, `$` or extended glob
+  (`enterprise_policy_translate._non_canonical`, plain string checks); any other
+  shape refuses a deny and is dropped from an allow. The reply's settings (`body.configuration`, each entry's
   `value` the setting as JSON) are shape-checked and hashed when the reply declares a
   hash, and then a badly shaped entry refuses the reply. With no hash they are read
   leniently, as before, so an entry Crew does not read never refuses a reply, and a
@@ -583,7 +600,12 @@ in an oss build). One fetch is the Kiro control plane's
   against the profile it was READ for, and every read compares it with the profile the
   one sign-in names NOW, so the existing repoint rule refuses another profile's copy on every
   path: the fresh-cache shortcut, the outage fallback, the concurrent-writer handoff, a
-  refresh and the posture. Every other source's identity is the source itself.
+  refresh and the posture. The identity also carries
+  `enterprise_policy_translate.TRANSLATION_TAG`, a digest of the `MANAGED` table, so a
+  copy an older table translated (one that dropped a rule this build maps, such as a
+  `memory_writes` deny) is refused on the same paths and refetched; with the service
+  unreachable, a boot after such an upgrade has no usable cache and exits. Every other
+  source's identity is the source itself.
 - **Profile pinned at startup.** An enterprise process pins the profile signed in when
   it first resolves the policy (`enterprise_policy_fetch.pinned_scope`) and reads the
   cache as that profile for life. It hands the pin to its cache-only children in
@@ -2586,9 +2608,21 @@ every surface. The display *title* is backend-variable and cannot reliably carry
 a path or URL, so these scopes are resolved from the tool's **semantic kind +
 real arguments** the ACP event carries:
 
-- A `Reading <path>` title classifies to `filesystem.read` (the read path is in
-  the title); `classify_tool_args` also maps `tool_kind == "read"` +
-  `raw_params["path"]` → `filesystem.read`.
+- A `Reading <rest>` title classifies to `filesystem.read` with the rest of the
+  title as the item; `classify_tool_args` also maps `tool_kind == "read"` +
+  `raw_params["path"]` → `filesystem.read`. When every read target the
+  arguments name is anchored (a local path that `tool_paths._is_anchored`
+  with `require_drive` calls absolute, so with a drive or UNC share on
+  Windows, and spelled so that `~` / `$VAR` / `%VAR%` expansion leaves it
+  unchanged, since the matcher expands it but the reading tool may not; or a
+  guest path its workdir anchors) and every batch `operations` entry names a
+  path (an Image entry's `image_paths` is not scanned, so its title is kept), `gate_decision` judges the read on them and drops the
+  title's pair: the title is display text (`Reading a.ts:10-29`, `Reading
+  listing workspace`), and a relative item is anchored at the gateway's working
+  directory, where an allow-mode `filesystem.read` refuses it. A call whose
+  arguments name no read path, a relative local one, or only a marker (no
+  target, truncated scan) keeps the title's pair beside them, so a title naming
+  a denied file is still refused.
 - `tool_kind == "edit"` + `raw_params["path"]` → `filesystem.write`.
 - `tool_kind == "fetch"` + `raw_params["url"]` → `network.egress` (the host is
   extracted from the URL so the `host` matcher applies).
@@ -3085,7 +3119,17 @@ an agent-bound task profile, then the surface binding. A policy or profile
 denial of this capability refuses even on an otherwise ungoverned host, and
 an unreadable ceiling or profile fails closed. Every grant, denial and evaluation
 error is emitted through `sel().log_governance_decision`, including the session,
-agent, capability and reason; audit failures never change the permission result).
+agent, capability and reason; audit failures never change the permission result),
+and `capabilities.credential_redaction_off` (opt-in, `capability_default=False`:
+on a host whose policy governs any scope, only a policy that names this row
+`enabled: true` lets the owner turn credential redaction off in the Files view.
+`security.redaction_switch.owner_may_disable` reads it at the policy layer only
+(`policy_level_control`, so an enterprise build reads the baseline's off; a
+profile does not take part), and an unreadable ceiling keeps redaction on. A
+folded ceiling (`lower_tier_folded`) also keeps it on, even when the top tier
+named the row itself, because the fold does not say which tier did. What
+the switch then does is in [security](security.md), "Owner's credential-redaction
+switch").
 Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -3950,9 +3994,10 @@ iterates `SCOPE_CATALOG`.
 `24h`) plus `until_shutdown`; the timed default is `6h`. The `yolo_duration`
 `SCOPE_CATALOG` row is a `ScopedRuleset` on the `identifier` matcher and governs
 only the two no-expiry members: `permanent` (the standing
-`agent.dangerously_skip_permissions` declaration) and `until_shutdown` (an ad-hoc
-grant with no timed expiry). Timed choices remain bounded by the ordinary config
-and `SafetyOverride` ceilings rather than this scope.
+`agent.dangerously_skip_permissions` declaration, and `gateway --approval yolo` for
+its launch) and `until_shutdown` (an ad-hoc grant with no timed expiry). Timed
+choices remain bounded by the ordinary config and `SafetyOverride` ceilings rather
+than this scope.
 
 Both decisions resolve against `HOST_SESSION_KEY` with `fail_closed=True`. Denying
 `permanent` makes `grant_declared_yolo()` fall back to the configured ad-hoc
@@ -3982,6 +4027,21 @@ enterprise build caps at 1800 seconds (`30m`, the shortest choice); the baseline
 already denies `yolo` there until a policy permits it. Two tiers fold to the
 lower cap.
 
+**`mcp_registry_local_control_plane` (policy top level, policy-only).** A JSON
+boolean, `false` when absent; any other value fails the load, and a profile
+carrying it is rejected. It is the admin's opt-in for a registry-governed host
+(`agent.mcp_registry_mode`): `true` lets `acp.session_mcp.kiro_control_plane_servers`
+mount Kiro Crew's per-session identity element for `kirocrew-core` and
+`kirocrew-cron`, which launches those two from the local install instead of the
+registry catalog's entry. Opt-in Crew servers and builtin app servers stay under the
+catalog either way. Off, nothing is mounted under registry mode (unless
+`kiro_cli.registry_governance_known_unreachable()` says no admin registry can
+govern the sign-in) and identity-scoped calls from those servers are refused
+`identity_unattestable`, with text naming this field; a refusal from any other server,
+or one made with the field already on, does not name it, since the field cannot fix
+it there. Because it widens the host it is in the authority-only class: a lower tier
+cannot supply it, and the authority's value stands.
+
 **Enterprise values under local tiers.** In an enterprise build
 `tiers._with_enterprise_value_floors` fills the authority's `updates.channel`
 (`stable`), `yolo_max_seconds` (1800) and, when `slack` is a permitted member, an
@@ -3992,8 +4052,11 @@ authority's may only narrow the floors.
 
 ### Which tool-approval modes a deployment may select — `approval_modes`
 
-The dashboard approval-mode picker offers four modes: `normal` (interactive —
-ask for every tool), `trust_reads` (auto-approve read-only shell commands except any that runs `git`; every other tool call, MCP included, still asks), `trust` (auto-approve
+The dashboard approval-mode picker offers four modes: `normal` (interactive:
+every tool asks except what the gate's read-only row approves in every mode —
+the reads, searches and fetches it proves, and read-only shell commands that
+do not run `git`), `trust_reads` (also auto-approve Kiro Crew's own read-only
+MCP tools, `hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS`), `trust` (auto-approve
 the active slot), and `yolo` (auto-approve every tool everywhere). The
 `approval_modes` `SCOPE_CATALOG` row (a `ScopedRuleset` on the `identifier`
 matcher — data-only shape, no evaluator change, mirroring `agent_backend`

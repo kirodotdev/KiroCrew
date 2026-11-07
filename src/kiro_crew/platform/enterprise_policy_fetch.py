@@ -92,8 +92,9 @@ _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 #: whose translation reads more of the reply gets a full answer instead of keeping an
 #: older build's document on ``UNCHANGED``. Bump it whenever :func:`translate` would
 #: turn the same reply into a different document. ``t1``: the reply's settings are read
-#: (RFC D7); an etag from before has no revision.
-TRANSLATION_REVISION = "t1"
+#: (RFC D7); an etag from before has no revision. ``t2``: the existing terms ``shell``,
+#: ``fs_*``, ``network_egress``, ``mcp``, ``subagent`` and three switches are read (D8).
+TRANSLATION_REVISION = "t2"
 
 
 def _sign_in_remedy() -> str:

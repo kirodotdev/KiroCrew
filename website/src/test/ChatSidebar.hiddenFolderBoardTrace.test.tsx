@@ -19,7 +19,7 @@
  * a search suspends the hide entirely. Two numbers for one fact, on one screen, is the
  * defect this file also pins against.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { render, fireEvent } from '@testing-library/react'
@@ -296,6 +296,30 @@ describe('a board says on screen how many folders it is hiding', () => {
     fireEvent.click(notice(container) as Element)
     expect(queryByTestId('folder-filter-show-all')).not.toBeNull()
     expect(queryByTestId(`folder-filter-${HIDDEN_FOLDER}`)).not.toBeNull()
+  })
+
+  it('lands the menu on the folder list, which sits last and can open below the fold', () => {
+    // Folders sit last in the menu, so on a menu taller than the room below the funnel
+    // the click opened the list it promised out of sight, and a keyboard reader's first
+    // arrow started from the top. The funnel's own open is the control: it starts the
+    // menu at the top, as it always has.
+    const rect = (top: number, bottom: number) => ({ x: 0, y: top, left: 0, right: 300, top, bottom, width: 300, height: bottom - top, toJSON() { return {} } }) as DOMRect
+    const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'menu') return rect(100, 300)
+      if (this.getAttribute('data-testid') === 'folder-filter-section') return rect(500, 600)
+      return rect(0, 0)
+    })
+    onTestFinished(() => rects.mockRestore())
+    hideFolders(HIDDEN_FOLDER)
+    const { container, getByLabelText, getByRole, getByTestId } = renderSidebar(true)
+    fireEvent.keyDown(getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    expect(getByRole('menu').scrollTop, 'the funnel scrolled the menu it opened').toBe(0)
+    fireEvent.keyDown(getByRole('menu'), { key: 'Escape' })
+    fireEvent.click(notice(container) as Element)
+    // The section ends 300 px below the menu's visible bottom and is shorter than the
+    // visible area, so the menu scrolls exactly that far and shows all of it.
+    expect(getByRole('menu').scrollTop).toBe(300)
+    expect(document.activeElement, 'focus did not land on the Folders heading').toBe(getByTestId('folder-filter-shelve'))
   })
 
   it('wears the same muted gray as the other lanes\' reveal row, not a warning (#14087)', () => {

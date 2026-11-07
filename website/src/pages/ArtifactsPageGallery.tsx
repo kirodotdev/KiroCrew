@@ -20,6 +20,7 @@ import type { Artifact } from '../types'
 import { KIND_BADGE, isoToTs } from '../components/library/LibraryTable'
 import type { LibraryDrag } from '../components/library/LibraryTable'
 import { WidgetThumb, ContentThumb, ImageThumb, WebAppThumb } from '../components/library/ArtifactThumbs'
+import { LiveSiteLink } from '../components/library/LiveSiteLink'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { guidePick } from '../uiLocations/targetRegistry'
@@ -107,6 +108,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
             </div>
             <code className="text-[11px] text-muted">{a.slug}</code>
             {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by_author', { author })}</span>}
+            <LiveSiteLink slug={a.slug} />
           </div>
           <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
         </div>

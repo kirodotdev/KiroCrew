@@ -800,12 +800,20 @@ it would let a planted `~/Applications/Anything.app` be launched by name.
 Then **every directory on the path to the code that will run is probed for writability**
 (`_writable_component`): the bundle's parent, the bundle itself, `Contents`, and
 `Contents/MacOS`. The parent alone was not enough, and the gap it left is the common case
-rather than a corner. On a stock macOS install `/Applications` is `drwxrwxr-x root admin`, so the parent probe
-fires for every admin user and every bundle dropped there is indistinguishable from one the
-operator installed. The parent probe and the bundle probes are independent: an unwritable
+rather than a corner. The parent probe and the bundle probes are independent: an unwritable
 parent is not evidence of an unwritable bundle. A bundle installed by any user-space
 installer — every drag-install, every Homebrew cask — is owned by the installing user, so
 `Foo.app/Contents/MacOS/Foo` can be replaced without the parent ever being writable.
+
+**A stock `/Applications` is judged by the bundle, not the parent.** macOS ships it
+`drwxrwxr-x root admin`, so every admin user (the default for a Mac's primary account) can
+create there, and the parent probe would refuse every third-party bundle under it,
+root-owned ones included. `_is_stock_applications` recognises exactly that directory with owner root,
+group `admin` (gid 80, hardcoded because `grp` does not exist on Windows) and mode `0775`.
+On it the parent probe is skipped, and the bundle, `Contents` and `Contents/MacOS` are each
+judged by ownership as well as mode (`_file_is_replaceable`), because a directory's owner
+can `chmod` it at will. A root-owned bundle there launches; one this user owns is still
+refused. Any other parent, or a `stat` that fails, keeps the parent probe.
 
 **Every level, not just the endpoints.** Write access to any single directory on that path
 is enough to control what executes, and `Contents` is the one an endpoints-only check
@@ -829,7 +837,8 @@ and recreates it with its own binary inside, and a parent-only probe then report
 just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
 up to and including the root and stops there — everything above is off the caller's path by
 construction, since the prefix test already placed the target inside it. `launch_macos`'
-`_writable_component` does the same for a bundle's four levels.
+`_writable_component` does the same for a bundle's four levels (three under a stock
+`/Applications`).
 
 **And the VERIFIED path is what gets spawned.** `resolve_target` resolves once and returns that
 `realpath`, not the raw catalog value: the two differ in the last component whenever a link or
@@ -2403,7 +2412,7 @@ subparsers (the parent CLI forwards `REMAINDER`). Full command reference in
 
 | Verb | For | Gated on the primary enable? |
 |---|---|---|
-| `doctor [--json]` | platform support + enable state + the advisory TCC probe | no — it *reports* the enable, and returns no desktop content |
+| `doctor [--json]` | platform support + enable state + the advisory TCC probe, and with the feature on, whether the configured chat backend loads the tools | no: it *reports* the enable, and returns no desktop content |
 | `apps` | the on-screen application list | **yes** — see below |
 | `call <tool> [k=v …]` / `call --calls '[…]'` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
 
@@ -2415,8 +2424,33 @@ whatever a terminal put in its title) that worked with the feature disabled, in 
 unattended cron session, and under a policy banning computer use outright. It now
 runs `computer_list_apps` through `dispatch_tool` like everything else, so the app
 denylist and the observation ceiling apply. `doctor` remains the ungated way to find
-out *why* the feature is off: it reads the keystone and the TCC state only, never the
-window list.
+out *why* the feature is off: it reads the keystone, the TCC state and (with the
+feature on) the configured backend's projection of the agent spec, never the window
+list.
+
+With the feature on, `doctor` also says when chats on the configured
+`agent.acp_backend` will not load these tools: a `Chat backend:` line naming the
+backend and a remedy, and the same name under `withheld_on_backend` in `--json`.
+Both are absent when the tools load. The answer is the backend's own projection of
+the default `kirocrew` spec, read through `agent_sdk.drivers.acp.agent_spec_mcp_refs`
+(the seam behind `kirocrew doctor`'s `mcp tool refs` rows) for that one backend: it
+is named when `@kirocrew-computer` resolves to no server there. Codex withholds
+Crew's identity-bound servers from the spec half of its array, so a default codex
+chat has no computer-use tools even though the Settings toggle is on. Reading that
+spec is the same read `kirocrew doctor` makes, so on a home with no managed agent
+spec yet it writes the managed specs first.
+
+That seam does not model the MCP gateway's broker stub. Codex is the one backend
+whose projection is measured to admit the stub for this server
+(`is_session_bound_crew_stub`); the single-binary harnesses withhold it as well. So
+on codex the line names two remedies (route `kirocrew-computer` in MCP Management
+and restart, or use the Kiro CLI backend), and it is absent once the running gateway
+routes the server: `gateway_routed_names()`, the saved routing and a stub in the
+overlay built at the gateway's start, the answer the MCP tab gives. On every other
+backend the line names only the Kiro CLI backend, routed or not. The projection's
+own withhold warnings are silenced for this one question: no session runs in it,
+and the Settings panel repeats the `--json` probe every few seconds while a
+permission is missing.
 
 ### `call` is a harness, not an eleventh tool
 
@@ -2435,7 +2469,8 @@ always the attended `cli_chat` surface (`sel._infer_source` → `cli`), used for
 SEL audit record. There is no identity proof and no separate diagnostics opt-in —
 both existed only to satisfy the unattended-surface refusal, which is gone. `doctor`
 remains the diagnostic that works regardless of the enable, because it reads the
-keystone and the TCC state and returns no desktop content.
+keystone, the TCC state and the agent spec's backend projection, and returns no
+desktop content.
 
 **Why a whole array in one process.** `element_index` values only mean anything
 relative to the `computer_get_state` that produced them, and that mapping lives in
@@ -2490,6 +2525,22 @@ server the keystone now forbids. Holding `_get_config_lock()` makes read-decide-
 atomic against every keystone writer, so whichever rebuild finishes last is the one
 that read the final state. It is a plain reacquisition: the write block has already
 exited its own, and `rebuild_agent_config` never takes this lock.
+
+App agents are rewritten in the same step, after the host rebuild and before the
+reset. An app agent that references `@kirocrew-computer` gets the entry in its
+materialized config (`<app>--<agent>.json`) only while the gate is open, so the
+handler re-materializes every enabled app's agents through
+`apps.bridges.refresh_app_agents_if_enabled`, one app at a time under that app's
+`app_lifecycle_lock`. That lock keeps an update, disable or uninstall in flight from
+interleaving with the rewrite; it is taken outside the config lock, because other
+paths take the config lock inside it. The keystone is read live under each app's
+lock and every flip runs its own pass, so overlapping saves still end on the final
+setting. A CLI disable runs in another process, so each app's enablement is also
+re-read after its rewrite, as `backend_runtime.registration` does: an app disabled
+meanwhile has its agents removed again, and an unreadable state writes nothing
+before the rewrite and deletes nothing after it. A failure is logged, does not fail
+the save, and leaves that app's agents on their old server set until the next
+gateway start.
 
 
 Deliberately narrow, so a restart is never gratuitous:

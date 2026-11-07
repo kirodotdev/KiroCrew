@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react'
 import { livePromptHistoryCursor, promptHistoryKeyEngages, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from '../composerPromptHistory'
+import type { PasteBlock } from '../../utils/pasteTokens'
 
 /* The draft's own prompt history: ↑/↓ recall of the prompts this slot sent.
    The explicit undo/redo snapshots live in chat-core
@@ -21,10 +22,12 @@ export function usePromptHistory() {
   const endBrowsing = useCallback(() => {
     historyCursorRef.current = null
   }, [])
-  const recall = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>, { sentMessages, current, onChange, inputRef }: {
+  const recall = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>, { sentMessages, current, blocks, onChange, onBlocksChange, inputRef }: {
     sentMessages: PromptHistoryItem[]
     current: string
+    blocks: PasteBlock[]
     onChange: (v: string) => void
+    onBlocksChange?: (blocks: PasteBlock[]) => void
     inputRef: React.RefObject<HTMLTextAreaElement>
   }) => {
     const ta = e.currentTarget
@@ -51,13 +54,14 @@ export function usePromptHistory() {
     // A held ↑ scrolling up through the user's own draft stops at its start;
     // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
     if (direction === 'older' && e.repeat && !cursor && cur !== '') return
-    const step = stepPromptHistory(sentMessages, cursor, direction, cur)
+    const step = stepPromptHistory(sentMessages, cursor, direction, cur, blocks)
     if (!step) return
     historyCursorRef.current = step.cursor
     // ↑ on the oldest entry resolves to the text already shown: consume the
     // key so the caret does not jump, but leave the value alone.
     if (step.cursor === null || step.text !== cur || cursor === null) {
       onChange(step.text)
+      onBlocksChange?.(step.pastes ?? [])
       moveCaretToEndAfterRecall()
     }
     e.preventDefault()

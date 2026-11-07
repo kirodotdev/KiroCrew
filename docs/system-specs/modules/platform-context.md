@@ -600,7 +600,7 @@ Runtime code reads only the module constant, never the build variable or a confi
 
 | Control id | Local source ignored | Read site | Setting API |
 |---|---|---|---|
-| `tunnel` | `tunnel.enabled`, `tunnel.relay_enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/server.py::start_dashboard`, which builds the app's `RelayIngress` off there; `platform/bootstrap.py::_public_tunnel_provider` with `relay_client/provider.py::relay_selected`, which never select or import the relay client there; `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks all three paths `lockedByPolicy` |
+| `tunnel` | `tunnel.enabled`, `tunnel.relay_enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/server.py::start_dashboard`, which builds the app's `RelayIngress` off there; `platform/bootstrap.py::_public_tunnel_provider`, which never selects or imports the relay client there; all three read the relay switch through `edition_locks.py::relay_selected`; `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks all three paths `lockedByPolicy` |
 | `telemetry.otlp_hosts` | `telemetry.otlp_endpoint`, `telemetry.otlp_endpoints` | `metrics/provider.py::_edition_locked_view`, read by `_otlp_destinations` and `otlp_egress_active` before any provider sees the config (an edition provider's own destinations stay) | `GET /api/config/schema` marks the path `lockedByPolicy` |
 | `developer_mode` | `KIROCREW_DEV_MODE` (and the `-dev` home suffix for the update simulator) | `session_environment.py::session_environments_enabled` (remote placement stays off) and `dashboard/routes/system.py` (`POST /api/update/simulate` is not registered) | none; an environment variable has no setting API. The flag's on-loop persistence strictness only raises more, so it is left as is |
 
@@ -931,7 +931,9 @@ Wired sites:
   returns `frozenset()` so standalone redaction is byte-identical.
 - `agent_parts/spec_build.py` and `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively into the agent config build; the dynamic refresh also re-pins an
-  existing entry's `command`/`args` and keeps its other keys.
+  existing entry's `command`/`args` and keeps its other keys. A server first
+  supplied on an existing spec gains its `@name` ref in `tools` once
+  (`agent_materialization/guide_platform.py`, `grant_edition_refs_once`).
 - `slack/events.py` / `slack/handler_runtime/dispatch.py` / `dashboard/handlers_system.py` —
   Slack enterprise gate + SSO status route through `slack_gate` / `identity`.
 - `mcp_gateway/manager.py` — `GatewayManager._spawn_once` resolves
@@ -1083,13 +1085,15 @@ Wired sites:
   Import direction: `tunnel/` imports
   `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
   **The relay client in the slot.** `build_default_context` fills the slot through
-  `relay_client/provider.py::public_tunnel_provider`: the no-op
-  `DefaultTunnelProvider` unless `tunnel.relay_enabled` is on and
-  `local_enable_locked("tunnel")` is false, and then `RelayTunnelProvider`, the
-  Kiro relay's host leg (protocol v1). Only the public composition calls it, so a
-  companion that composes its own context keeps its own provider and never gets
-  the relay client. The choice is made once, at composition (the key is
-  `restart=True`), and construction does no I/O. The manager stays edition-neutral
+  `platform/bootstrap.py::_public_tunnel_provider`: the no-op
+  `DefaultTunnelProvider` unless `edition_locks.py::relay_selected` says
+  `tunnel.relay_enabled` is on and `local_enable_locked("tunnel")` is false, and
+  then `relay_client/provider.py::public_tunnel_provider`'s `RelayTunnelProvider`,
+  the Kiro relay's host leg (protocol v1). `relay_selected` imports nothing from
+  `relay_client/`, so a composition with the relay off never loads it. Only the
+  public composition calls it, so a companion that composes its own context keeps
+  its own provider and never gets the relay client. The choice is made once, at
+  composition (the key is `restart=True`), and construction does no I/O. The manager stays edition-neutral
   and drives it like any provider: `start()` is reached only through
   `tunnel/setup.py`'s `--no-tunnel` and token-auth gates, and the provider's
   `ensure_available()` only reports state, because the on-demand link path that

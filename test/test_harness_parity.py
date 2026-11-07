@@ -1326,6 +1326,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "mint a non-shell verdict from a shape that backend never promised.",
     (
         "src/kiro_crew/acp/runtime_spawn_launch.py",
+        "_switch_off_mcp_for_toolless_spawn",
+    ): "``_kiro/mcp/toggle`` is a KAS engine extension notification, and only KAS starts "
+    "the user's mcp.json servers for an agent that sets includeMcpJson false. "
+    "Sending it to any other harness would put an unknown method on its wire.",
+    (
+        "src/kiro_crew/acp/runtime_spawn_launch.py",
         "_spawn_admitted",
     ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "
     "setting used to bound skill metadata. Other harnesses must keep their own spawn plans.",
@@ -1401,6 +1407,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "``_kiro/session/compact`` is KAS's own extension verb, advertised in its "
     "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
     "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
+    (
+        "src/kiro_crew/acp/session_handle_kas.py",
+        "kas_command_call",
+    ): "``_kiro/session/context``, ``_kiro/knowledge`` and ``_kiro/codeIntelligence`` are "
+    "KAS's own extension verbs behind a person's ``/context``, ``/knowledge`` and "
+    "``/code``. The positive test keeps them off every other harness's wire.",
     (
         "src/kiro_crew/acp/session_handle_updates.py",
         "_handle_update",

@@ -90,10 +90,12 @@ function GroupCard({ group }: { group: GitLabGroup }) {
         </span>
         <button
           type="button"
-          onClick={() => { void reviews.refetch() }}
-          disabled={reviews.isFetching}
+          onClick={() => { if (!reviews.isFetching) void reviews.refetch() }}
+          // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+          // order and drops a keyboard user's focus to the page while it runs.
+          aria-disabled={reviews.isFetching || undefined}
           aria-label={i18nT('apps.issueRadar.views.groupReviewsView.refresh_group', { path: group.path })}
-          className="p-1 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-0 disabled:opacity-30 disabled:cursor-default"
+          className="p-1 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-0 aria-disabled:opacity-30 aria-disabled:cursor-default"
         >
           <RefreshCw size={13} aria-hidden="true" className={reviews.isFetching ? 'animate-spin' : ''} />
         </button>

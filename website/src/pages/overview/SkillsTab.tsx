@@ -8,6 +8,7 @@ import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
 import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import HoverTip from '../../components/HoverTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, skillPostPath, type SkillFormData } from '../../components/SkillForm'
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
@@ -24,6 +25,7 @@ import SkillContextBudget from './SkillContextBudget'
 import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
 import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 import { Trans } from 'react-i18next'
 
@@ -100,6 +102,7 @@ function sourceLabel(source: Skill['source']): string | null {
 }
 
 export default function SkillsTab() {
+  const { confirm, cancel, confirmDialog } = useConfirm()
   const provider = useProvider()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -144,6 +147,9 @@ export default function SkillsTab() {
   // Entering the budget view PUSHES a history entry so browser Back returns to
   // Skills; leaving via the in-app affordance replaces (pops back cleanly).
   const viewBudget = searchParams.get('view') === 'budget'
+  useEffect(() => {
+    if (viewBudget) cancel()
+  }, [viewBudget, cancel])
   const showBudget = () => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', 'budget'); return next })
   const hideBudget = () => setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('view'); return next }, { replace: true })
 
@@ -480,6 +486,7 @@ export default function SkillsTab() {
   }
 
   if (isLoading) return (<>
+    {confirmDialog}
     <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text={i18nT('pages.overview.skillsTab.on_demand_skills_loaded_when_the_agent_determine')} /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3"><div className="h-8 max-w-[480px] flex-1 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5 }} /></div>
@@ -493,7 +500,7 @@ export default function SkillsTab() {
   </>)
 
   // Control plane: full-page budget view, deep-linkable via ?view=budget.
-  if (viewBudget) return <SkillContextBudget onBack={hideBudget} />
+  if (viewBudget) return <>{confirmDialog}<SkillContextBudget onBack={hideBudget} /></>
 
   // One predicate for the Create button's `disabled` and its onClick guard, so
   // the two can never disagree — a keyboard activation that races the disabled
@@ -505,6 +512,7 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
+    {confirmDialog}
     <PendingSkillsPanel sort={skillSort} />
     <ProjectSkillsPlatformHint />
     <ProjectSkillsTrustList />
@@ -734,7 +742,16 @@ export default function SkillsTab() {
                           would clear the second's failure notice, and the
                           optimistic snapshots would restore each other's
                           rows. One delete at a time, like the create modal. */}
-                      <Btn danger disabled={deleteSkill.isPending} onClick={() => { if (deleteSkill.isPending) return; if (confirm(i18nT('pages.overview.skillsTab.delete_confirm', { name: selectedSkill.key }))) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
+                      <Btn danger disabled={deleteSkill.isPending} onClick={async () => {
+                        if (deleteSkill.isPending) return
+                        const key = selectedSkill.key
+                        const ok = await confirm({
+                          title: i18nT('pages.overview.skillsTab.delete'),
+                          body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.skillsTab.delete_confirm', { name: key })}</p>,
+                          confirmLabel: i18nT('pages.overview.skillsTab.delete'),
+                        })
+                        if (ok) deleteSkill.mutate(key)
+                      }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
                     </div>
                   )}
                 </div>
@@ -929,6 +946,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   onApprove: (slug: string, contentSha256: string) => void
   onDismiss: (slug: string, contentSha256?: string) => void
 }) {
+  const { confirm, confirmDialog } = useConfirm()
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
   // Deliberately an effect and not a `useState(autoOpen)` initializer: the panel
@@ -960,6 +978,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   })
   return (
     <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
+      {confirmDialog}
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
@@ -1006,7 +1025,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           // shown is not known to be the file Approve would promote.
           const detailUnconfirmed = detailFetchStatus !== 'idle' || !!detailReadError
           const approveDisabled = !open || !detail || !detail.content_sha256 || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
-          return (
+          const approve = (
             <Btn
               /* Non-primary while the candidate is flagged AND the button is
                  enabled: a bright primary button beside "approving will be
@@ -1016,15 +1035,31 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                  (grey-vs-faded-purple on a mixed queue read as two different
                  controls). It stays ENABLED when flagged — the server is the
                  authority and a fixed script can be retried — and the visible
-                 hint under the row header says so in plain words. No `title`:
-                 it would restate the already-visible hint. */
+                 hint under the row header says so in plain words. No `title`
+                 for the flagged state: it would restate that visible hint. */
               primary={approveDisabled || p.script_validation?.ok !== false}
-              disabled={approveDisabled}
-              onClick={() => { if (detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
+              /* Collapsed, aria-disabled rather than disabled: a disabled
+                 button gets no hover or focus, so its tip could never say
+                 that Review comes first. The click guard below holds it, and
+                 the aria-disabled classes repeat a disabled primary's look. */
+              aria-disabled={!open || undefined}
+              disabled={open && approveDisabled}
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
+              onClick={() => { if (!approveDisabled && detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
+          return open ? approve : <HoverTip label={i18nT('pages.overview.skillsTab.approve_review_first')}>{approve}</HoverTip>
         })()}
-        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug, detail?.content_sha256) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
+        <Btn danger onClick={async () => {
+          const slug = p.slug
+          const contentSha256 = detail?.content_sha256
+          const ok = await confirm({
+            title: i18nT('pages.overview.skillsTab.dismiss'),
+            body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name })}</p>,
+            confirmLabel: i18nT('pages.overview.skillsTab.dismiss'),
+          })
+          if (ok) onDismiss(slug, contentSha256)
+        }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {p.script_validation?.ok === false && approveRefusal?.code !== 'script_validation_failed' && (
         /* Visible everywhere the flagged badge is, collapsed AND expanded:
@@ -1197,6 +1232,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
 }
 
 function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1561,11 +1597,8 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     },
   })
   const dismissAll = useMutation({
-    mutationFn: () => api.dismissAllPendingSkills(pending.map(p => p.slug)),
+    mutationFn: (slugs: string[]) => api.dismissAllPendingSkills(slugs),
     onMutate: () => {
-      // Unconditional, unlike the per-row mutations: Dismiss All targets EVERY
-      // pending candidate, so any per-candidate failure notice is about a
-      // subject this very click retries — its outcome supersedes them all.
       setPanelError(null)
     },
     onError: (err) => {
@@ -1595,7 +1628,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
   // panelError keeps the panel mounted for the same reason: a not-found
   // approve refusal empties the queue via refetch, and unmounting would eat
   // the very notice explaining why the row vanished.
-  if (pending.length === 0 && !reviewMissing && !panelError) return null
+  if (pending.length === 0 && !reviewMissing && !panelError) return <div className="mb-2" hidden={!confirmOpen}>{confirmDialog}</div>
   // Resolve "approved or dismissed" from the live list the same error branch
   // refetched: an approved candidate reappears there under its name. Settled
   // only once that refetch completes SUCCESSFULLY — a stale cache cannot claim
@@ -1613,11 +1646,11 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
   // No top margin on the root, for the same reason as the tab's heading below:
   // this panel is the Skills tab's FIRST in-flow element whenever it renders,
   // and the pane already owns the gap under the tab strip. It is also WHY that
-  // heading drops its margin outright instead of using `first:mt-0` — this panel
-  // returns null when there is nothing pending, so the heading moves in and out
-  // of `:first-child` with the pending count.
+  // heading drops its margin outright instead of using `first:mt-0`: this panel
+  // stays mounted even when it has no in-flow content.
   return (
     <div className="mb-2">
+      {confirmDialog}
       {/* Suppressed when the ONLY thing to show is the resolved-candidate
           notice: a "Pending review (0)" heading over a sentence explaining
           there is nothing to review reads like a broken count. */}
@@ -1625,7 +1658,17 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
           {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
           <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
-          <Btn danger className="ml-auto text-[11px]" onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: pending.length }))) dismissAll.mutate() }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
+          <Btn danger className="ml-auto text-[11px]" onClick={async () => {
+            if (dismissAll.isPending) return
+            // Snapshot the queue so confirmation does not authorize later arrivals.
+            const slugs = pending.map(p => p.slug)
+            const ok = await confirm({
+              title: i18nT('pages.overview.skillsTab.dismiss_all'),
+              body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: slugs.length })}</p>,
+              confirmLabel: i18nT('pages.overview.skillsTab.dismiss_all'),
+            })
+            if (ok) dismissAll.mutate(slugs)
+          }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
         </h4>
       )}
       {pending.length > 0 && (

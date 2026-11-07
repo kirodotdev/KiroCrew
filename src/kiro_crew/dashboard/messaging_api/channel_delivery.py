@@ -76,9 +76,16 @@ def _owner_dm_target(transport: Any) -> str:
 
 
 async def _deliver_channel_dm(
-    state: DashboardState, channel_type: str, text: str, *, caller_session: str
+    state: DashboardState,
+    channel_type: str,
+    text: str,
+    *,
+    caller_session: str,
+    markdown: bool = False,
 ) -> tuple[bool, str, str]:
     """Deliver *text* as a DM on *channel_type*. Returns ``(sent, code, detail)``.
+
+    *markdown* sends each part through the transport's ``send_markdown``.
 
     Channel-neutral by construction: the transport is looked up by name, the
     destination comes from its own configured-target allowlist, and delivery runs
@@ -213,13 +220,14 @@ async def _deliver_channel_dm(
         live_transport.capabilities,
         redactor=redact_via_context,
     )
+    send = live_transport.send_markdown if markdown else live_transport.send_message
     try:
         for unit in units:
             # Fail on the first UNCONFIRMED unit rather than pressing on: the
             # remaining chunks of a message whose head never landed would arrive as
             # an orphaned fragment. `delivery_confirmed` owns which of the two id
             # conventions this transport follows.
-            sent = await live_transport.send_message(conversation_id, unit, thread_id=thread_id)
+            sent = await send(conversation_id, unit, thread_id=thread_id)
             if not delivery_confirmed(live_transport.capabilities, sent):
                 logger.warning(
                     "send_message: %s returned no message id; treating as undelivered",
@@ -275,7 +283,12 @@ def _cron_job_for(state: DashboardState, caller_session: str) -> Any | None:
 
 
 async def _deliver_to_channel(
-    state: DashboardState, session_key: str, text: str, *, channel_type: str = ""
+    state: DashboardState,
+    session_key: str,
+    text: str,
+    *,
+    channel_type: str = "",
+    markdown: bool = False,
 ) -> bool:
     """Governed proactive send to the channel conversation behind *session_key*.
 
@@ -290,7 +303,8 @@ async def _deliver_to_channel(
     link must match it: a session can only have one channel link, so a mismatch
     means the caller asked for a conversation this session does not have, and
     posting to the link it does have would deliver to an audience nobody asked
-    for. Empty accepts whatever the link names.
+    for. Empty accepts whatever the link names. *markdown* sends each part
+    through the transport's ``send_markdown``.
 
     Fails closed and returns ``False`` — never falls through to another
     destination — for every reason a send can be refused: no link, a link on
@@ -367,24 +381,27 @@ async def _deliver_to_channel(
     # the confirmation mean the whole message. The two legs keep separate loops on
     # purpose: this one splits plain text, while the gateway's splits markdown with
     # fence sealing, and collapsing them would silently retune one of the two.
-    parts = chunk_text(
-        render_options_as_text(
-            display_safe_for(text, transport.capabilities, redactor=redact_via_context),
-            transport.capabilities,
-        ),
-        transport.capabilities.max_message_chars,
+    # A markdown send is the exception: each part is rendered on its own, so a cut
+    # inside a code fence would render the rest of the code as prose. It takes the
+    # fence-aware splitter, off the loop like the sibling legs.
+    safe = render_options_as_text(
+        display_safe_for(text, transport.capabilities, redactor=redact_via_context),
+        transport.capabilities,
     )
+    if markdown:
+        parts = await asyncio.to_thread(
+            chunk_for_transport, safe, transport.capabilities, redactor=redact_via_context
+        )
+    else:
+        parts = chunk_text(safe, transport.capabilities.max_message_chars)
+    send = transport.send_markdown if markdown else transport.send_message
     for part in parts:
         try:
             # "No exception" is not delivery on its own, and auditing it as such
             # would report a success for a message the user never saw -- the one
             # outcome this helper's contract exists to prevent.
             # `delivery_confirmed` owns which id convention this transport follows.
-            delivered = await transport.send_message(
-                resolved.channel_id,
-                part,
-                thread_id=resolved.thread_id,
-            )
+            delivered = await send(resolved.channel_id, part, thread_id=resolved.thread_id)
         except Exception:
             logger.warning("channel send: delivery failed for %s", session_key, exc_info=True)
             _audit("error", "transport_error")
@@ -407,8 +424,11 @@ async def _send_to_channel_target(
     *,
     caller_session: str = "",
     request_app: str = "",
+    markdown: bool = False,
 ) -> web.Response:  # noqa: C901
     """Deliver *text* to an opaque configured target on a registered transport.
+
+    *markdown* sends each part through the transport's ``send_markdown``.
 
     Four gates, all fail-closed, in the order their evidence is cheapest. The
     governance gate also asks the calling app's own ``capabilities.messaging``
@@ -503,6 +523,7 @@ async def _send_to_channel_target(
         transport.capabilities,
         redactor=redact_via_context,
     )
+    send = transport.send_markdown if markdown else transport.send_message
     try:
         for index, part in enumerate(parts):
             # Most transports report a failed send by RETURNING a falsy id rather
@@ -516,7 +537,7 @@ async def _send_to_channel_target(
             # convention each transport follows, from its own declared
             # ``returns_message_id`` — the alternative is this leg reporting every
             # delivered message on those as lost.
-            sent = await transport.send_message(conversation_id, part, thread_id=thread_id)
+            sent = await send(conversation_id, part, thread_id=thread_id)
             if not delivery_confirmed(transport.capabilities, sent):
                 raise _ChannelSendFailed(f"part {index + 1} of {len(parts)} was not accepted")
     except Exception as exc:

@@ -97,6 +97,13 @@ async def _run_inner_impl(
     usage: _RunCreditAccounting,
 ) -> None:
     """Inner execution — called within timeout wrapper."""
+    # A recovery attempt that never gets a session must not erase the one an
+    # earlier attempt ran in: the crew-log closer names it (``child_sid``).
+    setattr(
+        info,
+        "_last_session_id",
+        getattr(info, "_session_id", "") or getattr(info, "_last_session_id", ""),
+    )
     setattr(info, "_session_id", "")
     setattr(info, "_session_provider", "")
     setattr(info, "_session_cwd", "")
@@ -569,6 +576,8 @@ async def _run_inner_impl(
         )
         return verdict
 
+    _parent_revoked = _session.parent_trust_revoked(self._manager._sessions, info._approval_lineage)
+
     def _policy_for(spec: Any) -> tool_permission.Policy:
         # ``sel`` is read per row, as the facade's audit seam expects.
         return self._permission_policy(
@@ -579,6 +588,7 @@ async def _run_inner_impl(
             consult=_consult_gate,
             sel=lambda: sel(),
             log=logger,
+            parent_revoked=_parent_revoked,
         )
 
     _wire = tool_permission.AcpWire(client)

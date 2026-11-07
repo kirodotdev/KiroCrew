@@ -23,8 +23,12 @@
  * The walk emits tokens, never in-band marker characters, so every character of
  * the content, whatever it is, comes out unchanged.
  *
+ * {@link visibleHast} reads a selected part by the same rules, as markup, for a
+ * rich-text copy of a selection.
+ *
  * @module utils/visibleText
  */
+import type { ElementContent, Properties } from 'hast'
 
 const codeText = new WeakMap<Element, string>()
 
@@ -92,6 +96,19 @@ function keepsSpacing(tag: string, style: CSSStyleDeclaration | null): boolean {
   return ws === 'pre' || ws === 'pre-wrap' || ws === 'pre-line' || ws === 'break-spaces'
 }
 
+/** A KaTeX formula's TeX source: KaTeX marks its own drawn copy aria-hidden and
+ *  keeps the MathML copy, which carries the source, for screen readers. */
+function texOf(el: Element): string {
+  return el.querySelector('annotation[encoding="application/x-tex"]')?.textContent ?? ''
+}
+
+/** The children a reader sees: a closed `<details>` shows only its summary. */
+function shownChildren(el: Element): Node[] {
+  if (el.localName !== 'details' || (el as HTMLDetailsElement).open) return Array.from(el.childNodes)
+  const summary = Array.from(el.children).find((c) => c.localName === 'summary')
+  return summary ? [summary] : []
+}
+
 function walk(node: Node, out: Token[], pre: boolean): void {
   if (node.nodeType === 3) {
     const value = node.nodeValue ?? ''
@@ -108,10 +125,9 @@ function walk(node: Node, out: Token[], pre: boolean): void {
   }
   const style = styleOf(el)
   if (hiddenFromReader(el, style)) return
-  // A visible formula: its TeX once. Taken from the root, because KaTeX marks
-  // its own drawn copy aria-hidden and keeps the MathML copy for screen readers.
+  // A visible formula: its TeX once, taken from the root.
   if (el.classList.contains('katex')) {
-    const tex = el.querySelector('annotation[encoding="application/x-tex"]')?.textContent ?? ''
+    const tex = texOf(el)
     if (tex) out.push({ kind: 'kept', text: tex })
     return
   }
@@ -128,13 +144,8 @@ function walk(node: Node, out: Token[], pre: boolean): void {
   if (tag === 'td' || tag === 'th') out.push(CELL)
   const block = BLOCKS.has(tag) || el.classList.contains('katex-display')
   if (block) out.push(BREAK)
-  if (tag === 'details' && !(el as HTMLDetailsElement).open) {
-    const summary = Array.from(el.children).find((c) => c.localName === 'summary')
-    if (summary) walk(summary, out, pre)
-  } else {
-    const inner = pre || keepsSpacing(tag, style)
-    for (const child of Array.from(el.childNodes)) walk(child, out, inner)
-  }
+  const inner = pre || keepsSpacing(tag, style)
+  for (const child of shownChildren(el)) walk(child, out, inner)
   if (block) out.push(BREAK)
 }
 
@@ -177,4 +188,83 @@ export function visibleText(root: Element): string {
   const tokens: Token[] = []
   for (const child of Array.from(root.childNodes)) walk(child, tokens, keepsSpacing(root.localName, styleOf(root)))
   return join(tokens)
+}
+
+const KEPT_EMPTY = new Set(['br', 'hr', 'td', 'th'])
+
+function insideHeldCode(node: Node | null): boolean {
+  for (; node; node = node.parentNode) if (node.nodeType === 1 && codeText.has(node as Element)) return true
+  return false
+}
+
+/**
+ * The part of `root` inside `range` as hast, by the rules `visibleText` reads
+ * by: what the reader cannot see gives nothing, a held code block its code, a
+ * formula its TeX, a closed `<details>` its summary. Elements keep their tag and
+ * every attribute, under its attribute name; the caller decides which survive.
+ *
+ * Nothing at all when the range starts or ends inside a held code block: the
+ * highlighter draws the code in a shadow root, so the selected part of it is
+ * not in the light DOM to read.
+ */
+export function visibleHast(root: Element, range: Range): ElementContent[] {
+  if (insideHeldCode(range.startContainer) || insideHeldCode(range.endContainer)) return []
+  return Array.from(root.childNodes).flatMap((child) => hastOf(child, range))
+}
+
+function hastOf(node: Node, range: Range): ElementContent[] {
+  if (!range.intersectsNode(node)) return []
+  if (node.nodeType === 3) {
+    const value = node.nodeValue ?? ''
+    const text = value.slice(node === range.startContainer ? range.startOffset : 0, node === range.endContainer ? range.endOffset : value.length)
+    return text ? [{ type: 'text', value: text }] : []
+  }
+  if (node.nodeType !== 1) return []
+  const el = node as Element
+  const tag = el.localName
+  if (el.hasAttribute(HOST_ONLY_ATTR) || hiddenFromReader(el, styleOf(el)) || SKIP.has(tag)) return []
+  const code = codeText.get(el)
+  if (code !== undefined) {
+    return [{ type: 'element', tagName: 'pre', properties: {}, children: [{ type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: code }] }] }]
+  }
+  // An unfurled link chip or card copies as its URL, as the plain-text copy does,
+  // never as the fetched title and description it shows.
+  const unfurled = tag === 'a' ? el.getAttribute('data-unfurl-url') : null
+  if (unfurled) return [{ type: 'element', tagName: 'a', properties: { href: unfurled }, children: [{ type: 'text', value: unfurled }] }]
+  if (el.classList.contains('katex')) {
+    const tex = texOf(el)
+    return tex ? [{ type: 'text', value: tex }] : []
+  }
+  const shown = shownChildren(el)
+  const parts = shown.map((child) => hastOf(child, range))
+  // A selection that starts mid-row and runs into later rows gets a blank cell
+  // for each cell before it, so the selected cells stay under their headers.
+  // One that stays inside the row pads nothing, so one cell still pastes inline.
+  if (tag === 'tr' && !el.contains(range.endContainer) && parts.some((part) => part.length)) {
+    for (let i = 0; !parts[i].length; i++) {
+      const cell = shown[i]
+      if (cell.nodeType === 1 && KEPT_EMPTY.has((cell as Element).localName)) parts[i] = [{ type: 'element', tagName: (cell as Element).localName, properties: attributesOf(cell as Element), children: [] }]
+    }
+  }
+  const children = parts.flat()
+  // A block the range only touches at its edge (a triple-click ends at the next
+  // paragraph's start) holds nothing. A break or a rule is its own content, and
+  // a cell that is empty in the reply keeps the cells after it in their columns.
+  if (!children.length && !(KEPT_EMPTY.has(tag) && !el.textContent?.trim())) return []
+  const properties = attributesOf(el)
+  // A numbered list the selection enters past its first item keeps the numbers
+  // the reader saw.
+  if (tag === 'ol') {
+    const first = parts.findIndex((part) => part.length)
+    const skipped = shown.slice(0, first).filter((child) => child.nodeType === 1 && (child as Element).localName === 'li').length
+    const start = parseInt(el.getAttribute('start') ?? '', 10)
+    if (skipped) properties.start = String((Number.isNaN(start) ? 1 : start) + skipped)
+  }
+  return [{ type: 'element', tagName: tag, properties, children }]
+}
+
+function attributesOf(el: Element): Properties {
+  const properties: Properties = {}
+  for (const attr of Array.from(el.attributes)) properties[attr.name] = attr.value
+  return properties
 }

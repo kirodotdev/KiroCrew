@@ -132,12 +132,20 @@ def _note_eager_spawn_failure(slot: "_ChatSlot", exc: BaseException) -> None:
     # near-frame-limit payload, and this row is retained and broadcast.
     detail = redact_and_truncate(str(exc), _EAGER_SPAWN_ERROR_DETAIL_MAX_CHARS)
     try:
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        _last_error = detail or type(exc).__name__
         slot.append(
             "error",
             f"This chat's agent failed to start {failures} times in a row, so it "
             "will not be started again in the background. Send a message to try "
-            f"again. Last error: {detail or type(exc).__name__}",
+            f"again. Last error: {_last_error}",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_EAGER_SPAWN_STOPPED,
+                failures=failures,
+                detail=_last_error,
+            ),
         )
     except Exception:
         logger.debug("Eager spawn: could not post the stop notice for %s", slot.key, exc_info=True)
@@ -949,6 +957,8 @@ async def _spawn_admitted_prefetch(
                 crew_agent=crew_alias,
                 model=_requested_model or None,
                 cwd=slot.project or None,
+                # Same opt-in as the turn's claim: the chat shows the notice.
+                fallback_hidden_cwd=True,
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,

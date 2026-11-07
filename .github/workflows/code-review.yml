@@ -571,6 +571,43 @@ jobs:
           git diff "$MERGE_BASE" "$HEAD_SHA" > "$diff_file"
           python3 .github/scripts/take_away_check.py "$diff_file"
 
+      # ── App-repo commit for an adopted app's wheel copy ─────────────
+      # An app pinned in adoption-pins.json runs from its own repository on
+      # an adopted host, so a change made only to its wheel copy never
+      # reaches that user. Such a change names its app-repo commit or PR as
+      # an `App repo:` line (format and exemptions: the script). Pins are
+      # read at the merge base, the base tip and the head: the head so a PR
+      # cannot drop its own pin to pass, the base tip so a branch cut before
+      # a pin landed is still held to it. The script is read from the base
+      # ref so a branch cannot weaken its own check; the checkout copy runs
+      # only while the base tip has no such file.
+      - name: Require an app-repo commit for an adopted app's wheel copy
+        env:
+          MERGE_BASE: ${{ steps.diffbase.outputs.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          script="$(mktemp)"
+          listed="$(git ls-tree --name-only "$BASE_TIP" -- .github/scripts/adopted_wheel_copy_check.py)"
+          if [ -n "$listed" ]; then
+            git show "$BASE_TIP:.github/scripts/adopted_wheel_copy_check.py" > "$script"
+          else
+            cp .github/scripts/adopted_wheel_copy_check.py "$script"
+          fi
+          pins_path=src/kiro_crew/apps/adoption-pins.json
+          changes="$(mktemp)"
+          git diff --name-status --no-renames "$MERGE_BASE" "$HEAD_SHA" > "$changes"
+          pin_files=()
+          for rev in "$MERGE_BASE" "$BASE_TIP" "$HEAD_SHA"; do
+            pins="$(mktemp)"
+            if [ -n "$(git ls-tree --name-only "$rev" -- "$pins_path")" ]; then
+              git show "$rev:$pins_path" > "$pins"
+            fi
+            pin_files+=("$pins")
+          done
+          python3 "$script" "$changes" ${pin_files[@]+"${pin_files[@]}"}
+
       # ── Sibling sweep on fix PRs ────────────────────────────────────
       # A fix that repairs one site and leaves its siblings is the commonest
       # partial_fix. Fix/revert PRs list every other place with the same defect

@@ -166,6 +166,7 @@ async def test_a_row_is_the_conductor_item_shape_minus_the_masked_field():
     derived = {
         "orphaned",
         "stale",
+        "looping",
         "acceptance_concrete",
         "report_undelivered",
         "awaits_person",
@@ -298,10 +299,16 @@ async def test_the_board_reads_a_looping_worker_through_the_gates_resolver(monke
     monkeypatch.setattr(wlh.ledger_wake, "worker_looping", lambda _svc, key: key == WORKER)
     body, _ = await _call(state, CONDUCTOR)
     assert body["items"][0]["stale"] is False
+    # The page reads the loop itself, so the milestone shows as running.
+    assert body["items"][0]["looping"] is True
+    # A turn in flight keeps its own live reading: `looping` is for the idle wait only.
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    assert body["items"][0]["looping"] is False
     monkeypatch.setattr(wlh.ledger_wake, "worker_looping", lambda _svc, _key: False)
     body, _ = await _call(state, CONDUCTOR)
     assert body["items"][0]["stale"] is True
-    assert seen == [True, False]
+    assert body["items"][0]["looping"] is False
+    assert seen == [True, True, False]
 
 
 @pytest.mark.asyncio

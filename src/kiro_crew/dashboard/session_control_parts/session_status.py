@@ -297,8 +297,21 @@ def _pending_approval_fields(state: "DashboardState", slot: Any) -> dict[str, An
     return fields
 
 
+def _creation_parent(slot_key: str) -> str:
+    """*slot_key*'s creator from the crew log's CREATION records, or ``""``. No I/O.
+
+    Never the sidebar parent: an adoption or a handoff moves that, and it says nothing
+    about who made the session.
+    """
+    from kiro_crew.crew_log.session_tree_projection import creator_of
+
+    if not crew_log_emit.enabled():
+        return ""
+    return creator_of(slot_key)
+
+
 def _created_history_roster(
-    state: "DashboardState", caller_key: str, caller_workspace: str
+    state: "DashboardState", caller_key: str, caller_workspace: str, ownership_fenced: bool
 ) -> tuple[dict[str, dict[str, Any]], str, int]:
     """Persisted birth metadata for sessions created by *caller_key*.
 
@@ -306,7 +319,9 @@ def _created_history_roster(
     weaker source than the fenced crew log: ``created_by`` is a claim the line
     makes, which the member ownership boundary keeps only when the crew log
     confirms it, and it is not gateway-authored lineage. Rows retain that
-    distinction through their ``source`` value.
+    distinction through their ``source`` value. For an *ownership_fenced* caller a
+    row also needs :func:`_creation_parent` to name the caller, the creation-record
+    check a revive applies; no record at all makes the result ``incomplete``.
 
     The scan is read-only. ``list_sessions`` supplies the catalog and
     ``get_metadata_status`` supplies both the creator edge and a readability
@@ -345,6 +360,12 @@ def _created_history_roster(
             continue
         if str(meta.get("workspace", "default")) != caller_workspace:
             continue
+        if ownership_fenced:
+            creator = _creation_parent(slot_key)
+            if creator != caller_key:
+                if not creator:
+                    incomplete = True
+                continue
         if len(rows) >= MAX_SESSION_STATUS_ROWS:
             # Keep scanning only to report the exact overflow count. No metadata
             # or title beyond the cap is retained in this request.
@@ -378,7 +399,9 @@ async def created_session_status(
     * ``working`` — a turn is in flight. Wait.
     * ``queued`` — idle, but messages are waiting to run. Also wait, but nothing is
       happening yet, so a steer would land on nothing.
-    * ``idle`` — open and doing nothing. This is the one that needs a decision.
+    * ``idle`` — open and doing nothing. This is the one that needs a decision,
+      unless the row's ``looping`` is true: the session's own bounded loop (a
+      ``monitor_start`` waiting on CI) will wake it, so wait, as for ``working``.
     * ``closed`` — the crew log names it, the dashboard does not hold it, and the
       log records a ``session/closed`` edge: a worker that FINISHED and closed its
       tab. Carries ``closed_at``. Ignore it; there is nothing here to message, and
@@ -428,7 +451,7 @@ async def created_session_status(
     # so run the complete operation in one worker-thread hop.
     caller_workspace = str(getattr(caller_slot, "workspace", "default"))
     history_children, history_state, history_omitted = await asyncio.to_thread(
-        _created_history_roster, state, caller_key, caller_workspace
+        _created_history_roster, state, caller_key, caller_workspace, ownership_fenced
     )
     # The gate above RAN before the suspension, but its verdict does not survive
     # one: a channel mirror can be bound onto an already-open dashboard session
@@ -598,12 +621,18 @@ async def created_session_status(
             continue
         queue_depth = len(slot._queue)
         running = bool(slot.running)
+        from kiro_crew import ledger_wake
+        from kiro_crew.autonudge import get_instance as get_nudge
+
         rows.append(
             {
                 "target": key,
                 "title": _bounded_status_title(slot.display_title),
                 "status": "working" if running else ("queued" if queue_depth else "idle"),
                 "running": running,
+                # Its own loop will wake it (``ledger_wake.worker_looping``): an
+                # ``idle`` row with it is waiting on something outside, not stopped.
+                "looping": not running and ledger_wake.worker_looping(get_nudge(), key),
                 "queue_depth": queue_depth,
                 "process": process_state(state, slot),
                 **_pending_approval_fields(state, slot),

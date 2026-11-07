@@ -183,12 +183,14 @@ export default function ChatPaneChrome({
         >
           <SessionTabStrip
             tabs={sessionTabs.tabs}
+            pinned={sessionTabs.pinned}
             activeKey={activeSlot}
             cue={sessionTabs.cue}
             connected={connected}
             onSelect={selectSessionTab}
             onClose={closeSessionTab}
             onReorder={sessionTabs.reorderTabs}
+            onTogglePin={sessionTabs.togglePin}
           />
         </div>
       )}

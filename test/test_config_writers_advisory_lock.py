@@ -65,16 +65,9 @@ class TestAppsManagerTrustRevoke:
     ) -> None:
         """Two writers, deterministically interleaved: neither may lose the other.
 
-        Writer A is an ordinary locked config write (the shape ``kirocrew config
-        set`` and the dashboard settings PATCH both use), suspended inside its
-        mutate callback so it is holding the sidecar. Writer B is the trust
-        revoke, started while A holds it.
-
-        Before the conversion B took no advisory lock: it read straight away --
-        observing the document as it was BEFORE A's write -- and renamed over the
-        top, so exactly one of the two changes reached disk depending on who
-        renamed last. After it, B waits for the sidecar and re-reads inside its
-        own hold, so both land.
+        Writer A (an ordinary locked write) is paused inside its mutate callback while
+        holding the sidecar; writer B (the trust revoke) must wait and re-read inside
+        its own hold, or one change is lost.
         """
         from kiro_crew.apps import manager as appmanager
 
@@ -269,16 +262,8 @@ class TestSetupWizardWriters:
 class TestAForeignSectionIsNeverReplaced:
     """A mutate callback must ABORT on a non-dict section, not overwrite it.
 
-    These live beside the lock tests because the callback is what the conversion
-    introduced: the pre-lock code reached its section through
-    ``dict.setdefault``, which on a scalar either raised (slash command) or was
-    caught and reported as a save failure (dashboard URL). A callback that
-    instead assigns a fresh ``{}`` over that scalar destroys an operator value
-    the step does not own AND reports success -- silent config loss, the exact
-    failure this suite exists to stop.
-
-    A section that is genuinely ABSENT is still created; that is the ordinary
-    path and must keep working, so each case is pinned in both directions.
+    Assigning a fresh ``{}`` over a scalar would destroy an operator value and report
+    success. An absent section is still created, so each case is pinned both ways.
     """
 
     @staticmethod
@@ -424,17 +409,9 @@ class TestTheSeedWritesNoMetaBlock:
 class TestARestoredGrantIsNotDuplicated:
     """``_restore_trust_grant`` must append under the lock, not on top of it.
 
-    The pre-lock ``_has_trust_grant`` check answers "should this restore run at
-    all". It is not the read the write is derived from, so a dashboard re-grant
-    landing between that check and the advisory acquire is invisible to it -- and
-    an unconditional append then persists the name twice. A duplicated entry in
-    ``apps_trusted`` is a corrupted consent record: it is the durable list that
-    decides whether a third-party app may execute, so it must hold each name
-    once and exactly once.
-
-    ``apps_trusted_local`` in the same callback was already guarded, which is
-    what makes the base list's unconditional append an inconsistency rather than
-    a deliberate choice.
+    The ``_has_trust_grant`` check runs before the lock, so a re-grant landing in
+    between would be appended twice. ``apps_trusted`` decides whether a third-party
+    app may execute, so each name must appear exactly once.
     """
 
     def test_a_regrant_landing_before_the_lock_is_not_appended_twice(

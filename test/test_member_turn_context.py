@@ -1,15 +1,8 @@
 """The member-turn chokepoint: one decision point for the rules-currency invariant.
 
-``kiro_crew.members.member_turn_context`` owns the "every member turn runs
-under current rules" invariant as one decision point, not a branch table
-spread across delivery paths. Two families of tests pin it:
-
-1. **Behavior** — the lifecycle mapping and the per-lifecycle verdict, so the
-   invariant's shape cannot drift silently.
-2. **Wiring (AST guards)** — every delivery branch structurally routes through
-   the chokepoint, so a future session-lifecycle branch cannot bypass both the
-   member section and the fail-closed rules gate. Same guard style as
-   ``test_no_members_sel_audit_is_offloaded``.
+``kiro_crew.members.member_turn_context`` owns "every member turn runs under current
+rules". Behavior tests pin the per-lifecycle verdict; AST guards pin that every delivery
+branch routes through it, so none bypasses the fail-closed rules gate.
 """
 
 from __future__ import annotations
@@ -118,10 +111,8 @@ class TestMemberTurnContext:
         """Deny by default: a non-enum lifecycle raises instead of yielding the
         one combination the invariant forbids (no delivery, no gate).
 
-        The str mixin is the hazard pinned here: a bare "warm" compares EQUAL
-        to MemberLifecycle.WARM while failing the identity/membership tests
-        both verdict predicates use, so without the isinstance refusal it
-        would silently produce an unbounded member turn.
+        A bare "warm" equals MemberLifecycle.WARM via the str mixin but fails the identity
+        checks the predicates use, so without the isinstance refusal it fails open.
         """
         with pytest.raises(TypeError):
             member_turn_context(MEMBER, bogus)  # type: ignore[arg-type]

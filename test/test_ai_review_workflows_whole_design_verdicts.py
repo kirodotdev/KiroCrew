@@ -581,18 +581,11 @@ class TestAdvisoryVerdictRequiresCurrentHeadMarker:
 
     These lanes are non-blocking, so the failure is not a bad merge gate; it is
     a badge that asserts "reviewed at this sha" without that being checked.
-    """
 
-    @pytest.mark.parametrize(("lane", "marker"), sorted(ADVISORY_LANES.items()))
-    def test_the_head_marker_is_verified_not_just_emitted(self, lane: str, marker: str) -> None:
-        flat = _flat(_workflow(lane))
-        assert f'grep -qF "[{marker}] $HEAD"' in flat or (
-            f'grep -qF "[{marker}] ${{HEAD:-}}"' in flat
-        ), f"{lane}: verdict is accepted without proving the marker matches HEAD"
-        assert 'verdict="UNKNOWN"' in flat, (
-            f"{lane}: a missing marker must degrade to the existing "
-            "non-blocking UNKNOWN path, not invent a verdict"
-        )
+    That each lane's real step verifies the marker, and reads an unverified
+    BLOCK as UNKNOWN, is `TestAnUnverifiedBlockIsNotHonoured` in
+    `test_ai_review_workflows_verdict_publication.py`.
+    """
 
     @pytest.mark.parametrize(("lane", "marker"), sorted(ADVISORY_LANES.items()))
     def test_the_marker_check_does_not_reintroduce_the_pipe_bug(

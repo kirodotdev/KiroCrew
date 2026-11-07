@@ -188,6 +188,7 @@ class AcpRuntime:
     send_request = _rt_wire.send_request
     send_notification = _rt_wire.send_notification
     _refuse_write_if_dead = _rt_wire._refuse_write_if_dead
+    _record_sent = _rt_wire._record_sent
     _stdin_write_lock = _rt_wire._stdin_write_lock
     _write_response_bounded = _rt_wire._write_response_bounded
     _write_request_bounded = _rt_wire._write_request_bounded
@@ -636,6 +637,7 @@ class AcpRuntime:
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
+        self._child_env_names: frozenset[str] = frozenset()  # set by the launch tail
         # Unroutable-frame drop accounting: (sessionId, method) → count since
         # the last flush, plus the monotonic timestamp of that flush (0.0 = no
         # window open yet; the first counted drop opens it). Written ONLY from

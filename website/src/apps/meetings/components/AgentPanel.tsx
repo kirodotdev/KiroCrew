@@ -93,6 +93,12 @@ interface Props {
   expanded?: boolean
   /** Absent: no expand control (the panel cannot be enlarged here). */
   onToggleExpanded?: () => void
+  /**
+   * Told `true` while this panel holds a minutes draft that differs from its
+   * seed, and `false` once it no longer does or the panel unmounts. The draft is
+   * local state, so a parent that navigates away needs this to ask first.
+   */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 /**
@@ -126,6 +132,7 @@ export default function AgentPanel({
   onRevertOutput,
   expanded = false,
   onToggleExpanded,
+  onDirtyChange,
 }: Props) {
   const ime = useImeGuard()
   const { confirm, confirmDialog } = useConfirm()
@@ -141,19 +148,37 @@ export default function AgentPanel({
   // dirty check below survives that same poll — comparing against the live
   // `output` prop would call an untouched draft dirty the moment the agent
   // writes more.
-  const [draft, setDraft] = useState<{ seed: string; text: string } | null>(null)
+  //
+  // `unsettled` marks a draft whose last save rejected. A rejection does not say
+  // what the server holds (the write may have landed before the refresh after it
+  // failed), so the seed no longer proves the text is saved, and the draft stays
+  // dirty until a later save resolves.
+  const [draft, setDraft] = useState<{ seed: string; text: string; unsettled?: boolean } | null>(
+    null,
+  )
   const isChatAgent = agent.widget_type === 'chat'
   const showChat = chatView || isChatAgent
   const editable = onSaveOutput != null && !showChat
   const editing = draft !== null
-  // The session hook's toast fades; a save or revert that did not land is a state
-  // this panel must keep showing until the next attempt.
-  const [outputError, setOutputError] = useState<string | null>(null)
   // THIS panel's save, distinct from the `editSaving` prop: that prop is
   // session-wide (any panel's save or revert), which is right for disabling the
   // controls but wrong for the button label — an idle panel must not read
   // "Saving…" because a sibling agent's write is in flight.
   const [savePending, setSavePending] = useState(false)
+  // Same dirty rule as `cancelEdit`: against the seed, never the live output.
+  // A draft whose save is still in flight also counts: until the request lands,
+  // the seed does not yet say what the server holds. A draft whose save rejected
+  // counts for the same reason.
+  const dirty =
+    draft !== null && (savePending || draft.unsettled === true || draft.text !== draft.seed)
+  useEffect(() => {
+    if (!dirty || onDirtyChange == null) return
+    onDirtyChange(true)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
+  // The session hook's toast fades; a save or revert that did not land is a state
+  // this panel must keep showing until the next attempt.
+  const [outputError, setOutputError] = useState<string | null>(null)
 
   const expandRef = useRef<HTMLButtonElement>(null)
   const canExpand = onToggleExpanded != null && !isChatAgent
@@ -188,14 +213,19 @@ export default function AgentPanel({
       // The session hook reports the transport error. Keep the draft open: closing
       // here would turn a failed save into permanent loss of the user's correction.
       setOutputError(i18nT('apps.meetings.session.minutesSaveFailed'))
+      setDraft(current => (current === null ? current : { ...current, unsettled: true }))
       return
     } finally {
       setSavePending(false)
     }
     // Saving is asynchronous but the textarea remains editable. Only close the
     // exact snapshot the request persisted; text typed while it was in flight is
-    // still a local draft and must stay on screen.
-    setDraft(current => current !== null && current.text === submittedDraft ? null : current)
+    // still a local draft and must stay on screen. Its seed moves to the text
+    // the server now holds, so an edit back to the old seed still reads dirty.
+    setDraft(current => {
+      if (current === null || current.text === submittedDraft) return null
+      return { seed: submittedDraft, text: current.text }
+    })
   }
 
   const requestRevert = async () => {
@@ -221,8 +251,9 @@ export default function AgentPanel({
     // comparison is against the SEED the editor opened with, never the live
     // `output` prop: the outputs poll refreshes that prop while the editor is
     // open, and an untouched draft must not read as dirty because the agent
-    // wrote more underneath.
-    if (draft !== null && draft.text !== draft.seed) {
+    // wrote more underneath. A draft whose save rejected also asks, whatever
+    // its text: the seed no longer says what the server holds.
+    if (draft !== null && (draft.unsettled === true || draft.text !== draft.seed)) {
       const confirmed = await confirm({
         title: i18nT('apps.meetings.agentPanel.discardDraft'),
         body: i18nT('apps.meetings.agentPanel.discardDraftHint'),
@@ -428,7 +459,7 @@ export default function AgentPanel({
           value={draft.text}
           onChange={e =>
             setDraft(current =>
-              current === null ? current : { seed: current.seed, text: e.target.value },
+              current === null ? current : { ...current, text: e.target.value },
             )
           }
           // The Edit button unmounts with the read view when edit mode opens, so

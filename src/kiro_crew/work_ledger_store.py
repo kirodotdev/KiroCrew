@@ -42,9 +42,7 @@ from kiro_crew.work_ledger_records import (
 )
 from kiro_crew.work_vocab import work_event_id
 
-# --------------------------------------------------------------------------- #
 # Paths
-# --------------------------------------------------------------------------- #
 
 #: Directory naming is :func:`kiro_crew.session_ledger._store_name` -- readable
 #: fold plus ``sha256[:8]`` -- imported rather than copied. ``session_ledger``
@@ -193,9 +191,7 @@ def undelivered_path(worker_slot_key: str) -> Path:
     return resolved
 
 
-# --------------------------------------------------------------------------- #
 # Locks
-# --------------------------------------------------------------------------- #
 
 
 @contextmanager
@@ -424,9 +420,7 @@ def forget_undelivered_for_item(
         logger.debug("could not drop an undelivered-call record", exc_info=True)
 
 
-# --------------------------------------------------------------------------- #
 # Whole-file reads. A corrupt record reads as absent.
-# --------------------------------------------------------------------------- #
 
 
 def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
@@ -443,16 +437,12 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
     the other writer was interrupted mid-write. The ceiling is checked before the
     read so a hand-grown file cannot be pulled into memory first.
 
-    The bytes come from ``read_bytes_with_retry`` because a strict read here is
-    LOCK-FREE across writers: :func:`_refuse_if_worker_holds_open_item` reads the
-    prior item's file under the WORKER's binding lock, while that item's own
-    conductor may be replacing it under a different item lock. On Windows a read of
-    a file another handle holds open for write raises ``PermissionError``, so one
-    correct concurrent writer is enough to turn a strict read into a bare
-    ``OSError`` — which the dashboard route maps to a transient 503 "try again"
-    instead of the permanent already-bound refusal the guard exists to raise. The
-    retry closes that window. POSIX permits the read, and there a
-    ``PermissionError`` is a genuine access fault the helper re-raises at once.
+    The bytes come from ``read_bytes_with_retry`` because a strict read is LOCK-FREE
+    across writers: :func:`_refuse_if_worker_holds_open_item` reads the prior item
+    under the WORKER's binding lock while its conductor may replace it under an item
+    lock. On Windows that read raises ``PermissionError``, which would surface as a
+    transient 503 instead of the already-bound refusal; the retry closes the window.
+    On POSIX a ``PermissionError`` is a real access fault and is re-raised at once.
     """
     try:
         if path.stat().st_size > MAX_RECORD_BYTES:
@@ -586,9 +576,7 @@ def _stored_item_ids(slot_key: str) -> list[str]:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Events
-# --------------------------------------------------------------------------- #
 
 
 def event_id(ts: str, item_id: str, kind: str, text: str, *, status: str | None = None) -> str:

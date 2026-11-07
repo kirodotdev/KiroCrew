@@ -173,7 +173,7 @@ describe('ChannelPage — message list', () => {
       messages: [message({ from_id: 'human', from_role: 'You', mention: ['a1', 'ghost'] })],
     })])
     await renderPage()
-    expect(screen.getByText('→ @Researcher, @ghost')).toBeInTheDocument()
+    expect(screen.getByText('→ @Researcher and @ghost')).toBeInTheDocument()
   })
 
   it('renders an approval message as an approval card and posts the decision', async () => {

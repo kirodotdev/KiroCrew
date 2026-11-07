@@ -552,3 +552,85 @@ async def test_with_the_key_off_nothing_is_declared_or_stored(
     assert seen["store"]["error"]["code"] == -32601
     assert seen["get"]["error"]["code"] == -32601
     assert not (data_home() / "kas" / "mcp-grants").exists()
+
+
+# ── what gateway.log says about a saved sign-in ───────────────────────────────
+
+_SERVER_ID = _HASH[:12]
+
+
+def _sign_in_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == kss.logger.name]
+
+
+@pytest.mark.asyncio
+async def test_the_log_says_whether_a_saved_sign_in_was_found_missing_or_stored(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    first = _server(tmp_path)
+    await first.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY})
+    await first.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": _TOKEN_VALUE})
+    await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY})
+
+    assert _sign_in_lines(caplog) == [
+        f"MCP sign-in for server {_SERVER_ID}: no saved sign-in, the server will ask to sign in",
+        f"MCP sign-in for server {_SERVER_ID}: sign-in saved",
+        f"MCP sign-in for server {_SERVER_ID}: saved sign-in found",
+    ]
+    assert "SECRET" not in caplog.text and _HASH not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_get_with_the_same_answer_logs_once(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    server = _server(tmp_path)
+    for _ in range(3):
+        await server.answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY})
+    assert len(_sign_in_lines(caplog)) == 1
+
+
+@pytest.mark.asyncio
+async def test_only_the_tokens_entry_is_logged(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    server = _server(tmp_path)
+    for key in (_CLIENT_KEY, _VERIFIER_KEY, _DISCOVERY_KEY):
+        await server.answer(kss.METHOD_SECRET_GET, {"key": key})
+        await server.answer(kss.METHOD_SECRET_STORE, {"key": key, "value": "v"})
+    assert _sign_in_lines(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_saved_sign_in_that_cannot_be_read_says_so(tmp_path, monkeypatch, caplog):
+    store = kss.McpGrantStore(tmp_path)
+
+    def boom(key):
+        raise ValueError(f"cannot read {tmp_path}")
+
+    monkeypatch.setattr(store, "get", boom)
+    caplog.set_level(logging.INFO, logger=kss.logger.name)
+    with pytest.raises(kss.SecretStorageRefused):
+        await kss.SecretStorageServer(store).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY})
+    assert (
+        f"MCP sign-in for server {_SERVER_ID}: saved sign-in not read (store error)"
+        in _sign_in_lines(caplog)
+    )
+    assert str(tmp_path) not in caplog.text
+
+
+def test_saving_silently_off_warns_once_per_run(tmp_path, monkeypatch, caplog):
+    import threading
+
+    from kiro_crew import mcp_grant_kas
+
+    monkeypatch.setattr(mcp_grant_kas, "_OFF_WARNING_GIVEN", threading.Event())
+    home = _config_home(tmp_path, monkeypatch)
+    (home / "config.json").write_text('{"agent": {"kas_persist_mcp_sign_in": false')
+    caplog.set_level(logging.WARNING, logger=mcp_grant_kas.logger.name)
+    for _ in range(3):
+        assert kss.persistence_enabled() is False
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == mcp_grant_kas.logger.name and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "remote MCP servers will ask to sign in again" in warnings[0].getMessage()

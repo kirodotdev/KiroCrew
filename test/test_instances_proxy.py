@@ -544,12 +544,9 @@ class TestProxyRequest:
     ):
         """The link exchange is a peer call, so it gets the proxy connect budget.
 
-        ``_TOKEN_PROBE_TIMEOUT`` sizes the deny-by-default liveness probe and is
-        deliberately short. A peer whose ``/api/status`` answers slower than that
-        is still reachable; timing the exchange out on the probe budget would
-        report it as 503 ``proxy_no_credential``. The probe budget is pinned
-        below the peer's delay and the proxy connect budget above it, so the
-        exchange succeeds only when it waits on the proxy budget.
+        ``_TOKEN_PROBE_TIMEOUT`` is deliberately short; on it a slow peer would get 503
+        ``proxy_no_credential``. The probe budget is pinned below the peer's delay and
+        the proxy budget above it, so only the proxy budget lets the exchange succeed.
         """
         from aiohttp import web
 
@@ -679,12 +676,8 @@ class TestProxyRequest:
 class TestPeerRequestSharedDance:
     """The derivation shared by the three peer-request methods.
 
-    `proxy_request`, `send_session_bundle` and `search_sessions_remote` each
-    make an authenticated call to a CONNECTED peer over the open forward. The
-    part that is identical — connected-only, loopback target, port-scoped cookie
-    name, credential read per attempt — lives in `_peer_target` /
-    `_peer_cookie_header` so it is stated once. What is NOT shared is each
-    method's error contract, and that is what these tests pin.
+    The shared part lives in `_peer_target` / `_peer_cookie_header`; each method's
+    error contract is not shared, and that is what these tests pin.
     """
 
     @pytest.fixture(autouse=True)

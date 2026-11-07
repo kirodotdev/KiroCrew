@@ -10,24 +10,29 @@ as ``kiro_crew.apps.bridges.<name>``, and a patch there reaches this module too
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
+import stat
+import threading
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, skill_live_loaders
 from kiro_crew.apps.bridges_sources import (
     _namespace,
     _registration_denied,
     _registration_source,
     _skills_dir,
 )
-from kiro_crew.apps.manager import get_app
+from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir, get_app
 from kiro_crew.apps.manifest import (
     AppManifest,
     Containment,
     contained_in_screened_root,
     screen_app_path,
 )
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.bridges")
@@ -38,6 +43,10 @@ logger = logging.getLogger("kiro_crew.apps.bridges")
 # ---------------------------------------------------------------------------
 
 _RESERVED_SKILL_DIRS = {"auto"}
+
+#: Names the owning app of every app-skill link (see ``_write_app_skill_links``).
+_APP_SKILL_LINKS = ".app-skill-links.json"
+_APP_SKILL_LINKS_LOCK = threading.Lock()
 
 
 def _register_skills(
@@ -141,6 +150,7 @@ def _register_skills(
         except OSError as exc:
             logger.warning("Failed to link skill %s: %s", skill_name, exc)
 
+    _write_app_skill_links()
     if registered:
         sel().log_tool_invocation(
             session_key="",
@@ -233,6 +243,8 @@ def _deregister_skills(app_name: str) -> int:
             resources=f"app={app_name}",
         )
         return 0
+    finally:
+        _write_app_skill_links()
 
 
 # ---------------------------------------------------------------------------
@@ -307,5 +319,75 @@ def reconcile_app_skills(app_name: str) -> list[str]:
                     entry.name,
                     app_name,
                 )
+        _write_app_skill_links()
 
     return registered
+
+
+def _write_app_skill_links() -> None:
+    """Rewrite the skills root's ``.app-skill-links.json`` from the app-skill links on disk.
+
+    Rebuilt whole after every link change, so a bad file heals on the next one; a
+    failed write is logged. When the set of links differs from the file's (or cannot
+    be read), every live skills loader of this root drops its cached catalog, so an
+    app's skills appear and disappear with its install, enable, disable and
+    uninstall instead of a catalog TTL later. An unchanged set (the boot reconcile
+    re-linking what is already there) keeps the stored snapshot. Rules:
+    app-kit-platform.md section 5.2.
+    """
+    skills_root = _skills_dir()
+    path = skills_root / _APP_SKILL_LINKS
+    changed = True
+    with _APP_SKILL_LINKS_LOCK:
+        try:
+            owners: dict[str, str] = {}
+            owner_of_target: dict[str, str] = {}
+            flat_targets: dict[str, str] = {}
+            for top in skills_root.iterdir():
+                if platform_compat.is_link_or_junction(top):
+                    flat_targets[top.name] = os.path.realpath(top)
+                elif top.is_dir() and (app_dir(top.name) / INSTALLED_META_FILENAME).is_file():
+                    # An installed app's namespace; a user's own folder of links is not one.
+                    for link in top.iterdir():
+                        if platform_compat.is_link_or_junction(link):
+                            owners[f"{top.name}/{link.name}"] = top.name
+                            owner_of_target[os.path.realpath(link)] = top.name
+            for name, target in flat_targets.items():
+                if target in owner_of_target:
+                    owners[name] = owner_of_target[target]
+            body = {"format": 1, "links": {k: {"app": v} for k, v in sorted(owners.items())}}
+            # Bytes, so the file and the comparison agree on every OS's newlines.
+            data = (json.dumps(body, indent=2) + "\n").encode("utf-8")
+            changed = not _holds_exactly(path, data)
+            if changed:
+                atomic_write(path, data)
+        except OSError as exc:
+            logger.warning("Could not write %s: %s", path, exc)
+    if changed:
+        skill_live_loaders.invalidate_loaders_of(skills_root)
+
+
+def _holds_exactly(path: Path, data: bytes) -> bool:
+    """Whether *path* is a regular file whose bytes are exactly *data*.
+
+    The skills root is writable from inside the sandbox, so the name may hold
+    anything. It is opened without following a link and without blocking, and read
+    only once ``fstat`` says it is a regular file, so a FIFO, device or link there is
+    simply "not the same" and gets atomically replaced, never waited on. At most one
+    byte more than *data* is read. Absent or unreadable is also "not the same".
+    """
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return False
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            return handle.read(len(data) + 1) == data
+    except OSError:
+        return False
+    finally:
+        os.close(fd)

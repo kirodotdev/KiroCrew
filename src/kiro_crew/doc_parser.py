@@ -94,7 +94,7 @@ def extract_text(
 
     *max_chars*, when given, bounds the AGGREGATE extracted text: parsing
     stops as soon as at least that many characters have been collected (the
-    result may slightly overshoot, callers truncate to their exact cap).
+    result may overshoot, callers truncate to their exact cap).
     Without it a multi-part container (e.g. a .pptx with thousands of
     slides, each under the per-entry decompression cap) could accumulate
     unbounded text in memory. Callers that only need a preview should pass
@@ -265,50 +265,23 @@ def _read_zip_entry(
 
 # ── DOCX parser (Office Open XML) ──
 
-_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-
 
 def _extract_docx(
     path: str, max_chars: int | None = None, fileobj: IO[bytes] | None = None,
 ) -> str:
-    """Extract text from a .docx file (ZIP containing word/document.xml).
+    """Extract text from a .docx file: the structured preview's walk, flattened.
 
     Must only be called from extract_text() which enforces is_sensitive_path().
     """
-    assert _xml_fromstring is not None  # extract_text() gates the None case
+    # circular import: doc_blocks imports this module's archive helpers.
+    from kiro_crew.doc_blocks import docx_text
+
     if is_sensitive_path(path):
         return ""
     if not _vet_archive_inventory(path, fileobj):
         return ""
-    paragraphs: list[str] = []
-    collected = 0
     with zipfile.ZipFile(fileobj if fileobj is not None else path, "r") as zf:
-        if "word/document.xml" not in zf.namelist():
-            return ""
-        data = _read_zip_entry(zf, "word/document.xml")
-        if data is None:
-            return ""
-        root = _xml_fromstring(data)
-        for para in root.iter(f"{_W_NS}p"):
-            texts: list[str] = []
-            for t_elem in para.iter(f"{_W_NS}t"):
-                if t_elem.text:
-                    texts.append(t_elem.text)
-            if texts:
-                joined = "".join(texts)
-                if paragraphs:
-                    # Count the "\n" separator only BETWEEN paragraphs, so
-                    # `collected` tracks len("\n".join(paragraphs)) exactly.
-                    # Charging the first paragraph a separator too let a
-                    # cap-sized opening paragraph stop extraction while the
-                    # caller's length check read the result as un-truncated,
-                    # silently dropping the rest of the document.
-                    collected += 1
-                paragraphs.append(joined)
-                collected += len(joined)
-                if max_chars is not None and collected >= max_chars:
-                    break
-    return "\n".join(paragraphs)
+        return docx_text(zf, max_chars)
 
 
 # ── PPTX parser (Office Open XML) ──

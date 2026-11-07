@@ -2,20 +2,25 @@ name: Sensitive Change Review (author comment)
 
 # The PR author can clear Sensitive Change Review by posting the filled
 # `## Sensitive change review` template as a PR comment that names the current
-# head SHA. A comment is not a pull_request event, so on its own it would not
-# re-run that check. This workflow re-runs the newest Sensitive Change Review
-# run for the PR head; the re-run reads the comment and posts its verdict on
-# the head, under the same check name.
+# head SHA. A comment is not a pull_request_target event, so on its own it
+# would not re-run that check. This workflow re-runs the newest Sensitive
+# Change Review run for the PR head; the re-run reads the comment and posts its
+# verdict on the head, under the same check name.
 #
-# issue_comment workflows always execute from the default branch, so a PR
-# cannot edit this file to change what happens here. It runs no PR code and
-# decides nothing: the default-branch checker inside the re-run is the judge.
+# It runs no PR code and decides nothing: the re-run executes the default
+# branch's workflow and checker, whatever this file says. An issue_comment run
+# executes this file from the default branch. On a review,
+# sensitive-change-review-approval.yml calls it, and that call executes the
+# PR's copy, so a PR that edits it can stop its own approval from re-running
+# the check (which leaves the check red) but cannot change what the re-run
+# decides.
 # Comments posted by GITHUB_TOKEN (the gate's own sticky comment) start no
 # workflow, so the sticky comment cannot loop this.
 
 on:
   issue_comment:
     types: [created, edited]
+  workflow_call:
 
 # actions: write is only for re-running the check's own workflow run.
 permissions:
@@ -26,15 +31,18 @@ permissions:
 jobs:
   rerun:
     name: Re-run Sensitive Change Review
-    # Only the PR author's comment can count, so nobody else's comment spends
-    # a run. An EDIT counts only when the author made it (the event sender is
-    # the comment's author), so someone else changing the author's words
-    # does not. The checker re-checks the author, the head SHA and the template.
+    # A review always re-runs: an approval can clear the check and a later
+    # review can withdraw it. Only the PR author's comment can count, so nobody
+    # else's comment spends a run. An EDIT counts only when the author made it
+    # (the event sender is the comment's author), so someone else changing the
+    # author's words does not. The checker re-checks the author, the head SHA
+    # and the template.
     if: >-
-      github.event.issue.pull_request != null
-      && github.event.comment.user.login == github.event.issue.user.login
-      && github.event.sender.login == github.event.comment.user.login
-      && contains(github.event.comment.body, '## Sensitive change review')
+      github.event_name == 'pull_request_review'
+      || (github.event.issue.pull_request != null
+          && github.event.comment.user.login == github.event.issue.user.login
+          && github.event.sender.login == github.event.comment.user.login
+          && contains(github.event.comment.body, '## Sensitive change review'))
     # Off the fleet: any commenter can fire issue_comment, and a
     # non-allowlisted actor's fleet dispatch would queue forever. The group is
     # a GitHub-hosted Ubuntu VM dispatched by GitHub rather than the AWS
@@ -46,38 +54,38 @@ jobs:
     # else's comment is skipped before it can cancel the author's re-run.
     # Not cancel-in-progress: a run waiting on the check must finish.
     concurrency:
-      group: sensitive-change-review-comment-${{ github.event.issue.number }}
+      group: sensitive-change-review-comment-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
       - name: Re-run the check for the current head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
           pr_json="$(gh api "repos/$REPO/pulls/$PR")"
           head="$(jq -r '.head.sha' <<<"$pr_json")"
           head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")"
           if [ "$head_repo" != "$REPO" ]; then
-            echo "Fork PR: Sensitive Change Review refuses forks, so a comment cannot clear it."
+            echo "Fork PR: Sensitive Change Review refuses forks, so neither a comment nor a review can clear it."
             exit 0
           fi
 
-          # The newest run of the check for this PR at this head, from either
-          # trigger the check listens to.
+          # The newest run of the check for this PR at this head. Only a
+          # pull_request_target run executed the default branch's workflow.
           runs="$(gh api --method GET \
             "repos/$REPO/actions/workflows/sensitive-change-review.yml/runs" \
             -f head_sha="$head" -f per_page=50)"
           read -r run_id status < <(jq -r --argjson pr "$PR" --arg head "$head" '
             [.workflow_runs[]
              | select(.head_sha == $head
-                      and (.event == "pull_request" or .event == "pull_request_review")
+                      and .event == "pull_request_target"
                       and (.pull_requests | any(.number == $pr)))]
             | max_by(.id) // empty
             | "\(.id) \(.status)"' <<<"$runs") || true
           if [[ ! "${run_id:-}" =~ ^[0-9]+$ ]]; then
-            echo "::error::No Sensitive Change Review run found for PR #$PR at $head; push or re-run it from the Actions tab."
+            echo "::error::No Sensitive Change Review run found for PR #$PR at $head; push, or edit the PR title or body, to start one."
             exit 1
           fi
 

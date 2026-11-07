@@ -15,10 +15,13 @@
  *  it. An invite nobody has accepted yet is a Waiting row in the People list
  *  (`InviteRow`). The first invite, while nobody else has access, asks once per
  *  Crew (`useFirstShareGate`) with one warning line: they will see every session
- *  and Crew memory, with real counts. */
+ *  and Crew memory, with real counts. One acknowledgement covers both transports.
+ *
+ *  Tailscale and AWS SSM are tabs of the one dialog, shown only when both are
+ *  on; the SSM tab and its rows live in `SsmInvite.tsx`. */
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, ExternalLink, Link2, Mail, MessageSquare, RefreshCw, Trash2, UserPlus } from 'lucide-react'
+import { Check, Copy, ExternalLink, Link2, Mail, RefreshCw, Trash2, UserPlus } from 'lucide-react'
 import { api } from '../../api/client'
 import {
   AVATAR_MAX_BYTES,
@@ -39,6 +42,8 @@ import {
 } from '../../api/sharedCrewInvites'
 import { heldLinks, invitesPinnedOff } from '../../api/sharedCrewUi'
 import { useSharedCrewCapabilities, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
+import { ssmStatusKey } from '../../api/sharedCrewSsm'
+import { ssmConfigured, SsmReadError, SsmTab, useSsmStatus } from './SsmInvite'
 import { tailnetDirectActive } from '../../components/TailnetDirectLink'
 import { buildInviteMessage, ownerDisplayName } from './inviteMessage'
 import { Badge, Btn, Input, Toggle } from '../../components/ui'
@@ -54,20 +59,32 @@ import { useConfirm } from '../../components/ConfirmDialog'
 export const tailscaleInvitesKey = [...sharedCrewKeys.all, 'tailscale-invites'] as const
 export const sharedCrewAccessKey = [...sharedCrewKeys.all, 'access'] as const
 
+/** The transports an invite can go over. */
+export type InviteTransport = 'tailscale' | 'ssm'
+
 /** Where to stop sharing, in the words of the path that shared the Crew. A new
  *  sharing path adds its case with its own catalog key. */
-function stopSharingText(transport: string): string {
+function stopSharingText(transport: InviteTransport): string {
   switch (transport) {
+    case 'ssm': return i18nT('sharedCrew.first_share_stop_ssm')
     default: return i18nT('sharedCrew.first_share_stop_tailscale')
   }
 }
 
+/** Who can open the Crew, in the words of the path that shares it. */
+function audienceText(transport: InviteTransport): string {
+  switch (transport) {
+    case 'ssm': return i18nT('sharedCrew.first_share_audience_ssm')
+    default: return i18nT('sharedCrew.first_share_audience_tailscale')
+  }
+}
+
 /** Who can open the Crew, what they will see, the laptop note and where to stop sharing. */
-function FirstShareBody({ share, transport }: { share: FirstShare; transport: string }) {
+function FirstShareBody({ share, transport }: { share: FirstShare; transport: InviteTransport }) {
   const counted = share.sessions !== null && share.memory_items !== null
   return (
     <div className="flex flex-col gap-2" data-testid="first-share-body">
-      <p className="m-0" data-testid="first-share-audience">{i18nT('sharedCrew.first_share_audience_tailscale')}</p>
+      <p className="m-0" data-testid="first-share-audience">{audienceText(transport)}</p>
       <p className="m-0">
         {counted
           ? i18nT('sharedCrew.first_share_body', { sessions: fmtNumber(share.sessions ?? 0), memory: fmtNumber(share.memory_items ?? 0) })
@@ -85,25 +102,27 @@ function FirstShareBody({ share, transport }: { share: FirstShare; transport: st
 
 /** Copies the message the owner sends with an invite: who invited them, how to
  *  accept, and the Crew links. Renders nothing until the Crew has a link to
- *  send. `inviteUrl` is a link invite's URL; without it the email line is used. */
-export function CopyInviteMessage({ inviteUrl = '', testId = 'invite-copy-message', primary = false }: { inviteUrl?: string; testId?: string; primary?: boolean }) {
+ *  send. `inviteUrl` is a link invite's URL; without it the email line is used.
+ *  `message` is a finished message (the AWS SSM invite), copied as it is: the
+ *  button reads and behaves the same for every path. */
+export function CopyInviteMessage({ inviteUrl = '', testId = 'invite-copy-message', primary = false, message, onCopied }: { inviteUrl?: string; testId?: string; primary?: boolean; message?: string; onCopied?: () => void }) {
   const caps = useSharedCrewCapabilities({ fetchOnMount: false })
   const people = useSharedCrewPeople(true, { fetchOnMount: false })
   const [copied, setCopied] = useState<boolean | null>(null)
   const direct = caps.capabilities.tailnet_direct
-  if (!tailnetDirectActive(direct)) return null
+  if (message === undefined && !tailnetDirectActive(direct)) return null
   const copyMessage = async () => {
-    const text = buildInviteMessage({ owner: ownerDisplayName(people.data?.people ?? []), urls: direct.urls, inviteUrl })
+    const text = message ?? buildInviteMessage({ owner: ownerDisplayName(people.data?.people ?? []), urls: tailnetDirectActive(direct) ? direct.urls : [], inviteUrl })
     let ok = false
     try { ok = await copyToClipboard(text) } catch { ok = false }
     setCopied(ok)
-    if (ok) setTimeout(() => setCopied(null), 2000)
+    if (ok) { onCopied?.(); setTimeout(() => setCopied(null), 2000) }
   }
   return (
     <div className="flex flex-col gap-1 min-w-0">
       <Btn type="button" primary={primary} onClick={() => { void copyMessage() }} data-testid={testId}>
-        {copied ? <Check size={14} className="lucide-inline" aria-hidden /> : <MessageSquare size={14} className="lucide-inline" aria-hidden />}
-        {' '}{copied ? i18nT('sharedCrew.invite_copied') : i18nT('sharedCrew.invite_copy_message')}
+        {copied ? <Check size={14} className="lucide-inline" aria-hidden /> : <Copy size={14} className="lucide-inline" aria-hidden />}
+        {' '}{copied ? i18nT('sharedCrew.invite_copied') : i18nT(message === undefined ? 'sharedCrew.invite_copy_tailscale' : 'sharedCrew.invite_copy_ssm')}
       </Btn>
       {/* No hand-off: the invite draft and the People page around this button may hold unsaved input. */}
       {copied === false && <ErrorNotice variant="inline" message={i18nT('sharedCrew.direct_link_copy_failed')} testId={`${testId}-error`} />}
@@ -113,8 +132,8 @@ export function CopyInviteMessage({ inviteUrl = '', testId = 'invite-copy-messag
 
 /** Allow sharing when no warning is due, or after the owner confirms it. The
  *  acknowledgment is per Crew, so one covers every sharing path; *transport*
- *  only words where to stop sharing. */
-export function useFirstShareGate(transport = 'tailscale') {
+ *  only words who can open it and where to stop sharing. */
+export function useFirstShareGate(transport: InviteTransport = 'tailscale') {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
   const [shareError, setShareError] = useState('')
@@ -414,7 +433,8 @@ function InviteForm({ disabled }: { disabled: boolean }) {
 }
 
 /** Revoke with a confirm step: the one revoke control, on an invite row and on
- *  a joined person's row. *children* (a row's other actions) hide while the
+ *  a joined person's row, whichever path the invite came by (*transport*); the button,
+ *  the confirm and Cancel read the same for every path. *children* (a row's other actions) hide while the
  *  confirm shows. A link, or a row with no person's name, has no one to name:
  *  everyone who joined with it loses access. Otherwise the sentence follows the
  *  row's state: an unaccepted invite, an accepted share not connected yet, or a
@@ -427,13 +447,16 @@ const REVOKE_BODY: Record<RevokeState, string> = {
   member: 'sharedCrew.person_revoke_body',
 }
 
-export function RevokeControl({ inviteId, name, link = false, state = 'sent', children }: { inviteId: string; name: string; link?: boolean; state?: RevokeState; children?: ReactNode }) {
+export function RevokeControl({ inviteId, name, link = false, state = 'sent', children, transport = 'tailscale' }: { inviteId: string; name: string; link?: boolean; state?: RevokeState; children?: ReactNode; transport?: InviteTransport }) {
   const qc = useQueryClient()
   const [confirming, setConfirming] = useState(false)
   const revoke = useMutation({
-    mutationFn: () => api.tailscaleRevokeInvite(inviteId),
+    mutationFn: async (): Promise<void> => {
+      if (transport === 'ssm') await api.sharedCrewSsmRevokeInvite(inviteId)
+      else await api.tailscaleRevokeInvite(inviteId)
+    },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: tailscaleInvitesKey })
+      void qc.invalidateQueries({ queryKey: transport === 'ssm' ? ssmStatusKey : tailscaleInvitesKey })
       void qc.invalidateQueries({ queryKey: sharedCrewKeys.people })
     },
   })
@@ -571,15 +594,41 @@ function TailscalePane({ status }: { status: TailscaleInvitesStatus }) {
 }
 
 /** The People page's "Invite…" dialog. Invites not yet accepted show in the
- *  People list as Invites rows. */
+ *  People list as Invites rows. AWS SSM is a second pane, shown as a tab only
+ *  when Tailscale invites are on too. */
 export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const query = useInvites()
+  const ssm = useSsmStatus()
   const status = query.data
+  const ssmStatus = ssmConfigured(ssm.data) ? ssm.data : null
+  const [picked, setPicked] = useState<InviteTransport | null>(null)
+  // The pane an open dialog first showed stays, so a read that lands late never
+  // swaps a half-filled form (or a link shown once) for the other path's.
+  const first = useRef<InviteTransport | null>(null)
+  if (!open) first.current = null
+  else if (first.current === null && (status || ssmStatus)) first.current = ssmStatus && !status ? 'ssm' : 'tailscale'
+  const both = !!status && !!ssmStatus
+  const transport: InviteTransport = both ? picked ?? first.current ?? 'tailscale' : ssmStatus && !status ? 'ssm' : 'tailscale'
   return (
     <Modal open={open} onClose={onClose} title={i18nT('sharedCrew.invite_dialog_title')} maxWidth={520} guardAccidentalDismiss>
       <div className="flex flex-col gap-3 min-w-0" data-testid="invite-dialog">
-        <InviteReadError query={query} testId="invite-dialog-error" />
-        {status && <TailscalePane status={status} />}
+        {both && (
+          <div role="tablist" aria-label={i18nT('sharedCrew.invite_dialog_title')} className="flex flex-wrap gap-2">
+            <Btn type="button" role="tab" aria-selected={transport === 'tailscale'} primary={transport === 'tailscale'} onClick={() => setPicked('tailscale')} data-testid="invite-transport-tailscale">
+              {i18nT('sharedCrew.setup_tailscale')}
+            </Btn>
+            <Btn type="button" role="tab" aria-selected={transport === 'ssm'} primary={transport === 'ssm'} onClick={() => setPicked('ssm')} data-testid="invite-transport-ssm">
+              {i18nT('sharedCrew.setup_ssm')}
+            </Btn>
+          </div>
+        )}
+        {/* Both panes stay mounted, so switching tabs never drops a link shown once or a draft. */}
+        <SsmReadError query={ssm} testId="invite-dialog-ssm-error" />
+        {ssmStatus && <div hidden={transport !== 'ssm'} className="flex flex-col gap-3 min-w-0"><SsmTab status={ssmStatus} /></div>}
+        <div hidden={transport === 'ssm' && !!ssmStatus} className="flex flex-col gap-3 min-w-0">
+          <InviteReadError query={query} testId="invite-dialog-error" />
+          {status && <TailscalePane status={status} />}
+        </div>
       </div>
     </Modal>
   )
@@ -587,14 +636,16 @@ export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => 
 
 /** The one place a person is invited from: the `Invite…` button and its dialog,
  *  with `children` (links that belong beside it) after the button. Renders the
- *  button only for the owner, whose invite read answered; a failed read shows
- *  its notice and retry here, once. */
+ *  button only for the owner, whose invite read answered over either transport;
+ *  a failed read shows its notice and retry here, once. */
 export function InviteEntry({ children }: { children?: ReactNode }) {
   const [open, setOpen] = useState(false)
   const query = useInvites()
+  const ssmQuery = useSsmStatus()
+  const canInvite = useCanInvite()
   return (
     <>
-      {query.data && (
+      {canInvite && (
         <div className="flex items-center gap-3 min-w-0 flex-wrap">
           <Btn onClick={() => setOpen(true)} data-testid="share-hero-invite">
             <UserPlus size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.hero_invite')}
@@ -603,7 +654,25 @@ export function InviteEntry({ children }: { children?: ReactNode }) {
         </div>
       )}
       {!open && <InviteReadError query={query} testId="people-invites-error" />}
-      {query.data && <InviteDialog open={open} onClose={() => setOpen(false)} />}
+      {!open && <SsmReadError query={ssmQuery} testId="people-ssm-error" />}
+      {canInvite && <InviteDialog open={open} onClose={() => setOpen(false)} />}
     </>
   )
+}
+
+/** Whether the viewer is the owner: an invite read answered, over Tailscale or
+ *  over AWS SSM. */
+export function useCanInvite(): boolean {
+  const tailscale = useInvites().data
+  const ssm = useSsmStatus().data
+  return !!tailscale || ssmConfigured(ssm)
+}
+
+/** Whether an owner-only invite read answered at all, even an SSM read that says the
+ *  path is off: the owner reaches Advanced (where SSM is switched on) without an
+ *  invite path being up. Invite controls ask `useCanInvite` instead. */
+export function useOwnerRead(): boolean {
+  const tailscale = useInvites().data
+  const ssm = useSsmStatus().data
+  return !!tailscale || !!ssm
 }

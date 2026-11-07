@@ -42,6 +42,8 @@ const SHELL_HANDLES = [
   "local-gateway:get",
   "local-gateway:set",
   "pane:clear-http-cache",
+  "tray-icon:get",
+  "tray-icon:set",
   "wsl:detect",
   "zoom:get",
   "zoom:set",
@@ -91,6 +93,7 @@ function fakeStore(initial = {}) {
 function makeHotkeyStub() {
   const state = {
     current: "",
+    requested: "",
     logger: null,
     summonDeps: null,
     summonCalls: 0,
@@ -109,6 +112,7 @@ function makeHotkeyStub() {
       bindGlobalHotkey(saved, handler) {
         state.binds.push({ saved, handler });
         state.current = typeof saved === "string" ? saved : DEFAULT_GLOBAL_HOTKEY;
+        state.requested = state.current;
         return { accelerator: state.current, bound: !!state.current };
       },
       unregisterGlobalHotkey() {
@@ -117,6 +121,9 @@ function makeHotkeyStub() {
       },
       currentGlobalHotkey() {
         return state.current;
+      },
+      requestedGlobalHotkey() {
+        return state.requested;
       },
       setGlobalHotkeyLogger(logger) {
         state.logger = logger;
@@ -359,6 +366,13 @@ function harness({
         return args[0] === "quit" ? "quit" : "background";
       },
     },
+    trayIcon: {
+      get: recordWindow("trayIcon.get", { show: true, canHide: false }),
+      set: (...args) => {
+        windowCalls.push(["trayIcon.set", ...args]);
+        return { show: args[0] !== false, canHide: true };
+      },
+    },
   };
   for (const name of [
     "open",
@@ -521,13 +535,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 40);
+  assert.equal(h.handlers.size + h.listeners.size, 42);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 41);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 43);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -631,6 +645,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
   assert.equal(h.store.data.runLocalGateway, false);
   assert.deepEqual(h.handlers.get("global-hotkey:get")(event), {
     accelerator: "",
+    requested: "",
     default: "Test+Shift+K",
   });
 });
@@ -1534,6 +1549,7 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   h.registrar.registerShell();
   assert.deepEqual(h.handlers.get("global-hotkey:get")({}), {
     accelerator: "Ctrl+Alt+Test",
+    requested: "Ctrl+Alt+Test",
     default: "Test+Shift+K",
   });
   h.registrar.unregisterGlobalHotkey();
@@ -1644,7 +1660,7 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   // for the same install. Every other platform exits with its last window, so
   // clearing there cannot strand the flag.
   //
-  // The handler reads process.platform and electron.BrowserWindow itself, and
+  // The handler reads process.platform and electron.BaseWindow itself, and
   // this harness opens no window, so darwin always takes the hold branch here.
   const holdsGovernanceWithNoWindowOpen = process.platform === "darwin";
   const ev2 = makeEvent();
@@ -1667,6 +1683,16 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   evA._destroy(); // close the first window too
   assert.equal(deps.isPolicyGoverned(), holdsGovernanceWithNoWindowOpen,
     "governance clears when all windows close, except on macOS where the app outlives them");
+
+  // A dashboard window is a BaseWindow, not a BrowserWindow: while one is still
+  // open, destroying the last governing sender clears governance on macOS too.
+  h.electron.BaseWindow = { getAllWindows: () => [{ isDestroyed: () => false }] };
+  const evLast = makeEvent();
+  await h.listeners.get("update:notify-policy-governed")(evLast, true);
+  evLast._destroy();
+  assert.equal(deps.isPolicyGoverned(), false,
+    "a destroyed governing window clears governance while a dashboard window remains open");
+  delete h.electron.BaseWindow;
 
   // Remote-gateway gate: a harness that simulates a non-kirocrew port owner
   // (SSH tunnel holding the primary port) must reject governance via gate 3.
@@ -1840,15 +1866,18 @@ test("pane:clear-http-cache is gated to the local dashboard sender", async () =>
   assert.equal(purges.length, 0);
 });
 
-// ── close-action:get / close-action:set (#12204) ────────────────────────────
+// ── close-action:* (#12204) and tray-icon:* (#21924) ────────────────────────
 //
-// The setting governs only the MAIN window's close button, so both channels
-// answer only that window's own top frame on its dashboard origin, including a
-// main window on a configured REMOTE gateway. Connection windows never do.
+// The settings sit in the MAIN window's Settings, beside its close button, so
+// every channel answers only that window's own top frame on its dashboard
+// origin, including a main window on a configured REMOTE gateway. Connection
+// windows never do.
 
-const CLOSE_ACTION_CHANNELS = [
+const MAIN_WINDOW_SETTING_CHANNELS = [
   ["close-action:get", []],
   ["close-action:set", ["quit"]],
+  ["tray-icon:get", []],
+  ["tray-icon:set", [false]],
 ];
 const MAIN_WINDOW_ONLY = (channel) => ({
   message: `${channel} is restricted to the main window's dashboard`,
@@ -1873,7 +1902,7 @@ function mainFrameEvent(url = "http://localhost:5476/settings") {
 
 function assertCloseActionRefused(h, channel) {
   assert.equal(
-    h.windowCalls.some(([name]) => name.startsWith("closeAction.")),
+    h.windowCalls.some(([name]) => name.startsWith("closeAction.") || name.startsWith("trayIcon.")),
     false,
     `${channel}: a refused sender must not read or write the setting`,
   );
@@ -1896,8 +1925,8 @@ test("close-action channels answer the main window's dashboard, including on a r
   }
 });
 
-test("close-action channels refuse every sender that is not the main window", async () => {
-  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+test("main-window setting channels refuse every sender that is not the main window", async () => {
+  for (const [channel, args] of MAIN_WINDOW_SETTING_CHANNELS) {
     for (const owner of ["other", null]) {
       const h = closeActionHarness({ owner });
       await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(), ...args), MAIN_WINDOW_ONLY(channel));
@@ -1906,8 +1935,8 @@ test("close-action channels refuse every sender that is not the main window", as
   }
 });
 
-test("close-action channels refuse a subframe of the main window", async () => {
-  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+test("main-window setting channels refuse a subframe of the main window", async () => {
+  for (const [channel, args] of MAIN_WINDOW_SETTING_CHANNELS) {
     const h = closeActionHarness();
     const event = mainFrameEvent();
     event.senderFrame = { url: "http://localhost:5476/embedded" }; // not sender.mainFrame
@@ -1916,8 +1945,8 @@ test("close-action channels refuse a subframe of the main window", async () => {
   }
 });
 
-test("close-action channels refuse a main window navigated off its dashboard", async () => {
-  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+test("main-window setting channels refuse a main window navigated off its dashboard", async () => {
+  for (const [channel, args] of MAIN_WINDOW_SETTING_CHANNELS) {
     for (const url of ["https://remote.example/settings", "http://localhost:6100/settings", "about:blank", ""]) {
       const h = closeActionHarness();
       await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(url), ...args), MAIN_WINDOW_ONLY(channel));
@@ -1926,13 +1955,21 @@ test("close-action channels refuse a main window navigated off its dashboard", a
   }
 });
 
-test("close-action channels refuse when there is no main window", async () => {
-  for (const [channel, args] of CLOSE_ACTION_CHANNELS) {
+test("main-window setting channels refuse when there is no main window", async () => {
+  for (const [channel, args] of MAIN_WINDOW_SETTING_CHANNELS) {
     const h = closeActionHarness();
     h.windows.getMainWindow = () => null;
     await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(), ...args), MAIN_WINDOW_ONLY(channel));
     assertCloseActionRefused(h, channel);
   }
+});
+
+test("tray-icon channels answer the main window's dashboard, including on a remote gateway", async () => {
+  const h = closeActionHarness({ wslGatewayLocal: false, primaryPortOwner: "foreign" });
+  assert.deepEqual(await h.handlers.get("tray-icon:get")(mainFrameEvent()), { show: true, canHide: false });
+  assert.deepEqual(await h.handlers.get("tray-icon:set")(mainFrameEvent(), false), { show: false, canHide: true });
+  assert.deepEqual(lastCall(h.windowCalls, "trayIcon.set"), ["trayIcon.set", false]);
+  assert.equal(h.store.writes.some(([key]) => key === "showTrayIcon"), false);
 });
 
 test("close-action channels never run the port-owner probe", async () => {

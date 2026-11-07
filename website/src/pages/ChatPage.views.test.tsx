@@ -46,7 +46,7 @@ vi.mock('./chat', async (orig) => ({
   PinnedPrompt: (p: { onToggleExpanded: () => void; onJump: () => void }) => { seen.pinnedPrompt = p; return null },
   ChatFooter: () => null,
 }))
-vi.mock('./chat/TranscriptScrollShell', () => ({ default: ({ children }: { children: ReactNode }) => <div data-testid="shell">{children}</div> }))
+vi.mock('./chat/TranscriptScrollShell', () => ({ default: ({ children, belowRows }: { children: ReactNode; belowRows?: ReactNode }) => <div data-testid="shell">{children}{belowRows}</div> }))
 vi.mock('./chat/CollapsibleToolGroup', () => ({
   default: (p: { onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number; children: ReactNode }) => {
     seen.toolGroups.push(p); return <div data-testid="tool-group">{p.children}</div>
@@ -291,6 +291,15 @@ describe('ChatTranscriptView', () => {
   it('draws nothing for a permissions-only tool group', () => {
     render(<ChatTranscriptView {...base([{ kind: 'group', startIdx: 0, msgs: [msg('permission', 'p1')] }])} />)
     expect(seen.toolGroups).toHaveLength(0)
+  })
+
+  it("names what the warm catch-up checks while the gateway prepares it, and nothing once it is done", () => {
+    const caption = 'Checking 2 PRs on GitHub for “Ship the fix”.'
+    const slot = (preparing: boolean) => ({ key: 'crew-a', messages: 1, running: false, preparing, preparing_text: preparing ? caption : '', preparing_lang: preparing ? 'en' : '' }) as never
+    const { rerender } = render(<ChatTranscriptView {...base([], { currentSlot: slot(true) })} />)
+    expect(screen.getByTestId('chat-preparing-catch-up')).toHaveTextContent(caption)
+    rerender(<ChatTranscriptView {...base([], { currentSlot: slot(false) })} />)
+    expect(screen.queryByTestId('chat-preparing-catch-up')).toBeNull()
   })
 
   it('routes a group approval to the newest unresolved permission, else to the page approve', async () => {

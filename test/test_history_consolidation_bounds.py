@@ -1,16 +1,8 @@
 """The transcript budget one history consolidation prompt carries.
 
-The unconsolidated tail has no natural ceiling: a session that goes a long time
-between passes, or whose consolidation kept failing, accumulates every message
-since the marker and renders all of them into a single prompt. Past some length
-no provider accepts that prompt, so the span that most needs extracting becomes
-the one that can never be extracted.
-
-Bounding the prompt is only half of it. The durable ``last_consolidated`` marker
-is what says a message has been through a memory pass, so it has to follow the
-PROMPT rather than the snapshot — on the success path and on the abandon path
-alike. These tests pin the split, the separator accounting, the oversized-message
-case, and that no offset ever advances past what a model actually read.
+An unbounded tail would grow past what any provider accepts. The durable
+``last_consolidated`` marker must follow the PROMPT, not the snapshot, on both the
+success and abandon paths, so no offset advances past what a model read.
 """
 
 import asyncio
@@ -490,14 +482,8 @@ class TestTheBudgetIsNotABehaviourChangeForOrdinarySessions:
 class TestABoundedAttemptIsNotReleasedByGrowth:
     """Appending messages cannot change a prefix that was already prompted.
 
-    The attempt cap is what abandons a span that keeps failing. It is scoped to
-    the content it measured, and growth releases it so one transient
-    marker-write failure cannot refuse a session forever. Under the budget that
-    scoping needs the prompted boundary too: a permanently over-budget head
-    message renders the same chunk on every pass, so counting the turns arriving
-    behind it as new content would reset the attempts before they could ever
-    reach the cap — a session still receiving turns would be re-billed on every
-    idle window, forever.
+    An over-budget head renders the same chunk every pass. Counting turns that arrive
+    behind it as new content would reset the attempt cap forever and re-bill each idle.
     """
 
     @pytest.mark.asyncio
@@ -549,15 +535,10 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
 
     @pytest.mark.asyncio
     async def test_an_over_budget_head_reaches_the_cap_in_a_growing_session(self, tmp_path) -> None:
-        """The termination argument for an oversized head under sub-chunking.
+        """An oversized head drains slice by slice under a provider that rejects everything.
 
-        A head larger than one budget is sliced rather than abandoned whole, and
-        each slice gets its own attempt budget. With the provider
-        rejecting every attempt the cap abandons ONE slice and advances the
-        durable sub-offset, so the next pass continues from the next slice and the
-        head drains slice-by-slice instead of being lost in one write. The turns
-        arriving behind the head still never reset a slice's budget — the
-        bounded-within-message accounting keeps the cap across appends.
+        Each slice has its own attempt budget, and turns arriving behind the head never
+        reset it, so the cap is reached even in a growing session.
         """
         log = _log_with(
             tmp_path,
@@ -595,11 +576,8 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
     async def test_an_over_budget_head_abandons_one_slice_at_a_time(self, tmp_path) -> None:
         """The cap abandons ONE slice, not the whole head.
 
-        A head twice the budget is sliced in two. With every attempt rejected,
-        the first slice reaches the cap and is abandoned: the durable sub-offset
-        advances past it, the message marker stays put, and the next pass renders
-        the SECOND slice. So one over-budget message costs at most one slice of
-        loss per cap, never the whole message in a single write.
+        The sub-offset advances past the first slice, the message marker stays put,
+        and the next pass renders the second slice.
         """
         log = _log_with(
             tmp_path,
@@ -949,13 +927,8 @@ class TestTheReceiptDescribesThePromptedSpan:
 class TestNoticeRowsDoNotSkipSlicing:
     """An oversized head next to a display-only row must still be sliced.
 
-    ``_consolidation_chunk`` carries display-only rows (a ``notice`` such as an
-    AutoNudge) inside the prefix even though no prompt renders them, so a chunk
-    holding one oversized head plus a notice is two rows long. A slicing guard
-    keyed on ``len(chunk)`` would skip slicing for that shape, prompt the whole
-    head, and abandon the entire message at the attempt cap WITHOUT extraction —
-    the data loss the sub-chunking path exists to prevent. The guard must key on
-    the PROMPTED rows instead.
+    ``_consolidation_chunk`` keeps unrendered ``notice`` rows in the prefix, so a guard
+    keyed on ``len(chunk)`` would skip slicing; it must key on the PROMPTED rows.
     """
 
     def _notice(self, content: str) -> dict:
@@ -1022,14 +995,10 @@ class TestASliceRendersWithinTheBudget:
 
 
 class TestSlicingStripsImageRefsOnceOverTheWholeHead:
-    """Opus review: slicing raw ``content[start:end]`` can cut inside a fenced
-    code block, flipping the fence parity the slice presents to
-    ``strip_image_refs``. ``strip_image_refs`` masks fenced spans (a path inside
-    a fence is documentation), so a slice that opens mid-fence reads as prose and
-    an image reference the whole-head scan would MASK gets stripped — or, cut the
-    other way, a real reference is left to be inlined into the prompt the
-    sub-chunking path exists to keep image-free. Stripping once over the whole
-    head before slicing removes the ambiguity.
+    """Image refs are stripped once over the whole head, before slicing.
+
+    A slice that opens mid-fence flips the fence parity ``strip_image_refs`` sees, so
+    stripping per slice would strip a fenced path or keep a real reference.
     """
 
     def test_a_ref_inside_a_fence_does_not_leak_into_any_slice(self, monkeypatch) -> None:
@@ -1068,15 +1037,10 @@ class TestSlicingStripsImageRefsOnceOverTheWholeHead:
         assert seen == stripped_whole
 
     def test_a_mid_fence_slice_is_rendered_without_a_second_strip(self) -> None:
-        """GPT 6.1 (blocking, upheld): a slice is rendered with
-        ``prestripped=True`` so ``_fmt_message`` does NOT run ``strip_image_refs``
-        a second time. The head is stripped ONCE over its whole content, but a
-        slice that begins inside a fenced block shows a different fence parity, so
-        a re-strip would read the fenced block as prose and replace a path the
-        whole-head pass deliberately preserved — silently corrupting the
-        extraction prompt. The pre-strip removed the mid-fence AMBIGUITY in the
-        slice's content; this test pins that the RENDER path does not reintroduce
-        it.
+        """A slice renders with ``prestripped=True``, so ``_fmt_message`` does not re-strip.
+
+        A re-strip of a mid-fence slice would read the fence as prose and replace a
+        path the whole-head pass kept.
         """
         from kiro_crew.image_refs import strip_image_refs
 
@@ -1130,13 +1094,9 @@ class TestSlicingStripsImageRefsOnceOverTheWholeHead:
 class TestARotationDiscardsAStaleSubOffsetFromTheCap:
     """The attempt cap must read the sub-offset through its generation stamp.
 
-    A rotation resets ``last_consolidated`` and bumps ``rotation_generation`` but
-    leaves ``consolidation_sub_offset`` at its old nonzero value. Comparing the
-    attempt's stamped sub-offset against that RAW value reads every failure on
-    the new span as a different slice and resets the cap each time, so the
-    abandon path is never reached. Reading it through
-    ``_sub_offset_for_generation`` makes the comparison see the ``0`` the slicer
-    uses for the new generation, so the cap holds across failures.
+    A rotation leaves ``consolidation_sub_offset`` at its old value. Compared raw, every
+    failure looks like a new slice and resets the cap; ``_sub_offset_for_generation``
+    reads it as ``0``.
     """
 
     def test_a_stale_sub_offset_from_a_prior_generation_does_not_reset_the_cap(
@@ -1183,15 +1143,10 @@ class TestARotationDiscardsAStaleSubOffsetFromTheCap:
 
 
 class TestAPerHeadSliceCeilingBoundsTheCost:
-    """A single over-budget head is sliced a bounded number of times — about
-    ``_CONSOLIDATION_MAX_HEAD_SLICES`` for near-span lines, up to roughly twice
-    that for lines that advance well under a span — before a genuinely
-    multi-slice remainder is retired, so one pathological message cannot spawn
-    an unbounded run of sequential consolidation LLM calls that holds up every
-    message behind it. A head whose remainder fits one more slice is never
-    retired; it drains in full. The retired remainder is FAIL-SAFE: the marker
-    is advanced past the whole head WITH a logged reason and the user-facing
-    abandon notice, never silently.
+    """An over-budget head is sliced a bounded number of times before its remainder retires.
+
+    About ``_CONSOLIDATION_MAX_HEAD_SLICES`` slices (up to twice that for short lines).
+    A retire logs a reason and posts the abandon notice; a one-slice remainder drains.
     """
 
     @pytest.mark.asyncio
@@ -1318,11 +1273,8 @@ class TestAPerHeadSliceCeilingBoundsTheCost:
     ) -> None:
         """The retire fires only when MORE THAN one slice of content remains.
 
-        A head that drains in exactly the ceiling of slices — or one more — keeps
-        its final short slice: there is no span that would fit in one more slice
-        yet is dropped unread. This pins the retire condition's lower edge, so a
-        head whose remainder is a single slice is prompted in full rather than
-        marked consolidated unread.
+        This pins the lower edge: a head that drains in the ceiling of slices, or one
+        more, is prompted in full rather than marked consolidated unread.
         """
         ceiling = history_consolidation_mod._CONSOLIDATION_MAX_HEAD_SLICES
 

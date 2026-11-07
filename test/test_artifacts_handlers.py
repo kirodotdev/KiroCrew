@@ -452,6 +452,17 @@ class TestCreate:
         assert "name" in _json_body(resp)["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", [["dashboard"], {"a": 1}], ids=["list", "dict"])
+    async def test_a_list_or_object_source_returns_400(
+        self, isolated_store, patch_restricted, source
+    ) -> None:
+        body = {"name": "x", "content": "a", "slug": "kept-out", "source": source}
+        resp = await api_artifacts_create(_request(body=body))
+        assert resp.status == 400
+        assert _json_body(resp)["error"].startswith("source must be str")
+        assert not (isolated_store.root / "kept-out").exists()
+
+    @pytest.mark.asyncio
     async def test_duplicate_slug_returns_409(self, isolated_store, patch_restricted) -> None:
         body = {"name": "x", "content": "a", "slug": "taken"}
         await api_artifacts_create(_request(body=body))

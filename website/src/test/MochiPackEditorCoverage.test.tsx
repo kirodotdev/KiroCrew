@@ -182,10 +182,10 @@ describe('PackEditor — create mode', () => {
     render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
 
     expect(saveButton()).toBeDisabled()
-    expect(screen.getByText(/Missing: Idle, Walking, Thinking, Working, Error, Offline/)).toBeTruthy()
+    expect(screen.getByText(/Missing: Idle, Walking, Thinking, Working, Error, and Offline/)).toBeTruthy()
 
     await importInto('Idle', svgFile('idle'))
-    expect(screen.getByText(/Missing: Walking, Thinking, Working, Error, Offline/)).toBeTruthy()
+    expect(screen.getByText(/Missing: Walking, Thinking, Working, Error, and Offline/)).toBeTruthy()
     expect(saveButton()).toBeDisabled()
 
     for (const label of REQUIRED.slice(1)) copyInto(label, 'Idle')

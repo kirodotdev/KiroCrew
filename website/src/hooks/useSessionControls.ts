@@ -20,6 +20,7 @@ import { useRef } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { api } from '../api/client'
+import { isPermissionRefusal } from '../api/apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
 
 /** Hard cap on controls rendered inline across ALL apps.
@@ -255,7 +256,15 @@ export function useSessionControls(): SessionControlsResult {
   // from "no app declares a control" unless the failure is surfaced, so the
   // caller owes the user an error surface. `errors-use-error-notice` names a
   // `useQuery` error as an error for exactly this reason.
-  return { controls: data ?? NO_CONTROLS, error: (error as Error | null) ?? null }
+  //
+  // Except a permission refusal: a teammate the relay refuses the app surface
+  // (`relay_apps_teammate`), or an `owner_only` 403, has no session controls to
+  // offer, and "no chips" is the true state for them rather than a failure to
+  // report (#32031). Any other failure is still returned.
+  return {
+    controls: data ?? NO_CONTROLS,
+    error: isPermissionRefusal(error) ? null : (error as Error | null) ?? null,
+  }
 }
 /** Module-level, so React Query re-runs it only when the app list changes: an
  *  inline `select` is a new function per render and re-resolves every time. */

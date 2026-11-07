@@ -199,7 +199,7 @@ class DashboardState:
     # The person's pinned-session order (``pinned_session_order``). A class
     # default for the same reason as the push fields above: serialize_slot
     # reads it on the slots-push hot path, which also runs on a
-    # ``__new__``-built state. The empty tuple means "never reordered".
+    # ``__new__``-built state. The empty tuple means "no order stored".
     _pinned_session_order: "list[str] | tuple[str, ...]" = ()
 
     #: Whether the stored order has been read. The read runs after the
@@ -207,8 +207,8 @@ class DashboardState:
     #: every writer reads it first when it has not landed yet.
     _pinned_session_order_loaded: bool = False
 
-    #: Whether an order was ever stored, even an empty one. The browser's
-    #: one-time hand-off of its old local order lands only while this is False.
+    #: Whether an order was ever stored, even an empty one. The sidebar's
+    #: first-load seed (``only_if_unset``) lands only while this is False.
     _pinned_session_order_stored: bool = False
 
     #: Revision of the in-memory order, raised on every change. Each slot row
@@ -554,6 +554,7 @@ class DashboardState:
                 f"A {surface} conversation reached its turn ceiling and is paused. "
                 "Reset it from the dashboard to continue.",
                 meta={"session_key": session_key, "surface": surface},
+                i18n={"id": "turn_limit", "params": {"surface": surface}},
             )
         )
         self._slots: dict[str, _ChatSlot] = {}
@@ -1099,6 +1100,7 @@ class DashboardState:
     source_link_urls_for_slot = _source_links.source_link_urls_for_slot
     push_source_status = _source_links.push_source_status
     refresh_slot_source_status = _source_links.refresh_slot_source_status
+    refresh_source_status_now = _source_links.refresh_source_status_now
 
     # state_parts/dashboard_services.py
     approval_timeout_for = _dashboard_services.approval_timeout_for
@@ -1109,6 +1111,7 @@ class DashboardState:
     enable_yolo = _dashboard_services.enable_yolo
     disable_yolo = _dashboard_services.disable_yolo
     is_yolo_active = _dashboard_services.is_yolo_active
+    yolo_reaches = _dashboard_services.yolo_reaches
     request_approval = _dashboard_services.request_approval
     pending_coordinator_approvals = _dashboard_services.pending_coordinator_approvals
     linked_session_busy = _dashboard_services.linked_session_busy
@@ -1143,6 +1146,7 @@ class DashboardState:
     unregister_sse = _dashboard_services.unregister_sse
     _rewrite_notifications_async = _dashboard_services._rewrite_notifications_async
     delete_notification = _dashboard_services.delete_notification
+    dismiss_notification = _dashboard_services.dismiss_notification
     ack_notification = _dashboard_services.ack_notification
     unack_notification = _dashboard_services.unack_notification
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications

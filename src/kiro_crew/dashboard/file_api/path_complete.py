@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         is_unc_shape,
         pinned_fs,
         platform_compat,
+        sandbox_plan,
     )
 
 
@@ -263,7 +264,9 @@ def _complete_path_listing(project: str, rel: str, prefix: str) -> tuple[str, st
         # Containment again, on the canonical name this time: the lexical pass
         # judged the string the caller typed, and only this judges the directory it
         # turned out to name.
-        if not (witness == root or witness.startswith(root + os.sep)):
+        # ``path_within`` rather than ``root + os.sep``, so a project at a drive
+        # root (``H:\``, or ``/``) still contains the directories below it.
+        if not sandbox_plan.path_within(witness, root):
             return "outside", root, []
         if is_sensitive_resolved_path(witness):
             return "sensitive", witness, []

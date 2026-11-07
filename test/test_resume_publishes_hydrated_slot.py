@@ -212,17 +212,10 @@ async def test_slot_is_not_reachable_unhydrated_during_the_folder_unhide(tmp_pat
 async def test_a_delete_during_the_read_does_not_republish_the_transcript(tmp_path, monkeypatch):
     """A session deleted while resume is suspended must not be resurrected.
 
-    ``history.delete_session`` unlinks the file and leaves NO tombstone -- its own
-    docstring notes that once the delete releases the lock "a concurrent writer
-    can recreate the session". Resume reads the transcript BEFORE publishing the
-    slot (so the await cannot expose an empty slot by name), which means a delete
-    landing inside that read leaves us holding a fully populated transcript for a
-    session that does not exist. Publishing a slot from that content rewrites
-    the file on its next flush.
-
-    The probe is ``get_metadata_status``, not ``get_metadata``: the latter returns
-    ``{}`` for both "deleted" and "unreadable", and treating an unreadable
-    metadata line as a deletion would discard a live session.
+    ``history.delete_session`` leaves no tombstone, and resume reads the transcript
+    before publishing, so a delete inside that read would be undone by the next flush.
+    The probe is ``get_metadata_status``: ``get_metadata`` returns ``{}`` for both
+    "deleted" and "unreadable", and an unreadable line is not a deletion.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -279,20 +272,10 @@ async def test_a_delete_then_recreate_during_the_read_does_not_overwrite_the_rep
 ):
     """A session recreated while resume is suspended must not be overwritten.
 
-    The sibling test above covers the DELETE case, where the guard fires on
-    metadata being ABSENT. Deleting and then RECREATING inside the same window
-    errs in the opposite direction: ``delete_session`` leaves no tombstone and
-    its docstring notes a concurrent writer can recreate the session, so the
-    post-read metadata is a NON-EMPTY dict belonging to the NEW session. An
-    existence-keyed guard reads that as "still here" and publishes a slot
-    holding the OLD transcript, whose next flush overwrites a LIVE replacement.
-
-    Existence cannot separate the two; identity can. Every path that mints a
-    metadata line stamps ``created_at`` (``append`` on creation,
-    ``_update_metadata_locked`` when the line is missing) and
-    ``_rewrite_session_locked`` PRESERVES it, so a differing ``created_at`` on a
-    transcript that carried one means the file was recreated rather than merely
-    rewritten.
+    After delete-then-recreate the metadata exists but belongs to the NEW session, so
+    an existence check would publish the OLD transcript over it. Identity separates
+    them: every new metadata line stamps ``created_at`` and
+    ``_rewrite_session_locked`` preserves it, so a differing value means a recreate.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -376,12 +359,8 @@ async def test_a_delete_then_recreate_during_the_read_does_not_overwrite_the_rep
 async def test_a_benign_metadata_rewrite_during_the_read_still_publishes(tmp_path, monkeypatch):
     """A metadata change that is NOT a recreate must not refuse the resume.
 
-    This is the control for the identity arm's breadth. A title/agent update
-    rewrites the metadata line while ``_rewrite_session_locked`` and
-    ``_update_metadata_locked`` both PRESERVE ``created_at``, so the session is
-    the same one. A guard that compared the whole metadata dict -- rather than
-    the identity field -- would refuse here, turning an ordinary concurrent
-    rename into a failed resume.
+    A title/agent update keeps ``created_at``; a guard comparing the whole metadata
+    dict would turn an ordinary concurrent rename into a failed resume.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -435,16 +414,10 @@ async def test_a_folder_filed_during_the_read_is_not_erased_by_a_stale_existence
 ):
     """A folder assignment landing during the threaded read must survive resume.
 
-    The folder-existence check was hoisted above the publish so no await sits
-    between the re-checks and the hydrate loop. That hoist moved it onto the
-    PRE-read metadata snapshot, while the hydrate binds ``folder_id`` from the
-    snapshot re-read after the last await. A channel reconciliation filing the
-    session mid-read makes the two ids differ, and the verdict earned by the OLD
-    folder is then applied to the NEW one: a dangling old id yields
-    ``folder_unhidden=False``, which erases the live filing the reconciliation
-    just made. The dirty-slot flush persists that erasure.
-
-    A verdict is only about the folder it was computed for.
+    The folder-existence verdict comes from the PRE-read snapshot while ``folder_id``
+    comes from the re-read. If a reconciliation files the session mid-read, applying
+    the old folder's verdict would erase the new filing. A verdict is only about the
+    folder it was computed for.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -560,17 +533,10 @@ async def test_a_close_landing_during_the_read_is_not_cleared_by_the_stale_snaps
 ):
     """Resuming a closed session must not reopen a replacement closed mid-read.
 
-    ``clear_closed`` acts on the ``meta`` snapshot taken before the threaded
-    transcript read. If the session is deleted, recreated and closed inside that
-    window, an unconditional clear drops a ``closed`` flag belonging to a
-    DIFFERENT conversation -- and it runs BEFORE the identity re-check returns
-    409, so the 409 does not undo it. The user's close is silently reversed.
-
-    Both discriminators are covered. ``stamp_closed_at=True`` is the app close
-    path (chat_handlers stamps ``closed_at``); ``False`` is a legacy flag with no
-    stamp, where the file's mtime approximates the close instant -- and a
-    recreated file's mtime is necessarily fresh, which is what makes the
-    delete/recreate case comparable at all.
+    ``clear_closed`` acts on the pre-read ``meta`` and runs before the identity
+    re-check's 409, so an unconditional clear would drop a replacement's ``closed``.
+    ``stamp_closed_at=True`` is the app close path; ``False`` is a flag with no stamp,
+    where the file's mtime stands in for the close instant.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -720,20 +686,10 @@ async def test_a_metadata_only_session_removed_during_the_read_is_not_republishe
 ):
     """An EMPTY transcript must not disable the deletion and identity guards.
 
-    Both re-checks were gated on ``all_messages``, so a metadata-only session --
-    one carrying a metadata line and no messages, which ``update_metadata``
-    creates on upsert -- slipped past both: the transcript is empty, the term is
-    falsy, and the resume published a slot for a session that had been removed
-    under it. Its next flush recreates the deleted session (``recreate=False``)
-    or overwrites the live replacement (``recreate=True``).
-
-    ``all_messages`` was the wrong witness of prior existence. The pre-read
-    ``meta`` is the right one: it is read synchronously before the awaits, and a
-    nonempty value means the session was there when we looked. The interest the
-    old gate was protecting -- resuming a legitimately empty session must not
-    409 -- is carried by the OTHER terms, not by this one: ``not
-    post_read_meta`` stays false while the session is still present, and the
-    identity arm needs two DIFFERING ``created_at`` values.
+    A metadata-only session has no messages, so guards keyed on ``all_messages`` would
+    let resume publish a removed session. The pre-read ``meta`` witnesses prior
+    existence instead; an empty live session still resumes because ``not
+    post_read_meta`` stays false and the identity arm needs two differing ``created_at``.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -812,12 +768,10 @@ async def test_a_metadata_only_session_removed_during_the_read_is_not_republishe
 
 @pytest.mark.asyncio
 async def test_a_legitimately_empty_session_that_still_exists_still_resumes(tmp_path, monkeypatch):
-    """NEGATIVE CONTROL: the interest the old gate protected must survive.
+    """NEGATIVE CONTROL: a metadata-only session that is still PRESENT resumes normally.
 
-    A metadata-only session that is still PRESENT has to resume normally. If the
-    existence witness is widened without the other terms doing their share, every
-    empty session starts answering 409 ``resume_session_deleted`` -- one silent
-    bug traded for another, and this is the assertion that catches it.
+    A widened existence witness must not make every empty session answer 409
+    ``resume_session_deleted``.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -835,6 +789,32 @@ async def test_a_legitimately_empty_session_that_still_exists_still_resumes(tmp_
         "the guards must not refuse a session that is present"
     )
     assert "mdonly2" in state._slots, "the slot was not published for a live empty session"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_slots_broadcast_does_not_500_a_committed_resume(
+    tmp_path, monkeypatch, caplog
+):
+    """Every slots broadcast fails on a leading edge (a poisoned other slot): the
+    resume has committed, so it answers 200 and the failures go to the log."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    key = "dashboard:poisoned1"
+    state.conversation_log.update_metadata(key, {"title": "still here"})
+
+    def _fail():
+        raise TypeError("Object of type object is not JSON serializable")
+
+    monkeypatch.setattr(state, "_do_slots_broadcast", _fail)
+    state._slots_broadcast_interval = 0.0  # every push lands on a leading edge
+
+    with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/poisoned1/resume", json={"key": key})
+
+    assert resp.status == 200
+    assert "poisoned1" in state._slots
+    assert any(r.getMessage().startswith("Slots broadcast failed") for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -862,18 +842,11 @@ async def test_resuming_a_session_that_never_existed_is_not_refused(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_resume_does_not_apply_the_remote_binding_from_disk(tmp_path, monkeypatch):
-    """The load-bearing constraint of the fold (RFC 7.1b): the shared
-    materialiser applies exactly resume's field set and NEVER the remote binding.
+    """The shared materialiser applies resume's field set and NEVER the remote binding.
 
-    A session bound to a remote instance is persisted with
-    ``executor="remote"`` / ``instance_id`` / ``remote_slot`` in its metadata
-    line. Opening it from History must come back LOCAL — remote rehydration is
-    the startup restore path's job (``_rehydrate_slot_from_history``), a
-    different code path. This asserts the NEGATIVE against the exact failure
-    mode, so it fails if anyone starts applying the remote binding here, rather
-    than merely characterising the current field list (which a snapshot would,
-    and which would still pass if the applied set were widened and the snapshot
-    updated in the same commit).
+    A session bound to a remote instance must open from History as LOCAL; remote
+    rehydration is ``_rehydrate_slot_from_history``'s job (RFC 7.1b). This pins the
+    negative, which a snapshot of the field list would not.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -925,11 +898,8 @@ async def test_resume_does_not_apply_the_remote_binding_from_disk(tmp_path, monk
 async def test_resume_still_windows_a_long_transcript_to_500(tmp_path, monkeypatch):
     """Resume keeps its 500-row on-disk window unchanged.
 
-    The window/older-count is now a parameter (``window_limit``) so import can opt
-    out, but resume must still pass the default 500 and report the earlier rows as
-    frozen on disk. This pins that the parameterization did not quietly widen or
-    narrow resume's own window: a transcript of 600 rows loads the newest 500 and
-    reports 100 older-on-disk.
+    ``window_limit`` lets import opt out, but resume still loads the newest 500 of 600
+    rows and reports 100 older-on-disk.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -954,11 +924,8 @@ async def test_resume_still_windows_a_long_transcript_to_500(tmp_path, monkeypat
 def test_serialize_slots_omits_a_slot_under_construction(tmp_path, monkeypatch):
     """serialize_slots hides a registered-but-under-construction slot.
 
-    This is the primitive the whole materialisation-visibility design rests on: a
-    slot stays in ``_slots`` for identity while being built, but must not appear
-    in the payload until construction ends, or a client sees (and can click) a
-    half-built session whose Layer B join is not yet written. Registered +
-    begin_slot_construction -> absent from serialize_slots; end -> present.
+    The slot stays in ``_slots`` for identity, but a client must not see a half-built
+    session whose Layer B join is not yet written.
     """
     from kiro_crew.dashboard.state import _ChatSlot
 
@@ -985,17 +952,12 @@ def test_serialize_slots_omits_a_slot_under_construction(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_materialise_never_makes_the_slot_visible_before_it_is_ready(tmp_path, monkeypatch):
-    """No push during materialisation may serialize the slot — including the
-    leading-edge frame ``get_or_create_slot`` fires on creation.
+    """No push during materialisation may serialize the slot, including the creation frame.
 
-    This is the F3 regression First Principles and GPT caught: the construction
-    mark was set AFTER get_or_create_slot's synchronous broadcast, so the empty
-    slot rode the creation frame before the filter could hide it. The fix wraps
-    creation + begin_slot_construction in one suspend_slots_push block, deferring
-    that broadcast until the mark is set. Driven on a REAL DashboardState (not a
-    stub whose get_or_create_slot omits the broadcast — the fidelity gap that let
-    the earlier test pass vacuously): every serialize_slots taken at a push during
-    the materialise call must omit the slot, and it must appear only after.
+    The construction mark must be set before ``get_or_create_slot``'s synchronous
+    broadcast, so creation and ``begin_slot_construction`` share one
+    ``suspend_slots_push`` block. Driven on a REAL DashboardState, because a stub that
+    omits the broadcast would pass vacuously.
     """
     import kiro_crew.dashboard.chat_handlers as ch
 
@@ -1046,13 +1008,10 @@ async def test_materialise_never_makes_the_slot_visible_before_it_is_ready(tmp_p
 
 
 def test_background_flush_and_open_slots_skip_an_under_construction_slot(tmp_path, monkeypatch):
-    """Only the constructor persists a slot mid-build; the background flush and
-    the restart-restore set both skip it.
+    """Only the constructor persists a slot mid-build; flush and restart-restore skip it.
 
-    A periodic ``_flush_dirty_slots`` landing on an under-construction slot would
-    write a half-built transcript and could race the constructor's own save; and
-    the open-slots set must not list a slot a crash could then resurrect
-    half-built. Both skip on ``_slots_under_construction`` membership.
+    A periodic ``_flush_dirty_slots`` would write a half-built transcript, and the
+    open-slots set could let a crash resurrect it half-built.
     """
     from kiro_crew.dashboard.state import _ChatSlot
 
@@ -1118,12 +1077,9 @@ def test_live_slot_count_counts_an_under_construction_slot_once(tmp_path):
 def test_under_construction_slot_is_not_acquirable_during_the_async_tail(tmp_path):
     """A slot under construction is refused by both acquisition doors.
 
-    Construction is synchronous through the hydrate loop, but the import path
-    holds ``begin_slot_construction`` across its async Layer B finalization tail,
-    so the slot is registered-but-not-yet-resumable for that span. ``get_slot``
-    returns None and ``get_or_create_slot`` raises, so a concurrent acquirer
-    cannot treat it as a live session before Layer B lands; raw ``_slots`` still
-    resolves it so a same-key resume dedups.
+    Import holds ``begin_slot_construction`` across its async Layer B tail, so
+    ``get_slot`` returns None and ``get_or_create_slot`` raises until it lands; raw
+    ``_slots`` still resolves it so a same-key resume dedups.
     """
     import pytest
 
@@ -1161,11 +1117,9 @@ def test_raw_acquirer_mutators_refuse_an_under_construction_slot(tmp_path):
 def test_redact_history_rows_only_touches_the_window_not_the_frozen_prefix():
     """``_redact_history_rows`` redacts only the newest ``window_limit`` rows.
 
-    Redacting the frozen prefix would put transcript-sized GIL regex on the loop
-    for bytes that are never re-serialized (the prefix is already redacted on disk
-    and only counted). With ``window_limit=2`` on 5 rows, the 3 prefix rows are
-    returned untouched (same objects) and only the last 2 non-user rows are
-    scrubbed. ``window_limit=None`` (import) redacts everything.
+    The frozen prefix is already redacted on disk and never re-serialized, so
+    scrubbing it would only put regex work on the loop. ``window_limit=None`` (import)
+    redacts everything.
     """
     from kiro_crew.dashboard.chat_handlers import _redact_history_rows
 
@@ -1185,25 +1139,11 @@ def test_redact_history_rows_only_touches_the_window_not_the_frozen_prefix():
 
 
 def test_redact_history_rows_normalises_structured_content_to_a_redacted_string():
-    """A non-string ``content`` (nested multi-part content from a legacy or
-    hand-edited transcript) must be normalised to a redacted STRING, not passed
-    through unredacted and not kept as structure.
+    """A non-string ``content`` is normalised to a redacted STRING.
 
-    Before this fix ``_redact_history_rows`` skipped any non-string ``content``
-    (``if isinstance(content, str)``), so a credential nested in structured
-    content reached the broadcaster verbatim. Keeping the structure and redacting
-    only string leaves was also unsafe: a credential in a dict KEY would survive,
-    and the downstream save/display paths crash on non-string ``content``. So the
-    fix normalises to a single redacted string. This asserts a token-shaped
-    string buried in a dict/list ``content`` -- both as a value AND as a dict key
-    -- does NOT survive the redaction pass that feeds ``_hydrate_slot_from_history``
-    (and thus the broadcaster), that the result is a string, and that the row is
-    then serialisable by the persistence entry builder (bolin's ">200-row
-    saveable" requirement in miniature: the accepted row can be saved).
-
-    Negative-verified: revert the ``else`` branch to the old passthrough
-    (``m = {**m, "content": content}`` keeping the original structure) and this
-    test fails -- the token survives and the content stays non-string.
+    Keeping the structure is unsafe: a credential in a dict KEY would survive, and the
+    save/display paths crash on non-string ``content``. This checks a token as both a
+    value and a key does not survive, and that the row is still saveable.
     """
     from kiro_crew.dashboard.chat_handlers import _redact_history_rows
     from kiro_crew.dashboard.chat_persistence import _build_message_entry_uncached
@@ -1267,16 +1207,11 @@ def test_normalise_structured_content_is_bounded_and_never_raises():
 
 
 def test_named_create_on_a_retracted_under_construction_key_is_refused(tmp_path):
-    """The retract-window hijack: a named create on the predictable minted key,
-    while that key is retracted from ``_slots`` but still under construction,
-    must be refused -- otherwise it mints a second slot sharing the effective
-    session key the import's Layer B was joined to.
+    """A named create on a retracted, under-construction minted key is refused.
 
-    Reproduces the exact window: begin construction on the key, then RETRACT it
-    from ``_slots`` (as import does for its async Layer B tail), then issue a
-    ``get_or_create_slot(name=<key>)`` -- the create path, since the key is absent
-    from ``_slots``. It must raise, not mint. Once construction ends, the same
-    named create succeeds.
+    Import retracts the key from ``_slots`` for its async Layer B tail; a create there
+    would mint a second slot sharing the effective session key. Once construction
+    ends, the same named create succeeds.
     """
     import pytest
 
@@ -1301,13 +1236,10 @@ def test_named_create_on_a_retracted_under_construction_key_is_refused(tmp_path)
 
 
 def test_failed_hydration_does_not_leave_a_stale_restricted_marker(tmp_path, monkeypatch):
-    """A hydration that raises after marking the key restricted must roll the
-    marker back, or a later session at that key is wrongly blocked from memory
-    operations (fail-closed over-restriction).
+    """A hydration that raises after marking the key restricted rolls the marker back.
 
-    Non-persistent ``memory_mode`` adds ``dashboard:{key}`` to
-    ``_restricted_keys`` early in hydration; force a raise AFTER that add and
-    assert the except path discarded it (and dropped the slot).
+    Otherwise a later session at that key would be wrongly blocked from memory
+    operations. The raise is forced after ``dashboard:{key}`` joins ``_restricted_keys``.
     """
     import kiro_crew.dashboard.chat_handlers as ch
 
@@ -1333,18 +1265,21 @@ def test_failed_hydration_does_not_leave_a_stale_restricted_marker(tmp_path, mon
     assert "priv-1" not in state._slots
 
 
+class _FlushAborted(BaseException):
+    """What the suspend block's exit still lets through: it logs an ``Exception``."""
+
+
 def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, monkeypatch):
-    """If the suspend-block exit flush raises (a poisoned pre-existing slot's
-    push_slots_update), materialisation must roll back fully: no leaked
-    construction count, no registered slot. The rollback region covers creation
-    and the context exit, not just the hydrate body.
+    """If the suspend-block exit flush raises past its log (a ``BaseException``),
+    materialisation must roll back fully: no leaked construction count, no
+    registered slot. The rollback region covers creation and the context exit,
+    not just the hydrate body.
     """
     state = _make_state(tmp_path)
 
-    # Raise only on the DEFERRED exit flush (F2's scenario: a poisoned slot
-    # field fails serialize_slots at block exit), not the leading-edge push
-    # inside get_or_create_slot. Count calls: the exit flush is the one that
-    # fires after begin_slot_construction, with the slot already bound in the
+    # Raise only on the DEFERRED exit flush, not the leading-edge push inside
+    # get_or_create_slot. Count calls: the exit flush is the one that fires
+    # after begin_slot_construction, with the slot already bound in the
     # materialiser scope.
     real_push = state.push_slots_update
     calls = {"n": 0}
@@ -1352,7 +1287,7 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     def _push(*a, **k):
         calls["n"] += 1
         if slot_created["done"]:
-            raise RuntimeError("poisoned broadcast")
+            raise _FlushAborted("poisoned broadcast")
         return real_push(*a, **k)
 
     slot_created = {"done": False}
@@ -1370,7 +1305,7 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     import kiro_crew.dashboard.chat_handlers as ch
 
     before = state.live_slot_count()
-    with pytest.raises(RuntimeError, match="poisoned broadcast"):
+    with pytest.raises(_FlushAborted, match="poisoned broadcast"):
         ch._materialise_slot_from_history(
             state,
             name="flush-leak-1",
@@ -1381,6 +1316,37 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     assert "flush-leak-1" not in state._slots, "leaked a registered slot on flush failure"
     assert state.live_slot_count() == before, "leaked a construction reservation"
     assert "flush-leak-1" not in state._slots_under_construction
+
+
+def test_a_failing_exit_flush_does_not_fail_materialisation(tmp_path, monkeypatch, caplog):
+    """A suspend-block exit flush whose broadcast fails (a poisoned pre-existing
+    slot) is logged, and the materialisation it trails completes:
+    the block exited cleanly, so the slot stays registered and under
+    construction for the caller's tail to finish, and hydration still runs.
+    """
+    state = _make_state(tmp_path)
+
+    # Inside the block get_or_create_slot's push only marks one owed, so the
+    # exit flush is the first broadcast.
+    def _broadcast(*a, **k):
+        raise RuntimeError("poisoned broadcast")
+
+    monkeypatch.setattr(state, "_do_slots_broadcast", _broadcast)
+
+    import kiro_crew.dashboard.chat_handlers as ch
+
+    with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+        slot = ch._materialise_slot_from_history(
+            state,
+            name="flush-leak-1",
+            history_key="flush-leak-1",
+            meta={"title": "x"},
+            all_messages=[{"role": "assistant", "content": "a", "ts": ""}],
+        )
+    assert state._slots.get("flush-leak-1") is slot
+    assert "flush-leak-1" in state._slots_under_construction, "the caller's tail ends it"
+    assert [m.get("content") for m in slot.messages] == ["a"], "hydration must still run"
+    assert any(r.getMessage().startswith("Slots broadcast failed") for r in caplog.records)
 
 
 @pytest.mark.asyncio

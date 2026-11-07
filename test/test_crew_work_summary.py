@@ -75,7 +75,11 @@ def test_summary_counts_open_items_and_splits_out_the_person():
     # Each person-waiting item names its worker, so the row can count it once.
     assert summary["person_workers"] == ["chat-w", "chat-w"]
     a, e = summary["items"]
-    assert a == {"worker": "chat-w", "stale_at_ms": NOW_MS - 5 * 60_000 + WINDOW_MS}
+    assert a == {
+        "worker": "chat-w",
+        "stale_at_ms": NOW_MS - 5 * 60_000 + WINDOW_MS,
+        "looping": False,
+    }
     # A question for the conductor: the ledger never flags it while the move is not
     # the worker's.
     assert e["stale_at_ms"] == 0
@@ -98,7 +102,17 @@ def test_an_answered_person_wait_is_the_worker_s_again():
 def test_a_quiet_item_is_stale_now_and_a_looping_worker_never():
     quiet = _item("q", last_report_at=_stamp(40))
     assert _summary([quiet])["items"][0]["stale_at_ms"] == NOW_MS
-    assert _summary([quiet], looping={"dashboard:chat-w"})["items"][0]["stale_at_ms"] == 0
+    looped = _summary([quiet], looping={"dashboard:chat-w"})["items"][0]
+    assert looped["stale_at_ms"] == 0
+    # The row reads the loop itself, so a worker waiting on CI shows as running.
+    assert looped["looping"] is True
+
+
+def test_a_looping_worker_whose_question_the_conductor_owes_is_not_shown_running():
+    """The move is the conductor's: the row keeps it a wait, loop or not."""
+    asked = _item("q", status="question", last_report_at=_stamp(2))
+    (only,) = _summary([asked], looping={"dashboard:chat-w"})["items"]
+    assert only["looping"] is False
 
 
 def test_a_closed_worker_that_reported_is_stale_at_once():
@@ -108,7 +122,7 @@ def test_a_closed_worker_that_reported_is_stale_at_once():
 def test_a_remote_worker_is_never_flagged_stalled_here():
     quiet = _item("r", worker_instance_id="peer-1", last_report_at=_stamp(40))
     (only,) = _summary([quiet], closed={"dashboard:chat-w"})["items"]
-    assert only == {"worker": "", "stale_at_ms": 0}
+    assert only == {"worker": "", "stale_at_ms": 0, "looping": False}
 
 
 def test_remember_keeps_open_items_by_slot_and_reports_only_a_move():
@@ -332,3 +346,80 @@ def test_a_steer_before_a_new_question_in_the_same_second_does_not_answer_it():
     assert _summary([asked])["person"] == 1
     answered = dict(asked, events=[*asked["events"], {"ts": same, "kind": "steer", "text": "blue"}])
     assert _summary([answered])["person"] == 0
+
+
+def _loop(cycle_count: int, max_cycles: int = 24, kind: str = "work-ledger"):
+    from kiro_crew.monitoring.models import MONITOR_STATE_VERSION
+
+    return SimpleNamespace(
+        id="loop-1",
+        active=True,
+        approval_stalled=False,
+        max_cycles=max_cycles,
+        cycle_count=cycle_count,
+        max_runtime_secs=0,
+        created_ts=0,
+        monitor=SimpleNamespace(kind=kind, version=MONITOR_STATE_VERSION),
+    )
+
+
+@pytest.mark.parametrize(
+    ("loop", "expected"),
+    [
+        # A live patrol whose next fire is pending: the conductor picks stalls up.
+        (_loop(cycle_count=3), True),
+        # A live loop that watches a pull request never sweeps the ledger.
+        (_loop(cycle_count=3, kind="github-pr"), False),
+        # A one-shot monitor that already fired: the timer stops it at the cap
+        # without firing again, so it wakes nobody.
+        (_loop(cycle_count=1, max_cycles=1), False),
+        (None, False),
+    ],
+)
+def test_the_row_says_whether_the_conductor_holds_a_live_loop(monkeypatch, loop, expected):
+    import kiro_crew.autonudge as autonudge
+
+    loops = {"chat-7": loop}
+    monkeypatch.setattr(autonudge, "get_instance", lambda: SimpleNamespace(get_by_slot=loops.get))
+    crew_work.remember("chat-7", {"items": [_item("a")]})
+    summary = crew_work.summary_for_state("chat-7", SimpleNamespace(_slots={}))
+    assert summary["conductor_looping"] is expected
+
+
+def test_a_conductor_s_own_loop_change_refreshes_its_board():
+    heard: list[str] = []
+    crew_work.set_listener(heard.append)
+    crew_work.remember("chat-7", {"items": [_item("a")]})
+    crew_work.worker_loop_moved("chat-7")
+    assert heard == ["chat-7"]
+
+
+def test_a_channel_conductor_s_own_loop_change_refreshes_the_slot_it_is_shown_under(
+    monkeypatch,
+):
+    from kiro_crew.crew_log import slot_prime
+
+    monkeypatch.setattr(slot_prime, "schedule", lambda *a, **k: True)
+    heard: list[str] = []
+    crew_work.set_listener(heard.append)
+    crew_work.follow("discord_agent_direct_1", ("discord:agent:direct:1", "discord_agent_direct_1"))
+    crew_work.remember("discord:agent:direct:1", {"items": [_item("a")]})
+    heard.clear()
+    # The loop frame names the channel session key, not the dashboard slot.
+    crew_work.worker_loop_moved("discord:agent:direct:1")
+    assert heard == ["discord_agent_direct_1"]
+
+
+@pytest.mark.parametrize(("loop", "expected"), [(_loop(cycle_count=3), True), (None, False)])
+def test_a_channel_conductor_s_loop_is_found_under_its_session_key(monkeypatch, loop, expected):
+    import kiro_crew.autonudge as autonudge
+    from kiro_crew.crew_log import slot_prime
+
+    monkeypatch.setattr(slot_prime, "schedule", lambda *a, **k: True)
+    # The loop is bound under the channel session key, never the dashboard slot name.
+    loops = {"discord:agent:direct:1": loop}
+    monkeypatch.setattr(autonudge, "get_instance", lambda: SimpleNamespace(get_by_slot=loops.get))
+    crew_work.follow("discord_agent_direct_1", ("discord:agent:direct:1", "discord_agent_direct_1"))
+    crew_work.remember("discord:agent:direct:1", {"items": [_item("a")]})
+    summary = crew_work.summary_for_state("discord_agent_direct_1", SimpleNamespace(_slots={}))
+    assert summary["conductor_looping"] is expected

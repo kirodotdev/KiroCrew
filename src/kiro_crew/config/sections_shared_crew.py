@@ -2,7 +2,7 @@
 
 ``dashboard.shared_crew`` holds the Shared Crew switches and limits: fair
 admission, per-principal containment slices, the direct tailnet link and the
-typing lock. Fair admission and the direct tailnet link are off by default,
+typing lock. Fair admission, the direct tailnet link and the SSM link are off by default,
 and the slices apply only while fair admission is on. Every value is
 bounded at parse time, and ``effective_limits`` is the one place an ``auto``
 value is resolved, so the capacity API reports exactly what the gate enforces.
@@ -26,6 +26,7 @@ SHARED_CREW_BOUNDS: dict[str, tuple[int, int]] = {
     "principal_concurrency": (1, 256),
     "crew_concurrency": (0, 1024),
     "typing_idle_seconds": (3, 60),
+    "ssm_port": (1024, 65535),
 }
 
 
@@ -101,6 +102,28 @@ class SharedCrewConfig:
             restart=True,
         ),
     )
+    ssm: bool = field(
+        default=False,
+        metadata=_meta(
+            "AWS SSM Link",
+            "Off by default. On: also listen on 127.0.0.1 at the SSM port, for "
+            "teammates who reach this machine with an AWS Systems Manager port "
+            "forward. Only people holding a Crew invite get in, and this port "
+            "never treats a connection as the owner. A value that is not true "
+            "or false reads as off." + SHARED_CREW_NEEDS_PREVIEW_HELP,
+            restart=True,
+        ),
+    )
+    ssm_port: int = field(
+        default=5477,
+        metadata=_meta(
+            "AWS SSM Port",
+            "Loopback port the SSM link listens on, 1024 to 65535. It is separate "
+            "from the dashboard port so a forwarded connection is never mistaken "
+            "for a local one." + SHARED_CREW_NEEDS_PREVIEW_HELP,
+            restart=True,
+        ),
+    )
     typing_idle_seconds: int = field(
         default=10,
         metadata=_meta(
@@ -138,14 +161,14 @@ CREW_CPU_QUOTA_PERCENT = 2400
 SHARED_CREW_FLAGS = ("admission_enabled", "containment_enabled", "hard_limits")
 #: Flags that widen what can reach this machine. A value that is not a boolean
 #: reads as False, so a typo can only narrow exposure.
-SHARED_CREW_EXPOSURE_FLAGS = ("tailnet_direct",)
+SHARED_CREW_EXPOSURE_FLAGS = ("tailnet_direct", "ssm")
 
 
 def shared_crew_config_from(raw: object) -> SharedCrewConfig:
     """Build a bounded :class:`SharedCrewConfig` from a raw ``dashboard.shared_crew`` value.
 
     A non-object reads as every default. A wrong-typed key reads as its default,
-    except the exposure switch ``tailnet_direct``, which reads as off. An out-of-range
+    except the exposure switches ``tailnet_direct`` and ``ssm``, which read as off. An out-of-range
     integer is clamped into :data:`SHARED_CREW_BOUNDS`, so a hand edit can narrow
     or widen a limit but never disable one.
     """

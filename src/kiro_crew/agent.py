@@ -175,6 +175,7 @@ from kiro_crew.agent_parts.spec_lookup import (
     session_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _ASK_ONLY_WHEN_NEEDED_RULE,
     _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,

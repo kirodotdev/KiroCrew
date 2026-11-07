@@ -4,6 +4,7 @@ import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle,
 import { api, type AwsConsentStatus } from '../../api/client'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import BedrockKbLiveChip from './BedrockKbLiveChip'
+import IgnorePatternsEditor from './IgnorePatternsEditor'
 import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
@@ -348,9 +349,24 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // failed read shows no figure at all, even a cached one beside the failure
   // notice: the default is not what the gateway enforces when the operator
   // changed it, so it is never presented as loaded.
-  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number; knowledge_upload_max_bytes?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
+  // The MB figure is rounded for display, so the pre-check uses the exact bytes.
+  const maxUploadBytes = maxUploadMb === null ? null : servedUploadMb(dashCfg?.knowledge_upload_max_bytes)
   const [showAdd, setShowAdd] = useState(false)
+  // A file over the ceiling is refused here, before any request; the rest of
+  // the drop still uploads (each file is its own request). The panel stays open
+  // when anything was refused: the refusal and the upload rows live in it.
+  // Cleared on the next drop and when it closes.
+  const [uploadRefusal, setUploadRefusal] = useState('')
+  useEffect(() => { if (!showAdd) setUploadRefusal('') }, [showAdd])
+  const dropFiles = (files: File[]) => {
+    const big = maxUploadBytes === null ? [] : files.filter(f => f.size > maxUploadBytes)
+    const ok = files.filter(f => !big.includes(f))
+    setUploadRefusal(big.length ? i18nT('pages.knowledge.sourcesList.file_too_large', { name: fmtList(big.map(f => f.name)), max: maxUploadMb }) : '')
+    if (ok.length) onIngest(ok)
+    if (!big.length) setShowAdd(false)
+  }
   // Files and folders share one view (#26892): files upload at once, and a
   // folder opens the watched-folder form below the drop zone.
   const [addType, setAddType] = useState<'local' | 'url' | 'bedrock_kb'>('local')
@@ -879,13 +895,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
             </>
           ) : addType === 'local' ? (
             <>
-              <DropZone inputRef={fileInputRef} onFiles={(files) => { onIngest(files); setShowAdd(false) }} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
+              <DropZone inputRef={fileInputRef} onFiles={dropFiles} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
               {/* Browsers have no one picker for files and folders, so each gets its own button. */}
               <div className="flex gap-2 flex-wrap">
                 <Btn type="button" onClick={() => fileInputRef.current?.click()}><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.choose_files')}</Btn>
                 <Btn type="button" onClick={chooseFolder} aria-expanded={folderOpen}><FolderOpen size={12} /> {folderPickerAvailable ? i18nT('pages.knowledge.sourcesList.choose_folder') : i18nT('pages.knowledge.sourcesList.add_folder_by_path')}</Btn>
               </div>
               <IngestionProgress jobs={ingestionJobs} />
+              {/* A local size check, not a failed request, so a validation hint rather than an ErrorNotice. */}
+              {uploadRefusal && <div role="status" data-testid="sources-upload-refusal" className="text-[11px] text-warn">{uploadRefusal}</div>}
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
                 {maxUploadMb !== null && ' ' + i18nT('pages.knowledge.sourcesList.max_file_size', { max: maxUploadMb })}
@@ -988,6 +1006,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
                 <button onClick={() => toggleExpandedSource(s.id, isExpanded)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
+                  aria-expanded={isExpanded}
                   aria-label={isExpanded ? i18nT('pages.knowledge.sourcesList.collapse_folder_details') : i18nT('pages.knowledge.sourcesList.expand_folder_details')}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
@@ -1045,6 +1064,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   {failedCount > 0 && (
                     isFolderType ? (
                       <button type="button" onClick={() => toggleExpandedSource(s.id, isExpanded)}
+                        aria-expanded={isExpanded}
                         title={i18nT('pages.knowledge.sourcesList.show_failed_files')}
                         className="text-[11px] text-danger whitespace-nowrap shrink-0 underline decoration-dotted underline-offset-2 hover:decoration-solid">
                         {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failedCount })}
@@ -1074,11 +1094,16 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   nothing at mid widths. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
               {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : isLiveSource ? (
-                /* No status badge: the meta chip already labels the MODE
-                   ("● Live", explained by the visible line under the name),
-                   and a green badge here asserted a health this row never
-                   checks (a revoked grant fails open with only a log line). */
-                null
+                /* The meta chip labels the MODE ("Live"); this badge states
+                   the one health the gateway records for the row: how its
+                   last search went. Absent until a search reaches the row.
+                   A refused or failed search did not run, so it renders as
+                   the ErrorNotice under the row instead. */
+                s.last_search?.outcome === 'ok' ? (
+                  <Badge variant="ok" data-testid="bedrock-kb-last-search">
+                    {i18nT('pages.knowledge.sourcesList.last_search_ok')}
+                  </Badge>
+                ) : null
               ) : (
                 <Badge variant={shownStatus === 'synced' || shownStatus === 'active' ? 'ok' : shownStatus === 'error' ? 'err' : shownStatus === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(shownStatus, i18nT)}</Badge>
               )}
@@ -1090,6 +1115,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <SourceSpendDisplay spend={s.spend} />
               {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{sourceWordCountLabel(wc!)}</span> })()}
               {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
+              {isLiveSource && s.last_search && <span className="text-[11px] text-muted whitespace-nowrap">{formatRelativeDate(s.last_search.at)}</span>}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
@@ -1142,7 +1168,20 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="source-delete-error"
               />
             )}
-            {/* Inline expandable progress for folder sources */}
+            {/* No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {isLiveSource && s.last_search && s.last_search.outcome !== 'ok' && (
+              <ErrorNotice
+                message={i18nT(s.last_search.outcome === 'refused'
+                  ? 'pages.knowledge.sourcesList.last_search_refused'
+                  : 'pages.knowledge.sourcesList.last_search_failed')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="bedrock-kb-last-search-error"
+              />
+            )}
+            {/* Inline expandable pattern editor and progress for folder sources */}
+            {isFolderType && isExpanded && <IgnorePatternsEditor source={s} />}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
           </div>
           )

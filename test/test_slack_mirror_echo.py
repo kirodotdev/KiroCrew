@@ -1,6 +1,6 @@
 """The dashboard -> Slack mirror: its prompt echo and its "Thinking…" placeholder.
 
-Three defects a linked thread showed on mirrored turns:
+Defects a linked thread showed on mirrored turns:
 
 * the prompt echo escaped every ``<…>`` entity and wrapped the prompt in ``_…_``,
   so a pasted ``<https://…|label>`` link or ``<#C…>`` channel reference arrived as
@@ -19,7 +19,9 @@ Three defects a linked thread showed on mirrored turns:
   app, recovery, a channel-typed message) is not, and a new producer is not
   until it stamps itself as the person;
 * a tool step with no purpose line showed its raw ``@server/tool`` id; it now
-  reads the dashboard row's derived title ("Wait", "Git status").
+  reads the dashboard row's derived title ("Wait", "Git status");
+* the task stream named no recipient user, which an org-wide install refuses,
+  so every mirrored turn fell back to ``chat.update``; it now names the owner.
 """
 
 from __future__ import annotations
@@ -109,12 +111,14 @@ async def _linked_turn(
     message: str = "hello",
     slack: _SlackRecorder | None = None,
     user_row: bool = True,
+    owner_id: str = "",
     **run_kwargs: Any,
 ) -> _SlackRecorder:
     slack = slack or _SlackRecorder()
 
     def _linked(ctx: TurnContext) -> None:
         ctx.state.slack_client = slack
+        ctx.state.owner_id = owner_id
         ctx.state.sessions.set_slack_link("dashboard:chat-1", "thread-1", "C-1")
 
     await run_turn(
@@ -297,6 +301,15 @@ async def test_the_stream_opens_once_and_the_line_goes_once_over_many_tools() ->
     assert names.count("start_stream") == 1
     assert len(_deleted(slack)) == 1
     assert _surviving_thinking(slack) == []
+
+
+@pytest.mark.asyncio
+async def test_the_stream_names_the_owner_as_its_recipient() -> None:
+    # An org-wide install refuses a stream with no recipient user, and the
+    # owner is the only person the gateway answers on Slack.
+    slack = await _linked_turn([_TOOL, _ANSWER, _DONE], owner_id="U0OWNER")
+    [stream] = [args for name, args in slack.calls if name == "start_stream"]
+    assert stream["user_id"] == "U0OWNER"
 
 
 @pytest.mark.asyncio
@@ -849,6 +862,11 @@ class TestAScriptCronSendIsTheCrons:
         async with _client(state, "") as client:
             resp = await client.post("/api/chat?ws=1", json={"slot": "s1", "message": "tick"})
             assert resp.status == 200, await resp.text()
+        if not creator:
+            # The session's own composer send is never held behind sub-agents.
+            await async_wait_until(lambda: chat_run.await_count or chat_run.call_count)
+            assert not slot._queue
+            return
         chat_run.assert_not_called()
         [entry] = slot._queue
         assert (entry.get("meta") or {}).get(TURN_ACTOR_META_KEY) == actor

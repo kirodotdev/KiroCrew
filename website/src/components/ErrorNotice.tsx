@@ -346,7 +346,7 @@ export default function ErrorNotice({
         data-testid={testId}
       >
         {showIcon && <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />}
-        {title && <strong className="font-semibold">{title}</strong>}
+        {title && <strong className="min-w-0 font-semibold" style={{ overflowWrap: 'anywhere' }}>{title}</strong>}
         <span ref={messageRef} className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton

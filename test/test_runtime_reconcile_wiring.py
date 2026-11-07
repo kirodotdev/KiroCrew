@@ -19,6 +19,7 @@ import pytest
 from runtime_reconcile_helpers import _cleanup, _refusals
 
 from kiro_crew import runtime_reconcile as rr
+from kiro_crew.testing.ids import unallocatable_pids
 
 # Module-wide, like the other runtime reconciler test modules: the rootdir conftest
 # leaves runtime_ownership's tables as this module's own tests leave them, and the
@@ -27,6 +28,9 @@ pytestmark = pytest.mark.keep_runtime_ownership_tables
 
 
 # ── the argv condition, and the kill budget ───────────────────────────────────
+
+#: Fake pids no OS can issue: ``_unowned`` skips ``os.getpid()``, which a literal can equal.
+_P1, _P2, _P3 = sorted(unallocatable_pids(3))
 
 
 def _armed(
@@ -77,8 +81,8 @@ def test_a_process_whose_argv_is_not_a_harness_never_reaches_the_gate() -> None:
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
     rec = _armed(
-        kernel={200, 300, 400},
-        managed={300},
+        kernel={_P1, _P2, _P3},
+        managed={_P2},
         asked=asked,
         killed=killed,
         audited=audited,
@@ -87,8 +91,8 @@ def test_a_process_whose_argv_is_not_a_harness_never_reaches_the_gate() -> None:
     audited.clear()
     reading = rec.run_once()
 
-    assert asked == [300], f"only the harness reaches the gate; got {asked}"
-    assert killed == [300], f"and only it is signalled; got {killed}"
+    assert asked == [_P2], f"only the harness reaches the gate; got {asked}"
+    assert killed == [_P2], f"and only it is signalled; got {killed}"
     assert reading.killed == 1
     assert sorted(_refusals(audited)) == [
         "not a managed agent process",
@@ -106,7 +110,7 @@ def test_an_unreadable_argv_withholds_the_kill() -> None:
     def no_argv(pid: int) -> bool:
         raise OSError("cannot read the command line")
 
-    rec = _armed(kernel={200}, managed=set(), asked=asked, killed=killed, audited=audited)
+    rec = _armed(kernel={_P1}, managed=set(), asked=asked, killed=killed, audited=audited)
     rec._is_managed = no_argv  # type: ignore[method-assign]
     rec.run_once()
     audited.clear()
@@ -189,8 +193,8 @@ def test_a_zero_budget_signals_nothing_and_audits_what_it_would_have_killed() ->
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
     rec = _armed(
-        kernel={200, 300},
-        managed={300},
+        kernel={_P1, _P2},
+        managed={_P2},
         asked=asked,
         killed=killed,
         audited=audited,
@@ -205,7 +209,7 @@ def test_a_zero_budget_signals_nothing_and_audits_what_it_would_have_killed() ->
     assert reading.killed == 0
     assert reading.would_kill == 1, f"the candidate is counted; {reading.as_counter_fields()}"
     assert (
-        300,
+        _P2,
         "would_kill",
         "observing only: the kill budget is zero",
     ) in audited, f"and audited under its own outcome; got {audited}"
@@ -217,12 +221,12 @@ def test_an_armed_budget_kills() -> None:
     would satisfy it. An armed budget signals, attributes and counts."""
     asked: list[int] = []
     killed: list[int] = []
-    rec = _armed(kernel={200, 300}, managed={200, 300}, asked=asked, killed=killed)
+    rec = _armed(kernel={_P1, _P2}, managed={_P1, _P2}, asked=asked, killed=killed)
     rec.run_once()
     reading = rec.run_once()
 
-    assert killed == [200, 300]
-    assert asked == [200, 300], "and each one is attributed, because each one is signalled"
+    assert killed == [_P1, _P2]
+    assert asked == [_P1, _P2], "and each one is attributed, because each one is signalled"
     assert reading.killed == 2 and reading.would_kill == 0
 
 
@@ -235,14 +239,14 @@ def test_the_budget_is_adopted_before_every_pass_not_frozen_at_construction() ->
     """
     asked: list[int] = []
     killed: list[int] = []
-    rec = _armed(kernel={200}, managed={200}, asked=asked, killed=killed, max_kills=0)
+    rec = _armed(kernel={_P1}, managed={_P1}, asked=asked, killed=killed, max_kills=0)
     rec.run_once()
     observed = rec.run_once()
     assert killed == [] and observed.would_kill == 1
 
     rec.set_max_kills(rr.DEFAULT_MAX_KILLS)
     armed = rec.run_once()
-    assert killed == [200], "the same retained instance kills once the budget is restored"
+    assert killed == [_P1], "the same retained instance kills once the budget is restored"
     assert armed.killed == 1 and armed.would_kill == 0
 
     rec.set_max_kills(-5)
@@ -263,7 +267,7 @@ def test_the_kill_line_names_the_count_signalled_not_the_root_alone(
     """
     asked: list[int] = []
     audited: list[tuple[int, str, str]] = []
-    rec = _armed(kernel={200}, managed={200}, asked=asked, audited=audited)
+    rec = _armed(kernel={_P1}, managed={_P1}, asked=asked, audited=audited)
     rec._kill_tree = lambda pid, expected=None: 3  # type: ignore[method-assign]
     rec.run_once()
     audited.clear()
@@ -272,10 +276,10 @@ def test_the_kill_line_names_the_count_signalled_not_the_root_alone(
 
     lines = [r.getMessage() for r in caplog.records]
     assert any(
-        "signalled 3 process(es) in the tree at pid=200" in line for line in lines
+        f"signalled 3 process(es) in the tree at pid={_P1}" in line for line in lines
     ), f"the line names the count and the tree; got {lines}"
     assert not any(
-        "killed pid=200" in line for line in lines
+        f"killed pid={_P1}" in line for line in lines
     ), "and never claims the root itself was killed"
     killed_rows = [why for pid, outcome, why in audited if outcome == "killed"]
     assert (

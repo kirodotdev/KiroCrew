@@ -53,10 +53,12 @@ _CATALOG_READ_BATCH = 64
 # _request_catalog_refresh). So the deadline bounds how out-of-date an OUT OF BAND
 # change (an AIM sync, a manual cp) may be, and nothing else — the app's own
 # create/update/delete/refresh all call _invalidate_iter_cache(), so a skill
-# written through the app is visible at once to the loader that wrote it. The
-# fence is per loader: another loader, in this process or another one, that
-# already HOLDS a list keeps serving it until this deadline, and only a loader
-# that reads the stored snapshot afterwards sees the drop.
+# written through the app is visible at once to the loader that wrote it, and an
+# installed app's skill links changing invalidates every open loader of that root
+# (skill_live_loaders). The fence is otherwise per loader: another loader, in
+# this process or another one, that already HOLDS a list keeps serving it until
+# this deadline, and only a loader that reads the stored snapshot afterwards sees
+# the drop.
 #
 # The value is sized against the walk it amortizes, not picked for tidiness: a walk
 # of a real skills tree (645 files across 21 roots on a dev desktop, incl.

@@ -117,7 +117,7 @@ __all__ = [
 #: remedy names only Crew's own sign-in; the relay route's remedy
 #: (``host_auth._KAS_REMEDY``) names both because that spawn can draw on either.
 KAS_BUNDLE_SIGN_IN_REMEDY = (
-    "Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat. "
+    "Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again. "
     "kiro-cli is not used on this route."
 )
 

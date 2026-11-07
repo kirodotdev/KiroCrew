@@ -242,8 +242,8 @@ describe('CrewProfileSettings permission', () => {
   it('says under each option what that mode lets the mate do', () => {
     setup(member())
     const p = open('approval_mode')
-    expect(p).toHaveTextContent('oncall asks you before each tool, in every chat with it.')
-    expect(p).toHaveTextContent('oncall runs read-only commands on its own and asks for the rest, in every chat with it.')
+    expect(p).toHaveTextContent('oncall looks things up on its own, like reading files, searching the web or running read-only commands, and asks for the rest, in every chat with it.')
+    expect(p).toHaveTextContent('oncall also searches its memory, past chats, skills and knowledge library on its own and asks for the rest, in every chat with it.')
     expect(p).toHaveTextContent('oncall runs tools without asking you first, in every chat with it.')
     // Normal is the row above, so no description tells the person to go pick it.
     expect(p).not.toHaveTextContent('Pick Normal')

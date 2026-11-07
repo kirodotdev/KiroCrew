@@ -48,6 +48,11 @@ _OPEN_SCOPES: dict[str, str] = {
     "capabilities.spawn": "",
     "capabilities.cron": "",
     "apps": "any-app",
+    # Local-only, low-risk capabilities.
+    "capabilities.memory_writes": "",
+    "capabilities.theme_persona": "",
+    "capabilities.milestones": "",
+    "capabilities.decisions_local": "",
 }
 
 # scope -> (items the baseline permits, items it denies). One row per catalog scope.
@@ -104,7 +109,7 @@ def test_every_catalog_scope_has_a_table_row() -> None:
 
 
 def test_open_scopes_are_ungated_and_kept_off_scopes_are_not() -> None:
-    """The owner's split: eight scopes open, the rest of the asks stay off."""
+    """The owner's split: the open scopes keep Crew's default, the rest stay off."""
     canonical_open = {_SCOPE_ALIASES.get(s, s) for s in _OPEN_SCOPES}
     assert canonical_open <= set(BASELINE_UNGATED)
     for kept_off in (
@@ -113,6 +118,10 @@ def test_open_scopes_are_ungated_and_kept_off_scopes_are_not() -> None:
         "channels",
         "approval_modes",
         "yolo_duration",
+        # Kept off by the owner (D3).
+        "capabilities.app_dev_mode",
+        # ``capabilities.decisions_local`` only narrows this row, so it stays inert.
+        "capabilities.decisions",
     ):
         assert kept_off in BASELINE_CONTROLS, kept_off
 
@@ -156,6 +165,10 @@ _OPEN_DENIES: dict[str, dict[str, object]] = {
     "capabilities.spawn": {"capabilities": {"spawn": {"enabled": False}}},
     "capabilities.cron": {"capabilities": {"cron": {"enabled": False}}},
     "apps": {"apps": {"mode": "deny", "deny": ["any-app"]}},
+    "capabilities.memory_writes": {"capabilities": {"memory_writes": {"enabled": False}}},
+    "capabilities.theme_persona": {"capabilities": {"theme_persona": {"enabled": False}}},
+    "capabilities.milestones": {"capabilities": {"milestones": {"enabled": False}}},
+    "capabilities.decisions_local": {"capabilities": {"decisions_local": {"enabled": False}}},
 }
 
 
@@ -383,3 +396,23 @@ def test_enterprise_local_authority_with_no_central_only_narrows_the_baseline(
         # Narrowing still holds: the baseline's ``kiro`` is denied by the local tier.
         assert not resolve(composed, None, "agent_backend", "kiro").permitted
         assert resolve(composed, None, "mcp", "@kirocrew-core/x").permitted
+
+
+@pytest.mark.parametrize("doc", [None, {}], ids=["no-policy", "empty"])
+def test_enterprise_process_switch_keeps_an_open_scope(
+    enterprise: None, monkeypatch: pytest.MonkeyPatch, doc: "dict[str, object] | None"
+) -> None:
+    """``policy_permits`` (milestones) lets an open scope's default permit stand."""
+    from types import SimpleNamespace
+
+    from kiro_crew import edition_locks
+
+    ctx = SimpleNamespace(governance=None if doc is None else _ceiling(**doc))
+    monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: ctx)
+    assert edition_locks.policy_permits("capabilities.milestones")
+    # A scope the baseline holds still needs a policy permit.
+    assert not edition_locks.policy_permits("capabilities.computer_use")
+    assert not edition_locks.policy_permits("capabilities.app_dev_mode")
+    off = SimpleNamespace(governance=_ceiling(capabilities={"milestones": {"enabled": False}}))
+    monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: off)
+    assert not edition_locks.policy_permits("capabilities.milestones")

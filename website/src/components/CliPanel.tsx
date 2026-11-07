@@ -568,7 +568,17 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   useEffect(() => {
     const wrap = wrapperRef.current
     if (!wrap) return
+    // Copy on select acts on a left press that began on the terminal screen,
+    // never on a right-click or a find-bar click over an older selection. The
+    // press is read document-wide so a press anywhere else clears it.
+    const doc = wrap.ownerDocument
+    let leftPressOnScreen = false
+    const onMouseDown = (e: MouseEvent) => {
+      leftPressOnScreen = e.button === 0 && !!term.element?.contains(e.target as Node)
+    }
     const onMouseUp = (e: MouseEvent) => {
+      const fromScreen = leftPressOnScreen
+      leftPressOnScreen = false
       // Defer one frame: xterm finalises the selection on its own mouseup
       // handler, which may run after ours depending on listener order.
       requestAnimationFrame(() => {
@@ -578,12 +588,18 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         setCopied('idle')
         setSending('idle')
         setSel({ x: e.clientX - rect.left, y: e.clientY - rect.top, text })
+        // The toolbar Copy's own write and status; the toolbar stays up.
+        if (fromScreen && getTerminalFont().copyOnSelect) {
+          void copyToClipboard(text).then(ok => setCopied(ok ? 'done' : 'failed'))
+        }
       })
     }
+    doc.addEventListener('mousedown', onMouseDown, true)
     wrap.addEventListener('mouseup', onMouseUp)
     const selDisp = term.onSelectionChange(() => { if (!term.hasSelection()) setSel(null) })
     const scrollDisp = term.onScroll(() => setSel(null))
     return () => {
+      doc.removeEventListener('mousedown', onMouseDown, true)
       wrap.removeEventListener('mouseup', onMouseUp)
       selDisp.dispose()
       scrollDisp.dispose()
@@ -715,11 +731,13 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             feature that attaches its own handler here would silently replace it —
             extend the handler inside TerminalCompletion instead. The find and
             fullscreen chords (#10176) are intercepted through that same handler,
-            which is why they are passed down rather than bound on a new one. */}
+            which is why they are passed down rather than bound on a new one.
+            It is inactive while displaced: an open menu with a highlighted row
+            would claim the Enter that takes the terminal back (registry onData). */}
         <TerminalCompletion
           term={term}
           sessionId={sessionId}
-          active={visible}
+          active={visible && !displaced}
           onOpenSearch={termSearch.openSearch}
           onToggleFullscreen={onToggleFullscreen}
         />
@@ -769,6 +787,14 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
                     ? i18nT('components.cliPanel.reconnecting')
                     : i18nT('components.cliPanel.displaced_message')}
                 </span>
+                {/* Enter in the focused pane takes the terminal back (the
+                    registry's onData). The hint names a hardware key, so it
+                    is shown on keyboard devices only. */}
+                {displaced && !touchDevice && (
+                  <span className="shrink-0 text-muted" data-testid="cli-panel-displaced-enter-hint">
+                    {i18nT('components.cliPanel.displaced_enter_hint')}
+                  </span>
+                )}
               </>
             ) : (
               /* Rejected opens and exhausted retries use the shared error
@@ -794,6 +820,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
                 type="button"
                 onClick={() => retryTerminalConnection(sessionId)}
                 disabled={reconnecting}
+                aria-keyshortcuts={displaced && !touchDevice ? 'Enter' : undefined}
                 className="px-2 py-0.5 text-[12px]"
               >
                 {displaced

@@ -1,13 +1,7 @@
 """Tests for the `kirocrew doctor` OS-aware fix hints.
 
-Guards _os_fix_hint: it returns the macOS Homebrew command on Darwin and the
-Linux/AL2023 guidance otherwise, so `kirocrew doctor` never prints a brew
-command on Linux where there is no brew.
-
-The sign-in and KAS sections, the install and launcher checks, the model and
-channel sections and the cron and directory censuses live in
-``test_cli_doctor_agent_auth.py``, ``test_cli_doctor_install.py``,
-``test_cli_doctor_config_sections.py`` and ``test_cli_doctor_censuses.py``.
+Guards _os_fix_hint: Homebrew on Darwin, Linux/AL2023 guidance otherwise.
+Other doctor sections are tested in the sibling ``test_cli_doctor_*.py`` files.
 """
 
 from __future__ import annotations
@@ -93,11 +87,8 @@ class TestFixHint:
 class TestFfmpegLinuxHintResolvable:
     """The Linux missing-ffmpeg hint names only locations the resolver searches.
 
-    An earlier hint told the user to drop a static build into ``~/.local/bin``,
-    which ``transcribe._find_ffmpeg`` deliberately never searches (its candidate
-    list documents removing that directory), so following the advice literally
-    still ended at "not found". Hold the hint against the resolver's own candidate
-    list rather than freezing its prose.
+    ``transcribe._find_ffmpeg`` never searches ``~/.local/bin``, so the hint is held
+    against the resolver's own candidate list rather than frozen prose.
     """
 
     def test_hint_does_not_name_the_deliberately_excluded_dir(self) -> None:
@@ -251,13 +242,9 @@ class TestDataHome:
 class TestPodSessionBus:
     """`kirocrew doctor` Pods section — the systemd --user session bus.
 
-    Pods are systemd --user units. A gateway started from a systemd SYSTEM unit
-    inherits no login-session environment, and if the per-user instance is not
-    running at all there is nothing to point at — every pod verb then fails with
-    "Failed to connect to bus: No medium found". Doctor reports the three states,
-    never gates its exit code on them (an absent bus means an optional dev
-    feature is unavailable, not a broken install), and never changes the user's
-    login-session lifetime itself.
+    Without a per-user systemd instance every pod verb fails with "No medium found".
+    Doctor reports the three states but never gates its exit code on them (pods are
+    an optional dev feature) and never changes the login-session lifetime itself.
     """
 
     @staticmethod
@@ -412,11 +399,8 @@ class TestPodSessionBus:
     ) -> None:
         """An EL7 host can never run a pod, so enable-linger must not be offered.
 
-        systemd is present and the platform is Linux, so the two gates above both
-        pass and the old code fell through to `❌ ... Fix: loginctl enable-linger`.
-        On a host with no `user@.service` that fix cannot work: linger only tells
-        logind to instantiate a template that is not installed, so the reader sets
-        a flag, nothing starts, and the report still says the setup is broken.
+        With no `user@.service` linger cannot help: it asks logind to instantiate a
+        template that is not installed, so nothing starts.
         """
         self._linux(monkeypatch, tmp_path, bus=False, template=False)
         issues: list[str] = ["pre-existing"]
@@ -436,16 +420,9 @@ class TestPodSessionBus:
     ) -> None:
         """The socket alone is a false positive, so the doctor outranks it.
 
-        Observed on Amazon Linux 2: `has_session_bus()` returns True because a stray
-        session `dbus-daemon` created `/run/user/<uid>/bus`, while no per-user manager
-        exists at all. Testing the socket first would print `✅ session bus` on a host
-        where `kirocrew pod` provably cannot work, which is the misdirection this
-        change exists to remove.
-
-        This is intentionally stricter than `require_systemd()`, which passes on a live
-        socket. The doctor only prints, so a false ⏹ costs a sentence; refusing in the
-        runtime gate on a probe that cannot enumerate every unit location would break a
-        working host.
+        On Amazon Linux 2 a stray `dbus-daemon` can create `/run/user/<uid>/bus` with no
+        per-user manager. Stricter than `require_systemd()` on purpose: the doctor only
+        prints, so a false ⏹ costs a sentence, while the runtime gate must not refuse.
         """
         self._linux(monkeypatch, tmp_path, bus=True, template=False)
 
@@ -552,11 +529,8 @@ class TestUnresolvedMcpRefs:
         """Fixture the SDK delegation the row asks.
 
         Patched at ``agent_sdk.drivers.acp``, its defining module, because the row
-        imports it inside the function (doctor keeps its import graph lazy). That
-        the row asks ONE boundary-clean question rather than assembling the answer
-        from the spec, the backend registry and the mirror seam is the reason this
-        fixture is a single return value -- and is what keeps `doctor_checks/mcp.py`, the
-        row's home, off the agent-sdk-boundary baseline.
+        imports it lazily. One return value, because the row asks one boundary-clean
+        question, which keeps `doctor_checks/mcp.py` off the agent-sdk-boundary baseline.
         """
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
@@ -572,13 +546,9 @@ class TestUnresolvedMcpRefs:
     def test_the_no_mirror_verdict_claims_only_what_the_wire_proves(self, monkeypatch, capsys):
         """The static half hedges exactly as the runtime line does, on every backend.
 
-        The row is the same detector before a session exists, so it may not assert
-        what the runtime line stopped asserting: the harness may mount a same-named
-        server from its own configuration, which neither half reads, so the row
-        says a listed ref may still be served and never that the tools are absent.
-        One sentence, no backend condition; the broker-stub caveat and the registry
-        pointer stay. Called at the row's own home in ``doctor_checks.mcp`` (the
-        ``cli_doctor`` name is the facade's re-export of the same function).
+        The harness may mount a same-named server from its own config, which neither
+        half reads, so the row says a ref may still be served, never that tools are
+        absent. Called at its home in ``doctor_checks.mcp`` (``cli_doctor`` re-exports it).
         """
         from kiro_crew.doctor_checks import mcp as doctor_mcp
 
@@ -664,11 +634,9 @@ class TestUnresolvedMcpRefs:
     def test_the_sdk_probe_models_an_owned_permission_surface(self, monkeypatch):
         """The delegation must pass ``permission_surface_owned=True``.
 
-        The claude mirror withholds its WHOLE array when Crew did not author the
-        session's native permission file — a per-session fact no static check can
-        know. Passing False would make doctor report every ref as unresolved on the
-        one backend whose projection actually works, which is the false positive
-        that would get this row disabled.
+        The claude mirror withholds its whole array when Crew did not author the
+        permission file, a per-session fact. False would flag every ref as unresolved
+        on the one backend whose projection works.
         """
         from kiro_crew import acp_backends, providers
         from kiro_crew.acp import session_mcp
@@ -710,24 +678,11 @@ class TestUnresolvedMcpRefs:
 class TestBackendAbilityCardRows:
     """The MCP ability of the harness IN USE, and which others cost a whole server.
 
-    The class above answers for the configured harness only when something about it is
-    wrong. This is the other question -- what is my harness doing to my agent file, and
-    what would switching cost me -- and it is in a terminal report because the users most
-    likely to meet a projection gap are the ones already diagnosing one.
+    Two lines on a stock run: the in-use harness's card (with the projection kind, which
+    the dashboard omits) and where a tool-off can withhold Crew's own servers. The full
+    comparison belongs to the dashboard.
 
-    **Two lines on a stock run.** The full per-harness comparison belongs to the
-    dashboard, which has the room and the labels in thirteen languages; a row apiece for
-    six harnesses in a terminal report is a section readers learn to skip. What this
-    section carries is the in-use harness's own card and the one cross-harness fact a
-    chooser cannot act without: where a tool-off can withhold Crew's own servers.
-
-    It also carries what the CARD does not. The projection kind is a route Crew takes,
-    which costs a reader choosing a harness nothing, so the dashboard dropped it and this
-    report is where it is stated.
-
-    Every assertion reads the SHIPPED declarations. A row rendered from a stub would
-    prove the formatting and not the wiring, and a declaration nothing renders is the
-    state the issue reported.
+    Every assertion reads the SHIPPED declarations: a stub proves formatting, not wiring.
     """
 
     def _cfg(self, backend: str):
@@ -914,17 +869,11 @@ class TestBackendAbilityCardRows:
 class TestSelectedBackendProjectionRow:
     """The row for a harness whose transport carries none of Crew's own tools.
 
-    Distinct from the unresolved-refs row above, and the difference is what the
-    row is for: refs are read off the default spec, so a spec that references no
-    server produces no row at all -- while a ``no-channel`` harness has no
-    transport for Crew's servers whatever any spec says. That is a property of the
-    harness, and the operator who selected it gets told once.
+    Unlike the unresolved-refs row, this fires whatever the spec references: a
+    ``no-channel`` harness has no transport for Crew's servers at all.
 
-    The per-tool deny reach is NOT this row's subject:
-    ``TestBackendAbilityCardRows`` owns it -- in the in-use harness's own row, and in
-    one sentence naming every harness the costly reach holds for. One declaration with
-    two readings in one report is how the two drift apart, so
-    ``test_the_deny_reach_is_stated_once_in_the_report`` holds that boundary.
+    The per-tool deny reach belongs to ``TestBackendAbilityCardRows``, so it is stated
+    once per report.
     """
 
     def _cfg(self, backend: str):
@@ -933,15 +882,8 @@ class TestSelectedBackendProjectionRow:
     def test_a_no_channel_backend_gets_a_row_with_its_channel(self, monkeypatch, capsys):
         """Driven through a stubbed declaration, because no backend ships one now.
 
-        This read the SHIPPED opencode entry, which was the one ``no-channel``
-        declaration -- on the reading that its ``initialize`` advertising
-        ``mcpCapabilities`` of http and sse and no stdio meant the array could not
-        carry Crew's stdio servers. Measured against a real ``opencode acp``, it
-        carries them, so opencode became a mirror and the shipped tables hold no
-        ``no-channel`` entry at all. The ROW still has to render for the next
-        harness that legitimately has no channel, so the declaration is supplied
-        here rather than the test being deleted with the backend it happened to be
-        demonstrated on.
+        The shipped tables hold no ``no-channel`` entry, but the row must still render
+        for a future harness with no channel, so the declaration is supplied here.
         """
         from kiro_crew.agent_sdk import backend_mcp_ability
         from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
@@ -969,14 +911,9 @@ class TestSelectedBackendProjectionRow:
     def test_the_deny_reach_is_stated_once_in_the_report(self, capsys):
         """The consequence of a whole-server reach is this report's, not this ROW's.
 
-        It was stated twice: once per selectable harness by
-        ``_doctor_backend_ability_cards`` and again, in different words, for the
-        selected harness alone. Two readings of one declared field is how prose and
-        record drift, so the selected-harness row states the kind's own gap and
-        nothing about the reach.
-
-        Driven on the shipped goose declaration, which carries `whole-server`, so
-        the assertion is about the report rather than about a stub.
+        ``_doctor_backend_ability_cards`` states the reach; the selected-harness row
+        states only its kind's gap, so one field never gets two readings. Driven on the
+        shipped goose declaration, which carries `whole-server`.
         """
         cli_doctor._doctor_selected_backend_projection(self._cfg("goose"))
         assert capsys.readouterr().out == ""
@@ -988,15 +925,9 @@ class TestSelectedBackendProjectionRow:
     def test_the_shipped_tables_hold_exactly_the_declared_no_channel_backends(self):
         """The row's own subject, read off the SHIPPED tables rather than a stub.
 
-        A ``no-channel`` entry here is not a failure of the row -- it must simply be
-        addressable, which ``McpProjection`` enforces and ``test_provider_mirrors``
-        asserts -- but it IS the state an operator gets told about, so the set is
-        pinned by name and a new one is a deliberate change to this assertion.
-
-        No backend ships as one: pi, whose adapter drops the ``session/new`` array,
-        receives Crew's servers through its gate extension instead and is declared
-        ``broker-only`` like deepseek. The case that follows pins that pi's row is
-        therefore silent.
+        The set is pinned by name, so a new ``no-channel`` backend is a deliberate edit.
+        None ships: pi gets Crew's servers through its gate extension and is declared
+        ``broker-only`` like deepseek, so its row is silent (next case).
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 
@@ -1160,11 +1091,9 @@ class TestOomKillerProbe:
 class TestMemoryPressure:
     """`kirocrew doctor` Memory Pressure section — freeze-preparedness verdict.
 
-    A Linux host with zero swap AND no userspace OOM killer livelocks under
-    sustained memory pressure (file-backed page thrashing) before the kernel
-    OOM killer fires. Doctor warns on exactly that quadrant, passes when either
-    protection exists, reports "unknown" when detection is inconclusive, and
-    never gates its exit code on any of it (host config is the user's call).
+    Zero swap AND no userspace OOM killer livelocks a Linux host before the kernel OOM
+    killer fires. Doctor warns only then, reports "unknown" when detection is
+    inconclusive, and never gates its exit code (host config is the user's call).
     """
 
     def _arrange(

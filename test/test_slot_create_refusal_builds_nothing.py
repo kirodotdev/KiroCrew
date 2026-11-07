@@ -1,11 +1,8 @@
 """A dashboard create that is refused builds and files nothing on its way out.
 
-Main's retraction (``_retract_failed_newborn``) takes a refused newborn back out
-of the slot table. These tests cover the writes it does not undo: a session
-folder built on disk for the new chat, and a folder the create un-hid or
-claimed. The member assignment is checked before either is built, and the
-folder's un-hide and claim run only after the last step that can refuse the
-create.
+``_retract_failed_newborn`` does not undo a session folder on disk or a folder
+un-hide and claim, so the member check runs first and the un-hide and claim run
+after the last refusable step.
 """
 
 from __future__ import annotations
@@ -103,13 +100,9 @@ async def test_a_member_refusal_builds_no_session_folder(tmp_path, monkeypatch, 
 async def test_a_create_refused_after_the_mint_leaves_its_folder_hidden_and_unclaimed(
     tmp_path, monkeypatch
 ) -> None:
-    """A create filed into a hidden, session-made folder is refused after the
-    mint, when the member's private store cannot be pinned. The folder stays
-    hidden and keeps its session mark, because its un-hide and claim run only
-    after the create's last refusable step.
+    """A create refused after the mint leaves its hidden folder hidden and unclaimed.
 
-    Mutation pin: un-hide the folder where the create reads it and the refused
-    create shows and claims it.
+    The refusal comes from the member's private store failing to pin.
     """
     cfg = _config()
     state = _state(tmp_path, monkeypatch, cfg)

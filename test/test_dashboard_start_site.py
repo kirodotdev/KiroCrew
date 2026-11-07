@@ -231,6 +231,79 @@ async def test_start_site_healthy_peer_skips_waiting_message() -> None:
     assert "waiting" not in warnings.lower()
 
 
+_SERVER_LOG = "kiro_crew.dashboard.server"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "says", "suggests_stop"),
+    [
+        # Another program holds the port: never send the user to stop a gateway
+        # that does not exist.
+        ("foreign_holder", "held by another program, not a Kiro Crew gateway", False),
+        ("healthy_peer", "another Kiro Crew gateway holds it", True),
+        ("booting_peer", "another Kiro Crew gateway holds it", True),
+        ("reclaim_failed", "another Kiro Crew gateway holds it", True),
+        # lsof missing (stock containers): the holder is unknown, so both remedies.
+        ("unavailable", "held by another program or another Kiro Crew gateway", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_start_site_give_up_message_follows_the_holder(
+    caplog: pytest.LogCaptureFixture, outcome: str, says: str, suggests_stop: bool
+) -> None:
+    """The final error names what holds the port and always offers --port."""
+    site = _make_site()
+    site.start.side_effect = _eaddrinuse()
+    reclaim = AsyncMock(return_value=outcome)
+
+    with (
+        caplog.at_level(logging.INFO, logger=_SERVER_LOG),
+        pytest.raises(SystemExit),
+    ):
+        await _start_site(site, 5476, retries=2, delay=0, reclaim=reclaim)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert says in errors[0]
+    assert "kirocrew gateway --port 5477" in errors[0]
+    assert "KIROCREW_PORT=5477" in errors[0]
+    assert "systemctl" not in errors[0]
+    assert ("kirocrew stop" in errors[0]) is suggests_stop
+    if outcome == "unavailable":
+        waits = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert waits == [
+            "Port 5476 in use by an unidentified process — waiting up to 0s in case it is released…"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_reserve_port_give_up_message_names_a_foreign_holder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The reservation path gives the same holder-aware message as _start_site."""
+    from kiro_crew.dashboard.server import _reserve_dashboard_port
+
+    with (
+        patch("kiro_crew.dashboard.server._bind_once", side_effect=_eaddrinuse()),
+        caplog.at_level(logging.INFO, logger=_SERVER_LOG),
+        pytest.raises(SystemExit),
+    ):
+        await _reserve_dashboard_port(
+            "127.0.0.1",
+            65535,
+            retries=2,
+            delay=0,
+            reclaim=AsyncMock(return_value="foreign_holder"),
+        )
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "held by another program, not a Kiro Crew gateway" in errors[0]
+    # The top port has no +1, so the suggestion steps down instead.
+    assert "kirocrew gateway --port 65534" in errors[0]
+    assert "kirocrew stop" not in errors[0]
+
+
 # REAL aiohttp integration test (revision 2) — no mocks, real bind
 
 

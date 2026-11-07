@@ -1,11 +1,8 @@
 """The ``memory_mode`` ratchet a slot-close hand-over keeps on a shared transcript.
 
 A restricted tail draining under a persistent replacement tightens its line, live slot,
-key marker and execution carrier, and rolls them back only when no private row landed;
-the app-render tool rows tighten the same way; the carrier compare-and-swap retries; and
-a save over an unreadable or corrupt metadata line fails closed. The close-vs-recreate
-guards themselves live in ``test_slot_close_recreation_race.py``; the shared fakes in
-``slot_close_recreation_race_helpers.py``.
+key marker and execution carrier; a save over an unreadable or corrupt metadata line
+fails closed. Shared fakes live in ``slot_close_recreation_race_helpers.py``.
 """
 
 from __future__ import annotations
@@ -63,15 +60,10 @@ def _summary_cfg():
 def _floor_after_disk_tail(state, slot) -> None:
     """Tell a fresh same-key *slot* the newest ``ts`` already in its transcript file.
 
-    A slot learns the file's tail only at its own first save boundary
-    (``note_disk_tail``), so a replacement's FIRST row is stamped from the bare
-    clock. On a host whose clock ticks coarsely (Windows advances it in ~15.6 ms
-    steps) that stamp can tie the rows the dismissed original committed a moment
-    earlier, and the save's two-way ``ts`` merge keeps the window's line first on
-    an exact tie -- so the replacement's row would read back AHEAD of rows that
-    were written before it. These tests assert file order to prove every row
-    survived, not to probe that merge, so the replacement is told the on-disk
-    tail up front, the same floor its first save would have recorded.
+    On a coarse clock (Windows, ~15.6 ms) a replacement's first row can tie the
+    original's rows, and the save's ``ts`` merge keeps the window's line first on a tie.
+    These tests assert file order only to prove every row survived, so the replacement
+    gets the on-disk tail its first save would have recorded.
     """
     slot.note_disk_tail(*(m.get("ts") for m in state.conversation_log.read_messages(HKEY)))
 
@@ -83,34 +75,17 @@ async def test_delete_handover_of_a_restricted_tail_tightens_a_persistent_line(
 ) -> None:
     """A restricted tail draining under a persistent replacement's line tightens it.
 
-    The rows-only drain defers ``memory_mode`` to the line the replacement
-    published, and that field is what every learning reader gates on. Writing
-    the restricted original's tail under a line that says persistent would make
-    consolidation, the history tools and the summary treat private content as
-    ordinary; refusing the write would lose the reply the user was watching, with
-    no retry path (the slot is popped). The line is a ratchet any writer may
-    tighten, so the drain folds the retained mode in and lands the rows under the
-    stricter value -- the same file the other race order reaches, where the
-    original's committed line ratchets the replacement's own save (see
+    Every learning reader gates on the line's ``memory_mode``, and refusing the write
+    would lose the reply with no retry path. The line is a ratchet any writer may
+    tighten, so the drain writes under the stricter mode and drops the store name; the
+    title and folder stay (other race order:
     ``test_delete_handover_of_a_restricted_tail_lands_under_the_ratcheted_line``).
-    A restricted line names no store, so the replacement's store name goes with
-    the loosening; its title and folder are not the drain's to touch and stay.
 
-    The line is not the only thing that must tighten. The replacement is LIVE
-    and has already bound a persistent execution -- a durable record on the same
-    line, which ``read_session_execution`` answers from -- and the readers that
-    gate on the live slot rather than the line (the session summary, the export)
-    read ``slot.memory_mode`` and then the whole transcript from disk. So the
-    drain tightens the replacement slot itself before the rows are written, the
-    save folds the carried execution record with the line, and the summary gate
-    refuses the replacement afterwards: the private rows are on disk only once
-    every reader of that file, by line or by slot, already sees them as restricted.
-
-    The original committed NOTHING before the close, so the persistent line is
-    the replacement's alone -- the only shape in which the drain meets a looser
-    line. The replacement's first row is floored after the original's rows so the
-    file order asserted below is a property of the write sequence and not of the
-    host clock's resolution.
+    Readers that gate on the live slot (summary, export) read ``slot.memory_mode``, so
+    the drain tightens the replacement slot and its carried execution record before the
+    rows land. The original committed nothing, so the persistent line is the
+    replacement's alone; its first row is floored so file order does not depend on the
+    host clock.
     """
     state = _make_state(tmp_path)
     monkeypatch.setattr(history_mod, "_sessions_dir", lambda: tmp_path)
@@ -232,16 +207,11 @@ async def test_tool_result_rows_tighten_a_same_transcript_replacement(
 async def test_the_app_render_path_writes_its_tool_rows_through_the_privacy_wrapper(
     tmp_path, monkeypatch
 ) -> None:
-    """Through the real ``_run_chat``: the MCP-app render persists its tool rows
-    only after a same-transcript replacement has been tightened.
+    """Through ``_run_chat``, an MCP-app render writes only after the replacement tightens.
 
-    A restricted turn is popped mid-stream and a same-key, persistent slot takes
-    its place -- sharing its transcript. When the render claims the app, its
-    rows-only write must already find the replacement temporary and its key
-    marked restricted: during a write that lands first, live-slot gates (summary,
-    memory, app 403 checks) would derive from the private rows. The end state
-    converges either way (the save's own callback tightens right after the
-    write), so the probe is taken at the moment of the write.
+    A restricted turn is popped mid-stream and a persistent same-key slot shares its
+    transcript. The end state converges either way, so the probe is taken at the moment
+    of the rows-only write: live-slot gates must already see the replacement restricted.
     """
     spool = tmp_path / "mcp-apps"
     spool.mkdir()
@@ -694,11 +664,9 @@ async def test_delete_handover_saves_tail_after_second_carrier_cas_failure(
 async def test_tightening_a_live_replacement_keeps_and_rolls_back_its_carrier(tmp_path):
     """The hand-over tightening must not evict a live member-bound carrier.
 
-    Clearing the replacement's live execution would leave the rest of its turn
-    with no execution to check the store binding against (the check skips on
-    ``None`` -- the fail-OPEN direction for a private silo) and the next turn's
-    fold with nothing to fold into. The carrier is tightened in place instead:
-    same identity, stricter mode, and a failed write restores that generation.
+    The store-binding check skips on ``None`` (fail-OPEN for a private silo), so the
+    carrier is tightened in place: same identity, stricter mode, and a failed write
+    restores that generation.
     """
     from kiro_crew.dashboard.chat_utils import (
         effective_session_key,
@@ -753,13 +721,9 @@ async def test_a_save_over_an_unreadable_line_is_deferred_not_folded_as_persiste
 ) -> None:
     """The ratchet must not fold a line it could not read.
 
-    A restricted original's committed line, then a persistent recreate on the
-    freed key whose first save meets a transient read failure on that line
-    (``get_metadata_status`` -> ``({}, False)``). An empty dict folds as
-    ``persistent``, so without the guard this save would relabel the restricted
-    file persistent and stamp a store name on it -- the one write the ratchet
-    exists to prevent. The save must fail CLOSED like the identity check does:
-    raise, leaving ``_dirty`` armed so the flush retries once the read clears.
+    On a transient read failure (``get_metadata_status`` -> ``({}, False)``) an empty
+    dict would fold as ``persistent`` and relabel a restricted file. The save fails
+    CLOSED: it raises and leaves ``_dirty`` armed so the flush retries.
     """
     state = _make_state(tmp_path)
     original = state.get_or_create_slot(NAME, memory_mode=mode)
@@ -816,13 +780,9 @@ async def test_a_save_over_a_corrupt_line_rewrites_it_strictest_and_lands_the_ro
 ) -> None:
     """A permanently corrupt first line must not wedge every later save.
 
-    Deferring is right for a TRANSIENT read failure, but a first line that is
-    not JSON never becomes readable, so a save that kept deferring would never
-    persist another row, ``closed`` would never land and the tab would
-    resurrect on every restart. The full save rewrites the line instead -- the
-    rows after it survive, ``closed`` can follow -- and stamps the STRICTEST
-    mode with no store: the line's real contract is unknowable and the ratchet
-    forbids relabelling it looser.
+    A line that is not JSON never becomes readable, so deferring would block every save
+    and ``closed`` forever. The full save rewrites it with the STRICTEST mode and no
+    store, since the real contract is unknowable.
     """
     from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
     from kiro_crew.history import METADATA_LINE_CORRUPT, METADATA_LINE_READABLE
@@ -863,11 +823,9 @@ async def test_a_save_over_a_first_line_that_is_not_utf8_rewrites_it_and_keeps_o
 ) -> None:
     """The full save rewrites an undecodable first line, like one that is not JSON.
 
-    Bytes that are not UTF-8 read as CORRUPT, so the save takes its rewrite
-    branch; its strict text reads of the whole file then raised
-    ``UnicodeDecodeError``, so every save of the slot failed, its rows never
-    landed and ``closed`` never could. The rows OLDER than the in-memory window
-    are carried by the frozen prefix, which must still take them by position.
+    Non-UTF-8 bytes read as CORRUPT, so the save rewrites the line, and its whole-file
+    reads must not raise ``UnicodeDecodeError``. Rows older than the window are carried
+    by the frozen prefix, by position.
     """
     from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
     from kiro_crew.history import METADATA_LINE_CORRUPT, METADATA_LINE_READABLE
@@ -1014,14 +972,10 @@ async def test_same_key_persistent_recreate_cannot_relabel_a_restricted_line(
 ) -> None:
     """The on-disk ``memory_mode`` is a ratchet: a later writer can only tighten it.
 
-    A restricted slot commits rows and closes cleanly. Its file stays, and
-    ``get_or_create_slot`` hands the freed key to a persistent slot whose saves
-    rebuild the metadata line from their own state. Without the fold, the first
-    such save would write ``memory_mode: persistent`` plus a store name over the
-    committed private rows, and the consolidator and the MCP history tools --
-    which read only that line -- would learn from them. Both writers are driven:
-    the empty-window merge a newborn's metadata route takes, and the full save
-    that carries the replacement's first row.
+    A persistent slot taking a closed restricted slot's key must not write
+    ``memory_mode: persistent`` over the private rows, because the consolidator and the
+    MCP history tools read only that line. Both the empty-window merge and the full
+    save are driven.
     """
     state = _make_state(tmp_path)
     original = state.get_or_create_slot(NAME, memory_mode=mode)

@@ -400,7 +400,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
     from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
-    from kiro_crew.dashboard.chat_utils_injected_rows import STEER_INTENT_META
+    from kiro_crew.dashboard.chat_utils_injected_rows import COMPOSER_SEND_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
@@ -493,9 +493,9 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # drop notice would carry the entry's text there, so an edited stamp
             # would turn a file write into an outbound channel message.
             #
-            # The STEER INTENT mark goes too: it lets an entry drain past the
+            # The COMPOSER SEND mark goes too: it lets an entry drain past the
             # sub-agent hold (``releases_past_subagent_hold``), a path that never
-            # runs the drain's containment sweep. Restored, an act-now steer is
+            # runs the drain's containment sweep. Restored, a composer send is
             # an ordinary card that waits for the user like every other one.
             entry["meta"] = {
                 k: v
@@ -506,7 +506,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
-                    STEER_INTENT_META,
+                    COMPOSER_SEND_META,
                 )
             }
         try:

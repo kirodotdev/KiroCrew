@@ -802,6 +802,27 @@ class TestDashboardPortSelection:
         assert orch._dashboard_port == 8123
 
     @pytest.mark.asyncio
+    async def test_skill_set_aside_by_the_builtin_sync_is_announced(self, tmp_path):
+        orch = _prepared_orchestrator()
+        backup = tmp_path / ".widgets.user-backup"
+        sync_done: asyncio.Future = asyncio.get_running_loop().create_future()
+        orch._skills_sync_task = sync_done
+        ds = _mock_dashboard_state()
+        noted = asyncio.Event()
+        ds.notify.side_effect = lambda *args, **kwargs: noted.set()
+        with patch.object(gw, "LessonStore", MagicMock()):
+            with patch.object(gw, "start_dashboard", AsyncMock(return_value=(MagicMock(), ds))):
+                await orch._init_dashboard()
+        # The sync can finish after the dashboard binds; the note waits for it.
+        assert not ds.notify.called
+        sync_done.set_result([("widgets", backup)])
+        await await_until(noted, what="the set-aside note")
+        kind, title, body = ds.notify.call_args.args
+        assert kind == "skills"
+        assert '"widgets"' in title
+        assert str(backup) in body
+
+    @pytest.mark.asyncio
     async def test_api_server_ephemeral_port_is_read_back(self):
         orch = _prepared_orchestrator()
         orch._port_override = "auto"

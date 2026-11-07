@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored, action-first feature tips for features native to Kiro Crew (keyboard shortcuts, Settings toggles, config keys) that have no docs/*.md entry and so can never surface through the doc-scan catalog. Each tip's body ends with the exact thing to do. An optional 'action' object ({kind:'route', label, route}) renders a one-click button that navigates to the exact settings page/control; tips whose feature has no navigable destination (a keyboard shortcut or a mid-turn composer control) omit 'action' and render body only. A curated tip that wants a 'learn more' doc link MUST use 'doc_link' (rendering-only), never 'doc': 'doc' is the tip's dismissal identity, and a curated tip claiming a catalog-owned doc there would suppress the catalog's own tip for that doc on dismissal. Loaded by kiro_crew.tips._load_curated_tips; the string fields are validated like generated tips, and 'action' is validated separately by _sanitize_tip_action (kind must be 'route'; route must be an internal path).",
+  "_comment": "Hand-authored, action-first feature tips for approved Kiro Crew behaviors, including capabilities also covered by the documentation catalog. Each tip's body ends with the exact thing to do. An optional 'action' object ({kind:'route', label, route}) renders a one-click button that navigates to the exact settings page/control; tips whose feature has no navigable destination (a keyboard shortcut or a mid-turn composer control) omit 'action' and render body only. A curated tip that wants a 'learn more' doc link MUST use 'doc_link' (rendering-only), never 'doc': 'doc' is the tip's dismissal identity, and a curated tip claiming a catalog-owned doc there would suppress the catalog's own tip for that doc on dismissal. Loaded by kiro_crew.tips._load_curated_tips; the string fields are validated like generated tips, and 'action' is validated separately by _sanitize_tip_action (kind must be 'route'; route must be an internal path).",
   "tips": [
     {
       "id": "split-view",
@@ -16,6 +16,16 @@
       "feature": "Command Palette",
       "title": "Jump anywhere with ⌘K",
       "body": "Press **⌘K** (**Ctrl+K**) to open Search Everywhere — sessions, pages, skills, prompts, artifacts, settings, and runnable actions in one box. Prefer the IntelliJ-style double-tap **Shift**? Turn it on in **Settings › Shortcuts**.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Shortcuts settings", "route": "/settings/shortcuts" }
+    },
+    {
+      "id": "focus-mode",
+      "feature": "Focus Mode",
+      "title": "Hide the top bar and nav rail",
+      "body": "Press **⌥⇧M** (**Alt+Shift+M**) or click the **Focus mode** (full-screen icon) button in the top bar to hide the top bar and nav rail. Press **⌥⇧M** again to bring them back.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
@@ -44,32 +54,31 @@
       "id": "warm-pool",
       "feature": "Warm Pool",
       "title": "Cut session startup time",
-      "body": "Pre-spawn agent processes so new sessions start instantly instead of cold-starting. Enable with `kirocrew config set session.pool_size 2`. Off (0) by default.",
+      "body": "Slow session starts? Run **kirocrew config set session.pool_size 2**.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Warm Pool config", "route": "/settings/overview" }
+      "action": { "kind": "route", "label": "Open Warm Pool config", "route": "/settings/agent" }
     },
     {
       "id": "mcp-gateway",
       "feature": "MCP Gateway",
       "title": "Use less memory with the MCP gateway",
-      "body": "Route MCP tools through one shared broker instead of a copy per session to cut RAM. Enable the **Shared MCP gateway** toggle (Customize › Connections → MCP Servers → MCP Management), or run `kirocrew config set mcp_gateway.enabled true`.",
+      "body": "Many sessions share MCP servers? Open **MCP Management > Advanced > Servers**, turn on **Share** for a server or click **Enable all shareable**, then confirm any prompt that appears, and restart Crew if asked.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/capabilities?tab=mcp&view=mcp-servers#mcp-management" }
     },
     {
-      "id": "subagent-parallelism",
-      "feature": "Subagent Parallelism",
-      "title": "Tune how many subagents run at once",
-      "body": "`agent.max_subagents` caps concurrent subagents. **0 = auto-size** to your machine's memory and CPU; pin a number with `kirocrew config set agent.max_subagents 4`.",
+      "id": "delegate-independent-work",
+      "feature": "Subagents",
+      "title": "Delegate independent work",
+      "body": "Independent tasks? Type **Run these tasks in parallel.** in chat.",
       "why": "",
       "doc": "",
-      "doc_link": "dynamic-subagent-sizing.md",
-      "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Subagent config", "route": "/settings/overview" }
+      "doc_link": "subagents.md",
+      "cta_prompt": ""
     },
     {
       "id": "local-telemetry",
@@ -83,13 +92,12 @@
     {
       "id": "zero-token-cron",
       "feature": "Zero-token Crons",
-      "title": "Run crons with no LLM",
-      "body": "A scheduled job can run a shell `command` or a Python `script` directly — no model, zero tokens. Ideal for polling, cleanup, and health checks.",
+      "title": "Run the same check without the model",
+      "body": "Same check every time? Type **Schedule this as a script job** in chat. It runs without using the model.",
       "why": "",
       "doc": "",
       "doc_link": "cron-and-scheduling.md",
-      "cta_prompt": "",
-      "action": { "kind": "route", "label": "New scheduled job", "route": "/schedule" }
+      "cta_prompt": ""
     },
     {
       "id": "dev-fleet",
@@ -105,7 +113,7 @@
       "id": "app-store",
       "feature": "Apps",
       "title": "Add new capabilities with Apps",
-      "body": "Open **Apps → Browse** and click **Enable** to add an app's agents, skills, and crons in one step.",
+      "body": "Need another capability? Open **Apps › Discover** to **Enable** a shipped app or **Install** an external app. After installing, enable it in **Library** and complete any trust review.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
@@ -115,11 +123,11 @@
       "id": "system-monitor",
       "feature": "System Monitor",
       "title": "See what each session is spending",
-      "body": "A task manager for your agent: live CPU and memory per session, credits spent, and a Storage screen for what each session holds on disk. Open **Settings › Developer › System**.",
+      "body": "Open **Settings > Developer > System** for session resource use, or **Performance > Disk > Session storage** for disk use.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open System Monitor", "route": "/settings/developer/system" }
+      "action": { "kind": "route", "label": "Open Developer System", "route": "/settings/developer/system" }
     },
     {
       "id": "web-terminal",
@@ -134,8 +142,8 @@
     {
       "id": "artifacts-library",
       "feature": "Artifacts",
-      "title": "Keep the UI the agent builds for you",
-      "body": "Widgets, generated images, and documents can be saved as **Artifacts** — each gets its own page, a version history, and a companion chat for iterating on it. Browse them under **Artifacts**.",
+      "title": "Keep generated output",
+      "body": "Outside Incognito and Temporary chats, open **Artifacts > All** and click **Star document** beside a session document, or ask Crew: **Save this as an Artifact.**",
       "why": "",
       "doc": "",
       "cta_prompt": "",
@@ -155,7 +163,7 @@
       "id": "auto-skills",
       "feature": "Auto-generated Skills",
       "title": "Turn repeated work into a skill",
-      "body": "Let Kiro Crew draft a reusable skill when a finished session shows a procedure a future session would run again on a different target. Enable **Auto-generate skills from sessions** in **Settings › Skills** — by default drafts wait in a review queue for your approval. Turning off **skills.approval_required** lets prose-only skills publish directly; skills with scripts always need approval. Off by default.",
+      "body": "Want Crew to suggest reusable Skills after sessions? Turn on **Auto-generate skills from sessions** under **Settings › Skills**.",
       "why": "",
       "doc": "",
       "doc_link": "skills.md",
@@ -166,7 +174,7 @@
       "id": "role-models",
       "feature": "Per-role Models",
       "title": "Use a different model for background work",
-      "body": "Background jobs and sub-agents can run on their own model and reasoning effort, separate from your chat. Set **Background Model** in **Settings › Chat**; a role you leave unset stays on `auto`.",
+      "body": "Need a different model for background work? Open **Settings › Chat › Model** and set **Background Model**.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
@@ -176,7 +184,7 @@
       "id": "agent-browsing",
       "feature": "Agent Browsing",
       "title": "Let the agent use a real browser",
-      "body": "Install the **Playwright CLI** from **Settings › Browser** and the agent can open pages, read them, and fill forms — you watch, and can take over, in the chat's **Browser** panel.",
+      "body": "When browser access is available, ask Crew to open the page. Watch the live browser view in chat when **Show the live view in chat** is enabled under **Settings > Browser**.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
@@ -186,38 +194,17 @@
       "id": "computer-use",
       "feature": "Computer Use",
       "title": "Let the agent drive a desktop app",
-      "body": "On macOS, the agent can read a native app's window through accessibility and click, type, and scroll in it. Turn on **Enable computer use** in **Settings › Computer Use** — off until you do, and an agent cannot enable it itself.",
+      "body": "On a supported macOS or Windows host, when policy allows it, open **Settings > Computer Use** and turn on **Enable computer use** to let Crew drive a desktop app.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Computer Use settings", "route": "/settings/computer-use?highlight=computer-use.enable-computer-use" }
     },
     {
-      "id": "issue-radar",
-      "feature": "Issue Radar",
-      "title": "Triage GitHub and GitLab issues",
-      "body": "Enable the **Issue Radar** app under **Apps**, connect a repository, and triage issues and pull requests from the dashboard — what the agent finds stays on the issue's card. Off until you enable it.",
-      "why": "",
-      "doc": "",
-      "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
-    },
-    {
-      "id": "issue-radar-pipeline",
-      "feature": "Issue Radar Pipeline",
-      "title": "See where automated triage is stuck",
-      "body": "Issue Radar has a **Pipeline** dashboard almost nobody finds: left rail → **DASHBOARDS** → **Pipeline**. It shows which of the six triage steps every issue is sitting in, how long it has been there, and what each agent session cost in credits.",
-      "why": "",
-      "doc": "",
-      "doc_link": "issue-radar-pipeline.md",
-      "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
-    },
-    {
       "id": "remote-crew",
       "feature": "Remote Crew",
       "title": "Reach another machine's Kiro Crew",
-      "body": "Add another Kiro Crew gateway over SSH or AWS SSM in **Settings › Remote Crew**, then switch between crews from the header.",
+      "body": "Open **Settings > Remote Crew**; if disabled, click **Enable remote crew management** and restart Crew, then add the gateway.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
@@ -227,11 +214,154 @@
       "id": "secrets-vault",
       "feature": "Secrets Vault",
       "title": "Store credentials in the encrypted vault",
-      "body": "Keep API keys and tokens out of your config and chat: save them in the encrypted vault under **Settings › Secrets**, then reference one as `secret://KEY` wherever an MCP server takes an env value — it is resolved at launch and never written to disk in the clear.",
+      "body": "For a command-based stdio MCP server, save the credential under **Settings > Secrets**, route the server through **MCP Management**, approve its launch, and restart Crew to use **secret://KEY** in its environment. HTTP/SSE servers cannot use this routing path.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Secrets settings", "route": "/settings/secrets" }
+    },
+    {
+      "id": "schedule-repeated-work",
+      "feature": "Scheduling",
+      "title": "Schedule repeated work",
+      "body": "Repeating a check? Ask Crew: **Schedule this check.**",
+      "why": "",
+      "doc": "",
+      "doc_link": "cron-and-scheduling.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Schedule", "route": "/schedule" }
+    },
+    {
+      "id": "monitor-change",
+      "feature": "Monitoring",
+      "title": "Watch for a change",
+      "body": "Waiting for a change? In a Persistent chat, ask Crew: **Watch this and tell me when it changes.**",
+      "why": "",
+      "doc": "",
+      "doc_link": "monitor-loops.md",
+      "cta_prompt": ""
+    },
+    {
+      "id": "reusable-workflow",
+      "feature": "Workflows",
+      "title": "Create a reusable workflow",
+      "body": "Repeatable stages? Ask Crew: **Turn these stages into a reusable workflow.**",
+      "why": "",
+      "doc": "",
+      "doc_link": "workflows.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Workflows", "route": "/capabilities?tab=workflows" }
+    },
+    {
+      "id": "remember-preference",
+      "feature": "Memory",
+      "title": "Save a durable preference",
+      "body": "Outside Incognito and Temporary chats, ask Crew: **Remember this preference for future sessions.**",
+      "why": "",
+      "doc": "",
+      "doc_link": "memory-and-learning.md",
+      "cta_prompt": ""
+    },
+    {
+      "id": "reusable-skill",
+      "feature": "Skills",
+      "title": "Create a reusable skill",
+      "body": "Repeating a process? Ask Crew: **Turn this process into a reusable skill.**",
+      "why": "",
+      "doc": "",
+      "doc_link": "skills.md",
+      "cta_prompt": ""
+    },
+    {
+      "id": "add-mcp-server",
+      "feature": "MCP Integrations",
+      "title": "Add an external tool",
+      "body": "Need another service? Open **Customize › Connections › MCP Servers** and click **Add Server**.",
+      "why": "",
+      "doc": "",
+      "doc_link": "mcp-apps.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open MCP Servers", "route": "/capabilities?tab=mcp&view=mcp-servers" }
+    },
+    {
+      "id": "project-steering",
+      "feature": "Steering",
+      "title": "Add a persistent project rule",
+      "body": "Repeating a project rule? Open **Customize › Steering** and add it to this project's workspace steering.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Steering", "route": "/capabilities?tab=steering" }
+    },
+    {
+      "id": "knowledge-source",
+      "feature": "Knowledge",
+      "title": "Add recurring reference material",
+      "body": "Reuse this source often? Open **Customize > Knowledge**, choose **Sources**, then click **+ Add Source**.",
+      "why": "",
+      "doc": "",
+      "doc_link": "knowledge-library-how-it-works.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Knowledge", "route": "/capabilities?tab=knowledge" }
+    },
+    {
+      "id": "hooks-automation",
+      "feature": "Hooks",
+      "title": "Automate a repeated event response",
+      "body": "Repeat a command when a session starts, a prompt is sent, a tool runs, or a turn ends? Add it under **Customize › Hooks**.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Hooks", "route": "/capabilities?tab=hooks" }
+    },
+    {
+      "id": "custom-agent",
+      "feature": "Custom Agents",
+      "title": "Create a specialized agent",
+      "body": "Need the same setup for similar tasks? Create one under **Customize › Custom agents**.",
+      "why": "",
+      "doc": "",
+      "doc_link": "agents.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Custom agents", "route": "/capabilities?tab=templates" }
+    },
+    {
+      "id": "interactive-widget",
+      "feature": "Interactive Widgets",
+      "title": "Create interactive output",
+      "body": "Need controls, forms, or a dashboard? Ask Crew: **Build this as an interactive widget.**",
+      "why": "",
+      "doc": "",
+      "cta_prompt": ""
+    },
+    {
+      "id": "always-on-service",
+      "feature": "Always-on Crew",
+      "title": "Keep Crew available while away",
+      "body": "Need Kiro Crew while you're away? On Linux with systemd or macOS with launchd, run **kirocrew service install**.",
+      "why": "",
+      "doc": "",
+      "doc_link": "getting-started.md",
+      "cta_prompt": ""
+    },
+    {
+      "id": "interfaces",
+      "feature": "Interfaces",
+      "title": "Continue from another interface",
+      "body": "Want Crew in a terminal or Slack? Click **Learn more** for setup.",
+      "why": "",
+      "doc": "",
+      "doc_link": "getting-started.md",
+      "cta_prompt": ""
+    },
+    {
+      "id": "approval-modes",
+      "feature": "Approval Modes",
+      "title": "Choose an approval mode",
+      "body": "When the approval-mode picker is available, open it in the message box and choose an offered mode. **Normal**, **Reads**, and **Trust** set this chat's posture and can end an active app-wide override. **YOLO**, when offered, applies to every chat.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": ""
     },
     {
       "id": "shortcuts-help",

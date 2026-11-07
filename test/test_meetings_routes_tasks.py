@@ -864,14 +864,9 @@ class TestTaskWritesAreSerialized:
     def test_every_metadata_writer_holds_the_transaction(self) -> None:
         """Structural: no `write_meeting_meta` outside a `meta_transaction()`.
 
-        This class of bug has four known call sites: the metadata routes, the agent
-        toggle, the dictionary, and stop/start in the session domain. A fix per call
-        site leaves the next one open, so the invariant is asserted over the whole
-        module instead: every function that writes meeting metadata must hold the
-        lock across its read-modify-write.
-
-        AST rather than grep so a call inside a comment or a docstring cannot satisfy
-        it, and so the enclosing function is what gets checked.
+        Asserted over the whole module so a new writer cannot skip the lock across
+        its read-modify-write. AST rather than grep so a call inside a comment or a
+        docstring cannot satisfy it, and so the enclosing function is what gets checked.
         """
         import ast
         from pathlib import Path as _Path
@@ -1228,10 +1223,8 @@ class TestATaskIsNeverFiledTwice:
 
         A filing is prepare -> provider-create -> record and the middle step is an
         AWAIT, which `_TASKS_LOCK` (a threading lock, held only across local file IO)
-        cannot span. So a delete landing inside that gap removed the task while the
-        external item had already been created — leaving an orphan nothing references,
-        while the filing response reported success. Deleting is the other half of the
-        critical section the filing already serializes, so it needs the same lock.
+        cannot span. A delete inside that gap would orphan the created external item
+        while the filing reports success, so deleting takes the same lock.
         """
         import ast
         import inspect
@@ -1258,12 +1251,9 @@ class TestATaskIsNeverFiledTwice:
     def test_recording_a_filing_for_a_vanished_task_fails_loudly(self, tmp_path) -> None:
         """The deeper flaw the lock alone does not fix.
 
-        `_record_filing` must not `break` out of its loop when the id is absent, write
-        the list unchanged, and RETURN — so a task removed by any path the lock does not
-        order (the extractor agent rewriting `tasks.json`, a hand-edit, a future route)
-        produced a real external item plus a success response and no reference to it.
-        It must refuse instead, and must not rewrite the list a concurrent deleter just
-        wrote.
+        A task can vanish by paths the lock does not order (the extractor agent
+        rewriting `tasks.json`, a hand-edit). `_record_filing` must then refuse, not
+        report success, and must not rewrite the list a concurrent deleter just wrote.
         """
         from kiro_crew.apps.builtins.meetings.backend import store
         from kiro_crew.apps.builtins.meetings.backend.providers import tasks as taskprov

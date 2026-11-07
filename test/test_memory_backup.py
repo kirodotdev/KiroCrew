@@ -1,21 +1,12 @@
 """Memory must survive its own file being destroyed.
 
-Memory is the only data here that cannot be rebuilt from another source, and until
-these backups existed its whole durability story was a manual ``kirocrew snapshot``.
-An operator who never ran it had no copy — which is how a 36 MB store became 29 bytes
-with nothing to restore from.
+Memory is the only data here that cannot be rebuilt from another source. Pinned below:
 
-The properties that make a backup a backup, rather than a scheduled file copy that
-happens to usually work, and each is pinned below:
-
-* CONSISTENT UNDER A LIVE WRITER. The gateway holds the store open under WAL, so a
-  plain copy of ``memory.db`` alone takes a file whose committed tail is in a ``-wal``
-  sibling it did not take. That result PARSES, so nothing complains — it is simply
-  missing recent writes. SQLite's online backup API is what makes the copy whole.
-* BOUNDED ON DISK, and never emptied by its own retention.
-* ATOMIC — an interrupted run leaves no file that looks like a backup.
-* NON-DESTRUCTIVE ON RESTORE. A restore is done by someone who has already lost data
-  once; what it displaces may be the last copy of something.
+* Consistent under a live writer: a plain copy of ``memory.db`` misses the committed
+  tail in ``-wal`` and still parses, so SQLite's online backup API is used.
+* Bounded on disk, and never emptied by its own retention.
+* Atomic: an interrupted run leaves no file that looks like a backup.
+* Non-destructive on restore: what it displaces may be the last copy.
 """
 
 from __future__ import annotations
@@ -77,19 +68,11 @@ def cyclic_gc_quiesced():
 def _point_home_at(monkeypatch: pytest.MonkeyPatch, data_home: Path) -> None:
     """Make *data_home* the data home, with the default store and one silo declared.
 
-    The config is written to the SAME path the loader resolves ``KIROCREW_HOME`` to
-    (``Path.resolve()``), not to the raw ``data_home`` the fixture was handed. On
-    Windows the two can differ -- short-name (8.3) components, drive-letter casing,
-    or a long parametrized temp path -- so writing to the raw path leaves the loader
-    reading a home with no ``config.json``, degrading the load to the default store
-    alone; the declared ``fin`` silo is then unknown.
+    The config goes to the ``Path.resolve()`` form of ``KIROCREW_HOME``: on Windows the
+    raw path can differ (8.3 names, drive casing), leaving the ``fin`` silo unknown.
 
-    The three resolution memos are dropped alongside the home switch so a stale entry
-    keyed on an earlier case's home cannot answer for this one. ``config_dir()`` keys
-    on ``_resolved_home`` identity, ``_declared_stores`` memoizes on the config
-    fingerprint, and the loaded config is cached on that same fingerprint; a coarse
-    filesystem clock can leave two different homes sharing a fingerprint, so each is
-    reset explicitly rather than relied on to invalidate itself.
+    The three resolution memos are reset explicitly: a coarse filesystem clock can give
+    two homes the same config fingerprint.
     """
     import kiro_crew.config.paths as paths
     from kiro_crew import memory_stores
@@ -127,12 +110,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def seeded_memory_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """The populated default store, built ONCE per module and closed.
 
-    Every ``set_semantic`` is two durable commits (the row and its audit event), and a
-    fresh ``init`` is four more, so building the 20-row store costs 44 fsyncs. The
-    Windows shard prices an fsync in whole seconds when its disk is contended, and
-    the shard's per-test budget is 180 s counted from setup, so paying those 44 once
-    per parametrized case is what tipped a case over the cap and took the worker
-    down with it. Built here in its own home so the per-case fixture only copies it.
+    The 20-row store costs 44 fsyncs, which can take seconds each on a contended Windows
+    shard with a 180 s per-test budget, so cases copy this file instead.
     """
     seed_home = tmp_path_factory.mktemp("memory-backup-seed")
     with pytest.MonkeyPatch.context() as monkeypatch:
@@ -157,14 +136,8 @@ def seeded_memory_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def live_store(home: Path, seeded_memory_db: Path):
     """A populated default store, left OPEN — the state a real backup runs against.
 
-    Held open deliberately: a backup taken while nothing has the file is the easy case
-    and not the one that loses data.
-
-    Populated by copying :func:`seeded_memory_db` into place and opening it, which is
-    one commit per case instead of 44. Its rows therefore sit in the main file, not the
-    WAL; a test whose property IS "the committed tail is in the WAL" needs the rows
-    written through the open handle, which :class:`TestABackupIsConsistentUnderALiveWriter`
-    does with its own ``live_store``.
+    Copied from :func:`seeded_memory_db`, so its rows sit in the main file, not the WAL;
+    :class:`TestABackupIsConsistentUnderALiveWriter` writes its own ``live_store``.
     """
     shutil.copyfile(seeded_memory_db, resolve_store_path(DEFAULT_MEMORY_STORE))
     store = VectorMemoryStore()
@@ -211,11 +184,8 @@ class TestABackupIsConsistentUnderALiveWriter:
     def live_store(self, home: Path):
         """The rows written THROUGH the open handle, so the committed tail is in the WAL.
 
-        Overrides the module fixture for this class only. The property under test is
-        that a backup captures rows a plain copy of ``memory.db`` would miss, and a
-        store seeded by file copy has nothing in its WAL for a plain copy to miss --
-        every test here would pass against a file copy. This is the one class that
-        pays the per-row writes, and it pays them for that reason.
+        A store seeded by file copy has an empty WAL, so every test here would pass
+        against a plain file copy.
         """
         store = VectorMemoryStore()
         store.init()
@@ -620,13 +590,8 @@ class TestARestartCannotShrinkTheRetentionWindow:
 class TestTheManualVerbTakesTheCopyItWasAskedFor:
     """``kirocrew memory backup`` is an operator asking for a copy NOW.
 
-    The interval guard exists for the heartbeat, whose per-process tick counter would
-    otherwise take a copy on every restart. An operator running the verb by hand is
-    usually about to do something risky -- a restore, an out-of-band edit -- and needs
-    the store as it is now, not as it was up to a day ago. The dashboard's
-    "back up now" and the pre-update copy already bypass the guard; the CLI verb must
-    too, and the two sides of that asymmetry are pinned here so a refactor cannot
-    collapse them in either direction.
+    The interval guard is for the heartbeat, which would otherwise copy on every
+    restart. The CLI verb bypasses it, like the dashboard's "back up now".
     """
 
     @staticmethod
@@ -659,14 +624,8 @@ class TestTheManualVerbTakesTheCopyItWasAskedFor:
     ) -> None:
         """The other half of the asymmetry: the scheduled pass keeps the guard.
 
-        Forcing it too would reintroduce the restart loop the interval exists to stop,
-        so the heartbeat's own pass is driven here, against the same fresh copy the
-        CLI test copies over, and must leave the directory as it found it.
-
-        The pass FAILS SOFT -- ``_back_up_memory`` logs and swallows any exception --
-        so an unchanged directory alone would also be what a pass that never ran leaves.
-        The warning it logs on that path is asserted absent, which is what makes the
-        unchanged count evidence of a decline rather than of a crash.
+        ``_back_up_memory`` logs and swallows exceptions, so its warning is asserted
+        absent: otherwise an unchanged directory could mean a crash, not a decline.
         """
         import logging
         from unittest.mock import MagicMock

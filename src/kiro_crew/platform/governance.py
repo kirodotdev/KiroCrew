@@ -70,6 +70,7 @@ from kiro_crew.platform.guest_paths import (  # noqa: F401 - re-export
 )
 from kiro_crew.platform.tool_paths import (  # noqa: F401 - re-export
     TARGET_PATH_KEYS,
+    _is_anchored,
     edit_target_candidates,
     is_edit_call,
     target_paths,
@@ -1211,6 +1212,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         agentcore_workload_name,
         compose_profiles,
         deny_all_profile,
+        registry_local_control_plane_permitted,
     )
     from kiro_crew.platform.governance_parts.catalog import (  # noqa: F401
         _SCOPE_ALIASES,
@@ -1225,6 +1227,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASELINE_REASON,
         _DENY_UNLISTED,
         _PERMIT_NOT_GOVERNED,
+        _anchored_read_target,
+        _every_operation_names_a_path,
         _policy_level,
         _query_level,
         resolve,
@@ -1276,6 +1280,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ipv6_or_none,
         _parse_control,
         _parse_controls,
+        _parse_registry_local_control_plane,
         _parse_yolo_max_seconds,
         _read_json_file,
         _refuse_inexact_origin_entries,

@@ -7,8 +7,8 @@
  *  the work-ledger board, the session summary (GET only), the live slot rows
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, X } from 'lucide-react'
 import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
@@ -278,8 +278,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
   // member (`waiting`), or an unanswered blocked / question report whose reason
-  // names a person. An answer -- the conductor's or the person's own steer -- ends it.
-  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item))) return 'needs_you'
+  // names a person. An answer -- the conductor's or the person's own steer, a
+  // dismiss included -- ends it, and so does a turn running again (the worker moved on).
+  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item) && item.alive !== 'running')) return 'needs_you'
   if (item.alive === 'running') return 'running'
   // Stuck only when nothing is left to move it: its session closed on an open
   // report, or the board is orphaned (no main chat reads its reports). A done
@@ -291,6 +292,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   // with no report yet stays Not started (it may have no worker bound at all),
   // and raises only the quiet pulse below.
   if (open && item.stale) return 'quiet'
+  // Idle, but its own loop will wake it (waiting on CI, the server's `looping`):
+  // the flow still runs. A report the conductor still owes an answer stays waiting.
+  if (open && item.looping === true && item.alive === 'idle' && !onConductor(item)) return 'running'
   // An idle session after progress, or a question / blocked report the
   // conductor still owns, is waiting, as the List shows it.
   if (open) return 'waiting'
@@ -315,8 +319,10 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] ultra-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
-  quiet: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><Pause size={11} strokeWidth={2.5} /></span>,
-  stuck: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--danger)_18%,transparent)] text-[var(--danger)]"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
+  // Quiet and stuck are the conductor's to pick up, so they are muted: only
+  // needs_you takes the warm colour.
+  quiet: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_18%,transparent)] text-muted"><Pause size={11} strokeWidth={2.5} /></span>,
+  stuck: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_18%,transparent)] text-muted"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   next: <span className="block w-5 h-5 rounded-full border-[1.5px] border-dashed border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
 }
 
@@ -360,12 +366,15 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       {said && <span className="truncate" title={said}>· {said}</span>}
     </>
   } else {
+    // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
     const text = state === 'needs_you' ? waitingOn
+      : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.ultra_ms_running')} ${i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}`
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.ultra_ms_running'))
         : i18nT('components.crewMode.ultra_ms_not_started')
     sub = <span className="truncate" title={text}>{text}</span>
   }
-  const right = state === 'running' ? i18nT('components.crewMode.ultra_ms_now')
+  // "now" only for a turn in flight; a loop between checks shows the time since its report.
+  const right = state === 'running' && item.alive === 'running' ? i18nT('components.crewMode.ultra_ms_now')
     : state === 'next' ? i18nT('components.crewMode.ultra_ms_next')
       : state === 'done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
         : fmtMinutes(minutesBetween(item.last_report_at || item.created_at, now))
@@ -391,7 +400,10 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
  *  `pausedIn` (the paused root) marks a member Pause all stopped: its card shows
  *  "Paused" and its own Continue instead of the status dot. */
 function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: {
-  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void; onOpen: () => void; current: boolean; pausedIn?: string
+  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void
+  /** Absent on a remote crew's row: its key names no session here to open. */
+  onOpen?: () => void
+  current: boolean; pausedIn?: string
 }) {
   const { w, depth } = node
   const title = w.title || i18nT('commandCenter.worker_untitled')
@@ -409,8 +421,8 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
           <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
         </button>
       ) : gutter && <span aria-hidden="true" className="mt-2.5 w-4 h-4 shrink-0" />}
-      <button type="button" onClick={onOpen} aria-current={current ? 'true' : undefined}
-        className={`flex-1 min-w-0 text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : 'border-border bg-bg-elevated/40 hover:bg-bg-hover'}`}>
+      <button type="button" onClick={onOpen} disabled={!onOpen} aria-current={current ? 'true' : undefined}
+        className={`flex-1 min-w-0 text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : onOpen ? 'border-border bg-bg-elevated/40 hover:bg-bg-hover' : 'border-border bg-bg-elevated/40 cursor-default'}`}>
         <span className="flex items-center gap-2 min-w-0">
           <span className={`font-medium truncate ${done ? 'text-muted' : 'text-text'}`} data-testid="ultra-member-title">{title}</span>
           <span className="ml-auto flex items-center gap-1.5 shrink-0 text-[11px]">
@@ -437,7 +449,10 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
           </span>
         </span>
         {w.summary && <span className="block text-[12px] text-text/80 truncate mt-0.5">{w.summary}</span>}
-        {w.last_activity && <span className="block text-[11px] text-muted truncate mt-0.5">{fmtRelativeTime(w.last_activity)}</span>}
+        <span className="block text-[11px] text-muted truncate mt-0.5">
+          <span data-testid="ultra-member-location">{w.remote_crew || i18nT('sessionEnvironments.picker.thisMachine')}</span>
+          {w.last_activity && <> &middot; {fmtRelativeTime(w.last_activity)}</>}
+        </span>
       </button>
       {pausedIn && <span className="pt-2 pl-1 shrink-0"><CrewMemberContinue root={pausedIn} worker={w.key} /></span>}
     </li>
@@ -463,16 +478,36 @@ function clip(text: string, n: number): string {
  *  buttons says so. With a crew member on screen (`onAct` absent) the row offers
  *  the way back to the main chat (`back`: "Back to main chat", or "Open main chat"
  *  reopening a closed one), the same as the panel's Back row. */
-function PersonAskRow({ item, options, onAct, back }: { item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
+function PersonAskRow({ root, item, options, onAct, back }: { root: string; item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
   const draft = (answer: string) => i18nT('components.crewMode.ultra_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
   const small = 'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium border border-border hover:bg-bg-hover max-w-full'
+  // Dismiss: the server writes a person steer on the item, so every surface drops
+  // the ask until a newer report asks again. The board is re-read either way.
+  // It names the report on screen, so a newer ask filed since the last poll is
+  // refused rather than hidden unseen. No report in the tail: no button.
+  const queryClient = useQueryClient()
+  const reportId = [...(item.events || [])].reverse().find(e => e.kind === 'report')?.id || ''
+  const dismiss = useMutation({
+    mutationFn: () => api.crewBoardAction(root, item.item_id, 'dismiss', reportId),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) }) },
+  })
+  const dismissHint = i18nT('components.crewMode.ultra_dismiss_hint', { t: clip(item.title, 70) })
   return (
     <article className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="ultra-person-ask" data-item={item.item_id}>
       <div className="flex items-center gap-2 min-w-0">
         <MessageSquare size={14} aria-hidden="true" className="shrink-0 text-warn" />
         <h4 className="flex-1 min-w-0 text-[13px] font-semibold truncate" title={item.title}>{item.title}</h4>
+        {reportId && (
+          <button type="button" onClick={() => dismiss.mutate()} disabled={dismiss.isPending} aria-label={dismissHint} title={dismissHint} data-testid="ultra-person-ask-dismiss"
+            className="shrink-0 inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover disabled:opacity-50">
+            <X size={12} aria-hidden="true" />{i18nT('components.crewMode.ultra_dismiss')}
+          </button>
+        )}
       </div>
+      {/* The row holds no unsaved input (Reply only fills the chat box), so the hand-off loses nothing. */}
+      {dismiss.isError && <ErrorNotice variant="inline" message={errMessage(dismiss.error)} askAgent />}
       {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="ultra-person-ask-text">{item.summary}</p>}
+      {reportId && <p className="pl-[22px] text-[11px] text-muted" data-testid="ultra-person-ask-dismiss-note">{i18nT('components.crewMode.ultra_dismiss_note')}</p>}
       {onAct ? (
         <div className="pl-[22px] space-y-1">
           <div className="flex items-center gap-1.5" data-testid="ultra-person-ask-actions">
@@ -520,6 +555,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const listed = useCrewWorkers(root, active)
   const live = useLiveCrewWorkers(root)
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data, live])
+  // Pause all stops this gateway's turns only, so its counts leave remote rows out.
+  const localWorkers = workers.filter(w => !w.remote_crew)
   // Pause all ships behind the Ultra Mode preview, like the rest of this panel's crew surfaces.
   const crewModeOn = useCrewMode()
   const pause = crewModeOn ? listed.data?.paused : undefined
@@ -586,7 +623,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const finished = visibleCrewRows(finishedTops, isOpen)
   const memberRow = (n: CrewTreeNode) => (
     <MemberRow key={n.w.key} node={n} open={isOpen(n)} gutter={gutter} current={n.w.key === viewing}
-      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={() => open(n.w)}
+      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={n.w.remote_crew ? undefined : () => open(n.w)}
       pausedIn={pause?.stopped.includes(n.w.key) ? root : undefined} />
   )
   const [view, setView] = useState<'status' | 'list'>('status')
@@ -633,8 +670,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const openMs = milestones.filter(m => m.state !== 'done')
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
-  // Stuck (red): a milestone with nothing left to move it. Quiet (amber): one
-  // idle with nothing scheduled to wake it, whose chat can still be resumed.
+  // Stuck: a milestone with nothing left to move it. Quiet: one idle with
+  // nothing scheduled to wake it, whose chat can still be resumed. Both muted.
   const stuck = openMs.some(m => m.state === 'stuck')
   // Any stale open item raises it, a not-started one included, as main's pulse did.
   const quiet = openMs.some(m => m.state === 'quiet' || (m.state === 'next' && m.item.stale))
@@ -643,7 +680,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const moving = openMs.some(m => m.state === 'running')
   const openItem = (item: WorkBoardItem) => {
     const w = workers.find(x => x.ledger_item === item.item_id)
-    return w ? () => open(w) : undefined
+    return w && !w.remote_crew ? () => open(w) : undefined
   }
   const recap = summaryRecap(summary.data, items.map(i => i.title))
     || (items.length
@@ -696,7 +733,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
                 </button>
               </div>
             ) : null}
-            {forYou.map(item => <PersonAskRow key={item.item_id} item={item} options={board.data?.asks?.[item.item_id] ?? []} onAct={replyInto} back={crewBack} />)}
+            {forYou.map(item => <PersonAskRow key={item.item_id} root={root} item={item} options={board.data?.asks?.[item.item_id] ?? []} onAct={replyInto} back={crewBack} />)}
             <CrewApprovalCards root={root} compact />
           </section>
           {/* (3) Milestones: one row per ledger item, as outcomes. */}
@@ -704,7 +741,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
             <div className="flex items-center gap-2">
               <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.ultra_milestones', { done: msDone, total: items.length })}</h3>
               {(stuck || quiet || (moving && lastReport)) && (
-                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck ? 'text-[var(--danger)]' : quiet ? 'crew-tone-warn' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
+                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck || quiet ? 'text-muted' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
                   <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-current" />
                   {stuck ? i18nT('components.crewMode.ultra_stuck') : quiet ? i18nT('components.crewMode.ultra_quiet') : i18nT('components.crewMode.ultra_moving', { when: fmtRelative(lastReport || '') })}
                 </span>
@@ -744,7 +781,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
         <div className="relative flex-1 min-h-0 flex flex-col">
         {showSearch && <CrewWorkerSearch query={query} onChange={setQuery} />}
         {/* A paused crew can always be resumed, its root's tab closed or not; only Pause all needs a live root. */}
-        {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={c.running} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={workers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
+        {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={localWorkers.filter(w => crewWorkerGroup(w) === 'working').length} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={localWorkers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5" data-testid="ultra-list">
           {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
           {searching && shown.length === 0 && <p role="status" className="text-sm text-muted" data-testid="crew-search-empty">{i18nT('commandCenter.workers_search_empty', { query: query.trim() })}</p>}

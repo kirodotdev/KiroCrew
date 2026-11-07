@@ -1273,16 +1273,22 @@ async def test_only_the_holding_task_notes_its_own_landing() -> None:
     assert settled == [False]
 
 
-def test_a_turn_bracket_notes_a_landed_verdict_on_its_session() -> None:
+@pytest.mark.asyncio
+async def test_a_turn_bracket_notes_a_landed_verdict_on_its_session() -> None:
     """Every engine on ``ChannelTurns`` decides landing through the bracket."""
     from kiro_crew.messaging.turn_bracket import TurnBracket
 
-    sessions = MagicMock()
-    TurnBracket(sessions, MagicMock(), "discord:7").landed("end_turn")
-    sessions.note_turn_landed.assert_called_once_with("discord:7")
-    sessions.reset_mock()
-    TurnBracket(sessions, MagicMock(), "discord:7").landed("cancelled")
-    sessions.note_turn_landed.assert_not_called()
+    sessions = _new_sessions()
+    key = "discord:7"
+    await sessions.get_or_create(key)
+    token = sessions.turn_token(key)
+    landed = sessions.parent_turns._landed
+
+    assert TurnBracket(sessions, MagicMock(), key).landed("cancelled") is False
+    assert token not in landed
+    assert TurnBracket(sessions, MagicMock(), key).landed("end_turn") is True
+    assert token in landed
+    sessions.release(key)
 
 
 def test_every_engine_that_settles_a_turn_notes_its_landing() -> None:

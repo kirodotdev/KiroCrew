@@ -8,6 +8,7 @@ stays in sync with _SLASH_COMMANDS.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,6 +21,16 @@ from kiro_crew.dashboard.chat_utils import (
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
 )
+
+
+@pytest.fixture(autouse=True)
+def prompts_dir(tmp_path, _floor_monkeypatch):
+    """A private ``~/.kiro/prompts``: the menu lists the user's opted-in prompts."""
+    home = tmp_path / "home"
+    _floor_monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    path = home / ".kiro" / "prompts"
+    path.mkdir(parents=True)
+    return path
 
 
 def _fake_config(provider: str, acp_backend: str = ""):
@@ -55,6 +66,18 @@ def test_description_map_covers_slash_commands():
 
 
 class TestApiSlashCommands:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", ["", "claude"])
+    async def test_user_quick_prompt_is_listed_on_every_harness(self, prompts_dir, backend):
+        (prompts_dir / "cr.md").write_text(
+            "---\ndescription: Review a change\nslash_command: true\n---\nReview {arg}.\n",
+            encoding="utf-8",
+        )
+
+        payload = await _get("acp", backend)
+
+        assert {"name": "/cr", "description": "Review a change"} in payload
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend,supported", [("", False), ("claude", True)])
     async def test_acp_todos_suggestion_uses_default_backend_capability(self, backend, supported):

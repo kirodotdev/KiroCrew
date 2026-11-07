@@ -13,7 +13,7 @@
 #   leases, which reach the bind-masked pointer and so cannot run in the backend
 #   (see that module for why).
 #
-# What the app asks of the host (the BUILD rlimit, the bound port, the env it needs
+# What the app asks of the host (the BUILD rlimit, the env it needs
 # forwarded, its config section, its strict-internal and relay-refused paths) is the
 # data in ``host_grants.py``, read by the core's ``apps.builtin_host_grants`` seam.
 # That seam imports this package from the MCP servers and the config loader too, so

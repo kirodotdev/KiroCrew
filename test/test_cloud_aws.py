@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import json
+import logging
 import os
 import select
 import sys
@@ -14,6 +16,7 @@ import pytest
 from kiro_crew import sandbox as kc_sandbox
 from kiro_crew import sandbox_launch_mark
 from kiro_crew.cloud import aws
+from kiro_crew.slack.gateway_runtime import service_boot
 
 
 class TestBuildArgv:
@@ -376,6 +379,28 @@ class TestAgentSessionSignals:
         )
         with pytest.raises(aws.CloudActionDenied):
             aws.assert_human_action("ssm:StartSession")
+
+    def test_a_gateway_started_from_an_agent_session_warns_once(self, monkeypatch, caplog):
+        # A restart run from an agent's shell: the child inherits its session key.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:abc")
+        with caplog.at_level(logging.WARNING, logger=aws.logger.name):
+            assert aws.warn_if_started_from_agent_session() is True
+        warnings = [r for r in caplog.records if r.name == aws.logger.name]
+        assert len(warnings) == 1
+        assert "Restart the gateway from a normal terminal" in warnings[0].getMessage()
+
+    def test_a_gateway_started_from_a_terminal_does_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=aws.logger.name):
+            assert aws.warn_if_started_from_agent_session() is False
+        assert not [r for r in caplog.records if r.name == aws.logger.name]
+
+
+def test_the_gateway_warns_after_readiness_off_the_loop():
+    source = inspect.getsource(service_boot.run)
+    warns = "for _warn in (warn_if_running_from_git_checkout, warn_if_started_from_agent_session):"
+    assert warns in source
+    assert source.index('print(f"KIROCREW_READY:') < source.index(warns)
+    assert "asyncio.create_task(asyncio.to_thread(_warn))" in source
 
 
 class TestChokepointHumanActionGuard:

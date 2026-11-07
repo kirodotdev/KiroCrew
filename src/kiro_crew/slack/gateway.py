@@ -590,6 +590,7 @@ from kiro_crew.slack.gateway_runtime.subagent_wiring import (
     _WORKFLOW_STEP_PREFIXES,
     _spawn_parent_slot,
     _subagent_batch_pending,
+    _subagent_nested_live,
     _subagent_queued_count,
     _subagent_work_pending,
 )
@@ -765,6 +766,7 @@ class GatewayOrchestrator:
     channel_history: ChannelHistory | None
     dashboard_state: DashboardState | None
     _background_tasks: set[asyncio.Task]
+    _skills_sync_task: "asyncio.Task[list[tuple[str, Path]]] | None"
     _mcp_launch_approval_ready: asyncio.Event
     _memory_startup: MemoryStartup | None
     _memory_startup_task: asyncio.Task | None

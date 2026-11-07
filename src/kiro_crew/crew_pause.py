@@ -286,6 +286,15 @@ def resume(root: str) -> dict[str, Any] | None:
         return rec
 
 
+def roots_naming(slot_key: str) -> list[str]:
+    """The roots whose record :func:`release` would edit for *slot_key*, sorted."""
+    return sorted(
+        root
+        for root, rec in _live().items()
+        if any(slot_key in rec.get(field, []) for field in ("held", "stopped", "owed"))
+    )
+
+
 def release(slot_key: str) -> dict[str, dict[str, Any]]:
     """Stop holding *slot_key* (its own Continue was pressed). BLOCKING when it was held.
 

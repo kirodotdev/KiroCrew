@@ -1,28 +1,13 @@
 """Coverage for the thinly-tested command dispatchers in ``kiro_crew.cli_server``.
 
-Every file of this family injects a fake at the seam the product actually reaches:
+Fakes sit at the seams the product reaches: ``subprocess.run`` / ``os.execvp`` (a CI
+runner has no systemd, launchd or writable checkout), ``current_platform`` and the log
+paths (so no ``skipif``), and ``sel()`` (so the audit contract is asserted directly).
 
-* ``subprocess.run`` / ``os.execvp`` — the CLI shells out to git, journalctl and
-  tail. A CI runner has no installed systemd unit, no launchd, and (for the
-  update path) no writable checkout, so every spawn is replaced by a recorder.
-* ``current_platform`` / ``svc_linux.UNIT_PATH`` / ``svc_macos.STDOUT_LOG`` —
-  patched so the platform-specific log sources are exercised on any host without
-  a ``skipif``. Nothing here reads a real journal or plist.
-* ``sel()`` — replaced with a recorder so the audit contract can be asserted
-  directly instead of inferred from the security log on disk.
-
-The gateway/taskrunner coroutines are driven with ``asyncio.run`` (the repo does
-not enable pytest-asyncio auto mode).
-
-This file pins ``_update`` -- the git checkout path, the gateway poke, the hardened
-subprocess calls, and the wheel path's dispatch, feed validation and installer -- and
-the ``status`` count and memory lines. ``test_cli_server_more_coverage_client.py``
-pins the client side (``resolve_client_port_ex``, the dashboard health probe, the
-``token`` and ``logout`` refusals and port ownership, and the owner-verified secret
-transport), and ``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop`` and
-``restart``, the service and sandbox commands, ``_logs_cmd``, ``_gateway`` and
-``_run_task``. The SEL recorder fixture and the fake ``urlopen`` response they share
-live in ``cli_server_more_coverage_helpers.py``.
+This file pins ``_update`` and the ``status`` count and memory lines.
+``test_cli_server_more_coverage_client.py`` pins the client side and
+``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop``, ``restart`` and the
+service commands; shared fixtures live in ``cli_server_more_coverage_helpers.py``.
 """
 
 import os
@@ -42,9 +27,7 @@ from kiro_crew import cli_server, kiro_cli, platform_compat
 from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
-# --------------------------------------------------------------------------
 # _update — git checkout path
-# --------------------------------------------------------------------------
 
 
 # The OID the stub pins origin/<branch> to: what every later git call and the
@@ -787,11 +770,8 @@ class TestUpdateGatewayPoke:
 class TestUpdateSubprocessHardening:
     """The six ``subprocess.run`` calls in ``_update()``.
 
-    Two gap classes: (a) every captured-output call must also pass
-    ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
-    the parent terminal; (b) ``TimeoutExpired`` — which ``subprocess.run``
-    RAISES rather than returns — must land on the same branch that the site's
-    existing failure path already takes, never escape ``_update()``.
+    Each captured-output call passes ``stdin=subprocess.DEVNULL`` so a child prompt
+    cannot block, and a raised ``TimeoutExpired`` takes the site's failure branch.
     """
 
     @staticmethod
@@ -918,9 +898,7 @@ class TestUpdateWheelDispatch:
         assert seen[0].kind == "wheel"
 
 
-# --------------------------------------------------------------------------
 # _update_wheel — feed validation and installer failures
-# --------------------------------------------------------------------------
 
 
 _LAYOUT = InstallLayout(
@@ -1241,11 +1219,8 @@ class TestUpdateWheelInstaller:
     ) -> None:
         """A raw OSError from the staging filesystem must not escape as a traceback.
 
-        The engine wraps its own I/O failures in WheelUpdateError, but a full
-        or unwritable disk at mkdir/tempdir time raises OSError outside those
-        conversion sites — the CLI must route it through the same
-        operator-facing failure path (redacted message + fallback command +
-        exit 1).
+        A full disk at mkdir/tempdir time raises OSError outside the WheelUpdateError
+        wrapping; it takes the same redacted message, fallback command and exit 1.
         """
         from kiro_crew.platform import wheel_engine
 

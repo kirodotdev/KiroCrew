@@ -1,12 +1,9 @@
 """Crew Members DM threads: the pin and the member-key reservation past the thread route.
 
-The mode writer refuses member slots; resume restores only a member's own transcript onto
-its own key; a ``member-*`` key is minted only by the member-thread endpoint and reserved
-case-insensitively by the slot constructor; restart restore and resume take the pin from
-``dm.json``, never the transcript; the OpenAI-compatible completions path honors the same
-pin; and a configured free-form member stays a valid agent choice on an ordinary slot. A
-binding that drifted from the registry, or was lost over existing history, fails closed
-with its own code. Shared fakes live in ``members_dm_thread_helpers.py``.
+A ``member-*`` key is minted only by the member-thread endpoint and reserved
+case-insensitively; resume and restart take the pin from ``dm.json``, never the
+transcript; a drifted or lost binding fails closed with its own code. Shared fakes live
+in ``members_dm_thread_helpers.py``.
 """
 
 from __future__ import annotations
@@ -182,19 +179,12 @@ class TestResumeGuards:
     ):
         """A resume racing an await before the publish must yield to the winner's slot.
 
-        The handler re-checks for a live slot after each await that precedes the
-        publish. A concurrent resume that publishes inside one of those windows must be
-        SEEN by the re-check right after it: the loser answers with the live slot
-        instead of get_or_create-ing the existing slot and hydrating the disk transcript
-        onto it a second time (duplicated history on the next flush). Each case pins the
-        ORDER of the awaits and re-checks, so the re-check that saw the winner is the
-        one right after the window: deleting either re-check fails its case.
+        The re-check right after each await must see a winner that published in that
+        window, or the loser hydrates the transcript onto the slot a second time.
 
-        The winner runs on the loop, where a real resume publishes, from the function
-        the handler awaits in that window. It is never a side effect on
-        ``members.read_dm_binding``: the member event log's legacy fold calls that on
-        its ``eventlog-io`` worker, queued by the winner's own row, so a side effect
-        there can fire a second time from that thread and append a second copy.
+        The winner runs on the loop from the awaited function, never as a side effect of
+        ``members.read_dm_binding``: the event log's fold also calls that on its
+        ``eventlog-io`` worker, which would fire the side effect twice.
         """
         from chat_test_helpers import _make_app
 
@@ -270,11 +260,8 @@ class TestResumeGuards:
     async def test_resume_of_a_closed_member_thread_succeeds(self, tmp_path):
         """A CLOSED member thread's legitimate resume must not self-409.
 
-        The resume path clears the ``closed`` flag before the member identity
-        barrier runs; the barrier's baseline must absorb that self-inflicted
-        mutation (exactly ``closed``/``closed_at``) or every closed-thread
-        resume trips it — a 409 issued AFTER the reopen durably landed,
-        leaving the archive corrupted (reopened on disk, refused on the wire).
+        Resume clears ``closed``/``closed_at`` before the identity barrier, so the
+        barrier must absorb exactly that change; otherwise it 409s after the reopen landed.
         """
         from chat_test_helpers import _make_app
 
@@ -335,15 +322,9 @@ class TestResumeGuards:
     ):
         """Delete/recreate during the binding await must not corrupt the replacement.
 
-        Messages are read BEFORE the binding await; metadata is re-read after
-        it. If the transcript is replaced in between, the old messages would
-        hydrate against the replacement metadata and the next flush would
-        overwrite the replacement transcript. The identity barrier compares
-        the two metadata snapshots and refuses on any drift.
-
-        The replacement lands only inside the LATE binding read, so a re-read
-        moved ahead of that await reads the old metadata and the refusal is
-        lost.
+        Messages are read before the binding await and metadata after; the barrier
+        refuses if the two metadata snapshots differ. The replacement lands inside the
+        late binding read, so a re-read moved ahead of that await would miss it.
         """
         from chat_test_helpers import _make_app
 
@@ -391,12 +372,8 @@ class TestRegistryMovedUnderBinding:
     async def test_thread_fails_closed_when_the_bound_slot_runs_a_dead_crew(self, tmp_path):
         """Crew renamed/deleted, same slug: the endpoint refuses, re-entrantly.
 
-        Re-pinning here would be an agent switch that skips every invariant the
-        real switch endpoint holds (slot lock, workspace/project re-resolution,
-        pending-wait unblocking, metadata persistence, broadcast). So the
-        endpoint fails closed with its own code, mutates nothing, and leaves
-        the binding untouched so the refusal repeats until a human resolves it
-        in the crew manager.
+        Re-pinning would be an agent switch that skips the real switch endpoint's
+        invariants, so it fails closed, mutates nothing, and repeats until a human acts.
         """
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot(member_slot_key(CREW), agent="Dead_Crew", mode=DM_SLOT_MODE)
@@ -717,11 +694,8 @@ class TestOpenAiCompatPin:
     async def test_free_form_completion_reaches_binding_drift_guard(self):
         """A deleted or corrupt dm.json must refuse before dispatch.
 
-        Mirrors the chat_send binding-drift guard: a deleted/corrupt dm.json
-        must not let a completion dispatch on the live member slot and
-        persist a transcript restore skips and thread-open refuses. No
-        binding is written here (the pinned test HOME starts empty), so the
-        guard sees exactly the drifted state.
+        Mirrors the chat_send binding-drift guard. No binding is written (the test HOME
+        starts empty), so the guard sees exactly the drifted state.
         """
         import asyncio as _asyncio
 
@@ -809,12 +783,9 @@ class TestRegistryDriftWithoutLiveSlot:
     async def test_drifted_binding_fails_closed_even_with_no_live_slot(self, tmp_path):
         """The refusal keys off the BINDING, not a live slot.
 
-        After a restart no live slot exists for most member threads, so a
-        mismatch check against slot.agent alone would silently hand a renamed
-        crew's same-slug successor the previous crew's entire transcript —
-        same key, same history, successor's name on the pin chip. The binding
-        naming a non-owner must refuse BEFORE any slot is created or dm.json
-        is rewritten.
+        After a restart most threads have no live slot, so a check on slot.agent alone
+        would hand a same-slug successor the old transcript. It must refuse before any
+        slot is created or dm.json is rewritten.
         """
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member="Code.Reviewer", slot_key=member_slot_key(CREW))
@@ -839,11 +810,8 @@ class TestReservedMemberKeys:
     async def test_mixed_case_member_resume_is_refused_not_500(self, tmp_path):
         """A mixed-case member key resume must 409, never crash.
 
-        The constructor's reservation is casefolded, so `Member-radar` would
-        raise ValueError there — the resume path does not catch it (HTTP
-        500). The resume guards must therefore fold too: the mixed-case key
-        hits the early pin guard, whose uppercase slug reads as unbound, and
-        the request dies as a clean 409 before the constructor is reached.
+        The constructor's casefolded reservation would raise ValueError (a 500), so the
+        early pin guard must refuse `Member-radar` first.
         """
         from chat_test_helpers import _make_app
 
@@ -860,11 +828,8 @@ class TestReservedMemberKeys:
     def test_reservation_is_case_insensitive(self, tmp_path):
         """Mixed-case member keys are reserved too.
 
-        Transcript filenames derive from the slot key; on a case-insensitive
-        filesystem (Windows, default macOS) "Member-radar" aliases
-        "member-radar" — a mixed-case squatter passing a case-sensitive
-        prefix check would corrupt or read the pinned thread's history
-        through the alias.
+        Transcript filenames derive from the key, and on a case-insensitive filesystem
+        "Member-radar" aliases "member-radar"'s history.
         """
         state = _make_state(tmp_path)
         for squatter in ("Member-radar", "MEMBER-RADAR", "mEmBeR-radar"):
@@ -1633,11 +1598,8 @@ class TestOrphanedHistory:
     async def test_missing_binding_with_existing_history_fails_closed(self, tmp_path):
         """A lost binding must not hand the transcript to whoever derives the slug.
 
-        ChatPane hydrates from disk history BY KEY, so rebinding a slug whose
-        canonical history already holds a conversation would render the
-        previous occupant's transcript under the new crew's identity. With the
-        binding gone, attribution is not re-derivable — refuse with its own
-        code and leave everything untouched (re-entrant).
+        ChatPane hydrates history by key, so rebinding would show the previous
+        occupant's transcript. Attribution cannot be re-derived, so refuse and change nothing.
         """
         state = _make_state(tmp_path)
         key = f"dashboard:{member_slot_key(CREW)}"

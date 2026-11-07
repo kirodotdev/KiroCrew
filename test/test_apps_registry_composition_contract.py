@@ -439,9 +439,7 @@ def _source(module: ModuleType) -> str:
     return Path(module.__file__ or "").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # The surface
-# ---------------------------------------------------------------------------
 
 
 class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInventoryIsNotEmpty):
@@ -541,9 +539,7 @@ class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInvent
             assert "KEBAB_RE" not in source, f"{part.__name__} gates index names itself"
 
 
-# ---------------------------------------------------------------------------
 # One symbol per name, and writes that reach every binding of it
-# ---------------------------------------------------------------------------
 
 #: An exported name several owners import: defined in ``git_targets``.
 _MULTI_HOLDER = "_strip_git_target_userinfo"
@@ -691,9 +687,7 @@ class TestOneNamespaceForWrites:
         assert registry.logger.name == registry.__name__ == "kiro_crew.apps.registry"
 
 
-# ---------------------------------------------------------------------------
 # A patch on the facade reaches the call site in whichever owner makes the call
-# ---------------------------------------------------------------------------
 
 
 class _SpawnRefused(OSError):
@@ -888,9 +882,7 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
         assert seen == ["fetched:acme", "cached"]
 
 
-# ---------------------------------------------------------------------------
 # Layering and placement
-# ---------------------------------------------------------------------------
 
 
 def _engine_imports(source: str) -> set[str]:
@@ -1005,9 +997,7 @@ class TestLayering(composition_contract_checks.TheFacadeHelperIsOnlyEverCalledIn
         assert importlib.import_module(registry._PART_MODULES[0]) is subprocess_env
 
 
-# ---------------------------------------------------------------------------
 # The facade's own code, as a type checker and a patched importlib see it
-# ---------------------------------------------------------------------------
 
 
 def _bare_loads(source: str) -> list[tuple[int, str]]:
@@ -1153,9 +1143,7 @@ class TestTheFacadesOwnCode:
         assert built["error"] == "fake build"
 
 
-# ---------------------------------------------------------------------------
 # A reload of the facade re-executes the whole registry
-# ---------------------------------------------------------------------------
 
 _RELOAD_PROBE = """
 import importlib, json, sys

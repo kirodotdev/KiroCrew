@@ -18,6 +18,7 @@
  *  gateway without Crew Mode, and the stamps read as absent.
  */
 import { PREVIEW_CREW_MODE, PREVIEW_MATE_SESSIONS, readPreviewFlag } from '../utils/previewFlags'
+import { tabStatus } from './sessionTabs'
 
 /** Whether the Crew Mode preview is on for this device. The one read of the flag:
  *  `useCrewMode` subscribes to the same key for a re-render. */
@@ -90,6 +91,31 @@ export function busySlotKeys(
     if (mate) keys.add(mate)
   }
   return keys
+}
+
+/** The mate threads whose turn is parked on the person -- an approval or a
+ *  question -- keyed by the mate thread's key. A session the mate dispatched
+ *  (`mate_root`) that waits on the person marks its mate too, as a Crew Mode crew
+ *  member's prompt badges its conductor: the mate chat is where it is answered.
+ *  Keyed by the mate thread whether or not that tab is live, because the server
+ *  keeps stamping a closed mate thread's sessions. The Mates page rows and the
+ *  dock's mate rows both read this one map. */
+export function mateNeedsYouByKey(
+  rows: readonly { key: string; mode?: string; mate_root?: string | null; running?: boolean; pending_approval?: boolean; needs_input?: boolean }[],
+): Readonly<Record<string, boolean>> {
+  const byKey: Record<string, boolean> = {}
+  const waits = (sl: (typeof rows)[number]) => {
+    const st = tabStatus(sl, [], sl.key)
+    return st === 'permission' || st === 'question'
+  }
+  for (const sl of rows) {
+    if (sl.mode === 'member') byKey[sl.key] = byKey[sl.key] || waits(sl)
+  }
+  for (const sl of rows) {
+    const mate = mateRootOf(sl)
+    if (mate && waits(sl)) byKey[mate] = true
+  }
+  return byKey
 }
 
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */

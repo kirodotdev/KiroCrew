@@ -68,6 +68,17 @@ describe('ApprovalModePicker', () => {
     expect(trust).toContain('the sessions it starts')
   })
 
+  // Read-only shell commands are auto-approved in every mode, so Normal must not
+  // promise to ask first and Reads must not claim them as its difference.
+  it('says Normal runs read-only shell commands on its own', () => {
+    renderPicker('normal')
+    fireEvent.click(screen.getByLabelText('Approval mode: Normal'))
+    const [normal, reads] = screen.getAllByRole('menuitem').map(i => i.textContent || '')
+    expect(normal).toContain('running read-only shell commands')
+    expect(normal).not.toContain('before doing anything')
+    expect(reads).not.toContain('read-only shell commands')
+  })
+
   it('selecting a non-yolo mode dispatches changeApprovalMode with the slot', () => {
     renderPicker('normal')
     fireEvent.click(screen.getByLabelText('Approval mode: Normal'))

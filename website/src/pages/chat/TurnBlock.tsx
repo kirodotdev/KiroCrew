@@ -631,8 +631,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // MCP App iframe reloads and loses its state). Folding collapses that same
   // element's one grid track to 0fr (with `inert`), so a row folding out of
   // the running window or a click on the toggle eases height and opacity
-  // instead of jumping; reduced motion cuts straight to the end state. Only a
-  // fold candidate clips its content, so no other row's overflow changes.
+  // instead of jumping, except a settled tool row whose content the fold drops
+  // (below), which closes at once; reduced motion cuts straight to the end
+  // state. Only a fold candidate clips its content, so no other row's
+  // overflow changes.
   // The toggle sits right above the first folded row and is
   // keyed by that row, so when it changes place it is a new element, never
   // a moved one: moving a keyed sibling makes React re-insert the rows it
@@ -663,14 +665,15 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
         style={inFold && open ? { '--fold-rail-left': 'max(0px, calc((100% - var(--mc-content-width, 900px)) / 2))' } as CSSProperties : undefined}
       >
         {/* A folded row keeps its content mounted while it could still go
-            live: only the content can say so. A closed settled default-mode
-            fold drops the content of the rows that cannot (as that fold always
-            did, since a settled pill costs store reads on every update): not
-            running (a live row is never in the fold, and a settled row cannot
-            start running again), no MCP App on the message, and not one the
-            host knows may be live (a pill the user opened). */}
+            live: only the content can say so. A closed settled fold, in every
+            mode, drops the content of the tool rows that cannot, since a
+            settled pill costs store reads on every update and a long turn
+            folds them by the hundred: not running (a live row is never in the
+            fold, and a settled row cannot start running again), no MCP App on
+            the message, and not one the host knows may be live (a pill the
+            user opened). */}
         <div className={candidateSet.has(i) ? 'min-h-0 min-w-0 overflow-hidden' : 'min-h-0 min-w-0'}>
-          {folded && turn.complete && mode === 'default' && !hadMcpApp(it) && !mayBeLive(it)
+          {folded && turn.complete && isTool(it, appToolCallIds) && !hadMcpApp(it) && !mayBeLive(it)
             ? null
             : <RowActivityContext.Provider value={reporterFor(k)}>{renderItem(it, i)}</RowActivityContext.Provider>}
         </div>

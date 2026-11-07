@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Folder as FolderIcon, GitBranch, Settings, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import {
   ACCENT,
@@ -162,7 +163,7 @@ export function SettingsPage({
           }
           say(
             typeof fileCount === 'number'
-              ? i18nT('apps.mdNotebook.settings.knowledgeAddedCount', { n: fileCount })
+              ? i18nT('apps.mdNotebook.settings.knowledgeAddedCount', { count: fileCount, n: fmtNumber(fileCount) })
               : i18nT('apps.mdNotebook.settings.knowledgeAdded'),
           )
         } else {
@@ -818,6 +819,7 @@ export function SettingsPage({
                 type="button"
                 onClick={() => setRecording(r => !r)}
                 aria-label={i18nT('apps.mdNotebook.settings.shortcut')}
+                aria-pressed={recording}
                 style={{
                   flexShrink: 0,
                   minWidth: '78px',

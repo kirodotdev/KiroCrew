@@ -1,19 +1,12 @@
 """``delete_items_batch`` must never run on the event loop.
 
-It rebuilds the entire entity graph (``store._load_graph``: clear + two full table
-scans) inside its own ``BEGIN``/``COMMIT``, so on a large library it blocks the loop
-past the stall watchdog. The watchdog then exits, the supervisor respawns, and the
-fresh process runs the same scan -- a crash loop, observed repeatedly against a
-2900-document folder source with the frozen stack pinning
-``store.delete_items_batch <- ingestion._ingest_file_body <- folder_watcher._do_scan``.
+It rebuilds the entire entity graph (``store._load_graph``) inside its own
+``BEGIN``/``COMMIT``, so on a large library it blocks the loop past the stall
+watchdog, and the respawned process runs the same scan: a crash loop.
 
-Two tests, deliberately different in kind:
-
-* the AST ratchet pins every call site at once and fails if any future edit calls it
-  straight from a coroutine body, including sites this PR has not seen;
-* the behavioural test proves the offload is real rather than lexical -- it asserts
-  the THREAD the call lands on, so a refactor that keeps ``asyncio.to_thread`` in the
-  source but hands it something already-invoked still fails.
+* the AST ratchet fails if any edit calls it straight from a coroutine body;
+* the behavioural test asserts the THREAD the call lands on, so handing
+  ``asyncio.to_thread`` something already-invoked still fails.
 """
 
 from __future__ import annotations
@@ -66,15 +59,10 @@ def _called_names(body: list[ast.stmt]) -> set[tuple[str, int]]:
 def _sync_helpers_reaching(tree: ast.Module, name: str) -> set[str]:
     """Sync ``def`` names in this module that reach *name* without a thread hop.
 
-    Computed as a fixpoint, so a chain of sync helpers is followed to any depth.
-    Calling one of these from a coroutine body blocks the loop exactly as much
-    as calling *name* itself -- the indirection is invisible to a lexical scan,
-    which is how ``_skip_as_duplicate`` kept a synchronous
-    ``delete_items_batch`` alive after every direct call site was offloaded.
-
-    Scope is deliberately one module: resolving a call to another module's
-    method needs import and receiver-type resolution, which an AST scan cannot
-    do honestly. Same-file indirection is what the real defect used.
+    Computed as a fixpoint, so a chain of sync helpers is followed to any depth;
+    calling one from a coroutine blocks the loop as much as calling *name*.
+    Scope is one module: cross-module calls need receiver-type resolution an AST
+    scan cannot do.
     """
     sync_defs = {
         n.name: n for n in ast.walk(tree)
@@ -101,10 +89,7 @@ def _on_loop_call_sites(name: str) -> list[str]:
     reaches it (see ``_sync_helpers_reaching``).
     """
     found: list[str] = []
-    # Only files whose TEXT holds ``name`` can call it (directly, or through a
-    # same-module sync helper that does), so the shared corpus parses just those
-    # instead of re-walking all ~1250 modules for this gate. ``src_root()`` is the
-    # same tree the old ``_SRC`` named, so the relative paths below are unchanged.
+    # Only files whose TEXT holds ``name`` can call it, so only those are parsed.
     for path, _text, tree in parsed_candidates(require_all=(name,)):
         indirect = _sync_helpers_reaching(tree, name)
         for fn in (n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)):
@@ -122,14 +107,10 @@ def _on_loop_call_sites(name: str) -> list[str]:
 def test_deduped_state_writes_are_never_called_on_the_event_loop():
     """Ratchet: every terminal 'deduped' write reaches a worker thread.
 
-    All three doc-state tables record that state from inside the pre-ingest gate's
-    own ``BEGIN IMMEDIATE``, reached through ``run_to_completion``. A new call site
-    added straight to a coroutine body would both hold the write lock on the loop
-    thread and sit outside the gate's transaction, so it must fail here rather than
-    in production.
-
-    One assertion for three modules: ``folder_watcher``, ``artifact_ingest`` and
-    ``agent_source`` each name their finalizer ``_record_deduped_state``.
+    The state is recorded inside the pre-ingest gate's ``BEGIN IMMEDIATE``; a call
+    from a coroutine body would hold the write lock on the loop and sit outside that
+    transaction. ``folder_watcher``, ``artifact_ingest`` and ``agent_source`` each
+    name their finalizer ``_record_deduped_state``.
     """
     offenders = _on_loop_call_sites("_record_deduped_state")
     assert offenders == [], (
@@ -159,13 +140,9 @@ def test_delete_items_batch_is_never_called_on_the_event_loop():
 def test_resolve_old_item_ids_is_never_called_on_the_event_loop():
     """Ratchet: the full-source _old_item_ids read stays on a worker thread.
 
-    ``_resolve_old_item_ids`` materializes one row per item in the source --
-    tens of thousands on a large library, over a second of blocking SQLite --
-    so the ingest paths resolve it inside the off-loop duplicate-gate hop. A
-    call added straight to a coroutine body reintroduces the per-ingest loop
-    stall this helper exists to prevent, so it must fail here rather than in
-    production. Nested closures handed to ``run_to_completion`` (the gate
-    hops) are not coroutine bodies and correctly do not trip this.
+    It reads one row per item in the source (over a second of SQLite on a large
+    library). Closures handed to ``run_to_completion`` are not coroutine bodies and
+    do not trip this.
     """
     offenders = _on_loop_call_sites("_resolve_old_item_ids")
     assert offenders == [], (
@@ -206,10 +183,8 @@ async def test_handle_deleted_runs_the_delete_off_the_loop_thread(tmp_path, monk
             "delete_items_batch ran on the event-loop thread; it must be handed to "
             "asyncio.to_thread")
     finally:
-        # The delete ran on a worker thread, which opened its own connection;
-        # ``close()`` is per-thread and would leave that one (``knowledge.db`` +
-        # ``-wal``) open until the cyclic collector ran. Same seam in every test
-        # below whose store is touched off the loop thread.
+        # ``close()`` is per-thread and would leave the worker's connection open;
+        # every test below whose store is touched off the loop uses this seam.
         store._close_all_for_tests()
 
 
@@ -293,13 +268,10 @@ async def test_run_to_completion_forwards_the_return_value():
 
 @pytest.mark.asyncio
 async def test_finalizer_runs_even_when_cancelled_while_queued():
-    """A cancellation landing while the finalizer is still QUEUED in the
-    executor must not skip it: a bare
-    ``await asyncio.to_thread(fn)`` cancels the queued future before ``fn``
-    starts, stranding the committed new items with no state finalization.
+    """A cancel landing while the finalizer is still QUEUED must not skip it.
 
-    Deterministic setup: a 1-worker executor whose only worker is held by a
-    blocker, so the finalizer is provably queued when the cancel arrives.
+    A bare ``await asyncio.to_thread(fn)`` cancels the queued future before ``fn``
+    starts. A 1-worker executor held by a blocker keeps the finalizer queued.
     """
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
@@ -336,15 +308,9 @@ async def test_finalizer_runs_even_when_cancelled_while_queued():
 async def test_duplicate_gate_reingests_when_the_holder_vanishes_before_the_lock(tmp_path):
     """A holder deleted between the probe and the write lock must not dedupe.
 
-    The gate reads a holder and then makes the target DEPEND on it, so the two
-    steps have to be one atomic unit. Moving the gate off the event loop let a
-    concurrent source deletion land in the middle: the target got a terminal
-    'skipped_duplicate' row while the copy it was attaching to was cascaded
-    away, leaving the file on disk with its content unrecoverable.
-
-    Simulate the interleaving deterministically by making the authoritative
-    in-transaction lookup miss after the cheap probe has already hit. The gate
-    must decline to dedupe and let a normal ingest proceed.
+    The gate reads a holder and makes the target depend on it, so both steps are one
+    atomic unit; otherwise a concurrent deletion leaves the target 'skipped_duplicate'
+    with its content gone. The in-transaction lookup misses after the probe hit.
     """
     from unittest.mock import AsyncMock, MagicMock
 
@@ -408,24 +374,13 @@ async def test_duplicate_gate_reingests_when_the_holder_vanishes_before_the_lock
 async def test_deduped_state_write_is_off_loop_and_keeps_a_late_adoption(tmp_path):
     """The terminal 'deduped' write runs off the loop AND keeps a cascade's adoption.
 
-    Both properties belong to that one write. It takes the write lock, so running
-    it on the loop thread makes ``BEGIN IMMEDIATE`` wait there on any concurrent
-    writer -- the same stall this change exists to remove, reintroduced one line
-    further along. And the group it records cannot be predicted:
+    The write takes the write lock, so on the loop thread ``BEGIN IMMEDIATE`` would
+    wait there on any concurrent writer.
 
-    The pre-ingest gate commits its own transaction, so a user deleting the HOLDER
-    lands in the window between that commit and this write. That cascade is benign
-    by design -- it sees this folder's location row, reassigns the surviving item
-    to this source, and adopts it into this very ``folder_file_state`` row. Writing
-    ``item_ids='[]'`` afterwards -- which is what "the gate refused, so this file
-    owns nothing" predicts -- erases the adoption and leaves the only remaining
-    copy owned by this source but named by no state row: unreachable by the
-    deleted-file path and undeletable, which is exactly the strand the ownership
-    model exists to stop.
-
-    The interleaving is produced deterministically by cascading the holder away the
-    instant the gate returns its terminal job, with no threads involved. The scan
-    must end with the row naming the item it now owns.
+    Deleting the HOLDER between the gate's commit and this write reassigns the
+    surviving item to this source and adopts it into this ``folder_file_state`` row.
+    Writing ``item_ids='[]'`` afterwards would leave that last copy named by no state
+    row, so undeletable. The holder is cascaded away the instant the gate returns.
     """
     from unittest.mock import AsyncMock
 
@@ -527,17 +482,9 @@ async def test_deduped_state_write_is_off_loop_and_keeps_a_late_adoption(tmp_pat
 def test_deduped_state_write_never_adopts_a_sibling_files_items(tmp_path):
     """The refused row must not name items belonging to another file's row.
 
-    Two distinct files in one folder may legitimately hold identical text, so
-    ``(source_id, content_hash)`` does not identify a document. Resolving the
-    group by hash hands the refused row the SIBLING's items; both rows then name
-    the same physical item, and deleting either file destroys the other's content
-    while its file still sits on disk. ``_adopt_reassigned_item`` refuses an
-    ambiguous hash for exactly this reason, and this write must not reintroduce
-    the ambiguity it avoids.
-
-    Seeded directly rather than driven through a scan: the point under test is
-    which items the terminal write is willing to claim, and the sibling-hash
-    collision has to be present for the question to mean anything.
+    Two files in one folder may hold identical text, so ``(source_id, content_hash)``
+    does not identify a document; resolving by hash would make both rows name one item,
+    and deleting either file would destroy the other's content.
     """
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     try:
@@ -631,20 +578,10 @@ def test_deduped_state_write_drops_the_group_the_gate_just_deleted(tmp_path):
 async def test_deduped_state_write_recovers_a_transformed_files_reassigned_item(tmp_path):
     """A transformed file must not be stranded when adoption silently matched nothing.
 
-    ``folder_file_state.content_hash`` is over the file's RAW BYTES;
-    ``items.content_hash`` is over the EXTRACTED TEXT. For .md they coincide, so a
-    plaintext test cannot see this: for anything the reader transforms -- PDF,
-    DOCX, HTML -- they differ. ``_adopt_reassigned_item`` matches a folder row on
-    ``COALESCE(text_hash, content_hash)``, and a row the gate refused has no
-    ``text_hash`` of its own, so the match falls back to the bytes hash, finds
-    nothing, and adopts nothing WITHOUT logging. The reassignment ahead of it
-    still happened.
-
-    So after a ``delete_source_cascade`` on the holder, this source OWNS the
-    surviving item while no state row names it: unreachable by the deleted-file
-    path and undeletable. This test exists to pin that gap with a live repro
-    rather than a comment, and to fail loudly once the text hash is plumbed
-    through.
+    ``folder_file_state.content_hash`` is over the RAW BYTES, ``items.content_hash``
+    over the EXTRACTED TEXT; they differ for PDF, DOCX and HTML, so a .md test cannot
+    see this. ``_adopt_reassigned_item`` matches on ``COALESCE(text_hash,
+    content_hash)``, so a refused row without a ``text_hash`` would adopt nothing.
     """
     from unittest.mock import AsyncMock
 
@@ -765,16 +702,8 @@ def test_deduped_state_write_propagates_an_unreadable_group(tmp_path):
 def test_artifact_deduped_state_write_keeps_a_late_adoption(tmp_path):
     """The aggregate Artifacts path must not clobber a cascade's adoption either.
 
-    Same window as the folder path, in a different table: the gate commits, a
-    ``delete_source_cascade`` on the holder reassigns the surviving item to this
-    source and adopts it into this ``artifact_item_state`` row, and the caller then
-    writes its terminal state. Predicting an empty group there erases the adoption
-    and leaves the last copy of the content owned but named by no row.
-
-    Reachable more easily here than for folders: ``_OWNERSHIP_HASH_COL`` maps the
-    aggregate tables to ``content_hash`` directly, which is already the text-hash
-    domain, so ``_adopt_reassigned_item`` matches and adopts rather than silently
-    missing the way it does for a transformed file.
+    Same window as the folder path, in ``artifact_item_state``: predicting an empty
+    group would leave the last copy owned but named by no row.
     """
     from kiro_crew.knowledge.artifact_ingest import _record_deduped_state
 
@@ -878,17 +807,10 @@ def test_aggregate_deduped_state_write_records_an_empty_group_when_nothing_adopt
 async def test_duplicate_gate_records_terminal_state_even_when_cancelled(tmp_path):
     """A cancellation must not split the gate's commit from the caller's record.
 
-    ``run_to_completion`` guarantees the gate FINISHES and then re-raises the
-    cancellation, so anything the caller was going to do afterwards is skipped by
-    construction -- not merely at risk. The gate commits the delete of the previous
-    group, the location claim on the holder's items and the terminal job row, so a
-    shutdown landing there would leave all three durable with no state row naming
-    them: the claim cannot be detached (a ``scanning`` row has no ``text_hash``, so
-    the detach short-circuits) and the content is orphaned.
-
-    Passing the caller's write in as ``on_duplicate`` puts it inside the same hop.
-    Here the awaiting task is cancelled while the gate is in flight; the finalizer
-    must still have run.
+    ``run_to_completion`` finishes the gate and then re-raises, so anything the caller
+    does afterwards is skipped. The gate's delete, location claim and job row would
+    then be durable with no state row naming them. ``on_duplicate`` runs the caller's
+    write inside the same hop.
     """
     from unittest.mock import AsyncMock
 
@@ -926,11 +848,8 @@ async def test_duplicate_gate_records_terminal_state_even_when_cancelled(tmp_pat
         loop = asyncio.get_running_loop()
 
         def slow_gate(*args, **kwargs):
-            # Hold the gate on its worker thread until the test has cancelled the
-            # awaiting task. No sleep: an arbitrary wall-clock delay would both race
-            # on a slow runner and block a shared xdist worker, which perturbs other
-            # cancellation-timing tests. The handshake makes the shutdown ordering
-            # exact -- gate in flight, cancellation delivered, gate then commits.
+            # Hold the gate until the task is cancelled. A handshake, not a sleep: a
+            # sleep races on a slow runner and blocks a shared xdist worker.
             loop.call_soon_threadsafe(started.set)
             release.wait(timeout=10)
             return real_gate(*args, **kwargs)
@@ -965,17 +884,9 @@ async def test_duplicate_gate_records_terminal_state_even_when_cancelled(tmp_pat
 async def test_duplicate_gate_and_terminal_state_are_one_transaction(tmp_path):
     """The claim and the row that names it land together, or neither lands.
 
-    The finalizer runs inside the gate's own transaction, not after its commit. That
-    ordering is what a first-time aggregate document depends on: after the commit its
-    state row does not exist yet, so a ``delete_source_cascade`` landing in the gap
-    reassigns the surviving item to this source and then has nothing to adopt it
-    into -- ``_adopt_reassigned_item`` matches on ``(source_id, hash)``, finds no
-    row, and returns without logging. The record that follows reports an empty group
-    while the source owns the item.
-
-    Atomicity is asserted the direct way: make the finalizer raise, and require that
-    the gate's deletion, its location claim and its terminal job row are all absent
-    afterwards. If the finalizer ran after ``COMMIT`` they would survive.
+    For a first-time aggregate document no state row exists after the commit, so a
+    cascade in that gap would have nothing to adopt the item into. The finalizer
+    raises here; the gate's delete, claim and job row must all be rolled back.
     """
     from unittest.mock import AsyncMock
 

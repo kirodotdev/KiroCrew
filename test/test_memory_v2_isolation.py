@@ -711,13 +711,9 @@ class TestConsolidatorStoreResolution:
     def test_lessons_are_written_to_the_jsonl_store_passed_in(self, silos, tmp_path) -> None:
         """The JSONL tier is reached only when the legacy V1 store has no vector store yet.
 
-        Misfiling here is worse than losing a row: the fallback is a WRITE target, so
-        every crew's corrections append to the one global ``lessons.jsonl``.
-
-        ``vector_store=None`` is what a silo whose vector store could not be stood up
-        passes, and it must mean "skip that tier" — NOT "inherit the global handle".
-        Inheriting takes the dedup-aware vector branch and never reaches the silo's
-        own file at all, which is the exact shape of the defect being closed.
+        The fallback is a WRITE target. ``vector_store=None`` must mean "skip that tier",
+        not "inherit the global handle", or every crew's corrections land in the global
+        ``lessons.jsonl``.
         """
         silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store="legacy")
         consolidator = self._consolidator(silos, tmp_path)
@@ -802,16 +798,9 @@ async def _dashboard_state(
 ) -> MagicMock:
     """A ``DashboardState`` stand-in whose session RECORDS *store* as its binding.
 
-    Only what the three lessons routes read is set, and the attributes that decide
-    destination are the real objects a gateway builds: ``context_builder`` and
-    ``lessons`` hold the GLOBAL handles, so a route that reaches for a global handle
-    reaches this fixture's global store and the assertion sees the row.
-
-    The binding is read back out of a real ``ConversationLog`` — the same metadata the
-    consolidator resolves from, and the seam ``_session_memory_store`` reads — because
-    a route honouring a value nothing records would prove nothing. Seeded off the loop
-    so the writes take history's sanctioned acquire path rather than tripping its
-    on-loop persistence discipline.
+    ``context_builder`` and ``lessons`` hold the real GLOBAL handles, so a misrouted
+    write is visible. The binding lives in a real ``ConversationLog``, the record
+    ``_session_memory_store`` reads, seeded off the loop.
     """
     log = ConversationLog(base_dir=sessions_dir)
 
@@ -845,18 +834,11 @@ def _lessons_request(
     *,
     claims: dict[str, object] | None = None,
 ) -> MagicMock:
-    """One request shape for all three routes: a session key, plus a body for the two
-    that read one. The empty query string is what the dashboard sends — a
-    ``?workspace=`` override belongs to the v1 workspace tier, which a silo does not
-    consult at all.
+    """One request shape for all three routes: a session key, plus an optional body.
 
-    The body is fed as BYTES on a real stream, not by stubbing ``request.json``. The
-    lessons route reads through ``read_bounded_json``, whose capped path enforces the
-    ceiling BEFORE decoding: it compares ``request.content_length`` against the cap, so
-    a ``MagicMock`` there raises ``TypeError: '>' not supported`` instead of parsing.
-    ``read_bounded_json``'s own docstring states this contract — a site on the cap must
-    be fed ``content``/``content_length``. ``request.json`` is left stubbed as well so
-    the shape also satisfies the uncapped (``max_bytes=None``) path.
+    The body is real BYTES: ``read_bounded_json`` compares ``request.content_length``
+    with its cap, which a ``MagicMock`` breaks. ``request.json`` is also stubbed for the
+    ``max_bytes=None`` path.
     """
     request = MagicMock()
     request.app = {"state": state}
@@ -907,16 +889,9 @@ def _crew_lesson() -> Lesson:
 class TestLessonRoutesFollowTheBindingNotThePopulation:
     """``/api/lessons`` must resolve its destination from the caller's BINDING.
 
-    A named store starts EMPTY and nothing is ever copied into it, so "this store
-    holds no lesson rows" is the ordinary state of a freshly bound crew — never
-    evidence that the operator's global store is the right answer. Keying the
-    fallback on population instead of on binding is the shape that lets an empty silo
-    read the operator's lessons, delete one of them, and file the crew's own
-    correction into the global file every other crew reads on every turn.
-
-    Two triggers reach it and both are covered per route: a silo whose vector store
-    was never stood up (``ensure_store`` not awaited, or unable to answer), and a
-    prepared silo that simply holds no rows yet.
+    A fresh silo is EMPTY; falling back on population would let it read, delete and
+    write the operator's global lessons. Covered per route: a silo with no vector
+    store yet, and a prepared silo with no rows.
     """
 
     async def test_a_private_subagent_writes_and_recalls_only_its_own_lessons(self, silos) -> None:
@@ -1173,15 +1148,9 @@ _OPERATOR_PREFERENCE = "The operator deploys on Fridays."
 def _seeded_log(sessions_dir: Path, session_key: str, store: str) -> ConversationLog:
     """A real log and, for V2, canonical binding that agree on *store*.
 
-    The transcript metadata is written and read back through the real log rather
-    than stubbed because the consolidator resolves its WRITE side from that line.
-    Member V2 requires the canonical session record that routes
-    the READ side; seeding both proves the two sides agree without treating editable
-    transcript metadata as authority.
-
-    Fully synchronous, so an async test seeds through ``asyncio.to_thread``:
-    ``append`` takes a cross-process flock that makes a single NON-BLOCKING acquire
-    while a loop is running, and would silently drop the row it was called for.
+    The consolidator's WRITE side reads the log; the READ side reads the canonical
+    record. Async tests seed via ``asyncio.to_thread``: on a running loop ``append``'s
+    flock is non-blocking and would silently drop the row.
     """
     log = ConversationLog(base_dir=sessions_dir)
     log.init()
@@ -1196,11 +1165,8 @@ def _seeded_log(sessions_dir: Path, session_key: str, store: str) -> Conversatio
 class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
     """``store_of_session`` is the ONE resolver every turn-running surface asks.
 
-    A channel surface holds no crew alias — only an ``agent``, which is a kiro-cli
-    template id and a namespace disjoint from ``cfg.agents``. The session's own
-    canonical binding is the authoritative crew identity in scope. The consolidator
-    resolves its write side through the same call (``_consolidate`` is pinned to it
-    above), so one conversation's reads and writes name one silo.
+    A channel's ``agent`` is a kiro-cli template id, not a crew alias. The consolidator
+    uses the same call, so one conversation's reads and writes name one silo.
     """
 
     def test_a_recorded_silo_is_the_store_the_surface_resolves(self, silos, tmp_path) -> None:
@@ -1444,11 +1410,7 @@ async def _prompt_through_the_channel_pipeline(
 ) -> str:
     """The prompt ``messaging.dispatch.drive_turn`` hands the model for *session_key*.
 
-    Driven through the REAL pipeline and the REAL ``ContextBuilder``, so what is
-    asserted is the store the shipped code reads rather than the store this test
-    passed in. Only the seams that would need a network or a live provider are
-    substituted: the governance probe, identity publication, the embed pool's thread
-    hop, and the turn driver.
+    REAL pipeline and ``ContextBuilder``; only network or provider seams are replaced.
     """
     import kiro_crew.messaging.dispatch as dispatch_mod
 
@@ -1496,13 +1458,8 @@ async def _prompt_through_the_channel_pipeline(
 class TestTheChannelPipelineReadsTheSessionsOwnSilo:
     """A crew bound to a silo must read ITS memory over a channel, not the operator's.
 
-    This is the feature's headline, and the shape of its failure is that nothing goes
-    red: the prompt is well-formed, the store exists, and the content is plausible —
-    it is simply somebody else's. So the assertions are on the PROMPT's text, in both
-    directions: the crew's line present AND the operator's line absent.
-
-    The pipeline under test is the shared one, which seven shipped channels dispatch
-    through, so this covers all of them at once.
+    A wrong store still yields a plausible prompt, so the PROMPT is checked both ways:
+    the crew's line present and the operator's absent. All channels share this pipeline.
     """
 
     async def test_a_crew_bound_conversation_reads_its_own_memory(self, silos, tmp_path) -> None:
@@ -1599,13 +1556,8 @@ def _awaited_store_targets(path: str) -> set[str]:
 class TestEveryConvertedSurfaceResolvesThroughTheOneSeam:
     """The store each surface passes is the one the shared resolver answered.
 
-    Two properties, and the seam gate covers neither. It checks that a
-    ``memory_store=`` keyword is PRESENT (and that it is not derived from an
-    ``agent``); it cannot check that the value came from the session's recorded
-    binding rather than from a second, drifting copy of that lookup. Structural
-    because the alternative — driving eight surfaces end to end — would pin the
-    doubles far more tightly than the behaviour, and the behaviour of the resolver
-    itself is pinned above.
+    The seam gate checks only that ``memory_store=`` is PRESENT, not that it comes from
+    the recorded binding. Structural, since driving eight surfaces would pin the doubles.
     """
 
     @pytest.mark.parametrize("path,identity", _CONVERTED_TURN_SURFACES, ids=_surface_id)

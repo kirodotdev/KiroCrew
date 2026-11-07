@@ -363,6 +363,137 @@ def relay_withheld_headers(
     return _shim_entry(stdio, session_key, agent_id, server, version), True
 
 
+def crew_connection_slug(name: str, entry: Mapping[str, Any]) -> str:
+    """The provider slug when Crew owns this server's OAuth, else ``""``.
+
+    Only a registry provider's own entry (slug AND url match), and only while
+    :func:`kiro_crew.connections.crew_oauth.manages` holds. Blocking: reads config.
+    """
+    from kiro_crew.acp.kas_app_identity import gateway_bound_port
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import provider_for_server
+
+    # Only the gateway serves the proxy: a session projected elsewhere
+    # (``kirocrew chat``) keeps the entry's native path.
+    if not gateway_bound_port():
+        return ""
+    return crew_oauth.routed_slug(name, entry, provider_for_server)
+
+
+def crew_entry(
+    projected: dict[str, Any], name: str, entry: Mapping[str, Any], session_key: str, agent_id: str
+) -> dict[str, Any] | None:
+    """*projected* rewritten as a Crew-owned Connection bridge, or ``None`` if not one."""
+    from kiro_crew.acp.kas_app_identity import gateway_bound_port
+
+    slug = crew_connection_slug(name, entry)
+    if not slug:
+        return None
+    return relay_crew_connection(
+        projected,
+        session_key=session_key,
+        agent_id=agent_id,
+        server=name,
+        slug=slug,
+        port=gateway_bound_port(),
+        headers=entry.get("headers"),
+    )
+
+
+def connection_asks(
+    permissions: Any, mcp_servers: Mapping[str, Any], session_key: str
+) -> dict[str, Any] | None:
+    """:func:`with_connection_asks` over this session's bridged servers; ``None`` if none."""
+    if not session_key or not mcp_servers:
+        return None
+    from kiro_crew.connections import crew_oauth_proxy
+
+    servers = [n for n in mcp_servers if crew_oauth_proxy.is_connection_server(session_key, n)]
+    return with_connection_asks(permissions, servers) if servers else None
+
+
+def with_connection_asks(permissions: Any, servers: list[str]) -> dict[str, Any]:
+    """*permissions* plus one ``ask`` covering every tool of the Connection *servers*.
+
+    Every call of a Crew-owned Connection must raise a permission request: the
+    gateway proxy forwards a ``tools/call`` only against the approval Crew's gate
+    grants on it. KAS resolves the most restrictive rule, so this ``ask`` outranks
+    any derived allow.
+    """
+    block = dict(permissions) if isinstance(permissions, dict) else {}
+    match = [f"{n}/*" for n in sorted(servers)]
+    block["rules"] = [
+        *(block.get("rules") or []),
+        {"capability": "mcp", "match": match, "effect": "ask"},
+    ]
+    return block
+
+
+def relay_crew_connection(
+    projected: dict[str, Any],
+    *,
+    session_key: str,
+    agent_id: str,
+    server: str,
+    slug: str,
+    port: str,
+    headers: Any = None,
+) -> dict[str, Any]:
+    """*projected* (a Crew-owned Connection) rewritten to start the gateway bridge.
+
+    The snapshot names the connection, the gateway port and a per-bridge secret;
+    no url, header or token. The entry's own non-credential *headers* (a
+    ``User-Agent``) are kept in the gateway and sent beside Crew's bearer. The gateway registers the same secret, so only the
+    launcher holding this snapshot is admitted by its proxy
+    (:mod:`kiro_crew.connections.crew_oauth_proxy`). When the snapshot cannot be
+    written the entry still points at the launcher with a reference no snapshot
+    answers, so the server refuses to start rather than fall back to the vendor.
+    """
+    from kiro_crew.connections import crew_oauth_proxy
+
+    stdio = {
+        k: v for k, v in projected.items() if k not in ("url", "type", "headers", "env", "oauth")
+    }
+    mcp_url = str(projected.get("url") or "")
+    token = crew_oauth_proxy.new_bridge_token()
+    try:
+        version = _write_snapshot(
+            {"connection": slug, "port": int(port), "bridge_token": token},
+            session_key=session_key,
+            agent_id=agent_id,
+            server=server,
+        )
+    except (OSError, ValueError):
+        logger.warning(
+            "agent %r: could not write the Connection bridge for MCP server %r; it will "
+            "refuse to start",
+            agent_id,
+            server,
+            exc_info=True,
+        )
+        return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION)
+    name = snapshot_name(session_key, agent_id, server, version)
+    if not crew_oauth_proxy.register_bridge(
+        version=version,
+        token=token,
+        session_key=session_key,
+        server=server,
+        slug=slug,
+        mcp_url=mcp_url,
+        snapshot=name,
+        headers=headers if isinstance(headers, Mapping) else None,
+    ):
+        logger.warning(
+            "agent %r: the Connection bridge table is full; MCP server %r will refuse "
+            "to start in this session",
+            agent_id,
+            server,
+        )
+        _remove([snapshot_dir() / name])
+        return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION)
+    return _shim_entry(stdio, session_key, agent_id, server, version)
+
+
 def _remove(paths: list[Path]) -> None:
     for path in paths:
         try:
@@ -439,6 +570,10 @@ def discard_batch(custom_agents: Any, written: Any = ()) -> None:
         directory = snapshot_dir()
         names = list(batch_snapshot_names(custom_agents))
         names += [n for n in written if isinstance(n, str)] if isinstance(written, list) else []
+        # Each Connection bridge lives exactly as long as its snapshot.
+        from kiro_crew.connections import crew_oauth_proxy
+
+        crew_oauth_proxy.unregister_snapshots(names)
         _remove([directory / name for name in dict.fromkeys(names) if Path(name).name == name])
     except OSError:
         logger.warning("could not remove KAS launch snapshots", exc_info=True)

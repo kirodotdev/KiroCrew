@@ -649,7 +649,7 @@ class TestHelp:
         text = _reply(slot)
         for command in local_harness_menu(ACP_BACKEND_KAS):
             assert f"- `{command}`: {SLASH_COMMAND_DESCRIPTIONS[command]}" in text, command
-        for refused in ("/hooks", "/changelog", "/logdump"):
+        for refused in ("/experiment", "/changelog", "/logdump"):
             assert f"`{refused}`" not in text, refused
 
 
@@ -685,3 +685,209 @@ class TestAgent:
         text = _reply(slot)
         assert "Agent: the default agent" in text, text
         assert "No other agents are installed" in text
+
+
+class TestKasVerbs:
+    """``/context add|remove|clear``, ``/knowledge`` and ``/code`` go to KAS's own verbs."""
+
+    @staticmethod
+    def _verb(client, tmp_path, answer):
+        client.cwd = str(tmp_path)
+        client.kas_command_call = AsyncMock(return_value=answer)
+        return client.kas_command_call
+
+    @pytest.mark.asyncio
+    async def test_context_add_sends_the_absolute_path(self, tmp_path) -> None:
+        """RED on main: ``/context add`` only got the "doesn't work with KAS" notice."""
+        state, slot, client, calls = _live(tmp_path)
+        verb = self._verb(client, tmp_path, {"success": True, "message": "Added 'a.md' to context"})
+
+        await _run_chat(state, slot, "/context add --force a.md")
+
+        _assert_local(state, calls)
+        verb.assert_awaited_once_with(
+            "context",
+            {"subcommand": "add", "path": str(tmp_path / "a.md"), "force": True},
+        )
+        assert "Added 'a.md' to context" in _reply(slot)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["~/.ssh/id_rsa", "src/*.py"])
+    async def test_context_add_refuses_a_sensitive_or_wildcard_path(self, tmp_path, path) -> None:
+        state, slot, client, calls = _live(tmp_path)
+        verb = self._verb(client, tmp_path, {"success": True})
+
+        await _run_chat(state, slot, f"/context add {path}")
+
+        _assert_local(state, calls)
+        verb.assert_not_awaited()
+        assert f"`{path}`" in _reply(slot), _reply(slot)
+
+    @pytest.mark.asyncio
+    async def test_too_many_paths_change_nothing(self, tmp_path) -> None:
+        state, slot, client, _calls = _live(tmp_path)
+        verb = self._verb(client, tmp_path, {"success": True})
+        names = " ".join(f"f{i}.md" for i in range(61))
+
+        await _run_chat(state, slot, f"/context remove {names}")
+
+        verb.assert_not_awaited()
+        assert "at most 60 paths" in _reply(slot), _reply(slot)
+
+    def test_a_windows_path_keeps_its_backslashes(self, _floor_monkeypatch) -> None:
+        from kiro_crew.dashboard import kas_local_commands as local
+
+        _floor_monkeypatch.setattr(local, "_WINDOWS", True)
+        assert local._split_words(r'add C:\work\a.md "C:\my docs\b.md"') == [
+            "add",
+            r"C:\work\a.md",
+            r"C:\my docs\b.md",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_engine_without_the_verb_says_so(self, tmp_path) -> None:
+        state, slot, client, calls = _live(tmp_path)
+        self._verb(client, tmp_path, None)
+
+        await _run_chat(state, slot, "/context clear")
+
+        _assert_local(state, calls)
+        assert "doesn't work with this KAS version" in _reply(slot), _reply(slot)
+
+    @pytest.mark.asyncio
+    async def test_knowledge_show_lists_the_bases(self, tmp_path) -> None:
+        """RED on main: ``/knowledge`` reached the model as plain text."""
+        state, slot, client, calls = _live(tmp_path)
+        entries = [{"name": "docs", "path": "/w/docs", "item_count": 12}]
+        verb = self._verb(client, tmp_path, {"success": True, "entries": entries})
+
+        await _run_chat(state, slot, "/knowledge")
+
+        _assert_local(state, calls)
+        verb.assert_awaited_once_with("knowledge", {"subcommand": "show"})
+        assert "- `docs`: `/w/docs` (12 items)" in _reply(slot), _reply(slot)
+
+    @pytest.mark.asyncio
+    async def test_knowledge_add_takes_flags_or_words(self, tmp_path) -> None:
+        state, slot, client, _calls = _live(tmp_path)
+        verb = self._verb(client, tmp_path, {"success": True, "message": "Indexing 'docs'"})
+
+        await _run_chat(state, slot, "/knowledge add --name docs --path ./docs")
+
+        verb.assert_awaited_once_with(
+            "knowledge",
+            {"subcommand": "add", "path": str(tmp_path / "docs"), "name": "docs"},
+        )
+        assert "Indexing 'docs'" in _reply(slot)
+
+    @pytest.mark.asyncio
+    async def test_knowledge_stays_text_on_kiro(self, tmp_path) -> None:
+        """kiro-cli's path is unchanged: the word is not a Crew harness command there."""
+        state, slot, client, calls = _live(tmp_path, ACP_BACKEND_KIRO)
+        client.kas_command_call = AsyncMock()
+
+        await _run_chat(state, slot, "/knowledge show")
+
+        client.kas_command_call.assert_not_awaited()
+        calls.assert_called_once()
+        assert "/knowledge show" in calls.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_code_status_shows_the_servers(self, tmp_path) -> None:
+        """RED on main: ``/code`` only got the "doesn't work with KAS" notice."""
+        state, slot, client, calls = _live(tmp_path)
+        status = {
+            "initialized": True,
+            "languages": ["python"],
+            "lspServers": [{"name": "pyright", "status": "not_installed"}],
+        }
+        self._verb(client, tmp_path, {"success": True, "status": status})
+
+        await _run_chat(state, slot, "/code")
+
+        _assert_local(state, calls)
+        text = _reply(slot)
+        assert "Code intelligence: set up" in text, text
+        assert "- `pyright`: not installed" in text, text
+
+    @pytest.mark.asyncio
+    async def test_plan_gets_the_notice_not_the_model(self, tmp_path) -> None:
+        state, slot, _client, calls = _live(tmp_path)
+
+        await _run_chat(state, slot, "/plan write a parser")
+
+        _assert_local(state, calls)
+        assert "`/plan` doesn't work with KAS" in _reply(slot), _reply(slot)
+
+
+class TestHooks:
+    @pytest.mark.asyncio
+    async def test_lists_names_and_events_never_commands(
+        self, tmp_path, _floor_monkeypatch
+    ) -> None:
+        """RED on main: ``/hooks`` only got the "doesn't work with KAS" notice."""
+        from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
+        from kiro_crew.hooks import ScriptHook
+
+        hook = ScriptHook(id="h1", name="lint", event="PreToolUse", matcher="fs_write")
+        hook.command = f"curl -H 'Authorization: {_SECRET}' https://x"
+        _floor_monkeypatch.setattr(
+            "kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks",
+            AsyncMock(return_value=TurnSpecHooks([hook], None, False, True)),
+        )
+        state, slot, _client, calls = _live(tmp_path)
+        stored = ScriptHook(id="h2", name="notify", event="Stop", enabled=False)
+        state._hook_store = MagicMock()
+        state._hook_store.list_all.return_value = [stored]
+
+        await _run_chat(state, slot, "/hooks")
+
+        _assert_local(state, calls)
+        text = _reply(slot)
+        assert "- `notify`: Stop (off)" in text, text
+        assert "- `lint`: PreToolUse, for `fs_write`" in text, text
+        assert "curl" not in text and _SECRET not in text
+
+
+class TestKasCommandCall:
+    """The session handle sends only KAS's three command verbs, and only when listed."""
+
+    @staticmethod
+    def _handle(methods):
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
+        handle = AcpSessionHandle.__new__(AcpSessionHandle)
+        handle._session_id = "s-1"
+        handle._runtime = SimpleNamespace(
+            acp_backend=ACP_BACKEND_KAS,
+            _agent_capabilities={"_meta": {"kiro": {"extensionMethods": methods}}},
+        )
+        handle._send_awaited = AsyncMock(return_value=7)
+        handle._wait_for_response = AsyncMock(
+            return_value=SimpleNamespace(result={"success": True})
+        )
+        return handle
+
+    @pytest.mark.asyncio
+    async def test_sends_a_listed_verb_with_its_own_session(self) -> None:
+        handle = self._handle(["_kiro/knowledge"])
+
+        answer = await handle.kas_command_call(
+            "knowledge", {"subcommand": "show", "sessionId": "other"}
+        )
+
+        assert answer == {"success": True}
+        handle._send_awaited.assert_awaited_once_with(
+            "_kiro/knowledge", {"subcommand": "show", "sessionId": "s-1"}
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("command", "listed"),
+        [("_kiro/session/delete", ["_kiro/session/delete"]), ("knowledge", [])],
+    )
+    async def test_refuses_an_unknown_or_unlisted_verb(self, command, listed) -> None:
+        handle = self._handle(listed)
+
+        assert await handle.kas_command_call(command, {"subcommand": "show"}) is None
+        handle._send_awaited.assert_not_awaited()

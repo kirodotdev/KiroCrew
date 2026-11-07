@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from relay_client_helpers import CONTRACT, FIXTURES, fixture
+from relay_client_helpers import CONTRACT, FIXTURES, fixture, valid_message
 
 from kiro_crew.relay_client import protocol
 from kiro_crew.relay_client.protocol import FrameError, parse_inbound
@@ -144,7 +144,7 @@ def test_the_hello_the_client_builds_matches_the_fixture() -> None:
     hello = protocol.build_hello(client_version="9.9.9")
     required = {k for k, v in shape["fields"].items() if v["required"]}
     assert required <= set(hello) <= set(shape["fields"])
-    assert hello["features"] == ["flow-credit", "ws-flow", "request-credit"]
+    assert hello["features"] == ["flow-credit", "ws-flow", "request-credit", "move-done"]
     assert "opaque" not in hello["features"]
     # Every feature offered is one the hello fixture names as known in version 1.
     known = shape["fields"]["features"]["notes"]
@@ -575,3 +575,100 @@ def test_validator_frame_errors_keep_their_existing_refusal(monkeypatch) -> None
         False,
     )
     assert original.frame_type == "ping"
+
+
+# ---------------------------------------------------------------------------
+# The person's email and name: display only, a bad one is dropped, never refused
+# ---------------------------------------------------------------------------
+
+_BAD_DISPLAY = [
+    ("userName", 7),
+    ("userName", ""),
+    ("userName", "   "),
+    ("userName", "x" * 129),
+    ("userName", "Mallory\u202eevil"),
+    ("userName", "zero\u200bwidth"),
+    ("userName", "line\u2028break"),
+    ("userName", "lone\ud800"),
+    ("userName", "\U0001f600" * 129),
+    ("userEmail", ["a@example.com"]),
+    ("userEmail", "not-an-email"),
+    ("userEmail", "a" * 250 + "@example.com"),
+    ("userEmail", "r\u00e9n\u00e9e@example.com"),
+    ("userEmail", "a@b"),
+]
+
+
+def _with_display(frame_name: str, **fields: object) -> dict:
+    return valid_message(frame_name, **fields)
+
+
+@pytest.mark.parametrize("frame_name", ["frames/request", "frames/ws-upgrade"])
+def test_a_valid_email_and_name_pass_through_the_frame_check(frame_name: str) -> None:
+    message = _with_display(frame_name, userEmail="renee@example.com", userName="Ren\u00e9e \u00d8")
+    parsed = parse_inbound(json.dumps(message))
+    assert parsed["userEmail"] == "renee@example.com"
+    assert parsed["userName"] == "Ren\u00e9e \u00d8"
+
+
+@pytest.mark.parametrize("frame_name", ["frames/request", "frames/ws-upgrade"])
+@pytest.mark.parametrize(("key", "value"), _BAD_DISPLAY)
+def test_a_bad_email_or_name_is_dropped_and_the_frame_still_parses(
+    frame_name: str, key: str, value: object
+) -> None:
+    message = _with_display(frame_name, **{key: value})
+    parsed = parse_inbound(json.dumps(message))
+    assert key not in parsed
+    assert parsed["user"] == message["user"]
+
+
+def test_a_name_at_the_caps_is_kept() -> None:
+    at_chars = "\u00e9" * protocol.DISPLAY_NAME_MAX_CHARS
+    assert protocol.is_display_name(at_chars)
+    # 128 four-byte code points is 512 bytes, exactly the byte cap.
+    assert protocol.is_display_name("\U0001f600" * 128)
+    assert not protocol.is_display_name("\U0001f600" * 129)
+
+
+def test_the_display_grammars_match_the_fixture() -> None:
+    ids = fixture("limits/identifiers")["identifiers"]
+    email, name = ids["displayEmail"], ids["displayName"]
+    assert email["maxLength"] == protocol.DISPLAY_EMAIL_MAX_CHARS
+    assert email["pattern"].strip("^$") in protocol.DISPLAY_EMAIL_RE.pattern
+    assert name["maxCodePoints"] == protocol.DISPLAY_NAME_MAX_CHARS
+    assert name["maxUtf8Bytes"] == protocol.DISPLAY_NAME_MAX_BYTES
+    for value in email["valid"]:
+        assert protocol.is_display_email(value), value
+    for value in email["invalid"]:
+        assert not protocol.is_display_email(value), value
+    for value in name["valid"]:
+        assert protocol.is_display_name(value), value
+    for value in name["invalid"]:
+        assert not protocol.is_display_name(value), value
+
+
+def test_the_display_stamp_matches_the_fixture() -> None:
+    from kiro_crew.dashboard.kiro_relay.caller import CrewKind, HostBinding
+    from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress
+    from kiro_crew.relay_client.ingress import LoopbackIngress
+
+    gateway = RelayIngress(enabled=True)
+    ingress = LoopbackIngress("127.0.0.1", 9, gateway=gateway, max_ws_message_bytes=1)
+    gateway.bind_host(HostBinding(crew_kind=CrewKind.TEAM))
+    cases = [c for c in fixture("headers/caller-stamp")["cases"] if "toCrewWebServer" in c]
+    assert any("userName" in c["head"] for c in cases)
+    for case in cases:
+        head = parse_inbound(json.dumps(case["head"]))
+        out = ingress._stamped(
+            list(head["headers"].items()),
+            head["user"],
+            email=head.get("userEmail", ""),
+            name=head.get("userName", ""),
+        )
+        # The handover credential is per process, and Host is the loopback hop's own.
+        stamped = {
+            k.lower(): v
+            for k, v in out.items()
+            if k.lower() not in ("x-kiro-relay-handover", "host")
+        }
+        assert stamped == case["toCrewWebServer"], case["name"]

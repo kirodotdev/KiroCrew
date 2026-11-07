@@ -112,9 +112,6 @@ class TestTheScopeSurfaceIsResolvedOnce:
 
         `latest` is one check-run per name, which during the floor step is this run's
         own in-progress one, so no prior is seen and the floor holds nothing.
-
-        Only these two reads of history: a read of the current state (pr-readiness)
-        is correct on the default.
         """
         for lane, job, step in (
             ("security-scope-review.yml", "publish", "Enforce the per-head monotonic floor"),

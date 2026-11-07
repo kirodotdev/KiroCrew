@@ -105,7 +105,16 @@ async function focusedTag(page, within) {
 async function load(context, { offline, ready }) {
   const page = await context.newPage()
   logPageProblems(page)
-  await stubDashboardApi(page, { slots, theme: 'dark', extra })
+  await stubDashboardApi(page, {
+    slots, theme: 'dark', extra,
+    localStorageEntries: {
+      'mc-active-slot': SLOT,
+      'mc-privacy-notice-v1': '1',
+      'mc-sidebar-pinned': 'true',
+      'mc-session-stale-collapse-ms': '0',
+      'mc-onboarded': '1',
+    },
+  })
   // Registered after the stub, so it is consulted first. The stub's own no-op
   // route reads as an OPEN socket, which is the connected state.
   const sock = { live: null, dropped: false }
@@ -113,13 +122,6 @@ async function load(context, { offline, ready }) {
     if (offline || sock.dropped) ws.close()
     else sock.live = ws
   })
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-sidebar-pinned', 'true')
-    localStorage.setItem('mc-session-stale-collapse-ms', '0')
-    localStorage.setItem('mc-onboarded', '1')
-  }, SLOT)
   await page.goto(`${base}/chat`, { waitUntil: 'domcontentloaded' })
   await page.locator(ready || `[data-ui-location="chat.session-title"]`).first().waitFor({ state: 'visible', timeout: 20_000 })
   await page.waitForTimeout(1200)

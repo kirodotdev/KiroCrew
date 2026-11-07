@@ -493,10 +493,15 @@ async def _handle_message(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            # The collapsed pastes the text expanded (ChatEmbed's `meta.pastes`) ride the
+            # user row as POST /api/chat stores them, so the transcript keeps each chip.
+            sent_meta = body.get("meta")
+            pastes = sent_meta.get("pastes") if isinstance(sent_meta, dict) else None
             turn = _dispatch_turn(
                 state,
                 slot,
                 text,
+                message_meta={"pastes": pastes} if isinstance(pastes, list) and pastes else None,
                 directive_user_origin=True,
             )
             _bind_pending_dispatch_to_turn(dispatch_claim, slot, turn)

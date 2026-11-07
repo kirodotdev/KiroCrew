@@ -265,10 +265,12 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   const stall = useAppSelector(st => {
     const now = Date.now()
     const counts = crewWorkCounts(work, st.dashboard.slots, now)
+    // A running conductor turn is picking its stalls up: none are shown meanwhile.
+    const handling = !!st.dashboard.slots.find(x => x.key === root)?.running
     // The crew members whose live row waits on a tool approval, as one string so
     // the selector compares by value.
     const live = st.dashboard.slots.filter(x => x.pending_approval && crewRootOf(x) === root).map(x => x.key).join(' ')
-    return { person: counts?.person ?? 0, stalled: counts?.stalled ?? 0, keys: stalledWorkKeys(work, st.dashboard.slots, now), live }
+    return { person: counts?.person ?? 0, stalled: handling ? 0 : counts?.stalled ?? 0, keys: handling ? '' : stalledWorkKeys(work, st.dashboard.slots, now), live }
   }, shallowEqual)
   // A stalled line's duration reads the clock: step it once a minute while shown.
   const [, setMinute] = useState(0)
@@ -742,6 +744,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // next check. Both read as their own state, never as "Waiting on you".
     const crewStalled = crewIdle && (crewWork?.stalled ?? 0) > 0
     const crewMoving = crewIdle && (crewWork?.moving ?? 0) > 0
+    const crewLooping = crewMoving && crewWork?.looping === crewWork?.moving
+    const crewRunningText = crewLooping ? i18nT('components.crewMode.ultra_row_count_running', { count: crewWork?.looping ?? 0 }) : ''
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;
@@ -905,16 +909,23 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       },
       {
         // Nothing runs and an open ledger item has gone quiet with its next step
-        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Static warn:
-        // no work is moving, and the conductor's patrol is what picks it up.
+        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Muted: it is
+        // the conductor's to pick up, not the person's; only "needs you" is warm.
         key: 'crew_stalled',
         when: crewStalled,
         build: () => (
-          <div className={ROW_STATUS_LINE_CLS} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
-            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
-            <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
+          <div className={`${ROW_STATUS_LINE_CLS} text-muted`} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
+            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" aria-hidden />
+            <span className="truncate">{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
           </div>
         ),
+      },
+      {
+        // Idle, but every open item's worker waits in its own loop (`crew_work` `looping`,
+        // e.g. on CI): the crew runs. A still radar, not a spinner: no turn is in flight.
+        key: 'crew_running',
+        when: crewLooping,
+        build: () => <div className={ROW_STATUS_LINE_CLS} title={crewRunningText} data-testid="crew-work-running"><MonitorRadar actionRunning={false} className="text-accent" /><span className="truncate">{crewRunningText}</span></div>,
       },
       {
         // Nothing runs, and the ledger's open work still moves: a worker parked
@@ -1133,6 +1144,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           : i18nT('pages.chatSidebar.loop_waiting_monitor')}`
         case 'interrupted': return i18nT('pages.chat.recoveryCard.turn_interrupted')
         case 'crew_stalled': return i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })
+        case 'crew_running': return crewRunningText
         case 'crew_waiting': return i18nT('pages.chatSidebar.crew_work_waiting_title', { count: crewWork?.moving ?? 0 })
         case 'goal_loop': return goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title')
           : [goalLoopLabel, goalLoopDetail].filter(Boolean).join(' · ')

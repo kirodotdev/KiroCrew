@@ -122,6 +122,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_session_sharing_eligible": ("property", False, "a6632a57e602", "acp"),
     "kas_active_mode_id": ("property", False, "bb418bb7ece8", "acp"),
     "kas_auto_approved_capabilities": ("property", False, "45debfdb1d02", "acp"),
+    "kas_command_call": ("function", True, "0c8766b65545", "acp"),
     "kas_projected_agent": ("property", False, "bb418bb7ece8", "acp"),
     "kas_registered_agents": ("property", False, "908b88c4efab", "acp"),
     "last_compaction_transient": ("property", False, "a6632a57e602", "acp"),

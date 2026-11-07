@@ -76,14 +76,18 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     /** Delete every folder whose subtree holds no live session and no setting.
      *  `dryRun` lists the ids (and how many archived sessions each one holds)
      *  without changing anything; top-level folders are spared unless asked.
-     *  A real run passes the previewed `ids` and deletes only those still empty. */
-    cleanupChatFolders: (opts: { dryRun?: boolean; includeTopLevel?: boolean; ids?: string[] }) =>
-      post('/api/chat/folders/cleanup', { dry_run: !!opts.dryRun, include_top_level: !!opts.includeTopLevel, ...(opts.ids ? { ids: opts.ids } : {}) }).then(j) as Promise<{
+     *  A real run passes the previewed `ids` and deletes only those still empty.
+     *  `root` limits it to that folder's tree, settings included, and its dry
+     *  run previews the tree with its sessions already closed. */
+    cleanupChatFolders: (opts: { dryRun?: boolean; includeTopLevel?: boolean; ids?: string[]; root?: string }) =>
+      post('/api/chat/folders/cleanup', { dry_run: !!opts.dryRun, include_top_level: !!opts.includeTopLevel, ...(opts.ids ? { ids: opts.ids } : {}), ...(opts.root ? { root: opts.root } : {}) }).then(j) as Promise<{
         ok: boolean
         ids?: string[]
         deleted?: string[]
         count: number
         archived?: Record<string, number>
+        /** A root dry run whose root stays: why. */
+        root_kept?: 'cron' | 'default' | 'channel' | 'kept'
       }>,
     /** File a channel's EXISTING conversations into the folder its settings name.
      *
@@ -115,7 +119,7 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     setSlotMuted: (slot: string, muted: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/muted', { muted }).then(j),
     /** Set the order of pinned sessions in one atomic write; answers the stored order.
      *  `onlyIfUnset` lands the write only while no order is stored (a 409
-     *  otherwise), which is how a browser hands over its old local order. */
+     *  otherwise), which is how the sidebar's first-load seed lands. */
     setPinnedOrder: (keys: string[], onlyIfUnset = false, expectedCreated?: Record<string, string>) => post('/api/chat/pinned-order', {
       keys,
       ...(onlyIfUnset ? { only_if_unset: true } : {}),

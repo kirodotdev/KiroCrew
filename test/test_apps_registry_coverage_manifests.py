@@ -20,9 +20,7 @@ from conftest import requires_symlinks
 from kiro_crew.apps import registry
 from kiro_crew.apps.registry_pipeline import manifests as manifests_mod
 
-# ---------------------------------------------------------------------------
 # Manifest cache
-# ---------------------------------------------------------------------------
 
 
 class TestManifestCache:
@@ -239,9 +237,7 @@ class TestManifestCacheGc:
         assert registry._read_manifest_cache(self._DEMO) == {"name": "demo", "v": 2}
 
 
-# ---------------------------------------------------------------------------
 # Subdirectory containment
-# ---------------------------------------------------------------------------
 
 
 class TestSubdirGates:
@@ -297,17 +293,10 @@ class TestSubdirGates:
 
     @requires_symlinks
     def test_contained_join_degrades_to_none_on_a_symlink_loop(self, tmp_path):
-        # A real loop, not a faked OSError. The callers that re-check containment
-        # after a third-party script wrote to the checkout need a value, never a
-        # raise, and never a path that a later read/write would follow THROUGH the
-        # loop. A self-pointing directory link must therefore fail closed to None,
-        # for the link itself and for anything named beneath it, on every
-        # platform. POSIX gets this for free: non-strict `Path.resolve` walks the
-        # link and raises ELOOP as RuntimeError. Windows does NOT -- non-strict
-        # resolve lexically collapses the reparse point and hands back a
-        # contained-LOOKING path -- so `_contained_join` resolves the target
-        # strictly, which forces the OS to walk it and raise on the loop on
-        # Windows too. This asserts that fail-closed result on both.
+        # A real loop, not a faked OSError: a self-pointing link must fail closed to
+        # None, for the link and anything beneath it. On Windows non-strict resolve
+        # collapses the reparse point to a contained-LOOKING path, so
+        # `_contained_join` resolves strictly to make the OS raise on the loop.
         root = tmp_path / "root"
         root.mkdir()
         os.symlink("pkg", str(root / "pkg"))
@@ -315,9 +304,7 @@ class TestSubdirGates:
             assert registry._contained_join(root, subdir) is None
 
 
-# ---------------------------------------------------------------------------
 # Manifest fetch
-# ---------------------------------------------------------------------------
 
 
 def _tmp_clone_dir(monkeypatch, tmp_path, name: str = "clone") -> Path:
@@ -534,9 +521,7 @@ class TestFetchAppManifest:
         assert modes == ["strict"]
 
 
-# ---------------------------------------------------------------------------
 # Manifest resolution / merge / enrichment
-# ---------------------------------------------------------------------------
 
 
 class TestResolveManifest:
@@ -968,7 +953,7 @@ class TestEnrichWithInstallStatus:
         assert rows[0]["updateAvailable"] is False
 
     def test_external_row_never_inherits_origin_from_a_same_named_install(self):
-        """Regression: an external registry row named after an installed
+        """An external registry row named after an installed
         built-in must not get that app's ``origin`` cross-stamped by name —
         the wire value would contradict the ``provenance: "external"`` stamped
         beside it."""
@@ -1034,7 +1019,7 @@ class TestApplyTrustFields:
         assert all(r["provenance"] == "official" for r in rows)
 
     def test_external_row_origin_is_scrubbed_at_the_trust_boundary(self):
-        """Regression: an index-published (or name-collision-inherited)
+        """An index-published (or name-collision-inherited)
         ``origin`` on an external row is dropped, so the wire never carries
         ``origin: "builtin"`` beside ``provenance: "external"``."""
         rows = registry._apply_trust_fields(
@@ -1080,7 +1065,7 @@ class TestVersionNewer:
             # A leading "v" on either side.
             ("v1.1.0", "1.0.0", True),
             ("1.1.0", "v1.0.0", True),
-            # A numeric semver pre-release, and padding the old int() parse accepted.
+            # A numeric semver pre-release, and whitespace padding int() accepts.
             ("2.0.0-1", "1.0.0", True),
             ("1.0.0-0.3.7", "0.9.0", True),
             (" 1.1.0", "1.0.0\n", True),

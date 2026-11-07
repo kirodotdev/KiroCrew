@@ -108,6 +108,24 @@ def _agent_confinement() -> bool:
     return _sandbox.agent_confinement_evidence() is not None
 
 
+def warn_if_started_from_agent_session() -> bool:
+    """Log one WARNING when the gateway carries an agent session's markers.
+
+    A gateway restarted from an agent's shell keeps that session's environment and
+    sandbox, and nothing else says why AWS features then fail. Warns only: starting
+    a gateway is an ordinary command. Returns whether it warned.
+    """
+    if not _in_agent_session():
+        return False
+    logger.warning(
+        "This gateway was started from inside an agent session and inherits that "
+        "session's environment and any sandbox around it, so AWS credentials may not "
+        "resolve (dictation fails with 'Unable to locate credentials') and dashboard "
+        "cloud actions are refused. Restart the gateway from a normal terminal."
+    )
+    return True
+
+
 def assert_human_action(action: str) -> None:
     """Refuse a destructive/sensitive cloud mutation from an agent session.
 

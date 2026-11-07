@@ -11,6 +11,7 @@ import {
   registerComposerUpload,
   composerUploadSlot,
   finishComposerAttachment,
+  reportComposerUploadProgress,
   unregisterComposerUpload,
   useComposerSendHeld,
   useComposerUploadCount,
@@ -99,7 +100,8 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
     // hold below) would never run and the slot's Send would stay dead. Running
     // it lets the fetch fail fast and the hold clear through the usual path.
     networkMode: 'always',
-    mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal),
+    mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal,
+      (loaded, total) => reportComposerUploadProgress(controller, loaded, total)),
     // api.uploadFiles does NOT throw on a server refusal (unsupported type,
     // signature mismatch, over-cap): it resolves with { paths: [], error }.
     // So a refusal lands here in onSuccess, not onError — surface res.error
@@ -133,13 +135,16 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
   const cancelUpload = useCallback(() => {
     cancelComposerUploads(slotKeyRef.current)
   }, [slotKeyRef])
-  const uploadFiles = useCallback((files: File[]) => {
-    if (!files.length) return
+  // Returns true when a client-side pre-check refused the files and set its own
+  // hint (too many, or one over the cap), so a caller that also wants to show a
+  // hint (a mixed drop carrying a refused folder) does not overwrite it.
+  const uploadFiles = useCallback((files: File[]): boolean => {
+    if (!files.length) return false
     // Clear FIRST, so a refusal from the previous attempt cannot stay on
     // screen and read as the reason this one failed.
     setUploadError('')
     setUploadHint('')
-    if (files.length > 20) { setUploadHint(i18nT('pages.chatPage.too_many_files_max_20')); return }
+    if (files.length > 20) { setUploadHint(i18nT('pages.chatPage.too_many_files_max_20')); return true }
     // Video is deliberately exempt from this pre-check, exactly as in
     // ChatPage: the server's video ceiling is far higher than the per-file
     // cap, so the figure this message states would be a lie for a recording.
@@ -150,7 +155,7 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
     // against, so the server's own 413 is the only check.
     const maxMb = servedUploadMb(dashCfg?.upload_max_mb)
     const big = maxMb === null ? undefined : files.find((f) => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
-    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return }
+    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return true }
     // A failed settings read is reported beside the attempt it affects, not in
     // every pane: the files still go to the server, whose 413 replaces this
     // banner if one is refused. The copy stays true once the upload finishes.
@@ -161,6 +166,9 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
     holdComposerSend(forSlot)
     registerComposerUpload(forSlot, controller)
     uploadMutation.mutate({ files, forSlot, controller })
+    // The files were sent (a server-side refusal surfaces through the mutation,
+    // not a local pre-check hint), so no local-refusal hint was set.
+    return false
   }, [uploadMutation, setUploadError, setUploadHint, dashCfg, dashCfgError, slotKeyRef])
 
   // Classify BEFORE acting (issue #743): a dropped folder inserts its path
@@ -172,10 +180,28 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
   // browser no real path is visible, so classifyDrop leaves folders on the
   // upload route there (today's behaviour).
   const handleDrop = useCallback((dataTransfer: DataTransfer) => {
-    const { files, dirPaths } = classifyDrop(dataTransfer)
+    const { files, dirPaths, refusedDirs } = classifyDrop(dataTransfer)
     if (dirPaths.length) setInput((prev) => spliceDirTokens(prev, null, dirPaths).value)
-    if (files.length) uploadFiles(files)
-  }, [uploadFiles, setInput])
+    // uploadFiles clears the hint synchronously and returns whether it refused
+    // the files locally (too many, or one over the cap).
+    const refusedLocally = files.length ? uploadFiles(files) : false
+    // A folder whose resolved path can't be written as a composer folder token
+    // (a space or `@`, or a filesystem root) is refused — nothing is uploaded
+    // or inserted. Show it through the upload HINT (the same validation-refusal
+    // surface the too-many-files / file-too-large pre-checks use — nothing was
+    // sent), not the danger error banner. Set it AFTER uploadFiles' synchronous
+    // clear, and only when uploadFiles did NOT itself set a refusal hint: when
+    // the files were refused too, their hint is the one the user must see
+    // (#30416).
+    if (refusedDirs.length && !refusedLocally) {
+      // A refused-folder-only drop skips uploadFiles, so clear any stale upload-
+      // error banner from a previous failed upload here (uploadFiles is what
+      // clears it otherwise). A mixed drop already cleared it synchronously in
+      // uploadFiles, so this does not wipe a failure from this drop.
+      if (!files.length) setUploadError('')
+      setUploadHint(i18nT('components.chatInput.tree_drop_folder_refused'))
+    }
+  }, [uploadFiles, setInput, setUploadError, setUploadHint])
   const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
 
   return {

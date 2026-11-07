@@ -59,6 +59,13 @@ export const CC_CSS = `
 .cc-rem-done { opacity:.55; }
 .cc-rem-edit { flex:1; min-width:0; }
 .cc-rem-edit .cc-add-input { width:100%; }
+.cc-rem-schedule { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.cc-rem-schedule .cc-add-input { flex:0 1 auto; width:auto; }
+.cc-rem-minute { display:inline-flex; align-items:center; gap:6px; }
+.cc-rem-schedule-text { flex-basis:100%; }
+.cc-rem-schedule-actions { display:inline-flex; gap:6px; }
+/* The row's time is the one being changed: dim it while the form is open. */
+.cc-rem-row:has(.cc-rem-schedule) .cc-rem-when { opacity:.45; }
 /* Narrow screens: the text takes its own line so the time, tag and actions cannot squeeze it to nothing. */
 @media (max-width: 480px) { .cc-rem-row { flex-wrap:wrap; } .cc-rem-text, .cc-rem-edit { order:1; flex-basis:100%; } }
 .cc-icon-btn { font-size:12px; background:transparent; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:2px 8px; cursor:pointer; }

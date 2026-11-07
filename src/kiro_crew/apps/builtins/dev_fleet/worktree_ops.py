@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib as _importlib
+import json
 import os
 import sys
 import time
@@ -143,17 +144,20 @@ _PRUNE_CONCURRENCY = 4
 _DISCARD_OVERRIDABLE_CODES = frozenset({"merged_dirty", "closed_dirty", "active"})
 
 
-async def _prunable(path: str, branch: str | None) -> dict:
+async def _prunable(path: str, branch: str | None, pr_rows: list[dict] | None = None) -> dict:
     """Structured prune verdict. Squash-merge safe: PR merged + clean -> ok.
 
     Does NOT require ahead==0 (git cherry never reports 0 for squash merges).
     The race guard in _worktree_remove handles the edge case of commits pushed
     after the PR was merged by comparing branch OID to the PR's headRefOid.
+
+    *pr_rows* is this head's PR batch from the preview's one-pass lookup
+    (``_fetch_pr_rows``); without it each lookup asks gh alone.
     """
     # Resolve the full HEAD once so cache invalidation cannot alias distinct
     # commits that share an abbreviated prefix. Reuse it for the merge guard.
     head_oid = (await repository._git(path, "rev-parse", "HEAD")) if branch else None
-    pr = (await fleet_state._pr_status_cached(branch, head_oid)) if branch else None
+    pr = (await fleet_state._pr_status_cached(branch, head_oid, pr_rows)) if branch else None
     own = await repository._own_commits_count(path)
     dirty = await repository._real_dirty(path)
     # Classify the dirt so the preview can tell a tree blocked by real edits
@@ -182,7 +186,7 @@ async def _prunable(path: str, branch: str | None) -> dict:
         # the merge mean the branch OID diverged from the PR head — surface it
         # at preview time instead of letting the candidate fail every run.
         pr_oid = (
-            await fleet_state._fetch_pr_head_oid(branch, repo=(pr or {}).get("_repo"))
+            await fleet_state._fetch_pr_head_oid(branch, repo=(pr or {}).get("_repo"), rows=pr_rows)
             if branch
             else None
         )
@@ -226,7 +230,7 @@ async def _prunable(path: str, branch: str | None) -> dict:
         #    guard is fail-closed: an OID that cannot be established withholds
         #    the candidate rather than trusting the name-based lookup.
         pr_oid = (
-            await fleet_state._fetch_pr_head_oid(branch, repo=(pr or {}).get("_repo"))
+            await fleet_state._fetch_pr_head_oid(branch, repo=(pr or {}).get("_repo"), rows=pr_rows)
             if branch
             else None
         )
@@ -242,24 +246,80 @@ async def _prunable(path: str, branch: str | None) -> dict:
     return {**base, "ok": False, "code": "active"}
 
 
+#: Heads per ``_fetch_pr_rows`` request: 50 connections of at most
+#: ``_PR_HEAD_LOOKUP_LIMIT + 1`` rows stay far inside GitHub's GraphQL limits.
+_PR_BATCH_HEADS = 50
+# The connection ``gh pr list --head <b> --state all`` itself queries, so the
+# rows come back in its newest-first order, with every field either lookup reads.
+_PR_BATCH_FIELD = (
+    "h{i}: pullRequests(headRefName: $h{i}, states: [OPEN, CLOSED, MERGED], first: {n}, "
+    "orderBy: {{field: CREATED_AT, direction: DESC}}) "
+    "{{ nodes {{ number state url isDraft title body headRefOid }} }}"
+)
+
+
+async def _fetch_pr_rows(branches: list[str | None]) -> dict[str, list[dict]]:
+    """Every upstream PR on each of *branches*: one ``gh api graphql`` call per
+    ``_PR_BATCH_HEADS`` heads instead of one or two ``gh pr list`` calls a head.
+
+    A head's rows are what ``gh pr list --head <head> --state all`` returns, up to
+    the saturation sentinel, so fleet_state's ``_fetch_pr_status`` and
+    ``_fetch_pr_head_oid`` rule on them exactly as on their own query. A head
+    whose request failed is left out, and its lookups query it alone.
+    """
+    owner_repo = await fleet_state._get_owner_repo()
+    heads = sorted({b for b in branches if b and b != repository.BASE_BRANCH})
+    if not owner_repo or not heads:
+        return {}
+    owner, name = owner_repo.split("/", 1)
+    found: dict[str, list[dict]] = {}
+    for start in range(0, len(heads), _PR_BATCH_HEADS):
+        chunk = heads[start : start + _PR_BATCH_HEADS]
+        params = "".join(f", $h{i}: String!" for i in range(len(chunk)))
+        fields = " ".join(
+            _PR_BATCH_FIELD.format(i=i, n=fleet_state._PR_HEAD_LOOKUP_LIMIT + 1)
+            for i in range(len(chunk))
+        )
+        query = (
+            f"query($owner: String!, $name: String!{params}) "
+            f"{{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
+        )
+        # Heads travel as raw-string variables (-f), never spliced into the query.
+        argv = ["gh", "api", "graphql", "-f", f"query={query}"]
+        argv += ["-f", f"owner={owner}", "-f", f"name={name}"]
+        for i, head in enumerate(chunk):
+            argv += ["-f", f"h{i}={head}"]
+        rc, stdout, _ = await runtime._run_cmd(argv, timeout=15)
+        if rc != 0:
+            continue
+        try:
+            repo_rows = json.loads(stdout)["data"]["repository"]
+            found.update({head: repo_rows[f"h{i}"]["nodes"] for i, head in enumerate(chunk)})
+        except (ValueError, KeyError, TypeError):
+            continue
+    return found
+
+
 async def _prune_candidates() -> dict:
     worktrees = await repository._discover_worktrees()
     # The per-worktree verdict (_prunable) is several read-only git calls plus
-    # one or more networked gh calls (a PR-status lookup, its per-repo fallback
-    # traversal, and a merged/closed head-OID check), so a plain serial loop
-    # scales with fleet size: a 111-worktree fleet floors at ~57s even at one gh
-    # call each, double the gateway app proxy's 30s _PROXY_TIMEOUT, so the
-    # preview returns 504 and the button never renders. Run the verdicts
-    # concurrently under the same _PRUNE_CONCURRENCY bound the parallel prune
-    # workers use -- this path is read-only git (rev-parse, status,
-    # rev-list/cherry, merge-base) so it never touches _GIT_MUTATION_LOCK, which
-    # only the destructive removal path holds.
+    # its PR lookups (a PR-status lookup, its per-repo fallback traversal, and a
+    # merged/closed head-OID check), so a plain serial loop scales with fleet
+    # size: a 111-worktree fleet floors at ~57s even at one gh call each, double
+    # the gateway app proxy's 30s _PROXY_TIMEOUT, so the preview returns 504 and
+    # the button never renders. The upstream PRs of every head are fetched up
+    # front in one gh call per _PR_BATCH_HEADS heads, and each verdict reads its
+    # head's rows. The verdicts run concurrently under the same
+    # _PRUNE_CONCURRENCY bound the parallel prune workers use -- this path is
+    # read-only git (rev-parse, status, rev-list/cherry, merge-base) so it never
+    # touches _GIT_MUTATION_LOCK, which only the destructive removal path holds.
     prunable = [w for w in worktrees if not w.get("is_main")]
+    pr_rows = await _fetch_pr_rows([w.get("branch") for w in prunable])
     sem = asyncio.Semaphore(_PRUNE_CONCURRENCY)
 
     async def _verdict(w: dict) -> tuple[dict, dict]:
         async with sem:
-            v = await _prunable(w["path"], w.get("branch"))
+            v = await _prunable(w["path"], w.get("branch"), pr_rows.get(w.get("branch") or ""))
         return w, v
 
     # gather preserves the argument order in its result list regardless of
@@ -737,6 +797,7 @@ __all__ = (
     "_pod_restart",
     "_pod_token",
     "_pod_up",
+    "_fetch_pr_rows",
     "_prunable",
     "_prune_candidates",
     "_prune_dead_sync_base_refs",

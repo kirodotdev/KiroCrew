@@ -9,6 +9,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { useFrameLinkBridge } from '../../hooks/useFrameLinkBridge'
+import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
@@ -748,6 +749,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             // So does the desktop trackpad swipe that hides the panel, where
             // the host asks for it.
             relayWheel,
+            // Answers the host's ping, so a reload onto the spent url is re-minted.
+            aliveReply: true,
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the page, see above
@@ -906,6 +909,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     el.addEventListener('load', onFrameLoad)
     return () => el.removeEventListener('load', onFrameLoad)
   }, [url, grantKey, onFrameLoad])
+  // The browser can reload this frame by itself, and the reload finds its
+  // single-use url spent: a white frame. Re-mint when the document stops answering.
+  // A frame promoted from off screen already loaded there, and that load can be a 404.
+  useFrameAliveRecovery(frameRef, url, runsScript, retry, url !== null && preloadedRef.current?.url === url && preloadedRef.current.loaded)
   useEffect(() => {
     if (!staged) return
     const onMessage = (event: MessageEvent) => {

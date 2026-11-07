@@ -107,7 +107,9 @@ def test_lifecycle_mutation_is_confined_to_declared_owners() -> None:
         "app-kit-platform.md and _advance_lifecycle_locked"
     )
     assert mutations["_lifecycle_generation"] == frozenset({"_advance_lifecycle_locked"}), rule
-    assert lifecycle_callers == frozenset({"start_app_backend", "stop_app_backend"}), rule
+    assert lifecycle_callers == frozenset(
+        {"start_app_backend", "stop_app_backend", "_keep_down"}
+    ), rule
     assert mutations["_processes"] == frozenset(
         {
             "_await_inflight_spawn",
@@ -121,9 +123,7 @@ def test_lifecycle_mutation_is_confined_to_declared_owners() -> None:
     ), rule
 
 
-# ---------------------------------------------------------------------------
 # Shared doubles
-# ---------------------------------------------------------------------------
 
 
 # A lost-run ceiling for the threaded spawn-ownership tests, never their race window:
@@ -162,9 +162,7 @@ def _stub_listeners(monkeypatch: pytest.MonkeyPatch, listeners: list[Any]) -> No
     monkeypatch.setattr(bmod.platform_compat, "find_port_listeners", lambda _port: listeners)
 
 
-# ---------------------------------------------------------------------------
 # Port + listener probes
-# ---------------------------------------------------------------------------
 
 
 class TestPortProbes:
@@ -185,11 +183,8 @@ class TestPortProbes:
     ) -> None:
         """The True branch, without a real host socket.
 
-        An earlier revision bound a real ephemeral loopback listener here. Even
-        on port 0 that is a host-level side effect outside ``tmp_path``, and it
-        can fail outright on a locked-down runner -- so the success path is
-        faked the same way the refusal path below already is. ``_port_is_listening``
-        only uses the connection as a context manager and discards it, so a
+        A real loopback listener is a host side effect that can fail on a locked-down
+        runner, and ``_port_is_listening`` only enters and discards the connection, so a
         minimal stub is a faithful double.
         """
 
@@ -378,9 +373,7 @@ class TestSpawnedBackendOwnsPid:
         assert free == [True]
 
 
-# ---------------------------------------------------------------------------
 # start_app_backend coordination
-# ---------------------------------------------------------------------------
 
 
 class TestStartCoordination:
@@ -824,9 +817,7 @@ class TestSpawnPublicationOwnership:
         assert popen_calls == [703]
 
 
-# ---------------------------------------------------------------------------
 # Spawn body: port resolution
-# ---------------------------------------------------------------------------
 
 
 class TestSpawnPortResolution:
@@ -864,9 +855,7 @@ class TestSpawnPortResolution:
         assert bmod._MIN_PORT <= bmod._allocated_ports["fuzzy"] <= bmod._MAX_PORT
 
 
-# ---------------------------------------------------------------------------
 # Spawn body: adopting an existing instance on a fixed port
-# ---------------------------------------------------------------------------
 
 
 class TestAdoptExistingInstance:

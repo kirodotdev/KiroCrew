@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { store, useAppDispatch, useAppStore } from '../store'
 import { useConnected } from '../hooks/useConnected'
@@ -7,12 +7,27 @@ import { api } from '../api/client'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { colorName, paletteSlot } from '../utils/sessionColors'
 import { offlineProps } from '../utils/offline'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
 
 /** Mirrors the backend contract in chat_persistence.COLOR_HEX_RE. */
 const HEX_RE = /^#[0-9a-fA-F]{6}$/
+
+/** Recently applied custom colours, newest first. Browser-local, like the other
+ *  `mc-session-colors-*` choices. */
+const RECENT_KEY = 'mc-session-colors-recent'
+const RECENT_MAX = 8
+
+function readRecent(): string[] {
+  try {
+    const v: unknown = JSON.parse(safeGetItem(RECENT_KEY) ?? '[]')
+    return Array.isArray(v) ? v.filter((c): c is string => typeof c === 'string' && HEX_RE.test(c)) : []
+  } catch {
+    return []
+  }
+}
 
 /**
  * The inline session-colour swatch row used as the `colorSlot` of
@@ -29,11 +44,15 @@ const HEX_RE = /^#[0-9a-fA-F]{6}$/
  *   one PATCH — an index-only null would leave a custom hex in place, since
  *   the endpoint is `in body`-gated.
  *
+ * The last custom colour applied while the row is open joins a short recent
+ * list when it closes; the list shows as a second row of swatches that re-apply
+ * that `color_hex` in one click.
+ *
  * `onPicked` lets a caller that controls its own menu close it after a pick (the
  * header passes `setOpen(false)`); the sidebar menus are uncontrolled, so they
  * omit it and stay open — letting you try colours. Custom-hex commits never
  * call `onPicked`: the OS colour panel outlives the menu, and closing the row
- * mid-drag would orphan it.
+ * mid-drag would orphan it. A recent swatch is a one-click pick, so it does.
  */
 export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, onPicked }: {
   slotKey: string
@@ -58,6 +77,17 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   // that target the SAME value apart, so a late failure of the first would roll
   // back over the second's success. Only the latest write may roll back.
   const writeGenRef = useRef(0)
+  // Read once and recorded on unmount: the open row never reflows under the
+  // pointer, and a wheel drag that commits at every pause adds one colour.
+  const [recent] = useState(readRecent)
+  const lastHexRef = useRef<string | null>(null)
+  // The last hex actually written, so a wheel colour whose commit a pick
+  // cancels is not recorded.
+  const appliedHexRef = useRef<string | null>(null)
+  useEffect(() => () => {
+    const hex = lastHexRef.current
+    if (hex) safeSetItem(RECENT_KEY, JSON.stringify([hex, ...readRecent().filter(c => c !== hex)].slice(0, RECENT_MAX)))
+  }, [])
   if (HEX_RE.test(draft)) lastValidRef.current = draft
 
   const connected = useConnected()
@@ -125,7 +155,16 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
     // without this, a wheel drag followed within 300ms by a palette/no-color
     // click would let the delayed hex PATCH run last and persist stale color.
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
+    lastHexRef.current = appliedHexRef.current
     colorMutation.mutate(idx)
+    onPicked?.()
+  }
+
+  const pickHex = (hex: string) => {
+    if (!connected) return
+    if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
+    hexMutation.mutate(hex)
+    lastHexRef.current = appliedHexRef.current = hex
     onPicked?.()
   }
 
@@ -136,13 +175,17 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
     // A direct commit (Enter/blur) supersedes a pending wheel commit too.
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
     dirtyRef.current = false
-    hexMutation.mutate(value.toLowerCase())
+    const hex = value.toLowerCase()
+    hexMutation.mutate(hex)
+    lastHexRef.current = appliedHexRef.current = hex
   }
 
   /** Native colour input fires on every wheel movement — debounce the PATCH
    *  so a drag commits once, 300ms after the user settles. */
   const onWheelChange = (value: string) => {
     setDraft(value)
+    // Recorded now: the menu can close before this drag's commit fires.
+    lastHexRef.current = value.toLowerCase()
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
     commitTimerRef.current = setTimeout(() => commitHex(value), 300)
   }
@@ -173,6 +216,14 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
           {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), i18nT('components.sessionColorSwatches.custom_color'))}
         />
       </div>
+      {recent.length > 0 && (
+        <div className={`flex items-center gap-1.5 px-3 pb-1.5 ${connected ? '' : 'opacity-40'}`} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'))}>
+          {recent.map(c => {
+            const label = `${colorName(c)} (${c})`
+            return <button type="button" key={c} aria-label={label} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue aria-disabled:cursor-not-allowed aria-disabled:hover:scale-100 ${colorHex === c ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pickHex(c)} title={label} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), label)} />
+          })}
+        </div>
+      )}
       {customOpen && (
         <div className={`flex items-center gap-2 px-3 pb-1.5 ${connected ? '' : 'opacity-40'}`}>
           <input

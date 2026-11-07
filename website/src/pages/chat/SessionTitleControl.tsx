@@ -254,8 +254,8 @@ export default function SessionTitleControl({
   const [focused, setFocused] = useState(false)
   useHeldWindow(undoable, UNDO_WINDOW_MS, hovered || focused, () => setUndoable(null))
 
-  const report = (e: unknown, leadKey: string) =>
-    onError?.(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT(leadKey))
+  const report = (e: unknown, leadKey: string, vars?: Record<string, string>) =>
+    onError?.(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT(leadKey, vars))
 
   const commit = (draft: string) => {
     const refused = draft.trim()
@@ -318,7 +318,8 @@ export default function SessionTitleControl({
       // (they already renamed again), and surfacing it would re-raise the
       // notice a newer attempt's start just cleared. The recovery below still
       // runs, gated the same way, so the store is never left on a refused value.
-      if (rec.gen === myGen) report(e, 'pages.chatPage.could_not_rename_session')
+      // Names the refused title as the header showed it ("Untitled session", never a key).
+      if (rec.gen === myGen) report(e, 'pages.chatPage.could_not_rename_session_to', { title: sessionDisplayTitle({ key, title: refused }) })
       // A refused rename must also revert the optimistic title. Re-read the
       // server truth (deduped through queryClient.fetchQuery so overlapping
       // failures share one request) and apply ONLY this slot's title — never

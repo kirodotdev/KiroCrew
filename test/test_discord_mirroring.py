@@ -387,6 +387,42 @@ class TestDispatcherOriginMirroring:
             await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
+    async def test_a_cold_start_after_a_restart_cites_the_store_the_slot_was_on(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """With no capture to read, the slot's units on disk name the predecessor.
+
+        The restart drops every in-process cache and the double maps nothing, so only
+        the store can answer; the slot's genuine first store states it has none.
+        """
+        from kiro_crew.crew_log import emit
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+        unsync_appends(monkeypatch)  # the records are the subject, not their durability
+        monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
+        monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-1", raising=False)
+        emit.reset_caches()
+        try:
+            d, _cli, sess = _dispatcher({"u1"})
+            sess.has_session = lambda key: False
+            await d.handle_message(self._msg("hello"))
+            await asyncio.to_thread(assert_drained)
+            first = off_loop(_read_session_log, "acp-gen-1")
+            opened = [e for e in first if e.type == "session/opened"]
+            assert [e.data.get("previous_none") for e in opened] == [True]
+
+            emit.reset_caches()
+            monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
+            await d.handle_message(self._msg("after the restart"))
+            await asyncio.to_thread(assert_drained)
+            entries = off_loop(_read_session_log, "acp-gen-2")
+            opened = [e for e in entries if e.type == "session/opened"]
+            assert [e.data.get("previous") for e in opened] == [{"sid": "acp-gen-1"}]
+        finally:
+            await asyncio.to_thread(settle)
+
+    @pytest.mark.asyncio
     async def test_the_predecessor_is_captured_inside_the_allocation_not_around_it(
         self, monkeypatch, tmp_path
     ) -> None:

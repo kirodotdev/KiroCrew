@@ -28,12 +28,12 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
 /**
  * What the modal can be handed: a reading, `null` while the gateway's usage
  * cache warms, `'none'` when the gateway holds no reading (no plan from the API
- * and none from the scrape; the pill shows this state only on the Kiro backend,
+ * and none from the scrape; the pill shows this state only on a Kiro harness,
  * where the Refresh below can fill it), `'failed'` when
  * the fetch itself failed with nothing cached, `'signin-required'`
  * when no live Kiro credential could be read, or `'config-unreadable'` when the
- * gateway holds no reading AND the config read that decides whether this is the
- * Kiro backend at all failed -- so nothing can be shown as a fact, and the read
+ * gateway holds no reading AND the config read that decides whether this is a
+ * Kiro harness at all failed -- so nothing can be shown as a fact, and the read
  * is retried from here. `null` is the ONLY value that means "still loading" —
  * the others have nothing more to wait for, so spinning on them would repeat
  * the defect this distinction exists to remove.

@@ -19,7 +19,7 @@ import {
   loadBannerEnabled, shouldBannerNote,
 } from '../../hooks/notificationBanner'
 import type { Notification } from '../../types'
-import { notePriority, safeInternalUrl } from './notifMeta'
+import { notePriority, noteText, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
@@ -94,6 +94,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
   const isMobile = useIsMobile()
   const reduced = !!useReducedMotion()
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const notificationItems = useAppSelector(s => s.notifications.items)
 
   const [pending, setPending] = useState<Notification[]>([])
   const [expanded, setExpanded] = useState(false)
@@ -161,6 +162,13 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
     setPending(next)
     if (next.length <= 1) setExpanded(false)
   }, [measureExit])
+
+  useEffect(() => {
+    const held = new Set(notificationItems.filter(n => n.key).map(n => n.ts))
+    removeNotes(
+      pendingRef.current.filter(n => n.key && !held.has(n.ts)).map(n => n.ts),
+    )
+  }, [notificationItems, removeNotes])
 
   const fireAutoHide = useCallback(() => {
     timer.current = null
@@ -481,7 +489,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
                     <NotificationCard
                       n={n}
                       onOpen={() => openNote(n)}
-                      openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
+                      openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: noteText(n).title })}
                       onDismiss={() => removeNotes([n.ts])}
                       dismissLabel={i18nT('components.notifications.notificationBanner.dismiss_notification')}
                       dismissTestId="notification-banner-dismiss"

@@ -93,6 +93,61 @@ def test_every_other_denied_caller_keeps_the_generic_response(kwargs) -> None:
     assert source.stale_owner_session_response(_mocked_request(**kwargs)) is None
 
 
+# ── a former owner's session (owner id changed or cleared after sign-in) ─────
+
+
+def _owner_minted_token(subject: str, *, owner_mint: bool = True) -> str:
+    from kiro_crew.dashboard.token_auth_tokens import generate_token, owner_mint_extra
+
+    return generate_token(subject, extra=owner_mint_extra() if owner_mint else None)
+
+
+@pytest.mark.parametrize("owner_id", ["U_NEW_OWNER", ""])
+def test_former_owner_session_gets_distinct_denial(owner_id) -> None:
+    request = _mocked_request(user="U_OLD_OWNER", owner_id=owner_id)
+    request["auth_token"] = _owner_minted_token("U_OLD_OWNER")
+    resp = source.stale_owner_session_response(request)
+    assert resp is not None
+    assert resp.status == 401
+    assert f'"code": "{STALE}"' in (resp.text or "")
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        # An allowlisted messaging user's token never carries the claim.
+        lambda r: r.__setitem__("auth_token", _owner_minted_token("U_X", owner_mint=False)),
+        # No validated token published at all.
+        lambda r: None,
+        # A non-string published token.
+        lambda r: r.__setitem__("auth_token", object()),
+    ],
+)
+def test_non_owner_minted_signed_subject_keeps_generic(setup) -> None:
+    request = _mocked_request(user="U_X")
+    setup(request)
+    assert source.stale_owner_session_response(request) is None
+
+
+def test_owner_minted_app_token_keeps_generic() -> None:
+    request = _mocked_request(user="U_OLD_OWNER", app_claim="app-X")
+    request["auth_token"] = _owner_minted_token("U_OLD_OWNER")
+    assert source.stale_owner_session_response(request) is None
+
+
+def test_owner_mint_claim_survives_refresh_token_round_trip() -> None:
+    from kiro_crew.dashboard.refresh_tokens import (
+        generate_refresh_token,
+        refresh_token_owner_minted,
+    )
+
+    marked, *_ = generate_refresh_token("U_OWNER", owner_mint=True)
+    plain, *_ = generate_refresh_token("U_OWNER")
+    assert refresh_token_owner_minted(marked) is True
+    assert refresh_token_owner_minted(plain) is False
+    assert refresh_token_owner_minted("not-a-token") is False
+
+
 # ── through the owner gate (source-provider mutation route) ─────────────────
 
 
@@ -139,6 +194,87 @@ async def test_owner_gate_labels_stale_bootstrap_denial_and_grants_nothing(
 
     assert payload["code"] == STALE
     resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_minted", [True, False])
+async def test_source_gate_with_owner_cleared_labels_former_owner(
+    monkeypatch, owner_minted
+) -> None:
+    """With no owner configured, a former owner's session is told to sign in
+    again; a claimless subject keeps the generic 403. Neither runs the mutation."""
+    resolve = AsyncMock(return_value=None)
+    monkeypatch.setattr(source, "resolve_pull_request_thread", resolve)
+    token = _owner_minted_token("U_OLD_OWNER", owner_mint=owner_minted)
+
+    @web.middleware
+    async def fake_auth(request, handler):
+        request["user"] = "U_OLD_OWNER"
+        request["app"] = ""
+        request["auth_token"] = token
+        return await handler(request)
+
+    app = web.Application(middlewares=[fake_auth])
+    state = MagicMock()
+    state.owner_id = ""
+    app["state"] = state
+    app.router.add_post("/api/source/pull-request/resolve", source.api_pull_request_resolve)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/source/pull-request/resolve",
+            json={"url": "https://github.com/acme/repo/pull/1", "threadId": "T1"},
+        )
+        status, payload = resp.status, await resp.json()
+
+    if owner_minted:
+        assert (status, payload["code"]) == (401, STALE)
+    else:
+        assert (status, payload) == (403, {"error": "forbidden"})
+    resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("loaded_owner", "env_owner", "user_id", "marked"),
+    [
+        ("U_OWNER", None, "U_OWNER", True),
+        ("U_OWNER", None, "U_ALLOWED", False),
+        # The loaded identity decides: an owner id present only in the process
+        # environment marks nothing, and one that disagrees with the loaded
+        # owner does not move the claim.
+        ("", "U_OWNER", "U_OWNER", False),
+        ("U_OWNER", "U_ALLOWED", "U_ALLOWED", False),
+    ],
+)
+async def test_slack_dashboard_link_marks_only_the_owner(
+    monkeypatch, loaded_owner, env_owner, user_id, marked
+) -> None:
+    """The owner's own Slack link carries the owner-mint claim; an allowlisted
+    user's link does not."""
+    from kiro_crew.dashboard.token_auth_tokens import token_owner_minted_unverified
+    from kiro_crew.slack import allowlist, handler
+
+    monkeypatch.setattr(handler, "_owner_id", loaded_owner)
+    if env_owner is None:
+        monkeypatch.delenv("KIROCREW_OWNER_ID", raising=False)
+    else:
+        monkeypatch.setenv("KIROCREW_OWNER_ID", env_owner)
+    minted: list[str] = []
+    real = allowlist.generate_token
+
+    def _capture(*args, **kwargs):
+        tok = real(*args, **kwargs)
+        minted.append(tok)
+        return tok
+
+    monkeypatch.setattr(allowlist, "generate_token", _capture)
+    slack = MagicMock()
+    slack.open_dm = AsyncMock(return_value="D1")
+    slack.post_message = AsyncMock(return_value={"ok": True, "ts": "1"})
+    slack.post_blocks = AsyncMock(return_value={"ok": True, "ts": "1"})
+    await allowlist.send_dashboard_link(slack, user_id, 600)
+    assert minted, "send_dashboard_link minted no token"
+    assert token_owner_minted_unverified(minted[0]) is marked
 
 
 @pytest.mark.asyncio

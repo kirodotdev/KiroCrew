@@ -65,6 +65,12 @@ servers, every entry is validated before any of them is written, so a single bad
 entry fails the whole paste rather than half-applying it. A name already configured
 anywhere is refused rather than overwritten.
 
+This page is the place to add or turn on a server. The default agent's spec,
+`~/.kiro/agents/kirocrew.json`, is rebuilt on every gateway start from this list,
+`~/.kiro/settings/mcp.json` and installed apps, so it is not edited to add one. A
+stdio server whose program is not found on this computer is dropped from that spec;
+if a server's tools are missing in chat, check its row here first.
+
 ### Remote servers that need a sign-in
 
 A remote server usually answers the first request with a `401`, and that is the whole
@@ -240,10 +246,19 @@ files into its own cache directory, keyed by a hash of the server's URL — one 
 the bearer and refresh token, one holding the client registration. Both survive a
 restart.
 
-**Kiro Crew checks whether those files exist and never opens them.** That is what the
-"Signed in" badge reports: a sign-in happened, not that the token is still valid. It
-also means Kiro Crew can tell you neither the granted scope nor the expiry, and there
-is no place in the product where a provider token can be printed.
+On the KAS backend (`agent.acp_backend = kas`) `kiro-cli`'s cache is not written.
+With `agent.kas_persist_mcp_sign_in` on (the default), the engine hands its tokens and
+client registration to Kiro Crew, which keeps them in a dedicated encrypted vault
+under `<data home>/kas/mcp-grants/`, apart from your Settings → Secrets vault. With it
+off, the engine holds the sign-in in memory and loses it when it exits.
+With this setting off, the badge ignores any entries left in the vault.
+
+**Kiro Crew checks whether those files exist and never opens them.** For the KAS
+vault it checks whether the server's entry name is listed; it opens no key file and
+decrypts nothing. That is what the "Signed in" badge reports: a sign-in happened, not
+that the token is still valid. It also means Kiro Crew can tell you neither the
+granted scope nor the expiry, and there is no place in the product where a provider
+token can be printed.
 
 One consequence worth knowing: **removing a server's config entry does not revoke its
 grant.** The token files are keyed on the URL, not on the entry, so a later reconnect
@@ -287,8 +302,14 @@ Results are cached, so a row you just fixed can keep reading stale until you re-
 it. The panel names that step.
 
 A remote server that answers with a challenge gets a second, separate badge about the
-sign-in: **Sign-in required** (a challenge was seen and no grant exists), **Signed
-in** (the grant files are there), or **Not verified** (nothing the check could name).
+sign-in: **Sign-in required** (a challenge was seen and neither `kiro-cli`'s cache
+nor the KAS vault holds a grant), **Signed in** (either one holds it), or **Not
+verified** (the check could not tell). A server entry with `headers` reads **Not
+verified** unless `kiro-cli` holds its grant: Kiro Crew does not send those headers
+to the KAS engine as configured, so the vault entry's name cannot be worked out from
+the entry. The KAS vault name follows the engine's own key format; if a KAS upgrade
+changes that format, a signed-in server can read **Sign-in required** until Kiro Crew
+catches up.
 
 ### Test
 

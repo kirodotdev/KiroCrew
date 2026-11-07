@@ -45,6 +45,7 @@ async def test_member_denial_survives_audit_failure_without_reading_history(
         await sel_module.warm_sel_singleton()
     list_history = mock.Mock(return_value=[{"key": "dashboard:owner", "title": "private"}])
     env.state.conversation_log.list_sessions = list_history
+    env.state.conversation_log.list_sessions_indexed = list_history
     if not verified_member:
         monkeypatch.setattr(
             "kiro_crew.execution_context.read_session_execution",
@@ -96,6 +97,7 @@ async def test_owner_and_verified_scoped_member_keep_their_existing_admission(en
     monkeypatch.setattr(sel_module, "sel", event_log)
     list_history = mock.Mock(return_value=[])
     env.state.conversation_log.list_sessions = list_history
+    env.state.conversation_log.list_sessions_indexed = list_history
 
     response = await sessions.api_sessions(request(env, owner=True))
     assert response.status == 200

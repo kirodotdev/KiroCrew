@@ -192,9 +192,12 @@ def _install_mate_conductor_agent() -> None:
     )
     if spec_has_ledger_tools(governed):
         # ``dashboard`` rides along because the crewmate prompt names that skill
-        # (``conductor.crew_log_section``); a mapping of goal-conductor alone would
-        # scope the chat's skills to it and leave the dashboard skill out of reach.
-        skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
+        # (``conductor.crew_log_section``), and ``WIDGET_POINTER_SKILLS``; a mapping
+        # of goal-conductor alone would scope the chat's skills to it and leave
+        # those out of reach.
+        skill_resources.map_prompt_skills(
+            config, "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
+        )
     _write_mate_service_spec(
         _MATE_CONDUCTOR_AGENT_FILENAME, config, "_install_mate_conductor_agent"
     )
@@ -225,6 +228,7 @@ def _install_mate_worker_agent() -> None:
     principles = MATE_WORKER_PROMPT
     base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
     config["prompt"] = f"{base_prompt.rstrip()}\n\n{principles}" if base_prompt else principles
+    _register_edition_refs(config)
     # A worker bound to an item in its crewmate's ledger reports on it. The base's
     # server wins over a crewmate file's entry of the same name
     # (``mate_worker.merge_worker_spec``), so a crewmate's file cannot replace it.
@@ -585,6 +589,34 @@ def _mount_team_lead_dispatch(config: dict) -> None:
     config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
 
 
+def _register_edition_refs(config: dict) -> None:
+    """Reference every edition-contributed server *config* mounts in ``tools``.
+
+    ``build_agent_config`` puts each ``_extra_mcp_servers()`` entry in
+    ``mcpServers`` but leaves ``tools`` alone; the default spec gains the refs
+    later, in ``managed_mcp.register_managed_refs``. A spec written straight from
+    ``build_agent_config`` would otherwise mount those servers with none of their
+    tools exposed, because kiro-cli exposes only servers named as ``@<server>``
+    in ``tools``. Tools only, never ``allowedTools``: the refs make the tools
+    callable, and approving them stays with the ordinary gate.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    listed = config.get("tools")
+    if listed == "*":
+        # The scalar wildcard already exposes every mounted server's tools; keep it
+        # in the list shape the later installers read.
+        config["tools"] = ["*"]
+        return
+    tools = list(listed) if isinstance(listed, list) else []
+    for name in agent_mod._extra_mcp_servers():
+        ref = f"@{name}"
+        if name in servers and ref not in tools:
+            tools.append(ref)
+    config["tools"] = tools
+
+
 def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
     """Mount ``kirocrew-work`` on *config* in place, auto-approving *grants*.
 
@@ -655,14 +687,11 @@ def _install_team_lead_agent() -> None:
     # The skills this agent is told to read: ``team-lead`` ("read it before acting on
     # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
     # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate
-    # protocol sends it there to change its own page. ``widgets`` / ``living-ui`` /
-    # ``artifacts`` are how it draws in the dashboard chat, as the conductor does:
-    # the widget pointer its contract block carries on that surface
-    # (``context_assembly.agent_spec.WIDGET_BLOCK_AGENTS``) names ``widgets`` and
-    # ``artifacts``, and ``widgets`` sends a moving picture on to ``living-ui``.
+    # protocol sends it there to change its own page. ``WIDGET_POINTER_SKILLS`` are
+    # how it draws in the dashboard chat, as the conductor does.
     # Without the mapping its search scope is empty and none of them can be found.
     skill_resources.map_prompt_skills(
-        config, "team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"
+        config, "team-lead", "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
     )
     _mount_team_lead_dispatch(config)
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)

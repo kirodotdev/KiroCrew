@@ -41,9 +41,7 @@ from kiro_crew.apps.routes import (
 )
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/open
-# ---------------------------------------------------------------------------
 
 
 class TestOpenApp:
@@ -249,9 +247,7 @@ class TestOpenApp:
         assert spawned == []
 
 
-# ---------------------------------------------------------------------------
 # GET /apps/{name}/ui/{path} — path and type validation
-# ---------------------------------------------------------------------------
 
 
 class TestAppUiFile:
@@ -304,9 +300,7 @@ class TestAppUiFile:
             assert (await resp.json())["error"] == "invalid path"
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/dev
-# ---------------------------------------------------------------------------
 
 
 class TestAppDevMode:
@@ -353,9 +347,7 @@ class TestAppDevMode:
             assert "error" not in (await resp.json())
 
 
-# ---------------------------------------------------------------------------
 # GET/PUT /api/apps/{name}/config
-# ---------------------------------------------------------------------------
 
 
 class TestAppConfig:
@@ -449,9 +441,7 @@ class TestAppConfig:
             assert await resp.json() == {"theme": "dark"}
 
 
-# ---------------------------------------------------------------------------
 # App-secret cache + backend URL resolution
-# ---------------------------------------------------------------------------
 
 
 class TestAppSecretCache:
@@ -534,9 +524,7 @@ class TestResolveAppBackendUrl:
         assert _resolve_app_backend_url(APP) is None
 
 
-# ---------------------------------------------------------------------------
 # Reverse proxy /apps/{name}/api/{path} — authorization gates
-# ---------------------------------------------------------------------------
 
 
 class _FakeCM:
@@ -568,12 +556,9 @@ class _FakeSession:
 def _fail_proxy_backend_with(app: web.Application, exc: BaseException) -> None:
     """Make the proxy's outbound session raise ``exc``, installed BEFORE start.
 
-    ``register_app_routes`` creates the real ``ClientSession`` in an
-    ``on_startup`` hook; hooks run in registration order, so this one runs
-    right after it, closes the real session (its connector would otherwise
-    outlive the test) and installs the fake while the app is still mutable.
-    An ``app[...]`` write after the test server has started is deprecated by
-    aiohttp.
+    Startup hooks run in registration order, so this one runs right after the hook that
+    creates the real ``ClientSession``, closes it (its connector would outlive the test)
+    and installs the fake while the app is still mutable, as aiohttp requires.
     """
 
     async def _swap(app_: web.Application) -> None:

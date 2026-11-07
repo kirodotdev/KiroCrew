@@ -18,7 +18,8 @@ from kiro_crew.history import ConversationLog
 class TestStopEventContextInjection:
     """Tests for context.py stop_event note injection."""
 
-    def test_context_injection_stop_event(self, tmp_path):
+    @pytest.mark.parametrize(("state", "outcome"), [("stopped", "soft"), ("force_stopped", "hard")])
+    def test_context_injection_stop_event(self, tmp_path, state, outcome):
         """context.py emits the system note for resolved stop events."""
         import json
 
@@ -32,8 +33,8 @@ class TestStopEventContextInjection:
             {
                 "kind": "stop_event",
                 "id": "stop-abc",
-                "state": "stopped",
-                "outcome": "soft",
+                "state": state,
+                "outcome": outcome,
             }
         )
         log.append("sess1", "system", stop_data)
@@ -87,11 +88,8 @@ class TestStopEventContextInjection:
 class TestCancelledTurnPreambleInstruction:
     """The restore block must not invite a standalone cancellation ack.
 
-    The model reads the cancelled-turn preamble verbatim; an instruction that
-    permits acknowledging the cancellation makes it emit a synthetic
-    "Response was interrupted" message styled like a real response. The
-    wording must forbid any standalone acknowledgment, and the bracket
-    markers must stay byte-identical because context_blocks.py parses them.
+    Permitting an ack makes the model emit a fake "Response was interrupted" reply.
+    The bracket markers stay byte-identical because context_blocks.py parses them.
     """
 
     def test_preamble_forbids_standalone_acknowledgment(self, tmp_path):

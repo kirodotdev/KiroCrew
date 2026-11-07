@@ -18,10 +18,12 @@ from kiro_crew import hooks as hooks_mod
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY, HookManager, HooksConfig
 
 
-def _judge(tool: str, raw: dict, *, trusted: bool = True, kind: str = "", **extra):
+def _judge(
+    tool: str, raw: dict, *, trusted: bool = True, kind: str = "", title: str = "Searching", **extra
+):
     """One kiro-cli permission request for built-in *tool*, as the gate receives it."""
     return HookManager(extra.pop("config", None) or HooksConfig()).on_tool_call(
-        "Searching",
+        title,
         tool_kind=kind,
         raw_params=raw,
         mcp_tool_name=tool,
@@ -168,3 +170,30 @@ class TestTheSetsStayNarrow:
     def test_no_other_builtin_gains_the_proof(self, tool, root):
         raw = {"path": root, "url": "https://example.com", "command": "ls"}
         assert not hooks_mod._is_host_search_builtin_call(tool, "", raw, mcp_identity_trusted=True)
+
+
+class TestTheExfilRuleDoesNotReadASearch:
+    """A trusted ``grep``/``glob`` with no command line runs no shell: its title is the
+    text it searches for, so the exfil rule does not refuse it. Nothing else moves."""
+
+    @pytest.mark.parametrize("tool", ["grep", "glob"])
+    @pytest.mark.parametrize("text", ["-d @", "--data-binary=@", "-F file=@"])
+    def test_a_trusted_search_for_exfil_text_is_not_refused(self, tool, text, root):
+        result = _judge(tool, {"pattern": text, "path": root}, title=f"Searching for '{text}'")
+        assert result.action != TOOL_DENY
+
+    @pytest.mark.parametrize(
+        ("tool", "raw", "extra"),
+        [
+            ("grep", {}, {"trusted": False}),
+            ("glob", {}, {"mcp_server_name": "files"}),
+            ("code", {"operation": "pattern_search"}, {}),
+            ("grep", {"command": "echo '-d @x'"}, {}),
+            ("grep", {}, {"command": "echo '-d @x'", "is_shell": True}),
+            ("shell", {}, {"command": "echo '-d @x'", "is_shell": True}),
+        ],
+    )
+    def test_anything_else_keeps_the_exfil_rule(self, tool, raw, extra, root):
+        raw = {"pattern": "-d @", "path": root, **raw}
+        result = _judge(tool, raw, title="Searching for '-d @'", **extra)
+        assert (result.action, result.tier) == (TOOL_DENY, "exfil")

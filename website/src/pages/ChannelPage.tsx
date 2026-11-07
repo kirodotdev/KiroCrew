@@ -223,7 +223,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
         <div className="flex items-center gap-2 mb-0.5">
           <span className="text-sm font-semibold text-text-strong">{msg.fromRole}</span>
           {msg.mention && (
-            <span className="text-[13px] text-muted">→ {(Array.isArray(msg.mention) ? msg.mention : [msg.mention]).map(id => '@' + (agents.find(a => a.id === id)?.role || id)).join(', ')}</span>
+            <span className="text-[13px] text-muted">→ {fmtList((Array.isArray(msg.mention) ? msg.mention : [msg.mention]).map(id => '@' + (agents.find(a => a.id === id)?.role || id)))}</span>
           )}
           <span className="text-[13px] text-muted ml-auto">{time}</span>
         </div>
@@ -554,7 +554,7 @@ function NewChannelDialog({ onClose, onCreate, onClosedError, presets }: {
           <Btn key={p.id} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
             className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
             <span className="font-medium">{presetLabel(p)}</span>
-            {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({p.agents.map(a => a.role).join(', ')})</span>}
+            {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({fmtList(p.agents.map(a => a.role))})</span>}
           </Btn>
         ))}
       </div>
@@ -1202,7 +1202,7 @@ export default function ChannelPage() {
                 {clearDone.roles
                   ? i18nT('pages.channelPage.clear_context_cleared_roles', { roles: clearDone.roles })
                   : clearDone.messagesDeleted
-                    ? `${i18nT('pages.channelPage.clear_context_done')} ${i18nT('pages.channelPage.clear_context_messages_deleted')}`
+                    ? i18nT('pages.channelPage.clear_context_done_messages_deleted')
                     : i18nT('pages.channelPage.clear_context_done')}
                 {clearDone.messagesDeleted && (
                   <Btn

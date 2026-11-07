@@ -68,6 +68,9 @@ def _fresh_catalog_cache(_floor_monkeypatch: pytest.MonkeyPatch):
 class _SignedOutKiroPrerequisiteService(KiroPrerequisiteService):
     """Not-ready latch: the guard's ``isinstance`` check must still accept it."""
 
+    # Built without ``__init__``, so the refusal's latch read needs a status here.
+    _status = PrerequisiteStatus(platform="Linux")
+
     async def session_ready(self) -> bool:
         return False
 
@@ -577,6 +580,26 @@ async def test_destructive_rerun_gate_still_reprobes_a_stale_latch() -> None:
     probe.assert_awaited_once()
     # The stubbed probe left the latch ready=True, so the gate authorizes.
     assert blocked is None
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_probe_is_refused_as_a_timeout_not_a_sign_in_wall() -> None:
+    """A CLI that only answered too slowly may be installed and signed in."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    service._status = PrerequisiteStatus(platform="linux", installed=True, probe_timed_out=True)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        blocked = await kiro_readiness.reject_if_kiro_unverified(_request(service))
+
+    # The refusal reads the latched verdict; it starts no probe of its own.
+    probe.assert_not_awaited()
+    assert blocked is not None
+    assert blocked.status == 503
+    body = json.loads(cast(bytes, blocked.body))
+    # Not the sign-in code, which the dashboard answers with "run kiro-cli login".
+    assert body["code"] == "kiro_probe_timed_out"
+    assert "timed out" in body["error"]
 
 
 @pytest.mark.asyncio

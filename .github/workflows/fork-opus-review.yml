@@ -2007,6 +2007,8 @@ jobs:
             # overwrite the newer run's row with a stale verdict. A row whose
             # run-id dimension is NEWER than this run's is left alone.
             enc="$(jq -rn '"Opus 5.5 Review" | @uri')"
+            # No `filter=all` needed: the default can drop only completed rows,
+            # never a non-completed one (measured in #10116).
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]

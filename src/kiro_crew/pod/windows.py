@@ -189,6 +189,10 @@ class WindowsTaskError(RuntimeError):
     """Task Scheduler is not usable on this host."""
 
 
+class WindowsTaskCreateRefused(WindowsTaskError):
+    """Task Scheduler answered and refused to create this user's task: no pod can be made."""
+
+
 # Gate
 # require_backend() sits on the chokepoint every schtasks call funnels through,
 # and its create-and-delete probe costs two subprocess spawns. Cache the
@@ -251,7 +255,7 @@ def require_backend() -> None:
         '"cmd.exe /c exit 0"',
     )
     if created.returncode != 0:
-        raise WindowsTaskError(
+        raise WindowsTaskCreateRefused(
             "this user cannot create a scheduled task, so pods cannot be "
             f"supervised on this host (schtasks /Create rc={created.returncode}): "
             f"{(created.stderr or created.stdout or '').strip()}\n"
@@ -1281,6 +1285,26 @@ def main_pid(cfg: PodConfig, name: str) -> int | None:
     return supervised_pid(cfg, name)
 
 
+def _boot_in_progress(cfg: PodConfig, name: str) -> bool:
+    """Whether a claimed boot's producer is still alive, before any gateway pid.
+
+    The producer validates the checkout and seeds HOME before it spawns the
+    gateway, so a caller that refuses under a live pod (worktree removal) must
+    refuse here too. A record or identity that cannot be read counts as a boot in
+    progress: the answer guards a deletion.
+    """
+    try:
+        record = runs.read(cfg, name)
+        if record is None or record["state"] != "preparing":
+            return False
+        handle = jobs.open_identity(*record["publisher"])
+        if handle is not None:
+            jobs.close_identity(handle)
+    except (OSError, ValueError):
+        return True
+    return handle is not None
+
+
 def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     """``(state, restarts)`` shaped like the systemd backend's return.
 
@@ -1288,7 +1312,7 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     so the pair is derived from two facts the wrapper records: the supervised
     pid, and the exit code of the last boot.
 
-    * a live pid -> ``("active", 0)``
+    * a live pid, or a boot whose producer is still alive -> ``("active", 0)``
     * no pid and a NON-ZERO recorded result -> ``("failed", 1)``
     * anything else -> ``("inactive", 0)``
 
@@ -1296,7 +1320,9 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     CRASH SIGNAL ``_wait_healthy`` stops waiting on, not a tally, so it must
     never be shown to a user as a restart count.
     """
-    if supervised_pid(cfg, name) is not None:
+    # Boot first: the producer records the gateway pid BEFORE it publishes
+    # `ready`, so a read that misses `preparing` then finds the pid.
+    if _boot_in_progress(cfg, name) or supervised_pid(cfg, name) is not None:
         return "active", 0
     rc = last_result(cfg, name)
     if rc is not None and rc != 0:
@@ -1305,24 +1331,28 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 
 def active_names(cfg: PodConfig) -> set[str]:
-    """Names of pods with a live gateway process.
+    """Names of pods with a live gateway process or a boot still in progress.
 
-    Enumerates this plane's pid records instead of listing tasks. A full
+    Enumerates this plane's pid and run records instead of listing tasks. A full
     ``schtasks /Query /FO CSV`` dump would have to be filtered on a localized
     status column, and it would also count a task that exists but whose process
-    is gone — which systemd's ``--state=active`` filter excludes for us.
+    is gone — which systemd's ``--state=active`` filter excludes for us. A boot
+    has no pid record until its gateway spawns, yet it is already using the
+    checkout, so its run record counts too (the same answer as :func:`unit_state`).
     """
     prefix = f"{cfg.unit_prefix}."
-    names: set[str] = set()
+    candidates: set[str] = set()
     try:
-        entries = list(cfg.pods_dir.glob(f"{prefix}*.winpid"))
+        for suffix in (".winrun", ".winpid"):
+            for path in cfg.pods_dir.glob(f"{prefix}*{suffix}"):
+                candidates.add(path.name[len(prefix) : -len(suffix)])
     except OSError:
-        return names
-    for path in entries:
-        candidate = path.name[len(prefix) : -len(".winpid")]
-        if candidate and supervised_pid(cfg, candidate) is not None:
-            names.add(candidate)
-    return names
+        return set()
+    return {
+        name
+        for name in candidates
+        if name and (_boot_in_progress(cfg, name) or supervised_pid(cfg, name) is not None)
+    }
 
 
 def journal_mark(cfg: PodConfig, name: str) -> dict[str, int]:

@@ -1,23 +1,8 @@
-"""``LocalMemoryFiles`` reproduces what ``MemoryStore``'s private methods did.
+"""``LocalMemoryFiles`` keeps the admission gates, hardened reader and atomic writer.
 
-The ``MemoryFiles`` seam moved memory's admission gates, hardened reader and
-atomic writer out of ``MemoryStore`` and behind an extension point. The claim
-that came with that move is that the PUBLIC edition's behaviour is unchanged --
-and a claim like that is only worth something if something fails when it stops
-being true.
-
-The suites that already cover this surface (``test_memory.py``,
-``test_memory_markdown_read.py``) exercise it THROUGH ``MemoryStore``, so they
-would also pass if the local implementation quietly relaxed a guarantee that
-``MemoryStore`` happened to re-establish on its own. These tests therefore go
-straight at ``LocalMemoryFiles``, one class of guarantee at a time, and assert
-the observable artefacts -- the bytes on disk, the permission bits, the absence
-of a temp file, the target of a planted link being untouched -- rather than that
-a call returned without raising.
-
-Each test names the property it pins, because a future implementation of this
-protocol has to satisfy the PROPERTY, and the local specifics (an ``O_NOFOLLOW``
-open, an inode's link count) are only how this one implementation achieves it.
+Tested directly rather than THROUGH ``MemoryStore``, which could re-establish a relaxed
+guarantee on its own. Assertions are on artefacts: bytes, permission bits, no temp file,
+an untouched link target. Each test names the PROPERTY a future implementation must meet.
 """
 
 from __future__ import annotations
@@ -302,12 +287,8 @@ class TestReadParity:
     def test_read_entry_refuses_a_file_over_the_size_cap(self, tmp_path: Path) -> None:
         """The cap bounds one read so a planted huge file cannot exhaust memory.
 
-        Exercised on the MEMBER/named-store path deliberately: that is the branch
-        whose reader is the descriptor-checked one governed by
-        ``_HISTORY_SNAPSHOT_MAX_BYTES``. The default store's branch delegates to
-        ``hooks.safe_read_file_bytes_nolink``, which carries its own cap -- so
-        pinning the constant there would assert against a number that does not
-        govern the path.
+        The named-store path is the one ``_HISTORY_SNAPSHOT_MAX_BYTES`` governs; the default
+        path uses ``hooks.safe_read_file_bytes_nolink``'s own cap.
         """
         memory_dir = tmp_path / "ws" / "memory"
         memory_dir.mkdir(parents=True)
@@ -368,12 +349,8 @@ class TestReadParity:
     ) -> None:
         """The every-turn read path must not follow a leaf link to a credential file.
 
-        ``read_text`` feeds ``get_context`` on the default V1 path, so a symlink
-        planted at ``preferences.md`` inside the agent-writable memory dir would,
-        if followed, publish the target's bytes into the model's context. The
-        root gate covers the directory components, not the leaf, so ``read_text``
-        screens the leaf itself and refuses a link loudly (its read callers catch
-        ``OSError`` and skip the source).
+        A followed link at ``preferences.md`` would put the target into the model context.
+        The root gate skips the leaf, so ``read_text`` refuses it with ``OSError``.
         """
         files = _files(tmp_path)
         outside = tmp_path / "evidence.txt"
@@ -395,11 +372,8 @@ class TestReadParity:
         """A lock on a directory that does not exist yet must create THAT
         directory and lock inside it, not fall back to its parent.
 
-        On a fresh workspace the memory/history dir may not exist when the first
-        write takes its lock. The old ``path if path.is_dir() else path.parent``
-        resolved the absent directory to the workspace root, so the lock (and the
-        later staging inside the still-absent directory) landed one level up and
-        the write raised ``FileNotFoundError``.
+        Falling back to the parent puts the lock one level up, and staging in the absent
+        directory then raises ``FileNotFoundError``.
         """
         memory_dir = tmp_path / "fresh_ws" / "memory"
         history_dir = memory_dir / "history"

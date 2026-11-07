@@ -443,9 +443,8 @@ class KiroCrewAgentConfig:
             "Tool stall hard cap override (s)",
             "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions "
             "running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies "
-            "to UNKNOWN verdicts and to an opaque MCP tool whose only WORKING "
-            "evidence is movement in the runtime's process tree; every other "
-            "WORKING session is never acted on.",
+            "to UNKNOWN verdicts and to the WORKING readings that key bounds; every "
+            "other WORKING session is never acted on.",
         ),
     )
     # Per-agent compaction threshold. Same empty-inherits convention as the

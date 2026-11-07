@@ -402,12 +402,10 @@ class TestBootRestore:
     ) -> None:
         """The routine container boot: a remote-only reopen seed must not hold the label.
 
-        Under ``KIROCREW_CONTAINER_AUTHORITY_RESTORED=1`` a listed tab whose transcript
-        is not on local disk stays in ``unrestored_slot_keys`` on EVERY boot, by design
-        (its transcript is fetched lazily, if ever). A finish that waited on that set
-        kept ``slotsPartial`` for the process lifetime, so the dashboard never drained
-        a deleted session's unread dot. The seed and the notice both come from the
-        real restore here, so this proves the condition against what a boot produces.
+        Under ``KIROCREW_CONTAINER_AUTHORITY_RESTORED=1`` a tab whose transcript is not on
+        local disk stays in ``unrestored_slot_keys`` on every boot by design, so waiting
+        on that set would keep ``slotsPartial`` forever. Seed and notice come from the
+        real restore.
         """
         from chat_test_helpers import _make_state
 

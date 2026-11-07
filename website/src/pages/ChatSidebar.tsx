@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useCrewMode, useMateSessionsHidden, usePreviewFlag } from '../hooks/usePreviewFlag'
 import { selectLiveMateThreads } from '../store/dashboardSlice'
+import { selectCloseNotice } from '../store/dashboard/closeWatch'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
 import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -186,6 +187,9 @@ function ChatSidebar({
   // remoteCrewError below, but lives above the list rather than in the menu,
   // because the plain entries close the menu on select.
   const [newChatError, setNewChatError] = useState('')
+  // A refused "Refresh PR status": same placement as newChatError, for the same
+  // reason (the row closes the menu on select).
+  const [prStatusRefreshError, setPrStatusRefreshError] = useState('')
   // Inline failure reason for "New chat on crew" — a crew create can 502 and
   // leave nothing behind, so its reason is shown in the submenu rather than lost.
   const remoteCrewErrorId = useId()
@@ -332,12 +336,16 @@ function ChatSidebar({
   } = useHistoryPane({ setHistoryFilter, slotFilter, dispatch })
   const [cleanupOpen, setCleanupOpen] = useState(false)
   const [folderCleanupOpen, setFolderCleanupOpen] = useState(false)  // header ⋮ → "Clean up empty folders" panel
+  const [folderCleanupRoot, setFolderCleanupRoot] = useState<ChatFolder | null>(null)  // folder ⋮ → "Close sessions and delete…"
   const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
   const [broadcastOpen, setBroadcastOpen] = useState(false)  // header ⋮ → "Broadcast message…" panel
-  const [filterSortOpen, setFilterSortOpen] = useState(false)
+  // 'folders': the board notice's Show opened the menu for its folder list (SearchDock).
+  const [filterSortOpen, setFilterSortOpen] = useState<boolean | 'folders'>(false)
   const sessionCleanup = useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dispatch, queryClient })
 
-  const bulkModel = useBulkModelSwitch({ localSlots })
+  const dashboardSlots: Slot[] = useAppSelector(s => s.dashboard.slots)
+  const bulkSlots = useMemo(() => dashboardSlots.filter(s => !s.peer_id), [dashboardSlots])
+  const bulkModel = useBulkModelSwitch({ localSlots, slots: bulkSlots })
   const resumeAll = useResumeAll({ localSlots, connected })
 
   const {
@@ -397,7 +405,7 @@ function ChatSidebar({
   const modelFilterInverted = filterModelsExcluded && activeModelKeys.size > 0
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, orderedColumns,
+    hideEmptyFolderBody, countSubfolderContents, orderedColumns,
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
@@ -738,7 +746,7 @@ function ChatSidebar({
   // each behaviour has one definition. Rename + Tags stay local (they drive this
   // component's inline-edit + tag-popover state).
   const sessionActions = useSessionActions(mode, { onOpened: onSelectSlot })
-  const closeRefused = useAppSelector(st => st.chat.closeRefused)
+  const closeRefused = useAppSelector(selectCloseNotice)
   const { forkError: duplicateError, clearForkError: clearDuplicateError } = sessionActions
   // Which sessions are currently open in a popped-out window (shared singleton).
   const { poppedOut } = useChatPopouts()
@@ -938,7 +946,7 @@ function ChatSidebar({
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
     filterSortOpen, filtersPaused, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
-    folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
+    folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
     foldersShelved, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
@@ -948,7 +956,7 @@ function ChatSidebar({
     historySearchScan, hoverPinRef, ime, installedAgents, instanceSessions, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, isMobile, isStaleExempt, lane, laneRowWindow, laneScrollMemory, laneSlots,
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
-    moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane,
+    moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane, prStatusRefreshError,
     onDropSessionRef, canStageSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
@@ -958,9 +966,9 @@ function ChatSidebar({
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
-    setFolderActionError, setFolderCleanupOpen, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
+    setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
     setHistoryFilter, setHistoryOpen, setLaneScrollEl, setBroadcastOpen, setManageTagsOpen, setModelFilterExcluded,
-    setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
+    setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey: pickSort, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
     manualOrderError, setManualOrderError,
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
@@ -1042,6 +1050,7 @@ function ChatSidebar({
 
       {/* Clean Up dialog */}
       {folderCleanupOpen && <FolderCleanupPanel folders={folders} onClose={() => setFolderCleanupOpen(false)} />}
+      {folderCleanupRoot && <FolderCleanupPanel key={folderCleanupRoot.id} folders={folders} root={folderCleanupRoot} slots={localSlots} onClose={() => setFolderCleanupRoot(null)} />}
       {cleanupOpen && renderSessionCleanupPanel(scope)}
 
       {/* Switch-all-to-model dialog — mirrors the Clean Up panel. Picking a

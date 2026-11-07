@@ -1098,9 +1098,7 @@ export function AgentBackendTab() {
     // "could not check" line reads as a mistake the reader refuses to touch. The
     // reasoning was in this file's own header, where no user will ever see it.
     if (row?.installed === 'unknown')
-      return `${i18nT('pages.developer.agentBackendTab.install_check_failed')} ${i18nT(
-        'pages.developer.agentBackendTab.can_still_switch',
-      )}`
+      return i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch')
     // AFTER the missing/unknown lines and BEFORE the descriptor lines: this row
     // has a positive install verdict, so it would otherwise fall through to
     // `Experimental` and say nothing about why the switch is dead.
@@ -1181,12 +1179,18 @@ export function AgentBackendTab() {
         </p>
       )
     if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} />
+    // A failed probe, so `ErrorNotice`.
     if (row?.installed === 'unknown')
       return (
-        <p className="text-[13px] leading-relaxed text-text">
-          {i18nT('pages.developer.agentBackendTab.install_check_failed')}{' '}
-          {i18nT('pages.developer.agentBackendTab.can_still_switch')}
-        </p>
+        <>
+          {/* No hand-off: this detail can also hold the Strands setup card,
+              whose model and sign-in drafts are not saved yet, and the
+              hand-off's navigation to the chat would discard them. */}
+          <ErrorNotice
+            message={i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch')}
+            variant="inline"
+          />
+        </>
       )
     if (row?.restart_required)
       return (

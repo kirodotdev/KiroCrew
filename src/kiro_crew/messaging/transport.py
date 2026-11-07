@@ -319,6 +319,15 @@ class MessagingTransport(ABC):
     ) -> str:
         """Send ``content`` to a conversation; return a platform message id."""
 
+    async def send_markdown(
+        self, conversation_id: str, content: str, thread_id: str | None = None
+    ) -> str:
+        """Send markdown ``content`` rendered; the default sends it as written.
+
+        A channel whose plain send shows markdown literally overrides this.
+        """
+        return await self.send_message(conversation_id, content, thread_id=thread_id)
+
     @abstractmethod
     async def resolve_conversation(self, user_id: str) -> str:
         """Resolve a direct-conversation id for ``user_id`` (``open_dm`` equiv)."""
@@ -348,7 +357,8 @@ class MessagingTransport(ABC):
         return []
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
-        """Resolve an advertised target to ``(conversation_id, thread_id)``."""
+        """Resolve a target id to ``(conversation_id, thread_id)``: one
+        :meth:`configured_targets` advertises, or a spelling the transport documents."""
         return None
 
     # -- Outbound authorization --------------------------------------------

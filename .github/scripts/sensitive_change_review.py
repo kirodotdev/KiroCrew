@@ -20,7 +20,7 @@ and drives it green there.
 
 On a same-repository PR the gate also keeps one sticky PR comment up to date,
 with the sensitive files and the template to paste into the approval. A fork
-PR's token cannot write, so a fork gets the job summary only.
+PR gets the job summary only: its sensitive change is refused whatever is pasted.
 
 Deterministic on purpose: no model, no sandbox run. It reads the PR, its file
 list and its reviews through `gh api` and answers one question.
@@ -586,7 +586,7 @@ def main() -> int:
         return 2
     text = _summary(verdict)
     print(text)
-    # A fork's token is read-only, so only a same-repository PR gets the comment.
+    # Only a same-repository PR gets the comment: a fork is refused regardless.
     # With no sensitive file left, an existing comment is refreshed (so it stops
     # asking for an approval) but no new one is created.
     if not is_fork(pr):

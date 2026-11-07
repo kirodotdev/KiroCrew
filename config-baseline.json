@@ -105,6 +105,7 @@
         "tool_approval_timeout_secs": 600,
         "session_control": true,
         "session_manager_chain": false,
+        "peer_steer_loss_recovery": false,
         "member_dispatch": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
@@ -1131,7 +1132,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Posture Admission Gate",
-      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by admit_wait_secs, until memory frees. Subagent spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. Manually triggered cron runs and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only.",
+      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by admit_wait_secs, until memory frees. Background helper turns (titles, labels, summaries, history consolidation) are skipped while it lasts. Subagent spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. Manually triggered cron runs and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1669,6 +1670,20 @@
       "tags": [],
       "label": "Session Manager Chain",
       "help": "Let a session reach the whole line of sessions under it, not only the ones it manages directly. With it on, a lead that handed a worker to a conductor can still send to, read, stop and close that worker, and closing the conductor hands its workers to the lead. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.peer_steer_loss_recovery",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Peer Steer Loss Recovery",
+      "help": "Let a steer that is not typed into the session's own composer (another session's session_send or session_broadcast steer, or an automation's) cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. Those harnesses can drop a steer they accepted, so it counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. While it is on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. Off by default: such a steer queues for the next turn, and only the composer steers these harnesses.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2568,6 +2583,8 @@
         "episodic_max_count": 10000,
         "decay_rates": {},
         "semantic_keys": [],
+        "session_affinity": 0.0,
+        "recency_boost": 0.0,
         "history_idle_hours": 3.0,
         "history_max_days": 365,
         "backup_enabled": true,
@@ -2966,6 +2983,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "memory.session_affinity",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Session Affinity",
+      "help": "V2 only. Additive boost for memories from the current conversation in recall ranking (0 = disabled; 0.10 = recommended). When a query is ambiguous, same-session episodes score higher than identically relevant episodes from other sessions. The boost is a flat lift added after the recency term, only to entries already admitted on relevance, so it can rank a same-session entry above one from another session that scores up to 0.10 higher. Clamped to 0..0.10.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
+      "path": "memory.recency_boost",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Recency Boost",
+      "help": "V2 only. Maximum multiplicative boost for recent memories in recall ranking, falling off hyperbolically: half at 7 days, a third at 14 days (0 = disabled, preserving the default age-neutral ranking; 0.15 = a 15% boost for today's entries). A recent entry can outrank an older one that scores up to (1 + boost) times higher. Clamped to 0..1.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
     },
     {
       "path": "memory.history_idle_hours",
@@ -4790,6 +4835,7 @@
         "stub_overrides": {},
         "pool_identity_env": [],
         "prewarm_count": 0,
+        "keep_alive_servers": [],
         "read_buffer_limit_bytes": 67108864,
         "response_spill_threshold_bytes": 262144
       }
@@ -5161,6 +5207,35 @@
       "enumValues": null,
       "defaultValue": 0,
       "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Keep-Alive Servers",
+      "help": "MCP server names whose shared backend is kept for the whole gateway run instead of being drained after idle_timeout_secs. For a server that keeps its sign-in only in memory, this makes it sign in once per run instead of again after each idle drain. Applies only to a server that is stubbed (stub_servers) and shared (enabled); a server not named here keeps the idle drain. The max_backends cap and a credential-file change can still restart it. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "mcp_gateway.read_buffer_limit_bytes",
@@ -6085,7 +6160,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Hard cap (s)",
-      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window) and for any per-agent watchdog_tool_stall_* override. Also bounds an opaque MCP tool whose only WORKING evidence is movement somewhere in the runtime's process tree, and a Windows shell tool whose only WORKING evidence is CPU movement in processes started since its dispatch. Every other WORKING reading (a matched shell child, a declared wait, a keepalive-pinging core tool) is deferred before this cap is consulted and is bounded only by the turn's own ceiling. Default 2h, clamped against the transport's per-prompt timeout like the suspect window.",
+      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window) and for any per-agent watchdog_tool_stall_* override. Also bounds an opaque MCP tool whose only WORKING evidence is movement somewhere in the runtime's process tree, and a Windows shell tool whose only WORKING evidence is CPU movement in processes started since its dispatch, and a model wait's WORKING reading. Every other WORKING reading (a matched shell child, a declared wait, a keepalive-pinging core tool) is deferred before this cap is consulted and is bounded only by the turn's own ceiling. Default 2h, clamped against the transport's per-prompt timeout like the suspect window.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 7200.0
@@ -7200,7 +7275,8 @@
         "voice_replies": false,
         "forum_activation": "always",
         "accounts": {},
-        "session_folder": ""
+        "session_folder": "",
+        "max_text_inject_kb": 50
       }
     },
     {
@@ -7528,6 +7604,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "telegram.max_text_inject_kb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Attachment Text Limit (KiB)",
+      "help": "How much of an attached text file or document reaches the model, in KiB of characters (at least 1); the rest is cut with a truncation marker.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
     },
     {
       "path": "weixin",
@@ -8934,6 +9026,8 @@
           "containment_enabled": true,
           "hard_limits": false,
           "tailnet_direct": false,
+          "ssm": false,
+          "ssm_port": 5477,
           "typing_idle_seconds": 10
         },
         "restore_sessions": false,
@@ -9175,6 +9269,8 @@
         "containment_enabled": true,
         "hard_limits": false,
         "tailnet_direct": false,
+        "ssm": false,
+        "ssm_port": 5477,
         "typing_idle_seconds": 10
       },
       "requiresRestart": true
@@ -9262,6 +9358,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Link",
+      "help": "Off by default. On: also listen on 127.0.0.1 at the SSM port, for teammates who reach this machine with an AWS Systems Manager port forward. Only people holding a Crew invite get in, and this port never treats a connection as the owner. A value that is not true or false reads as off. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Port",
+      "help": "Loopback port the SSM link listens on, 1024 to 65535. It is separate from the dashboard port so a forwarded connection is never mistaken for a local one. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5477,
       "requiresRestart": true
     },
     {
@@ -10863,7 +10989,11 @@
         "relay_crew_domain": "",
         "relay_move_grace_seconds": 1.0,
         "relay_lease_url": "",
-        "relay_lease_credential": ""
+        "relay_lease_credential": "",
+        "relay_lease_token_type": "",
+        "relay_viewer_enabled": false,
+        "relay_viewer_cps_url": "",
+        "relay_viewer_credential": ""
       }
     },
     {
@@ -10923,7 +11053,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Kiro Relay",
-      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Off by default. It connects only when Relay Lease Service URL and Relay Lease Credential are set, so the Crew can hold a lease; without them it starts a relay client that reports it cannot connect. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Off by default. It connects only when Relay Lease Service URL and Relay Lease Credential are set, so the Crew can hold a lease. Without them no relay client starts and the tunnel status names the missing setting. The one exception is no Relay Lease Service URL with Relay Host URL and Relay Crew Domain both set: then the client starts and reports that it has no host token. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -10999,6 +11129,66 @@
       "tags": [],
       "label": "Relay Lease Credential",
       "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, or the absolute path of a file holding it. Never the credential itself; it is read for each call and never logged.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_token_type",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Token Type",
+      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center, Builder ID or Kiro sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Any other value keeps Remote Control from starting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer",
+      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default, and nothing reads it yet. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_cps_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer Control Plane URL",
+      "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) means not set up. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_credential",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Relay Viewer Credential",
+      "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -11468,7 +11658,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Tool stall hard cap override (s)",
-      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies to UNKNOWN verdicts and to an opaque MCP tool whose only WORKING evidence is movement in the runtime's process tree; every other WORKING session is never acted on.",
+      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies to UNKNOWN verdicts and to the WORKING readings that key bounds; every other WORKING session is never acted on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
@@ -11769,6 +11959,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "apps.*.mute_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mute sessions this app opens",
+      "help": "Mute the chat sessions this app opens, as a session's own mute does: a finished turn plays no chime, shows no toast and marks nothing unread, and the notes those sessions post arrive silenced. A tool approval, a question for you and a failed turn still reach you. Your own sessions are unaffected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "auto_update",

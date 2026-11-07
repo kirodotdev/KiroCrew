@@ -39,12 +39,17 @@ import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 
 import { i18nT } from '../../i18n/t'
 import { useProvider } from '../../providers'
-import { useModelsAuthRequired } from '../../providers/modelListHealth'
+import { useModelsAuthRequired, useModelsDegradedReason } from '../../providers/modelListHealth'
 import ErrorNotice from '../../components/ErrorNotice'
 import { parseWholeNumber } from '../../utils/wholeNumber'
 
 export type { LinkPatternRule, LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
+
+/** A load-failure notice: the catalog lead with the failed read's own error
+ *  under it, or the lead alone when that error carries no text. */
+const loadFailure = (lead: string, reason: string | undefined) =>
+  reason ? { title: lead, message: reason, messagePlacement: 'below' as const } : { message: lead }
 
 export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const qc = useQueryClient()
@@ -345,6 +350,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // so this reads one boolean rather than the refusal code; it feeds only the
   // availableModelsQ banner, since the dashboard/roster reads do not carry it.
   const kiroSignInRequired = useModelsAuthRequired(provider.id)
+  const modelsDegradedReason = useModelsDegradedReason(provider.id)
   const configLoadMessage = kiroSignInRequired
     ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
     : i18nT('pages.settings.chatPanel.failed_to_load_config')
@@ -366,10 +372,12 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         <div className="mb-4 flex flex-wrap items-center gap-3">
           {/* No hand-off: the rest of the panel — and its `localRoleOther` /
               `localBudget` / `localKeepChars` drafts — stays mounted under this
-              banner, so the navigation would discard them. Retry is the path. */}
+              banner, so the navigation would discard them. Retry is the path.
+              The read's own error sits under the lead, so a failure Retry
+              cannot clear still says why. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            message={i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}
+            {...loadFailure(i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config'), dashQ.error?.message)}
           />
           <Btn onClick={() => dashQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
@@ -380,12 +388,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               the config, the agent roster and the resolved-model reads: they
               fail the same way to the user, so they share one notice and one
               Retry, which re-asks whichever of them failed. Always the generic
-              message: the kiro-cli sign-in flag is set only by the model-list
+              lead: the kiro-cli sign-in flag is set only by the model-list
               fetch, so these reads must not borrow its remedy for a failure of
-              their own. */}
+              their own. Under it, the first failed read's own error. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            message={i18nT('pages.settings.chatPanel.failed_to_load_config')}
+            {...loadFailure(
+              i18nT('pages.settings.chatPanel.failed_to_load_config'),
+              [mcQ, agentsQ, resolvedQ].map(q => q.error?.message).find(Boolean),
+            )}
           />
           <Btn
             onClick={() => {
@@ -404,10 +415,11 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               the catalog retry runs; navigating away could discard them. This is
               the one banner whose cause the sign-in flag describes, so it shows
               the "run kiro-cli login" message when the model list is degraded by
-              an expired / signed-out login. */}
+              an expired / signed-out login. The failed fetch's own error sits
+              under either lead. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            message={configLoadMessage}
+            {...loadFailure(configLoadMessage, modelsDegradedReason)}
           />
           <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
@@ -907,6 +919,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.quick_send')} hint={i18nT('pages.settings.chatPanel.click_a_suggested_reply_to_send_it_instantly', { mod: isMac ? '⇧' : 'Shift' })} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} hint={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.arrow_key_prompt_history')} hint={i18nT('pages.settings.chatPanel.arrow_key_prompt_history_desc')} checked={chatCfg.arrowKeyPromptHistory} onChange={v => setChat('arrowKeyPromptHistory', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.spellcheck_input')} hint={i18nT('pages.settings.chatPanel.spellcheck_input_desc')} checked={chatCfg.spellcheck} onChange={v => setChat('spellcheck', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.optimize_before_sending')} hint={i18nT('pages.settings.chatPanel.optimize_before_sending_desc', { chord: platformShortcut('Cmd+Z') })} checked={chatCfg.optimizeBeforeSend} onChange={v => setChat('optimizeBeforeSend', v)} />
@@ -933,6 +946,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             }}
             disabled={!mcQ.isSuccess}
           />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.double_escape_to_stop')} hint={i18nT('pages.settings.chatPanel.double_escape_to_stop_desc')} checked={chatCfg.doubleEscapeToStop} onChange={v => setChat('doubleEscapeToStop', v)} />
         </SettingsCard>
           )
 
@@ -1087,6 +1101,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab')} hint={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab_desc')} checked={chatCfg.sidebarClickOpensTab} onChange={v => setChat('sidebarClickOpensTab', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_empty_folders')} hint={i18nT('pages.settings.chatPanel.a_folder_with_no_chats_takes_one_row_instead_of')} checked={chatCfg.hideEmptyFolderBody} onChange={v => setChat('hideEmptyFolderBody', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders')} hint={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders_description')} checked={chatCfg.countSubfolderContents} onChange={v => setChat('countSubfolderContents', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.full_titles_on_scroll')} hint={i18nT('pages.settings.chatPanel.full_titles_on_scroll_description')} checked={chatCfg.fullTitlesOnScroll} onChange={v => setChat('fullTitlesOnScroll', v)} />
           <SettingsSelect
             label={i18nT('settings.chat.defaultMemoryMode.label')}

@@ -510,6 +510,9 @@ def _authenticated_ffmpeg(
     an unsigned build, and a Developer ID signature from our own team authenticates
     the released one. One of the two must hold; a payload that satisfies neither is
     refused exactly as before.
+
+    An ``OSError`` (reading the candidate, or staging its snapshot) propagates,
+    because it says nothing about the bytes.
     """
     source = -1
     snapshot_writer = -1
@@ -600,8 +603,6 @@ def _authenticated_ffmpeg(
         snapshot = -1  # ownership transferred to result
         snapshot_path = None  # ownership transferred to result
         return result
-    except OSError:
-        return None
     finally:
         if source >= 0:
             os.close(source)
@@ -656,13 +657,23 @@ def _open_authenticated_in(
             continue
         if not platform_compat.IS_WINDOWS and not os.access(candidate, os.X_OK):
             continue
-        authenticated = _authenticated_ffmpeg(
-            candidate,
-            *artifact,
-            signature_anchored=(
-                allow_signature_anchor and filename in _SIGNER_REWRITTEN_FFMPEG_ARTIFACTS
-            ),
-        )
+        try:
+            authenticated = _authenticated_ffmpeg(
+                candidate,
+                *artifact,
+                signature_anchored=(
+                    allow_signature_anchor and filename in _SIGNER_REWRITTEN_FFMPEG_ARTIFACTS
+                ),
+            )
+        except OSError as exc:
+            # The system's text for the errno, never the error's own: that can hold a path.
+            logger.warning(
+                "Ignoring %s in a pinned decoder location: it could not be read or staged "
+                "for execution (%s).",
+                filename,
+                os.strerror(exc.errno) if exc.errno else type(exc).__name__,
+            )
+            continue
         if authenticated is None:
             logger.warning(
                 "Ignoring %s in a pinned decoder location: its bytes do not match the "

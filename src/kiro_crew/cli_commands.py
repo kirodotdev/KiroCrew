@@ -780,11 +780,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_hooks_need_restart,
     )
     from kiro_crew.cli_commands_cron import (  # noqa: F401
+        _CRON_LIST_UNGROUPED,
         _cron,
         _cron_add,
         _cron_add_bounds,
         _cron_add_fail,
         _cron_dispatch,
+        _cron_folder_label,
+        _cron_folder_ref,
         _cron_preview,
         _cron_update_not_found,
         _format_schedule,
@@ -797,6 +800,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_commands_gateway_api import (  # noqa: F401
         _artifact,
         _client_port,
+        _create_cron_folder,
         _gateway_send,
         _internal_secret,
         _peer_refusal,

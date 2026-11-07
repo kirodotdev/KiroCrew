@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import os
+import zipfile
 from types import SimpleNamespace
 
 import pytest
@@ -106,6 +108,21 @@ async def test_import_still_refuses_plain_garbage_as_bad_json(monkeypatch):
 
     assert resp.status == 400
     assert json.loads(resp.body)["code"] == "transfer_invalid_json"
+
+
+@pytest.mark.asyncio
+async def test_import_names_a_zip_archive_as_an_unsupported_format(monkeypatch):
+    """A Kiro IDE session export is a zip; it is refused as a format, not as bad JSON."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sess_1/session.json", json.dumps({"title": "t"}))
+        zf.writestr("sess_1/messages.jsonl", "")
+    resp = await _run_import(st, monkeypatch, None, gz=archive.getvalue())
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "transfer_unsupported_format"
 
 
 @pytest.mark.asyncio

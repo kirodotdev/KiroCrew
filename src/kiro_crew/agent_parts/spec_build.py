@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         managed_mcp,
         redact_log,
         safe_context_call,
+        saved_command_casing,
         sel,
     )
 
@@ -270,7 +271,15 @@ def _extra_mcp_servers() -> dict[str, dict]:
         fallback={},
         log_message="extra_mcp_servers lookup failed; using none",
     )
-    return dict(extra) if extra else {}
+    # Every spec writer copies these commands verbatim, so a PATHEXT ``.EXE``
+    # the adapter resolved is healed here, once, for all of them.
+    healed: dict[str, dict] = {}
+    for name, spec in (extra or {}).items():
+        cmd = spec.get("command")
+        if isinstance(cmd, str) and os.path.isabs(cmd):
+            spec = {**spec, "command": saved_command_casing(cmd)}
+        healed[name] = spec
+    return healed
 
 
 def _prompt_path() -> Path:

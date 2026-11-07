@@ -12,6 +12,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { createTestStore } from './helpers'
 import MarkdownPanel from '../components/MarkdownPanel'
+import { i18nT } from '../i18n/t'
+import type { PartialCause } from '../utils/fileReadQuery'
 
 vi.mock('../pierre', () => ({
   PierreCode: () => <div data-testid="pierre-code" />,
@@ -32,7 +34,7 @@ vi.mock('../components/FileRenderers', async (importOriginal) => ({
   ExcalidrawViewer: () => <div data-testid="rich-viewer" />,
 }))
 
-type PanelProps = { filePath: string; content: string; partial?: boolean; readOnly?: boolean }
+type PanelProps = { filePath: string; content: string; partial?: PartialCause; readOnly?: boolean }
 
 function renderPanel(props: PanelProps) {
   const store = createTestStore()
@@ -150,9 +152,12 @@ describe('MarkdownPanel: a partial buffer is never saved', () => {
   })
 
   it('keeps Save disabled and says why for a partial code file', () => {
-    const { onSave } = renderPanel({ filePath: '/home/user/app/.env.py', content: 'KEY=***', partial: true })
+    const { onSave } = renderPanel({ filePath: '/home/user/app/.env.py', content: 'KEY=***', partial: 'redacted' })
     expect(screen.getByTestId('code-editor')).toBeInTheDocument()
-    expect(screen.getByTestId('markdown-panel-partial-notice')).toBeInTheDocument()
+    const notice = screen.getByTestId('markdown-panel-partial-notice').textContent
+    expect(notice).toBe(i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: i18nT('components.markdownPanel.partial_reason_redacted') }))
+    expect(notice).toMatch(/credentials/)
+    expect(notice).not.toMatch(/cut short/)
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: 'KEY=***x' } })
     expect(saveButton()).toBeDisabled()
     fireEvent.click(saveButton()!)
@@ -160,10 +165,10 @@ describe('MarkdownPanel: a partial buffer is never saved', () => {
   })
 
   it('refuses Cmd+S on a partial buffer and reports it', async () => {
-    const { onSave } = renderPanel({ filePath: '/home/user/app/settings.py', content: 'x = 1', partial: true })
+    const { onSave } = renderPanel({ filePath: '/home/user/app/settings.py', content: 'x = 1', partial: 'truncated' })
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: 'x = 2' } })
     fireEvent.keyDown(document, { key: 's', metaKey: true })
-    expect(await screen.findByTestId('markdown-panel-save-error')).toBeInTheDocument()
+    expect((await screen.findByTestId('markdown-panel-save-error')).textContent).toMatch(/cut short at the gateway's size limit/)
     expect(onSave).not.toHaveBeenCalled()
   })
 
@@ -176,7 +181,7 @@ describe('MarkdownPanel: a partial buffer is never saved', () => {
   })
 
   it.each(['/home/user/sources.json', '/home/user/notes.md'])('offers no Edit toggle for a partial %s', (filePath) => {
-    renderPanel({ filePath, content: 'cut short', partial: true })
+    renderPanel({ filePath, content: 'cut short', partial: 'truncated' })
     expect(editButton()).toBeNull()
   })
 
@@ -184,7 +189,7 @@ describe('MarkdownPanel: a partial buffer is never saved', () => {
     const { rerenderPanel } = renderPanel({ filePath: '/home/user/sources.json', content: '{}' })
     fireEvent.click(editButton()!)
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: '{"b":1}' } })
-    rerenderPanel({ filePath: '/home/user/sources.json', content: '{}', partial: true })
+    rerenderPanel({ filePath: '/home/user/sources.json', content: '{}', partial: 'truncated' })
     expect(saveButton()).toBeDisabled()
     fireEvent.click(previewButton()!)
     expect(screen.getByTestId('rich-viewer')).toBeInTheDocument()

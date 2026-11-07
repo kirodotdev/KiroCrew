@@ -470,14 +470,39 @@ describe('PipelineView — refresh button', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh the pipeline' }))
 
     const busy = await screen.findByRole('button', { name: 'Refreshing the pipeline…' })
-    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
     expect(busy).toHaveAttribute('title', 'Refreshing the pipeline…')
     expect(screen.queryByRole('button', { name: 'Refresh the pipeline' })).toBeNull()
 
     await act(async () => { release(fabric([item({ number: 7 })])) })
 
     const idle = await screen.findByRole('button', { name: 'Refresh the pipeline' })
-    expect(idle).toBeEnabled()
+    expect(idle).not.toHaveAttribute('aria-disabled')
     expect(idle).toHaveAttribute('title', 'Refresh the pipeline')
+  })
+
+  it('keeps keyboard focus on Refresh while the read runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole read.
+    crewFabric.mockResolvedValue(fabric([item({ number: 7 })]))
+    renderView()
+    await screen.findByText('IS-7')
+
+    let release: (v: CrewFabricResponse) => void = () => {}
+    crewFabric.mockReturnValue(new Promise(resolve => { release = resolve }))
+    const calls = crewFabric.mock.calls.length
+    const button = screen.getByRole('button', { name: 'Refresh the pipeline' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing the pipeline…' })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(crewFabric.mock.calls.length).toBe(calls + 1)
+
+    await act(async () => { release(fabric([item({ number: 7 })])) })
+    await screen.findByRole('button', { name: 'Refresh the pipeline' })
+    expect(button).toHaveFocus()
   })
 })

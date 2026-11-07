@@ -94,6 +94,16 @@ def _build_argparser() -> argparse.ArgumentParser:
         "socket path disappears.",
     )
     p.add_argument(
+        "--keep-alive-server",
+        dest="keep_alive_servers",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Server name whose idle pooled backend is kept for the daemon's "
+        "whole run instead of being evicted after --idle-timeout-secs. "
+        "Repeatable. None by default.",
+    )
+    p.add_argument(
         "--prewarm-count",
         dest="prewarm_count",
         type=int,
@@ -271,6 +281,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             idle_timeout_secs=args.idle_timeout_secs,
             stop_event=stop_event,
             prewarm_count=args.prewarm_count,
+            keep_alive_servers=frozenset(args.keep_alive_servers),
             credential_watch_paths=[Path(p) for p in args.credential_watch_paths],
             owner_pid=max(0, int(args.owner_pid or 0)),
             spawn_concurrency=args.spawn_concurrency,

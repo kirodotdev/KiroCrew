@@ -47,6 +47,10 @@ function MyPage() {
 }
 ```
 
+For type checking, the dashboard serves the declarations of both
+`@kirocrew/app-sdk` and `@kirocrew/app-sdk/ui` at `/vendor/kirocrew-app-sdk.d.ts`
+(see [getting-started.md](getting-started.md#ui-page--react-component)).
+
 `useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
 `put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
 `permissions.api` paths your `app.json` declares. JSON methods parse a JSON
@@ -148,13 +152,14 @@ shown as text, only as the header's hover tooltip.
 | `placeholder` | `string` | localized "Message..." (`appSdk.chatEmbed.message`) | Composer placeholder while the session is idle. While a turn runs the composer shows its own "agent is working" text instead. |
 | `frameless` | `boolean` | `false` | Drops the outer border, rounding, background and title strip, and makes the input row transparent, so a host card can hold the chat flush. |
 | `startAtBottom` | `boolean` | `false` | Opens scrolled to the newest row and stays pinned there as rows arrive, until the user scrolls up; shows a jump-to-bottom button while unpinned. Without it the embed opens at the top and smooth-scrolls to each new message. |
-| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. Every send passes `meta` (`{ sendId?: string; files?: string[]; pastes?: PasteBlock[] }`): `sendId` always, `files` and `pastes` when the send has non-image attachments or a collapsed paste. Forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)); forwarding `meta.sendId` lets the embed prove a send landed even when `onSend` rejects. |
+| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. Every send passes `meta` (`{ sendId?: string; files?: string[]; pastes?: PasteBlock[] }`): `sendId` always, `files` and `pastes` when the send has non-image attachments or a collapsed paste. Forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)); forwarding `meta.sendId` lets the embed prove a send landed even when `onSend` rejects. While a turn runs, a send through `onSend` is labelled Queue, because the embed cannot know what your endpoint does with it. Without `onSend`, the embed's own send steers or queues as the person's busy-send choice says, so do not set `onSend` only to steer. |
 | `aboveComposer` | `ReactNode` | none | Content placed in normal flow directly above the composer, such as a docked quote bar. |
 | `composerMaxHeight` | `number` (px) | `240` | Cap for the composer's auto-grow (see below). |
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
 | `onArtifactOpen` | `(slug: string) => void` | none | Opens a saved artifact from a link in a reply; without it artifact links follow their href. |
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
 | `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
+| `proseFences` | `readonly string[]` | none | Fence tags the transcript draws wrapped, as it draws `markdown` and `text` fences. The tag is the first word of the info string, matched without regard to case. Use it for a fence your app defines for prose or a record, such as a proposed reply. Other fences keep their horizontal scroll. |
 
 ### Restyling rows
 
@@ -537,7 +542,7 @@ when the manifest declares its endpoint; nothing grants either by default:
 
 Accepting a command puts it in the composer; the send runs it, as in the main
 chat. Each file row shows the folder it sits in, cut from the start, so files
-with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/onboarding` and `/kb`: the main
+with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/fork`, `/onboarding` and `/kb`: the main
 chat runs those in the browser, and the embed has nothing to run them with.
 Accepting a file writes its `@path` token and stages the file like an
 attachment, so the send carries it in `meta.files`; removing the file's chip
@@ -1120,6 +1125,45 @@ the log directly, so treat `app:<name>` as "which app said this", not as proof.
 `operation` is namespaced the same way, so two apps cannot collide on a bare
 `"publish"`. No permission gates it: an app cannot obtain anything with it, only
 state what it did.
+
+### Background agents (`ctx.spawn`)
+
+Present when the manifest declares `permissions.spawn`, and `None` otherwise.
+Every call names one of the app's own agents (`<app>--*`), runs auto-approved,
+and is checked against the app's governance profile and its
+`capabilities.spawn` scopes.
+
+```python
+from kiro_crew.apps.spawn_sdk import CONVERSATION_BUSY, CONVERSATION_GONE, SpawnError
+
+run_id = await ctx.spawn.run("implement the plan", "coder", silent=True, keep=True)
+...
+try:
+    follow_up = await ctx.spawn.continue_(run_id, "fix these review findings: ...")
+except SpawnError as exc:
+    if exc.code not in (CONVERSATION_GONE, CONVERSATION_BUSY):
+        raise
+    follow_up = await ctx.spawn.run("fix these findings; earlier result: ...", "coder")
+```
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `run(task, agent, *, silent=False, model="", keep=False)` | run id | Start a background agent. With no `model`, the user's `apps.<name>.model` setting applies unless the agent pins one. `keep=True` gives the run its own process and keeps its conversation for hours instead of about one |
+| `continue_(spawn_id, task, *, model="", silent=False)` | new run id | Send a follow-up task to a finished run's conversation, so the agent keeps the context of the earlier run |
+| `is_done(run_id)` | bool | True once the run has finished, whatever the outcome |
+
+`continue_` takes the id `run` returned. That id stays the conversation's id, so
+pass it again for every later follow-up; the new id is only for `is_done`. The
+conversation must be one this app started with one of its own agents, and that
+agent must still exist. The follow-up keeps the run's model unless you name
+another. A conversation is kept about an hour after its run finishes; a
+`keep=True` run, or one you have continued, is kept for hours.
+
+Both calls raise `SpawnError` instead of returning an empty id. `declined` is
+`True` when the host had no room to start the run, so back off before you try
+again. `code` is `CONVERSATION_GONE` when the conversation can no longer be
+resumed, and `CONVERSATION_BUSY` when a run is still in flight on it. Answer
+either one with a fresh `run` that carries a summary of the earlier result.
 
 ### Durable Jobs (`ctx.job`)
 

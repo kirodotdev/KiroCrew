@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     prewarm_enabled_check,
 )
 from kiro_crew.dashboard.session_control_parts.target_authorization import authorize_target
+from kiro_crew.dashboard.session_control_parts.turn_control import _name_attached
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
 from kiro_crew.members import select_provider_backend
@@ -230,7 +232,7 @@ async def set_model_target(
             raise _target_busy_error()
         children = await _subagents_attached_response(state, slot, session_key, "set_model")
         if children is not None:
-            raise _target_busy_error()
+            raise _target_busy_error(json.loads(children.text or "{}"))
         # The await above can let a turn start, or the target be replaced,
         # linked or mirrored; re-run the idle check and the gate synchronously
         # right before storing the pick.
@@ -960,11 +962,17 @@ def landing_holds_lease(key: str) -> bool:
 _JEV_ROUTE_SPELLINGS = frozenset({"auto (jev)", "auto:jev"})
 
 
-def _target_busy_error() -> SessionControlError:
-    """The refusal ``set_model_target`` gives a target with work in flight."""
+def _target_busy_error(body: dict[str, Any] | None = None) -> SessionControlError:
+    """The refusal ``set_model_target`` gives a target with work in flight.
+
+    *body* is the refusing 409's, so a sub-agent refusal names what to stop.
+    """
     return SessionControlError(
-        "session busy, model not changed: it has a turn or sub-agents in flight. "
-        "Stop it with session_stop and retry once it is idle.",
+        _name_attached(
+            "session busy, model not changed: it has a turn or sub-agents in flight. "
+            "Stop it with session_stop and retry once it is idle.",
+            body,
+        ),
         code="target_busy",
         status=409,
     )

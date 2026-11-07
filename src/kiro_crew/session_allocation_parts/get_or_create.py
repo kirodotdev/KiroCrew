@@ -86,12 +86,17 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
     (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
     sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
+    Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
     """
+    from kiro_crew import platform_compat
     from kiro_crew.agent_scratch import scratch_root
     from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
 
     path = Path(os.path.realpath(stored_cwd))
     if not path.is_relative_to(os.path.realpath(scratch_root())):
+        return False
+    if platform_compat.IS_WINDOWS:
         return False
     try:
         if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
@@ -103,6 +108,22 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
         return False
     return True
+
+
+#: ``startup_notice`` token for a start that left a hidden scratch cwd behind.
+HIDDEN_SCRATCH_CWD_NOTICE = "hidden_scratch_cwd_skipped"
+
+
+def _note_skipped_hidden_cwd(provider: Any, skipped_cwd: str) -> None:
+    """Tell the chat its folder could not be reopened, once, on the provider's start."""
+    if not skipped_cwd or getattr(provider, "startup_notice", None) is not None:
+        # A notice the start itself left (a cloud reopen) is not overwritten.
+        return
+    provider.startup_notice = (
+        HIDDEN_SCRATCH_CWD_NOTICE,
+        f"This chat's folder {skipped_cwd} was a temporary folder from an earlier "
+        "run and can't be opened anymore. The chat now works in the default folder.",
+    )
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -515,6 +536,11 @@ async def _get_or_create_impl(
     # (``apps.agent_launch``); ``agent`` stays the session's identity. Stamped
     # on the cold-started provider below, never handed to a factory.
     app_launch_agent = str(extra_factory_kwargs.pop("app_launch_agent", "") or "")
+    # Opt-in for a caller that tells the user about a dropped folder (the dashboard
+    # chat): only then does an explicit cwd in a hidden scratch tree fall back to the
+    # default directory. Any other caller keeps its cwd, so a start there fails loudly
+    # instead of running in another repository. Never handed to a factory.
+    fallback_hidden_cwd = bool(extra_factory_kwargs.pop("fallback_hidden_cwd", False))
     from kiro_crew.execution_context import read_session_execution
 
     execution = await asyncio.to_thread(read_session_execution, key)
@@ -643,6 +669,7 @@ async def _get_or_create_impl(
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
@@ -694,6 +721,7 @@ async def _get_or_create_impl(
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
@@ -719,20 +747,29 @@ async def _get_or_create_impl(
     if not effective_cwd and (resume_sid or native_fork):
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
-            if await asyncio.to_thread(
-                _stored_cwd_is_hidden_scratch,
-                stored_cwd,
-                extra_factory_kwargs.get("shared_scratch"),
-            ):
-                self._deps.logger.warning(
-                    "session %s: not resuming in %s, an earlier process's scratch "
-                    "directory the sandbox hides from this one; starting in the "
-                    "default directory",
-                    key,
-                    stored_cwd,
-                )
-            else:
-                effective_cwd = stored_cwd
+            effective_cwd = stored_cwd
+    # A caller's own cwd (a dashboard chat's project) can name an earlier process's
+    # scratch tree as well: the sandbox hides it from the new process, so every MCP
+    # server the session starts there fails to spawn. A resumed cwd is always
+    # checked; a caller's own only when it opted in (``fallback_hidden_cwd``).
+    skipped_hidden_cwd = ""
+    cwd_is_hidden = False
+    if effective_cwd and (fallback_hidden_cwd or not cwd):
+        cwd_is_hidden = await asyncio.to_thread(
+            _stored_cwd_is_hidden_scratch,
+            str(effective_cwd),
+            extra_factory_kwargs.get("shared_scratch"),
+        )
+    if cwd_is_hidden:
+        self._deps.logger.warning(
+            "session %s: not starting in %s, an earlier process's scratch "
+            "directory the sandbox hides from this one; starting in the "
+            "default directory",
+            key,
+            effective_cwd,
+        )
+        skipped_hidden_cwd = str(effective_cwd)
+        effective_cwd = None
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -1205,6 +1242,7 @@ async def _get_or_create_impl(
         starting_pid = spawn_pid(provider)
         if starting_pid is not None:
             self._starting_pids.add(starting_pid)
+    _note_skipped_hidden_cwd(provider, skipped_hidden_cwd)
 
     won_race_session: Any | None = None
     duplicate_provider: LLMProvider | None = None
@@ -1454,6 +1492,7 @@ async def _get_or_create_impl(
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 

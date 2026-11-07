@@ -19,6 +19,7 @@ from kiro_crew import edition
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import (
     PROFILE_ENTERPRISE,
+    bootstrap,
     bootstrap_context,
     build_default_context,
     current_context,
@@ -77,11 +78,12 @@ class TestSelection:
         assert provider.public_url() == ""
 
     def test_a_stand_in_config_never_selects_it(self) -> None:
-        assert type(public_tunnel_provider(MagicMock())) is DefaultTunnelProvider
+        assert type(bootstrap._public_tunnel_provider(MagicMock())) is DefaultTunnelProvider
 
     def test_an_enterprise_build_ignores_the_local_enable(self, monkeypatch) -> None:
         monkeypatch.setattr(edition, "is_enterprise", lambda: True)
-        assert type(public_tunnel_provider(_cfg(relay_enabled=True))) is DefaultTunnelProvider
+        tunnel = bootstrap._public_tunnel_provider(_cfg(relay_enabled=True))
+        assert type(tunnel) is DefaultTunnelProvider
 
     def test_not_selected_when_an_edition_supplies_its_provider(self, monkeypatch) -> None:
         from kiro_crew.platform import bootstrap as bootstrap_mod
@@ -269,6 +271,29 @@ class TestSettings:
             f for f in dataclasses.fields(TunnelConfig) if f.name == "relay_lease_credential"
         ]
         assert spec.metadata.get("sensitive") is True
+
+    def test_the_lease_token_type_setting_reaches_the_lease_client(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        config_file = tmp_path / "config.json"
+        tunnel = {
+            "relay_enabled": True,
+            "relay_lease_url": "https://lease.example.com",
+            "relay_lease_credential": "secret://lease",
+            "relay_lease_token_type": "API_KEY",
+        }
+        config_file.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
+        provider = public_tunnel_provider(KiroCrewConfig.load())
+        assert provider._tokens._token_type == "API_KEY"
+
+    @pytest.mark.parametrize(
+        "token_type, team",
+        [("API_KEY", True), ("KIRO_MACHINE_TOKEN", False), ("", False), ("EXTERNAL_IDP", False)],
+    )
+    def test_only_a_crew_api_key_makes_a_team_crew(self, token_type, team) -> None:
+        settings = RelaySettings.from_config(_cfg(relay_lease_token_type=token_type))
+        assert settings.is_team_crew is team
 
     @pytest.mark.asyncio
     async def test_a_cancelled_stop_still_closes_the_token_source_and_the_ingress(self) -> None:
@@ -508,6 +533,47 @@ class TestThroughTheTunnelWrapper:
         assert "relay_host_url" in snapshot["error"]
         await provider.stop()
 
+    @pytest.mark.parametrize(
+        ("tunnel", "names"),
+        [
+            ({}, "tunnel.relay_host_url"),
+            ({"relay_lease_url": "https://lease.example"}, "tunnel.relay_lease_credential"),
+            (
+                {
+                    "relay_lease_url": "https://lease.example",
+                    "relay_host_url": "wss://host.relay.example/v1/host",
+                    "relay_crew_domain": "crew.relay.example",
+                },
+                "tunnel.relay_lease_credential",
+            ),
+        ],
+        ids=["no-lease-no-names", "lease-without-credential", "lease-and-names-without-credential"],
+    )
+    async def test_the_relay_enable_help_matches_a_start_without_a_lease(
+        self, tunnel: dict, names: str
+    ) -> None:
+        """Measured against ``start()``: no client is built, the status names the setting."""
+        from kiro_crew.config.schema import SCHEMA_REGISTRY
+
+        built: list[dict] = []
+        provider = RelayTunnelProvider(
+            RelaySettings.from_config(_cfg(relay_enabled=True, **tunnel)),
+            ingress_factory=MagicMock,
+            client_factory=lambda **kw: built.append(kw),  # type: ignore[arg-type,return-value]
+        )
+        await provider.start()
+        snapshot = provider.status_snapshot()
+        assert built == []
+        assert snapshot is not None and snapshot["state"] == "error"
+        assert names in snapshot["error"]
+        await provider.stop()
+
+        (help_text,) = [e.help for e in SCHEMA_REGISTRY if e.path == "tunnel.relay_enabled"]
+        assert "no relay client starts" in help_text
+        assert "names the missing setting" in help_text
+        assert "starts a relay client that reports it cannot connect" not in help_text
+        assert "no Relay Lease Service URL with Relay Host URL and Relay Crew Domain" in help_text
+
     async def test_without_the_dashboards_relay_ingress_it_starts_nothing(
         self, monkeypatch
     ) -> None:
@@ -584,6 +650,18 @@ class TestTheRelaySwitch:
             assert _build_tunnel_config({"relay_enabled": hand_edit}).relay_enabled is False
         assert _build_tunnel_config({"relay_enabled": True}).relay_enabled is True
 
+    def test_one_predicate_reads_the_switch(self, monkeypatch) -> None:
+        from kiro_crew.edition_locks import relay_selected
+
+        assert relay_selected(_cfg(relay_enabled=True)) is True
+        assert relay_selected(_cfg()) is False
+        # A stand-in config answers every attribute truthily, and a config with no
+        # tunnel section has no switch at all.
+        assert relay_selected(MagicMock()) is False
+        assert relay_selected(object()) is False
+        _lock_tunnel(monkeypatch)
+        assert relay_selected(_cfg(relay_enabled=True)) is False
+
     def test_an_enterprise_build_locks_the_switch(self, monkeypatch) -> None:
         from kiro_crew import edition_locks
 
@@ -592,7 +670,8 @@ class TestTheRelaySwitch:
         try:
             assert edition_locks.config_path_locked("tunnel.relay_enabled")
             assert edition_locks.local_enable_locked("tunnel")
-            assert type(public_tunnel_provider(_cfg(relay_enabled=True))) is DefaultTunnelProvider
+            tunnel = bootstrap._public_tunnel_provider(_cfg(relay_enabled=True))
+            assert type(tunnel) is DefaultTunnelProvider
         finally:
             edition_locks.reset_logged()
 

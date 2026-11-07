@@ -802,16 +802,42 @@ describe('PullRequestPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh pull request' }))
 
-    expect(await screen.findByRole('button', { name: 'Refreshing pull request' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Refreshing pull request' })).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('tab', { name: /Checks 1\/1/i })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /All checks passed/i })).not.toBeInTheDocument()
     expect(mockApi.pullRequestSource).toHaveBeenLastCalledWith(github.url, true)
 
     resolveRefresh({ ...github, checks: [pendingCheck] })
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Refresh pull request' })).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Refresh pull request' })).not.toHaveAttribute('aria-disabled'),
     )
     expect(screen.getByRole('tab', { name: /Checks running 0\/1/i })).toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    let resolveRefresh: (value: PullRequestSource) => void = () => {}
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    mockApi.pullRequestSource.mockImplementationOnce(
+      () => new Promise<PullRequestSource>(resolve => { resolveRefresh = resolve }),
+    )
+    const calls = mockApi.pullRequestSource.mock.calls.length
+
+    const button = screen.getByRole('button', { name: 'Refresh pull request' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing pull request' })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(mockApi.pullRequestSource.mock.calls.length).toBe(calls + 1)
+
+    resolveRefresh(github)
+    await screen.findByRole('button', { name: 'Refresh pull request' })
+    expect(button).toHaveFocus()
   })
   it('says how many checks are still running and how many failed', async () => {
     const failed = { ...github.checks[0], name: 'lint', conclusion: 'FAILURE', bucket: 'failed' as const }
@@ -1832,5 +1858,83 @@ describe('PullRequestPanel tab keyboard', () => {
     fireEvent.keyDown(tabs[0], { key: 'End' })
     expect(onSelect).toHaveBeenCalledWith(gitlab.url)
     expect(tabs[1]).toHaveFocus()
+  })
+})
+
+describe('PullRequestPanel source tab close', () => {
+  it('closes a source tab from its close control without selecting it', async () => {
+    const onSelect = vi.fn()
+    const onDismiss = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onDismiss={onDismiss}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove acme/service MR !7 from this panel' }))
+
+    expect(onDismiss).toHaveBeenCalledWith(gitlab.url)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('hands the selection and focus to the next tab when the selected tab is closed', async () => {
+    const onSelect = vi.fn()
+    const onDismiss = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onDismiss={onDismiss}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove acme/widgets PR #12 from this panel' }))
+
+    expect(onSelect).toHaveBeenCalledWith(gitlab.url)
+    expect(onDismiss).toHaveBeenCalledWith(github.url)
+    expect(screen.getByRole('tab', { name: /MR !7/ })).toHaveFocus()
+  })
+
+  it('keeps the strip for a lone source when its tab can be closed', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url: github.url, provider: 'github', number: 12, repo: 'widgets' }]}
+          selectedUrl={github.url}
+          onSelect={vi.fn()}
+          onDismiss={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    const strip = screen.getByRole('tablist', { name: 'Pull requests' })
+    const close = within(strip).getByRole('button', { name: 'Remove PR #12 from this panel' })
+    // A divider sits between the tab's status marks and its close control.
+    expect(close.previousElementSibling).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('draws no close control for a host that cannot close tabs', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    expect(screen.queryByRole('button', { name: /from this panel$/ })).not.toBeInTheDocument()
   })
 })

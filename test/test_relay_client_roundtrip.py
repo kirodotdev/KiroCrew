@@ -14,10 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from relay_client_helpers import (
+    MOVE_TOKEN,
     OWNER,
     TOKEN,
     FakeCrew,
     FakeRelay,
+    MoveTokenSource,
     RecordingSleep,
     fixture,
     make_client,
@@ -65,7 +67,12 @@ async def test_handshake_sends_hello_with_the_host_token_and_connects_on_ready()
             assert set(hello) <= set(shape["fields"])
             assert {k for k, v in shape["fields"].items() if v["required"]} <= set(hello)
             assert hello["protocolVersion"] == 1 and hello["mode"] == "http"
-            assert set(hello["features"]) == {"flow-credit", "ws-flow", "request-credit"}
+            assert set(hello["features"]) == {
+                "flow-credit",
+                "ws-flow",
+                "request-credit",
+                "move-done",
+            }
             assert leg.token == TOKEN
             assert leg.user_agent.startswith("kiro-crew/")
 
@@ -142,7 +149,8 @@ async def test_document_navigation_round_trip_does_not_redirect_to_localhost() -
             head = valid_message(
                 "frames/request",
                 method="GET",
-                path="/",
+                # Not the bare root, which the ingress sends to /chat (the next test).
+                path="/chat",
                 query="",
                 headers={"sec-fetch-dest": "document"},
             )
@@ -153,8 +161,49 @@ async def test_document_navigation_round_trip_does_not_redirect_to_localhost() -
             assert "location" not in {name.lower() for name in response["headers"]}
             assert json.loads(body) == {"ok": True, "query": ""}
             (seen,) = crew.seen
-            assert seen["path"] == "/"
+            assert seen["path"] == "/chat"
             assert seen["caller"].kiro_user_id == OWNER
+        finally:
+            await stop(client, ingress)
+
+
+async def test_a_relayed_root_page_load_round_trips_as_a_redirect_to_chat() -> None:
+    """The relay root the control plane hands out lands on /chat; ``/?q`` does not move."""
+    async with FakeRelay() as relay, FakeCrew(canonical_redirect=True) as crew:
+        client, _, ingress = make_client(relay, crew)
+        await client.start()
+        try:
+            leg = await relay.next_leg()
+            await leg.handshake()
+            root = valid_message(
+                "frames/request",
+                method="GET",
+                path="/",
+                query="",
+                headers={"sec-fetch-dest": "document"},
+            )
+            await leg.send(root)
+            await leg.send({"type": "request-end", "id": root["id"]})
+            response, _ = await leg.read_response(root["id"])
+            assert response["status"] == 302
+            headers = {name.lower(): value for name, value in response["headers"].items()}
+            assert headers["location"] == "/chat"
+            assert crew.seen == []
+
+            with_query = valid_message(
+                "frames/request",
+                method="GET",
+                path="/",
+                query="a=b",
+                headers={"sec-fetch-dest": "document"},
+            )
+            await leg.send(with_query)
+            await leg.send({"type": "request-end", "id": with_query["id"]})
+            response, body = await leg.read_response(with_query["id"])
+            assert response["status"] == 200
+            assert json.loads(body) == {"ok": True, "query": "a=b"}
+            (seen,) = crew.seen
+            assert seen["path"] == "/"
         finally:
             await stop(client, ingress)
 
@@ -1010,23 +1059,31 @@ async def test_stop_during_a_move_leaves_no_connection_live() -> None:
 
 
 async def test_a_move_that_never_gets_ready_keeps_the_old_connection() -> None:
-    async with FakeRelay() as relay, FakeCrew() as crew:
-        client, _, ingress = make_client(relay, crew)
+    source = MoveTokenSource()
+    async with FakeRelay(tokens={TOKEN, MOVE_TOKEN}) as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(relay, crew, source=source)
         await client.start()
         try:
             old = await relay.next_leg()
             await old.handshake()
             await async_wait_until(lambda: client.state == STATE_CONNECTED)
+            old_conn = _connection(client)
             await old.send({"type": "reconnect", "reason": "drain", "closeInSeconds": 0})
-            new = await relay.next_leg()
-            # No ready on the new one within the window: the client gives it up
-            # and keeps the old one.
-            assert await new.wait_closed() == 1000
+            # No ready on the new one within the window: the client gives it up,
+            # its dial with it, and keeps the old one.
+            await async_wait_until(
+                lambda: source.calls == 2
+                and client._live == {old_conn}
+                and not old_conn.move_requested.is_set()
+            )
             assert not old.closed.is_set()
             assert client.state == STATE_CONNECTED
-            # The relay's 1012 at the end of the window then redials at once.
+            # The relay's 1012 at the end of the window then redials at once. A
+            # move dial that reached the relay before its cancel is not the redial.
             await old.close(1012)
             third = await relay.next_leg()
+            while third.token == MOVE_TOKEN:
+                third = await relay.next_leg()
             await third.handshake()
             await async_wait_until(
                 lambda: client.state == STATE_CONNECTED and len(client._live) == 1

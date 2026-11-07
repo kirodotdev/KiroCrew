@@ -27,7 +27,7 @@ import { capabilityUsable, membershipPointer, principalInitials, principalName, 
 import { SharedAccessSetup } from './SharedAccessSetup'
 import { ConsoleAccess, TeamConfigInvalid } from './PeopleModes'
 import { PeopleAdvanced } from './PeopleAdvanced'
-import { PeopleList, PersonalWaiting, ShareHero, useCanInvite } from './PeopleCrew'
+import { PeopleList, PersonalWaiting, ShareHero, useCanInvite, useOwnerRead } from './PeopleCrew'
 import { InviteEntry } from './TailscaleInvites'
 import { avatarUrl } from '../../api/sharedCrewInvites'
 import { effectiveMode } from '../../api/sharedCrewMode'
@@ -116,6 +116,7 @@ function PeopleContent({ capabilities, data, modeData }: {
 }) {
   const pointer = membershipPointer(capabilities.membership_link)
   const canInvite = useCanInvite()
+  const ownerRead = useOwnerRead()
   // Someone other than the viewer already connected: sharing works, whatever the
   // setup paths say (Tailscale Serve set up by hand, for one).
   const othersSeen = (data?.people ?? []).some(row => !row.is_viewer)
@@ -127,7 +128,7 @@ function PeopleContent({ capabilities, data, modeData }: {
         <SharedAccessSetup capabilities={capabilities} />
         <InviteEntry />
         <PersonalWaiting />
-        {canInvite && <PeopleAdvanced />}
+        {ownerRead && <PeopleAdvanced />}
       </div>
     )
   }
@@ -154,7 +155,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   const attributionReason = capabilities.reasons?.attribution
   const adapters = modeData?.adapters ?? capabilities.setup_paths ?? {}
   const rows = data?.people ?? []
-  const viewerOwns = canInvite || rows.some(row => row.is_viewer && row.is_owner)
+  const viewerOwns = ownerRead || rows.some(row => row.is_viewer && row.is_owner)
   const hero = <ShareHero direct={capabilities.tailnet_direct} tailscale={adapters.tailscale} people={rows} canInvite={canInvite} />
   if (!data || !capabilityUsable(capabilities.attribution)) {
     const unnamed = attributionReason === 'platform_unprovable' || attributionReason === 'daemon_same_user'

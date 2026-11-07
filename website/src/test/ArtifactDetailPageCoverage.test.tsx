@@ -467,6 +467,14 @@ describe('ArtifactDetailPage — mutation paths', () => {
     )
   })
 
+  it('hands focus to the add-tag button when a tag is removed', async () => {
+    await mount(mkArtifact({ tags: ['ops', 'cr'] }))
+    const remove = screen.getByLabelText('Remove tag ops')
+    remove.focus()
+    fireEvent.click(remove)
+    expect(screen.getByLabelText('Add a tag')).toHaveFocus()
+  })
+
   it('surfaces a tag-write failure', async () => {
     await mount(mkArtifact({ tags: ['ops'] }))
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('tags rejected'))
@@ -499,6 +507,42 @@ describe('ArtifactDetailPage — mutation paths', () => {
     fireEvent.keyDown(input, { key: 'Escape' })
     await waitFor(() => expect(screen.getByLabelText('Add a tag').tagName).toBe('BUTTON'))
     expect(vi.mocked(api).updateArtifact).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['Escape', 'draft'],
+    ['Enter', 'release'],
+    [',', 'oncall'],
+  ])('returns focus to the add-tag button when %s closes the input', async (key, tag) => {
+    await mount(mkArtifact({ tags: [] }))
+    fireEvent.click(screen.getByLabelText('Add a tag'))
+    const input = await screen.findByLabelText('Add a tag')
+    input.focus()
+    fireEvent.change(input, { target: { value: tag } })
+    fireEvent.keyDown(input, { key })
+    await waitFor(() => expect(screen.getByLabelText('Add a tag').tagName).toBe('BUTTON'))
+    expect(screen.getByLabelText('Add a tag')).toHaveFocus()
+  })
+
+  it.each([['Enter'], [' ']])(
+    'cancels the default of a %j that closes the tag input, so it cannot click the refocused button',
+    async (key) => {
+      await mount(mkArtifact({ tags: [] }))
+      fireEvent.click(screen.getByLabelText('Add a tag'))
+      const input = await screen.findByLabelText('Add a tag')
+      fireEvent.change(input, { target: { value: 'release' } })
+      // fireEvent returns false when a handler called preventDefault.
+      expect(fireEvent.keyDown(input, { key })).toBe(false)
+    },
+  )
+
+  it('leaves focus alone when the tag input closes on blur', async () => {
+    await mount(mkArtifact({ tags: [] }))
+    fireEvent.click(screen.getByLabelText('Add a tag'))
+    const input = await screen.findByLabelText('Add a tag')
+    fireEvent.blur(input)
+    await waitFor(() => expect(screen.getByLabelText('Add a tag').tagName).toBe('BUTTON'))
+    expect(screen.getByLabelText('Add a tag')).not.toHaveFocus()
   })
 
   it('blurring the tag input commits a typed tag and discards an empty one', async () => {
@@ -1364,6 +1408,18 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument(), PUBLISHED_LINE_WAIT)
     expect(screen.queryByRole('link', { name: /Open published page/i })).toBeNull()
     expect(screen.queryByText(/Published to/)).toBeNull()
+  })
+
+  // PublishProvider.source_problem: the provider's reason the remote copy could
+  // not be read reaches the page inline, and the local copy stays open.
+  it('shows why the remote copy cannot be read', async () => {
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({
+      source_notice: 'The remote copy is in the trash.',
+      source_notice_code: 'remote_trashed',
+    })
+    await mount(mkArtifact({ publication }))
+    expect(await screen.findByText('The remote copy is in the trash.', {}, PUBLISHED_LINE_WAIT)).toBeInTheDocument()
+    expect(screen.getByText('CR Queue')).toBeInTheDocument()
   })
 
   it('shows no published link when the publication carries no URL', async () => {

@@ -67,17 +67,18 @@ on:
       # It runs on `pull_request`, so its payload does carry the PR head and
       # its start can hold the verdict like any other lane's.
       - Internal Content Scan Gate
-      # Not a lane: readiness does not aggregate its verdict, and the job gate
-      # skips its `pull_request` runs before a runner starts, so those cost a
-      # dispatch and nothing else. It is listed for its
-      # `pull_request_review` runs, which a submitted, edited or dismissed
+      # Not a lane: readiness does not aggregate its verdict. It is listed for
+      # its `pull_request_review` runs, which a submitted, edited or dismissed
       # review starts and nothing else does. That run's payload carries the PR
       # head, and either way the hold step finds it, the review is read: while
       # the run is still going the hold writes `pending` and its completion is
       # the check evidence on which the sweep recomputes, and once it has
       # completed the hold writes nothing and this same run goes on to the
-      # full evaluation, which reads the reviews.
-      - Sensitive Change Review
+      # full evaluation, which reads the reviews. Sensitive Change Review
+      # itself is not listed: it runs on `pull_request_target`, whose events
+      # this workflow already hears, and the re-run a review requests is made
+      # with GITHUB_TOKEN, which starts no `workflow_run`.
+      - Sensitive Change Review (approval)
     # ONLY `in_progress`. `completed` is deliberately absent, and so is
     # `requested`.
     #
@@ -195,11 +196,11 @@ concurrency:
   # will run; everything else collapses among itself in a sibling `noop` group
   # and skips without ever allocating a runner. Mirroring only part of the gate
   # is a defect, not a smaller version of this: the gate admits `dynamic` runs
-  # and Sensitive Change Review `pull_request_review` runs on a FIRST attempt,
-  # so an attempt-only suffix would label those `noop` and park an admitted hold
-  # in a cancelling group with the dispatches this change gates -- the next one
-  # would cancel it and then skip, publishing nothing and leaving the previous
-  # verdict standing. The predicate CANNOT live in the `if:` alone:
+  # and Sensitive Change Review (approval) `pull_request_review` runs on a FIRST
+  # attempt, so an attempt-only suffix would label those `noop` and park an
+  # admitted hold in a cancelling group with the dispatches this change gates --
+  # the next one would cancel it and then skip, publishing nothing and leaving
+  # the previous verdict standing. The predicate CANNOT live in the `if:` alone:
   # workflow-level `concurrency` is evaluated when the run is created, before
   # any job condition is read, so a single group would let a gated dispatch
   # cancel a real in-flight hold and then skip -- leaving no hold published
@@ -237,13 +238,12 @@ concurrency:
            github.event.workflow_run.head_sha
              || github.run_id,
            ((github.event.workflow_run.event == 'pull_request'
-             && github.event.workflow_run.name != 'Sensitive Change Review'
              && (github.event.workflow_run.run_attempt > 1
                  || github.event.workflow_run.name == 'Issue Gate'
                  || github.event.workflow_run.name == 'Security Scope Review'))
             || github.event.workflow_run.event == 'dynamic'
             || (github.event.workflow_run.event == 'pull_request_review'
-                && github.event.workflow_run.name == 'Sensitive Change Review'))
+                && github.event.workflow_run.name == 'Sensitive Change Review (approval)'))
              && 'hold' || 'noop')
     }}
   cancel-in-progress: true
@@ -270,14 +270,10 @@ jobs:
     # re-adding such a lane has to clear both, which
     # `test/test_ai_review_workflows.py` refuses.
     #
-    # Sensitive Change Review is admitted for its `pull_request_review` runs
-    # only. Its `pull_request` runs start on the same opened, synchronize,
-    # reopened and edited events the `pull_request_target` trigger already
-    # re-derives the verdict on, and it is not an aggregated lane, so a run
-    # from one of them would re-check nothing and still spend requests from
-    # the shared pool. A review run is the opposite case: no other event this
-    # workflow hears follows a review. Both clauses name the lane by its
-    # `name:`, the same field the trigger allowlist matches on.
+    # Sensitive Change Review (approval) is admitted for its
+    # `pull_request_review` runs: no other event this workflow hears follows a
+    # review. The clause names the workflow by its `name:`, the same field the
+    # trigger allowlist matches on.
     #
     # The `run_attempt > 1` clause is the other half of the fourth concurrency
     # key segment above, and the comment there is the full account: the group
@@ -294,13 +290,12 @@ jobs:
     if: >-
       github.event_name != 'workflow_run'
       || (github.event.workflow_run.event == 'pull_request'
-          && github.event.workflow_run.name != 'Sensitive Change Review'
           && (github.event.workflow_run.run_attempt > 1
               || github.event.workflow_run.name == 'Issue Gate'
               || github.event.workflow_run.name == 'Security Scope Review'))
       || github.event.workflow_run.event == 'dynamic'
       || (github.event.workflow_run.event == 'pull_request_review'
-          && github.event.workflow_run.name == 'Sensitive Change Review')
+          && github.event.workflow_run.name == 'Sensitive Change Review (approval)')
     # This is the busiest workflow here: thousands of ~12-second runs a day, in
     # bursts. A same-repository PR's `pull_request_target` run from a listed
     # actor uses the CodeBuild fleet so it stays out of the shared hosted
@@ -595,7 +590,17 @@ jobs:
           # the same distinction -- so normalising one spelling into the other
           # would be an inference. One extra read is cheaper than a comparison
           # that silently stops matching.
-          PR_AUTHOR="$(gh_retry gh api "repos/$REPO/pulls/$PR" --jq '.user.login')"
+          #
+          # The same read carries the native-stack trunk: REST's `stack` object
+          # is present only on a PR in a GitHub-native stack, and its
+          # `base.ref` is the branch the bottom PR targets. GitHub runs that
+          # branch's `pull_request` workflows on EVERY PR in the stack, so the
+          # trunk, not this PR's own base, decides whether CI / Fast Gate /
+          # Build / Internal Content Scan start. Empty for a PR outside a native
+          # stack.
+          pr_rest="$(gh_retry gh api "repos/$REPO/pulls/$PR")"
+          PR_AUTHOR="$(jq -r '.user.login' <<<"$pr_rest")"
+          STACK_TRUNK="$(jq -r '.stack.base.ref // ""' <<<"$pr_rest")"
           SHA="$(jq -r '.headRefOid' <<<"$pr_json")"
           STATE="$(jq -r '.state' <<<"$pr_json")"
           # The default branch is where CI / Build / CodeQL are gated to run
@@ -618,6 +623,7 @@ jobs:
             echo "draft=$(jq -r '.isDraft' <<<"$pr_json")"
             echo "url=$(jq -r '.url' <<<"$pr_json")"
             echo "base=$(jq -r '.baseRefName' <<<"$pr_json")"
+            echo "stack_trunk=$STACK_TRUNK"
             echo "author=$PR_AUTHOR"
             echo "default_branch=$DEFAULT_BRANCH"
             # (head repository, head branch) is how a monitored workflow run is
@@ -975,18 +981,12 @@ jobs:
           DRAFT: ${{ steps.context.outputs.draft }}
           FORK: ${{ steps.context.outputs.fork }}
           BASE_REF: ${{ steps.context.outputs.base }}
+          STACK_TRUNK: ${{ steps.context.outputs.stack_trunk }}
           DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
-          # The triggering workflow_run's own name + status, read ONLY to close
-          # a race on the fork Stage-2 lanes below: this evaluation can itself be
-          # the `in_progress` event a human-override rerun fires the INSTANT it
-          # starts, before that rerun's own "Open check-run" step has posted a
-          # fresh row -- so a check-runs read right now would still see the OLD
-          # completed verdict and publish a stale success. Empty on every other
-          # trigger (pull_request_target, or a workflow_run this isn't).
-          WR_NAME: ${{ github.event.workflow_run.name }}
-          WR_STATUS: ${{ github.event.workflow_run.status }}
+          # The edit's time on an `edited` run, read by the `edited_lanes` check.
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
           # From the disposition step above. Empty DISPOSITION_OK means the step
           # did not run at all, which contributes nothing -- the step's own `if`
           # matches this one's, and test_pr_readiness_dispositions.py pins the
@@ -1025,9 +1025,23 @@ jobs:
           # bottom PR of the stack merges, GitHub auto-retargets this PR to the
           # default branch and CI/Build/CodeQL then run over the combined diff
           # before anything can reach the default branch.
+          #
+          # A GitHub-NATIVE stack is the exception for the `branches:`-filtered
+          # lanes: GitHub runs the trunk's `pull_request` workflows on every PR
+          # in the stack, mid-stack ones included, so CI / Fast Gate / Build /
+          # Internal Content Scan DO run there and must count. The
+          # filter is therefore judged against STACK_TRUNK when the PR is in a
+          # native stack, and against its own base otherwise, so a hand-made
+          # stack keeps the carve-out. CodeQL default-setup does not follow the
+          # stack (no mid-stack PR carries a CodeQL run), so it alone is still
+          # judged against the PR's own base.
           stacked=false
-          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+          if [ -n "$DEFAULT_BRANCH" ] && [ "${STACK_TRUNK:-$BASE_REF}" != "$DEFAULT_BRANCH" ]; then
             stacked=true
+          fi
+          codeql_ineligible=false
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            codeql_ineligible=true
           fi
 
           workflow_specs=()
@@ -1059,6 +1073,9 @@ jobs:
           # list omits is a gate that can go red without reddening the PR.
           workflow_specs+=("issue-gate.yml|Issue Gate")
 
+          # True only for a fork PR into a non-default base (see below).
+          fork_base_hold=false
+
           if [ "$FORK" = "true" ]; then
             # A fork head cannot run the repository's managed default-setup
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
@@ -1076,6 +1093,14 @@ jobs:
             # field is the workflow whose completion triggers the lane -- all
             # five fire on `Fast Gate` completing, so its newest run + attempt
             # for this head is what "current" means here (fast-gate.yml).
+            #
+            # Fast Gate only runs on PRs to the default branch, so on a stacked
+            # fork PR no lane keyed on it starts and the PR is held for a
+            # maintainer (the hold below). The lanes stay listed so a verdict
+            # one posted while the base was the default branch still counts.
+            if [ "$stacked" = "true" ]; then
+              fork_base_hold=true
+            fi
             workflow_specs+=(
               # The scan reaches a fork through the same Stage-2 pattern: a fork
               # head gets no OIDC token, so fork-internal-content-scan.yml runs
@@ -1098,11 +1123,14 @@ jobs:
               "checkrun:Security Scope Review|Security Scope Review|scope-pr-|fast-gate.yml"
             )
           else
-            if [ "$stacked" = "true" ]; then
+            if [ "$codeql_ineligible" = "true" ]; then
               skipped+=("CodeQL (only runs on PRs to $DEFAULT_BRANCH)")
-              skipped+=("Internal Content Scan (only runs on PRs to $DEFAULT_BRANCH)")
             else
               workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
+            fi
+            if [ "$stacked" = "true" ]; then
+              skipped+=("Internal Content Scan (only runs on PRs to $DEFAULT_BRANCH)")
+            else
               # Blocking lane: an added line carrying an Amazon-internal marker
               # fails this and therefore fails readiness. Resolved by workflow
               # FILE, so the awkward reusable-workflow check name
@@ -1200,8 +1228,22 @@ jobs:
           # evaluation has checkrun: specs, and all seven read the same
           # collection. Paginated because a head carries one check-run per
           # JOB (89 on a typical same-repo head), and the second page is the
-          # one that would otherwise drop the lane posted last.
+          # one that would otherwise drop the lane posted last. `filter=all`:
+          # the default can omit an older completed row of a name, so a sibling
+          # PR's newer verdict on this SHA can hide the row the external_id
+          # binding below looks for.
           sha_check_runs=""
+
+          # A pull_request_target open/synchronize/reopen/edit is itself an
+          # event that starts lanes on this head, so their runs may not exist
+          # yet (the sentinel after the loop says so).
+          runs_starting=false
+          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
+            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
+              runs_starting=true
+              ;;
+          esac
+          lane_never_started=false
 
           # The three whole-design lanes' comment slots, read ONCE here beside
           # the runs read: both readers below score those lanes, and the
@@ -1259,6 +1301,10 @@ jobs:
             fi
           }
 
+          # The monitored workflows whose `pull_request` trigger lists `edited`.
+          # test_pr_readiness_evaluate.py pins this list to those triggers.
+          edited_lanes=" code-review.yml codex-review.yml issue-gate.yml "
+
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
           # 3.2) treats expanding an empty array under `set -u` as an unbound
@@ -1285,31 +1331,16 @@ jobs:
               # an absent/unbound row (the real review has not posted yet) ->
               # pending.
               cname="${file#checkrun:}"
-              # A human-override-rerun race this branch does NOT currently
-              # close, kept here so the intent is not lost with the wiring.
-              # It fires only when readiness was itself triggered by a
-              # `Fork <lane>` run's `workflow_run: in_progress`, and such a
-              # trigger can never reach this step: a `workflow_run`-triggered
-              # lane runs from the default branch, so `Resolve current pull
-              # request revision` finds no open pull request for that head and
-              # exits SKIP long before the evaluation (see the trigger
-              # allowlist). The branch was therefore unreachable while those
-              # lanes were listed, and stays unreachable now that they are not
-              # -- and doubly so since every `in_progress` trigger stops at the
-              # hold step and never evaluates. The race it names is real and
-              # unguarded: a rerun's fresh "Open check-run" step can land after
-              # this read, so the read sees the OLD completed verdict. The
-              # sweep's mode-2 check evidence catches it within one sweep
-              # interval. Tracked in issue #14166 rather than fixed here, which
-              # is a trigger change only.
-              if [ "$FORK" = "true" ] && [ "${WR_STATUS:-}" = "in_progress" ] \
-                && [ "${WR_NAME:-}" = "Fork $cname" ]; then
-                pending+=("$label (rerun starting)")
-                continue
-              fi
+              # No event marks a fork lane's rerun STARTING (a
+              # `workflow_run`-triggered lane cannot be a trigger; see the
+              # allowlist), so a rerun whose fresh "Open check-run" row lands
+              # after this read (for a success, also after the publish step's
+              # re-check) keeps its OLD verdict until the next evaluation -- at
+              # the latest pr-readiness-sweep.yml's recompute on that rerun's
+              # completion.
               if [ -z "$sha_check_runs" ]; then
                 sha_check_runs="$(gh_retry gh api --method GET --paginate \
-                  "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                  "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" \
                   | jq -cs '{check_runs: [.[].check_runs[]]}')" || {
                   rc=$?
                   # 22 = permanent HTTP error (misconfiguration): fail loud so it
@@ -1375,6 +1406,12 @@ jobs:
                     | max_by(.id) // empty
                   ' <<<"$pr_runs")"
                   if [ -z "$trun" ]; then
+                    if [ "$fork_base_hold" = "true" ]; then
+                      # The trigger never runs on this base; the hold keeps
+                      # the PR out.
+                      skipped+=("$label (only runs on PRs to $DEFAULT_BRANCH)")
+                      continue
+                    fi
                     # The trigger has not run for this head yet, so no review is
                     # owed and none can have reported. Pending, not passed.
                     pending+=("$label (not started)")
@@ -1550,7 +1587,37 @@ jobs:
               ' <<<"$src")"
             fi
             if [ -z "$run" ]; then
-              pending+=("$label (not started)")
+              # A lane added after this head was pushed has no run here, and
+              # only a new pull request event starts one: a `pull_request` run
+              # takes its workflow from that event's merge commit (#5957). It
+              # stays pending, so a pass never stands in for a lane that did
+              # not run, but once another lane's run on this head has completed
+              # the events so far have fanned out without it, and it says so.
+              note="not started"
+              case "$file" in
+                *.yml)
+                  if [ "$runs_starting" = "false" ] \
+                    && jq -e --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
+                      any(.workflow_runs[]; .status == "completed"
+                          and .head_repository.full_name == $repo
+                          and .head_branch == $ref)
+                    ' <<<"$pr_runs" >/dev/null; then
+                    note="not started on this head; push or reopen"
+                    lane_never_started=true
+                  fi
+                  ;;
+              esac
+              pending+=("$label ($note)")
+              continue
+            fi
+            # An edit restarts each `edited_lanes` lane, but this run can read
+            # the page before GitHub creates the new run: a newest run created
+            # before the edit is the old verdict, so it waits. A late run sees
+            # the new run and keeps its verdict.
+            if [ "$TRIGGER_EVENT:$TRIGGER_ACTION" = "pull_request_target:edited" ] \
+              && [[ "$edited_lanes" == *" $file "* ]] \
+              && jq -e --arg t "${PR_UPDATED_AT:-}" '.created_at < $t' <<<"$run" >/dev/null; then
+              pending+=("$label (edit re-run not started)")
               continue
             fi
 
@@ -1777,13 +1844,9 @@ jobs:
           # (A legitimate reviewer re-run arrives via workflow_run and shows up
           # as an in_progress workflow above, so it keeps producing "checking"
           # through this same real-pending path.)
-          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
-            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
-              if [ "${#pending[@]}" -gt 0 ]; then
-                pending+=("validation runs are starting")
-              fi
-              ;;
-          esac
+          if [ "$runs_starting" = "true" ] && [ "${#pending[@]}" -gt 0 ]; then
+            pending+=("validation runs are starting")
+          fi
 
           # (The long-term "Arbiter — judge from comments" gate was retired: its
           # one-way-door / long-term-reversibility lens now lives in Design
@@ -1848,6 +1911,13 @@ jobs:
               read_failure=true
               ;;
           esac
+
+          # The hold: with no fork scan or review on this base the PR cannot
+          # pass on its own. A blocker publishes a terminal `failure`, which
+          # the sweep re-fires only on new evidence, never on age.
+          if [ "$fork_base_hold" = "true" ]; then
+            failed+=("fork PR into $BASE_REF needs maintainer review: the Stage-2 fork scan and reviews only run on PRs to $DEFAULT_BRANCH")
+          fi
 
           # Human review (issue #17049). A reviewer whose NEWEST review asks
           # for changes on THIS head blocks: nothing has been pushed since they
@@ -1945,6 +2015,18 @@ jobs:
               description="${#awaiting_approval[@]} workflow(s) awaiting maintainer approval"
               if [ "${#passed[@]}" -eq 0 ] && [ "$transport_failed" = "false" ]; then
                 description="$description; none has run yet"
+              fi
+            fi
+            if [ "$fork_base_hold" = "true" ]; then
+              # Name the hold and count the rest; fixed wording, not
+              # $BASE_REF, keeps the 140-char limit.
+              others=$(( ${#blockers[@]} - 1 ))
+              description="fork PR into a non-default base needs maintainer review"
+              if [ "$others" -gt 0 ]; then
+                description="$description; $others other blocking item(s)"
+              fi
+              if [ "${#awaiting_approval[@]}" -gt 0 ]; then
+                description="$description; ${#awaiting_approval[@]} awaiting maintainer approval"
               fi
             fi
           elif [ "${#waiting[@]}" -gt 0 ]; then
@@ -2066,6 +2148,13 @@ jobs:
               echo
               echo "**Waiting**"
               printf -- "- %s\n" ${waiting[@]+"${waiting[@]}"}
+              if [ "$lane_never_started" = "true" ]; then
+                echo
+                echo "> A lane \`not started on this head\` has no run although another"
+                echo "> lane's run here has completed, most often because it was added"
+                echo "> after this head was pushed. Only a new pull request event starts"
+                echo "> it: push a commit, or close and reopen the pull request."
+              fi
             fi
             # Reached with transport_failed=true only via the fall-through
             # above (an already-observed blocker dominates the pending
@@ -2090,6 +2179,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
+          BASE_REF: ${{ steps.context.outputs.base }}
           URL: ${{ steps.context.outputs.url }}
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
@@ -2300,8 +2390,9 @@ jobs:
             # The seven Stage-2 fork review lanes run from the default branch,
             # so the runs page above never shows them on a fork head; the
             # verdict step reads them from the head SHA's check-runs, and so
-            # does this re-check, bound the same way: each lane stamps its row
-            # with `<prefix><PR>-<Fast Gate run id>-<attempt>`, and only a row
+            # does this re-check, with the same `filter=all` and bound the same
+            # way: each lane stamps its row with
+            # `<prefix><PR>-<Fast Gate run id>-<attempt>`, and only a row
             # naming THIS pull request AND the newest Fast Gate run + attempt
             # for this head is current. The attempt is what makes a Fast Gate
             # re-run visible: the previous attempt's seven rows still sit on
@@ -2332,7 +2423,7 @@ jobs:
                 TARGET_LABEL="readiness: checking"
                 DESCRIPTION="readiness check(s) changed since evaluation; re-checking Fast Gate"
               elif fork_state="$(gh_retry gh api --method GET --paginate \
-                "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" \
                 | jq -rs --arg pr "$PR" --arg fg "$fast_gate" \
                   --argjson legacy "$LEGACY_LANE_NAMES" '
                   ($legacy | with_entries({key: .value, value: .key})) as $old_name
@@ -2404,6 +2495,21 @@ jobs:
           # next monitored-workflow event) re-evaluates and republishes,
           # and no verdict is ever silently overwritten. The POST is
           # bounded (gh applies no HTTP timeout of its own).
+          #
+          # A base change keeps the SHA, so a verdict scored for the old base
+          # publishes nothing; the run for the new base publishes. Read last,
+          # right before the POST. An unreadable base never lets a success
+          # stand: it publishes a stamped pending the sweep re-fires.
+          if ! current_base="$(gh_retry gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')"; then
+            if [ "$STATUS_STATE" = "success" ]; then
+              STATUS_STATE=pending
+              TARGET_LABEL="readiness: checking"
+              DESCRIPTION="[read-failed] Readiness could not re-check the base before publishing; it will be re-evaluated"
+            fi
+          elif [ "$current_base" != "$BASE_REF" ]; then
+            echo "Ignoring publish for stale base $BASE_REF; PR #$PR now targets $current_base."
+            exit 0
+          fi
           jq -n \
             --arg state "$STATUS_STATE" \
             --arg target_url "$URL" \

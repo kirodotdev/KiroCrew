@@ -3,7 +3,7 @@
 // match highlighter, and the follow behaviour that pins to whichever end is
 // "latest" for the current direction.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render as rtlRender, screen, fireEvent, act } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement, ReactNode } from 'react'
 
@@ -98,6 +98,16 @@ describe('LogViewer level control', () => {
     expect(screen.getByText('Error').className).toContain('bg-transparent')
   })
 
+  it('announces the level buttons as one named radio group with the chosen level checked', async () => {
+    render(<LogViewer />)
+    await act(async () => {})
+    const group = screen.getByRole('radiogroup', { name: 'Log Level:' })
+    expect(within(group).getAllByRole('radio').map(r => r.textContent)).toEqual(['Debug', 'Info', 'Warning', 'Error'])
+    expect(within(group).getByRole('radio', { checked: true }).textContent).toBe('Info')
+    await act(async () => { fireEvent.click(within(group).getByRole('radio', { name: 'Warning' })) })
+    expect(within(group).getByRole('radio', { checked: true }).textContent).toBe('Warning')
+  })
+
   it('styles each active level with its own tone', async () => {
     render(<LogViewer />)
     await act(async () => {})
@@ -168,6 +178,20 @@ describe('LogViewer search', () => {
     expect(marks).toHaveLength(2)
     expect(marks[0].tagName).toBe('MARK')
     expect(screen.getByText('1 match')).toBeInTheDocument()
+  })
+
+  it('the Matches only toggle says whether it is on', async () => {
+    const input = await withLines()
+    fireEvent.change(input, { target: { value: 'needle' } })
+    const toggle = screen.getByRole('button', { name: 'Matches only' })
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId('log-line')).toHaveLength(1)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId('log-line')).toHaveLength(2)
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('narrows to matches only, and clearing the query resets that', async () => {

@@ -13,6 +13,12 @@ The core never imports an app to hand it this.
 ``run`` RAISES on refusal rather than returning a falsy id: the host can decline
 (approval policy, caps), and a caller that reads a decline as success waits on a
 spawn that never happened instead of counting a failure and backing off.
+
+``continue_`` hands a follow-up task to a finished run's conversation, so a
+pipeline that returns work to the same agent keeps that agent's context. It runs
+the same checks as ``run`` against the agent the conversation was started with,
+and an expired or busy conversation raises with a ``code`` the app can switch on
+to fall back to a fresh ``run``.
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ from kiro_crew.subagent_wait_reasons import stopped_before_start
 logger = logging.getLogger(__name__)
 
 
-def _audit_spawn_denied(app: str, agent: str, reason: str) -> None:
+def _audit_spawn_denied(app: str, agent: str, reason: str, tool_name: str = "spawn_run") -> None:
     """Emit a SEL denial record for an SDK-side spawn refusal.
 
     The SDK rejects an empty-agent, unverifiable, or cross-app spawn BEFORE it
@@ -43,7 +49,7 @@ def _audit_spawn_denied(app: str, agent: str, reason: str) -> None:
         sel().log_tool_invocation(
             session_key="",
             source="app_spawn_sdk",
-            tool_name="spawn_run",
+            tool_name=tool_name,
             outcome="denied",
             error=reason,
             metadata={"app": app, "agent": agent or "default"},
@@ -55,8 +61,20 @@ def _audit_spawn_denied(app: str, agent: str, reason: str) -> None:
 #: What the gateway injects: ``(task, agent, silent, model, app) -> awaitable[spawn id]``.
 #: ``app`` is the calling app's name — threaded so the spawn's governance check
 #: can resolve that app's OWN profile (blast-radius containment), not just the
-#: policy ceiling. An empty id means the host declined.
-SpawnImpl = Callable[[str, str, bool, str, str], Awaitable[str]]
+#: policy ceiling. An empty id means the host declined. :meth:`SpawnSDK.run`
+#: passes ``keep=True`` as a keyword only when the app asked for it.
+SpawnImpl = Callable[..., Awaitable[str]]
+
+#: Optional continuation the gateway injects alongside the impl:
+#: ``(conversation, task, model, silent, app) -> awaitable[run id]``.
+ContinueImpl = Callable[[str, str, str, bool, str], Awaitable[str]]
+
+#: :attr:`SpawnError.code` when the conversation has no resumable session left
+#: (expired, released, or pruned). Start a fresh run instead.
+CONVERSATION_GONE = "conversation_gone"
+#: :attr:`SpawnError.code` when a run is still in flight on the conversation (or
+#: another continuation of it is starting). Wait for it, or start a fresh run.
+CONVERSATION_BUSY = "conversation_busy"
 
 
 def _app_spawn_model(app: str, agent: str) -> str:
@@ -96,11 +114,16 @@ class SpawnError(RuntimeError):
 
     A caller that backed off on the whole exception type would pause on faults
     too, so the flag is the signal to gate on — not ``isinstance``.
+
+    ``code`` names a refusal a caller acts on differently. ``continue_`` sets it
+    to :data:`CONVERSATION_GONE` or :data:`CONVERSATION_BUSY`, both of which a
+    caller answers with a fresh ``run``; every other refusal leaves it ``""``.
     """
 
-    def __init__(self, *args: object, declined: bool = False) -> None:
+    def __init__(self, *args: object, declined: bool = False, code: str = "") -> None:
         super().__init__(*args)
         self.declined = declined
+        self.code = code
 
 
 #: Optional probe the gateway injects alongside the impl:
@@ -111,10 +134,17 @@ DoneProbe = Callable[[str], bool]
 class SpawnSDK:
     """App-scoped view of the host's background-agent spawning."""
 
-    def __init__(self, app_name: str, impl: SpawnImpl, done_probe: DoneProbe | None = None) -> None:
+    def __init__(
+        self,
+        app_name: str,
+        impl: SpawnImpl,
+        done_probe: DoneProbe | None = None,
+        continue_impl: ContinueImpl | None = None,
+    ) -> None:
         self._app_name = app_name
         self._impl = impl
         self._done_probe = done_probe
+        self._continue_impl = continue_impl
 
     def is_done(self, spawn_id: str) -> bool:
         """True once the spawned agent has finished (success OR failure).
@@ -133,7 +163,13 @@ class SpawnSDK:
             return False
 
     async def run(
-        self, task: str, agent: str = "", *, silent: bool = False, model: str = ""
+        self,
+        task: str,
+        agent: str = "",
+        *,
+        silent: bool = False,
+        model: str = "",
+        keep: bool = False,
     ) -> str:
         """Start a background agent for *task*; return its spawn id.
 
@@ -149,7 +185,9 @@ class SpawnSDK:
         default model for this run — unattended work is where users most want a
         cheaper model, since nobody is present to weigh cost against quality. With
         no ``model``, the user's own ``apps.<name>.model`` setting applies unless
-        the agent pins a model.
+        the agent pins a model. ``keep=True`` is the host's ``keep`` flag: the run
+        gets its own process and its conversation is retained for hours rather than
+        about one, for an app that expects to :meth:`continue_` it later.
         """
         if not task.strip():
             raise SpawnError("spawn task is empty")
@@ -162,7 +200,10 @@ class SpawnSDK:
             _audit_spawn_denied(self._app_name, agent, reason)
             raise SpawnError(reason)
         try:
-            spawn_id = await self._impl(task, agent, silent, model, self._app_name)
+            # ``keep`` rides as a keyword only when asked for, so an impl that
+            # predates it still serves every spawn that does not ask.
+            extra = {"keep": True} if keep else {}
+            spawn_id = await self._impl(task, agent, silent, model, self._app_name, **extra)
         except SpawnError:
             raise
         except Exception as exc:  # noqa: BLE001 — normalise to one failure type
@@ -182,6 +223,81 @@ class SpawnSDK:
         )
         return spawn_id
 
+    async def continue_(
+        self, spawn_id: str, task: str, *, model: str = "", silent: bool = False
+    ) -> str:
+        """Send *task* as a follow-up turn to finished run *spawn_id*; return the new run id.
+
+        The follow-up runs on the same conversation, so the agent keeps what it
+        read and reasoned in the earlier run. *spawn_id* is the id :meth:`run`
+        returned, and it stays the conversation's id for every later follow-up.
+        The new id is for :meth:`is_done`.
+
+        The checks are those of :meth:`run`: the conversation must be one this app
+        started with one of its own ``<app>--*`` agents, the app's governance
+        profile and ``capabilities.spawn`` scopes apply to that agent, and the run
+        is auto-approved. The follow-up keeps the run's model unless *model*
+        names another.
+
+        Raises :class:`SpawnError`. Its ``code`` is :data:`CONVERSATION_GONE` when
+        the conversation has nothing left to resume and :data:`CONVERSATION_BUSY`
+        when a run is still in flight on it; either way a fresh :meth:`run` with a
+        summary of the earlier result is the fallback.
+        """
+        if not task.strip():
+            raise SpawnError("continue task is empty")
+        if not spawn_id.strip():
+            raise SpawnError("continue needs the spawn id of a finished run")
+        if self._continue_impl is None:
+            raise SpawnError(f"this host cannot continue a run for app {self._app_name!r}")
+        try:
+            run_id = await self._continue_impl(spawn_id, task, model, silent, self._app_name)
+        except SpawnError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — normalise to one failure type
+            raise SpawnError(f"continue failed for app {self._app_name!r}: {exc}") from exc
+        if not run_id:
+            raise SpawnError(
+                f"host declined the continuation for app {self._app_name!r}", declined=True
+            )
+        logger.info(
+            "App %s continued run %s (id=%s, silent=%s)",
+            self._app_name,
+            spawn_id,
+            run_id,
+            silent,
+        )
+        return run_id
+
+
+async def _own_agents(app: str, agent: str, tool_name: str) -> set[str]:
+    """The names of *app*'s own agents; raises (audited) when they cannot be read.
+
+    Off the loop: ``list_agents()`` scans the agents dir and JSON-parses each file.
+    On a cold or large directory that read would block the gateway loop —
+    stalling chat and the heartbeat — so it runs in a thread.
+
+    Materialized app agents are named ``<app>--<agent>.json``, so the filename
+    prefix is the ownership proof. Without it an app could name the GLOBAL host
+    agent ("kirocrew") or another app's agent — which the manager would then run
+    with ``approval_mode="auto"``, a full-privilege escalation from the app's own
+    restricted background agent. Kiro Crew's own generated specs are never an
+    app's agent, even when derived from one (``<app>--<agent>--readonly`` shares
+    the prefix).
+    """
+    prefix = f"{app}--"
+    try:
+        agents = await asyncio.to_thread(list_agents)
+        return {
+            a.name
+            for a in agents
+            if a.filename.startswith(prefix) and not is_internal_agent_spec(a)
+        }
+    except Exception as exc:  # noqa: BLE001 — cannot confirm → refuse
+        reason = f"cannot verify agent {agent!r} for app {app!r}: {exc}"
+        _audit_spawn_denied(app, agent, reason, tool_name)
+        raise SpawnError(reason) from exc
+
 
 def build_spawn_impl(subagents: object) -> SpawnImpl:
     """Adapt a live ``SubagentManager`` to :data:`SpawnImpl`.
@@ -196,7 +312,9 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
     raises here, because an id alone does not mean it is running.
     """
 
-    async def _impl(task: str, agent: str, silent: bool, model: str, app: str) -> str:
+    async def _impl(
+        task: str, agent: str, silent: bool, model: str, app: str, *, keep: bool = False
+    ) -> str:
         if subagents is None:
             raise SpawnError("no subagent manager on this gateway")
         # The named agent must EXIST. SubagentManager validation silently replaces
@@ -205,32 +323,10 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
         # ESCALATE from the app's restricted background agent to unrestricted
         # auto-approved execution. Fail closed: refuse a name we cannot confirm is
         # a real agent rather than fall back.
-        try:
-            # Off the loop: list_agents() scans the agents dir and JSON-parses each
-            # file. On a cold or large directory that read would block the gateway
-            # loop — stalling chat and the heartbeat — so it runs in a thread.
-            agents = await asyncio.to_thread(list_agents)
-            # Restrict to THIS app's OWN agents. Materialized app agents are named
-            # `<app>--<agent>.json`, so the filename prefix is the ownership proof.
-            # Without it an app could name the GLOBAL host agent ("kirocrew") or
-            # another app's agent — which the manager would then run with
-            # approval_mode="auto", a full-privilege escalation from the app's own
-            # restricted background agent.
-            prefix = f"{app}--"
-            # Kiro Crew's own generated specs are never an app's agent, even when
-            # derived from one (``<app>--<agent>--readonly`` shares the prefix).
-            known = {
-                a.name
-                for a in agents
-                if a.filename.startswith(prefix) and not is_internal_agent_spec(a)
-            }
-        except Exception as exc:  # noqa: BLE001 — cannot confirm → refuse
-            reason = f"cannot verify agent {agent!r} for app {app!r}: {exc}"
-            _audit_spawn_denied(app, agent, reason)
-            raise SpawnError(reason) from exc
+        known = await _own_agents(app, agent, "spawn_run")
         if agent not in known:
             reason = (
-                f"app {app!r} may only spawn its OWN agents ({prefix}*); {agent!r} is not one "
+                f"app {app!r} may only spawn its OWN agents ({app}--*); {agent!r} is not one "
                 "(refusing to run the host default or another app's agent)"
             )
             _audit_spawn_denied(app, agent, reason)
@@ -249,6 +345,7 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             approval_mode="auto",
             model=model or None,
             app=app,
+            keep=keep,
             # Already confirmed to exist via the off-loop list_agents() above;
             # skip the manager's synchronous re-scan on the event loop.
             _agent_prevalidated=True,
@@ -315,7 +412,140 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
     # to every layer that threads spawn_impl (gateway -> lifecycle -> context).
     # build_app_context reads it back via getattr.
     _impl.done_probe = build_done_probe(subagents)  # type: ignore[attr-defined]
+    _impl.continue_impl = build_continue_impl(subagents)  # type: ignore[attr-defined]
     return _impl
+
+
+def _conversation_owner(subagents: object, conversation: str) -> tuple[str, str]:
+    """``(app, agent)`` that started run *conversation*, from its live record or
+    its protected run record. Blocking on a record that left memory: call off the
+    loop. Raises :class:`_ConversationPrunedError` when the run's folder is absent
+    (retention pruned it), and ``ValueError`` (or ``OSError``) when a
+    record that is there cannot be read."""
+    get = getattr(subagents, "get", None)
+    info = get(conversation) if callable(get) else None
+    if info is not None:
+        return str(getattr(info, "app", "") or ""), str(getattr(info, "agent", "") or "")
+    from kiro_crew.subagent_persistence import _agent_dir, read_run_execution
+
+    try:
+        execution = read_run_execution(conversation)
+    except ValueError:
+        # Only a folder that is provably absent is an ordinary expiry; a present
+        # but unreadable record, or an id that names no folder, fails closed.
+        if not _agent_dir(conversation).exists():
+            raise _ConversationPrunedError(conversation) from None
+        raise
+    return execution.app, execution.template_id
+
+
+class _ConversationPrunedError(LookupError):
+    """The run's live record and its folder are both gone: nothing to resume."""
+
+
+def build_continue_impl(subagents: object) -> ContinueImpl:
+    """Adapt a live ``SubagentManager`` to :data:`ContinueImpl`.
+
+    Ownership is checked before the manager is asked: the conversation's run must
+    record THIS app and one of the app's own agents that still exists. The
+    follow-up names that agent explicitly, so the manager's governance gate
+    evaluates the app's profile and ``capabilities.spawn`` scopes against it as
+    it does for :meth:`SpawnSDK.run`, and ``approval_mode="auto"`` is passed for
+    the same reason as there: no user is present to approve a tool call.
+
+    Returns "" when the manager declines for capacity; a typed refusal raises
+    :class:`SpawnError` with its ``code``.
+    """
+
+    async def _continue(conversation: str, task: str, model: str, silent: bool, app: str) -> str:
+        if subagents is None:
+            raise SpawnError("no subagent manager on this gateway")
+        try:
+            run_app, agent = await asyncio.to_thread(_conversation_owner, subagents, conversation)
+        except _ConversationPrunedError as exc:
+            reason = f"{CONVERSATION_GONE}: conversation {conversation!r} has expired"
+            _audit_spawn_denied(app, "", reason, "spawn_continue")
+            raise SpawnError(reason, code=CONVERSATION_GONE) from exc
+        except (OSError, ValueError) as exc:
+            reason = f"cannot verify that app {app!r} owns conversation {conversation!r}: {exc}"
+            _audit_spawn_denied(app, "", reason, "spawn_continue")
+            raise SpawnError(reason) from exc
+        if run_app != app or not agent:
+            reason = (
+                f"app {app!r} may only continue a run it started with one of its OWN "
+                f"agents; conversation {conversation!r} is not one"
+            )
+            _audit_spawn_denied(app, agent, reason, "spawn_continue")
+            raise SpawnError(reason)
+        if agent not in await _own_agents(app, agent, "spawn_continue"):
+            reason = (
+                f"app {app!r} may only continue runs of its OWN agents ({app}--*); "
+                f"{agent!r} is not one"
+            )
+            _audit_spawn_denied(app, agent, reason, "spawn_continue")
+            raise SpawnError(reason)
+        # A continuation runs where the run ran; the recorded path is read off
+        # the loop because it may live on a slow mount.
+        recorded_cwd = getattr(subagents, "recorded_cwd", None)
+        cwd = await asyncio.to_thread(recorded_cwd, conversation) if callable(recorded_cwd) else ""
+        from kiro_crew.shared_crew.admission_entry import admit_app_spawn
+        from kiro_crew.shared_crew.admission_link import link_spawn
+        from kiro_crew.shared_crew.containment import principal_scope
+
+        admission = await admit_app_spawn(subagents, app)
+        if admission.rejected:
+            reason = admission.reason.value if admission.reason is not None else "refused"
+            raise SpawnError(
+                f"fair admission refused the continuation for app {app!r} ({reason})",
+                declined=True,
+            )
+        continue_kwargs: dict[str, object] = dict(
+            agent=agent,
+            model=model or None,
+            cwd=cwd,
+            approval_mode="auto",
+            silent=silent,
+        )
+        try:
+            run_id = await link_spawn(admission, subagents)
+            if run_id is None:
+                raise SpawnError(
+                    f"fair admission could not record the continuation for app {app!r}",
+                    declined=True,
+                )
+            if run_id:
+                continue_kwargs["_preassigned_id"] = run_id
+            with principal_scope(None if admission.work is None else admission.work.budget_key):
+                info = await subagents.continue_conversation_async(  # type: ignore[attr-defined]
+                    conversation, task, **continue_kwargs
+                )
+        except BaseException:
+            await admission.abandon()
+            raise
+        if info is None or bool(getattr(info, "error", "")) or not info.id:
+            await admission.abandon()
+        else:
+            # A continuation runs on its conversation's session key, so that is
+            # the key its nested spawns name.
+            await admission.attach_child(
+                str(info.id),
+                session_key=getattr(info, "conversation_key", "") or f"subagent:{info.id}",
+                also=(f"subagent:{info.id}",),
+            )
+        if info is None:
+            return ""
+        error = str(getattr(info, "error", "") or "")
+        if error:
+            for code in (CONVERSATION_BUSY, CONVERSATION_GONE):
+                if error.startswith(code):
+                    raise SpawnError(error, code=code)
+            declined = str(getattr(info, "error_code", "")) == TASK_STORE_UNAVAILABLE_CODE
+            raise SpawnError(error, declined=declined)
+        if stopped_before_start(info):
+            raise SpawnError("the continuation was stopped before it started; nothing ran")
+        return str(getattr(info, "id", "") or "")
+
+    return _continue
 
 
 def build_done_probe(subagents: object) -> DoneProbe:

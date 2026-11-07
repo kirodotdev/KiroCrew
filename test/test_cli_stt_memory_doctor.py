@@ -87,6 +87,7 @@ class TestDoctorStt:
         the runner instead of the STT arm under test.
         """
         import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
 
         _pin_default_config(_floor_monkeypatch)
         _floor_monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
@@ -98,6 +99,8 @@ class TestDoctorStt:
         # is a note. The desktop arm is pinned by the bundled tests below, the
         # Windows arm in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
         _floor_monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
+        # Unconfined: run from an agent's shell, a macOS miss would read as a skip.
+        _floor_monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: False)
         # Left real, this prepends to the process PATH for every later test.
         _floor_monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
 
@@ -210,19 +213,9 @@ class TestDoctorStt:
     ):
         """``_report``'s ``modules=`` faking must not corrupt a co-runner's module identity.
 
-        The doctor run inside ``_report`` reaches ``kiro_crew.acp.skill_projection``
-        lazily (through the ACP driver), so on a cold xdist worker that submodule is
-        imported for the FIRST time inside the module-faking block. The faking must
-        leave it in place: after ``_report`` returns, ``sys.modules``, the
-        ``kiro_crew.acp`` package attribute and a re-import all have to name one
-        module object.
-
-        A whole-dict ``patch.dict("sys.modules", ...)`` restores its entry snapshot
-        on exit and so evicts that submodule while the package attribute still
-        names it. A later test on the same worker then re-imports it as a second
-        object, monkeypatches that one, and the runtime's function-local
-        ``from kiro_crew.acp.skill_projection import ...`` resolves the unpatched
-        real preparer. This drives the real helper, so it fails on that restore.
+        On a cold worker ``kiro_crew.acp.skill_projection`` is first imported inside the
+        faking block. A whole-dict ``patch.dict("sys.modules", ...)`` would evict it on
+        exit, so a later test would patch a second copy the runtime never imports.
         """
         import importlib
 
@@ -452,6 +445,56 @@ class TestDoctorStt:
         assert "brew install ffmpeg" not in section
         assert "winget install" not in section
 
+    def _confined_release_without_its_decoder(self, tmp_path, capsys, monkeypatch, *, macos):
+        """Doctor's report from a sandboxed shell of a release whose decoder is not found."""
+        import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
+
+        self._stt(monkeypatch, provider="transcribe")
+        monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
+        )
+        monkeypatch.setattr(_doc.platform_compat, "IS_MACOS", macos)
+        monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: True)
+        out, _code = self._report(
+            tmp_path,
+            capsys,
+            ffmpeg=False,
+            modules={
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": MagicMock(),
+            },
+        )
+        return self._stt_section(out), out.partition("Fix these issues: ")[2]
+
+    def test_doctor_in_a_confined_macos_shell_does_not_report_the_decoder_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A confined macOS shell cannot stage the decoder, so a miss there is no verdict.
+
+        The snapshot every macOS decoder but a fixed system one runs from sits
+        under a root the agent sandbox denies.
+        """
+        section, issues = self._confined_release_without_its_decoder(
+            tmp_path, capsys, monkeypatch, macos=True
+        )
+        assert "ffmpeg:      ⏭  not checkable from this shell" in section
+        assert "reinstall Kiro Crew" not in section
+        assert "ffmpeg" not in issues
+
+    def test_doctor_in_a_confined_linux_shell_still_reports_the_decoder_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Linux stages the decoder into a memfd the sandbox allows, so a miss is real."""
+        section, issues = self._confined_release_without_its_decoder(
+            tmp_path, capsys, monkeypatch, macos=False
+        )
+        assert "ffmpeg:      ❌ not found" in section
+        assert "not checkable" not in section
+        assert "ffmpeg" in issues
+
     def test_doctor_release_without_a_bundled_decoder_points_at_a_system_ffmpeg(
         self, tmp_path, capsys, monkeypatch
     ):
@@ -674,17 +717,8 @@ class TestDoctorEmbeddings:
         after the CPU arch instead of the packaging rule that dropped the file
         on every arch.
         """
-        # This test asserts the NO-override branch, so the var must be absent.
-        # It is not, reliably: the doctor branches on LLAMA_CPP_LIB_PATH and the
-        # value can arrive from outside this test -- a dev shell that exports it,
-        # or the sibling override test, whose helper sets it via a raw
-        # os.environ.setdefault that escapes pytest teardown. Either way the
-        # doctor takes the "libs load from the override dir" path and this
-        # assertion can never match. Clearing it here (mirroring the sibling,
-        # which explicitly setenv-s) makes the expectation independent of both
-        # the ambient environment and test order -- pytest-split reshuffles
-        # shards whenever the suite test count changes, so the leak surfaced on
-        # an unrelated PR that merely added tests elsewhere.
+        # The NO-override branch needs LLAMA_CPP_LIB_PATH absent. A dev shell or the
+        # sibling override test's raw os.environ.setdefault can leak it in, so clear it.
         monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
         self._run_doctor(
             tmp_path,

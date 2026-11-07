@@ -23,7 +23,9 @@ things:
   as the ordinary local, tailnet or tunnel request it is;
 * a handover that does not verify, arrives on any transport but loopback TCP, names
   no valid person, or names someone this Crew does not honor: refuse it, typed;
-* a verified handover: apply the remote limits, then serve a copy of the request
+* a verified handover: apply the remote limits, send a plain page load of the bare
+  root to ``/chat`` (the relay root is the Crew address the control plane hands
+  out), and otherwise serve a copy of the request
   with every relay header removed, ``request.remote`` set to
   :data:`~.caller.RELAY_REMOTE`, and the caller published under
   :data:`~.caller.RELAY_CALLER_KEY` for token auth.
@@ -54,8 +56,13 @@ from kiro_crew.dashboard.kiro_relay.caller import (
     RELAY_CALLER_KEY,
     RELAY_HANDOVER_HEADER,
     RELAY_REMOTE,
+    RELAY_USER_EMAIL_HEADER,
     RELAY_USER_HEADER,
+    RELAY_USER_NAME_HEADER,
     HostBinding,
+    decode_display_name,
+    display_email,
+    encode_display_name,
     is_kiro_user_id,
     published_relay_caller,
 )
@@ -128,14 +135,22 @@ class RelayIngress:
             self._handover = secrets.token_urlsafe(32)
 
     def stamp_headers(
-        self, client_headers: Iterable[tuple[str, str]], *, relay_user: str
+        self,
+        client_headers: Iterable[tuple[str, str]],
+        *,
+        relay_user: str,
+        relay_email: str = "",
+        relay_name: str = "",
     ) -> CIMultiDict[str]:
         """The headers for one handed-over request.
 
         *client_headers* are the person's request headers as the relay forwarded
         them; *relay_user* is the verified ID from the relay's own message. Any
         relay header among *client_headers* is dropped first, so the stamp always
-        overwrites a client value, never sits beside it.
+        overwrites a client value, never sits beside it. *relay_email* and
+        *relay_name* are the display labels from the same message: each is stamped
+        only when it is a valid, non-empty label, and a bad one is left off rather
+        than refusing the request.
         """
         if not self._enabled:
             raise RelayIngressError("the relay is off")
@@ -145,6 +160,14 @@ class RelayIngress:
             raise ValueError("relay_user is not a Kiro user ID")
         stamped = without_relay_headers(client_headers)
         stamped[RELAY_USER_HEADER] = relay_user
+        email = display_email(relay_email)
+        if email:
+            stamped[RELAY_USER_EMAIL_HEADER] = email
+        if relay_name:
+            try:
+                stamped[RELAY_USER_NAME_HEADER] = encode_display_name(relay_name)
+            except ValueError:
+                pass
         stamped[RELAY_HANDOVER_HEADER] = self._handover
         return stamped
 
@@ -214,6 +237,39 @@ def refuse_relayed(request: web.Request, limit: RemoteLimit, *, operation: str) 
     return web.json_response({"error": limit.message, "code": limit.code}, status=403)
 
 
+def _display_labels(request: web.Request) -> dict[str, str]:
+    """The email and name a verified handover carries, each ``""`` when absent or bad.
+
+    Labels only: a repeated, malformed or over-long value is ignored and the request
+    is still served, never refused for it.
+    """
+    emails = request.headers.getall(RELAY_USER_EMAIL_HEADER, [])
+    names = request.headers.getall(RELAY_USER_NAME_HEADER, [])
+    return {
+        "email": display_email(emails[0]) if len(emails) == 1 else "",
+        "display_name": decode_display_name(names[0]) if len(names) == 1 else "",
+    }
+
+
+#: Where a relayed request for the bare root is sent: the dashboard's home page.
+RELAY_ROOT_REDIRECT = "/chat"
+
+
+def _is_bare_root_page_request(request: web.Request) -> bool:
+    """Whether *request* is a plain page load of ``/``: GET or HEAD, no query, no upgrade.
+
+    Only this one shape is redirected. ``raw_path`` carries the query, so ``/?x`` is
+    left to the dashboard as before, rather than this layer deciding whether a
+    redirect should carry the query. A WebSocket upgrade is never answered with a
+    redirect.
+    """
+    return (
+        request.method in ("GET", "HEAD")
+        and request.raw_path == "/"
+        and "Upgrade" not in request.headers
+    )
+
+
 async def _serve_handover(
     request: web.Request,
     handler: _Handler,
@@ -235,7 +291,7 @@ async def _serve_handover(
     users = request.headers.getall(RELAY_USER_HEADER, [])
     if len(users) != 1 or not is_kiro_user_id(users[0]):
         return _refuse(request, "", USER_INVALID)
-    caller = binding.caller_for(users[0])
+    caller = binding.caller_for(users[0], **_display_labels(request))
     if caller is None:
         return _refuse(request, f"relay:{users[0]}", NOT_OWNER)
     limit = remote_limit_for(
@@ -246,6 +302,11 @@ async def _serve_handover(
     relayed = _clone(request, remote=RELAY_REMOTE)
     if relayed is None:
         return _refuse(request, caller.audit_label, HEADER_INVALID, status=400)
+    if _is_bare_root_page_request(relayed):
+        # The address the control plane hands out for a Crew is its relay root, and
+        # the dashboard's home is /chat. Relative, so the browser stays on the relay
+        # host.
+        raise web.HTTPFound(location=RELAY_ROOT_REDIRECT)
     relayed[RELAY_CALLER_KEY] = caller
     return await handler(relayed)
 

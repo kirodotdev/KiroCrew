@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 
@@ -185,5 +185,48 @@ describe('AssistantMessage copy formats', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+// The selection row's Copy over a reply: the selected part goes out as rich
+// text beside the plain text Copy always wrote.
+describe('AssistantMessage selection Copy', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    if (!Range.prototype.getBoundingClientRect) Range.prototype.getBoundingClientRect = () => new DOMRect(10, 10, 100, 20)
+  })
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges()
+    vi.useRealTimers()
+  })
+
+  /** Select `word` in the reply, then let the toolbar's mouseup check run. */
+  function selectInReply(word: string) {
+    const md = screen.getByTestId('md')
+    const text = md.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, text.data.indexOf(word))
+    range.setEnd(text, text.data.indexOf(word) + word.length)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    act(() => { md.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 40, clientY: 30 })) })
+    act(() => { vi.advanceTimersByTime(60) })
+  }
+
+  it('writes the selected part as rich text with the same plain text', async () => {
+    render(<AssistantMessage content={REPLY} isStreaming={false} slotRunning={false} showFooter={false} />)
+    selectInReply('Plan')
+    await act(async () => { screen.getByRole('button', { name: 'Copy' }).click() })
+    expect(copyRichToClipboard).toHaveBeenCalledWith('Plan', 'Plan')
+    expect(copyToClipboard).not.toHaveBeenCalled()
+  })
+
+  it('copies the plain text alone once the browser has dropped the selection', async () => {
+    render(<AssistantMessage content={REPLY} isStreaming={false} slotRunning={false} showFooter={false} />)
+    selectInReply('Plan')
+    window.getSelection()!.removeAllRanges()
+    await act(async () => { screen.getByRole('button', { name: 'Copy' }).click() })
+    expect(copyToClipboard).toHaveBeenCalledWith('Plan')
+    expect(copyRichToClipboard).not.toHaveBeenCalled()
   })
 })

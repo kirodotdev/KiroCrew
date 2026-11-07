@@ -98,8 +98,9 @@ export interface SendWirePayload {
   message: string
   slot?: string
   meta?: Record<string, unknown>
-  /** See `SendTurnOptions.steer`. Only the dashboard wire forwards it: an
-   *  app embed cannot steer (the server refuses app-authenticated steers). */
+  /** See `SendTurnOptions.steer`. The dashboard wire and the app-sdk wire both
+   *  forward it. The gateway steers only a person's send: an app-token caller
+   *  that asks to steer is queued instead, and its receipt says `queued`. */
   steer?: boolean | 'auto'
   /** Human crewmate DM priority, validated by the gateway. Dashboard only. */
   responsive?: boolean

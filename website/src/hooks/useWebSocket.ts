@@ -3,7 +3,7 @@ import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, dismissNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
@@ -61,6 +61,7 @@ import {
   handleSlotFoldMoved,
   handleSourceStatus,
   handleThreadReply,
+  invalidateChatPins,
   invalidateRefreshQueries,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
@@ -164,7 +165,7 @@ export function useWebSocket() {
   const buffers = useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed: voice.speakStreamedDelta })
   const slotList = useSlotListSync(dispatch, queryClient, buffers)
   const bundle = useBundleReload(dispatch, getDashboardState)
-  const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })
+  const chatStream = useChatStream({ dispatch, queryClient, buffers, voice, reconnectingRef })
   const turnCompletion = useTurnCompletion({ dispatch, queryClient, reconnectingRef })
   // Which work boards this tab shows, sent as `fold_watch` once a gateway that
   // routes by watch set says `fold_hello`. Created with the hook's lifetime.
@@ -383,9 +384,7 @@ export function useWebSocket() {
             // slot_key only — no pin content — so nothing sensitive crosses the
             // WebSocket to any listener.
             const slotKey = (data as { slot_key?: string }).slot_key
-            if (slotKey) {
-              queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
-            }
+            if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
           case 'artifact_update':
@@ -403,8 +402,9 @@ export function useWebSocket() {
             // configured sound — the Redux action alone only drives the
             // toast/badge, not the sound.
             // RFC Phase 3: muted-channel (silenced) and passive notes are
-            // feed-only — no sound.
-            if (!n.silenced && n.priority !== 'passive') {
+            // feed-only — no sound. So is a quiet replacement: a keyed note
+            // moving along its lifecycle at no higher priority.
+            if (!n.silenced && n.priority !== 'passive' && !n.quiet) {
               dispatchMcNotification(n.kind)
             }
             // The in-app banner hears LIVE arrivals only. A reconnect catch-up
@@ -415,7 +415,7 @@ export function useWebSocket() {
             // The boot snapshot never reaches here at all (it arrives through
             // `fetchNotifications`, not this frame), so mount replay is
             // excluded by construction.
-            if (!reconnectingRef.current) dispatchLiveNotification(n)
+            if (!reconnectingRef.current && !n.quiet) dispatchLiveNotification(n)
             break
           }
           case 'panel_published':
@@ -450,6 +450,10 @@ export function useWebSocket() {
             break
           case 'notification_unack':
             dispatch(unackNotificationByTs(data.ts))
+            break
+          case 'notification_dismiss':
+            // The note's publisher withdrew it; every view drops it.
+            dispatch(dismissNotificationByTs(data.ts))
             break
           case 'notifications_clear':
             // Another view cleared the inbox; drop this view's copy so the
@@ -665,6 +669,11 @@ export function useWebSocket() {
             dispatch(sseActivityEvent(ev))
             break
           }
+          case 'models_changed':
+            // A cold model list was filled by a background session the server
+            // started for it (no chat spawned, so no `spawned` frame came).
+            queryClient.invalidateQueries({ queryKey: ['available-models'] })
+            break
           case 'subagent_spawn':
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string }))
             break

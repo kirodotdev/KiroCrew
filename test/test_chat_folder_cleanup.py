@@ -412,6 +412,94 @@ class TestCleanupRoute:
         state.push_slots_update.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_root_takes_its_whole_tree_once_its_sessions_close(self) -> None:
+        # The folder menu's "Close sessions and delete": the picked top-level
+        # folder and its configured child go too, nothing outside the tree is
+        # offered, and the preview looks past the session about to be closed.
+        state = _state(_slot("chat-1-1", "lead"))
+        everything = ["work", "goal", "worker", "busy", "lead", "repo"]
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"dry_run": True, "root": "work"}
+                )
+            ).json()
+            assert dry["ids"] == everything
+            # A nested root takes its own branch, never the folders above it.
+            nested = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"dry_run": True, "root": "busy"}
+                )
+            ).json()
+            assert nested["ids"] == ["busy", "lead"]
+            # The close failed: the session is still live when the delete runs.
+            kept = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"root": "work", "ids": everything}
+                )
+            ).json()
+            assert kept["deleted"] == ["goal", "worker", "repo"]
+            del state._slots["chat-1-1"]
+            rest = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"root": "work", "ids": everything}
+                )
+            ).json()
+        assert rest["deleted"] == ["work", "busy", "lead"]
+        assert _ids(state) == {"slack", "travel"}
+
+    @pytest.mark.asyncio
+    async def test_a_root_still_keeps_a_folder_a_saved_job_files_into(self) -> None:
+        state = _state(job_folders={"worker"})
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post(
+                    "/api/chat/folders/cleanup", json={"dry_run": True, "root": "work"}
+                )
+            ).json()
+        assert dry["ids"] == ["busy", "lead", "repo"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("root", "jobs", "default", "reason"),
+        [
+            ("work", {"work"}, set(), "cron"),
+            ("work", set(), {"work"}, "default"),
+            ("slack", set(), set(), "channel"),
+            ("work", {"worker"}, set(), "kept"),
+            ("work", set(), set(), None),
+        ],
+        ids=["cron", "default", "channel", "inside", "deletable"],
+    )
+    async def test_a_root_preview_says_why_the_root_stays(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        root: str,
+        jobs: set[str],
+        default: set[str],
+        reason: str | None,
+    ) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folder_cleanup.default_session_folder_ids",
+            lambda: default,
+        )
+        state = _state(job_folders=jobs)
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post("/api/chat/folders/cleanup", json={"dry_run": True, "root": root})
+            ).json()
+        assert dry.get("root_kept") == reason
+        assert (root in dry["ids"]) is (reason is None)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_root_is_refused(self) -> None:
+        state = _state()
+        async with TestClient(TestServer(_app(state))) as client:
+            resp = await client.post("/api/chat/folders/cleanup", json={"dry_run": True, "root": 5})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_root"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("scope", [{"app_scope": "issue-radar"}, {"member": "member:abc"}])
     async def test_agents_are_refused(self, scope: dict[str, str]) -> None:
         state = _state()

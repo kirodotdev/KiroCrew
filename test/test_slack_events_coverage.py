@@ -431,6 +431,17 @@ class TestHandleYolo:
         assert _audit_rows(_real_sel, "slack.yolo_mode") == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("arg", ["renew", ""])
+    async def test_the_cli_grant_is_not_slacks(self, _yolo_env, _real_sel, arg):
+        """``gateway --approval yolo``'s grant reads as off in Slack and is not renewed."""
+        _yolo_env.is_active.return_value = True
+        _yolo_env.is_cli_launch = True
+        respond = AsyncMock()
+        await ev._handle_yolo(_make_orch(), "U_OWNER", arg, respond)
+        assert "not active" in respond.call_args[0][0] or "*OFF" in respond.call_args[0][0]
+        _yolo_env.renew.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_bare_invocation_shows_status_on(self, _yolo_env):
         _yolo_env.is_active.return_value = True
         respond = AsyncMock()

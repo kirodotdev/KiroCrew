@@ -1094,6 +1094,23 @@ def test_mcp_tools_pass_the_verified_key_to_transport(monkeypatch):
     assert tools.session_ledger_read("x", {}).startswith("This session has no work ledger yet.")
 
 
+def test_mcp_read_returns_an_events_only_record(monkeypatch):
+    """A record holding only events is a ledger: the read returns its event tail
+    instead of the start-one hint."""
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import ledger as tools
+
+    event = {"ts": "2026-11-01T00:00:00Z", "kind": "progress", "text": "checked CI"}
+    state = {"goal": "", "phase": "", "next": "", "tried": [], "artifacts": {}, "events": [event]}
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-v-1")
+    monkeypatch.setattr(
+        mcp_core, "_get", lambda _path, *, session_key, timeout: {"state": state, "events": [event]}
+    )
+    read = tools.session_ledger_read("x", {})
+    assert not read.startswith("This session has no work ledger yet.")
+    assert json.loads(read)["events"] == [event]
+
+
 # ── MCP read budget ───────────────────────────────────────────────────────
 
 

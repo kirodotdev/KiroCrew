@@ -29,7 +29,7 @@ vi.mock('../api/client', () => ({ api: {
   sharedCrewViewer: vi.fn(), sharedCrewPresence: vi.fn(), sharedCrewDecisions: vi.fn(),
   sharedCrewSendState: vi.fn(), sharedCrewTypingLease: vi.fn(), sharedCrewWork: vi.fn(),
   sharedCrewCapacity: vi.fn(), sharedCrewSessions: vi.fn(), sharedCrewAccess: vi.fn(),
-  tailscaleInvites: vi.fn(), tailscaleUploadAvatar: vi.fn(), mobileConnectMethods: vi.fn(),
+  tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleUploadAvatar: vi.fn(), mobileConnectMethods: vi.fn(),
   kirocrewConfig: vi.fn(), patchConfig: vi.fn(),
 } }))
 // People's Advanced section reads the config schema for its restart badges;
@@ -88,6 +88,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   for (const read of reads) vi.mocked(api[read.method]).mockResolvedValue(read.data as never)
   vi.mocked(api.tailscaleInvites).mockResolvedValue(invites)
+  vi.mocked(api.sharedCrewSsm).mockResolvedValue(null)
   vi.mocked(api.sharedCrewAccess).mockResolvedValue(null)
   vi.mocked(api.mobileConnectMethods).mockResolvedValue({ methods: [] })
   vi.mocked(api.kirocrewConfig).mockResolvedValue({} as never)
@@ -221,6 +222,39 @@ describe('Shared Crew failure owners', () => {
     mount(<SessionCollabStrip sessionKey="s1" />, qc)
     expect(await screen.findByRole('alert')).toHaveTextContent('initial chat read failed')
     expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+  })
+
+  // #32031: a relay teammate is refused the mode and People reads with 403
+  // `owner_only`. That is not a failure to report, and its "Try again" could never
+  // succeed. A session-expiry 403 carrying the same code still reports.
+  const ownerOnly = (authRequired = false) => new ApiError(403, 'owner authorization required',
+    JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }), authRequired)
+
+  it.each(reads.slice(1, 3))('sidebar shows no notice and no filter when $method is refused to a non-owner', async read => {
+    const qc = client()
+    qc.removeQueries({ queryKey: read.key, exact: true })
+    vi.mocked(api[read.method]).mockRejectedValue(ownerOnly())
+    mount(<Sidebar />, qc)
+    await waitFor(() => expect(qc.getQueryState(read.key)?.status).toBe('error'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+  })
+
+  it.each(reads.slice(1, 3))('sidebar still reports a session-expiry 403 on $method', async read => {
+    const qc = client()
+    qc.removeQueries({ queryKey: read.key, exact: true })
+    vi.mocked(api[read.method]).mockRejectedValue(ownerOnly(true))
+    mount(<Sidebar />, qc)
+    expect(await screen.findByRole('alert')).toHaveTextContent('owner authorization required')
+  })
+
+  it.each(reads)('chat shows no notice when $method is refused to a non-owner', async read => {
+    const qc = client()
+    qc.removeQueries({ queryKey: read.key, exact: true })
+    vi.mocked(api[read.method]).mockRejectedValue(ownerOnly())
+    mount(<SessionCollabStrip sessionKey="s1" />, qc)
+    await waitFor(() => expect(qc.getQueryState(read.key)?.status).toBe('error'))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('reports a work refetch failure beside the cached queued send', async () => {

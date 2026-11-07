@@ -118,13 +118,12 @@ async function main() {
       return false
     }
 
-    await stubDashboardApi(page, { slots, extra })
+    await stubDashboardApi(page, { slots, extra, localStorageEntries: { 'mc-active-slot': SLOT } })
     // AFTER the shared stub so this wins: the stub swallows /api/ws to stop a
     // retry storm, but the socket must actually OPEN — the reconcile rides that
     // handshake. Nothing is ever pushed over it: every state change in this
     // harness comes from the authority, which is the whole point.
     await page.routeWebSocket(/\/api\/ws/, () => {})
-    await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(3000)
 

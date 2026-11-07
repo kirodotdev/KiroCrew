@@ -251,7 +251,6 @@ _FACADE_DEFS = (
     "_shared_catalog_fetch",
     "_consume_refresh_exception",
     "api_models",
-    "api_effort_levels",
     "api_slash_commands",
     "api_kirocrew_agents",
     "_get_config_lock",
@@ -260,6 +259,10 @@ _FACADE_DEFS = (
     "_model_pin_rejected",
     "api_kirocrew_agent_avatar_get",
 )
+
+#: Base definitions in a plain sibling module outside the owner composition, which
+#: the facade imports and binds under the same name: name -> module stem.
+_SIBLING_DEFS = {"api_effort_levels": "agents_effort_levels"}
 
 _MOVED = frozenset(name for names in _BASE_OWNERS.values() for name in names)
 
@@ -367,11 +370,12 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
 
     app = web.Application()
     routes.register_all(app)
+    sibling_modules = {f"kiro_crew.dashboard.handlers.{stem}" for stem in _SIBLING_DEFS.values()}
     served = [
         route.handler
         for route in app.router.routes()
         if getattr(agents, getattr(route.handler, "__name__", ""), None) is not None
-        and route.handler.__module__ == _FACADE
+        and route.handler.__module__ in {_FACADE} | sibling_modules
     ]
     assert len({id(h) for h in served}) == 31
     assert [h.__name__ for h in served if getattr(agents, h.__name__) is not h] == []
@@ -544,7 +548,17 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 120
+    siblings = set(_SIBLING_DEFS)
+    total = len(defined) + len(_MOVED) + len(siblings)
+    assert len(defined | _MOVED | siblings) == total == 120
+
+
+@pytest.mark.parametrize("name", sorted(_SIBLING_DEFS))
+def test_a_sibling_definition_is_the_facade_binding(name: str) -> None:
+    """The facade binds the sibling's own object, so routes and patches see one function."""
+    sibling = importlib.import_module(f"kiro_crew.dashboard.handlers.{_SIBLING_DEFS[name]}")
+    assert getattr(agents, name) is vars(sibling)[name]
+    assert getattr(handlers_pkg, name) is vars(sibling)[name]
 
 
 def test_the_owners_log_as_the_facade() -> None:

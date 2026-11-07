@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.feishu.client import CHAT_GROUP
+from kiro_crew.feishu.client import CHAT_GROUP, CHAT_P2P
 from kiro_crew.feishu.commands import build_help, parse_command
 from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import (
@@ -77,6 +78,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
+from kiro_crew.messaging.upload_gate import uploads_restricted
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -141,6 +143,9 @@ class FeishuDispatcher:
         # Set the same way; the config applier pushes reloaded authorization
         # fields at it.
         self.transport: "FeishuTransport | None" = None
+        # Set by maybe_start_feishu when a dashboard runs; the upload ceiling reads
+        # the durable privacy flags through it.
+        self.dashboard_state: Any = None
         # Conversation state keyed by ROUTE rather than by sender: a group turn
         # must never share a bucket with the sender's private DM (see _route).
         # ``seed_fn`` recovers the highest generation already on disk so /new
@@ -295,6 +300,11 @@ class FeishuDispatcher:
             self.client,
             inbound.message_id,
             FEISHU_CAPABILITIES,
+            # A group's members are not all on the allow-list, so a group turn keeps
+            # printing an image's path (as a Webex space does) instead of posting
+            # the file to them.
+            uploads_allowed=inbound.chat_type == CHAT_P2P
+            and not await self._uploads_restricted(session_key),
         )
 
         # Surface a newly-created Feishu session in the dashboard immediately
@@ -311,10 +321,12 @@ class FeishuDispatcher:
         # re-check and the busy check, so a refused or folded message costs no
         # download; the temp files go when the turn that reads them ends.
         temp_paths: list[str] = []
+        images: list[str] = []
         try:
             if inbound.resources:
                 ingested = await self._ingest(inbound)
                 temp_paths = ingested.temp_paths
+                images = ingested.image_paths
                 ingested = await transcribe_audio_attachments(ingested, "Feishu")
                 text = append_attachment_context(text, ingested)
             await drive_turn(
@@ -370,8 +382,15 @@ class FeishuDispatcher:
                     # against ``allowed_open_ids``, where every admitted DM sender is an
                     # equally-trusted peer with their own ``open_id``-keyed session.
                     minimal_context=inbound.chat_type == CHAT_GROUP,
+                    # Images upload only from the provider's OWN resolved cwd and its
+                    # `$KIROCREW_SCRATCH`, read when the provider binds: on a session's
+                    # first turn there is no provider before this point.
+                    bind_provider=lambda p: renderer.authorize_upload_root(
+                        getattr(p, "cwd", "") or "",
+                        scratch_root=str(getattr(p, "work_scratch_dir", None) or ""),
+                    ),
                     persist=lambda user_text, reply, is_new: self._persist_turn(
-                        session_key, user_text, reply, is_new, agent
+                        session_key, user_text, reply, is_new, agent, images
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     audit_caller=f"feishu:{open_id}",
@@ -405,6 +424,23 @@ class FeishuDispatcher:
             download=_download,
             source="feishu",
             handle_audio=True,
+        )
+
+    async def _uploads_restricted(self, session_key: str) -> bool:
+        """True when this session must not ship local file bytes to Feishu.
+
+        The shared ceiling (:func:`kiro_crew.messaging.upload_gate.uploads_restricted`):
+        an incognito or temporary conversation never uploads. The persisted-transcript
+        probe is passed in because ``messaging`` may not import ``dashboard``.
+        """
+        # circular import: the dashboard gateway imports the channel transports.
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        return await uploads_restricted(
+            self.dashboard_state,
+            session_key,
+            channel_type="feishu",
+            persisted_probe=_probe_persisted_session,
         )
 
     async def _handle_busy(self, inbound: "LarkInbound", session_key: str) -> None:
@@ -618,16 +654,27 @@ class FeishuDispatcher:
         reply_text: str,
         is_new: bool,
         agent: str | None = None,
+        images: Sequence[str] = (),
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart).
 
         ``agent`` is the RESOLVED agent for this turn, not the configured
         default: without it a custom-agent conversation persists with no agent
         metadata and the dashboard attributes it to the default agent.
+
+        ``images`` are the pictures downloaded for this message. The log keeps a
+        copy with the session, because their temp files go when the turn ends.
         """
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
+        self.conv_log.append(
+            session_key,
+            "user",
+            user_text,
+            agent=agent,
+            mid=mint_row_mid(),
+            ingested_images=images,
+        )
         if reply_text:
             self.conv_log.append(
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()

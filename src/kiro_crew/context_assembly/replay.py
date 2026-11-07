@@ -31,7 +31,7 @@ _MODE_IDENTITY_RE = re.compile(r"## 🔒 Mode Identity.*?(?=\n## |\Z)", re.DOTAL
 
 
 _STOP_EVENT_CAP = 3  # max recent stop events to inject into LLM context
-_STOP_EVENT_RESOLVED_STATES = frozenset({"stopped", "stop_failed_reset"})
+_STOP_EVENT_RESOLVED_STATES = frozenset({"stopped", "stop_failed_reset", "force_stopped"})
 
 
 # Regex patterns for noise compression in assistant messages

@@ -1211,7 +1211,9 @@ def test_an_identity_unreadable_at_the_last_moment_withholds_the_kill() -> None:
     assert ("process identity changed since classification",) == _refusals(audited)
 
 
-def test_process_age_comes_from_the_process_start_not_the_procfs_inode() -> None:
+def test_process_age_comes_from_the_process_start_not_the_procfs_inode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MUTATION TARGET: which clock the age floor reads.
 
     ``/proc/<pid>``'s own ``st_ctime`` is assigned when procfs instantiates the
@@ -1223,16 +1225,23 @@ def test_process_age_comes_from_the_process_start_not_the_procfs_inode() -> None
     Pinned against the repository's own helper rather than a recomputation of it,
     and against this live process, whose age is genuinely non-zero.
     """
+    from kiro_crew import session_pid
     from kiro_crew.session_pid import _pid_age_seconds
+
+    # One sampled "now" for both readings. On Windows and macOS each reading dates
+    # the start against its own ``time.time()`` call, taken after its own
+    # process-start lookup, so on a loaded shard the two drifted apart by more than
+    # the tolerance. Linux dates against ``/proc/uptime`` and is unaffected.
+    monkeypatch.setattr(session_pid, "time", _FrozenClock(session_pid.time.time()))
 
     mine = os.getpid()
     expected = _pid_age_seconds(mine)
     assert expected is not None, "this process's own age must be readable"
     measured = rr.process_age_secs(mine)
     assert measured > 0.0, "a live process is not zero seconds old"
-    # Tight on purpose: the two readings are of the same clock microseconds apart,
-    # so any real disagreement is the wrong clock. A loose tolerance would accept a
-    # constant, because the pytest process is itself only seconds old.
+    # Tight on purpose: both readings share one clock sample, so any real
+    # disagreement is the wrong clock. A loose tolerance would accept a constant,
+    # because the pytest process is itself only seconds old.
     assert abs(measured - expected) < 0.5, f"age {measured} disagrees with the helper {expected}"
 
     # Fail-closed: an unreadable pid is too young to touch, never old enough.

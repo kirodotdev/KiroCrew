@@ -127,16 +127,18 @@ async function openPage(browser, base, { width, height, theme, scene, mobile, la
     if (path.startsWith('/api/chat/slots/')) return json(route, detail), true
     return false
   }
-  await stubDashboardApi(page, { slots: [scene.linked ? linkedSlot : baseSlot], theme, extra })
+  await stubDashboardApi(page, {
+    slots: [scene.linked ? linkedSlot : baseSlot], theme, extra,
+    localStorageEntries: {
+      'mc-active-slot': ACTIVE,
+      'mc-privacy-notice-v1': '1',
+      'mc-sidebar-pinned': 'true',
+      'mc-lang': lang,
+    },
+  })
   // After the shared stub, which swallows /api/ws: this socket carries the
   // queued-depth frame.
   await page.routeWebSocket(/\/api\/ws/, socket => { ws = socket })
-  await page.addInitScript(({ slot, lang }) => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-sidebar-pinned', 'true')
-    localStorage.setItem('mc-lang', lang)
-  }, { slot: ACTIVE, lang })
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
   if (scene.sessionQueued > 0) {

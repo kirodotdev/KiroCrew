@@ -5,12 +5,12 @@
  * board read's `asks`. A button fills the chat box and never sends.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { createTestStore } from '../../../test/helpers'
 
-const api = vi.hoisted(() => ({ crewWorkers: vi.fn(), resumeChatSlot: vi.fn(), crewBoard: vi.fn(), sessionSummary: vi.fn(), sendMessage: vi.fn() }))
+const api = vi.hoisted(() => ({ crewWorkers: vi.fn(), resumeChatSlot: vi.fn(), crewBoard: vi.fn(), crewBoardAction: vi.fn(), sessionSummary: vi.fn(), sendMessage: vi.fn() }))
 vi.mock('../../../api/client', () => ({ api }))
 vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: vi.fn() }))
 
@@ -132,6 +132,43 @@ describe('Ultra Mode Needs your input', () => {
     expect(within(row).getByTestId('ultra-person-ask-open-main')).toHaveTextContent('Open main chat')
     fireEvent.click(within(row).getByTestId('ultra-person-ask-open-main'))
     expect(api.resumeChatSlot).toHaveBeenCalled()
+  })
+
+  it('a refused skip (a newer ask arrived) says so on the card and keeps it', async () => {
+    const report = { id: 'r1', ts: '2026-10-30T00:05:00Z', item_id: 'it_q', kind: 'report', status: 'question', text: '' }
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ events: [report] as never })] })
+    api.crewBoardAction.mockRejectedValue(new Error('Nothing was skipped: this ask changed or was answered since the page loaded.'))
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    fireEvent.click(await screen.findByTestId('ultra-person-ask-dismiss'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Nothing was skipped: this ask changed or was answered since the page loaded.')
+    expect(screen.getByTestId('ultra-person-ask')).toBeInTheDocument()
+  })
+
+  it('"Skip question" dismisses the ask it shows on the server and the card leaves', async () => {
+    const report = { id: 'r1', ts: '2026-10-30T00:05:00Z', item_id: 'it_q', kind: 'report', status: 'question', text: '' }
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ events: [report] as never })] })
+    api.crewBoardAction.mockImplementation(async () => {
+      // The server wrote the person's steer: the next read no longer flags it.
+      api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ awaits_person: false, outstanding: false, events: [{ id: 'e1', ts: '2026-10-30T00:06:00Z', item_id: 'it_q', kind: 'steer', status: null, text: '' }] as never })] })
+      return { ok: true, action: 'dismiss', item_id: 'it_q' }
+    })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    const close = await screen.findByRole('button', { name: 'Skip "Pick a tea" without replying' })
+    expect(close).toHaveTextContent('Skip question')
+    // What skipping does is on the card, not only in a tooltip.
+    expect(screen.getByTestId('ultra-person-ask-dismiss-note')).toHaveTextContent('It comes back only if it asks again.')
+    fireEvent.click(close)
+    await waitFor(() => expect(api.crewBoardAction).toHaveBeenCalledWith('root-1', 'it_q', 'dismiss', 'r1'))
+    expect(await screen.findByTestId('ultra-needs-you-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('ultra-person-ask')).toBeNull()
+    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
+  })
+
+  it('a worker running again is working, not waiting on you', async () => {
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ alive: 'running', awaits_person: false })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    expect(await screen.findByTestId('ultra-milestone')).toHaveAttribute('data-state', 'running')
+    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
   })
 
   it('the Board tab hands its composer insert to the panel', async () => {

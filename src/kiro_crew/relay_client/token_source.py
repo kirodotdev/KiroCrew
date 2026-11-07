@@ -82,7 +82,7 @@ def token_claims(token: str) -> dict:
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
     try:
         claims = json.loads(base64.urlsafe_b64decode(payload))
-    except (binascii.Error, ValueError):
+    except (binascii.Error, ValueError, RecursionError):
         return {}
     return claims if isinstance(claims, dict) else {}
 

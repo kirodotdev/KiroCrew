@@ -1,13 +1,8 @@
 """Tests for the CI surface-test selector (``scripts/ci-surface-tests.py``).
 
-The selector decides which tests must still run when a diff touches only ONE
-surface. Its contract is **deny-by-default**: it may only skip a file it can
-positively prove is single-surface, so a heuristic miss costs CI time rather
-than silently dropping a cross-surface parity guard.
-
-These tests pin that contract, because the failure mode they guard against is
-invisible: a guard quietly stops running and the drift it protects against
-ships green.
+The selector picks the tests that must still run when a diff touches only ONE
+surface. It is deny-by-default: it skips only a file it can prove is single-surface,
+so a miss costs CI time instead of silently dropping a cross-surface parity guard.
 """
 
 from __future__ import annotations
@@ -48,12 +43,9 @@ def _load_selector():
 def selector():
     """The selector module, with ``collect`` memoized for the module's lifetime.
 
-    ``collect`` rglobs and regex-scans every ``test_*.py`` under all three
-    testpath roots -- ~3s a call -- and this module calls it once per parametrized
-    guard over only three distinct answers. The memo key carries ``_is_windows()``
-    because the Windows filter is applied inside ``collect``:
-    ``test_posix_scope_is_unfiltered`` patches that seam between two
-    ``collect("backend")`` calls and must still see two different scopes.
+    ``collect`` costs ~3s a call. The memo key carries ``_is_windows()`` because the
+    Windows filter runs inside ``collect``, and ``test_posix_scope_is_unfiltered``
+    patches that seam between two ``collect("backend")`` calls.
     """
     module = _load_selector()
     memo: dict[tuple[str, bool], list[str]] = {}
@@ -88,8 +80,7 @@ _BACKEND_GUARDS = (
     "test/test_knowledge_formats_parity.py",
     "test/test_windows_signing_contract.py",
     "test/test_meetings_routes.py",
-    # Under the third testpath root -- these were silently unscanned until
-    # src/kiro_crew/apps/builtins was added to _BACKEND_ROOTS.
+    # Under the third testpath root, src/kiro_crew/apps/builtins in _BACKEND_ROOTS.
     "src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py",
     "src/kiro_crew/apps/builtins/crew_companion/tests/test_manifest.py",
     "src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes_claim_and_slot.py",
@@ -137,21 +128,14 @@ def test_frontend_guards_are_never_skipped(selector, guard: str) -> None:
 def test_backend_roots_cover_every_configured_testpath() -> None:
     """Every setup.cfg `testpaths` entry must be a scanned root.
 
-    This is the contract that actually keeps the selector honest. A test file
-    under an unenumerated root is not "unclassified but still running" -- the
-    reduced run passes explicit paths, so it never runs at all. Adding a new
-    testpath without adding it here must fail loudly.
+    The reduced run passes explicit paths, so a test under an unscanned root never
+    runs at all.
     """
     import configparser
 
     parser = configparser.ConfigParser()
-    # `encoding` is not optional here. `ConfigParser.read` opens with no encoding,
-    # which decodes using `locale.getpreferredencoding()` -- UTF-8 on POSIX, but
-    # the legacy ANSI code page on Windows. `setup.cfg` contains non-ASCII (em
-    # dashes in its comments), so on a CJK Windows host this raises
-    # `UnicodeDecodeError` and the contract below is never checked at all. Same
-    # failure class `scripts/check_subprocess_encoding.py` exists for, reached
-    # through a file read rather than a subprocess pipe.
+    # Without `encoding`, the read uses the Windows ANSI code page, and setup.cfg's
+    # non-ASCII bytes raise `UnicodeDecodeError` on a CJK Windows host.
     parser.read(_REPO_ROOT / "setup.cfg", encoding="utf-8")
     configured = parser.get("tool:pytest", "testpaths").split()
     assert configured, "setup.cfg declares no testpaths -- selector cannot be verified"
@@ -166,16 +150,9 @@ def test_backend_roots_cover_every_configured_testpath() -> None:
 def test_setup_cfg_carries_non_ascii_so_its_read_must_pin_utf8() -> None:
     """Pins WHY the read above names an encoding, on hosts that cannot show it.
 
-    The defect is host-conditioned: an unpinned `ConfigParser.read` only
-    misbehaves where `locale.getpreferredencoding()` is not UTF-8, so a UTF-8 CI
-    runner passes either way and cannot exercise it. The two facts that make the
-    encoding load-bearing DO hold everywhere, and this asserts both -- so the
-    guard cannot rot silently on the runners that never feel it.
-
-    Deliberately not a repo-wide "missing encoding=" rule. The `Cross-Platform
-    Portability` step of `pr-policy.yml` documents why it ships none (a line regex breaks on nested and multi-line
-    calls), and an AST version means editing `.github/workflows/**`. This stays
-    the size of the defect.
+    An unpinned read breaks only where `locale.getpreferredencoding()` is not UTF-8,
+    so a UTF-8 runner cannot show it; the two facts that make the encoding matter
+    hold everywhere, and this asserts both.
     """
     import configparser
 
@@ -200,10 +177,8 @@ def test_setup_cfg_carries_non_ascii_so_its_read_must_pin_utf8() -> None:
 def test_frontend_spec_roots_cover_vitest_include(selector) -> None:
     """Every root in vitest's `test.include` must be a scanned frontend root.
 
-    The mirror of the backend contract above. vitest overrides `include` in
-    website/vite.config.ts, so that list -- not the vitest default -- is the
-    authoritative set of specs the frontend job runs. A root missing here is
-    dropped wholesale on a backend-only diff.
+    website/vite.config.ts overrides `include`, so that list is the set of specs the
+    frontend job runs. A root missing here is dropped on a backend-only diff.
     """
     config = (_REPO_ROOT / "website" / "vite.config.ts").read_text(encoding="utf-8")
     # The test-config include is the one listing *.test.* globs (the other
@@ -270,20 +245,9 @@ def test_frontend_escape_patterns_are_detected(selector, tmp_path) -> None:
 def test_backend_owned_config_references_are_cross_surface(selector, tmp_path) -> None:
     """A spec naming a backend-owned config file must stay in the must-run set.
 
-    pyproject.toml, setup.cfg and the other TOML/CFG/YAML configs are all
-    backend-owned (the one exception, website/AUTOSDE.yaml, only makes the
-    match over-broad, which costs CI time), and a spec reaches them through
-    a pre-computed root constant -- no ``../../../`` escape and no
-    ``kiro_crew`` marker on the referencing line:
-
-        const version = readFileSync(join(REPO_ROOT, 'pyproject.toml'), ...)
-
-    With only directory/name/`.py` markers in the pattern, such a spec was
-    classified single-surface and SKIPPED on a backend-only diff -- the
-    exact silent-drop this selector exists to prevent. Measured live guards
-    that this closes: ``releaseVersion.test.ts`` (pins release.yml's version
-    mapping) and ``frontendBlobReconcile.wireFormat.test.ts`` (pins the
-    reconcile script ci.yml runs).
+    A spec reaches TOML/CFG/YAML configs through a root constant, with no
+    ``../../../`` escape and no ``kiro_crew`` marker on the line. Live guards of this
+    shape: ``releaseVersion.test.ts`` and ``frontendBlobReconcile.wireFormat.test.ts``.
     """
     toml = tmp_path / "a.test.ts"
     toml.write_text(
@@ -304,12 +268,8 @@ def test_backend_owned_config_references_are_cross_surface(selector, tmp_path) -
 def test_frontend_owned_config_reference_is_cross_surface(selector, tmp_path) -> None:
     """The mirror: a backend guard naming the frontend's config file by bare name.
 
-    ``tsconfig.json`` lives inside website/, so a realistic reference carries
-    ``website`` in its path -- but a guard that quotes the filename alone
-    (a joined path built from constants, a fixture table of config names)
-    had no marker at all. Bare extensions cannot close this direction the
-    way they close the mirror: the backend owns .toml/.cfg/.yaml/.json
-    configs of its own, so only frontend-owned config NAMES are added here.
+    A guard quoting the filename alone carries no ``website`` marker. Only frontend
+    config NAMES match here, because the backend owns .toml/.cfg/.yaml/.json configs too.
     """
     guard = tmp_path / "test_tsconfig_parity.py"
     guard.write_text(
@@ -322,12 +282,8 @@ def test_frontend_owned_config_reference_is_cross_surface(selector, tmp_path) ->
 def test_own_surface_config_references_stay_single_surface(selector, tmp_path) -> None:
     """The asymmetry is the point: each surface's OWN configs must not trip it.
 
-    A backend test reading pyproject.toml or setup.cfg is reading its own
-    surface, and a frontend spec reading package.json or tsconfig.json is
-    doing the same -- neither is a parity guard. This pins that the new
-    terms went in per-direction, not as bare extensions on both patterns
-    (which would have flooded the must-run set: 51 backend files reference
-    a .yaml of their own).
+    Config terms are per-direction, not bare extensions on both patterns, which would
+    flood the must-run set (51 backend files reference a .yaml of their own).
     """
     backend_own = tmp_path / "test_own_cfg.py"
     backend_own.write_text(
@@ -345,9 +301,7 @@ def test_own_surface_config_references_stay_single_surface(selector, tmp_path) -
     assert selector._is_cross_surface(frontend_own, selector._FRONTEND_FOREIGN) is False
 
 
-# ---------------------------------------------------------------------------
 # Windows: the reduced scope must not name a suite Windows cannot collect
-# ---------------------------------------------------------------------------
 #
 # The reduced target list is passed to pytest as EXPLICIT file arguments, and an
 # explicit argument bypasses conftest's Windows ignore hook. So a POSIX-only
@@ -381,37 +335,15 @@ def test_ignore_list_exists_and_is_non_empty() -> None:
 
 
 def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
-    """The extraction into a file must be lossless.
+    """The Windows collect-ignore list is exactly this set.
 
-    conftest applies the list only on Windows, so a parsing
-    typo here would silently re-enable a suite that fails at import on win32 and
-    would not be caught on a POSIX dev machine. Pin the exact set.
+    conftest applies it only on Windows, so a parsing typo would re-enable a suite
+    that fails at import on win32 and no POSIX machine would notice.
 
-    ``test_harness.py`` left this set when the gateway harness became
-    cross-platform (reader thread instead of ``selectors`` on a pipe, tree kill
-    instead of ``terminate_pgid``); it now runs on the Windows shards.
-    ``test_stop_kill_cancel.py``, the three ``test_theme_install*.py`` parts and
-    ``test_file_office_preview.py`` left it once their blockers were gone: the
-    kill-path tests skip their POSIX-only cases themselves, theme packs are served
-    on Windows, and the file schema accepts a drive-letter path. They run on the
-    Windows shards too.
-
-    ``test_pod_windows_boot.py`` is the one entry here for a reason other than a
-    POSIX assumption: it boots a real pod under Task Scheduler, needs a built
-    ``.venv`` inside the checkout that the shards never create, and costs minutes.
-    Its own dedicated ci.yml job names it on the command line, which bypasses this
-    list by design.
-
-    ``test_macos_pool_ceiling_posix.py`` executes the macos-on-demand `decide` job's
-    real bash against a stub ``gh``, so it needs a POSIX shell AND an executable bit
-    that survives. On Windows ``shutil.which("bash")`` resolves the WSL launcher,
-    which cannot read the Windows tmp paths the harness writes, and ``chmod`` is a
-    no-op on NTFS so the stub is never the ``gh`` that resolves. Listing the module
-    is how a POSIX-only-by-design suite is stated here; a class-level ``skipif``
-    would leave a marker that proves nothing on that shard either.
-
-    ``test_ci_fork_windows_scope_posix.py`` is listed for the same reason: it runs
-    ci.yml's fork Windows scope step under bash inside a throwaway git checkout.
+    ``test_pod_windows_boot.py`` is listed because it needs a built ``.venv`` the
+    shards never create; its own ci.yml job names it on the command line. The two
+    ``*_posix.py`` suites run real bash against stub files, which WSL bash and NTFS
+    ``chmod`` cannot support on Windows.
     """
     assert _ignore_names() == {
         "test_ci_fork_windows_scope_posix.py",
@@ -508,11 +440,10 @@ def test_every_ignored_suite_exists() -> None:
 
 
 def test_conftest_and_selector_read_the_same_ignore_list(selector) -> None:
-    """One file, two readers -- so the two cannot drift apart.
+    """One file, two readers, so the two cannot drift apart.
 
-    conftest's ignore hook reads it for the recursive path; the selector
-    filters it out of the explicit-argument path. If a future change re-inlines
-    either copy, this fails.
+    conftest's ignore hook reads it for the recursive path; the selector filters it
+    out of the explicit-argument path.
     """
     assert selector._windows_collect_ignore(_REPO_ROOT) == frozenset(_ignore_names())
 
@@ -568,12 +499,9 @@ def test_missing_ignore_list_fails_open(selector, tmp_path) -> None:
 def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
     """Why the filter lives in the selector and not only in conftest.
 
-    pytest honours a conftest's `collect_ignore` list, and its
-    ``pytest_ignore_collect`` hook -- the form ``test/conftest.py`` applies the
-    platform list through -- when it RECURSES into a directory, and neither when the
-    file is named on the command line. That asymmetry is the entire bug, so pin it
-    for both forms: if a future pytest starts honouring either for explicit
-    arguments, this fails and the selector-side filter can be dropped.
+    pytest honours `collect_ignore` and ``pytest_ignore_collect`` only when it RECURSES
+    into a directory, not for a file named on the command line. If a future pytest
+    honours either for explicit arguments, the selector-side filter can go.
     """
     import os
     import subprocess
@@ -592,14 +520,9 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
     (suite / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
     def run(*target: str) -> int:
-        # Strip PYTEST_ADDOPTS so the nested pytest does not inherit the outer
-        # run's options. An inherited `--basetemp` there points at an ancestor of
-        # this child's cwd (its tmp_path), which pytest rejects as a usage error
-        # (exit 4) before it ever evaluates collect_ignore -- turning this
-        # collection-semantics assertion into a spurious failure. The child gets
-        # its own basetemp under this test's tmp_path instead, so it never shares
-        # (or prunes) the per-user `pytest-of-<user>` tree with the outer run's
-        # xdist workers or with another run on the host.
+        # An inherited `--basetemp` from PYTEST_ADDOPTS points at an ancestor of the
+        # child's cwd, which pytest rejects (exit 4) before collect_ignore runs. Its own
+        # basetemp also keeps it off the shared `pytest-of-<user>` tree.
         child_env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
         return subprocess.run(
             [
@@ -630,9 +553,7 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
 # The Windows filter must be scoped the way conftest's own exclusion is
-# ---------------------------------------------------------------------------
 
 
 def _seed(path: Path, text: str) -> None:
@@ -643,19 +564,12 @@ def _seed(path: Path, text: str) -> None:
 def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> None:
     """The ignore list governs ``test/`` only, so the filter must too.
 
-    The list holds BARE filenames and ``test/conftest.py``'s ignore hook matches a
-    listed name only directly under ``test/`` -- so the exclusion covers
-    ``test/<name>`` and nothing else. Matching the emitted paths on their
-    basename instead also drops a same-named suite under ``transfer/`` or the
-    apps-builtins tree, which no conftest excludes and Windows collects fine.
-    That is a silently skipped cross-surface guard, which is the one outcome
-    this selector's deny-by-default contract forbids: a heuristic mistake is
-    supposed to cost CI time, never coverage.
+    ``test/conftest.py`` matches a listed bare name only directly under ``test/``.
+    Matching on basename would also drop a same-named suite elsewhere, which Windows
+    collects fine: a silently skipped guard.
 
-    Loads its own selector instance rather than taking the module-scoped
-    ``selector`` fixture, whose ``collect`` memo is keyed only on
-    ``(surface, _is_windows())`` and would otherwise be shared with -- and
-    poisoned by -- this synthetic repo root.
+    Loads its own selector: the fixture's ``collect`` memo would be poisoned by this
+    synthetic repo root.
     """
     selector = _load_selector()
     monkeypatch.setattr(selector, "_repo_root", lambda: tmp_path)
@@ -665,8 +579,7 @@ def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> Non
         tmp_path / "test" / "windows-collect-ignore.txt",
         "test_snapshot.py    # POSIX-only replace-while-open semantics\n",
     )
-    # Both name the frontend tree, so both are cross-surface and would other-
-    # wise be must-run: the only difference between them is where they live.
+    # Both are cross-surface; the only difference between them is where they live.
     guard = "assert Path('website/src/utils/sanitize.ts').is_file()\n"
     _seed(tmp_path / "test" / "test_snapshot.py", guard)
     app_suite = "src/kiro_crew/apps/builtins/demo/tests/test_snapshot.py"
@@ -683,19 +596,11 @@ def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> Non
     )
 
 
-# --- container image test suite: image-only-dependency collection guard ---------
+# container image test suite: image-only-dependency collection guard
 #
-# The crew container image's test suite lives under
-# ``src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests`` and is
-# reached by ``setup.cfg``'s ``testpaths = ... src/kiro_crew/apps/builtins``. Four
-# of its modules ``import httpx`` (and one ``fastapi``/``uvicorn``) at module top
-# level -- deps that ``container/requirements.txt`` marks "Container runtime only.
-# These must NOT become dependencies of the Kiro Crew app itself", so the app's own
-# CI env does not carry them. Its conftest therefore sets ``collect_ignore_glob`` to
-# skip the suite when those collection-time deps are absent, rather than raising a
-# ``ModuleNotFoundError`` at collection that cascades every backend shard. These
-# pin that guard: it must skip on a missing dep, and it must NOT skip when all are
-# present (or the whole suite silently stops running everywhere).
+# The suite imports httpx/fastapi/uvicorn at top level, which the app's CI env does
+# not carry. Its conftest sets ``collect_ignore_glob`` when one is absent; it must
+# NOT skip when all are present, or the suite stops running everywhere.
 
 _CONTAINER_CONFTEST = (
     _REPO_ROOT
@@ -712,13 +617,7 @@ _CONTAINER_CONFTEST = (
 
 
 def _run_container_conftest(*, present: set[str], platform: str = "linux"):
-    """Load the container conftest as a module with ``find_spec`` reporting only ``present``.
-
-    Uses the same ``spec_from_file_location`` + ``exec_module`` mechanism as
-    ``_load_selector`` above, so the conftest's module-level guard runs and its
-    ``collect_ignore_glob`` / ``_missing_image_deps`` can be read back. Returns the
-    loaded module.
-    """
+    """Load the container conftest as a module with ``find_spec`` reporting only ``present``."""
     real_find_spec = importlib.util.find_spec
 
     def fake_find_spec(name, *a, **k):
@@ -734,24 +633,10 @@ def _run_container_conftest(*, present: set[str], platform: str = "linux"):
     saved = importlib.util.find_spec
     try:
         importlib.util.find_spec = fake_find_spec  # type: ignore[assignment]
-        # Pin the platform the conftest sees, so what a caller measures is the branch it
-        # asked for. The conftest tests ``sys.platform`` BEFORE it tests the deps, so on a
-        # Windows or macOS runner ``collect_ignore_glob`` is set whatever ``present`` says,
-        # and every dep-branch assertion would be reading the platform branch's answer.
-        # The default is therefore ``linux``, which is the only platform on which the dep
-        # branch is reachable at all.
-        #
-        # Skipping those tests off Linux was the alternative and is worse: the dependency
-        # logic is not platform-specific, so a skip stops checking a live property on two
-        # of the three platforms while still scoring as a pass.
-        #
-        # ``sys.platform`` is a plain string and is safe to patch directly, unlike
-        # ``os.name``: ``pathlib.Path.__new__`` consults ``os.name`` on every
-        # instantiation to pick ``PosixPath`` or ``WindowsPath``, and the conftest calls
-        # ``Path(__file__).resolve()``, so pinning that attribute raises ``cannot
-        # instantiate 'WindowsPath' on your system`` -- in both directions, since a
-        # Windows runner pinned to a POSIX name fails the mirror way. Nothing consults
-        # ``sys.platform`` per-instantiation.
+        # The conftest checks ``sys.platform`` before the deps, so off Linux the dep
+        # branch is unreachable; pin ``linux`` by default so the dep tests run everywhere.
+        # Patch ``sys.platform``, not ``os.name``: ``pathlib.Path`` reads ``os.name`` on
+        # every instantiation and would raise on the conftest's ``Path(__file__)``.
         with mock.patch.object(sys, "platform", platform):
             spec.loader.exec_module(module)
     finally:
@@ -781,16 +666,9 @@ def test_container_suite_runs_when_all_collect_time_deps_present() -> None:
 def test_the_platform_branch_wins_over_the_dep_branch(platform: str) -> None:
     """Off Linux the suite is skipped even with every dep importable.
 
-    The two branches answer different questions -- "can this subject run here at all"
-    and "are its imports satisfied" -- and the platform one has to win, because the
-    image is Linux-only however complete the dev env is. Ordering them the other way
-    would collect the whole Linux-dependent suite on Windows whenever someone had
-    installed ``requirements-dev.txt`` there.
-
-    ``darwin`` is covered beside ``win32`` because it is the case a POSIX test admits
-    and Linux does not: macOS is POSIX, and publication in this package links a
-    descriptor through ``/proc/self/fd``, which Darwin does not have. A gate keyed on
-    POSIX lets every such test through to a guaranteed ``FileNotFoundError``.
+    The image is Linux-only however complete the dev env is. ``darwin`` is covered
+    because a POSIX gate would admit it, and the package uses ``/proc/self/fd``, which
+    Darwin does not have.
     """
     ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, platform=platform)
     assert ns._missing_image_deps == [], "the dep branch had nothing to complain about"
@@ -810,20 +688,12 @@ def test_boto3_is_not_a_collect_time_gate() -> None:
     assert getattr(ns, "collect_ignore_glob", None) is None
 
 
-# --- container image test suite: the direct-argument twin of the glob guard -----
+# container image test suite: the direct-argument twin of the glob guard
 #
-# ``collect_ignore_glob`` only filters files pytest discovers by WALKING the
-# directory. A file named explicitly on the command line skips that walk, and
-# pytest treats direct arguments as overriding every ignore mechanism (including
-# a ``pytest_ignore_collect`` hook) -- so the conftest also substitutes a
-# declining Module collector in ``pytest_pycollect_makemodule``, the one
-# construction step every path to a test module shares. CI's reduced
-# cross-surface path passes several of this suite's files as explicit arguments
-# on every single-surface diff, which is how a frontend-only PR came to fail
-# ``Backend Tests`` with ``ModuleNotFoundError: No module named 'httpx'``.
-# These pin the hook's decision; the collector construction
-# itself is pytest plumbing, replaced with a sentinel so no live Session is
-# needed.
+# A file named on the command line bypasses ``collect_ignore_glob`` and every ignore
+# hook, and CI's reduced scope passes this suite's files that way. So the conftest
+# also declines in ``pytest_pycollect_makemodule``. A sentinel replaces the collector
+# so no live Session is needed.
 
 
 class _SentinelDeclined:
@@ -880,21 +750,12 @@ def test_the_makemodule_hook_leaves_other_directories_alone() -> None:
     )
 
 
-# --- container image test suite: the collection-completeness checks --------------
+# container image test suite: the collection-completeness checks
 #
-# The conftest's ``pytest_collection_modifyitems`` runs only under
-# ``CREW_CONTAINER_TESTS_REQUIRED`` and answers four questions about a collection
-# that already happened: did every module that defines tests yield an item, did
-# every test name the source declares yield an item, did the total clear the
-# floor, and is the floor still close enough to the real collection to mean
-# anything. The last one exists because the first three cannot see a floor going
-# stale: a suite that grows while the floor stays put reports green on a run that
-# lost every test in the gap.
-#
-# These pin the hook's decisions with fabricated items, so each check is exercised
-# on its own rather than through a real 20-second collection. The reader is pinned
-# separately against synthetic modules, because what it must NOT require is the
-# half that a live tree cannot demonstrate.
+# Under ``CREW_CONTAINER_TESTS_REQUIRED``, ``pytest_collection_modifyitems`` checks
+# every module and declared test name yielded an item, the total cleared the floor,
+# and the floor is not stale (a grown suite hides losses in the gap). Fabricated
+# items exercise each check without a real 20-second collection.
 
 _CONTAINER_SUITE_DIR = _CONTAINER_CONFTEST.parent
 _OMIT = object()
@@ -913,10 +774,8 @@ class _FakeItem:
 def _required_conftest(*, declared: dict[str, set[str]] | None = None, floor: int | None = None):
     """The conftest loaded with the requirement ON, and its reader optionally stubbed.
 
-    ``_REQUIRED`` is read from the environment at import and every test process
-    leaves the variable unset, so the hook would return at its first line. Setting
-    the module global is the same switch the lane flips, and it is read at call
-    time.
+    ``_REQUIRED`` is read from the environment at import, where it is unset; the module
+    global is read at call time.
     """
     ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
     ns._REQUIRED = True
@@ -939,11 +798,8 @@ def _items(module: str, name: str, count: int) -> list[_FakeItem]:
 def test_the_collection_floor_reds_below_its_value() -> None:
     """One test short of the floor is an error, because the floor IS the collection.
 
-    This is the property the floor's POSITION buys and the reason it is set to the
-    measured collection rather than to the collection less the margin. Set below the
-    collection, the same margin would be spent hiding losses of that size instead:
-    the drain this check exists to catch would pass silently up to ``_FLOOR_MARGIN``
-    cases, while ordinary growth would red on the very first added test.
+    Set below the collection, the margin would hide losses of up to ``_FLOOR_MARGIN``
+    cases.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     with pytest.raises(pytest.UsageError, match="below its floor of 10"):
@@ -966,10 +822,8 @@ def test_the_collection_floor_passes_at_its_own_value() -> None:
 def test_a_floor_left_behind_by_a_growing_suite_is_an_error() -> None:
     """The check that makes the floor's staleness loud instead of silent.
 
-    One side is a hand-written constant and the other is the live collection, so
-    this can fail -- and it does fail on a tree whose suite has outgrown its
-    floor, which is the whole point. A floor that recomputed itself from the
-    collection could never trip and would report green forever.
+    The floor is a hand-written constant; one recomputed from the collection could
+    never trip.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     with pytest.raises(pytest.UsageError, match="the floor stayed behind"):
@@ -984,17 +838,8 @@ def test_the_floor_may_sit_exactly_its_margin_below_the_collection() -> None:
 def test_a_passing_collection_reports_its_count_and_remaining_headroom() -> None:
     """A passing collection reports its count and remaining headroom.
 
-    Every failure check above is silent while the margin is unspent, so on its own a
-    green run says nothing about how close the floor sits to the collection -- the
-    drift the guard bounds is invisible until it trips. The success line closes that
-    gap: a passing collection states the observed count AND the growth headroom still
-    remaining, so the number is read while the margin is unspent rather than only when
-    it is gone.
-
-    Asserted on ``_headroom_report`` directly (the pure line-builder) so the check
-    does not depend on how the line is surfaced, and both numbers are present so a
-    future edit cannot drop the headroom and leave only a count that says nothing
-    about drift.
+    The failure checks are silent while the margin is unspent, so without this line a
+    green run hides how close the floor sits. Asserted on the pure ``_headroom_report``.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     # One test inside the margin window: floor 10, margin 2, so 11 collected leaves
@@ -1008,12 +853,8 @@ def test_a_passing_collection_reports_its_count_and_remaining_headroom() -> None
 def test_the_reported_headroom_moves_as_the_collection_changes() -> None:
     """The reported numbers are computed from the live collection, not remembered.
 
-    A signal that did not move with the suite would be another stale constant, the
-    very failure this line-builder exists to avoid. Sitting on the floor spends no headroom
-    (the full margin remains); each test added above the floor spends one; at the
-    ceiling it is zero, and below the floor it clamps at zero, because the failure
-    checks own that state and a positive number would read as headroom that does not
-    exist.
+    Each test above the floor spends one; below the floor it clamps at zero, because
+    the failure checks own that state.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     assert f"headroom {ns._FLOOR_MARGIN} of {ns._FLOOR_MARGIN} remaining" in ns._headroom_report(10)
@@ -1030,11 +871,7 @@ def test_the_reported_headroom_moves_as_the_collection_changes() -> None:
 def test_the_passing_hook_emits_the_headroom_line(capsys) -> None:
     """The line is actually emitted on the pass path, not merely computable.
 
-    The hook is driven with ``config=None`` (no live pytest session), under which
-    the emitter falls back to ``print``, so a captured run can read the number. The
-    property under test is that a green collection produces the line at all -- a
-    guard whose only output is the failure path leaves the drift it bounds invisible
-    on a passing run.
+    With ``config=None`` the emitter falls back to ``print``, so capsys can read it.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     _run_hook(ns, _items("test_a.py", "test_one", 11))
@@ -1047,10 +884,7 @@ def test_the_passing_hook_emits_the_headroom_line(capsys) -> None:
 def test_the_headroom_line_prefers_the_terminal_reporter() -> None:
     """On a real run the line goes to pytest's terminal reporter, not raw stdout.
 
-    ``config=None`` in the pin above proves the fallback; a live run has a
-    ``terminalreporter`` plugin, and the line must land there so it sits in the same
-    summary a human reads rather than in captured output nobody sees. The emitter is
-    driven directly with a fake config exposing that plugin.
+    Captured stdout is hidden on a passing run; the ``terminalreporter`` summary is not.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     written: list[str] = []
@@ -1075,12 +909,8 @@ def test_the_headroom_line_prefers_the_terminal_reporter() -> None:
 def test_the_stale_floor_message_names_both_ways_the_margin_can_be_exceeded() -> None:
     """The message must not send a reader hunting a regression that is not there.
 
-    A margin above zero legalises growth with no floor edit, so two branches may
-    each add up to ``_FLOOR_MARGIN`` tests, clear this bound separately, and compose
-    past it without either one touching the constant. The lane then reds on a commit
-    that did not grow the suite, and a message naming only the same-commit cause
-    misattributes it. Both causes are asserted because naming one is what makes the
-    other invisible.
+    Two branches may each add up to ``_FLOOR_MARGIN`` tests and compose past the bound,
+    so the lane can red on a commit that did not grow the suite.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     collected = 10 + ns._FLOOR_MARGIN + 1
@@ -1089,9 +919,7 @@ def test_the_stale_floor_message_names_both_ways_the_margin_can_be_exceeded() ->
     message = " ".join(str(caught.value).split())
     assert "in the commit that grew the suite" in message, message
     assert "concurrently merged one did" in message, message
-    # The prescribed value is the COLLECTION itself, never the collection less the
-    # margin: prescribing the latter re-pins the floor at maximum staleness, which
-    # spends the margin on hiding losses and leaves growth no headroom at all.
+    # Prescribe the collection itself; less the margin would spend it hiding losses.
     assert f"Raise _MIN_COLLECTED to {collected}" in message, message
     assert f"Raise _MIN_COLLECTED to {collected - ns._FLOOR_MARGIN}" not in message, message
 
@@ -1107,14 +935,9 @@ def test_a_module_that_defines_tests_and_yields_nothing_is_an_error() -> None:
 def test_a_declared_test_that_yields_no_item_is_an_error() -> None:
     """The shape a module-level presence check cannot see.
 
-    The module is collected and contributes items, so the presence check is
-    satisfied; one name the source declares produced nothing. A decorator that
-    returns a non-function is the shape that lands here. The other shapes that
-    silence a test do NOT reach this check: two module-level ``def test_x`` collapse
-    to one name in ``_declared_tests``' set, so shadowing is never seen here, and a
-    class body an import guard emptied puts its methods under an ``ast.If`` that the
-    reader never descends into, because it scans only the direct children of a
-    ``ClassDef`` -- both drain the count instead and are caught by the floor.
+    The module yields items, but one declared name produced nothing, as a decorator
+    returning a non-function does. Shadowed names and import-guarded class bodies do
+    not reach this check; the floor catches them.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one", "test_swallowed"}}, floor=1)
     with pytest.raises(pytest.UsageError, match=r"test_a\.py::test_swallowed"):
@@ -1158,11 +981,8 @@ def test_the_hook_is_silent_without_the_requirement() -> None:
 def test_the_reader_excludes_names_pytest_cannot_collect(tmp_path: Path) -> None:
     """What the reader must NOT require, which a live tree cannot demonstrate.
 
-    Requiring an item for a name pytest never collects is a red with nothing
-    wrong behind it, so the scan is scoped to the two places pytest looks: a
-    module-level function, and a method of a class whose name matches
-    ``python_classes``. A helper nested inside another function and a method of a
-    plain helper class are both named ``test*`` and neither is collected.
+    The scan covers only module-level functions and methods of ``python_classes``
+    classes; nested ``test*`` helpers and plain-class methods are never collected.
     """
     (tmp_path / "test_shapes.py").write_text(
         "def test_module_level():\n"
@@ -1207,10 +1027,8 @@ def test_a_module_whose_tests_pytest_cannot_reach_is_still_required_to_yield_one
 ) -> None:
     """Presence stays the loose question even though the names are the strict one.
 
-    A module whose only ``test*`` definition is somewhere pytest does not look has
-    no names to require, and it must still be required to yield SOMETHING -- that
-    is the check that catches a module dropping out of collection entirely, and a
-    module must not escape it by holding its tests in an unusual place.
+    A module with no requirable names must still yield SOMETHING, or a module dropping
+    out of collection would go unseen.
     """
     (tmp_path / "test_odd.py").write_text(
         "def build():\n    def test_nested():\n        pass\n\n    return test_nested\n",
@@ -1229,11 +1047,8 @@ def test_a_module_whose_tests_pytest_cannot_reach_is_still_required_to_yield_one
 def test_the_margin_is_smaller_than_the_smallest_module() -> None:
     """The floor's margin is derived from the tree, not chosen for comfort.
 
-    The margin is growth headroom, so its bound is about what may land WITHOUT the
-    floor being raised. A margin at or above the smallest module's test count would
-    let a whole new module arrive while the constant stays put, and the floor would
-    resume drifting by exactly the mechanism this file exists to stop. Losing tests
-    is not what the margin governs -- a collection below the floor reds at any size.
+    A margin at or above the smallest module's test count would let a whole new
+    module land without raising the floor.
     """
     ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
     per_module = {name: len(names) for name, names in ns._declared_tests().items() if names}
@@ -1248,10 +1063,7 @@ def test_the_margin_is_smaller_than_the_smallest_module() -> None:
 def test_the_suite_has_a_module_that_declares_no_test() -> None:
     """The reason the presence check is read from source rather than from the glob.
 
-    ``test_supervisor_fakes.py`` matches ``test_*.py`` to sit inside one track's
-    ownership and declares no test. Requiring every matching file to yield an item
-    would fail on the tree as it stands, which is why the check asks the source
-    what it defines.
+    ``test_supervisor_fakes.py`` matches ``test_*.py`` but declares no test.
     """
     ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
     files = {path.name for path in _CONTAINER_SUITE_DIR.glob("test_*.py")}

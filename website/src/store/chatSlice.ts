@@ -19,6 +19,7 @@ import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
+import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
@@ -627,8 +628,13 @@ export const deleteSlot = createAsyncThunk<
   async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
+    const confirmationsAtStart = root.dashboard.closeConfirmations?.[key] ?? 0
     // A new close press retires the last refusal's notice.
-    if (root.chat.closeRefused) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    if (root.chat.closeRefused || root.dashboard.closeRestored) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    // Read before the optimistic removal takes the row away. An untitled row stores
+    // null, not the localized label: the notice outlives a language switch.
+    const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
+    const incarnation = deletedSlot?.incarnation
     // Use the surface key (forward-compat alias for `mode`) so a future
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
@@ -703,6 +709,7 @@ export const deleteSlot = createAsyncThunk<
         // `push_slot_removed` confirms the durable close, while the restore arm
         // puts the key back and publishes a list that releases this hold.
         dispatch(awaitCloseOutcome({ key, requestId }))
+        dispatch(watchCloseOutcome({ key, title: refusedTitle, incarnation }))
         // The hold's wall-clock cap is otherwise evaluated only when a list
         // arrives, and an idle main-dashboard tab may receive none; the timer
         // makes the bound real. Fire-and-forget: the reducer's guards make a
@@ -720,10 +727,6 @@ export const deleteSlot = createAsyncThunk<
         gcSessionStorage(key)
       }
     } catch (err) {
-      // The title is read from before the optimistic removal took the row away.
-      // An untitled row stores null, not the localized label: the notice outlives
-      // a language switch, so the sidebar localizes it at render.
-      const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
       const uncoded = closeRefusalCode(err) === null
       // Release the close hold BEFORE refetching: this thunk's `rejected` (which
       // also releases it) fires only after the `await navigation` below, and
@@ -735,13 +738,20 @@ export const deleteSlot = createAsyncThunk<
         const notice = () => dispatch({ type: 'chat/setCloseRefused', payload: { key, title: refusedTitle, reason: 'failed' } })
         const shouldNotice = (readFailed: boolean) => {
           const dashboard = (getState() as RootState).dashboard
-          const closeHold = dashboard.closingSlots?.[key]
-          const confirmedClose = closeHold !== undefined && closeHold.confirmedUntil !== null
-          return !dashboard.durablyRemoved?.[key] && !confirmedClose && (readFailed || dashboard.slots.some(s => s.key === key))
+          const confirmedClose = (dashboard.closeConfirmations?.[key] ?? 0) !== confirmationsAtStart
+          return !dashboard.durablyRemoved?.[key] && !confirmedClose && (readFailed || dashboard.slots.some(s => s.key === key && isClosedIncarnation(incarnation, s)))
         }
         // The reconciled list, not the raw reply: a `removed` frame or a newer close's hold drops the key.
+        // An absent row with no verdict may still come back if the server's archive save fails.
+        const noVerdict = () => {
+          const dashboard = (getState() as RootState).dashboard
+          return !dashboard.durablyRemoved?.[key] && !dashboard.closingSlots?.[key]
+        }
         recovery.unwrap().then(
-          () => { if (shouldNotice(false)) notice() },
+          () => {
+            if (shouldNotice(false)) notice()
+            else if (noVerdict()) dispatch(watchCloseOutcome({ key, title: refusedTitle, incarnation }))
+          },
           () => { if (shouldNotice(true)) notice() },
         )
       } else {
@@ -1081,10 +1091,29 @@ const chatSlice = createSlice({
         // Identity is meta.mid only, as for the active walk: an overlapping
         // page must not reach the list as a duplicate row key.
         const fresh = messages.filter(m => !isRedeliveredMessage(cur, m.meta))
-        // The bounded length indexes this array, so it shifts with the prepend.
+        const merged = [...fresh, ...cur]
+        // Paging older is exactly when a parked block's anchor becomes loaded,
+        // as on the active walk; without this a split pane showed the restored
+        // answer bare until the slot was made active.
+        const parked = (state.thinkingOrphans ??= {})
+        const seated = reinsertThinkingOrphans(merged, parked[k] ?? [], !hasMore)
+        parked[k] = seated.remaining
+        // The bounded length counts leading rows of `merged`, so it shifts with
+        // the prepend AND with every block seated inside that region. Seating
+        // only inserts, keeping every row of `merged` in order, so the region
+        // ends right after its last original row.
         const boundedLen = state.slotPaneBounded?.[k]
-        writeSlotPage(state, slot, [...fresh, ...cur], hasMore,
-          boundedLen === undefined ? undefined : boundedLen + fresh.length, nextBefore)
+        let seatedBoundedLen: number | undefined
+        if (boundedLen !== undefined) {
+          const regionEnd = boundedLen + fresh.length
+          const original = new Set(merged)
+          let seen = 0
+          seatedBoundedLen = 0
+          for (let i = 0; i < seated.list.length && seen < regionEnd; i++) {
+            if (original.has(seated.list[i])) { seen++; seatedBoundedLen = i + 1 }
+          }
+        }
+        writeSlotPage(state, slot, seated.list, hasMore, seatedBoundedLen, nextBefore)
       })
       .addCase(loadOlderSlotMessages.rejected, (state, action) => {
         // A refused dispatch never set the flag, and must not clear one a
@@ -1104,7 +1133,7 @@ const chatSlice = createSlice({
 export const {
   setCloseRefused,
   setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stagePendingSend, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, recordSendAttempt, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, recordSendAttempt, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, subagentReplayDone, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,

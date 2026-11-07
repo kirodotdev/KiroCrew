@@ -6,7 +6,9 @@ on movement in any process started since its dispatch, which another
 session's process can produce. So those readings are bounded by
 ``watchdog.tool_stall_hard_cap_secs``; a matched shell child, the declared
 ``wait`` verdict and a kirocrew-core tool that pings the session keepalive
-keep deferring. Recovery is the session-scoped ``session/cancel``.
+keep deferring. Recovery is the session-scoped ``session/cancel``. A model
+wait's WORKING reading is movement under the runtime, so it is bounded by the
+same cap and then gets the stale probe.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from test_acp_stale_recovery import _SilentQueue
+from test_acp_stale_recovery import _make_handle, _SilentQueue
 
 from kiro_crew.acp.liveness import (
     EVIDENCE_MCP_SUBTREE_ACTIVE,
@@ -28,9 +30,10 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
 from kiro_crew.session_directive import CORE_MCP_SERVER
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 _MCP_ACTIVE = (VERDICT_WORKING, f"{EVIDENCE_MCP_SUBTREE_ACTIVE} (io +512B cpu +3t)")
+_BACKEND_ACTIVE = (VERDICT_WORKING, "backend activity (io +512B cpu +3t)")
 
 
 def _settings(hard_cap: float) -> WatchdogSettings:
@@ -59,7 +62,7 @@ class _Oracle:
         self.past_cap = 0
         self.done = threading.Event()
 
-    def __call__(self, pid, tool):
+    def __call__(self, pid, tool=None):
         now = time.monotonic()
         if self._cap_at is None:
             self._cap_at = now + self._hard_cap
@@ -116,6 +119,20 @@ def _opaque_tool() -> ToolCallState:
     return ToolCallState(title="ReadInternalWebsites", command="{}")
 
 
+def _model_wait_handle(hard_cap: float, check) -> AcpSessionHandle:
+    """A silent model wait whose stale and model-silent windows pass at once."""
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        stale_window_secs=0.01,
+        model_silent_probe_secs=0.01,
+        tool_stall_hard_cap_secs=hard_cap,
+    )
+    handle = _make_handle(watchdog=wd)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_model_wait = check
+    return handle
+
+
 @pytest.mark.asyncio
 async def test_opaque_mcp_working_is_cancelled_past_the_hard_cap():
     handle = _handle(_settings(hard_cap=0.05), _MCP_ACTIVE, _opaque_tool())
@@ -149,11 +166,45 @@ async def test_windows_shell_tree_working_is_cancelled_past_the_hard_cap():
 
 
 @pytest.mark.asyncio
+async def test_model_wait_working_is_probed_past_the_hard_cap():
+    handle = _model_wait_handle(hard_cap=0.05, check=lambda pid: _BACKEND_ACTIVE)
+    rt = handle._runtime
+    metrics: list[tuple] = []
+    handle._emit_watchdog_metric = lambda action, verdict, evidence, idle, **kw: metrics.append(  # type: ignore[method-assign]
+        (action, verdict, kw.get("window"))
+    )
+
+    task = asyncio.create_task(_drain(handle, timeout=FALLBACK_TIMEOUT_SECS))
+    try:
+        await async_wait_until(
+            lambda: rt.send_notification.await_count or task.done(),
+            describe=lambda: "the stale probe",
+        )
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert rt.send_notification.await_args.args[0] == "session/cancel"
+    assert handle._stale_probe is True
+    assert ("probe", VERDICT_WORKING, "working_cap") in metrics
+
+
+@pytest.mark.asyncio
 async def test_opaque_mcp_working_defers_inside_the_hard_cap():
     # hard_cap 0 for the counter only: every consult counts, the handle's own
     # cap stays far away, so these are consults made inside the cap.
     oracle = _Oracle(_MCP_ACTIVE, hard_cap=0.0)
     handle = _handle(_settings(hard_cap=999.0), oracle, _opaque_tool())
+
+    await _assert_deferred_past_cap(handle, oracle)
+
+
+@pytest.mark.asyncio
+async def test_model_wait_working_defers_inside_the_hard_cap():
+    # The counter starts 0.05 s after the first consult, past every other
+    # window; the handle's own cap stays far away.
+    oracle = _Oracle(_BACKEND_ACTIVE, hard_cap=0.05)
+    handle = _model_wait_handle(hard_cap=999.0, check=oracle)
 
     await _assert_deferred_past_cap(handle, oracle)
 

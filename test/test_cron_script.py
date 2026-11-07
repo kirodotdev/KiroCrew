@@ -740,6 +740,20 @@ class TestScriptContextNotify:
         assert fake_key not in sent["text"]
         assert sent["text"].startswith("secret ")
 
+    def test_notify_forwards_the_format(self):
+        job = SimpleNamespace(id="j1", message="test")
+        ctx = ScriptContext(job=job)
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"ok": true}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
+        ) as mock_urlopen:
+            ctx.notify("*Title*", channel_type="telegram", target_id="user:1", format="markdown")
+        sent = json.loads(mock_urlopen.call_args.args[0].data)
+        assert (sent["text"], sent["format"]) == ("*Title*", "markdown")
+
 
 class TestScriptContextCallTool:
     """Tests for ScriptContext.call_tool() MCP bridge."""

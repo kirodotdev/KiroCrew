@@ -176,6 +176,51 @@ def test_a_frame_lands_in_the_backend_file(monkeypatch, tmp_path):
     assert json.loads((Path(dest) / "kas.jsonl").read_text(encoding="utf-8"))["id"] == 3
 
 
+def test_an_outbound_frame_lands_in_its_own_file_scrubbed(monkeypatch, tmp_path):
+    """A written frame arrives as its encoded bytes and lands beside the inbound
+    file, never in it, scrubbed like any other frame."""
+    _clean(monkeypatch)
+    dest = str(tmp_path / "frames")
+    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+    _frame_record.write_frame(ACP_BACKEND_KIRO, {"jsonrpc": "2.0", "id": 1}, dest)
+    sent = {"jsonrpc": "2.0", "id": 2, "method": "session/prompt", "params": {"token": secret}}
+    _frame_record.write_frame(ACP_BACKEND_KIRO, json.dumps(sent).encode(), dest)
+
+    inbound = (Path(dest) / "kiro.jsonl").read_text(encoding="utf-8").splitlines()
+    outbound = (Path(dest) / "kiro.out.jsonl").read_text(encoding="utf-8")
+    assert [json.loads(ln)["id"] for ln in inbound] == [1]
+    assert json.loads(outbound)["method"] == "session/prompt"
+    assert secret not in outbound
+    assert _mode(Path(dest) / "kiro.out.jsonl") == _frame_record.FILE_MODE
+
+
+def test_an_outbound_frame_never_records_mcp_server_config(monkeypatch, tmp_path):
+    """An MCP server's env value is a credential whatever its name; the servers
+    are replaced by their count at any depth, and the rest of the frame stays."""
+    _clean(monkeypatch)
+    server = {
+        "name": "jira",
+        "command": "jira-mcp",
+        "env": [{"name": "JIRA_PAT", "value": "pat-1"}],
+    }
+    sent = {
+        "method": "session/new",
+        "params": {
+            "cwd": "/w",
+            "mcpServers": [server],
+            "_meta": {"agent": {"mcpServers": {"j": server}}},
+        },
+    }
+    _frame_record.write_frame("kas", json.dumps(sent).encode(), str(tmp_path))
+
+    written = (tmp_path / "kas.out.jsonl").read_text(encoding="utf-8")
+    assert "pat-1" not in written
+    params = json.loads(written)["params"]
+    assert params["cwd"] == "/w"
+    assert params["mcpServers"] == params["_meta"]["agent"]["mcpServers"]
+    assert params["mcpServers"] == "[1 MCP server(s) not recorded]"
+
+
 def _nested(depth: int, *, as_dict: bool) -> object:
     node: object = 1
     for _ in range(depth):

@@ -1,23 +1,11 @@
 """Two schema lineages over one engine, with each file's object set pinned by VALUE.
 
-``memory_schema`` gives a crew silo its own physical row table, while every other
-vector file — above all ``config_dir()/"memory.db"`` — stays on the v1 lineage. The
-operator constraint is one-directional: memory v2 is for crew members only, so a silo
-may look like whatever it needs to and the DEFAULT store must look like exactly what
-it looked like before.
+A crew silo gets its own physical row table; every other vector file, above all
+``config_dir()/"memory.db"``, stays on the v1 lineage exactly as it was. The rest of
+the suite only checks table membership, so the assertions here are EXACT SETS.
 
-Nothing else in the tree can falsify the second half. The whole memory suite's only
-the schema table read is a SUBSET assertion (``assert "semantic_memory" in tables``),
-nothing asserts on ``vector_memory._MIGRATIONS``, and ``PRAGMA user_version`` is never
-written — so a second ``CREATE TABLE`` landing in the default store's file is invisible
-to every existing test, including the 21 golden payload tests. That is why the
-assertions here are EXACT SETS rather than membership checks.
-
-The v1 object names, table set and version set are spelled as LITERALS. Deriving them
-from the production DDL would make the pin circular: it would move with the thing it
-exists to hold still. The production migration LIST is pinned separately, against the
-literal tuples, so a rename shows up as a failure here rather than passing quietly on
-both sides.
+The v1 names are LITERALS: deriving them from the production DDL would make the pin
+move with the thing it holds still.
 """
 
 from __future__ import annotations
@@ -176,12 +164,8 @@ _VOLATILE_COLUMNS = frozenset({"id", "created_at", "updated_at", "last_accessed_
 def _declare_silos(*names: str) -> None:
     """Declare *names* as memory stores in the per-test data home.
 
-    ``memory_stores`` is an OBJECT keyed by store name. Spelled as an ARRAY
-    (``{"memory_stores": ["finance"]}``) the schema drops the whole entry, every name
-    degrades to the default with a warning, and ``resolve_store_path("finance")``
-    answers ``config_dir()/"memory.db"`` — the DEFAULT store's own file. A test
-    written that way builds the default store twice, calls one of them a silo, and
-    asserts nothing at all.
+    ``memory_stores`` must be an OBJECT keyed by name. As an ARRAY the schema drops it
+    and every name resolves to the DEFAULT store's file, so the test would pin nothing.
     """
     payload = {
         "memory_stores": {DEFAULT_MEMORY_STORE: {}, **{name: {} for name in names}},
@@ -364,11 +348,8 @@ class TestTheSiloPredicateIsPositive:
     def test_an_aliased_store_directory_names_neither_store(self, tmp_path: Path) -> None:
         """A link INSIDE the root redirects rather than escapes, and must be refused.
 
-        With ``memory_stores/acme`` pointing at ``memory_stores/finance``, a
-        resolved-PARENT check still sees the fenced root and would answer ``"acme"``
-        for a file that physically belongs to ``finance`` — handing two crews one
-        silo with every path check reporting success. The containment test is
-        therefore IDENTITY, and the answer for the alias is neither name.
+        A resolved-PARENT check would answer ``"acme"`` for a file that belongs to
+        ``finance``, handing two crews one silo. Containment is IDENTITY.
         """
         _declare_silos(_FINANCE, _ACME)
         root = memory_stores_root()
@@ -390,14 +371,8 @@ class TestTheSiloPredicateIsPositive:
 class TestTheDefaultStoreNeverGetsTheCrewLineage:
     """The operator's own ``memory.db`` is byte-shaped exactly as it was.
 
-    Asserted as EXACT SETS, and that is the point of the class. The design doc's
-    verbatim v4 schema is five additional tables; applied to
-    ``config_dir()/"memory.db"`` it leaves all 21 golden-payload tests green, every
-    behavioural memory test green, and the suite's one the schema table read green —
-    that read is ``assert "semantic_memory" in tables``, which an added table cannot
-    falsify. A subset assertion here would have caught nothing. An added table, an
-    added view, an added trigger, and an added ``schema_version`` row each fail here
-    and nowhere else.
+    Asserted as EXACT SETS: an added table, view, trigger or ``schema_version`` row
+    leaves every other memory test green and fails only here.
     """
 
     def test_the_default_store_holds_exactly_the_v1_objects(self, stores, tmp_path: Path) -> None:
@@ -589,12 +564,8 @@ class TestThePreExistingSiloKeepsItsLineage:
 def _seed_vector(store: VectorMemoryStore, key: str) -> None:
     """Put a stored vector on *key*'s row, in the shape its lineage has for one.
 
-    Written through SQL rather than through an ``embed_fn`` so the seed is exact and
-    the assertion is about the upsert's conflict rule alone, not about whatever width
-    a live embedder happens to produce.
-
-    Named relation per lineage: a crew silo's writable relation is the physical
-    ``memory_items``, and both views refuse a write outright.
+    Written through SQL so the seed is exact. A crew silo's writable relation is the
+    physical ``memory_items``; both views refuse a write.
     """
     rel = "memory_items" if store._lineage == memory_schema.LINEAGE_CREW else "semantic_memory"
     store.db.execute(f"UPDATE {rel} SET embedding = ? WHERE key = ?", (_VECTOR, key))
@@ -604,11 +575,8 @@ def _seed_vector(store: VectorMemoryStore, key: str) -> None:
 def _stored_vector(store: VectorMemoryStore, key: str) -> tuple[bytes | None, int | None]:
     """*key*'s ``(embedding, width)``, read from the PHYSICAL relation.
 
-    The width is MEASURED from the blob rather than read from a column, which is the
-    whole reason no such column exists: a stored width can disagree with the vector
-    it describes, and a measured one cannot. Read from the physical relation because
-    the crew lineage's ``semantic_memory`` is a view, and a future column added to
-    one lineage only would otherwise be invisible here.
+    The width is MEASURED from the blob: a stored width could disagree with the vector.
+    The crew lineage's ``semantic_memory`` is a view, hence the physical relation.
     """
     rel = "memory_items" if store._lineage == memory_schema.LINEAGE_CREW else "semantic_memory"
     row = store.db.execute(f"SELECT embedding FROM {rel} WHERE key = ?", (key,)).fetchone()
@@ -739,17 +707,10 @@ class TestTheCrewLineageAnswersTheV1Contract:
         } == {memory_schema.KIND_EPISODE}
 
     def test_an_unchanged_rewrite_keeps_the_vector_and_a_changed_one_clears_it(self, both) -> None:
-        """The upsert's conflict clause, which is the one statement with real logic.
+        """The upsert keeps the vector for the same text and clears it for new text.
 
-        A row must never keep ranking by a vector computed from different text,
-        and it must not pay a re-embed for a consolidation pass that rewrote
-        the same value. Both halves are asserted, on both lineages.
-
-        Confidence 1.0 deliberately, and every return value is asserted ``is None``:
-        ``set_semantic`` REJECTS a write below ``_confidence_threshold`` (from any
-        source but ``user_explicit``) as ``low_confidence`` and returns before the
-        upsert runs at all — so the same test written with a low confidence passes
-        while asserting nothing about the conflict clause.
+        Confidence 1.0 and ``is None`` on every return: ``set_semantic`` rejects a
+        low-confidence write before the upsert runs, which would pin nothing.
         """
         for store in both.values():
             assert store.set_semantic(_THEME_KEY, "dark", 1.0, "user_explicit") is None
@@ -797,15 +758,8 @@ def _render_fstring(node: ast.JoinedStr) -> str:
 def _sql_statements(module: ModuleType) -> list[str]:
     """Every SQL-shaped string literal in *module*'s source, docstrings excluded.
 
-    An f-string is rendered with each interpolation as ``{}``, so a statement whose
-    relation is ``self._sem_rel`` is collected as the statement it is rather than
-    dropped for not being one constant; its literal fragments are then skipped, so
-    the same statement is not also collected in pieces.
-
-    Docstrings are excluded because the claim being checked is about what the engine
-    EXECUTES. A sentence that names a facet and a view together is how the rule gets
-    explained — the crew DDL's own comments do exactly that — and prose describing a
-    prohibition must not read as a breach of it.
+    An f-string is rendered with each interpolation as ``{}`` and its fragments are
+    skipped. Docstrings are excluded: the claim is about what the engine EXECUTES.
     """
     tree = ast.parse(inspect.getsource(module))
     fragments = {
@@ -852,20 +806,10 @@ class TestFacetsAreUnreachableFromEveryRanker:
     def test_no_statement_naming_a_view_names_a_facet_column(self) -> None:
         """The same claim, made against the ENGINE's statements rather than the DDL.
 
-        The views not exposing the columns is the enforcement; this is the half a
-        reader can check without opening a database, and the half CI reports. A
-        statement that reached for a facet through ``semantic_memory`` would raise
-        ``no such column`` at runtime, on the crew lineage only, from whichever code
-        path happened to run it — a failure shape worth catching at review time.
-
-        Bounded to statements naming a VIEW on purpose. A carve FILTER on
-        ``memory_items`` is what these columns exist for, so a walk that refused
-        every mention of one anywhere in the engine would go red on the next feature
-        that used them correctly. What must never happen is a facet reaching the
-        RANKED READ path, and that path is exactly the one that goes through a view.
-
-        The walk cannot see a column list assembled at runtime (one statement builds
-        one), which is precisely why the views, and not this test, are the barrier.
+        Such a statement would raise ``no such column`` on the crew lineage only.
+        Bounded to statements naming a VIEW: a carve filter on ``memory_items`` is
+        legitimate. A column list built at runtime is invisible here; the views are
+        the barrier.
         """
         import importlib
 
@@ -907,11 +851,8 @@ class TestFacetsAreUnreachableFromEveryRanker:
 class TestFacetsAreStampedOnEveryKind:
     """One kwarg, three kinds, and the axes land on all three.
 
-    Driven through the PUBLIC writers, never through ``_stamp_facets`` itself: the
-    stamp runs from the tail of each writer, so a direct call would keep passing
-    while a writer quietly stopped threading its facets through. Read back with
-    :func:`_axes`, which names ``memory_items`` — the views cannot show a facet, and
-    that is the point rather than an inconvenience.
+    Driven through the PUBLIC writers, not ``_stamp_facets``, so a writer that stops
+    passing its facets fails. Read back from ``memory_items``: the views hide facets.
     """
 
     def test_every_declared_axis_is_a_column_and_is_asserted_here(self) -> None:
@@ -974,16 +915,9 @@ class TestFacetsAreStampedOnEveryKind:
     def test_an_unfaceted_row_is_blank_on_every_axis(self, silo) -> None:
         """The absence shape, and it is UNIFORM across all five axes.
 
-        Every axis is ``NOT NULL DEFAULT ''``, so an unstamped one reads back blank and
-        never NULL. Pinned because the uniformity is what a carve filter depends on: a
-        single nullable axis would force every filter to spell ``IS NULL OR = ''``, and
-        one written the documented way would then silently match nothing.
-
-        Both spellings of "no facets" are covered. ``facets=None`` never enters the
-        stamp; an all-empty ``MemoryFacets`` enters it and is turned away by
-        ``is_empty()``. They must be indistinguishable in the row, or the writer that
-        builds a facet object unconditionally behaves differently from the one that
-        passes nothing.
+        Every axis is ``NOT NULL DEFAULT ''``: one nullable axis would make a carve
+        filter written as ``= ''`` match nothing. ``facets=None`` and an all-empty
+        ``MemoryFacets`` must leave the same row.
         """
         assert silo.set_semantic(_SEMANTIC_KEY, "vim", 1.0, "user_explicit") is None
         assert (
@@ -1006,13 +940,9 @@ class TestFacetsAreStampedOnEveryKind:
 class TestAFacetStampIsAdditive:
     """``FACET_STAMP_SQL``'s per-axis CASE, which is what lets two writers cooperate.
 
-    Consolidation knows the crew, the surface and the session; ``write_lesson`` knows
-    the scope. They reach the same row through different calls, so a stamp that wrote
-    all five axes unconditionally would blank whatever the other writer established —
-    and a blanked carve axis is a row that silently rejoins the unfiltered pool.
-
-    Observable on a KEYED row only: an episode gets a fresh uuid per write, so there
-    is no second write to the same episode to be additive about.
+    Consolidation and ``write_lesson`` stamp different axes of one row; an
+    unconditional stamp would blank the other's axes. Keyed rows only: episodes get a
+    fresh uuid per write.
     """
 
     def test_a_second_write_that_knows_only_the_surface_keeps_the_scope(self, silo) -> None:
@@ -1140,15 +1070,8 @@ _V1_WRITERS: list[
 class TestTheV1LineageIgnoresFacets:
     """The kwarg is additive-with-a-safe-default, so a caller threads identity ONCE.
 
-    ``history_consolidation`` builds one facet object and passes it to whichever
-    store the session resolved to. If a v1 store raised, or stored, or grew a column
-    for it, then every operator on the default store would pay for a feature scoped
-    to crew silos — and the payment would land on ``config_dir()/"memory.db"``, the
-    one file this whole lineage split exists to leave alone.
-
-    Compared against a SECOND v1 store written without the kwarg, rather than against
-    a hardcoded row: "ignored" means the two files hold the same row, which is a
-    claim no expectation written by hand can make.
+    A v1 store must neither raise on nor store facets. Compared against a SECOND v1
+    store written without the kwarg: "ignored" means both files hold the same row.
     """
 
     @pytest.mark.parametrize(
@@ -1214,16 +1137,9 @@ class _RaisesOnTheFacetStamp:
 class TestAFacetStampNeverFailsAWrite:
     """``_stamp_facets`` swallows every exception, and the reason is not tidiness.
 
-    ``HistoryConsolidator._consolidate`` calls its writers inside a try whose
-    ``billed`` flag is still False while they run. An exception escaping the stamp is
-    therefore recorded as "the consolidation attempt did not happen", so all four
-    consolidation entry points re-arm on the next 60s idle tick — and keep re-arming,
-    forever, with no backoff, because the next attempt fails identically. The cost of
-    the opposite choice is one carve filter on one row, and nothing else reads the
-    column.
-
-    Forced for real rather than asserted from the source: the connection is replaced
-    with a stand-in that fails exactly the stamp statement.
+    An escaping exception reads as "consolidation did not happen", so consolidation
+    re-arms every 60s idle tick forever. The connection is replaced with a stand-in
+    that fails exactly the stamp statement.
     """
 
     def test_the_row_survives_a_stamp_that_raises(self, silo, caplog) -> None:
@@ -1452,12 +1368,8 @@ class TestTheCrewSchemaIsSelfConsistent:
     def test_the_schema_carries_no_trigger(self, db) -> None:
         """And must never be given one, least of all an ``INSTEAD OF`` on a view.
 
-        ``snapshot_redact._refuse_update_triggers_that_destroy_rows`` refuses a
-        database whose UPDATE trigger writes a relation other than the trigger's own;
-        its exemption requires ``target == tbl_name``, which an ``INSTEAD OF`` trigger
-        on a view can never satisfy. The refusal keys on the trigger NAME and is
-        permanent, so adding one would stop the whole product database from being
-        backup-inspectable — not one table, the database.
+        ``snapshot_redact._refuse_update_triggers_that_destroy_rows`` would refuse the
+        whole database, since an ``INSTEAD OF`` trigger never has ``target == tbl_name``.
         """
         assert _objects(db, "trigger") == set()
         # The STATEMENT, not the word: the DDL's own comment names the prohibition,
@@ -1488,11 +1400,8 @@ _SHARED_DDL = {
 def _table_shape(db: sqlite3.Connection, table: str) -> dict[str, object]:
     """Everything about *table* that a statement written against it binds to.
 
-    Columns as an ORDERED list of ``(name, type, notnull, default, pk)`` — what an
-    INSERT's column list and a ``SELECT *`` row both depend on — plus every index
-    with its uniqueness, its origin and its own columns. SQLite's implicit
-    ``sqlite_autoindex_*`` counts: it is how a PRIMARY KEY on a TEXT column is
-    backed, so dropping that key would move this set and nothing else would.
+    Ordered columns plus every index. The implicit ``sqlite_autoindex_*`` counts: it
+    backs a TEXT PRIMARY KEY, so dropping that key moves only this set.
     """
     columns = [tuple(row[1:6]) for row in db.execute(f"PRAGMA table_info({table})")]
     indexes = {
@@ -1505,19 +1414,8 @@ def _table_shape(db: sqlite3.Connection, table: str) -> dict[str, object]:
 class TestTheSharedTablesHaveOneDefinition:
     """``memory_events`` and ``memory_meta`` are one definition, composed twice.
 
-    These two are the only product tables the engine reaches with NO per-lineage
-    indirection: ``_log_event``'s INSERT, ``get_events``' and ``rotate_events``'
-    statements, and the ``_read_meta``/``_write_meta`` pair that
-    ``reconcile_embedding_space`` keys the per-file vector signature through, all
-    name them literally on both lineages.
-
-    So a column on one lineage and not the other is a statement that works on v1 and
-    raises on a silo — and nothing else in the tree would report it.
-    ``MIGRATIONS_CREW`` is a single frozen entry at
-    :data:`memory_schema.CREW_SCHEMA_VERSION`, so a fourth ``_MIGRATIONS`` entry
-    adding a column would reach every v1 file and NO silo. v1 is what the rest of the
-    suite exercises, so the break would surface on an operator's silo, at runtime,
-    from whichever write path happened to run first.
+    The engine names them literally on both lineages. ``MIGRATIONS_CREW`` is frozen,
+    so a ``_MIGRATIONS`` entry adding a column would reach v1 only and break silos.
     """
 
     def test_both_lineages_compose_the_same_fragment(self) -> None:

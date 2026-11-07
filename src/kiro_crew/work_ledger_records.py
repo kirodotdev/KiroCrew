@@ -33,14 +33,11 @@ logger = logging.getLogger("kiro_crew.work_ledger")
 
 SCHEMA_VERSION = 1
 
-# --------------------------------------------------------------------------- #
 # Vocabularies
-# --------------------------------------------------------------------------- #
 
 #: A work item's disposition, written by the conductor. A DIFFERENT question from
 #: ``verdict``: an item may hold ``verdict: fail`` and stay ``open`` while the
-#: worker retries, which is the state ``ledger_entry.py`` encodes today as "fails
-#: incremented but still running".
+#: worker retries.
 ITEM_STATES: frozenset[str] = frozenset(WORK_ITEM_STATES)
 
 #: States from which no further write is accepted.
@@ -57,12 +54,10 @@ WORKER_STATUSES: frozenset[str] = frozenset(WORK_WORKER_STATUSES)
 #: Why a ``blocked`` / ``question`` report is stuck; see :data:`WORK_BLOCKED_REASONS`.
 BLOCKED_REASONS: frozenset[str] = frozenset(WORK_BLOCKED_REASONS)
 
-#: The statuses from which a report gap still means "the WORKER went quiet", which is
-#: the only thing :func:`is_stale` exists to surface. Only ``progress`` leaves the next
-#: move with the worker. ``done``, ``blocked`` and ``question`` each woke the conductor
-#: through the report itself and hand the next move to the conductor or to a person,
-#: so a worker that stays silent after one of them is waiting, not stalled. Flagging
-#: it would point the flag at the reader instead of the worker.
+#: The statuses from which a report gap still means "the WORKER went quiet", the only
+#: thing :func:`is_stale` surfaces. Only ``progress`` leaves the next move with the
+#: worker; ``done``, ``blocked`` and ``question`` hand it to the conductor or a person,
+#: so a worker silent after one of them is waiting, not stalled.
 STALE_ELIGIBLE_STATUSES: frozenset[str] = frozenset({"progress"})
 
 #: The statuses that wait on the conductor or a person. A conductor ``decide`` newer
@@ -70,20 +65,16 @@ STALE_ELIGIBLE_STATUSES: frozenset[str] = frozenset({"progress"})
 #: :func:`is_stale` measures the worker's silence from the decision.
 WAITING_STATUSES: frozenset[str] = frozenset({"blocked", "question"})
 
-#: Field values that mean "not filled in yet". A conductor legitimately opens an item
-#: whose bar is not knowable at dispatch time -- the worker is what learns the pull
-#: request number -- and writes ``"TBD"`` in the field meanwhile, so the placeholder is
-#: part of the shape rather than a typo. See :func:`is_acceptance_concrete`.
+#: Field values that mean "not filled in yet". A conductor may open an item whose bar
+#: is not knowable at dispatch (the worker learns the pull request number) and write
+#: ``"TBD"`` meanwhile. See :func:`is_acceptance_concrete`.
 ACCEPTANCE_PLACEHOLDERS: frozenset[str] = frozenset({"tbd", ""})
 
-#: Per ``kind``, the fields ``accept_eval.py`` actually READS. This is the whole
-#: vocabulary :func:`is_acceptance_concrete` judges a bar by: a placeholder in a field
-#: that script consumes is what makes a bar unevaluable, and a placeholder anywhere
-#: else is in a field it never looks at, so it is none of this predicate's business.
-#: ``cmd`` reads nothing because that script always REFUSES it, and ``refused`` is a
-#: message the conductor must receive -- re-express the condition, never route around
-#: it -- so dropping such an item from the batch would delete its only delivery.
-#: A test derives this map's keys from the script's own dispatch and fails on drift.
+#: Per ``kind``, the fields ``accept_eval.py`` actually READS: only a placeholder in
+#: one of these makes a bar unevaluable for :func:`is_acceptance_concrete`. ``cmd``
+#: reads nothing because the script always REFUSES it, and that refusal must still
+#: reach the conductor, so such an item stays in the batch. A test derives this map's
+#: keys from the script's own dispatch and fails on drift.
 ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
     "pr_checks": ("pr", "repo"),
     "pr_merged": ("pr", "repo"),
@@ -109,11 +100,10 @@ ACCEPTANCE_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: concrete. Derived from the map above rather than spelled twice.
 ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
 
-#: Every ITEM write appends exactly one event, so there is no way to move an item
-#: field without a line explaining it (the conductor's own ``goal``/``round``
-#: header is the one eventless write, because it belongs to no item). ``report``
-#: is the only kind a worker can produce; ``steer`` is the only kind a person's
-#: steer from a Crew Mode side panel produces, and it moves no field.
+#: Every ITEM write appends exactly one event, so no item field moves without a line
+#: explaining it (the ``goal``/``round`` header write belongs to no item and has none).
+#: ``report`` is the only kind a worker produces; ``steer`` comes from a person's
+#: Crew Mode side panel and moves no field.
 EVENT_KINDS: frozenset[str] = frozenset(
     {"create", "bind", "report", "decision", "verdict", "close", "steer", "retire", "destroy"}
 )
@@ -124,47 +114,31 @@ CONDUCTOR_ACTIONS: frozenset[str] = frozenset(
     {"create", "bind", "decide", "verdict", "close", "goal"}
 )
 
-# --------------------------------------------------------------------------- #
 # Caps. Each one refuses; none truncates.
-# --------------------------------------------------------------------------- #
 
-#: How many OPEN items one conductor may hold at once -- the bound on live fan-out,
-#: which is the only thing a per-conductor item cap is for. Items in a
-#: :data:`TERMINAL_ITEM_STATES` state do not count: a queue conductor that mints one
-#: item per ticket and closes each as it lands would otherwise exhaust the cap on its
-#: own history within a day, with nothing live behind the refusal. Enforced by
-#: :func:`_create_item`. There is no bound on how many items a board creates over its
-#: life: the crew log's ``work`` fold forgets a closed item once
-#: ``work_vocab.WORK_CLOSED_WINDOW`` newer closed items sit behind it, so the fold is
-#: bounded by what is open, not by history. This cache keeps every record; nothing
-#: here removes one.
+#: How many OPEN items one conductor may hold at once: the bound on live fan-out.
+#: :data:`TERMINAL_ITEM_STATES` items do not count, or a queue conductor that closes
+#: one item per ticket would exhaust the cap on its own history. Enforced by
+#: :func:`_create_item`. Lifetime creates are unbounded: the crew log's ``work`` fold
+#: forgets a closed item once ``work_vocab.WORK_CLOSED_WINDOW`` newer closed items sit
+#: behind it. This cache keeps every record.
 MAX_ITEMS_PER_CONDUCTOR = 32
-#: How many OPEN items one GOAL may hold at once when the user set no bound of
-#: their own -- the goal's own fan-out bound, tighter than
-#: :data:`MAX_ITEMS_PER_CONDUCTOR`, which bounds the store. A worker per open item
-#: is a worker running, so this is the bound on parallel work, the one thing the
-#: user asked to be capped in code. Stored per board as
-#: :attr:`ConductorRecord.concurrency_cap`, set with
-#: ``work_ledger_record action=goal concurrency_cap=N`` and enforced by
-#: :func:`_create_item` on a board that has recorded a goal -- a queue board that
-#: never writes one (the pipeline and security conductors) keeps only the open
-#: open bound. Closed items do not count: a create refused here is refused for
-#: what is running, never for what has run.
+#: How many OPEN items one GOAL may hold at once when the user set no bound: the bound
+#: on parallel work, tighter than :data:`MAX_ITEMS_PER_CONDUCTOR`. Stored as
+#: :attr:`ConductorRecord.concurrency_cap` (``work_ledger_record action=goal
+#: concurrency_cap=N``) and enforced by :func:`_create_item` only on a board that
+#: recorded a goal; queue boards that never write one (the pipeline and security
+#: conductors) keep only the store's open bound. Closed items do not count.
 DEFAULT_GOAL_CONCURRENCY_CAP = 6
-#: The highest ``concurrency_cap`` a goal write accepts: a cap past the store's
-#: open bound could never be reached, so it would only hide that bound behind a
-#: different refusal.
+#: The highest ``concurrency_cap`` a goal write accepts: a cap past the store's open
+#: bound could never be reached.
 MAX_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
 #: How many items one GOAL is expected to create, every round and re-plan together,
-#: when the user set no budget of their own. An ADVISORY line, not a bound: a
-#: create past it is admitted, and :attr:`ConductorRecord.cap_exceeded` turns true
-#: so the conductor's round report can say so and the user can decide whether the
-#: goal is spending more than they meant. Nothing refuses on it: a refusal here
-#: would stall a goal whose items land and close quickly on its own finished
-#: history while nothing was running, and the bound on spend is the concurrency
-#: cap above. Stored per board as :attr:`ConductorRecord.item_cap`, set with
-#: ``work_ledger_record action=goal item_cap=N`` and measured against
-#: :attr:`ConductorRecord.goal_items_used`.
+#: when the user set no budget. ADVISORY: a create past it is admitted and
+#: :attr:`ConductorRecord.cap_exceeded` turns true so the round report can say so.
+#: Refusing would stall a goal on its own finished history; the concurrency cap above
+#: bounds spend. Stored as :attr:`ConductorRecord.item_cap` (``work_ledger_record
+#: action=goal item_cap=N``), measured against :attr:`ConductorRecord.goal_items_used`.
 DEFAULT_GOAL_ITEM_CAP = 20
 #: The highest ``item_cap`` a goal write accepts.
 MAX_GOAL_ITEM_CAP = WORK_STORED_ITEM_LIMIT
@@ -174,18 +148,15 @@ MAX_EVENTS_PER_ITEM = 200
 #: first level that may only work -- it may neither open a ledger nor create an item
 #: -- so a conductor dispatched by the last conducting level is refused at its first
 #: ledger call (:func:`child_depth` denies the open), before any ledger exists for it.
-#: ``MAX_DEPTH`` is the DEFAULT of the cap, two levels: root at depth 0 and one
-#: conductor at depth 1. Two rather than three because each level multiplies
-#: sessions -- three levels of three items is twenty-seven -- and because a summary
-#: of summaries of summaries is not evidence any more; that number is a guess
-#: informed by session multiplication, not a measurement (RFC Q5).
+#: The DEFAULT is two levels (root at 0, one conductor at 1) because each level
+#: multiplies sessions (three levels of three items is twenty-seven) and a summary of
+#: summaries stops being evidence; a guess, not a measurement (RFC Q5).
 #:
 #: The cap in force is :func:`work_ledger_rules.max_depth`: this default, or the
 #: ``work_ledger.max_depth`` config key, kept inside
-#: ``[WORK_MAX_DEPTH_MIN, WORK_MAX_DEPTH_MAX]`` (the bounds live in ``work_vocab``). Read ONLY through :func:`may_conduct`,
-#: which every depth guard asks, so the level a dispatch admits, the level a ledger
-#: may open at and the level that may create an item are one level and cannot drift
-#: apart.
+#: ``[WORK_MAX_DEPTH_MIN, WORK_MAX_DEPTH_MAX]`` (bounds in ``work_vocab``). Read ONLY
+#: through :func:`may_conduct`, which every depth guard asks, so dispatch, ledger open
+#: and item create cannot drift apart.
 MAX_DEPTH = WORK_MAX_DEPTH_DEFAULT
 
 MAX_GOAL_CHARS = 2000
@@ -217,10 +188,7 @@ DEFAULT_STALE_WINDOW_SECS = 900.0
 #: that is only slow.
 PENDING_BUDGET_SECS = 24 * 60 * 60.0
 
-# --------------------------------------------------------------------------- #
-# Error codes. Named for the HTTP-facing vocabulary Phase 2 maps them onto, so the
-# mapping is a lookup rather than a re-classification.
-# --------------------------------------------------------------------------- #
+# Error codes. Named for the HTTP-facing vocabulary, so mapping them is a lookup.
 
 CODE_NO_LEDGER = "no_ledger"
 CODE_UNKNOWN_ITEM = "unknown_item"
@@ -244,9 +212,8 @@ class WorkLedgerError(Exception):
     """A store invariant was violated, or a cap refused a write.
 
     Carries ``code`` — one of the ``CODE_*`` constants — and, for a bound that
-    refused, the ``field`` whose cap it was. Phase 2 maps ``code`` onto a status and
-    quotes ``field`` back, so the caller learns WHICH bound it crossed rather than
-    that something was too long.
+    refused, the ``field`` whose cap it was, so the caller learns WHICH bound it
+    crossed.
     """
 
     def __init__(self, message: str, *, code: str, field: str | None = None) -> None:
@@ -255,9 +222,7 @@ class WorkLedgerError(Exception):
         self.field = field
 
 
-# --------------------------------------------------------------------------- #
 # Records
-# --------------------------------------------------------------------------- #
 
 
 @dataclass
@@ -614,9 +579,7 @@ class WorkEvent:
         )
 
 
-# --------------------------------------------------------------------------- #
 # Coercion helpers. None of these raise.
-# --------------------------------------------------------------------------- #
 
 
 def _as_str(value: Any) -> str:

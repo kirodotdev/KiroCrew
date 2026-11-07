@@ -23,8 +23,9 @@ import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
 from kiro_crew.dashboard.chat_utils import (
-    STEER_INTENT_META,
+    COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
     _redact_for_display,
     _redact_meta,
@@ -566,11 +567,11 @@ async def steer_into_running_turn(
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
     if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
-        # codex can drop a steer it already took when a later approval in the turn
-        # is denied. That limit is accepted only for the composer, where the
-        # session's own human watches the turn and can resend; a peer's text
-        # takes the caller's queue path instead.
-        return STEER_UNAVAILABLE
+        # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
+        # A snapshot, not a load: no file read on the loop, no await before registering.
+        live_config = live.snapshot()
+        if live_config is None or not live_config.agent.peer_steer_loss_recovery:
+            return STEER_UNAVAILABLE
     if _engine_has_no_prompt(client):
         # The slot reads running from the moment its turn task exists, which is
         # before the prompt reaches the engine (context build) and after it
@@ -738,7 +739,7 @@ async def steer_into_running_turn(
         # with the attachment lists rather than in the lockstep origin maps,
         # which the persisting tail drops while the steer is still unconsumed: a
         # steer the turn ends before taking keeps its intent past the sub-agent
-        # hold (``STEER_INTENT_META``) instead of parking behind a wave its
+        # hold (``COMPOSER_SEND_META``) instead of parking behind a wave its
         # sender chose not to wait for.
         slot._steer_act_now.add(message)
     if decision_strip:
@@ -1251,7 +1252,7 @@ def queue_for_next_turn(
     channel_recipient: dict[str, Any] | None = None,
     quote: dict[str, Any] | None = None,
     commands_off: bool = False,
-    steer_intent: bool = False,
+    composer_send: bool = False,
     author: dict[str, Any] | None = None,
     admission: dict[str, Any] | None = None,
     banner: str = "",
@@ -1261,10 +1262,9 @@ def queue_for_next_turn(
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
 
-    *steer_intent* stamps :data:`STEER_INTENT_META`: the session's own human asked
-    this send to act now and the running turn could not take it, so the sub-agent
-    hold releases it at the turn's end rather than parking it behind the wave.
-    Only the composer's steer fallback passes it.
+    *composer_send* stamps :data:`COMPOSER_SEND_META`: the session's own human
+    typed this into the composer, so the sub-agent hold releases it at the turn's
+    end rather than parking it behind the wave. Only the composer passes it.
 
     *admission* supplies containment captured before an asynchronous queue path
     began. When absent, containment is captured here at enqueue like every direct
@@ -1360,8 +1360,8 @@ def queue_for_next_turn(
         meta["decisions_strip"] = decision_strip
     if commands_off:
         meta[COMMANDS_OFF_META_KEY] = True
-    if steer_intent:
-        meta[STEER_INTENT_META] = True
+    if composer_send:
+        meta[COMPOSER_SEND_META] = True
     if author:
         # *author* is the server-derived Shared Crew author of a person's send
         # (``attribution.author_meta``). The drain unions it onto the row and

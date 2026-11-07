@@ -203,11 +203,19 @@ brief is one fixed line ("Nothing new since HH:MM.", with the date when it is
 not today), posted as a plain message without a card or status chip, and no
 model call is made. The line claims nothing about what waits:
 a question asked in prose before the owner left is the message right above it.
-Otherwise the slot's `preparing` flag shows "Preparing your catch-up…" in the
-chat's working indicator while the gateway reads its inputs and writes the
-brief (the wake turn below, else one tool-free background model call); the
-finished message posts while the flag is
-still up, so it replaces the indicator in place. The claim and every staleness
+Otherwise the slot's `preparing` flag shows in the chat's working indicator
+while the gateway reads its inputs and writes the brief (the wake turn below,
+else one tool-free background model call); the finished message posts while the
+flag is still up, so it replaces the indicator in place. The flag carries a
+caption the gateway builds (`warm_task_brief_checking.py`) from the inputs the
+brief already holds: the non-zero counts of pull requests it read on GitHub (a
+failed read is not counted), the brief's work items (open ones, plus any that closed
+while the owner was away) and running worker chats, then the goal, redacted and
+cut to 60 characters ("Checking 2 PRs on GitHub, 3 tasks for “…”."), or the goal
+alone when every count is zero. The slots frame sends it as `preparing_text`
+with the language it is written in, `preparing_lang`; a client shows it only
+when that is its UI language, and its own translated "Preparing your catch-up…"
+otherwise. The claim and every staleness
 check use the first read's fingerprint; what the brief says comes from the
 re-read made once the claim is on disk, so a worker report that lands in
 between is not missed. Just before posting, the gateway re-reads the "Waiting on
@@ -341,9 +349,18 @@ the verified set (a live read, the snapshot or the owner's request, read by
 Before posting, the gateway runs the RFC's section 3.9.6 output check over
 every model field, the whole body included: every commit SHA must appear in
 the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
-"as of" time. On a
+"as of" time. An unbacked SHA or time alone keeps the brief: each one gets
+the `_UNVERIFIED_TEXT` tag for the owner's language right after it in every
+model field, and the secret, PR and SHA/time scans run again on the tagged
+strings; a wake check's `label` and `result` are tagged like model fields.
+A value the tag cannot sit beside is still a miss: one without whitespace
+before it and whitespace or sentence punctuation after it (split by markup,
+in inline code or a link, or inside `17:05:30`), any value in a body that
+holds a fenced block or a widget, or one whose tagged field would pass what
+the card keeps (240 UTF-16 units a field, 6,000 characters the body). On any other
 miss every model field is dropped and the card posts with the gateway's
-waiting cards and the fixed failure line as its headline. The body may carry one
+waiting cards and the fixed failure line as its headline. Both paths store
+`grounding_miss` on the row. The body may carry one
 picture the model chooses when it helps the owner act: a mermaid block, a
 markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
 bare "N of M done" line, links and images. A separate `widget` field the model
@@ -773,8 +790,8 @@ conversation's own text approvals, which the card trust already covers.
 `trust_carries` is `_trust` that is NOT card-scoped: `session_create`, forks and the
 workflow ceiling read it, so the sessions a card-trusted worker opens are born
 asking, on the same card. A revoke clears `_trust` and writes `""`, so a subagent
-spawned after it asks again; one already running keeps the policy it was given at
-spawn (`subagent_manager.turn_session`).
+spawned after it asks again, and one already running loses its `parent_policy=auto`
+grant on its next tool request ([subagent](subagent.md) § Revoked parent trust).
 Trust is in memory only and never persisted. A pending
 approval's slot row carries `trust_grantable` (the slot approve route's own proof
 that Trust may be offered) and, for a coordinator request such as a spawn,
@@ -839,10 +856,22 @@ passes the immutable template explicitly while preserving the canonical member,
 member memory binding, history key, caller model and approval policy. An explicit
 or resumed cwd wins; otherwise the member's configured workspace is used. A
 resumed cwd is the one the session map recorded, kept only while it is still a
-directory and is not inside an earlier process's scratch tree: the sandbox hides
-every scratch tree but the spawn's own (and a `shared_scratch` tree it is handed),
-so a child started there could not read its working directory. With
-`agent.sandbox` off after the governance floor nothing is hidden and the cwd is kept
+directory. A resumed cwd, or an explicit one from a caller that passes
+`fallback_hidden_cwd=True` (the dashboard chat's turn and eager start, which show the
+notice), is dropped when it is inside an earlier process's scratch tree; any other
+caller keeps its explicit cwd, so a sub-agent's start there fails loudly instead of
+running in another repository: the sandbox hides every scratch tree but the spawn's own
+(and a `shared_scratch` tree it is handed), so a child started there could not read
+its working directory and every MCP server it launched failed to spawn. The session
+then starts in its default directory, and the provider carries a
+`hidden_scratch_cwd_skipped` `startup_notice`. The chat's stored folder is never
+changed, so each fresh start of that chat falls back again; the dashboard shows the
+notice, translated, at most once per chat per gateway run (an in-memory flag on the
+slot, `_hidden_scratch_notice_shown`), and the turn describes the folder the session
+runs in (`chat_turn.turn_spec_hooks._fallback_turn_project`).
+With `agent.sandbox` off after the governance floor nothing is hidden and the cwd is
+kept, and so it is on native Windows, where a Kiro spawn is delegated to Kiro's own
+sandbox and no scratch-root mask is applied
 (`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
 cwd may name a different project than the one the capabilities were saved in
 (a folder's project directory, for example). Startup is refused with
@@ -1213,10 +1242,10 @@ to the conversation the next workflow reuse ends.
   later tick. Only a process running the session cleanup loop sweeps, so a standalone
   `kirocrew run` that ends before its entries are due leaves them for the next process that
   runs the loop, such as the gateway.
-- **Starting the loop.** The cleanup loop otherwise starts only with the first ordinary
-  allocation (`get_or_create`). `open_task_session` starts it when it sets a delay, and
-  `SessionManager.start_pool` starts it when entries wait from an earlier process. A workflow
-  worker's session comes from `get_or_create`, which starts it already.
+- **Starting the loop.** `SessionManager.start_pool` always starts the cleanup loop, so a
+  gateway that never allocates still runs the boot sandbox reclaim, the periodic sweeps and
+  this hook. `get_or_create`, and `open_task_session` when it sets a delay, start it again; the start is
+  idempotent. A workflow worker's session comes from `get_or_create`, which starts it.
 - **Protection.** An entry has the host delete the record it names, so
   `released-sessions` is a data-home leaf written by Crew's own processes outside the
   sandbox (the gateway, or a standalone `kirocrew run`), registered where
@@ -2840,6 +2869,14 @@ answer); `queued`, the accepted spawns with no run yet (`queued_runs_async`) as
 unavailable; and `deliveries_inflight`, the results still being delivered to the
 slot. Ids and states only: no task text, agent name or result. The fields are read
 after the verdict, and a read that fails costs its own field, never the refusal.
+Two readers show them. The dashboard (`api/apiError.slotAttachedDetail`) puts one
+line naming each run and queued spawn as `id (state)` under the refusal's message,
+through `friendlyErrText` for every surface that shows it and beside the Reload
+alert's own copy, plus a could-not-check line when `runs` is `null` or
+`queued_partial` is true.
+Session-control's `target_busy` refusals (`session_reload`, `session_set_model`) and
+its `session_retry` / `session_continue` refusal append the same list to their
+message (`turn_control._name_attached`), so a driving agent sees what to stop.
 
 Eight properties are load-bearing on this boundary, and each fails toward the
 permissive answer if dropped. `edit-resend` carries all eight; the bullets name
@@ -3127,8 +3164,16 @@ envelope on a cold session.
 byte-order mark reads normally. A file that is not a JSON object starts the map
 empty, and the first write moves it to `session_map.json.corrupt-<utc>` before
 landing; a failed move fails that write and the state stays owed. A file whose
-read raises `OSError` is left alone, and every write raises until a restart reads
-it (`session_map_store._load`, `_write_payload`).
+read raises `OSError` is left alone, and every write raises until an async
+flush re-reads it or a restart does (`session_map_store._load`, `_write_payload`).
+The deferred flush and `aflush` all wait for one re-read, run in a worker thread
+and never under `_MAP_LOCK`; inline writes keep raising until it has run. It
+adopts the file beside the keys written since only when the file holds none of
+them and no entry in memory binds a Slack thread or a mirror, whose one-owner
+checks could not see the file (`_reread_after_failed_load`). A key removed in
+memory since then comes back from the file, as it would after a restart.
+Otherwise, or when the re-read fails or does not parse, writes raise until a
+restart reads the file.
 
 **Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
 itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
@@ -4327,19 +4372,26 @@ so absence clears it.
   rejected before a command outcome, including validation and idle-dispatch
   race refusals, are recorded by the generic mutating-API audit instead.
 
-- **A steer that missed its turn is not held behind sub-agents.** The sub-agent
-  hold (`_dequeue_next_system_message`) drains system injections and keeps plain
-  user prompts parked until the wave ends. A composer steer reaches the queue
-  only when the running turn could not take it: the steer was unavailable
-  (`api_chat`'s fall-through to `queue_for_next_turn(steer_intent=True)`), or
-  the turn ended before consuming it (`_requeue_unconsumed_steers`, from the
-  slot's `_steer_act_now` set). Either entry carries `meta.steer_intent`, and
+- **The session's own human is never held behind sub-agents.** The sub-agent
+  hold (`_dequeue_next_system_message`) drains system injections and keeps
+  other user prompts parked until the wave ends. A composer send is not one of
+  them. A composer send is one `token_auth` marked `is_dashboard_user` (a
+  validated dashboard token with no app claim); a loopback internal-secret
+  caller (an MCP tool, a cron script's `send_to_session`) never is. On
+  an idle slot whose children are still running, `api_chat` holds every other
+  send; the composer's starts a turn at once, whatever the busy-send mode. On a running slot, every composer send that reaches the queue carries
+  `meta.composer_send`: a Queue choice or an `auto` send Jev decided to queue
+  (`queue_for_next_turn(composer_send=True)`), a steer that was unavailable
+  (the same fall-through), or a steer the turn ended before consuming
+  (`_requeue_unconsumed_steers`, from the slot's `_steer_act_now` set).
   `releases_past_subagent_hold` lets it drain at that turn's end like an
-  injection: its sender chose Steer, not Queue. Only the session's own human
-  typing in the composer gets the mark. A peer's `session_send` steer, a
-  channel steer, an app send and an `auto` send Jev decided to queue all wait
-  for the wave. The mark decides ordering only, never authority, and the drain
-  pops it so it never reaches the row's meta.
+  injection, because Queue means after this turn, not after the background
+  work. A card the turn-end read hands the floor (`required_queue_id`) runs
+  under the hold when it carries the mark and stays queued otherwise. A peer's
+  `session_send`, a channel message, an app send and an internal-secret send
+  all wait for the wave. The
+  mark decides ordering only, never authority, and the drain pops it so it
+  never reaches the row's meta.
 - **Only a plain user prompt is durable.** An entry carrying a `kind` is an
   injection whose producer is gone (a cron notification names an event, and a
   restart is not that event happening again); an entry carrying a `payload` is a
@@ -4396,7 +4448,15 @@ so absence clears it.
 - **Restored entries are handed back as queue CARDS, not dispatched.** Nothing
   drains an idle slot on boot, so the user sends, edits or deletes them. This is
   the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
-  turn may have run un-persisted must never be auto-resent.
+  turn may have run un-persisted must never be auto-resent. Resume on an
+  interrupted slot runs only that turn and leaves the cards waiting, so while the
+  main chat or a split pane offers Resume over restored cards, the composer
+  placeholder says how many wait to be sent (`turn_interrupted_restored_queue`,
+  which first points to the collapsed queue strip) or, for one card,
+  `turn_interrupted_restored_card`. The choice is on the count, not the plural
+  category, because one card shows its Send now button without opening the stack.
+  A crewmate's chat (no cards, only bubbles) and the crew window (read-only
+  cards) keep the plain Resume hint, since neither lets the user send a card.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a

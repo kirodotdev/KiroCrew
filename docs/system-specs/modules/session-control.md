@@ -53,7 +53,17 @@ plus a same-key reopen); nothing is appended and a retry acts on the current
 session. Release waives the self-target refusal (`allow_self=True`), since a
 session releasing itself reaches no peer, and refuses 409 `already_root` or 403
 `not_parent`. Both wait until the tree append is durable before answering, so a
-takeover that never reached the disk is refused rather than reported. Neither
+takeover that never reached the disk is refused rather than reported. Once it
+lands, each writes one display-only `notice` row in the target's transcript, as
+a handoff does, after the lock and the fence are released: adopt names the
+caller and the parent it replaced (that clause omitted when there was no other
+parent), release names the parent it left. A verb that answered
+`tree_write_pending` still writes the row, in the background, if that append
+lands later. While the target runs a turn the row waits for that turn to end,
+since a row under its open tool or chunk rows would stop the turn's backward
+scans. The row is skipped when the target closed or another session took
+its key first, and when a session releases itself (it is mid-turn on that call,
+and its tool row records it). Neither
 verb is in the conductor or member grant sets (`_CONDUCTOR_DASHBOARD_GRANTS`,
 `_MEMBER_DASHBOARD_GRANTS`), and both are in `CHANNEL_AGENT_BLOCKED_TOOLS`.
 
@@ -233,7 +243,15 @@ quality instead — that blames a read which completed and, since no source omit
 anything, reports nothing cut while rows are missing. The ownership fence applies to all rows and not merely to
 the verb: a history candidate is admitted only when its persisted `created_by`
 exactly equals the caller, and the workspace boundary is re-applied before its
-title is exposed. A session created by another caller is absent.
+title is exposed. A session created by another caller is absent. For an
+ownership-fenced caller the persisted field is only a claim (a sandboxed shell can
+write the line), so the candidate is kept on the creation-record terms
+`session_revive` applies: only when the crew log's creation record
+(`_creation_parent`) names the caller. A record naming another creator drops it;
+no record to check it against (the crew log off or unseeded, or a session it does
+not cover) drops it and makes `history` `incomplete`, because the caller may have
+created it (#14843). The person's own tab is not fenced and lists the claim as
+before.
 
 **Delivery has two authorization moments, and both are enforced.** An idle target
 runs the prompt immediately, under the authorization that admitted it. A busy
@@ -295,8 +313,16 @@ authorization. The recipient is resolved by the same check as the drop notice
 self-send, a closed sender, and a reused key held by a different tab. The hard
 stop reports exactly the entries it takes off the queue, before the settle can
 suspend; a send that lands during the settle stays queued and is not reported,
-because it will still run. Best-effort here too: the discard
-was already decided by the person or the stop.
+because it will still run. The same hard stop drops the turn's pending steers.
+While `agent.peer_steer_loss_recovery` is on, the sender of a pending peer steer
+that answered `steered` or requeued gets `SEND_DISCARD_HARD_STOP_STEER`: the
+notice says the steer may not have run, since the turn may already have read it,
+and that it will not be queued to run later. That covers a steer the key
+admitted, which waits for its turn's clean end, and a peer's kiro-cli or KAS
+steer its turn has not read yet. A steer still in its RPC is skipped, because it
+answers unavailable and its sender queues it. With the key off a hard stop drops
+every pending steer without a notice. Best-effort here too: the discard was
+already decided by the person or the stop.
 
 **The stamp names a session, not a key, and does not survive a restart.** It
 carries the sender's `_tab_id` beside its slot key and is omitted unless both are
@@ -333,6 +359,14 @@ same path the dashboard composer's mid-turn steer uses), so a caller watching a
 worker go the wrong way can say so while the work is still in flight rather than
 after it lands. The result names the outcome: `steered` for an injection,
 `started` for a turn begun, and neither for a queued message.
+
+A harness that can drop a steer it accepted (`steer_needs_loss_recovery`:
+codex, claude, goose, pi and opencode) takes a peer's steer only when
+`agent.peer_steer_loss_recovery` is on; otherwise the steer arm answers
+unavailable and the message queues. With the key on, the peer's steer is held
+as the composer's is: it counts as delivered only when its turn ends cleanly,
+and the turn's teardown otherwise requeues it as a queue card that runs as the
+next turn, so it can run twice.
 
 Two properties keep the steer arm from being a hole in the queued arm's checks.
 The delivery happens NOW rather than later, which removes the queue's waiting
@@ -946,9 +980,9 @@ posture from the Bot's record instead: the Profile Permissions
 thread itself holds at that moment. It is read once the child's record is on
 disk (`seed_new_worker`), so a Profile change made during the create reaches it.
 No session-store write happens at creation: the child has no ACP session yet
-(`set_approval_policy` no-ops on a missing session), and `chat_runner` already
-derives the persistable policy from `_trust` on every session create/resume, so
-the subagent spawn gate sees it from the child's first turn.
+(`set_approval_policy` stores no policy on a missing session), and `chat_runner`
+already derives the persistable policy from `_trust` on every session
+create/resume, so the subagent spawn gate sees it from the child's first turn.
 
 Two grants are excluded, and the exclusions are load-bearing:
 
@@ -2687,6 +2721,17 @@ itself is a plain `agent.*` bool with no catalog entry, and a scope would need a
 new governance enforcement seam rather than a data-only append, so it is left to a
 follow-up.
 
+`agent.peer_steer_loss_recovery` (bool, default **false**). Whether a peer's steer
+may cut into a turn on a harness whose `steer_needs_loss_recovery` is true; the
+`steer: true` paragraph above says what changes when it does. `steer_into_running_turn`
+reads it from the config watcher's snapshot (`config.live.snapshot()`), never from
+disk, because the read runs on the event loop and before the steer registers. A
+change applies once the watcher has reloaded the file, without a restart; with no
+snapshot yet the steer is refused as with the key off. A composer steer, or a steer
+into kiro-cli or KAS, never reads the key at admission. The hard stop reads the same
+snapshot to decide its steer notice, so while the key is on that notice reaches a
+peer's kiro-cli or KAS steer too.
+
 ## Module layout
 
 `kiro_crew.dashboard.session_control` stays the only import path and the only patch
@@ -2720,7 +2765,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
-  `session_adopt` and `session_release`, and the tree-mutation lock and append fence.
+  `session_adopt` and `session_release`, the tree-mutation lock and append fence, and
+  the transcript notice adopt, release and handoff write.
 - `src/kiro_crew/dashboard/session_control_parts/session_handoff.py`: `session_handoff`
   and the hand-back when a manager closes.
 - `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and

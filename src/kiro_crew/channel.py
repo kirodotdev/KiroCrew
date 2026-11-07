@@ -49,6 +49,7 @@ from kiro_crew.llm_helpers import (
     unfinished_turn_error,
 )
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
+from kiro_crew.safety_override import safety_override
 from kiro_crew.trust_patterns import extract_bash_command
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,11 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
 # is what refuses the call -- approving the prompt only means the refusal arrives
 # one step later, and the interactive guard's job is to beat an AUTO-approval,
 # which the dispatch guard beats as well.
-CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS: dict[str, tuple[tuple[str, str], ...]] = {
-    "ops_mission_control_api": (("POST", "/rotation/arm"),),
-}
+CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATION: tuple[str, str, str] = (
+    "ops_mission_control_api",
+    "POST",
+    "/rotation/arm",
+)
 
 # Direct-to-user messaging tools a channel agent may never invoke — channel
 # agents communicate exclusively through channel posts.  send_notification
@@ -164,6 +167,7 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS: dict[str, tuple[tuple[str, str], ...]
 CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "send_message",
     "send_notification",
+    "dismiss_notification",
     "session_stop",
     # Ending another session's wait moves that turn forward on a schedule the
     # channel's thread text would then be choosing; same containment reason.
@@ -193,6 +197,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # A digest of the same transcript `session_read_message` returns, so it is
     # blocked for the same exfiltration reason.
     "session_summary",
+    # Reads another tracked channel's messages, which a channel agent would relay
+    # into a thread other people read; same exfiltration reason.
+    "read_slack_history",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's
@@ -1567,12 +1574,12 @@ async def _stream_task(
                     )
                     await client.reject_tool(event.request_id)
                     continue
-                # YOLO mode (global) or channel trust — auto-approve
-                if (is_yolo and is_yolo()) or channel.trusted:
+                # YOLO mode (global) or channel trust — auto-approve. A
+                # ``gateway --approval yolo`` grant is for dashboard chats only.
+                _yolo = bool(is_yolo and is_yolo()) and safety_override().is_cli_launch is not True
+                if _yolo or channel.trusted:
                     approval_outcome = (
-                        "auto_approved_yolo"
-                        if (is_yolo and is_yolo())
-                        else "auto_approved_channel_trust"
+                        "auto_approved_yolo" if _yolo else "auto_approved_channel_trust"
                     )
                     # Audit BEFORE the wire call: approve_tool can raise, and a
                     # decision that reached the transport must not vanish from

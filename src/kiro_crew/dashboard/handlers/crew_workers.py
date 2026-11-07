@@ -155,25 +155,37 @@ GROUP_DONE = "done"
 
 class LedgerFacts(NamedTuple):
     """What a worker's ledger item on its root says: id, the card's line, and the
-    item's own progress (``done``, ``with_conductor`` or ``""`` when it says neither)."""
+    item's own progress (``done``, ``with_conductor`` or ``""`` when it says neither).
+
+    An item placed on a remote crew also names that crew's instance id (``crew``),
+    the ledger it sits on (``board``), its redacted title (it has no local session
+    to read a title from) and the work item itself (``work_item``), which the
+    shared remote readers take."""
 
     item: str = ""
     line: str = ""
     progress: str = ""
+    crew: str = ""
+    board: str = ""
+    title: str = ""
+    work_item: Any = None
 
 
 #: Ledger facts for a worker with no item on its root's ledger.
 NO_LEDGER = LedgerFacts()
 
 
-def _group(status: str, progress: str = "") -> str:
+def _group(status: str, progress: str = "", looping: bool = False) -> str:
     """The side panel group from real signals only.
 
     A tool approval is ``approval``; a running turn is ``working``; a closed tab, a
     closed ledger item, or a worker that reported ``done`` is ``done``; a worker
     that reported ``blocked`` or ``question`` (whatever its ``reason``), or one with
-    an open question card, waits on its conductor: ``with_conductor``. Anything else
-    is idle, ``waiting``: having replied is not having finished.
+    an open question card, waits on its conductor: ``with_conductor``. An idle
+    worker whose own loop will wake it (*looping*, ``ledger_wake.worker_looping``:
+    a bounded ``monitor_start`` loop waiting on CI) is still ``working``: the flow
+    runs, only the result is outside. Anything else is idle, ``waiting``: having
+    replied is not having finished.
     """
     if status == STATUS_NEEDS_APPROVAL:
         return GROUP_APPROVAL
@@ -183,7 +195,17 @@ def _group(status: str, progress: str = "") -> str:
         return GROUP_DONE
     if status == STATUS_ASKING or progress == GROUP_WITH_CONDUCTOR:
         return GROUP_WITH_CONDUCTOR
+    if looping:
+        return GROUP_WORKING
     return GROUP_WAITING
+
+
+def _looping(key: str) -> bool:
+    """Whether *key*'s session holds a loop that will wake it, as the ledger reads it."""
+    from kiro_crew import ledger_wake
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_looping(get_instance(), key)
 
 
 #: Report statuses that mean the worker waits on its conductor.
@@ -504,22 +526,45 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
     worker bound by another worker's ledger shows no item. A root that owns no
     ledger has none to show.
     """
+    from kiro_crew import session_ledger
     from kiro_crew.dashboard.handlers import work_ledger_board
 
+    def redacted(text: str) -> str:
+        value = work_ledger_board._redact_deep({"line": text}).get("line")
+        return _one_line(value if isinstance(value, str) else "")
+
     out: dict[str, LedgerFacts] = {}
-    for worker, item in _ledger_work_items(root).items():
-        line = work_ledger_board._redact_deep({"line": item.summary or item.title}).get("line")
+    remote: list[Any] = []
+    for worker, item in _ledger_work_items(root, remote).items():
         out[worker] = LedgerFacts(
-            item.item_id, _one_line(line if isinstance(line, str) else ""), _progress_of(item)
+            item.item_id, redacted(item.summary or item.title), _progress_of(item)
+        )
+    for item in remote:
+        # Keyed by the item, never by the peer's slot key: that key names no
+        # session here, and a row the page could switch to must be a local one.
+        out[REMOTE_KEY_PREFIX + item.item_id] = LedgerFacts(
+            item.item_id,
+            redacted(item.summary or item.title),
+            _progress_of(item),
+            crew=str(item.worker_instance_id),
+            board=session_ledger.ledger_key(root),
+            title=redacted(item.title),
+            work_item=item,
         )
     return out
 
 
-def _ledger_work_items(root: str) -> dict[str, Any]:
+#: The key a remote crew's worker row carries: its ledger item, never a slot key.
+REMOTE_KEY_PREFIX = "remote:"
+
+
+def _ledger_work_items(root: str, remote: list[Any] | None = None) -> dict[str, Any]:
     """Worker slot key -> its work item on *root*'s own ledger, unredacted. BLOCKING.
 
     The item :func:`_ledger_items` summarizes: a worker with an old closed item and
     a new open one is the open one's. Read through the board's seam, as there.
+    Items placed on a remote crew are left out of the answer and appended to
+    *remote* when it is given.
     """
     from kiro_crew import session_ledger
     from kiro_crew.dashboard.handlers import work_ledger_board
@@ -537,6 +582,8 @@ def _ledger_work_items(root: str) -> dict[str, Any]:
         # An item bound on a PEER crew names that crew's slot key, which can equal
         # a local one: it is never a local session's item.
         if getattr(item, "worker_instance_id", None):
+            if remote is not None and item.item_id:
+                remote.append(item)
             continue
         worker = session_ledger.ledger_key(item.worker_session_key or "")
         if worker and item.item_id:
@@ -631,6 +678,43 @@ def _worker_line(row: Mapping[str, Any], ledger_line: str, slot: Any = None) -> 
     return _one_line(last)
 
 
+def _remote_facts(state: Any, remote: list[tuple[str, LedgerFacts]]) -> dict[str, tuple[str, str]]:
+    """Row key -> (crew display name, status) for remote rows. BLOCKING.
+
+    The name is the instances registry's, else the instance id. The status comes
+    from the readers the ledger read uses for the same item: liveness from
+    ``work_ledger.remote_liveness`` and the pending approval from
+    ``remote_ingest.remote_row_fields``. A closed item is ``closed`` whatever was
+    last stored: ingest pulls open items only. No peer is called.
+    """
+    from kiro_crew import work_ledger
+    from kiro_crew.dashboard.handlers.remote_ingest import remote_row_fields
+    from kiro_crew.dashboard.handlers_instances_gate import _registry
+
+    try:
+        names = {str(i.id): str(i.name or "") for i in _registry(state).list()}
+    except Exception:
+        logger.debug("crew workers: instances registry unreadable", exc_info=True)
+        names = {}
+    out: dict[str, tuple[str, str]] = {}
+    for key, facts in remote:
+        item = facts.work_item
+        running, closed = work_ledger.remote_liveness(facts.board, item) or (False, False)
+        try:
+            pending = bool(remote_row_fields(facts.board, item).get("pending_approval"))
+        except Exception:
+            logger.debug("crew workers: no remote state for %s", facts.item, exc_info=True)
+            pending = False
+        if item.is_terminal or closed:
+            status = STATUS_CLOSED
+        elif pending:
+            status = STATUS_NEEDS_APPROVAL
+        else:
+            status = STATUS_WORKING if running else STATUS_IDLE
+        out[key] = (names.get(facts.crew) or facts.crew, status)
+    return out
+
+
 async def api_crew_workers(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot}/crew-workers -- one Crew Mode root's workers."""
     refused = await _gate(request, "crew_mode.workers")
@@ -675,7 +759,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "title": str(row.get("title") or ""),
                 "agent": str(row.get("agent") or ""),
                 "status": status,
-                "group": _group(status, facts.progress),
+                "group": _group(status, facts.progress, status == STATUS_IDLE and _looping(key)),
                 "last_activity": _last_activity(row),
                 "ledger_item": item,
                 "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
@@ -704,6 +788,28 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "dispatched_by": parents.get(key, "") or "",
             }
         )
+    remote = [(key, facts) for key, facts in items.items() if facts.crew]
+    if remote and kind != ROOT_KIND_MATE:
+        where = await asyncio.to_thread(_remote_facts, state, remote)
+        for key, facts in remote:
+            name, status = where[key]
+            workers.append(
+                {
+                    "key": key,
+                    "title": facts.title,
+                    "agent": "",
+                    "status": status,
+                    "group": _group(status, facts.progress),
+                    "last_activity": "",
+                    "ledger_item": facts.item,
+                    "summary": facts.line,
+                    "created_by": root,
+                    "dispatched_by": root,
+                    # Where it runs. Its key names no local session, so the page
+                    # offers no open, steer, stop or approval on this row.
+                    "remote_crew": name,
+                }
+            )
     out: dict[str, Any] = {"root": root, "workers": workers}
     from kiro_crew.dashboard.handlers.crew_pause import pause_view
 
@@ -1019,7 +1125,13 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         _crew_ledger_items, root, [*(str(lane["key"]) for lane in lanes), *closed]
     )
     for lane in lanes:
-        lane["group"] = _group(lane["status"], items.get(lane["key"], NO_LEDGER).progress)
+        lane["group"] = _group(
+            lane["status"],
+            items.get(lane["key"], NO_LEDGER).progress,
+            lane["role"] == "worker"
+            and lane["status"] == STATUS_IDLE
+            and _looping(str(lane["key"])),
+        )
 
     def closed_lanes(keys: list[str], role: str) -> list[dict[str, Any]]:
         from kiro_crew.dashboard.chat_utils_display import _redact_for_display
@@ -1341,13 +1453,13 @@ async def _deliver_as_person(
                 "requeued": True,
             }
     queue_id = queue_for_next_turn(
-        state, slot, message, directive_user_origin=True, steer_intent=True
+        state, slot, message, directive_user_origin=True, composer_send=True
     )
     started = False
     if not slot.running:
-        # The composer's own default: with the worker's sub-agents still running the
-        # drain holds the text until they finish (``queue_drain``), and the reply
-        # says it is queued rather than started.
+        # The composer's own rule: the person's text is never held behind the
+        # worker's sub-agents (``COMPOSER_SEND_META``), so the drain starts it
+        # now; only a slot that cannot start leaves the reply saying queued.
         await _start_next_queued_turn(state, slot)
         # Started means THIS entry left the queue: an earlier entry the drain took
         # first leaves this one queued, to be recorded when it is delivered.

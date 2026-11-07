@@ -2941,6 +2941,8 @@ jobs:
           # are still swept, so stranded-run cleanup is unchanged.
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
             enc="$(jq -rn '"GPT 6.1 Review" | @uri')"
+            # No `filter=all` needed: the default can drop only completed rows,
+            # never a non-completed one (measured in #10116).
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]

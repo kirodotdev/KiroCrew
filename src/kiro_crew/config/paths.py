@@ -38,31 +38,23 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# KiroCrew's data root nests UNDER kiro-cli's own home ``~/.kiro/`` (Labs product
-# decision: all Kiro-family apps share the ``~/.kiro/`` base so a user has a
-# single place to secure). ``config_dir()`` therefore resolves to
-# ``~/.kiro/crew`` by default. ``CONFIG_DIR_NAME`` is the segment(s) appended to
-# ``~/`` — kept as a POSIX-style relative literal so downstream string checks
-# (e.g. the security keystone) can match it uniformly.
+# The data root nests under kiro-cli's own home ``~/.kiro/`` so all Kiro-family
+# apps share one base for a user to secure; ``config_dir()`` defaults to
+# ``~/.kiro/crew``. ``CONFIG_DIR_NAME`` stays a POSIX-style relative literal so
+# string checks (e.g. the security keystone) can match it uniformly.
 KIRO_BASE_DIR_NAME = ".kiro"
 CONFIG_DIR_LEAF = "crew"
 CONFIG_DIR_NAME = f"{KIRO_BASE_DIR_NAME}/{CONFIG_DIR_LEAF}"  # ".kiro/crew"
 
-# The pre-move top-level home (``~/.kirocrew``). Retained as a constant (not an
-# inline literal) so the security keystone, autonudge, seed and the other
-# legacy-path consumers reference the same source of truth.
+# The pre-move top-level home (``~/.kirocrew``). One constant so the security
+# keystone, autonudge, seed and other legacy-path readers share it.
 LEGACY_CONFIG_DIR_NAME = ".kirocrew"
 
-# Recovery-pointer breadcrumb written at the TOP-LEVEL home (``~/.kirocrew.breadcrumb``),
-# deliberately OUTSIDE ``~/.kiro/``. The data home now nests under kiro-cli's
-# ``~/.kiro/`` base, so a hypothetical Kiro-family uninstaller that wipes
-# ``~/.kiro/`` would take Kiro Crew's data with it. This tiny, non-secret
-# pointer survives such a wipe (it lives beside ``~/.kiro``, not inside it) and
-# records where the data
-# home is, so a user/support script can find any surviving data or understand
-# what was lost. It is NOT a backup — just a durable signpost. Only written on
-# the default (non-override) path; a ``KIROCREW_HOME`` override is the user's own chosen
-# location and carries no ``~/.kiro/`` wipe risk.
+# Recovery-pointer breadcrumb at ``~/.kirocrew.breadcrumb``, deliberately OUTSIDE
+# ``~/.kiro/``: an uninstaller that wipes ``~/.kiro/`` would take the data home
+# with it, and this non-secret pointer survives to say where the data was. Not a
+# backup. Written on the default path only; a ``KIROCREW_HOME`` override is the
+# user's own location and has no ``~/.kiro/`` wipe risk.
 RECOVERY_BREADCRUMB_NAME = ".kirocrew.breadcrumb"
 
 OUTBOX_DIR_NAME = "outbox"
@@ -79,18 +71,13 @@ _WORKSPACE_DIR_NAME = "kirocrew-workspace"
 _resolved_home: Path | None = None
 
 # Memo for ``config_dir()``: ``(raw KIROCREW_HOME, the home the entry was built
-# from, result)``. ``config_dir()`` is called from 323 sites and each uncached
-# call does a ``Path.resolve()`` + ``mkdir`` and, on the default path, a
-# breadcrumb read/write — measured 94.9us per call. Keying on the RAW env value
-# keeps the override honoured the moment it changes (``KIROCREW_HOME`` is
-# repointed per test by the suite's isolation fixture, and by pods/worktrees at
-# runtime), and keying on the resolved home by identity ties the default-path
-# entry to the resolution cache above — so clearing ``_resolved_home`` (which
-# the test suite does per test) invalidates this memo too instead of pinning a
-# stale home. For that invalidation to hold, the default path stores the home it
-# RETURNED rather than a re-read of the global; see ``config_dir``. In a real
-# process both keys are stable after the first call, which is what makes the
-# breadcrumb write effectively once-per-process rather than once-per-call.
+# from, result)``. ``config_dir()`` is hot, and an uncached call does a
+# ``Path.resolve()``, a ``mkdir`` and, on the default path, a breadcrumb
+# read/write. Keying on the RAW env value honours an override the moment it
+# changes (tests, pods and worktrees repoint ``KIROCREW_HOME``); keying on the
+# resolved home by identity means clearing ``_resolved_home`` invalidates this
+# memo too. In a real process both keys are stable after the first call, so the
+# breadcrumb write happens once per process.
 _config_dir_memo: tuple[str | None, Path | None, Path] | None = None
 
 #: The mode :func:`config_dir` creates the data home with. ``0o700`` on POSIX.
@@ -207,17 +194,10 @@ _UNSAFE_HOME_PREFIXES = frozenset(
 
 # macOS resolves ``/etc`` to ``/private/etc``, so an override spelled ``/etc``
 # reaches the guard already resolved and would otherwise miss the check above.
-#
-# Matched as a THREE-component prefix, so the whole ``/private/etc`` TREE is
-# refused — not just the bare directory. ``("/", "etc")`` above is a prefix on
-# Linux and refuses ``/etc/anything``; an exact match here would have left
-# ``KIROCREW_HOME=/etc/kirocrew`` accepted on macOS only, so the two platforms
-# would disagree about the same path.
-#
-# Deliberately scoped to ``/private/etc`` rather than all of ``/private``:
-# ``tempfile.gettempdir()`` resolves under ``/private/var/folders/<...>/T`` on
-# macOS, so refusing that tree would reject every legitimate temp-dir data home
-# that tests, pods and worktree previews rely on.
+# A THREE-component prefix, so the whole ``/private/etc`` tree is refused, the
+# same as ``/etc/anything`` on Linux. Not all of ``/private``: macOS temp dirs
+# resolve under ``/private/var/folders/...``, which tests, pods and worktree
+# previews use as a data home.
 _UNSAFE_RESOLVED_PREFIXES = frozenset(
     {
         ("/", "private", "etc"),
@@ -233,20 +213,10 @@ def _is_unsafe_home(p: Path) -> bool:
     so this refuses a bare "/" on every OS (not just POSIX).
 
     Both system-directory checks are PREFIX matches, so a system directory and
-    everything under it are refused together. That symmetry is the point: the
-    ``("/", "etc")`` entry already refuses ``/etc/anything`` on Linux, so the
-    macOS-resolved form has to cover ``/private/etc/anything`` too, or the same
-    override would be rejected on one platform and accepted on the other.
-
-    The macOS case exists because callers pass an already-``resolve()``d path:
-    ``KIRO_HOME=/etc`` arrives here as ``/private/etc``, whose ``parts[:2]`` is
-    ``("/", "private")``. A check that knew only the unresolved spelling let it
-    through, and KiroCrew would then create agent JSON inside ``/etc``.
-
-    Deliberately NOT refusing the whole ``/private`` tree: on macOS
-    ``tempfile.gettempdir()`` resolves under ``/private/var/folders/...``, so a
-    prefix match there would reject every temp-dir data home — which tests, pods
-    and worktree previews legitimately use.
+    everything under it are refused together, on Linux and macOS alike. Callers
+    pass an already-``resolve()``d path, so on macOS ``KIRO_HOME=/etc`` arrives
+    as ``/private/etc``; see ``_UNSAFE_RESOLVED_PREFIXES`` for why only that
+    subtree of ``/private`` is refused.
 
     Shared by :func:`_valid_override_home` (``KIROCREW_HOME``) and
     :func:`kiro_home` (``KIRO_HOME``) so both overrides refuse the same targets.
@@ -412,10 +382,9 @@ def valid_scratch_root_override() -> Path | None:
 def _resolve_scratch_root_override() -> Path | None:
     """Validate the override once and pin ``(raw, resolved)`` for the process.
 
-    The time-of-use defence (resolve/validate exactly ONCE, then freeze) and its rationale
-    live in :func:`valid_scratch_root_override`'s docstring. The refusal reason is not pinned
-    -- no caller reads it back -- but it is still logged once, at compute time, so an operator
-    can tell WHY the override was dropped.
+    See :func:`valid_scratch_root_override` for why it resolves once and freezes. The
+    refusal reason is not pinned (no caller reads it back) but is logged once, so an
+    operator can tell why the override was dropped.
     """
     global _scratch_root_override_pin
     raw = os.environ.get(SCRATCH_ROOT_ENV) or ""
@@ -424,11 +393,8 @@ def _resolve_scratch_root_override() -> Path | None:
         return pin[1]
     resolved, reason = _validate_scratch_root_override()
     _scratch_root_override_pin = (raw, resolved)
-    # Warn exactly once per distinct raw value when a SET override was refused: the pin is
-    # keyed on the raw string and recomputed only when that string changes, so emitting the
-    # warning here -- at compute time -- fires once per offending value even though
-    # ``scratch_root()`` is called on every allocation, sweep and log-cap pass. A repointed
-    # (changed) value recomputes and warns again, which is what an operator fixing it needs.
+    # Warn here, at compute time, so a refused value warns once per distinct raw string
+    # even though ``scratch_root()`` runs on every allocation, sweep and log-cap pass.
     if raw and resolved is None and reason is not None:
         logger.warning("%s=%s is %s, ignoring", SCRATCH_ROOT_ENV, raw, reason)
     return resolved
@@ -440,20 +406,17 @@ def scratch_root_owner_refusal(root: Path) -> str | None:
     This is the PRE-ADOPT, owner-only half of the two-step adoption the relocated root goes
     through (:func:`agent_scratch.allocate_scratch`): decide the owner here, apply the
     owner-only lock, then run the writer check (:func:`scratch_root_writer_refusal`) AFTER
-    the lock. The writer check is deliberately NOT run here: a fresh directory under a
-    secondary NTFS drive inherits ``Authenticated Users: Modify`` (a replaceable-writer
-    right), which the writer check would refuse -- but the lock removes that ACE, so the
-    writer question is only meaningful once the directory is locked. Running it before the
-    lock refused the documented ``D:\\kirocrew-scratch`` case and silently kept scratch on
-    ``C:``.
+    the lock. The writer check must NOT run here: a fresh directory on a secondary NTFS
+    drive inherits ``Authenticated Users: Modify``, which the writer check refuses, and only
+    the lock removes that ACE. Checking before the lock would refuse the documented
+    ``D:\\kirocrew-scratch`` case and silently keep scratch on ``C:``.
 
     ``None`` means the owner is safe to adopt: the current user, OR ``BUILTIN\\Administrators``
     (``S-1-5-32-544``) when the volume is LOCAL -- a root an elevated session created on this
-    host. This is the SAME owner-trust rule the workflow allocator applies
-    (:func:`workflow_memory._allocator_owner`), reused verbatim so there is ONE rule for this
-    question rather than two that can drift apart: the identical Administrators SID on a
-    UNC/mapped share belongs to the FILE SERVER, not this machine, so a share root owned by
-    that remote Administrators group is refused. Everything else is refused by owner:
+    host. This is the same owner-trust rule the workflow allocator applies
+    (:func:`workflow_memory._allocator_owner`), so the two cannot drift. The same
+    Administrators SID on a UNC/mapped share belongs to the FILE SERVER, so a share root
+    owned by it is refused. Everything else is refused by owner:
 
     * ``"volume has no access control (FAT/exFAT)"`` -- the descriptor is unreadable or
       carries a NULL DACL. Such a volume cannot be owner-locked by
@@ -483,22 +446,13 @@ def scratch_root_owner_refusal(root: Path) -> str | None:
     owner_sid = security.owner_sid
 
     current_sid = platform_compat.current_user_sid()
-    # The ONE shared owner-trust rule (:func:`windows_acl.owner_is_trusted_allocator`), the
-    # same definition the workflow allocator calls (:func:`workflow_memory._allocator_owner`),
-    # so the two cannot drift: the current user's own SID, OR ``BUILTIN\Administrators``
-    # (``S-1-5-32-544``) WHEN the volume is LOCAL. An elevated session's new directory is owned
-    # by Administrators rather than the user's own SID, so a strict ``owner == me`` compare
-    # would refuse a root this host just created and silently keep scratch on C:;
-    # ``volume_is_local`` keeps that trust honest, because the identical Administrators SID on
-    # a UNC/mapped share belongs to the FILE SERVER, a different machine.
+    # An elevated session's new directory is owned by Administrators, not the user's SID,
+    # so a strict ``owner == me`` compare would refuse a root this host just created.
     if windows_acl.owner_is_trusted_allocator(
         owner_sid, security.volume_is_local, current_sid or ""
     ):
         return None
-    # Everything else -- a different ordinary account, SYSTEM, TrustedInstaller, an
-    # Administrators-owned root on a non-local volume (a UNC/mapped share), or a SID that
-    # cannot be read -- is refused. Fail-closed: an owner that cannot be verified as this
-    # host's current user or local Administrators is never trusted.
+    # Fail-closed: any other owner, or one that cannot be read, is never trusted.
     return "not owned by current user"
 
 
@@ -519,8 +473,8 @@ def scratch_root_writer_refusal(root: Path) -> str | None:
     The check runs over *root* AND its RESOLVED ANCESTOR CHAIN, not the leaf alone: locking
     the scratch leaf owner-only protects nothing above it, so a parent a foreign principal can
     rename aside (a nested override under an operator-created directory that still carries an
-    inherited ``Authenticated Users: Modify`` ACE) is a swap vector the walk now catches. The
-    volume-root node keeps its exception, since a drive root cannot be renamed.
+    inherited ``Authenticated Users: Modify`` ACE) is a swap vector. The volume-root node is
+    exempt, since a drive root cannot be renamed.
     """
     from kiro_crew import github_runner, platform_compat
 
@@ -528,16 +482,11 @@ def scratch_root_writer_refusal(root: Path) -> str | None:
     if not me_sid:
         return "not owned by current user"
     resolved = root.resolve()
-    # The leaf first, then each resolved ancestor up to and including the drive root. Locking
-    # the leaf owner-only does nothing for a PARENT above it: a nested override like
-    # ``D:\shared\scratch`` under an operator-created ``D:\shared`` leaves that parent with its
-    # inherited ``Authenticated Users: Modify`` ACE, so another local user who can replace
-    # ``D:\shared`` can rename it aside after validation and recreate the path, redirecting
-    # every later child-scratch read and write into peer-controlled storage. Walk the resolved
-    # parents with the same component validator; a swappable component refuses and allocation
-    # falls back to the guarded default. A component that is its own anchor (``D:\``) is a
-    # VOLUME ROOT: it cannot be renamed or deleted, so a plain DELETE grant on it is no swap
-    # vector -- the same exception the source-tarball staging walk gives the drive-root node.
+    # The leaf first, then each resolved ancestor up to the drive root. E.g. another local
+    # user who can replace ``D:\shared`` could rename it aside under ``D:\shared\scratch``
+    # and recreate the path, redirecting later scratch I/O into storage they control. A
+    # component that is its own anchor (``D:\``) is a volume root and cannot be renamed, so
+    # a DELETE grant on it is no swap vector (the source-tarball staging walk agrees).
     components = [resolved, *github_runner.path_parents(resolved)]
     for component in components:
         try:
@@ -563,22 +512,14 @@ def demote_scratch_root_override(reason: str) -> None:
     :func:`agent_scratch.allocate_scratch` therefore re-runs the owner decision AFTER its
     own ``mkdir`` via :func:`scratch_root_owner_refusal`, and when the created directory
     reads as foreign it falls allocation back to ``config_dir()/scratch``. That re-check is
-    the ONLY place the refusal can be made, so this is where the pin must learn it: without
-    this, the still-accepting pin keeps :func:`valid_scratch_root_override` (and thus
-    ``scratch_root()``) returning the override, and the sweep, the log cap and the
-    shared-window join all read ``scratch_root()`` and keep operating on the refused
-    directory while allocations land in the default -- a split root.
+    the ONLY place the refusal can be made, so the pin must learn it here; otherwise the
+    sweep, the log cap and the shared-window join keep using the refused directory while
+    allocations land in the default -- a split root.
 
-    Rewrites the pin to ``(raw, None)``, keyed on the CURRENT raw env string, so
-    ``scratch_root()`` returns the default from here on. Keying on the raw string keeps the
-    normal recompute-on-change contract intact: a later legitimately CHANGED
-    ``KIROCREW_SCRATCH_ROOT`` has a different raw string, misses this pin and is validated
-    afresh. *reason* is the operator-facing phrase from :func:`scratch_root_owner_refusal`
-    (or the lock/writer refusal); it is not stored -- no caller reads a refusal reason back --
-    but it is logged here so an operator can tell why the override was dropped at allocation
-    time, the same visibility the validation path gets in :func:`_resolve_scratch_root_override`.
-    This is the small helper :mod:`kiro_crew.agent_scratch` calls instead of poking the
-    private pin name, so the two stay in one module.
+    Rewrites the pin to ``(raw, None)`` for the CURRENT raw env string, so a later CHANGED
+    ``KIROCREW_SCRATCH_ROOT`` misses this pin and is validated afresh. *reason* (from
+    :func:`scratch_root_owner_refusal` or the lock/writer refusal) is logged, not stored.
+    :mod:`kiro_crew.agent_scratch` calls this rather than touching the private pin.
     """
     global _scratch_root_override_pin
     raw = os.environ.get(SCRATCH_ROOT_ENV) or ""
@@ -672,19 +613,12 @@ def _validate_scratch_root_override() -> tuple[Path | None, str | None]:
     # entirely. The resolve-ONCE pin in :func:`valid_scratch_root_override` is the second
     # half of the same defence.
     #
-    # Detect the link with ``platform_compat.is_link_or_junction`` on the override name,
-    # NOT a ``realpath`` vs ``abspath`` compare: on Windows ``ntpath.realpath`` normalises
-    # the on-disk casing, upper-cases the drive letter and expands short 8.3 names, so a
-    # plain REAL directory typed as ``d:\scratch`` resolves to ``D:\scratch`` and the
-    # lexical compare refused it -- silently keeping scratch on the system drive, on the
-    # one platform this override exists for. It also treated an ordinary SYSTEM symlink in
-    # an ancestor (e.g. ``/home`` -> ``/local/home``, macOS ``/tmp`` -> ``/private/tmp``)
-    # as grounds to refuse a perfectly real relocation. ``os.path.islink`` alone reports
-    # False for a Windows junction, so pairing it with the junction check keeps symlink AND
-    # junction refusal fail-safe on every OS while a real directory -- whatever its casing,
-    # and wherever ordinary system links sit above it -- is accepted. The repoint attack is
-    # a link AT the name the operator controls, which is exactly what this tests. A lazy,
-    # in-function import keeps this module an import-time leaf (see the module docstring).
+    # Test the override NAME with ``platform_compat.is_link_or_junction``, NOT a
+    # ``realpath`` vs ``abspath`` compare: ``ntpath.realpath`` normalises casing, the drive
+    # letter and 8.3 names, so a real ``d:\scratch`` would compare unequal, and a system
+    # symlink in an ancestor (``/home`` -> ``/local/home``) would too. ``os.path.islink``
+    # alone misses a Windows junction. The repoint attack is a link AT the name, which is
+    # what this tests. Imported lazily to keep this module an import-time leaf.
     from kiro_crew import platform_compat
 
     if platform_compat.is_link_or_junction(os.path.abspath(os.path.expanduser(override))):
@@ -733,17 +667,13 @@ def _validate_scratch_root_override() -> tuple[Path | None, str | None]:
     # first (the documented ``D:\\kirocrew-scratch`` example) and own it, so adopting it
     # would cement THEIR control over every session's scratch. Deciding this HERE -- in the
     # validator -- makes ``scratch_root()`` the single place that resolves the override, so a
-    # refusal falls back to the guarded default consistently for allocation, the sweep, the
-    # log cap and the shared-window join alike. A not-yet-created root has no foreign owner
-    # to inherit (allocation creates it owner-only), so only an existing one is checked.
-    # Fail-closed: an owner that cannot be read is an owner that cannot be trusted. A lazy,
-    # in-function import keeps this module an import-time leaf (see the module docstring).
+    # refusal falls back to the guarded default for allocation, the sweep, the log cap and
+    # the shared-window join alike. A not-yet-created root has no foreign owner (allocation
+    # creates it owner-only), so only an existing one is checked. Fail-closed.
     #
-    # ``Path.exists()`` swallows only "not found" errors, so a value whose stat is denied
-    # (on Windows a ``::$DATA`` spelling of a real directory raises ``WinError 5``) would
-    # escape here and out of ``scratch_root()`` on every call. A root that cannot be
-    # stat'ed cannot have its owner verified either, so it is refused the same fail-closed
-    # way as an unreadable owner, and the caller pins the default and logs once.
+    # ``Path.exists()`` swallows only "not found", so a denied stat (on Windows a
+    # ``::$DATA`` spelling raises ``WinError 5``) is caught here and refused like an
+    # unreadable owner.
     try:
         if p.exists():
             reason = scratch_root_owner_refusal(p)
@@ -844,17 +774,10 @@ def config_dir() -> Path:
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.
     _write_recovery_breadcrumb(d)
-    # Key on ``d``, the home this call actually resolved, NOT on a re-read of
-    # ``_resolved_home``. The two normally hold the same object, but not always:
-    # the global is written only by ``_resolve_default_home``, so a resolution
-    # that bypasses it (a stubbed resolver in a test, or a reset of the global
-    # landing between the resolve above and this line) leaves the global ``None``
-    # while ``d`` is a real path. Storing that ``None`` as the key records an
-    # entry whose key is satisfied by every later "no override, home not yet
-    # resolved" call — the state the suite's isolation fixture recreates per
-    # test — so the unrelated ``d`` would be served as if freshly resolved.
-    # Keying on ``d`` keeps the invariant above literal: the entry is live only
-    # while the resolution cache still holds the same home.
+    # Key on ``d``, the home this call resolved, NOT a re-read of ``_resolved_home``:
+    # a resolution that bypasses the global (a stubbed resolver, or a reset landing
+    # between the resolve and this line) leaves it ``None``, and a ``None`` key would
+    # match every later "home not yet resolved" call and serve a stale ``d``.
     _config_dir_memo = (override_raw, d, d)
     return d
 
@@ -865,11 +788,9 @@ def data_home() -> Path:
     :func:`config_dir` is *resolve + maintain*: besides resolving the home it
     also ``mkdir``s it and refreshes the recovery breadcrumb (a stat + a read).
     That work belongs to process start -- :func:`ensure_data_home` is the startup
-    hook -- not to every caller that merely needs a path. While callers bound the
-    result to a module constant at import the distinction did not matter;
-    resolving per call makes it load-bearing, because a request handler would
-    otherwise refresh the breadcrumb on the event loop as a side effect of asking
-    where a directory is.
+    hook -- not to every caller that merely needs a path; otherwise a request
+    handler would refresh the breadcrumb on the event loop just by asking where a
+    directory is.
 
     Use this from any hot or async path. Three cases, in order:
 
@@ -1074,27 +995,20 @@ def config_package_dir() -> Path:
 def _in_ephemeral_tree(path: Path, env: Mapping[str, str] | None = None) -> bool:
     """Whether *path* lives inside an AppImage's ephemeral runtime mount.
 
-        An AppImage runs from a squashfs the runtime mounts under a randomized
-        ``/tmp/.mount_<name>XXXXXX`` directory and unmounts on exit, so anything
-        resolved there is valid ONLY for the life of that process. A machine-wide
-        launcher aimed into it dangles the moment the app quits — the same hazard as
-        :func:`_in_linked_git_worktree`, from a different direction.
+    An AppImage runs from a squashfs the runtime mounts under a randomized
+    ``/tmp/.mount_<name>XXXXXX`` directory and unmounts on exit, so anything
+    resolved there is valid ONLY for the life of that process. A machine-wide
+    launcher aimed into it dangles the moment the app quits.
 
-    ``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
-        authoritative signal; ``$APPIMAGE`` names the outer image file rather than the
-        mount, so it cannot answer an ancestry test. The ``.mount_`` path component is
-        the fallback for a child process that inherited no environment, matched on the
-        RESOLVED path so a symlink into the mount cannot slip past.
+    ``$APPDIR`` (the mount point) is the authoritative signal; ``$APPIMAGE`` names
+    the outer image file, so it cannot answer an ancestry test. The ``.mount_``
+    path component is the fallback for a child that inherited no environment.
 
-        Deliberately NOT "anything under the temp directory". A scratch tree in
-        ``/tmp`` is every bit as ephemeral, but a blanket temp-dir rule cannot tell a
-        reaped work directory from a legitimate install a developer or test placed
-        there, and the launcher those produce is caught precisely by
-        :func:`_bin_is_usable` instead — by the interpreter being gone, which is the
-        property that actually breaks the command.
+    Deliberately NOT "anything under the temp directory": that cannot tell a
+    reaped work directory from a legitimate install placed there, and a launcher
+    whose interpreter is gone is caught by :func:`_bin_is_usable` instead.
 
-        Stdlib-only and subprocess-free for the same reason as the worktree guard:
-        this runs on the gateway start path.
+    Stdlib-only and subprocess-free: this runs on the gateway start path.
     """
     env = os.environ if env is None else env
     appdir = (env.get("APPDIR") or "").strip()
@@ -1141,10 +1055,9 @@ def _under_system_tmp(path: Path) -> bool:
     rest of this module treats redirected environments — but on macOS launchd
     sets ``$TMPDIR`` to a per-user ``/var/folders/.../T``, so ``gettempdir()``
     alone does NOT contain ``/tmp``, and ``/tmp/<scratch clone>`` would read as
-    durable there. POSIX ``/tmp`` is
-    therefore checked as well: it is reaped on reboot by contract, so nothing
-    durable lives under it. ``/var/tmp`` deliberately is not: POSIX has it
-    PRESERVED across reboots, which is the opposite claim.
+    durable there. POSIX ``/tmp`` is therefore checked as well: it is reaped on
+    reboot by contract, so nothing durable lives under it. ``/var/tmp``
+    deliberately is not: POSIX has it PRESERVED across reboots, which is the opposite claim.
 
     That literal is added on POSIX ONLY. ``Path("/tmp")`` is drive-RELATIVE on
     Windows, so ``.resolve()`` anchors it to the current drive and yields
@@ -1162,16 +1075,9 @@ def _under_system_tmp(path: Path) -> bool:
             roots.append(Path(candidate).resolve())
         except (OSError, ValueError):  # pragma: no cover - defensive: unusable root
             continue
-    # The PATH is resolved too, not just the roots. Resolving one side only makes the
-    # comparison cross namespaces on exactly the platform this rule exists for:
-    # macOS resolves `/tmp` to `/private/tmp`, so a checkout at `/tmp/<scratch clone>`
-    # keeps `/tmp` among its parents, matches nothing, and reads as DURABLE. The guard
-    # then stamps a machine-wide agent spec from a tree the OS reaps at reboot, which
-    # is the outcome it exists to prevent.
-    #
-    # Resolving is also the safe direction for a symlink pointing OUT of the temp tree:
-    # the checkout really lives at the target, so a durable target correctly stops
-    # matching rather than being declined for the shape of its path.
+    # Resolve the PATH too, not just the roots: on macOS `/tmp` resolves to
+    # `/private/tmp`, so an unresolved `/tmp/<clone>` would match nothing and read as
+    # durable. A symlink pointing OUT of the temp tree is judged by its real target.
     try:
         target = path.resolve()
     except (OSError, ValueError):  # pragma: no cover - defensive: unresolvable path
@@ -1348,13 +1254,11 @@ def isolated_agents_dir(data_home: Path) -> Path:
 #: caller can decide per call — the suite's own redirect defers to a test that
 #: moved ``Path.home`` or ``$KIRO_HOME`` itself, which it cannot know in advance.
 #:
-#: Why it lives HERE rather than as a per-module hook: 16 modules bind
-#: ``kiro_agents_dir`` by name (``from ... import kiro_agents_dir``), and that
-#: copies the function OBJECT, so patching this module's attribute never reaches
-#: them. A value read inside the function BODY does reach them, because a
-#: function's globals are always its defining module's -- so one assignment here
-#: redirects every consumer, present and future, with no per-module registration
-#: to keep in sync.
+#: Why it lives HERE rather than as a per-module hook: many modules bind
+#: ``kiro_agents_dir`` by name (``from ... import kiro_agents_dir``), which copies
+#: the function OBJECT, so patching this module's attribute never reaches them. A
+#: value read inside the function BODY does, because a function's globals are its
+#: defining module's, so one assignment here redirects every consumer.
 _agents_dir_override: Callable[[], Path] | None = None
 
 

@@ -527,6 +527,35 @@ describe('PierreWorkspaceTreeImpl — row context menu "Upload files…"', () =>
   })
 })
 
+describe('PierreWorkspaceTreeImpl — row context menu "New file…"', () => {
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  it('creates inside a directory row and beside a file row, so a top-level file reaches the root', async () => {
+    const onNewFileRequest = vi.fn()
+    renderTree({ onNewFileRequest })
+    await waitForTree()
+
+    const dir = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New file…' }))
+    expect(dir.close).toHaveBeenCalledTimes(1)
+    dir.unmount()
+    openMenu({ kind: 'file', name: 'README.md', path: 'README.md' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New file…' }))
+
+    expect(onNewFileRequest.mock.calls).toEqual([[`${ROOT}/src/a`], [`${ROOT}/`]])
+  })
+})
+
 describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)', () => {
   // The DEGENERATE case of the shared `role="menu"` contract: this menu hosts
   // exactly ONE menuitem, so every focus-move assertion is vacuously true —

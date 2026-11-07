@@ -43,7 +43,12 @@
 > So the vault sign-in always takes effect on the next spawn, and every KAS prompt
 > points at the Kiro sign-in card and never at `kiro-cli login`: the declaration's
 > `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
-> of the last spawn once one ran (`host_auth._with_kas_route`); `kirocrew doctor`'s
+> of the last spawn once one ran (`host_auth._with_kas_route`). The chat row for
+> that sentence carries the `meta.notice` token `kas_signed_out`, and the route it
+> names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
+> recognises it), so the dashboard draws it in the user's language, led by the
+> route in plain words; beside the card's sign-in button the copy points at that button.
+> Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
 > same remedy when kiro-cli's own store is what answers. A stored Kiro CLI pick
 > (`agent.acp_backend == "kiro"`) is not moved: it keeps kiro-cli's sign-in.
@@ -266,7 +271,7 @@ cross-process lock (KAS just re-reads / re-callbacks):
 | Identity | Refresh endpoint | Protocol |
 |---|---|---|
 | Social + Builder ID (social path) | `POST {host}/refreshToken` | JSON `{refreshToken}` → `{accessToken, refreshToken?, expiresIn, profileArn?}` |
-| IAM Identity Center | AWS SSO-OIDC `CreateToken` | needs stored `{clientId, clientSecret}` from RegisterClient |
+| IAM Identity Center | AWS SSO-OIDC `CreateToken` | needs stored `{clientId, clientSecret}` from RegisterClient; its `clientSecretExpiresAt` is kept as `client_secret_expires_at` |
 | External IdP | token's `tokenEndpoint` | OAuth `grant_type=refresh_token` |
 
 Refresh window: KAS enters its refresh buffer at **now + 3min**. The module MUST ensure
@@ -555,7 +560,13 @@ engine instead ([aws-control.md](aws-control.md)).
   the vault (`TokenStore.mark_refresh_rejected`, cleared by any new credential
   landing in the slot), and that marker is what `kirocrew doctor` (`crew vault:`
   line), `KasLoginService.status()` (`refresh_rejected`) and the dashboard's
-  Kiro sign-in card report as "sign-in expired -- sign in again". The marker does
+  Kiro sign-in card report as "sign-in expired -- sign in again". A Builder ID /
+  IdC entry whose `client_secret_expires_at` has passed gets its cause on that
+  doctor line ("client registration expired on <date>", verdict `cannot renew`
+  until the refused refresh records the marker), since SSO-OIDC refuses the
+  refresh with a bare `invalid_client`. It is not a
+  `refresh_blocker`: the refresh is still attempted, so the refusal still records
+  the marker the card reads. The marker does
   NOT feed the spawn decision: a lapsed Crew identity is told to the user (the
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic

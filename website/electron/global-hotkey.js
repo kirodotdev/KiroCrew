@@ -49,6 +49,9 @@ const DEFAULT_GLOBAL_HOTKEY =
  */
 let liveAccelerator = "";
 
+/** What the stored preference asked for at the last bind; "" when turned off. */
+let requestedAccelerator = "";
+
 /**
  * Log sink, injected by main.js so a failed registration is visible in
  * gateway-launch.log. Defaults to console.warn so the module works standalone.
@@ -180,6 +183,7 @@ function bindGlobalHotkey(saved, handler) {
   // Re-register cleanly so a rebind releases the key it really bound.
   unregisterGlobalHotkey();
   const wanted = resolveGlobalHotkey(saved);
+  requestedAccelerator = wanted;
   if (!wanted) return { accelerator: "", bound: false };
   if (tryRegister(wanted, handler)) {
     liveAccelerator = wanted;
@@ -218,6 +222,11 @@ function currentGlobalHotkey() {
   return liveAccelerator;
 }
 
+/** What the last bind asked for ("" when turned off). Read by the shortcuts UI IPC. */
+function requestedGlobalHotkey() {
+  return requestedAccelerator;
+}
+
 module.exports = {
   DEFAULT_GLOBAL_HOTKEY,
   resolveGlobalHotkey,
@@ -226,5 +235,6 @@ module.exports = {
   bindGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
+  requestedGlobalHotkey,
   setGlobalHotkeyLogger,
 };

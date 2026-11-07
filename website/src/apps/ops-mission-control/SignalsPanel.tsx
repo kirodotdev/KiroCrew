@@ -333,9 +333,12 @@ export default function SignalsPanel() {
         )}
 
         <div className="flex items-center gap-2 mt-3">
+          {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+              order and drops a keyboard user's focus to the page while it polls. */}
           <Btn
-            disabled={signalsQuery.isFetching}
-            onClick={() => signalsQuery.refetch()}
+            aria-disabled={signalsQuery.isFetching || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+            onClick={() => { if (!signalsQuery.isFetching) void signalsQuery.refetch() }}
             title={i18nT('apps.opsMissionControl.signalsPanel.poll_every_configured_source_now_read_only')}
           >
             <RefreshCw className="lucide-inline" />{' '}

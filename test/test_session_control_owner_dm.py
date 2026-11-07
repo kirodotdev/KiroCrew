@@ -1697,7 +1697,17 @@ def test_every_owner_dm_surface_opens_the_crew_log_from_its_dispatcher():
             assert pipeline.Drift.OPENS_CREW_LOG in drift, f"{surface}: pipeline opens no log"
             source = inspect.getsource(pipeline)
         assert "open_turn_crew_log(" in source, f"{surface}: dispatcher opens no crew log"
-        assert "predecessor_sid(" in source, f"{surface}: opener would cite no predecessor"
+        opener_kwargs = {
+            kw.arg
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "open_turn_crew_log"
+            for kw in node.keywords
+        }
+        assert "sessions" in opener_kwargs, f"{surface}: opener would cite no predecessor"
+        assert "store" in opener_kwargs, f"{surface}: no store tier behind the capture"
+        assert "store_predecessor(" in source, f"{surface}: no store tier behind the capture"
         assert "workspace=slot_workspace(" in source, f"{surface}: opener states no workspace"
 
 

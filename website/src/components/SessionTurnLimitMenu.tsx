@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import type { SlotTurnTimeout } from '../api/client/chatSlotSettings'
 import { fmtDuration } from '../i18n/format'
 import ErrorNotice, { ErrorNoticeMenuItem, type ErrorNoticeMenuItemComponent } from './ErrorNotice'
-import { OfflineReasonRow } from './OfflineMenuReason'
+import { OfflineReasonRow, REASON_ROW_WIDTH } from './OfflineMenuReason'
 import { useConnected } from '../hooks/useConnected'
 import { offlineProps } from '../utils/offline'
 import {
@@ -216,7 +216,7 @@ export function SessionTurnLimitSubmenu({ slotKey, variant }: {
           Item={variant === 'context' ? ContextMenuItem : DropdownMenuItem}
           offline={!connected}
         />
-        {!connected && <OfflineReasonRow testId="turn-limit-offline-reason" className="px-2 py-1" message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.change_turn_limits') })} />}
+        {!connected && <OfflineReasonRow testId="turn-limit-offline-reason" className={`${REASON_ROW_WIDTH} px-2 py-1`} message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.change_turn_limits') })} />}
       </SubContent>
     </Sub>
   )

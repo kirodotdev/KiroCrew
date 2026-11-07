@@ -1151,12 +1151,10 @@ class TestOneDocumentManyLocations:
     def test_ownership_lookups_work_when_text_differs_from_bytes(self, tmp_path):
         """A folder row is related to items by the TEXT hash, not the file's bytes.
 
-        `folder_file_state.content_hash` is sha256 of the file's raw bytes -- right
-        for change detection, which must not have to run an extraction pass. Items
-        are keyed by sha256 of the EXTRACTED TEXT. For .md/.txt those strings are
-        equal, which is why plaintext fixtures never caught this; for a PDF, DOCX or
-        HTML file they differ and every state-to-item lookup silently matched nothing,
-        leaving the location bookkeeping inert for exactly those documents.
+        `folder_file_state.content_hash` hashes the raw bytes (change detection
+        without extraction); items are keyed by the EXTRACTED TEXT hash. The two
+        match for .md/.txt but differ for PDF, DOCX or HTML, so this needs a file
+        whose text differs from its bytes.
         """
         store = _mk_store(tmp_path)
         try:
@@ -1256,7 +1254,7 @@ class TestSweepIsNotQuadratic:
             recency=float(idx) if recency is None else recency,
             resident_since=float(idx))
 
-    # ---- equivalence with the dense reference, over randomized corpora ----
+    # equivalence with the dense reference, over randomized corpora
 
     def _random_corpus(self, rng, n):
         """Mix every feature that steers _match_reason: shared hashes, near-typo
@@ -1338,7 +1336,7 @@ class TestSweepIsNotQuadratic:
         assert any(a.reason.startswith("fuzzy:") for a in got), (
             "the long-name near-duplicates must still collapse")
 
-    # ---- the quadratic path is gone ----
+    # fuzzy tier stays sub-quadratic
 
     @staticmethod
     def _distinct_names(n):

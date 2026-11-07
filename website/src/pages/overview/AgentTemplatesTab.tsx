@@ -655,7 +655,7 @@ export default function AgentTemplatesTab() {
           ? <span className="text-[11px] text-muted truncate">{i18nT('pages.overview.agentTemplatesTab.override_line', { crew: r.private_to, template: r.forked_from })}</span>
           : r.description && <span className="text-[11px] text-muted truncate">{r.description}</span>}
         <div className="flex flex-wrap gap-1 mt-0.5">
-          <Badge variant="muted" title={r.model ? i18nT('pages.overview.agentTemplatesTab.model') : `${i18nT('pages.overview.agentTemplatesTab.model')}: ${i18nT('pages.overview.agentTemplatesTab.model_auto')}`}><span className="font-mono">{i18nT('pages.overview.agentTemplatesTab.model_badge', { model: r.model || 'auto' })}</span></Badge>
+          <Badge variant="muted" title={r.model ? i18nT('pages.overview.agentTemplatesTab.model') : i18nT('pages.overview.agentTemplatesTab.model_auto_title')}><span className="font-mono">{i18nT('pages.overview.agentTemplatesTab.model_badge', { model: r.model || 'auto' })}</span></Badge>
           {/* Muted like its siblings: a colored pill worded like the usage line's
               link reads as a second control. */}
           {crews > 0 && <Badge variant="muted">{i18nT('pages.overview.agentTemplatesTab.crewmates_count', { count: crews })}</Badge>}

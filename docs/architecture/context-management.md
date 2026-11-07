@@ -48,7 +48,7 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume, and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -219,10 +219,20 @@ Slack thread text and folder paths are also screened by `contains_injection` and
 
 Dashboard sessions discover the artifacts skill through the existing system
 prompt's `WIDGET_BLOCK` in both density variants and through the on-demand skill
-catalog. `build_message` does not repeat that pointer every turn. Interactive
-sessions with a Dashboard surface receive milestone evidence, result and next-step
-guidance only when the current live `dashboard.dynamic_dashboard_cards` setting
-is on, including warm, resumed and re-injected turns.
+catalog. `build_message` does not repeat that pointer every turn. The default
+agent and a crewmate's conductor get the pointer from `prompt.md`'s own token;
+every shipped conductor (`crew_mode.CONDUCTOR_TEMPLATES`) gets it appended to its
+contract block by `_resolve_agent_prompt`, and maps the skills it leads to
+(`skill_resources.WIDGET_POINTER_SKILLS`). Neither worker agent
+(`kirocrew-worker`, `kirocrew-mate-worker`) gets it, so the crewmate's worker
+drops the token its default contract carries. On `more` the pointer says to draw
+an answer that reads better drawn as one widget without being asked; `less`
+prefers plain markdown.
+
+Interactive sessions with a Dashboard surface receive milestone evidence, result
+and next-step guidance only when the current live
+`dashboard.dynamic_dashboard_cards` setting is on, including warm, resumed and
+re-injected turns.
 Every turn reads the live snapshot (the current config loader when no watcher
 exists), so toggling affects the next turn without rebuilding the context builder.
 The guidance does not load the skill body, enable generation, start another producer,

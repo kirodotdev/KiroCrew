@@ -10,10 +10,10 @@ on nested repetition.
 So Crew reads only the syntax whose meaning is the same in both engines, with its
 own parser, and matches it with its own automaton, never with ``re``:
 
-- literal characters, and a backslash-escaped punctuation character as a literal
-  (in an entry using any syntax below, only ASCII punctuation other than ``<`` /
-  ``>``, which Rust reads as word boundaries; a literal-plus-``.*`` entry keeps
-  the reading it always had);
+- literal characters, and a backslash-escaped ASCII punctuation character as a
+  literal (in an entry using any syntax below, not ``<`` / ``>``, which Rust reads
+  as word boundaries; a literal-plus-``.*`` entry may escape those two, since a
+  command holding either is never granted);
 - ``.`` (any character);
 - a bracket class: ``[abc]``, ranges such as ``[A-Za-z0-9_./-]``, negation
   ``[^;|&]``, escaped punctuation inside it;
@@ -134,7 +134,7 @@ def _literal_segments(body: str) -> tuple[str, ...] | None:
             i += 2
         elif ch == "\\":
             nxt = body[i + 1] if i + 1 < len(body) else ""
-            if not nxt or nxt.isalnum() or nxt.isspace():
+            if not nxt or not nxt.isascii() or nxt.isalnum() or nxt.isspace():
                 return None
             current.append(nxt)
             i += 2
@@ -352,11 +352,89 @@ def plain_command(command: object) -> bool:
     )
 
 
+#: The separators a chain of plain commands may use and still be granted, longest
+#: first so ``&&`` and ``||`` are read before a lone ``|``.
+CHAIN_SEPARATORS = ("&&", "||", ";", "|")
+
+#: Most commands one chain may hold and still be granted.
+MAX_CHAIN_COMMANDS = 16
+
+#: Characters that make a chain ungrantable: each can move a separator into an
+#: argument, so the split would not match what the shell runs. A non-ASCII
+#: character refuses the chain too (:func:`chain_commands`): PowerShell reads the
+#: typographic quotes U+2018 to U+201E as quotes.
+_CHAIN_QUOTING_CHARS = frozenset("'\"\\")
+
+#: PowerShell's stop-parsing token: everything after it, separators included, is
+#: passed to the program as literal text, so a chain holding it is refused too.
+_STOP_PARSING = "--%"
+
+
+def chain_commands(command: object) -> tuple[str, ...] | None:
+    """The plain commands *command* chains with :data:`CHAIN_SEPARATORS`, or ``None``.
+
+    Split at every separator, with the spaces around it dropped. A chain holding a
+    quote, a backslash or any non-ASCII character anywhere is ``None``: a quote
+    (PowerShell's typographic ones included) can carry a separator into one shell
+    argument, so the split parts would not be the commands that run.
+    ``None`` too when a part is empty or not :func:`plain_command`
+    (so a lone ``&``, a redirect, a substitution or a newline still refuses the
+    whole command), when the command is too long, or past
+    :data:`MAX_CHAIN_COMMANDS` parts. A plain command is its own one part.
+    """
+    if not isinstance(command, str) or not command or len(command) > MAX_COMMAND_LENGTH:
+        return None
+    parts: list[str] = []
+    start = i = 0
+    while i < len(command):
+        sep = next((s for s in CHAIN_SEPARATORS if command.startswith(s, i)), "")
+        if sep:
+            parts.append(command[start:i])
+            i += len(sep)
+            start = i
+        else:
+            i += 1
+    parts.append(command[start:])
+    if len(parts) > 1:
+        if (
+            not command.isascii()
+            or _CHAIN_QUOTING_CHARS.intersection(command)
+            or _STOP_PARSING in command
+        ):
+            return None
+        parts = [p.strip(" ") for p in parts]
+    if len(parts) > MAX_CHAIN_COMMANDS or not all(plain_command(p) for p in parts):
+        return None
+    return tuple(parts)
+
+
+def chain_matches_all(raw_patterns: object, command: object) -> bool:
+    """Whether *command* is a plain command or a chain of them
+    (:func:`chain_commands`) and one of *raw_patterns* matches EVERY part whole.
+
+    kiro-cli asks about each command of a chain; a chain is granted only when each
+    one would be. One :data:`_MAX_MATCH_STEPS` budget covers the whole chain."""
+    parts = chain_commands(command)
+    if parts is None:
+        return False
+    budget = [_MAX_MATCH_STEPS]
+    patterns = [
+        p
+        for p in (
+            parse(raw) for raw in (raw_patterns if isinstance(raw_patterns, (list, tuple)) else ())
+        )
+        if p is not None
+    ]
+    return all(any(_match(p, part, budget) for p in patterns) for part in parts)
+
+
 #: What the person is told when an ``allowedCommands`` entry would match a command
 #: but the command's shell composition keeps it from being granted.
 COMPOSITION_NOTICE = (
-    "This command matches allowedCommands, but commands with |, >, <, &&, ;, $() "
-    "or backticks always ask. Run the script alone, or move the pipeline into the script."
+    "This command matches allowedCommands, but a chain (&&, ||, ;, |) runs without a "
+    "prompt only when every command in it matches and it holds no quote, backslash, "
+    "non-ASCII character or --%, and >, <, $() or backticks always ask. Run the script alone, "
+    "or move the pipeline into the script."
 )
 
 #: Characters that end the leading simple command of a composed one.

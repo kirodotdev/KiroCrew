@@ -22,6 +22,7 @@ schema/validation.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
@@ -330,6 +331,8 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             else section.default("decay_rates")
         ),
         semantic_keys=section.get("semantic_keys"),
+        session_affinity=section.read("session_affinity", _safe_float, lo=0.0, hi=0.10),
+        recency_boost=section.read("recency_boost", _safe_float, lo=0.0, hi=1.0),
         history_idle_hours=_history_idle_hours(section),
         history_max_days=section.read("history_max_days", _safe_nonnegative_int),
         backup_enabled=section.read("backup_enabled", _safe_bool),
@@ -462,6 +465,13 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
     )
 
 
+def _name_list(value: Any) -> list[str]:
+    """The non-blank strings of *value* when it is a list, stripped; else ``[]``."""
+    if not isinstance(value, list):
+        return []
+    return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+
+
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
     _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
@@ -536,6 +546,9 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
         prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
+        # Server names: only a list of non-blank strings counts, so a stray
+        # string or object keeps nothing alive.
+        keep_alive_servers=_name_list(section.get("keep_alive_servers")),
         read_buffer_limit_bytes=max(
             1024,
             section.read("read_buffer_limit_bytes", _safe_int),
@@ -588,7 +601,42 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_move_grace_seconds=section.read("relay_move_grace_seconds", _safe_float, 0.0, 30.0),
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
+        relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
+        relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
+        **_relay_viewer_targets(section),
     )
+
+
+def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
+    """The viewer's control plane URL and credential reference, or "" for a bad one.
+
+    The URL carries the person's sign-in, so it is held to the lease URL's rule:
+    https://, or http:// only for a loopback port-forward. The credential setting
+    names where a credential is and never holds one, so a value that is not
+    secret://NAME or an absolute path is dropped, and the warning does not repeat
+    it. Imported here, not at module load, so config load pulls in no relay
+    client code while both are empty.
+    """
+    url = str(section.get("relay_viewer_cps_url") or "").strip()
+    ref = str(section.get("relay_viewer_credential") or "").strip()
+    if url or ref:
+        from kiro_crew.relay_client.lease import credential_reference_problem, lease_url_problem
+
+        problem = lease_url_problem(url) if url else None
+        if problem is not None:
+            logger.warning(
+                "tunnel.relay_viewer_cps_url ignored: %s",
+                problem.replace("lease service", "control plane"),
+            )
+            url = ""
+        if ref and credential_reference_problem(ref) is not None:
+            logger.warning(
+                "tunnel.relay_viewer_credential ignored: it must be secret://NAME or the "
+                "absolute path of a file holding the credential, never the credential itself"
+            )
+            ref = ""
+    return {"relay_viewer_cps_url": url, "relay_viewer_credential": ref}
 
 
 def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig:
@@ -744,6 +792,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
             str(section.get("forum_activation") or section.default("forum_activation"))
         ),
         allowed_forum_chat_ids=_coerce_int_ids(section.get("allowed_forum_chat_ids")),
+        max_text_inject_kb=section.read("max_text_inject_kb", _safe_int, 1),
         # The parser reads raw JSON entries, so it is handed only a stored value;
         # an omitted key is the field default as built.
         accounts=(

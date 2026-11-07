@@ -204,7 +204,7 @@ def _cleanup_boundary(self: SessionManager) -> SessionCleanup:
 
 
 def _ensure_cleanup_task(self: SessionManager) -> None:
-    """Start the one cleanup loop at the allocation registration point."""
+    """Start the one cleanup loop, at boot and again at each allocation; idempotent."""
     self._cleanup_boundary().start_cleanup()
 
 

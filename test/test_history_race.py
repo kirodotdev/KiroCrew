@@ -1,17 +1,9 @@
 """Tests for fresh-slot first-turn duplicate user-message injection.
 
-Race condition: dashboard chat handler appends the user message to slot.messages
-and the periodic flush loop (5 s) writes it to JSONL. Meanwhile _run_chat awaits
-get_or_create which spawns kiro-cli (~15 s cold). When kiro is finally up, the
-context-builder reads the JSONL — and finds the user's CURRENT message there,
-which it then injects as "history" alongside the same message under
-[CURRENT USER REQUEST].
-
-The fix: ConversationLog.recent / recent_chained / recent_with_provenance now
-accept ``exclude_last_n`` to drop trailing raw entries before role filtering.
-The dashboard caller (_turn_build_prompt, chat_turn/prompt_assembly.py)
-passes exclude_last_n=1 because exactly one message is appended per turn
-before _run_chat invokes context build.
+The 5 s flush writes the user message to JSONL while kiro-cli starts (~15 s cold), so
+the context builder would inject the CURRENT message as history too. ``exclude_last_n``
+on ConversationLog.recent / recent_chained / recent_with_provenance drops trailing raw
+entries before role filtering; _turn_build_prompt passes 1 (one append per turn).
 """
 from __future__ import annotations
 
@@ -341,13 +333,10 @@ class TestBuildSessionReplayMesh1726:
 
 
 class TestBoundedRecallQuotas:
-    """The two bounded ``recent()`` recall sites must not let inject volume
-    evict conversation.
+    """The two bounded ``recent()`` recall sites must not let inject volume evict conversation.
 
-    ``recent()`` filters by role and then takes a plain tail slice, so a run of
-    ``inject`` rows longer than the bound IS the whole read. ``build_session_replay``
-    already defends this with per-role quotas; these two sites read through a
-    single bounded query, which cannot give the same guarantee.
+    ``recent()`` takes a plain tail slice, so a run of ``inject`` rows longer than the
+    bound is the whole read.
     """
 
     def test_a_note_flood_cannot_evict_conversation_from_the_cold_start_builder(self, tmp_path):

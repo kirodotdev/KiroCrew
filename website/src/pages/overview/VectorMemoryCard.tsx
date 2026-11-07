@@ -8,7 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
-import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
+import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, semanticWriteErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -636,8 +636,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             <datalist id="key-suggestions">{filteredKeys.map(k => <option key={k} value={k}>{k}</option>)}</datalist>
           </div>
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.column_value')} placeholder={i18nT('pages.overview.vectorMemoryCard.value')} style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
-            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } })} />
-          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
+            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } } })} />
+          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(semanticWriteErrorMessage(e) || extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
         </div>
         {/* No hand-off: preserve the rejected value and inline edit for retry. */}
         <ErrorNotice message={writeError} className="mb-2" />
@@ -669,9 +669,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                     <div className="flex gap-1 items-center" onClick={ev => ev.stopPropagation()}>
                       <Input value={editVal} onChange={ev => setEditVal(ev.target.value)} className="!py-1 !px-2 !text-sm"
                         aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
-                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
+                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
                         autoFocus />
-                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}><Check className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }}><Check className="lucide-inline" /></Btn>
                       <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.cancel_edit')} onClick={() => closeEdit(e.key)}><X className="lucide-inline" /></Btn>
                     </div>
                   ) : (
@@ -726,10 +726,15 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
           return allTags.length > 0 ? (
             <div className="flex gap-1.5 flex-wrap mb-3">
               <span className="text-muted text-[12px] self-center mr-1">{i18nT('pages.overview.vectorMemoryCard.filter_by_tag')}</span>
-              {allTags.map((tag: string) => (
-                <button key={tag} disabled={episodicRead.isFetching} onClick={() => { const t = epTagFilter === tag ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
-                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${epTagFilter === tag ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
-              ))}
+              {allTags.map((tag: string) => {
+                // A toggle, not one-of-N: pressing the active tag clears the
+                // filter, so each chip is an independent pressed/unpressed button.
+                const tagOn = epTagFilter === tag
+                return (
+                <button key={tag} type="button" aria-pressed={tagOn} disabled={episodicRead.isFetching} onClick={() => { const t = tagOn ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
+                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${tagOn ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
+                )
+              })}
             </div>
           ) : null
         })()}
@@ -774,12 +779,13 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {/* No hand-off: this card and its parent retain unsaved memory values and editing drafts. */}
         <ErrorNotice message={audit.error ? extractError(audit.error) : undefined} />
         {audit.isError && <Btn disabled={audit.isFetching} onClick={() => void (audit.isFetchNextPageError ? audit.fetchNextPage() : audit.refetch())}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
-        <div className="flex gap-1.5 flex-wrap mb-3">
-          <Btn onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
+        {/* One-of-N: exactly one event type is shown at a time, so it is a radio group. */}
+        <RadioChipGroup className="flex gap-1.5 flex-wrap mb-3" ariaLabel={i18nT('pages.overview.vectorMemoryCard.event_filter_label')}>
+          <Btn {...radioChip(eventFilter === 'all')} onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
           {eventTypes.map((t: string) => (
-            <Btn key={t} onClick={() => setEventFilter(t)} className={eventFilter === t ? '!border-accent !text-accent' : ''}>{t}</Btn>
+            <Btn key={t} {...radioChip(eventFilter === t)} onClick={() => setEventFilter(t)} className={eventFilter === t ? '!border-accent !text-accent' : ''}>{t}</Btn>
           ))}
-        </div>
+        </RadioChipGroup>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
           {[

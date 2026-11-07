@@ -173,7 +173,7 @@ async def resolve_requested_memory_store(
         return "", denial
 
     requested = request.query[MEMORY_STORE_PARAM].strip() or DEFAULT_MEMORY_STORE
-    if requested not in declared_store_names():
+    if requested not in await asyncio.to_thread(declared_store_names):
         return "", web.json_response(
             {
                 "error": f"no memory store named {requested!r} is declared",
@@ -354,7 +354,7 @@ async def _admin_store(
         raw = body[MEMORY_STORE_PARAM]
         # ``""`` is never a declared name, so a non-string lands on the 404 below.
         requested = (raw.strip() or DEFAULT_MEMORY_STORE) if isinstance(raw, str) else ""
-        if requested not in declared_store_names():
+        if requested not in await asyncio.to_thread(declared_store_names):
             return "", web.json_response(
                 {
                     "error": f"no memory store named {requested!r} is declared",

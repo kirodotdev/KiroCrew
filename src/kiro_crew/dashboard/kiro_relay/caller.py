@@ -3,13 +3,10 @@
 Pure values. Nothing here reads a request, a config file or the network, so the
 ingress middleware, token auth and the app proxy all agree on one shape.
 
-Provenance and transport use the shared-crew attribution contract's vocabulary
-(:mod:`kiro_crew.shared_crew.contracts`). :class:`Transport` is that contract's own
-enum, whose ``remote`` member names a relayed request. The contract's
-``Provenance`` has no relay member yet, so :class:`Provenance` here holds the one
-value it needs, ``kiro_relay``; once the contract gains that member this enum becomes
-an import of it, which is the whole switch: every reader here compares members,
-never raw strings.
+Provenance and transport are the shared-crew attribution contract's own enums
+(:mod:`kiro_crew.shared_crew.contracts`): ``Provenance.KIRO_RELAY`` names a caller
+the relay verified, and ``Transport.REMOTE`` a relayed request. Every reader here
+compares members, never raw strings.
 """
 
 from __future__ import annotations
@@ -17,19 +14,32 @@ from __future__ import annotations
 import enum
 import hmac
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import quote, unquote_to_bytes
 
 # The one definition of the relay-header prefix, shared with the client-sent strip
 # and the app-backend proxy. Only the Crew's own relay client may write a header
 # under it, and only on a request it hands over; the relay drops any a client
 # sends, and the client-sent strip drops any that arrive any other way.
 from kiro_crew.dashboard.relay_headers import RELAY_HEADER_PREFIX
-from kiro_crew.shared_crew.contracts import Transport
+from kiro_crew.relay_client.protocol import is_display_email, is_display_name
+from kiro_crew.shared_crew.contracts import Provenance, Transport
 
 #: The verified person's stable Kiro user ID, stamped from the relay's own message.
 RELAY_USER_HEADER = RELAY_HEADER_PREFIX + "user"
 #: The per-process handover credential that marks a request as the relay client's.
 RELAY_HANDOVER_HEADER = RELAY_HEADER_PREFIX + "handover"
+#: The person's email, ASCII as the relay sent it. Display only: never compared,
+#: logged or counted; identity stays on :data:`RELAY_USER_HEADER`.
+RELAY_USER_EMAIL_HEADER = RELAY_HEADER_PREFIX + "user-email"
+#: The person's name, always in the RFC 8187 ``UTF-8''`` form
+#: (:func:`encode_display_name`). Display only, like the email.
+RELAY_USER_NAME_HEADER = RELAY_HEADER_PREFIX + "user-name"
+#: The one form :func:`encode_display_name` writes and :func:`decode_display_name` reads.
+_RFC8187_PREFIX = "UTF-8''"
+#: RFC 8187 ``attr-char`` besides letters and digits; every other byte is ``%HH``.
+_RFC8187_SAFE = "!#$&+-.^_`|~"
+_RFC8187_VALUE_RE = re.compile(r"\A(?:[A-Za-z0-9!#$&+\-.^_`|~]|%[0-9A-Fa-f]{2})+\Z", re.ASCII)
 
 #: aiohttp request key under which the ingress middleware publishes the caller.
 RELAY_CALLER_KEY = "kiro_relay_caller"
@@ -47,13 +57,6 @@ KIRO_PROVIDER = "kiro"
 #: characters (the app proxy's owner id bound). The relay protocol contract owns
 #: the authoritative grammar; this is the Crew's own fail-closed floor under it.
 _KIRO_USER_ID_RE = re.compile(r"\A[A-Za-z0-9._:@+=/-]{1,256}\Z")
-
-
-class Provenance(str, enum.Enum):
-    """How the server established a principal: the relay's member of the contract's set."""
-
-    #: Named by the Kiro relay in its own message, stamped by this Crew's relay client.
-    KIRO_RELAY = "kiro_relay"
 
 
 class CrewKind(str, enum.Enum):
@@ -74,6 +77,39 @@ class RelayCallerKind(str, enum.Enum):
 def is_kiro_user_id(value: object) -> bool:
     """Whether *value* is a Kiro user ID this Crew will compare or record."""
     return isinstance(value, str) and _KIRO_USER_ID_RE.match(value) is not None
+
+
+def encode_display_name(name: str) -> str:
+    """*name* as an RFC 8187 ext-value, always ``UTF-8''`` then attr-chars and ``%HH``."""
+    if not is_display_name(name):
+        raise ValueError("not a display name")
+    return _RFC8187_PREFIX + quote(name.encode("utf-8"), safe=_RFC8187_SAFE)
+
+
+def decode_display_name(value: object) -> str:
+    """The name an RFC 8187 header value carries, or ``""`` for any value that is not one.
+
+    Only the ``UTF-8''`` form is read (the charset compared case-insensitively, no
+    language tag), the bytes must be strict UTF-8, and the name must pass the same
+    grammar the relay client applied to the frame.
+    """
+    if not isinstance(value, str) or len(value) <= len(_RFC8187_PREFIX):
+        return ""
+    if value[: len(_RFC8187_PREFIX)].upper() != _RFC8187_PREFIX.upper():
+        return ""
+    encoded = value[len(_RFC8187_PREFIX) :]
+    if not _RFC8187_VALUE_RE.match(encoded):
+        return ""
+    try:
+        name = unquote_to_bytes(encoded).decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return ""
+    return name if is_display_name(name) else ""
+
+
+def display_email(value: object) -> str:
+    """*value* when it is an email the relay may name, else ``""``."""
+    return value if is_display_email(value) else ""
 
 
 def published_relay_caller(request: object) -> RelayCaller | None:
@@ -113,6 +149,10 @@ class RelayCaller:
     provider: str = KIRO_PROVIDER
     provenance: Provenance = Provenance.KIRO_RELAY
     transport: Transport = Transport.REMOTE
+    #: Display labels the relay passed on, empty when it sent none. Never part of
+    #: equality, an owner check, admission, a log line or a metric.
+    email: str = field(default="", compare=False, repr=False)
+    display_name: str = field(default="", compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not is_kiro_user_id(self.kiro_user_id):
@@ -161,21 +201,31 @@ class HostBinding:
         if self.crew_kind is CrewKind.TEAM and self.owner_user_id:
             raise ValueError("a team Crew has no relayed owner")
 
-    def caller_for(self, kiro_user_id: str) -> RelayCaller | None:
+    def caller_for(
+        self, kiro_user_id: str, *, email: str = "", display_name: str = ""
+    ) -> RelayCaller | None:
         """The caller the relay named, or ``None`` when this Crew does not honor them.
 
         A personal Crew honors the header only for its signed-in owner. A team Crew
         takes the person as the relay names them, because Kiro minted their token
-        only after checking their grant, and makes them a teammate.
+        only after checking their grant, and makes them a teammate. *email* and
+        *display_name* are labels only and play no part in the decision.
         """
         if not is_kiro_user_id(kiro_user_id):
             return None
         if self.crew_kind is CrewKind.TEAM:
-            return RelayCaller(kiro_user_id=kiro_user_id, kind=RelayCallerKind.TEAMMATE)
+            kind = RelayCallerKind.TEAMMATE
         # Bytes, so a non-ASCII value is an ordinary mismatch, never a TypeError.
-        if hmac.compare_digest(
+        elif hmac.compare_digest(
             kiro_user_id.encode("utf-8", "surrogatepass"),
             self.owner_user_id.encode("utf-8", "surrogatepass"),
         ):
-            return RelayCaller(kiro_user_id=kiro_user_id, kind=RelayCallerKind.OWNER)
-        return None
+            kind = RelayCallerKind.OWNER
+        else:
+            return None
+        return RelayCaller(
+            kiro_user_id=kiro_user_id,
+            kind=kind,
+            email=display_email(email),
+            display_name=display_name if is_display_name(display_name) else "",
+        )

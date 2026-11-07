@@ -97,6 +97,7 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_turns_started",
         "_unstarted_generation",
         "_wake_starting_task",
         "_chunk_seq",
@@ -153,6 +154,7 @@ class _ChatSlot:
         "_mcp_report",
         "_mcp_report_session_id",
         "_mcp_banner_shown",
+        "_hidden_scratch_notice_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -164,6 +166,7 @@ class _ChatSlot:
         "_has_reader_flag",
         "_compacting",
         "_preparing_count",
+        "_preparing_texts",
         "_stop_declined_at",
         "_stop_state_raw",
         "_stop_generation",
@@ -352,6 +355,7 @@ class _ChatSlot:
         "_wait_steer_baseline",
         "_wait_contested",
         "_question_pending",
+        "_embed_question_polled_at",
         "_welcomed_agent",
     )
 
@@ -438,6 +442,9 @@ class _ChatSlot:
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
     _mcp_banner_shown: dict[str, tuple[str, int, str]]
+    # Whether this chat already showed the hidden-scratch-folder start notice in
+    # this gateway run; in memory only, so a restart shows it once more.
+    _hidden_scratch_notice_shown: bool
     _pending_reset_history_key: str | None
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
@@ -477,6 +484,7 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    _turns_started: int
     _unstarted_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
@@ -513,6 +521,7 @@ class _ChatSlot:
     _has_reader_flag: bool
     _compacting: bool
     _preparing_count: int
+    _preparing_texts: list[tuple[str, str]]
     _stop_declined_at: float
     _stop_state_raw: str
     _stop_generation: int
@@ -563,6 +572,7 @@ class _ChatSlot:
     #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
     _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
+    _embed_question_polled_at: float | None
 
     # Initialised by state_parts/slot_ladder.py.
     _pending_subagent_failures: list[str]

@@ -11,6 +11,7 @@ saw a command. The forward is now granted by the backend's positive
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -104,6 +105,16 @@ def _live(tmp_path, backend: str):
     return state, slot, commands, prompts
 
 
+def _save_user_quick_prompt(tmp_path, monkeypatch) -> None:
+    """``/cr`` as an opted-in saved prompt under a private home."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    (home / ".kiro" / "prompts").mkdir(parents=True)
+    (home / ".kiro" / "prompts" / "cr.md").write_text(
+        "---\nslash_command: true\n---\nReview {arg}.\n", encoding="utf-8"
+    )
+
+
 class TestMembership:
     def test_only_claude_is_a_member(self) -> None:
         assert ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS == {ACP_BACKEND_CLAUDE}
@@ -136,6 +147,19 @@ class TestDashboardTurn:
         state, slot, commands, prompts = _live(tmp_path, ACP_BACKEND_CLAUDE)
 
         await _run_chat(state, slot, "/plain explain this")
+
+        commands.assert_not_called()
+        assert prompts.called
+
+    @pytest.mark.asyncio
+    async def test_a_user_quick_prompt_is_not_forwarded_on_claude(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """An opted-in saved prompt is a macro too, not a Claude Code command."""
+        _save_user_quick_prompt(tmp_path, monkeypatch)
+        state, slot, commands, prompts = _live(tmp_path, ACP_BACKEND_CLAUDE)
+
+        await _run_chat(state, slot, "/cr the diff")
 
         commands.assert_not_called()
         assert prompts.called
@@ -186,6 +210,16 @@ class TestBackendResolution:
             state, "dashboard:s1", "hello", cc_provider=False
         )
         assert await _forwards_harness_command(state, "dashboard:s1", "/model", cc_provider=False)
+
+    @pytest.mark.asyncio
+    async def test_the_claude_code_label_keeps_a_user_quick_prompt_too(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _save_user_quick_prompt(tmp_path, monkeypatch)
+        state = _make_state(tmp_path)
+
+        assert not await _forwards_harness_command(state, "dashboard:s1", "/cr", cc_provider=True)
+        assert await _forwards_harness_command(state, "dashboard:s1", "/other", cc_provider=True)
 
 
 class TestOtherSurfaces:

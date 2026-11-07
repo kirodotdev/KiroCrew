@@ -518,7 +518,8 @@ def default_golden_set_path() -> Path:
     every annotator was a language model, so a shared blind spot reads as
     consensus. The five queries the annotators split on are rewritten so one
     reading is right, gold sets unchanged (``label_revision`` 2).
-    Externally-anchored relevance judgments are the standing gap.
+    ``bench kb-retrieval --external`` adds a set whose relevance judgments are
+    a published benchmark's (``kb_external``), scored beside this one.
 
     Consequence for anyone comparing runs: a v1 report and a v2 report measure
     DIFFERENT corpora and their metrics are not comparable. Nothing mechanical
@@ -764,9 +765,10 @@ def format_kb_report(report: KBRetrievalReport, *, k: int = 3) -> str:
         f"map@{k}",
     ):
         lines.append(f"  {key:<16} {head[key]:.3f}")
-    lines.append(
-        f"  abstention_rate  {head['abstention_rate']:.3f} " f"(n={int(head['n_abstention'])})"
-    )
+    if head["n_abstention"]:  # a set with no abstention queries has no rate to print
+        lines.append(
+            f"  abstention_rate  {head['abstention_rate']:.3f} " f"(n={int(head['n_abstention'])})"
+        )
     lines.append("")
     lines.append(f"BY CLASS @{k}:")
     by_class = report.by_class(k)

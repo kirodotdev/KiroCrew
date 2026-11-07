@@ -740,7 +740,7 @@ def _session_auto_approves(state: DashboardState, slot: _ChatSlot) -> bool:
     and authorises nothing: no caller of this function approves, rejects or delays
     a tool call.
     """
-    return _slot_is_trusted(slot) or state.is_yolo_active()
+    return _slot_is_trusted(slot) or bool(state.is_yolo_active() and state.yolo_reaches(slot))
 
 
 async def _tool_risk_meta(
@@ -791,7 +791,7 @@ async def _tool_risk_meta(
             tool=event.tool_name or event.title or "",
             arguments=event.tool_input or "",
             message=message,
-            policy=_auto_approve_reason(slot, state.is_yolo_active()),
+            policy=_auto_approve_reason(slot, state.is_yolo_active() and state.yolo_reaches(slot)),
             session_key=session_key,
             calls_this_turn=calls_this_turn,
             tool_kind=event.tool_kind or "",

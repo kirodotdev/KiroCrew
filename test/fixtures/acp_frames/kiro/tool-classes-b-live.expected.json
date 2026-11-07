@@ -1,0 +1,598 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "3.1.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "probe",
+      "ids": [
+        "probe"
+      ]
+    },
+    "session_id": "kiro-tools-session-2"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create the probe-bucket S3 bucket as requested",
+          "label": "Create S3 bucket probe-bucket",
+          "operation_name": "create-bucket",
+          "parameters": {
+            "bucket": "probe-bucket"
+          },
+          "region": "us-east-1",
+          "service_name": "s3api"
+        },
+        "title": "AWS: s3api create-bucket",
+        "tool_call_id": "toolu_bdrk_01UzmPkqfEd13UEQAmPqcyRC",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"service_name\": \"s3api\",\n  \"operation_name\": \"create-bucket\",\n  \"parameters\": {\n    \"bucket\": \"probe-bucket\"\n  },\n  \"region\": \"us-east-1\",\n  \"label\": \"Create S3 bucket probe-bucket\",\n  \"__tool_use_purpose\": \"Create the probe-bucket S3 bucket as requested\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "use_aws",
+        "tool_purpose": "Create the probe-bucket S3 bucket as requested",
+        "wire_title": "AWS: s3api create-bucket"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create the probe-bucket S3 bucket as requested",
+          "label": "Create S3 bucket probe-bucket",
+          "operation_name": "create-bucket",
+          "parameters": {
+            "bucket": "probe-bucket"
+          },
+          "region": "us-east-1",
+          "service_name": "s3api"
+        },
+        "request_id": "synthetic-id-1",
+        "shell_classified": true,
+        "title": "AWS: s3api create-bucket",
+        "tool_call_id": "toolu_bdrk_01UzmPkqfEd13UEQAmPqcyRC",
+        "tool_input": "{\n  \"service_name\": \"s3api\",\n  \"operation_name\": \"create-bucket\",\n  \"parameters\": {\n    \"bucket\": \"probe-bucket\"\n  },\n  \"region\": \"us-east-1\",\n  \"label\": \"Create S3 bucket probe-bucket\",\n  \"__tool_use_purpose\": \"Create the probe-bucket S3 bucket as requested\"\n}",
+        "tool_name": "use_aws",
+        "tool_purpose": "Create the probe-bucket S3 bucket as requested"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01UzmPkqfEd13UEQAmPqcyRC",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create the probe-bucket S3 bucket as requested",
+          "label": "Create S3 bucket probe-bucket",
+          "operation_name": "create-bucket",
+          "parameters": {
+            "bucket": "probe-bucket"
+          },
+          "region": "us-east-1",
+          "service_name": "s3api"
+        },
+        "title": "use_aws",
+        "tool_call_id": "toolu_bdrk_01UzmPkqfEd13UEQAmPqcyRC",
+        "tool_input": "{\n  \"service_name\": \"s3api\",\n  \"operation_name\": \"create-bucket\",\n  \"parameters\": {\n    \"bucket\": \"probe-bucket\"\n  },\n  \"region\": \"us-east-1\",\n  \"label\": \"Create S3 bucket probe-bucket\",\n  \"__tool_use_purpose\": \"Create the probe-bucket S3 bucket as requested\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Create the probe-bucket S3 bucket as requested",
+        "wire_title": "use_aws"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Fetch example.com as requested",
+          "mode": "truncated",
+          "url": "https://example.com"
+        },
+        "title": "Fetching web content",
+        "tool_call_id": "toolu_bdrk_01Df4U15Zh6HT4PGpD2enUQo",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Fetch example.com as requested\",\n  \"url\": \"https://example.com\",\n  \"mode\": \"truncated\"\n}",
+        "tool_kind": "read",
+        "tool_name": "web_fetch",
+        "tool_purpose": "Fetch example.com as requested",
+        "wire_title": "Fetching web content"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Fetch example.com as requested",
+          "mode": "truncated",
+          "url": "https://example.com"
+        },
+        "request_id": "synthetic-id-2",
+        "shell_classified": true,
+        "title": "Fetching web content",
+        "tool_call_id": "toolu_bdrk_01Df4U15Zh6HT4PGpD2enUQo",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Fetch example.com as requested\",\n  \"url\": \"https://example.com\",\n  \"mode\": \"truncated\"\n}",
+        "tool_name": "web_fetch",
+        "tool_purpose": "Fetch example.com as requested"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Df4U15Zh6HT4PGpD2enUQo",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Fetch example.com as requested",
+          "mode": "truncated",
+          "url": "https://example.com"
+        },
+        "title": "web_fetch",
+        "tool_call_id": "toolu_bdrk_01Df4U15Zh6HT4PGpD2enUQo",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Fetch example.com as requested\",\n  \"url\": \"https://example.com\",\n  \"mode\": \"truncated\"\n}",
+        "tool_kind": "read",
+        "tool_purpose": "Fetch example.com as requested",
+        "wire_title": "web_fetch"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search for agent client protocol as requested",
+          "query": "agent client protocol"
+        },
+        "title": "Searching the web",
+        "tool_call_id": "toolu_bdrk_01P5cn9mPVfr14aAbQLGLFkL",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search for agent client protocol as requested\",\n  \"query\": \"agent client protocol\"\n}",
+        "tool_kind": "search",
+        "tool_name": "web_search",
+        "tool_purpose": "Search for agent client protocol as requested",
+        "wire_title": "Searching the web"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search for agent client protocol as requested",
+          "query": "agent client protocol"
+        },
+        "request_id": "synthetic-id-3",
+        "shell_classified": true,
+        "title": "Searching the web",
+        "tool_call_id": "toolu_bdrk_01P5cn9mPVfr14aAbQLGLFkL",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search for agent client protocol as requested\",\n  \"query\": \"agent client protocol\"\n}",
+        "tool_name": "web_search",
+        "tool_purpose": "Search for agent client protocol as requested"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01P5cn9mPVfr14aAbQLGLFkL",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search for agent client protocol as requested",
+          "query": "agent client protocol"
+        },
+        "title": "web_search",
+        "tool_call_id": "toolu_bdrk_01P5cn9mPVfr14aAbQLGLFkL",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search for agent client protocol as requested\",\n  \"query\": \"agent client protocol\"\n}",
+        "tool_kind": "search",
+        "tool_purpose": "Search for agent client protocol as requested",
+        "wire_title": "web_search"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run one subagent that replies with ok",
+          "mode": "blocking",
+          "stages": [
+            {
+              "name": "ok",
+              "prompt_template": "Reply with the single word ok and nothing else.",
+              "role": "kiro_default"
+            }
+          ],
+          "task": "Reply with the word ok."
+        },
+        "title": "Spawning agent crew",
+        "tool_call_id": "toolu_bdrk_01DNEcmsHfcXrLJFSP3sd8BX",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run one subagent that replies with ok\",\n  \"mode\": \"blocking\",\n  \"task\": \"Reply with the word ok.\",\n  \"stages\": [\n    {\n      \"name\": \"ok\",\n      \"role\": \"kiro_default\",\n      \"prompt_template\": \"Reply with the single word ok and nothing else.\"\n    }\n  ]\n}",
+        "tool_kind": "unknown",
+        "tool_name": "subagent",
+        "tool_purpose": "Run one subagent that replies with ok",
+        "wire_title": "Spawning agent crew"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run one subagent that replies with ok",
+          "mode": "blocking",
+          "stages": [
+            {
+              "name": "ok",
+              "prompt_template": "Reply with the single word ok and nothing else.",
+              "role": "kiro_default"
+            }
+          ],
+          "task": "Reply with the word ok."
+        },
+        "request_id": "synthetic-id-4",
+        "title": "Spawning agent crew",
+        "tool_call_id": "toolu_bdrk_01DNEcmsHfcXrLJFSP3sd8BX",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run one subagent that replies with ok\",\n  \"mode\": \"blocking\",\n  \"task\": \"Reply with the word ok.\",\n  \"stages\": [\n    {\n      \"name\": \"ok\",\n      \"role\": \"kiro_default\",\n      \"prompt_template\": \"Reply with the single word ok and nothing else.\"\n    }\n  ]\n}",
+        "tool_name": "subagent",
+        "tool_purpose": "Run one subagent that replies with ok"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01DNEcmsHfcXrLJFSP3sd8BX",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run one subagent that replies with ok",
+          "mode": "blocking",
+          "stages": [
+            {
+              "name": "ok",
+              "prompt_template": "Reply with the single word ok and nothing else.",
+              "role": "kiro_default"
+            }
+          ],
+          "task": "Reply with the word ok."
+        },
+        "title": "subagent",
+        "tool_call_id": "toolu_bdrk_01DNEcmsHfcXrLJFSP3sd8BX",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run one subagent that replies with ok\",\n  \"mode\": \"blocking\",\n  \"task\": \"Reply with the word ok.\",\n  \"stages\": [\n    {\n      \"name\": \"ok\",\n      \"role\": \"kiro_default\",\n      \"prompt_template\": \"Reply with the single word ok and nothing else.\"\n    }\n  ]\n}",
+        "tool_kind": "other",
+        "tool_purpose": "Run one subagent that replies with ok",
+        "wire_title": "subagent"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Report goal completion as requested",
+          "command": "complete",
+          "summary": "Capture probe run: each requested tool (use_aws s3api create-bucket, web_fetch, web_search, subagent) was called once as instructed, and the user denied every one, per the tool results. Nothing was created, fetched, searched, or run. This completion is reported because the user explicitly asked for it."
+        },
+        "title": "Goal complete",
+        "tool_call_id": "toolu_bdrk_01KL3K8ne52T7YGbNevbWum2",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Report goal completion as requested\",\n  \"command\": \"complete\",\n  \"summary\": \"Capture probe run: each requested tool (use_aws s3api create-bucket, web_fetch, web_search, subagent) was called once as instructed, and the user denied every one, per the tool results. Nothing was created, fetched, searched, or run. This completion is reported because the user explicitly asked for it.\"\n}",
+        "tool_kind": "unknown",
+        "tool_name": "goal",
+        "tool_purpose": "Report goal completion as requested",
+        "wire_title": "Goal complete"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01KL3K8ne52T7YGbNevbWum2",
+        "tool_final": true,
+        "tool_output": "✓ Goal complete",
+        "tool_output_bytes": 17,
+        "tool_output_digest": "9f282eb7d6ce88e4c8191f3475e741918c607379c3aa92397d78134278f94756",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Report goal completion as requested",
+          "command": "complete",
+          "summary": "Capture probe run: each requested tool (use_aws s3api create-bucket, web_fetch, web_search, subagent) was called once as instructed, and the user denied every one, per the tool results. Nothing was created, fetched, searched, or run. This completion is reported because the user explicitly asked for it."
+        },
+        "title": "Goal complete",
+        "tool_call_id": "toolu_bdrk_01KL3K8ne52T7YGbNevbWum2",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Report goal completion as requested\",\n  \"command\": \"complete\",\n  \"summary\": \"Capture probe run: each requested tool (use_aws s3api create-bucket, web_fetch, web_search, subagent) was called once as instructed, and the user denied every one, per the tool results. Nothing was created, fetched, searched, or run. This completion is reported because the user explicitly asked for it.\"\n}",
+        "tool_kind": "other",
+        "tool_purpose": "Report goal completion as requested",
+        "wire_title": "Goal complete"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "stop_reason": "end_turn"
+  }
+]

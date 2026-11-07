@@ -20,6 +20,8 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import crew_mode, crew_pause, platform_compat
+from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
+from kiro_crew.testing.wait import until_parked
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +155,9 @@ def _fake_slot(key: str, *, queued: int = 0) -> Any:
         is_closing=False,
         _stop_state="idle",
         window_pending=False,
+        _turn_generation=1,
+        _unstarted_generation=-1,
+        _turns_started=0,
     )
 
 
@@ -819,6 +824,7 @@ async def test_a_pause_landing_while_a_patrol_prepares_holds_its_turn(monkeypatc
 async def test_continue_on_a_paused_root_points_at_the_board(tmp_path, monkeypatch):
     from chat_test_helpers import _make_state
 
+    from kiro_crew.dashboard import chat_handlers  # noqa: F401  (binds continue_turn's names)
     from kiro_crew.dashboard.chat_api.continue_turn import api_chat_slot_continue
 
     state = _make_state(tmp_path)
@@ -856,6 +862,97 @@ async def test_a_refused_member_continue_keeps_it_paused(tmp_path, monkeypatch):
     # Still owed its hand-back: Resume all continues it later.
     assert crew_pause.record("chat-root")["stopped"] == ["chat-w1"]
     assert crew_pause.holds_turn("chat-w1")
+
+
+@pytest.mark.asyncio
+async def test_a_resume_all_during_a_members_refused_continue_still_hands_it_back(
+    tmp_path, routes, monkeypatch
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-w1")
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    resume: list[Any] = []
+
+    async def _continue(_state: Any, slot: Any, **_k: Any) -> str:
+        if resume:
+            routes.calls["continue"].append(slot.key)
+            return "continued"
+        # Resume all is pressed while the member's own Continue is in flight, and
+        # that Continue is then refused (its stopped turn is still tearing down).
+        resume.append(
+            asyncio.ensure_future(routes.handler.api_crew_resume(_req(state, "chat-root")))
+        )
+        await until_parked(routes.handler._root_lock("chat-root"))
+        raise chat_handlers.SlotContinueRefusal("still stopping", "slot_running", 409)
+
+    monkeypatch.setattr(chat_handlers, "continue_slot_turn", _continue)
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    assert (await chat_handlers.api_chat_slot_continue(req)).status == 409
+    # Resume all ran once the refusal had put the member back, so it continued it.
+    assert json.loads((await resume[0]).text)["resumed"] == {"chat-w1": "continued"}
+    assert routes.calls["continue"] == ["chat-w1"]
+
+
+@pytest.mark.asyncio
+async def test_a_members_continue_that_waited_behind_resume_all_starts_no_second_turn(
+    tmp_path, routes, monkeypatch
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-w1")
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    lock = routes.handler._root_lock("chat-root")
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    async with lock:
+        # Resume all holds the lock when the member's own Continue arrives.
+        pressed = asyncio.ensure_future(chat_handlers.api_chat_slot_continue(req))
+        await until_parked(lock)
+        # Resume all hands the member back: its continuation starts a turn.
+        crew_pause.resume("chat-root")
+        slot._turns_started += 1
+    assert (await pressed).status == 200
+    assert routes.calls["continue"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_members_continue_after_resume_and_a_new_pause_still_continues_it(
+    tmp_path, routes, monkeypatch
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr(routes.handler, "_ROOT_LOCKS", {})
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-w1")
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    lock = routes.handler._root_lock("chat-root")
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    async with lock:
+        pressed = asyncio.ensure_future(chat_handlers.api_chat_slot_continue(req))
+        await until_parked(lock)
+        # Resume all hands the member back, then a newer Pause all stops it again.
+        crew_pause.resume("chat-root")
+        slot._turns_started += 1
+        crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    assert (await pressed).status == 200
+    assert routes.calls["continue"] == ["chat-w1"]
+    assert not crew_pause.holds_turn("chat-w1")
 
 
 # ── Ultra Mode runs on the team lead ───────────────────────────────────────────
@@ -981,6 +1078,140 @@ async def test_a_stopped_turn_still_tearing_down_stays_held_for_the_next_resume(
     again = await routes.handler.api_crew_resume(_req(_state(_TREE, slots)))
     assert json.loads(again.text)["resumed"] == {"w1": "continued"}
     assert crew_pause.record("root") is None
+
+
+@pytest.mark.parametrize("key", ["root", "w1"])
+@pytest.mark.parametrize("successor_running", [False, True])
+@pytest.mark.asyncio
+async def test_a_turn_that_starts_once_the_hold_lifts_is_not_continued_or_held_again(
+    routes, monkeypatch, key, successor_running
+):
+    monkeypatch.setattr(routes.handler, "_SETTLE_TRIES", 1)
+    monkeypatch.setattr(routes.handler, "_SETTLE_STEP_SECS", 0)
+    await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    slots = {r["key"]: _fake_slot(r["key"]) for r in _TREE}
+    slot = slots[key] = _fake_slot(key, queued=1)
+    slot.running = True  # the stopped turn is still tearing down
+    real = crew_pause.resume
+
+    def _resume_then_tail_drains(root: str) -> Any:
+        rec = real(root)
+        # The hold is gone, so the stopped turn's own tail starts the queued
+        # message: it either finished inside the wait, or still runs past it.
+        slot._turn_generation += 1
+        slot._turns_started += 1
+        slot._queue, slot.queue_depth, slot.running = [], 0, successor_running
+        return rec
+
+    monkeypatch.setattr(crew_pause, "resume", _resume_then_tail_drains)
+    body = json.loads((await routes.handler.api_crew_resume(_req(_state(_TREE, slots)))).text)
+    assert key not in routes.calls["continue"]
+    assert body["paused"] is False and not crew_pause.holds_turn(key)
+
+
+@pytest.mark.parametrize("later_dispatch", [0, 1])
+@pytest.mark.asyncio
+async def test_a_dispatch_that_ends_unstarted_once_the_hold_lifts_leaves_the_continue_owed(
+    routes, monkeypatch, later_dispatch
+):
+    await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    slots = {r["key"]: _fake_slot(r["key"]) for r in _TREE}
+    w1 = slots["w1"]
+    real = crew_pause.resume
+
+    def _resume_then_a_dispatch_ends_unstarted(root: str) -> Any:
+        rec = real(root)
+        # The stopped dispatch itself, or a wake that took the free slot, ends
+        # before its turn starts; the queue hand-off that follows takes the slot.
+        w1._turn_generation += later_dispatch
+        mark_turn_unstarted(w1)
+        w1._turn_generation += 1
+        return rec
+
+    monkeypatch.setattr(crew_pause, "resume", _resume_then_a_dispatch_ends_unstarted)
+    body = json.loads((await routes.handler.api_crew_resume(_req(_state(_TREE, slots)))).text)
+    assert body["resumed"]["w1"] == "continued"
+
+
+@pytest.mark.parametrize("successor_running", [False, True])
+@pytest.mark.asyncio
+async def test_a_turn_owed_while_resume_lifts_the_hold_is_not_continued_once_it_ran(
+    routes, monkeypatch, successor_running
+):
+    monkeypatch.setattr(routes.handler, "_SETTLE_TRIES", 1)
+    monkeypatch.setattr(routes.handler, "_SETTLE_STEP_SECS", 0)
+    await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    slots = {r["key"]: _fake_slot(r["key"]) for r in _TREE}
+    w4 = slots["w4"]
+    real = crew_pause.resume
+    assert "w4" not in (crew_pause.record("root") or {}).get("stopped", [])
+
+    def _owed_then_resume_then_it_runs(root: str) -> Any:
+        # A held turn reaches the pause gate after Resume all read the record:
+        # it is now owed, then runs once the hold lifts.
+        crew_pause.owe_turn("w4")
+        rec = real(root)
+        _turn_starts(w4)
+        w4.running = successor_running
+        return rec
+
+    monkeypatch.setattr(crew_pause, "resume", _owed_then_resume_then_it_runs)
+    body = json.loads((await routes.handler.api_crew_resume(_req(_state(_TREE, slots)))).text)
+    assert "w4" not in routes.calls["continue"]
+    assert body["paused"] is False and not crew_pause.holds_turn("w4")
+
+
+def _ends_unstarted(slot: Any) -> None:
+    # A dispatch ends before its turn starts; its queue hand-off takes the slot.
+    slot._turn_generation += 1
+    mark_turn_unstarted(slot)
+    slot._turn_generation += 1
+
+
+def _turn_starts(slot: Any) -> None:
+    slot._turn_generation += 1
+    slot._turns_started += 1
+
+
+def _unstarted_then_queued_turn(slot: Any, later: int) -> None:
+    # One or more dispatches end unstarted, then a hand-off starts the queued turn.
+    for _ in range(1 + later):
+        _ends_unstarted(slot)
+    _turn_starts(slot)
+
+
+def _turn_then_unstarted_wakes(slot: Any, later: int) -> None:
+    # A queued turn runs and ends, then one or more wakes take the free slot
+    # and end unstarted.
+    _turn_starts(slot)
+    for _ in range(1 + later):
+        _ends_unstarted(slot)
+
+
+@pytest.mark.parametrize("shape", [_unstarted_then_queued_turn, _turn_then_unstarted_wakes])
+@pytest.mark.parametrize("later_dispatch", [0, 1])
+@pytest.mark.parametrize("successor_running", [False, True])
+@pytest.mark.asyncio
+async def test_a_turn_beside_an_unstarted_dispatch_is_not_continued_or_held_again(
+    routes, monkeypatch, shape, later_dispatch, successor_running
+):
+    monkeypatch.setattr(routes.handler, "_SETTLE_TRIES", 1)
+    monkeypatch.setattr(routes.handler, "_SETTLE_STEP_SECS", 0)
+    await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    slots = {r["key"]: _fake_slot(r["key"]) for r in _TREE}
+    w1 = slots["w1"]
+    real = crew_pause.resume
+
+    def _resume_then_a_real_turn_runs(root: str) -> Any:
+        rec = real(root)
+        shape(w1, later_dispatch)
+        w1.running = successor_running
+        return rec
+
+    monkeypatch.setattr(crew_pause, "resume", _resume_then_a_real_turn_runs)
+    body = json.loads((await routes.handler.api_crew_resume(_req(_state(_TREE, slots)))).text)
+    assert "w1" not in routes.calls["continue"]
+    assert body["paused"] is False and not crew_pause.holds_turn("w1")
 
 
 def test_a_refused_continue_on_the_last_owed_member_brings_the_record_back():

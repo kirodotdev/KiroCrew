@@ -29,6 +29,7 @@ import {
   setTerminalFontFamily,
   setTerminalFontSize,
   setTerminalCursorStyle,
+  setTerminalCopyOnSelect,
   DEFAULT_TERMINAL_FONT_SIZE,
   TERMINAL_CURSOR_STYLES,
 } from '../../hooks/useTerminalFont'
@@ -46,6 +47,7 @@ import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
+import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -92,6 +94,9 @@ const INTENSITY_LABEL_KEYS = {
   intense: 'pages.settings.displayPanel.intensity_intense',
 } as const satisfies Record<IntensityName, string>
 
+/** Why the tray icon switch is locked on, which the switch's description points at. */
+const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
@@ -126,6 +131,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
+  const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -701,7 +707,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main
-          window's dashboard (useCloseAction), local or remote gateway. */}
+          window's dashboard (useCloseAction, useTrayIcon), local or remote
+          gateway. */}
       {closeActionSupported && (
         <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
           <SettingsCard>
@@ -717,6 +724,30 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 `installValue` further down this panel. The switch already
                 shows the unchanged value, so toggling again is the retry. */}
             {closeActionFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+            {trayIconSupported && (
+              <SettingsToggle
+                settingId="display.show-tray-icon"
+                label={i18nT('pages.settings.displayPanel.show_tray_icon')}
+                hint={i18nT('pages.settings.displayPanel.show_tray_icon_desc')}
+                checked={trayIcon.show}
+                disabled={trayIconPending || !trayIcon.canHide}
+                describedBy={trayIcon.canHide ? undefined : TRAY_ICON_LOCKED_NOTE_ID}
+                onChange={setTrayIcon}
+              />
+            )}
+            {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
+            {trayIconSupported && !trayIcon.canHide && (
+              <p id={TRAY_ICON_LOCKED_NOTE_ID} className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.show_tray_icon_locked')}
+              </p>
+            )}
+            {/* No hand-off, for the same drafts as the close row above. */}
+            {trayIconFailed && (
               <ErrorNotice
                 variant="inline"
                 message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
@@ -873,6 +904,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                     : i18nT('pages.settings.displayPanel.terminal_cursor_style_underline'),
             }))}
             onChange={v => setTerminalCursorStyle(v as (typeof TERMINAL_CURSOR_STYLES)[number])}
+          />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_copy_on_select')}
+            hint={i18nT('pages.settings.displayPanel.terminal_copy_on_select_desc')}
+            checked={termFont.copyOnSelect}
+            onChange={setTerminalCopyOnSelect}
           />
           {/* Free text with commit-on-blur, mirroring the font field above: the
               gateway host's installed shells cannot be enumerated from the

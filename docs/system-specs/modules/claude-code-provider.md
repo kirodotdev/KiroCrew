@@ -286,8 +286,9 @@ and effort selection, the full `session/request_permission` flow) works. So
   rewriter refuses to wrap a `type: "registry"` one -- and nothing here can
   resolve a name against the admin's catalog. Holding the line at that one
   overlay read covers every mirror that mounts `stub_elements`, codex included,
-  and any future one; it is a no-op for the kiro-cli path, which drops an
-  unmarked injected entry under registry mode by itself. Crew's control plane is
+  and any future one; it holds on the kiro-cli path too, where an element
+  injected on `session/new` is launched as given rather than filtered against the
+  catalog. Crew's control plane is
   exempt there on the same grounds it is exempt above, and the two functions must
   agree, or a name in the set with no element behind it withholds the spec's only
   copy of that server. A stub
@@ -902,7 +903,8 @@ knows the name: claude is in `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS`, so
 Claude Code commands (`claude/compact-live.jsonl` shows the SDK running a
 `/compact` prompt as its own command). The dashboard's own commands (`/agent`,
 `/goal`, `/workflow`, `/prompts`, `/side`) and a quick-prompt macro such as
-`/plain` still win first. The cost is that a message which merely opens with a
+`/plain`, or a user's own opted-in saved prompt (`quick_prompts.user_quick_prompt`),
+still win first. The cost is that a message which merely opens with a
 slash (a pasted `/etc/hosts` line) is forwarded without context too. The slash
 gate and the app-grant send refusal read the same predicate
 (`_forwards_harness_command`). Such a command answers like a prompt, so its echo
@@ -916,7 +918,8 @@ the configured `agent.acp_backend` because that endpoint has no session key: whe
 `runs_own_slash_commands` holds it lists Claude Code's commands (`/compact`,
 `/clear`, `/context`, `/help`, `/init`, `/review`, `/security-review`, `/todos`,
 `/usage`) and the dashboard's own ones above, minus the blocked set, never kiro-cli's
-`/hooks`, `/code`, `/experiment`, `/logdump`, `/changelog` or `/tools`. Project
+`/hooks`, `/code`, `/experiment`, `/logdump`, `/changelog` or `/tools`. The user's
+opted-in saved prompts join either list. Project
 commands and skills are not listed: nothing records the adapter's
 `available_commands_update` yet. Pinned by `test/test_api_slash_commands.py`.
 
@@ -940,17 +943,44 @@ claude-agent-acp 0.94.0: `test/fixtures/acp_frames/claude/zero-tools-refused-liv
 (0.93.0, the installers' pin, behaved the same; a project allow rule for Bash, Write
 and WebFetch in force; no `tool_call`, no permission request, nothing on disk).
 
-### A fresh conversation is a cold start
+### A fresh conversation on the live adapter
 
-The adapter runs on a dedicated `AcpClient`, and `AcpClient` has no reset that
-starts a new conversation on its live process; only `AcpSessionProvider` (the
-shared-runtime path of kiro, KAS and Codex) has one. `AcpProvider.new_conversation`
-on a Claude session therefore raises `NotImplementedError` naming the backend, and
-both of its callers take their kill-and-respawn fallback: a reused workflow-pool
-worker (`WorkerPool.reset`, which logs the cold start at INFO) and a history
-consolidation pass (`_start_fresh_conversation`, which logs the path it took at
-INFO). No context crosses either reset; the cost is a spawn and `initialize` per
-reuse.
+A reused workflow-pool worker (`WorkerPool.reset`) and a history consolidation pass
+(`_start_fresh_conversation`) ask `AcpProvider.new_conversation` for an empty
+conversation. On this harness that is `AcpClient.new_conversation`
+(`acp/client_new_conversation.py`), gated on `ACP_BACKENDS_CLIENT_NEW_CONVERSATION`.
+It keeps the adapter process that is already running, which skips the spawn and
+`initialize` a kill and respawn pays.
+
+1. The settings seed, the Side Chat deny rules and the `mcpServers` array are
+   prepared again off the loop, as a launch prepares them. When the seed finds the
+   `settings.local.json` Crew wrote replaced since the last session, the reset stops
+   there: only a fresh client leaves such a file out of the setting sources and pins
+   the asking mode, so it gives way to the cold start.
+2. `session/close` ends the old session and its Claude Code process, and the frames it
+   left buffered are dropped, so the client never holds two sessions on one process.
+3. The new `session/new` is set up as a cold start sets one up: the same `_meta`
+   envelope and array (`_new_session_following_substitution`), the starting-mode pin
+   with its project-deny re-read, the derived-spec check, the MCP mount check, the
+   member projection confirmation and the model. The context and cost counters, the
+   between-turn credits, the background launches and the stale-compaction state then
+   start again.
+4. Back in the provider, the steps `start` runs after the client is ready follow:
+   `_apply_initial_effort`, and for a session that keeps no transcript the deletion
+   of the replaced session's files, as `shutdown` deletes them. The deletion also
+   runs after a failed reset that ended the process, since the client then holds
+   no id that `shutdown` could delete it by.
+
+Any failure in steps 1 to 3, a cancel included, ends the process and resets the client
+to its not-started state, so both callers take their kill-and-respawn fallback. No
+context crosses either reset.
+
+Membership rests on a live capture (`acp_frames/claude/new-conversation-live.jsonl`,
+claude-agent-acp 0.94.0): two `session/new` on one process, then `session/close` for
+the first answered `{}`, after which the first id answered `Session not found` and the
+second still answered. Each session runs its own Claude Code process under the
+adapter, and the closed one's had exited. Every other backend on its own `AcpClient`
+raises `NotImplementedError` naming it and is reset by kill and respawn.
 
 ### A Bot's worker session
 

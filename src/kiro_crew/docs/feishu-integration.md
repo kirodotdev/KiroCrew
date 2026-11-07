@@ -35,7 +35,9 @@ Lark).
    pictures and files you send the bot). If you enable group chats, also add
    `im:message.group_at_msg.include_bot:readonly` (receive group messages that
    @-mention the bot). The broader `im:message` grant does not replace the
-   explicit p2p event scope in the current Feishu console.
+   explicit p2p event scope in the current Feishu console. To receive the
+   images an answer refers to, also add `im:resource` (or
+   `im:resource:upload`); without it you get the image's path instead.
 4. **Use long connection** — under *Events & Callbacks*, choose
    **Long connection** (not a request URL), then subscribe to
    `im.message.receive_v1`.
@@ -198,6 +200,22 @@ This needs the `im:message:readonly` permission from the quick start.
   @-mention anyone, so the bot ignores it there. Paste it into a rich-text
   message that @-mentions the bot instead.
 
+## Images in answers
+
+When an answer in a direct message refers to a local image
+(`![chart](/path/to/chart.png)`), the text is sent first and then each image as
+its own image message, with its path removed from the text. An answer that is
+only images sends only the images.
+
+- Only a real PNG, JPEG, GIF, WebP or BMP file is sent, from the session's
+  working directory or its own scratch directory.
+- Each image may be up to 10 MB, with ten images and 64 MiB per answer.
+- An incognito or temporary conversation never sends a local file.
+- A refused image keeps its path, with a `⚠️ … not sent` line saying why. An
+  image that fails to upload (for example, the app lacks `im:resource`) is
+  named by its path in a follow-up message.
+- If the answer text cannot be sent, no image is sent either.
+
 ## Limits
 
 Feishu v1 is deliberately single-shot: the agent's answer is buffered and sent
@@ -210,6 +228,8 @@ Known gaps, all follow-up work rather than defects:
 
 - **No streaming.** Feishu supports `PATCH /im/v1/messages/{id}`, so
   edit-in-place streaming is a natural next step.
+- **No images in group answers.** A group answer keeps printing an image's
+  path, because not every member of the group is on the allow-list.
 - **Replies only.** The bot answers an inbound message and cannot start a
   conversation, so it is not a proactive-notification target.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an

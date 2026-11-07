@@ -33,6 +33,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | An **Ultra Mode root** is a root session (nothing dispatched it) running a conductor as a template. Every session it dispatched, directly or through another, is its **crew member**: the slot list stamps `crew_mode_root: true` on the root and `crew_root: <root key>` on each member, following the persisted lineage past closed sessions, so a member whose root's tab closed after this gateway saw the root, or one reopened from History while its root is known, keeps its root. The known roots are in memory: a root still closed when the gateway starts is not remembered until it is reopened (the migration part reads closed roots from saved metadata) | `crew_mode.stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
 | The Crew panel's routes (`GET .../crew-workers`, `GET .../crew-timeline`, `POST .../crew-workers/{worker}/steer`, `POST .../crew-workers/{worker}/approve`) answer a **Bot thread** as a root too: its sessions are those stamped `mate_root` for it, live, and closed ones from the session tree; a closed Bot thread this gateway saw is answered from saved data like a closed Ultra Mode root. The list answer for a Bot carries `root_kind: "mate"`; an Ultra Mode root's answer is unchanged. The gate is the same owner-only, app-token-refused gate, and a session outside the named root's own tree is refused `not_a_worker` whatever the root's kind. A steer into a Bot's session is not counted as an Ultra Mode steer ([RFC](../../request-for-change/rfc-crewmate-workers-under-the-crewmate.md), migration step 3) | `dashboard/handlers/crew_workers.py` (`_live_root`, `_closed_root_kind`, `_tree_workers`), `crew_mode.mate_workers_of` |
 | A **Bot thread** (slot `mode` `member`) is a root of its own kind, kept apart from Ultra Mode: the same walk stamps `mate_root: <mate thread key>` and `mate_dispatched_by: <direct creator>` on each session it dispatched, directly or through another, stopping at the nearest root of either kind, and a Bot thread this gateway saw holds its sessions after its tab closes. No row gains `crew_root` from it. No list reads the two fields yet; the Crew panel's routes read them to answer a Bot thread as a root (next row) ([RFC](../../request-for-change/rfc-crewmate-workers-under-the-crewmate.md), Design 1) | `crew_mode.stamp_rows`, `crew_mode.live_stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
+| **The person closing a conductor closes its workers.** When `DELETE /api/chat/slots/{slot}` closes an Ultra Mode root or a Bot thread with no app token, the open sessions it still manages after its own close (`session_managers.holder`) close too, down the line, each archived to history, but only one that was in the conductor's tree just before that close (its stamped row names the conductor as `crew_root` or `mate_root`, read in one pass with no await before the close) or was opened while the line was closing; the response names them in `closed_workers` and any that stayed open in `failed_workers`. A session handed up or back by the conductor's own hand-back stays open, as does one that left the tree (`session_release`, an adoption elsewhere), which moves the tree edge and not the manager record, as do a plain chat's sessions and every close by an agent, an app or the idle sweep | `chat_api/slot_lifecycle.py` (`api_chat_slot_delete`), `chat_api/conductor_close.py` (`_conductor_line`, `_close_managed`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | An Ultra Mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
@@ -59,7 +60,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/mcp_tools/control_parts/schemas.py` | The `select_crew` tool declaration |
 | `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
 | `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
-| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
+| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker, the create-request record |
 | `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
 | `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `member-records/` and the identity it answers for a session |
 | `src/kiro_crew/members_parts/self_edit.py` | What a Bot may change on its own record: cleaning, the update, its undo, the rename |
@@ -89,6 +90,27 @@ message only for that status and code together. Other conflicts, including
 memory and template-ownership failures, retain the API error message; missing
 or malformed codes are not guessed to mean a duplicate. Failed creation leaves
 the form open with its entered name and selected template intact.
+
+A create answers `{ok, name, memory_store, member_id}`: `name` is the config key
+the crew was given and `member_id` its immutable identity. A caller that can lose
+that answer (a dropped connection, a gateway restart) names the create with a
+UUID it mints, `request_id` (absent or `null` names nothing; any other value that
+is not a UUID string is `400 invalid_request_id`). Once that create has finished,
+the server records the id in the new member's directory
+(`members/<slug>/create_request.json`, `members.mark_create_request`). The
+reconcile path for a lost answer is to send the same name with the same
+`request_id` again. If the first create landed, the repeat answers `200` with
+that same identity and writes nothing; if it never landed, the repeat is the
+create. `409 agent_exists` means no record names that request: the first create
+has not finished yet or could not record the id, or another crew holds the name;
+the caller retries later or reads the roster. A repeat with no `request_id`, or
+another one, is `409 agent_exists` as before.
+The greeting stays server-owned: the first-greeting record is written before the
+request record, so a caller acting on a `200` repeat finds the greeting owed as
+the first answer would have, and the repeat itself records and starts nothing
+(the welcome below).
+The New Bot dialog sends no `request_id` yet and reconciles a lost answer from
+the roster (below).
 
 ## Execution-choice catalog
 
@@ -312,7 +334,7 @@ project checkout or the edition can supply a name the directory never declared.
 
 Every binding writer answers the same `409 lineage_unverifiable` when it cannot
 verify whether its target is another crew's private copy: crew create
-(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}`), the
+(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}` and `PUT /api/agents` (name in body)), the
 default-agent write, publish and reset. Its `error` sentence depends on the
 cause, which `_UnverifiableLineage.reason` classifies, because only one cause
 clears by itself:
@@ -662,6 +684,37 @@ delete is refused; **Create and edit** refetches the roster before selecting
 the new row, since the auto-select effect replaces a selection the roster does
 not list; the create dialog is titled **Duplicate <name>** when opened from a
 Duplicate affordance, so the three duplicate entry points read as one flow.
+
+## Crew names a proxy would mangle
+
+A crew name with a character that needs percent-encoding (a space becomes
+`%20`) never rides a URL path from the dashboard. A path-normalising reverse
+proxy decodes `%20` back to a bare space, the request-line delimiter, and
+answers 502 before the gateway sees the request (#19976). The record update
+takes the name in the body instead (`PUT /api/agents`, #19981). Every other
+crew route that names the crew in its path also answers under a base64url
+twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
+`[A-Za-z0-9_-]` (#20083): `DELETE`, `GET`/`POST .../avatar`,
+`GET`/`PUT .../capabilities`, `POST .../capabilities/preview`,
+`POST .../capabilities/detach`, `GET`/`PUT .../worker-kit` and
+`POST .../worker-kit/preview`.
+
+- **Encoding** (`kiro_crew/agent_url_path.py`): unpadded base64url of the
+  UTF-8 bytes. A segment that does not re-encode to itself (padding, spare
+  bits set, not UTF-8) is refused `400 name_segment_invalid`, so one name has
+  one spelling. The dashboard's `website/src/api/agentPath.ts` builds the same
+  spelling and keeps a plain name in path form.
+- **Same handler, same gate.** Each twin is registered to the handler of its
+  path-form route, so the owner check runs first and nothing after it changes
+  (`dashboard/agent_name_segment.py`, `agent_route_name`). No twin shares a
+  method and segment pattern with a path-form route, so a crew named `b64`
+  keeps its own routes; aiohttp tries the longer static prefix first, so
+  registration order alone would not guarantee it.
+- **Change cards.** A card's plan uses the same spelling (`agent_path`,
+  `agent_record_write`). The hook reads a twin as its path-form template
+  (`change_cards.route_key`, `B64_ROUTE_ALIASES`) and decodes the name for the
+  memory line (`route_match_info`), so a step, its memory line and its undo
+  guard see one route whichever spelling arrived.
 
 ## Owner-reviewed capability inheritance
 
@@ -1593,7 +1646,11 @@ re-read keeps its retry), and that open's greeting request starts the hidden goa
 welcome; nothing is sent in the user's name. From
 the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
-Bot's chat and asks for no greeting. The dialog's own success path (cache
+Bot's chat and asks for no greeting. A create refused with 409 `data_home_not_owned` (files in the data home belong
+to another account, see `cli.md` "Data home owned by another account") shows that
+cause in one sentence with the server's `fix_command` to copy; Settings shows the
+same notice on every tab while `/api/status` reports `data_home_access.ok` false.
+The dialog's own success path (cache
 invalidation, the post-failure reconcile, the goal stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from
@@ -1689,8 +1746,14 @@ be stale (another device, an unstar); unstarring on the roster zeroes the
 cached `star_order` too, as the server does. Drags are ignored while a
 reorder is saving, and every reorder refetches the roster when it settles, so
 the dock shows what the server holds; a failed reorder, or a roster that fails
-to load, shows an `ErrorNotice` beside the rail. A Bot's working dot reads its
-live DM slot, falling back to the roster's `running`.
+to load, shows an `ErrorNotice` beside the rail. A docked Bot's row carries
+the rail's one accent dot while the Bot has something for the person, read from
+the Bots page row's own sources: it waits on them (its DM slot, or a session it
+dispatched, waits on an approval or a question, through `mateNeedsYouByKey` in
+`website/src/lib/crewMode.ts`, the map the Bots page rows read too), its DM
+slot is unread (`unreadSlots`), or it is working (its live DM slot, falling back
+to the roster's `running`). The dot goes when none of these holds; its
+accessible name says which one put it there.
 `star_order` lives on the crew record next to `starred`, so it follows the
 person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
@@ -4015,19 +4078,24 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   member working protocol (`context_assembly.member._MEMBER_HOW_YOU_WORK_COMMON`)
   hand research and long work to a worker session for the same reason, and
   they, the operating-mode block (`operating_mode_block`) and the heartbeat
-  prompt all dispatch and END the turn rather than waiting or polling: for a
-  quick single task the worker's report wakes the thread, and no monitor loop is
+  prompt all dispatch and END the turn rather than waiting or polling: without
+  the ledger the worker's report wakes the thread, and no monitor loop is
   armed. **Ledger-tracked work is the one exception**, and only where the
   conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
   after the governance ceiling
   (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
   names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
   in place of `conductor.tracking`), and the operating-mode block appends
-  `conductor.patrol`. That piece teaches the dispatch for work with more than one
-  item, or work the user asked to track. It opens by sending the Bot to the
+  `conductor.patrol`. There every task the Bot hands to a worker is tracked, a
+  single task too, as on the Ultra Mode conductor, and so is work the user asked
+  to track; the tracking sentence says the same, and the goal-setup nudge
+  (`goal_setup.kickoff_step2_ledger`) and the heartbeat hand-off
+  (`goal_reminder._HEARTBEAT_WORKERS_LEDGER`) track their worker as an item too
+  (`member_mate_tools.member_has_ledger_tools`). It opens by sending the Bot to the
   `goal-conductor` skill before planning such work, and to follow it for
   dispatch, patrol, verdicts and worker debate, as the conductor's own charter
-  does. Then: record the goal, then per item
+  does. Then: record the goal for work with more than one item (a single task
+  records none), then per item
   `work_ledger_record action=create`, `session_create`, `work_ledger_record
   action=bind`, `session_send`, binding before the seed. It also teaches the
   patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
@@ -4038,8 +4106,10 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   (see "The two conductors stay in step" below). A spec that does not mount and grant the
   ledger keeps the text above unchanged, and no loop is taught. The Bot
   conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
-  skill scope) and the `dashboard` skill its prompt names only when its spec
-  passes the same check after the governance ceiling. The intended scope is
+  skill scope), the `dashboard` skill its prompt names and the
+  `skill_resources.WIDGET_POINTER_SKILLS` its `prompt.md` widget pointer leads
+  to only when its spec passes the same check after the governance ceiling.
+  The intended scope is
   those mapped skills alone, as on the Ultra Mode conductor. For one release
   `skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS` stays on: the mapping is
   ADDED to the user's `~/.kiro/skills` and a trusted workspace `.kiro/skills`
@@ -4067,9 +4137,15 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   worker lacks" below). It mounts `kirocrew-work` the same way as the
   conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
   `work_brief`, `work_report`), so a worker bound to an item in its
-  Bot's ledger can read its brief and report on it; it is a base server,
+  Bot's ledger can read its brief and report on it (`worker.principles` tells
+  it to call `work_brief` first and to report on the item it names with
+  `work_report`); it is a base server,
   so a Bot's file cannot replace its entry (a switch-off is still a
-  restriction, below). Both specs are written from
+  restriction, below). Each server an edition contributes
+  (`McpToolingProvider.extra_mcp_servers()`) that the worker mounts gets an
+  `@<server>` ref in `tools`, which `build_agent_config()` leaves out
+  (`service_agents._register_edition_refs`); `allowedTools` gains nothing, so
+  those tools prompt. Both specs are written from
   `build_agent_config()` on every gateway start
   (`service_agents._install_mate_conductor_agent` /
   `_install_mate_worker_agent`) into `~/.kiro/mates/agents/`, beside the
@@ -4382,7 +4458,9 @@ or `revision_required` apply makes a fresh preview for the same agent and keeps
 the reason above it, because re-picking the same agent fires no change; a failed
 preview offers **Try again** and **Cancel**. A finished add says so under the
 picker ("Added N to <name>."), and when it granted auto-approvals it says those
-tools now run without asking and offers **Open Approvals**. Its rows name items through
+tools now run without asking and offers **Open Approvals**, a button with an
+opaque `--bg-elevated` fill and a `--border-strong` edge so it reads on the green
+tint before any hover. Its rows name items through
 `components/crew/workerKitLabels.ts`, grouped by kind in a fixed order under a
 counted heading, added before skipped (`components/crew/workerKitGroups.ts`),
 each change word a badge tinted by its hue with a hue-coloured glyph, the word
@@ -4788,7 +4866,7 @@ no other card wears them). The call answers that card with `opt_in: true`, and
 preview on, so it does not ask again. The request is held in the Bot's
 record, written BEFORE the card is raised (`mate_tool_access.reserve_offer`,
 which also claims the one ask, so a second call at the same time gets
-`409 opt_in_pending`): a record that cannot be written raises no card
+`409 opt_in_pending`): a record that cannot be read or written raises no card
 (`503 opt_in_unrecorded`), a card that is then not raised takes the record back
 (`release_offer`), and the card's id is filled in after (`bind_card`; while it is
 missing the offer counts as waiting for `RESERVATION_GRACE_SECS`, then as a card
@@ -5143,7 +5221,7 @@ Ultra Mode chat.
 | The Crew tab's list has two sources. The slot store's own rows -- every open slot stamped `crew_root` for the root, a peer's left out -- are shaped as list rows (`liveCrewWorkers`: state to status and group, lineage from `created_by`) and are always in, so a crew member the person's lists leave out is reachable from the tab whether or not the gateway serves `GET /api/chat/slots/{root}/crew-workers`. That route adds what the store has not (closed crew members, the ledger item, the summary, the server's own group) and its rows win where both name a key (`mergeCrewWorkers`). A 404 on a crew route (an older gateway, or the part that serves it has not landed) is NO DATA, not a failure (`crewRouteNotServed`): the list, the sidebar row's crew summary and the Timeline say nothing is wrong and hand nothing to the agent -- the list shows the open crew members or "No crew yet", the Timeline one muted line that this gateway has no timeline yet -- and the route is not polled again. A read that fails for a real reason still says so. The route is re-read when the slot store says the crew moved (`useCrewWorkersPush`: a crew row's state, title or `parent` from the lineage push, or the `crew_work` of the root or of a sub-conductor, which the gateway follows for any crew member that dispatched another), one coalesced re-read per burst, with a 60 s poll for what no push carries; the gateway keeps each root's closed workers, their titles and every ledger store's facts until the session tree, the live keys or that store's change mark moves (`crew_workers._root_cache`) | `website/src/lib/crewWorkers.ts`, `website/src/pages/chat/command-center/CrewWorkerList.tsx`, `src/kiro_crew/dashboard/handlers/crew_workers.py` |
 | A PEER's crew members stay rows in the federated session list (`sessionSources.ts`): a local crew member leaves the list because its root's Crew panel lists it, but a peer's root opens in the crew window, which has no such panel, and the panel reads this gateway's slots and routes, so for a peer's crew member the list is the one way in. The rows keep their `crew_root` / `crew_mode_root` stamps for the marks | `website/src/pages/chat-sidebar/sessionSources.ts`, `website/src/hooks/useInstanceSessions.ts` |
 | What a hidden crew member (its root open) owes the person rides on its root. The Command Bar's Needs You lifts an Ultra Mode root whose workers wait on a tool approval with the Approve pill and the count (`crewWaitingApprovals` over the FULL slot set, the count the fleet page's command center uses); the root's own approval, when it has one, reads as any session's. The sessions view still lists no crew member | `website/src/apps/command-bar/CommandBarOverlay.tsx`, `website/src/apps/command-bar/CommandBarOverlayRootRows.tsx` |
-| Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/UltraCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
+| Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`; an idle worker whose own bounded loop will wake it, `ledger_wake.worker_looping` sent as `looping`, is `working`, and so is its milestone, its goal-board card and, when every open item loops, its conductor's row: "N running", no new word), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/UltraCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
 | While a crew member is on screen, the Crew tab opens with a **Back to main chat** row (`CrewPanelBack`, above both views); it reads **Open main chat** while the root is closed, and then reopens the root from its saved transcript before opening it. Desktop keeps the side panel open on the root; a phone lands on the chat. A failed reopen shows the inline notice under the row (`commandCenter.worker_reopen_failed`, with the agent hand-off). The row takes its label and action from `useCrewBack`, the one place a Back comes from; the worker view's breadcrumb (`CrewWorkerBreadcrumb`) uses the same `useCrewBack` on its root crumb, so clicking the main chat's name does what the row does, and its sub-team lead crumb opens that member the way its Crew tab row does (reopening a closed one first); the current member and its status stay plain text | `components/crew/useCrewBack.ts`, `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/UltraCrewPanel.tsx`, `components/crew/CrewWorkerBreadcrumb.tsx` |
 | While one of a root's crew members is the active chat, the sidebar marks the root's row as its parent: class `session-crew-parent`, `data-crew-parent`, and a screen-reader line (`components.crewMode.parent_row_hint`). `ChatSidebar` derives `crewParent` from the active slot's `crew_root`; `rowView` sets `isCrewParent` only when no crew window covers the pane, and the mark never makes the root the active row | `pages/ChatSidebar.tsx`, `pages/chat-sidebar/rows.ts`, `pages/chat-sidebar/SessionRow.tsx`, `styles/crew-mode.css` |
 | The List view draws the crew as ONE tree (`crewTree`): a finished member stays under its lead and is only styled (`data-done`, muted title). A top-level tree that is finished all through folds under one **Finished · N** row (N counts its members), folded by default. The open or folded choice is kept per browser in localStorage (`CREW_FINISHED_OPEN_KEY`, `mc-crew-workers-finished-open`). That fold hides its rows, the one on screen included; the Back row stays the way to the root | `pages/chat/command-center/UltraCrewPanel.tsx`, `pages/chat/command-center/CrewWorkerList.tsx` |

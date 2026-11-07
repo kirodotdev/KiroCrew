@@ -120,6 +120,13 @@ describe('SessionStorageScreen (inventory)', () => {
     expect(screen.getByText('Storage screen redesign')).toBeTruthy()
   })
 
+  it('names the sort dropdown for what it controls', async () => {
+    // Without a name the trigger reads only the chosen order ("Largest first").
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+    expect(screen.getByLabelText('Sort sessions')).toBeTruthy()
+  })
+
   it('collapses background sessions into one group row', async () => {
     renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
     await waitFor(() => expect(screen.getByText(/Background agents/)).toBeTruthy())

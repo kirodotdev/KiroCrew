@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
     from kiro_crew.agent_sdk.context import ContextPromptProvider
     from kiro_crew.providers.acp import AcpProvider
@@ -499,7 +499,9 @@ def backend_delivers_spec_servers(backend: str) -> bool:
     return backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE or has_mirror(backend)
 
 
-def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bool]]]:
+def agent_spec_mcp_refs(
+    agent: str, *, backends: Collection[str] | None = None
+) -> tuple[bool, list[tuple[str, list[str], bool]]]:
     """Per selectable backend: which of *agent*'s ``@server`` refs resolve to nothing.
 
     The static half of the runtime detector in
@@ -531,6 +533,9 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     Passing ``False`` would report every ref as unresolved on the one backend
     whose projection actually works.
 
+    *backends* narrows the rows to those ids, for a caller that asks about one
+    backend: each row costs a full translation of the spec.
+
     Blocking (reads the spec) and never raises: a backend whose projection cannot
     be resolved is omitted rather than reported wrongly. Function-local imports
     for the same boot-path reason as every other function here.
@@ -545,7 +550,7 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     if not spec:
         return False, []
     rows: list[tuple[str, list[str], bool]] = []
-    for backend in selectable_backend_values():
+    for backend in selectable_backend_values() if backends is None else backends:
         try:
             mirror = mirror_for(backend)
             wire: list = []

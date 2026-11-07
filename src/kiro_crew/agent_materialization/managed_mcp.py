@@ -415,13 +415,15 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
     ``spec_gate`` is closed — the same predicate the two spec writers use, so a
     caller cannot resurrect a server emission withholds.
 
-    ``include_opt_in`` resolves an ``opt_in`` entry's invocation anyway, and exists
-    for the ONE caller that is not asking the emission question:
-    ``mcp_gateway.gatewayd._spawns_own_control_plane``, which compares a spawn's
-    binary and argv against the invocation this name is DEFINED as. A closed
-    ``spec_gate`` still yields ``None`` under the flag; the branch below says why the
-    two disqualifiers part company there. It grants nothing on its own, because
-    neither spec writer passes it: an opt-in entry a writer omits is still omitted.
+    ``include_opt_in`` resolves an ``opt_in`` entry's invocation anyway, for callers
+    that are not asking the emission question: the control-plane check
+    (``mcp_gateway.gatewayd._spawns_own_control_plane``), which compares a spawn's
+    binary and argv against the invocation this name is DEFINED as, and the paths
+    that resolve a server a spec or grant already names (the app-agent copier in
+    ``apps/bridges_agents.py`` among them). A closed ``spec_gate`` still yields
+    ``None`` under the flag; the branch below says why the two disqualifiers part
+    company there. It grants nothing on its own: neither host spec writer passes it,
+    and the app-agent copier passes it only for a server the agent already names.
 
     ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
     :func:`build_agent_config`. The flag is kiro-cli's local approval, and the
@@ -782,12 +784,20 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
             entry[MERGED_MARK] = True
 
 
-def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: frozenset[str]) -> None:
+def register_managed_refs(
+    config: dict,
+    *,
+    fresh_install: bool,
+    gated_off: frozenset[str],
+    mounted_aliases: dict[str, str],
+) -> None:
     """Reference the managed servers in ``tools`` and audit the ones a gate withholds."""
     valid_servers: dict[str, Any] = config["mcpServers"]
     # On fresh installs, ensure managed MCP tools are in tools (but NOT
     # allowedTools — new MCPs may have destructive tools; user opts in).
     # On existing configs, don't touch tools/allowedTools — user controls those.
+    # An edition server first supplied on an existing config gets its ref once
+    # from ``guide_platform.grant_edition_refs_once`` instead.
     if fresh_install:
         added_refs: list[str] = []
         # Managed servers + edition-contributed servers both get their @ref
@@ -800,8 +810,9 @@ def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: froze
             n for n in agent_mod._extra_mcp_servers() if n not in agent_mod._MANAGED_MCP_SERVERS
         ]
         for mcp_name in _register_names:
-            ref = f"@{mcp_name}"
-            if mcp_name in valid_servers and ref not in config.get("tools", []):
+            alias = mounted_aliases.get(mcp_name, mcp_name)
+            ref = f"@{alias}"
+            if alias in valid_servers and ref not in config.get("tools", []):
                 config.setdefault("tools", []).append(ref)
                 added_refs.append(ref)
         if added_refs:

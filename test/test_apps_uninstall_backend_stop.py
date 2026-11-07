@@ -2,24 +2,16 @@
 
 Both entry points that remove an app stop its backend on positive evidence.
 
-The CLI is a separate process from the gateway, so it holds no handle on the
-child the gateway spawned: stopping the backend locally is not available to it.
-It hands the uninstall to a running gateway the way ``enable`` and ``disable``
-do, carrying ``--purge-data``. When no gateway answers, it says plainly that it
-stopped nothing instead of reporting success.
+The CLI holds no handle on the gateway's child, so it hands the uninstall (with
+``--purge-data``) to a running gateway, and says it stopped nothing when none answers.
 
-The HTTP handler stops the backend for every app, whatever ``resources`` holds.
-That field is read from the app's own installed metadata, so honouring it lets
-an app declare ``resources: "app"`` and switch off its own teardown. The
-scheduler cleanup is ungated for the same reason, and because an ``app:<name>``
-job is persisted in the gateway's own cron store and fired by the gateway's own
-service whatever that field says.
+The HTTP handler stops the backend and the scheduler cleanup whatever ``resources``
+holds: that field is the app's own metadata, so honouring it would let an app switch
+off its own teardown.
 
-After the stop the port is OBSERVED, because the stop's boolean answers
-``False`` both for "nothing to stop" and for "something runs that I did not
-stop", and ``True`` only for "the process I tracked is gone" -- which says
-nothing about a worker the app spawned for itself. A port still accepting
-connections is reported as ``unstopped_backend_port``.
+After the stop the port is OBSERVED, because the stop's boolean cannot tell "nothing
+to stop" from "a process I did not track". A port still accepting connections is
+reported as ``unstopped_backend_port``.
 """
 
 from __future__ import annotations
@@ -148,11 +140,8 @@ class TestCliFileOnlyUninstallDoesNotClaimAStop:
     def test_a_recorded_port_reports_even_when_the_manifest_denies_a_backend(self) -> None:
         """The manifest is the app's own file, so it cannot be the only gate.
 
-        An app trusted to run code can drop its ``entryPoint`` and would otherwise
-        silence the one notice about the process it is still running. The pidfile
-        lives under ``KIROCREW_HOME``, outside the app directory, so the app cannot
-        reach it — and this path is the default on Windows and in sandboxed shells,
-        where "no gateway reached" coexists with a gateway that started the backend.
+        An app can drop its ``entryPoint`` to silence the notice; the pidfile lives under
+        ``KIROCREW_HOME``, out of the app's reach.
         """
         assert "was not stopped" in self._drive(entry_point="", recorded_port=9137)
 
@@ -321,11 +310,8 @@ class TestUninstallHandlerStopsAndObservesTheBackend:
     async def test_no_recorded_port_is_reported_as_unverifiable(self) -> None:
         """ "Nothing observed" is not "stopped", and here it cannot even be checked.
 
-        With no gateway-recorded port the probe has only the DECLARED one to go on,
-        and ``onUninstall`` has already run app-controlled code inside the directory
-        that declares it — so an untracked fixed-port backend could have relabelled
-        the port it still holds. Nothing later catches that: the files are gone and
-        the stop dropped the pidfile record the next start would reap from.
+        Only the DECLARED port is left, and ``onUninstall`` ran app code that could have
+        relabelled it. Nothing later catches that, since the pidfile record is gone.
         """
         body, _, _ = await self._run(resources="gateway", live_port=None, recorded_port=None)
 
@@ -354,11 +340,9 @@ class TestUninstallHandlerStopsAndObservesTheBackend:
 class TestACronWriteFailureAbortsBeforeAnythingDestructive:
     """A removal that raised did not persist, and the count cannot say so.
 
-    ``deregister_app_crons_from_service`` answers ``0`` both for "the app owned
-    nothing" and for "the write never landed", and re-counting the rows cannot
-    settle it either: a failing save leaves them filtered out of the in-memory job
-    list until a reload. So the exception is the only evidence, and the uninstall
-    consumes the entry point that reports it.
+    ``deregister_app_crons_from_service`` answers ``0`` for "owned nothing" and for "the
+    write never landed", and a failed save also hides the rows in memory, so only the
+    exception is evidence.
     """
 
     async def _run_with_cron_failure(self, exc: Exception) -> tuple[int, dict[str, Any], MagicMock]:

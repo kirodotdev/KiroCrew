@@ -24,6 +24,7 @@ from denied_commands_security_helpers import (
     _rule_pattern,
 )
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew import security
 from kiro_crew.security import _GIT_PUBLISH_RULE_PATTERNS, BUILTIN_DENIED_RULES
 from kiro_crew.security import argv_floor as _argv_floor
@@ -216,6 +217,19 @@ class TestBuiltinRuleMatcherShape:
             matcher = _deny_matcher(_rule_pattern(rule_id))
             assert not matcher._bounded, rule_id
             assert len(matcher._frag_res) == 1, rule_id
+
+    @pytest.mark.parametrize("rule_id", [_RULE_KILL + "-interpreter", _RULE_MINT + "-argv"])
+    def test_interpreter_rules_stay_linear_on_one_plain_long_word(self, rule_id):
+        # A hex blob is one long run of word characters, which an optional ``\w+\.``
+        # in front of the sink names rescans from every start.
+        from kiro_crew.security import _deny_matcher
+
+        matcher = _deny_matcher(_rule_pattern(rule_id))
+
+        def reject(text: str) -> None:
+            assert not matcher.match(text)
+
+        assert_rejected_without_backtracking(reject, lambda n: "echo " + "a" * n)
 
 
 class TestSelfFloorShortCircuit:

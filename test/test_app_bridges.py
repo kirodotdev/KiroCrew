@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,7 @@ from kiro_crew.apps.bridges import (
     _safe_link_name,
     deregister_app,
     load_app_cron_defs,
+    reconcile_app_skills,
     refresh_app_agents,
     register_app,
 )
@@ -533,6 +536,87 @@ class TestSkillRegistration:
         assert (app_dir_path / "real.md").is_file(), "the real file survives"
 
 
+# Owning app of each app-skill link, for tools that run without a gateway
+
+
+def _install_skill_app(tmp_path, name, skills):
+    src = _make_app_source(tmp_path, name=name, skills=[f"skills/{s}" for s in skills])
+    for skill in skills:
+        (src / "skills" / skill).mkdir(parents=True, exist_ok=True)
+        (src / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n")
+    install_app(src)
+
+
+def _register(app_env, name):
+    app_root = app_env["home"] / "apps" / name
+    _register_skills(name, AppManifest.from_json_file(app_root / APP_MANIFEST_FILENAME), app_root)
+
+
+def _skill_links(app_env):
+    data = json.loads((app_env["home"] / "skills" / ".app-skill-links.json").read_text())
+    assert data["format"] == 1
+    return {rel: entry["app"] for rel, entry in data["links"].items()}
+
+
+class TestAppSkillLinks:
+    def test_a_flat_link_names_the_app_that_registered_it_last(self, tmp_path, app_env):
+        _install_skill_app(tmp_path, "app-one", ["shared"])
+        _register(app_env, "app-one")
+        assert _skill_links(app_env) == {"app-one/shared": "app-one", "shared": "app-one"}
+
+        _install_skill_app(tmp_path, "app-two", ["shared"])
+        _register(app_env, "app-two")
+        assert _skill_links(app_env) == {
+            "app-one/shared": "app-one",
+            "app-two/shared": "app-two",
+            "shared": "app-two",
+        }
+
+    def test_a_removed_skill_and_a_deregistered_app_drop_their_entries(self, tmp_path, app_env):
+        _install_skill_app(tmp_path, "test-app", ["kept", "dropped"])
+        _register(app_env, "test-app")
+        manifest_path = app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest["skills"] = ["skills/kept"]
+        manifest_path.write_text(json.dumps(manifest))
+
+        reconcile_app_skills("test-app")
+        assert _skill_links(app_env) == {"test-app/kept": "test-app", "kept": "test-app"}
+
+        _deregister_skills("test-app")
+        assert _skill_links(app_env) == {}
+
+    def test_reconcile_rebuilds_a_corrupt_file_with_only_app_links(self, tmp_path, app_env):
+        # The user's own skills: a real directory with the app skill's name (so no flat
+        # link is made), and a folder of links named like no app.
+        skills_root = app_env["home"] / "skills"
+        (skills_root / "my-skill").mkdir(parents=True)
+        drafts = tmp_path / "drafts" / "notes"
+        drafts.mkdir(parents=True)
+        (skills_root / "personal").mkdir()
+        platform_compat.symlink_or_junction(str(drafts), str(skills_root / "personal" / "notes"))
+        _install_skill_app(tmp_path, "test-app", ["my-skill"])
+        _register(app_env, "test-app")
+        (skills_root / ".app-skill-links.json").write_text("{ not json")
+
+        reconcile_app_skills("test-app")
+
+        assert _skill_links(app_env) == {"test-app/my-skill": "test-app"}
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
+    def test_junction_links_are_recorded(self, tmp_path, app_env, monkeypatch):
+        _install_skill_app(tmp_path, "test-app", ["my-skill"])
+
+        def _refused(*_args, **_kwargs):
+            # A non-admin Windows account holds no symlink privilege, so links are junctions.
+            raise OSError(1314, "A required privilege is not held by the client")
+
+        monkeypatch.setattr(os, "symlink", _refused)
+        _register(app_env, "test-app")
+
+        assert _skill_links(app_env) == {"test-app/my-skill": "test-app", "my-skill": "test-app"}
+
+
 # Top-level register / deregister
 
 
@@ -583,6 +667,52 @@ class TestTopLevel:
         assert refreshed == []
         # The agent-spec lock file spec writers share is not a spec.
         assert not list(app_env["kiro_agents"].glob("*.json"))
+
+    def test_a_gate_closed_managed_ref_is_neither_copied_nor_reported(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # Computer use off: the app agent's spec must not carry kirocrew-computer
+        # (its backend would stall KAS readiness), and the ref it leaves dangling on
+        # purpose is not a "will never mount" finding on every registration.
+        import kiro_crew.agent as agent_mod
+
+        computer = agent_mod._MANAGED_MCP_SERVERS["kirocrew-computer"]
+        monkeypatch.setitem(computer, "spec_gate", lambda: False)
+        src = _make_app_source(tmp_path)
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps({"name": "my-agent", "tools": ["@kirocrew-computer", "@kirocrew-core"]})
+        )
+        install_app(src)
+
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            assert refresh_app_agents("test-app")
+
+        (spec_path,) = app_env["kiro_agents"].glob("*.json")
+        servers = json.loads(spec_path.read_text(encoding="utf-8"))["mcpServers"]
+        assert "kirocrew-computer" not in servers
+        assert "kirocrew-core" in servers
+        assert "never mount" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("before", "after", "materialized"),
+        [(True, True, True), (True, False, False), (None, None, False), (True, None, True)],
+        ids=["enabled", "disabled-during-rewrite", "unreadable-before", "unreadable-after"],
+    )
+    def test_refresh_app_agents_if_enabled_rechecks_enablement_around_the_rewrite(
+        self, tmp_path, app_env, monkeypatch, before, after, materialized
+    ):
+        # A CLI disable (another process) can land while a computer-use enable flip
+        # rewrites app agents; the rewrite must not leave that app's agents
+        # dispatchable; an unreadable state writes nothing before and deletes nothing after.
+        import kiro_crew.apps.bridges_register as register_mod
+
+        install_app(_make_app_source(tmp_path))
+        states = iter([before, after])
+        monkeypatch.setattr(register_mod, "app_enabled_state", lambda _name: next(states))
+
+        register_mod.refresh_app_agents_if_enabled("test-app")
+
+        assert bool(list(app_env["kiro_agents"].glob("*.json"))) is materialized
 
     def test_install_while_execution_denied_registers_nothing(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.execution as execution_mod

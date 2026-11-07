@@ -262,13 +262,8 @@ def test_run_publishes_ready_before_wait_and_starts_dispatchers_afterward():
 def test_the_crew_log_child_liveness_probe_is_registered_after_ready():
     """Registering the probe imports the emitter, so it stays off the boot path.
 
-    ``no-new-work-on-gateway-boot-path`` counts an optional, flag-off subsystem's
-    import as boot work whatever the handler checks later, and importing the
-    emitter pulls the ledger store in with it. Registering after the
-    ``KIROCREW_READY`` print keeps that cost out of every launch; registering
-    before the dashboard workers and cron start keeps it ahead of the first
-    session that could open a ledger and run its repair, which without a probe
-    would be free to close a child that is still running.
+    After ``KIROCREW_READY`` keeps the import off launch; before the dashboard workers and
+    cron start keeps it ahead of any repair, which without a probe could close a live child.
     """
     source = inspect.getsource(GatewayOrchestrator.run)
     ready = source.index('print(f"KIROCREW_READY:')

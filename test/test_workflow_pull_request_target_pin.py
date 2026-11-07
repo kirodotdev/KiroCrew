@@ -16,6 +16,7 @@ ALLOWED = {
     "fork-pr-label.yml",
     "fork-workflow-guard.yml",
     "pr-readiness.yml",
+    "sensitive-change-review.yml",
 }
 
 

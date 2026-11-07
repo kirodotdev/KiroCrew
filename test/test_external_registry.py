@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -340,17 +341,36 @@ class TestFetchExternalRegistryValidation:
             assert result is None  # git failed but validation passed
 
     @pytest.mark.asyncio
-    async def test_accepts_branch_with_slashes(self):
+    async def test_accepts_branch_with_slashes(self, monkeypatch, tmp_path):
         """Branch names like 'feature/foo' are valid git refs."""
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
-            mock_proc = AsyncMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b"error"))
-            mock_proc.returncode = 128
-            mock_exec.return_value = mock_proc
-            await _fetch_external_registry_index(
-                "https://github.com/example/MyRepo.git", "feature/branch-name"
-            )
-            assert mock_exec.called
+        # The sandbox wrapper is swapped for a real stand-in "git": a child that
+        # records the clone argv and writes an index into the clone directory
+        # (its last argument), so no network is touched.
+        record = tmp_path / "clone-argv.json"
+        fake_git = tmp_path / "fake_git.py"
+        fake_git.write_text(
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(record)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "index = [{'name': 'slashed-app', 'repo': 'https://github.com/example/MyRepo.git'}]\n"
+            "pathlib.Path(sys.argv[-1], 'app-registry.json').write_text(json.dumps(index))\n",
+            encoding="utf-8",
+        )
+
+        async def _run_fake_git(argv, **_kwargs):
+            return [sys.executable, str(fake_git), *argv], None
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry_pipeline.indexes.wrap_argv_async", _run_fake_git
+        )
+        result = await _fetch_external_registry_index(
+            "https://github.com/example/MyRepo.git", "feature/branch-name"
+        )
+
+        assert result is not None
+        assert [row["name"] for row in result] == ["slashed-app"]
+        clone_argv = json.loads(record.read_text(encoding="utf-8"))
+        assert clone_argv[clone_argv.index("--branch") + 1] == "feature/branch-name"
 
 
 @pytest.mark.asyncio

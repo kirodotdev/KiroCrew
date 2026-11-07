@@ -58,6 +58,7 @@ import { Card, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
   announceChainedCrew,
   clearChainRefusal,
@@ -70,7 +71,7 @@ import {
   getRemoteProvisionerRenderer,
 } from '../../components/remoteProvisionerRenderers'
 import type { ErrorReport } from '../../utils/errorReport'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, parseErrorField, reportForError } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
@@ -872,6 +873,16 @@ export function RemoteCrewPanel() {
   }, [errMsg])
 
   const preflight: CloudPreflight | undefined = preflightQuery.data
+  // The gateway could not run the `aws` CLI at all: this host has no sandbox
+  // for it. Keyed on the code, so the sentence is the reader's language, and the
+  // no-result line below must not blame credentials nobody read.
+  const preflightNoSandbox = preflightQuery.error instanceof ApiError
+    && parseErrorCode(preflightQuery.error.body) === 'sandbox_unavailable'
+  // Only `no_backend` means this host has no sandbox: `transient` clears on a
+  // retry, and `foreign_sandbox` is an outer sandbox around a host that has one.
+  const preflightSandboxKind = preflightNoSandbox && preflightQuery.error instanceof ApiError
+    ? parseErrorField(preflightQuery.error.body, 'kind')
+    : undefined
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
@@ -981,10 +992,11 @@ export function RemoteCrewPanel() {
   }
 
   const Tabs = (
-    <div className="flex gap-1 border-b border-border mb-5">
+    <RadioChipGroup className="flex gap-1 border-b border-border mb-5" ariaLabel={i18nT('pages.settings.remoteCrewPanel.view_label')}>
       <button
         type="button"
         onClick={() => setTab('crews')}
+        {...radioChip(tab === 'crews')}
         aria-label={i18nT('pages.settings.remoteCrewPanel.your_crews')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'crews' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
@@ -994,13 +1006,14 @@ export function RemoteCrewPanel() {
       <button
         type="button"
         onClick={() => setTab('setup')}
+        {...radioChip(tab === 'setup')}
         aria-label={i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'setup' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
         <Rocket size={14} /> {i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
         {inProgress.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden />}
       </button>
-    </div>
+    </RadioChipGroup>
   )
 
   const Notices = (
@@ -1359,7 +1372,14 @@ export function RemoteCrewPanel() {
             {preflightQuery.isError && (
               <ErrorNotice
                 className="mb-2"
-                message={errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                message={preflightNoSandbox
+                  ? preflightSandboxKind === 'transient'
+                    ? i18nT('pages.settings.remoteCrewPanel.aws_check_sandbox_busy')
+                    : preflightSandboxKind === 'foreign_sandbox'
+                      ? i18nT('pages.settings.remoteCrewPanel.aws_check_outer_sandbox')
+                      : i18nT('pages.settings.remoteCrewPanel.aws_check_no_sandbox')
+                  : errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                report={preflightNoSandbox ? reportForError(preflightQuery.error) : undefined}
                 askAgent
               />
             )}
@@ -1424,8 +1444,11 @@ export function RemoteCrewPanel() {
             ) : (
               <div className="text-[13px] text-muted py-1">
                 {/* The failure itself renders above, independent of this branch;
-                    this is the no-result state with its Re-check. */}
-                {i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
+                    this is the no-result state with its Re-check. A check that
+                    failed to run read no credentials, so it must not blame them. */}
+                {preflightQuery.isError
+                  ? i18nT('pages.settings.remoteCrewPanel.check_not_run')
+                  : i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
                 <div className="mt-2"><Btn onClick={runCheck} disabled={preflightQuery.isFetching}><RefreshCw className={`lucide-inline${preflightQuery.isFetching ? ' animate-spin' : ''}`} /> {preflightQuery.isFetching ? i18nT('pages.settings.remoteCrewPanel.checking') : i18nT('pages.settings.remoteCrewPanel.re_check')}</Btn></div>
               </div>
             )}

@@ -656,6 +656,8 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.episodic_max_results` | Max episodic memories injected per session | `8` |
 | `memory.episodic_max_count` | Max total episodic memories stored | `10000` |
 | `memory.decay_rates` | Per-tag episodic recency decay rates, per day (score factor `exp(-rate * days_old)`). Keys are memory tags (case-insensitive); the reserved `default` key replaces the built-in `0.03` for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. `0` never ages out of retrieval ranking; `1` falls out of retrieval within about a day. Ranking only: `episodic_max_count` cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to `0..10`; non-numeric values are ignored with a logged warning. Example: `{"legal_precedents": 0.0, "trading_data": 1.0}` | `{}` |
+| `memory.session_affinity` | V2 only. Additive boost for memories from the current conversation in recall ranking. `0` (default) = disabled; `0.10` = recommended. When a query is ambiguous, same-session episodes score higher than identically relevant episodes from other sessions. A flat lift added after recency, only to entries already admitted on relevance, so it can rank a same-session entry above one from another session that scores up to `0.10` higher. Clamped to `0..0.10`. | `0` |
+| `memory.recency_boost` | V2 only. Maximum multiplicative boost for recent memories in recall ranking, falling off hyperbolically: half at 7 days, a third at 14 days. `0` (default) = disabled, preserving the age-neutral ranking; `0.15` = a 15% boost for today's entries. A recent entry can outrank an older one that scores up to (1 + boost) times higher. Clamped to `0..1`. | `0` |
 | `memory.history_idle_hours` | Hours of inactivity before history consolidation. At least `0.5`: a smaller value is raised to it, and in `config.json` a value that is not a positive number uses the default | `3.0` |
 | `memory.history_max_days` | Days of history to retain before pruning | `365` |
 | `memory.backup_enabled` | Periodic rotating backups of every active memory store (the default store, named V1 stores and member V2 stores); retention does not delete active memories | `true` |
@@ -747,7 +749,17 @@ default:
   call, so the model cannot write arguments that quote a read it has not seen
   returned yet; the write is rejected with a note to resend it once the reads
   return. A discipline guard, not a security control: the security floor runs
-  first and is unchanged.
+  first and is unchanged. On the KAS backend it also covers Kiro Crew's own write
+  tools (ledger, report and send) that an agent's `allowedTools` auto-approves:
+  they come back as approval requests Kiro Crew answers itself, so a write sent
+  alone still runs with no prompt. It applies from the next session. Turning it
+  off mid-session leaves those approval requests in place, and Kiro Crew still
+  answers them, so nothing new prompts. Such a write now passes the gate's
+  governance checks, so under a configured governance profile or a matching
+  `confirm_tools` pattern it prompts where it used to run silently. A native KAS
+  sub-agent, or a child session with its own session id, has no Kiro Crew
+  answer for these requests, so with the guard on its spec-approved writes ask a
+  person (or are refused when nobody is there).
 - **`hooks.batch_write_guard_commands`** (list, default empty). Extra
   write-command prefixes (for example `myctl apply`) the batch write guard treats
   as write-class, for tools only a local install knows. Matched on the command's
@@ -759,6 +771,32 @@ default:
 | Key | Description | Default |
 |-----|-------------|---------|
 | `mcp_gateway.enabled` | Share one MCP backend process between sessions with identical server configuration. Opt-in; when false each session owns its backend | `false` |
+| `mcp_gateway.keep_alive_servers` | Server names whose shared backend is kept for the whole gateway run instead of being drained after `mcp_gateway.idle_timeout_secs`. Applies only to a server that is stubbed and shared. Needs a restart | `[]` |
+
+#### A server that signs in again and again
+
+Some MCP servers keep their OAuth sign-in only in the memory of their own
+process. Each Kiro Crew chat, worker or helper process normally starts its own
+copy of every server, so each new copy opens a browser sign-in. To make such a
+server sign in once per gateway run:
+
+1. In **MCP Management**, turn on the server's stub (`mcp_gateway.stub_servers`).
+2. Turn on backend sharing: `kirocrew config set mcp_gateway.enabled true`.
+3. Keep its backend for the run:
+   `kirocrew config set mcp_gateway.keep_alive_servers '["<server-name>"]'`.
+4. If the server's `env` holds a value that looks like a credential (for example
+   an `OAUTH_*` or `*_TOKEN` name), list those names in
+   `mcp_gateway.pool_identity_env`; otherwise the server runs unshared.
+5. Restart the gateway.
+
+Every chat, worker and helper whose entry for that server has the same command,
+env and working directory then reaches one backend, which signs in once. It still
+restarts when the gateway restarts, when a credential file the gateway watches
+changes, or when `mcp_gateway.max_backends` is full and it is the least
+recently used idle backend.
+
+On the `kas` backend, a background helper whose agent mounts no tool
+(`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
 ### Session summaries
 
@@ -1066,5 +1104,5 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/memory_stores/<store>/` | A managed store (`<store>` is its name, also its `store_id`): one member’s SQLite learning database and manual context files |
 | `~/.kiro/crew/session_map.json` | Session resume mapping |
 | `~/.kiro/crew/snapshots/` | Default output of `kirocrew snapshot` |
-| `~/.kiro/agents/kirocrew.json` | Installed agent config |
+| `~/.kiro/agents/kirocrew.json` | Installed agent config, rebuilt on every gateway start; add MCP servers under Customize → Connections → MCP Servers, not here |
 | `~/.kiro/settings/mcp.json` | Global MCP server config |

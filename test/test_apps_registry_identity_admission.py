@@ -24,9 +24,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps import registry
 
 
-# --------------------------------------------------------------------------
 # Identity-refusal cleanup + provenance-signer freshness
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_identity_refusal_preserves_preexisting_checkout(monkeypatch, tmp_path):
     """UPDATE path: a pull that brings a self-renaming manifest is refused
@@ -531,9 +529,9 @@ async def test_provenance_signer_uses_post_script_manifest(monkeypatch, tmp_path
     commit_reads: list[int] = []
 
     def _commit_by_read_order(root):
-        # First read (if any) would be pre-script; the fix resolves it ONCE,
-        # post-script — emulate a script advancing the checkout by returning a
-        # different SHA per read and asserting the LAST one is persisted.
+        # The commit is resolved ONCE, post-script: emulate a script advancing the
+        # checkout by returning a different SHA per read and asserting the LAST one
+        # is persisted.
         commit_reads.append(len(commit_reads))
         return ("c" if len(commit_reads) == 1 else "d") * 40
 
@@ -767,14 +765,11 @@ async def test_postscript_admission_rejection_rolls_back_preexisting_checkout(
 
 @pytest.mark.asyncio
 async def test_moveaside_reclone_retained_not_restored_on_rejection(monkeypatch, tmp_path):
-    """When the origin-mismatch gate moves an old checkout aside and
-    fresh-clones, a rejection must delete the fresh re-clone (never preserve it
-    or reset it toward the moved-aside repository's commit) and must NOT
-    restore the moved-aside previous checkout: an origin-mismatch move-aside is
-    a DIFFERENT repository, so handing it back to the slot would give a later
-    retry the very tree this gate already refused. It stays RETAINED as a
-    `.stale-*` sibling (recoverable by hand, swept on a retention timer), which
-    is why only a same-origin/branch-drift move-aside is ever restored."""
+    """A rejection after an origin-mismatch move-aside deletes the fresh re-clone and
+    does NOT restore the moved-aside checkout.
+
+    That checkout is a DIFFERENT repository the gate refused, so it stays RETAINED as a
+    `.stale-*` sibling, recoverable by hand and swept on a retention timer."""
     src = tmp_path / "app-sources" / "demoapp"
     (src / ".git").mkdir(parents=True)  # OLD checkout pre-exists (origin A)
     (src / "old-work.txt").write_text("precious", encoding="utf-8")

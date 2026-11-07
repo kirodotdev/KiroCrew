@@ -1,9 +1,9 @@
 /**
- * `isKiroBackend` decides whether the pill's Kiro-only surfaces (the no-reading
- * dash) render. It must be POSITIVE — true only for the kiro id, and never for a
- * config that has not loaded — because a guess here puts a "could not read your
- * balance; open to refresh" control in front of a user whose harness has no
- * balance to read.
+ * `isKiroHarness` decides whether the pill's Kiro-account surfaces (the
+ * no-reading and failed dashes) render. It must be POSITIVE — true only for the
+ * Kiro harness ids, and never for a config that has not loaded — because a guess
+ * here puts a "could not read your balance; open to refresh" control in front of
+ * a user whose harness has no balance to read.
  */
 import { describe, expect, it } from 'vitest'
 

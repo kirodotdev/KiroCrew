@@ -55,7 +55,10 @@ if TYPE_CHECKING:
 
 
 def _hook_subprocess_env(
-    hook: "ScriptHook", context: str, acp_session_id: str | None = None
+    hook: "ScriptHook",
+    context: str,
+    acp_session_id: str | None = None,
+    session_model: str | None = None,
 ) -> dict[str, str]:
     """Build the environment a script-hook subprocess runs with.
 
@@ -80,12 +83,18 @@ def _hook_subprocess_env(
     :mod:`kiro_crew.agent_sdk.spec_hooks`). It is set as ``KIRO_SESSION_ID``, the
     name kiro-cli gives the hooks it runs itself, so a spec hook reads the same
     value on either backend. Not known yet, it stays unset rather than empty.
+
+    ``session_model`` is the model the firing session runs on, set as
+    ``KIROCREW_SESSION_MODEL``. kiro-cli has no such variable, so the name is
+    Kiro Crew's. Unknown, it stays unset.
     """
     env = {k: v for k, v in os.environ.items() if k in _HOOK_BASE_ENV_KEYS}
     env["KIROCREW_HOOK_EVENT"] = hook.event
     env["KIROCREW_HOOK_CONTEXT"] = context[:500]
     if acp_session_id:
         env["KIRO_SESSION_ID"] = acp_session_id
+    if session_model:
+        env["KIROCREW_SESSION_MODEL"] = session_model
     return env
 
 
@@ -151,12 +160,14 @@ async def run_script_hook(
     hook_event: dict | None = None,
     cwd: str | None = None,
     acp_session_id: str | None = None,
+    session_model: str | None = None,
 ) -> ScriptHookResult:
     """Execute a script hook's command with timeout.
 
     Passes hook event as JSON via STDIN (Kiro CLI compatible). ``cwd`` is the
     directory the command runs in; ``None`` keeps the gateway's own.
-    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` (see ``_hook_subprocess_env``).
+    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` and ``session_model``
+    ``KIROCREW_SESSION_MODEL`` (see ``_hook_subprocess_env``).
     """
     start = time.monotonic()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
@@ -275,10 +286,10 @@ async def run_script_hook(
         )
 
         # A script hook inherits only the minimum env its shell + command need
-        # (``_HOOK_BASE_ENV_KEYS``) plus the two hook-metadata variables — NOT a
+        # (``_HOOK_BASE_ENV_KEYS``) plus the hook-metadata variables — NOT a
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
-        env = _hook_subprocess_env(hook, context, acp_session_id)
+        env = _hook_subprocess_env(hook, context, acp_session_id, session_model)
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
         # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
         # platforms — only the eventual spawn form differs (see the Windows
@@ -787,6 +798,7 @@ class ScriptHookStore:
         extra_hooks_tool_names: Sequence[str] | None = None,
         tool_match_names: Sequence[str] | None = None,
         acp_session_id: str | None = None,
+        session_model: str | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -832,6 +844,9 @@ class ScriptHookStore:
         stdin: they are the spec hooks kiro-cli would
         run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
         backend, so they still do not.
+
+        ``session_model`` is the model the firing session runs on. Every hook
+        this fire runs, stored or extra, gets it as ``KIROCREW_SESSION_MODEL``.
 
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
@@ -883,7 +898,10 @@ class ScriptHookStore:
             extra_event["cwd"] = extra_hooks_cwd
         if extra_hooks_tool_names:
             extra_event["tool_name"] = extra_hooks_tool_names[0]
-        extra_run: dict[str, str] = {}
+        stored_run: dict[str, str] = {}
+        if session_model:
+            stored_run["session_model"] = session_model
+        extra_run = dict(stored_run)
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
@@ -992,7 +1010,7 @@ class ScriptHookStore:
                 result = await run_script_hook(hook, context, extra_event, **extra_run)
                 result.from_spec = bool(hook.spec_origin)
             else:
-                result = await run_script_hook(hook, context, hook_event)
+                result = await run_script_hook(hook, context, hook_event, **stored_run)
             results.append(result)
             logger.info(
                 "Hook %s (%s): %s in %dms (exit=%d)",

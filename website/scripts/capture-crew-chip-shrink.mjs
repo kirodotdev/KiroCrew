@@ -96,8 +96,10 @@ async function shot(width, state) {
   const page = await context.newPage()
   await page.route(/127\.0\.0\.1:78\d\d/, (route) =>
     route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>pane</title>' }))
-  await stubDashboardApi(page, { theme: 'light', slots: SLOTS, extra })
-  await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [PINNED_KEY, JSON.stringify(PINS)])
+  await stubDashboardApi(page, {
+    theme: 'light', slots: SLOTS, extra,
+    localStorageEntries: { [PINNED_KEY]: JSON.stringify(PINS) },
+  })
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector(TRIGGER, { timeout: 20000 })
   await page.waitForSelector(CHIP_ROW, { timeout: 10000 })

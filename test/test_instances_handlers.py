@@ -91,14 +91,9 @@ class TestHandlers:
     ):
         """The served cap covers every REGISTERED crew, connected or not.
 
-        This is the regression that produced "one random crew is broken". The cap
-        must not be the live connected count: a crew whose tunnel came up just
-        after this request was not counted, the cap arrived one short, and the
-        viewport evicted a pane to honour it. Eviction unmounts the pane and
-        cold-boots the remote SPA on the next click, which reads as a disconnect —
-        and which crew lost depended on connection order, so the victim moved on
-        every restart. Here 3 are registered and only 2 are connected; the cap
-        must still be 3.
+        A cap from the live connected count arrives one short when a tunnel comes up
+        late, and the viewport evicts a random pane (reads as a disconnect). Here 3 are
+        registered and 2 connected; the cap must still be 3.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -536,13 +531,8 @@ class TestHandlers:
     ):
         """A failed connect names WHICH link broke where a client can read it.
 
-        The ladder's verdict already travels in ``diagnosis.code``, but the
-        dashboard's error journal reads a top-level ``code`` — so without the
-        promotion the one field that distinguishes "cannot SSH at all" from "SSH
-        works, the remote gateway is down" never reaches the surface that offers to
-        act on it. Only a NEGATIVE verdict is promoted: the stored diagnosis is the
-        last ladder run, so a stale ``ok`` must not be published as this call's
-        reason.
+        The error journal reads a top-level ``code``, so ``diagnosis.code`` is promoted.
+        Only a NEGATIVE verdict is: the stored diagnosis may be a stale ``ok``.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
@@ -673,11 +663,8 @@ class TestHandlers:
     def test_add_defaults_remote_port_to_the_stock_gateway_port(self, tmp_path, monkeypatch):
         """The ADD endpoint must not carry its own stale port default.
 
-        The registry default and the handler default were separate literals, so
-        correcting the registry left the HTTP path (which is what the Add form
-        actually calls) still handing out an earlier default dashboard port. Every
-        unit test built records via ``reg.add`` directly and so could not see it;
-        an isolated-pod run against the real endpoint did.
+        Driven through the HTTP path the Add form calls: a test via ``reg.add`` cannot
+        see a handler-side literal that drifts from the registry default.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.instances.registry import DEFAULT_REMOTE_PORT
@@ -706,12 +693,8 @@ class TestHandlers:
     def test_add_error_bodies_carry_a_machine_readable_code(self, tmp_path, monkeypatch):
         """Every add rejection names its cause in ``code``, not only in prose.
 
-        The dashboard reads this field (``utils/errorReport``'s ``parseErrorCode``)
-        to attach the failure's cause to an agent hand-off, and a first-time setup
-        rejection is exactly the case where the user cannot diagnose it alone. A
-        duplicate is kept distinct from an invalid field because the two are
-        different user actions — rename versus correct — and a client that cannot
-        tell them apart has to match on prose.
+        ``utils/errorReport``'s ``parseErrorCode`` reads it for agent hand-offs. A
+        duplicate stays distinct from an invalid field: rename versus correct.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 

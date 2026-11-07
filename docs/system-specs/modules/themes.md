@@ -47,6 +47,18 @@ asset path crosses the manifest boundary. Missing declarations preserve the
 Kiro ghost poses, and trusted compiled themes retain the broader
 `registerThemeBranding()` component seam.
 
+Level-1 and Level-2 manifests may also declare `codeTheme`,
+`{"dark": "<scheme>", "light": "<scheme>"}`: the Shiki scheme every code and diff
+view uses in that mode (a Level-0 pack's is ignored). The backend passes each
+string value to the asset descriptor and checks nothing else, so nothing is
+refused at install. The
+frontend (`pierreThemesFor`, `website/src/pierre/config.ts`) uses a name only when
+the build bundles that scheme (`@pierre/theming`'s collection); a mode left out,
+or a name it does not bundle, keeps the stock `pierre-dark` / `pierre-light`
+scheme for that mode. The one highlighter pool every view shares starts on the
+active pack's pair and is re-themed when the pack changes, which re-renders the
+open views.
+
 Installed packs may also supply the loader **art**, not just select symbols:
 `loader/*.png` `.webp` `.gif` `.svg` (1–8 images, Level 1) are the pack's own
 loader art: one image renders on its own, 2–8 are cycled by the stock carousel.
@@ -66,7 +78,8 @@ it needs no HTML-serving route of its own. The frontend
 
 The empty chat's welcome screen (`WelcomeView`) has one brand-mark slot, and a
 Level-1 pack fills it with `branding/welcome.svg|png|webp|gif` (256 KB, served
-and rendered like the loader art, so an animated image plays in place).
+and rendered like the loader art through `PackLoaderImage`, so an animated image
+plays in place and holds its first frame under `prefers-reduced-motion: reduce`).
 Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
 pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
 too, matching the left rail.
@@ -377,7 +390,7 @@ late. The boot path therefore has two parts.
    detail), written when that pack is applied. `ThemeProvider` reads it
    synchronously at mount and seeds variables, fonts and branding before the
    first paint. The cache holds only the Level-1 projection (colors, fonts,
-   branding, overrides flag and loader art); Level-2 experience content
+   branding, overrides flag, loader art and code scheme); Level-2 experience content
    (overlays, topbar, audio and persona) is applied only from the current server
    detail because consent is bound to its content hash. The server stays the
    source of truth: `customThemesLoaded` is never set from the cache, so

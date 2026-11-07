@@ -54,6 +54,10 @@ export interface SidePanelTab {
    *  adding an unrelated ?section= param would silently lose its mobile
    *  chrome, and nothing on that page would flag it. */
   hostsSubNav?: boolean
+  /** Query params holding THIS tab's own drill-in (Settings > Overview's
+   *  `?view=memory`). Every rail selection drops them, like a SubNav
+   *  selection, so a picked tab opens at its root. */
+  drillInParams?: readonly string[]
 }
 
 interface SidePanelLayoutProps {
@@ -340,14 +344,22 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     </SidePanelLeaveGuardContext.Provider>
   )
 
+  /** A rail selection lands on a tab's root: drop the SubNav selection and
+   *  every tab's declared drill-in. */
+  const dropTabSelections = (next: URLSearchParams) => {
+    deleteSubSelection(next)
+    for (const declared of tabs) for (const p of declared.drillInParams ?? []) next.delete(p)
+  }
   const setTab = (t: string) => {
     // Before anything else: switching tabs unmounts the pane, and the pane may
-    // hold work the user has not saved. Gated on the tab actually CHANGING —
-    // the desktop rail calls this for the tab already shown, which unmounts
-    // nothing, so an unqualified ask would pop a discard-confirm over a click
-    // that was never going to destroy anything. (PromptsTab's own row select
-    // carries the same caveat for re-clicking the selected row.)
-    if (t !== tab && !mayLeavePane()) return
+    // hold work the user has not saved. Gated on the click unmounting
+    // something — the desktop rail calls this for the tab already shown, which
+    // unmounts nothing unless it drops that tab's drill-in, so an unqualified
+    // ask would pop a discard-confirm over a click that was never going to
+    // destroy anything. (PromptsTab's own row select carries the same caveat
+    // for re-clicking the selected row.)
+    const leavesDrillIn = (tabs.find(x => x.key === tab)?.drillInParams ?? []).some(p => params.has(p))
+    if ((t !== tab || leavesDrillIn) && !mayLeavePane()) return
     // Synchronously, in the same batched update as the param write: picking the
     // FIRST tab deletes the param, so a fallback still holding the previous tab
     // would render it for a frame AND get re-written into the URL by the sync
@@ -362,7 +374,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       // path IS the root list there), and mobile drill-in is a PUSH carrying
       // the SUBNAV_PUSH_STATE marker so the back control can pop it.
       const next = new URLSearchParams(params)
-      deleteSubSelection(next)
+      dropTabSelections(next)
       const search = next.toString()
       const seg = toPathSegment(t)
       navigate(
@@ -379,7 +391,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       // A second-level selection is scoped to the tab that hosts it. One that
       // rides across a tab change strands a phone view whose new tab hosts no
       // SubNav: the chrome yields to a back bar that never renders.
-      deleteSubSelection(next)
+      dropTabSelections(next)
       // Mobile always writes the param explicitly — the param-less state IS the
       // root list there, so the desktop convention (first tab = no param) would
       // make the first tab unreachable.

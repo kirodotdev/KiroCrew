@@ -49,8 +49,7 @@ async function capture(browser, base, label, unzipMissing, theme) {
     if (path === '/api/acp-backends') return json(route, { backends: [] }), true
     return false
   }
-  await stubDashboardApi(page, { theme, extra })
-  await page.addInitScript(() => localStorage.setItem('mc-privacy-notice-v1', '1'))
+  await stubDashboardApi(page, { theme, extra, localStorageEntries: { 'mc-privacy-notice-v1': '1' } })
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   const card = page.getByRole('heading', { name: 'Get Kiro CLI' })
   await card.waitFor({ state: 'visible', timeout: 20000 })

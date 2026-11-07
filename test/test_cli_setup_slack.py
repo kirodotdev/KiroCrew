@@ -1,30 +1,17 @@
 """``kirocrew setup --slack`` — the tokens are checked BEFORE they are stored.
 
-The wizard asks Slack about every value at the moment it is pasted, so a typo, a
-revoked token, or a channel ID pasted where the member ID belongs is reported at
-the prompt rather than hours later as a "Slack disabled" line in the gateway
-log. The properties that matter are:
+Rules pinned:
 
-* a token Slack REJECTS is reported with Slack's own code and re-asked, and the
-  value that finally lands in ``.env`` is the accepted one;
-* a value Slack keeps refusing replaces nothing on disk;
-* a member ID is format-checked with no network at all — ``C…`` is a channel and
-  ``B…`` is a bot — while ``W…`` (Enterprise Grid) is a valid member ID and must
-  never be refused;
-* an UNREACHABLE Slack is not a rejection: being offline must not cost the
-  operator the credentials they just typed;
-* only ``user_not_found`` / ``users_not_found`` indict a member ID; a missing
-  ``users:read`` scope indicts the CHECK, so it degrades to unverifiable rather
-  than refusing the operator's own ID;
-* the check runs only at a terminal — off one nobody can see the verdict, and
-  re-asking would eat the next line of a piped answer file and misassign every
-  remaining answer, so the step stays exactly as it was;
-* the wizard offers to restart only a gateway that is ALREADY running, and
-  survives a service manager that refuses the restart — the tokens are already
-  on disk by then.
+* a REJECTED token shows Slack's code and is re-asked; a value refused for good writes
+  nothing to disk;
+* member IDs are format-checked offline: ``C…`` and ``B…`` refused, ``W…`` (Enterprise
+  Grid) accepted;
+* an UNREACHABLE Slack is not a rejection, and a missing ``users:read`` scope makes the
+  check unverifiable, not a refusal;
+* the check runs only at a terminal: re-asking would eat a piped answer file's lines;
+* the restart offer covers only a gateway ALREADY running, and survives a refused restart.
 
-Every Slack call is stubbed at ``slack_sdk`` (the helpers import it lazily, so
-patching the module attribute is enough): no test here reaches the network.
+No test here reaches the network.
 """
 
 from __future__ import annotations
@@ -72,11 +59,8 @@ def _api_error(code: str) -> SlackApiError:
 def _install(monkeypatch: pytest.MonkeyPatch, client: type[_FakeWebClient]) -> None:
     """Put *client* in place of the ``WebClient`` name ``cli_setup`` actually calls.
 
-    Patched at the CONSUMER, not at ``slack_sdk.web.WebClient``: ``cli_setup``
-    imports the class at module scope (per the top-level-imports convention), so it
-    holds its own reference and patching the source module would silently no-op --
-    the check would then run against real Slack and the assertion would read
-    ``None``.
+    Patched at the CONSUMER: ``cli_setup`` imports the class at module scope, so
+    patching ``slack_sdk.web.WebClient`` would no-op and reach real Slack.
     """
     monkeypatch.setattr("kiro_crew.cli_setup.WebClient", client)
 
@@ -130,13 +114,8 @@ def _tty(monkeypatch: pytest.MonkeyPatch, interactive: bool) -> None:
 def no_restart(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may bounce the developer's own gateway.
 
-    Patched at the primitives the offer consults — no active service, no
-    listener — so the offer itself still runs for real (and takes its "nothing
-    is running" branch), while an actual ``_restart`` would fail loudly.
-
-    ``listening_pid_tool_available`` is pinned True as well, or every "nothing is
-    running" assertion here would depend on whether the test host happens to have
-    ``lsof`` under the trusted directories.
+    Patched at the primitives (no service, no listener), so the offer runs for real.
+    ``listening_pid_tool_available`` is pinned True so results do not depend on ``lsof``.
     """
 
     def _never() -> None:
@@ -388,15 +367,9 @@ class TestVerifySlackOwnerId:
 class TestRejectedOwnerIdKeepsVerifiedTokens:
     """A rejected OPTIONAL field must not cost the operator a verified REQUIRED one.
 
-    The member ID is optional at write time, so abandoning the save over it
-    discarded two tokens Slack had just confirmed -- the one outcome the
-    verify-as-you-type flow exists to prevent.
-
-    Every test here takes ``env_file``. That fixture is not decoration: these tests
-    drive the real credential WRITE, and the writer resolves its target through
-    ``cs.env_path()``. Patching ``cs.KIROCREW_HOME`` does not redirect that, so
-    without ``env_file`` the write lands in the developer's own
-    ``~/.kiro/crew/.env`` and replaces live Slack tokens with these fakes.
+    Every test takes ``env_file``: the real write resolves ``cs.env_path()``, which
+    ``cs.KIROCREW_HOME`` does not redirect, so without it the developer's own
+    ``~/.kiro/crew/.env`` would be overwritten.
     """
 
     def test_tokens_are_written_and_owner_is_left_unset(

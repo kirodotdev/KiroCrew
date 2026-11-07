@@ -1081,6 +1081,29 @@ def missing_credential_helper(stderr: str) -> str:
     return match.group(2) if match else ""
 
 
+def _windows_missing_helper(stderr: str, profile: str) -> str:
+    """The profile's bare ``credential_process`` program when Windows could not start it, or "".
+
+    The Windows CLI says ``[WinError 2] The system cannot find the file specified``
+    without the program's name, so the name is read back from the profile's own
+    setting, under the same bare-name rule as :data:`_MISSING_PROGRAM_RE`.
+    """
+    if "[WinError 2]" not in stderr:
+        return ""
+    try:
+        rc, out, _err = aws.run_aws(["configure", "get", "credential_process"], profile)
+    except aws.CloudActionDenied:
+        # Not on the agent-session allowlist: an agent keeps the generic note.
+        return ""
+    value = out.strip() if rc == 0 else ""
+    if value.startswith('"'):
+        # The CLI on Windows keeps a double-quoted program whole, spaces included.
+        name = value[1:].partition('"')[0]
+    else:
+        name = (value.split() or [""])[0]
+    return "" if "/" in name or "\\" in name else name
+
+
 def credential_helper_hint(name: str) -> str:
     """What to do when the profile's ``credential_process`` helper is not found."""
     return (
@@ -1112,7 +1135,7 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
     rc, out, err = aws.run_aws(["sts", "get-caller-identity", "--output", "json"], profile, region)
     if rc != 0:
         result["detail"] = (err or "could not resolve credentials").strip()[:300]
-        helper = missing_credential_helper(err)
+        helper = missing_credential_helper(err) or _windows_missing_helper(err, profile)
         result["credential_helper_missing"] = helper
         result["note"] = aws.env_credentials_hint() or (
             credential_helper_hint(helper)

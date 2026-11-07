@@ -356,3 +356,60 @@ class TestCronPreviewNotifyParity:
         # The kwarg value is redacted too, not just the text.
         assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
         assert "REDACTED" in out
+
+
+class TestCronPreviewMatchesScriptContext:
+    """A script that runs as a cron must preview: same methods, same parameters."""
+
+    def test_every_public_method_has_production_parameters(self, tmp_path: Path, capsys):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "import inspect\n"
+            "from kiro_crew.cron_script import Report, ScriptContext\n"
+            "def shape(fn):\n"
+            "    params = inspect.signature(fn).parameters.values()\n"
+            "    return [(p.name, p.kind, p.default) for p in params if p.name != 'self']\n"
+            "def run(ctx):\n"
+            "    methods = inspect.getmembers(ScriptContext, inspect.isfunction)\n"
+            "    drift = [name for name, fn in methods if not name.startswith('_')\n"
+            "             and (not hasattr(ctx, name) or shape(fn) != shape(getattr(ctx, name)))]\n"
+            "    raise Report(f'drift={drift}')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        assert "drift=[]" in capsys.readouterr().out
+
+    def test_session_and_crew_log_calls_print_redacted_and_return_stand_ins(
+        self, tmp_path: Path, capsys
+    ):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    folders = ctx.list_session_folders()\n"
+            "    folder = ctx.create_session_folder('Reports')\n"
+            "    slot = ctx.open_session('Daily', folder_id=folder['id'])\n"
+            "    key = 'aws_secret_access_key=' + 'wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'\n"
+            "    sent = ctx.send_to_session(slot, key)['ok']\n"
+            "    mode = ctx.set_session_mode(slot, 'trust_reads')['mode']\n"
+            "    logged = ctx.crew_log_append('note', {'text': key}, max_age_s=120)\n"
+            "    logged = logged['recorded']['type']\n"
+            "    raise Report(f'{len(folders)} {slot} {sent} {mode} {logged}')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        for method in (
+            "list_session_folders",
+            "create_session_folder",
+            "open_session",
+            "send_to_session",
+            "set_session_mode",
+            "crew_log_append",
+        ):
+            assert f"[{method} suppressed]" in out, out
+        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert "REDACTED" in out
+        assert "0 preview-dry-run-slot True trust_reads note" in out, out
