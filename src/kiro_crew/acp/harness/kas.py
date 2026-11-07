@@ -70,6 +70,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     KAS_CLIENT_CAPABILITIES,
+    METHOD_KAS_MCP_GOVERNANCE_DISABLED,
     METHOD_KAS_MCP_STATUS,
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
@@ -1151,8 +1152,16 @@ class KasHarness(MembershipHarness):
     def notification_aliases(self) -> NotificationAliases:
         return replace(
             KIRO_FAMILY_ALIASES,
+            # governance_disabled travels in the same staged window: it arrives
+            # under the session id during session/new, before the response --
+            # without the alias it drops as an unroutable init frame and a
+            # fail-closed start waits out the whole readiness budget.
             mcp_init=KIRO_FAMILY_ALIASES.mcp_init
-            + (METHOD_KAS_MCP_STATUS, METHOD_KAS_TOOLS_CHANGED),
+            + (
+                METHOD_KAS_MCP_STATUS,
+                METHOD_KAS_TOOLS_CHANGED,
+                METHOD_KAS_MCP_GOVERNANCE_DISABLED,
+            ),
             mcp_readiness=True,
         )
 

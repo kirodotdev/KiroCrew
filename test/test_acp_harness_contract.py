@@ -653,7 +653,11 @@ def test_kiro_keeps_its_legacy_notification_drain():
 
 
 def test_kas_stages_status_and_catalog_and_requires_readiness():
-    from kiro_crew.acp.types import METHOD_KAS_MCP_STATUS, METHOD_KAS_TOOLS_CHANGED
+    from kiro_crew.acp.types import (
+        METHOD_KAS_MCP_GOVERNANCE_DISABLED,
+        METHOD_KAS_MCP_STATUS,
+        METHOD_KAS_TOOLS_CHANGED,
+    )
 
     aliases = harness_for(ACP_BACKEND_KAS).notification_aliases
     assert aliases.session_update == KIRO_FAMILY_ALIASES.session_update
@@ -661,6 +665,10 @@ def test_kas_stages_status_and_catalog_and_requires_readiness():
     assert aliases.mcp_init == KIRO_FAMILY_ALIASES.mcp_init + (
         METHOD_KAS_MCP_STATUS,
         METHOD_KAS_TOOLS_CHANGED,
+        # Staged like the status frames: the host emits it under the session id
+        # during session/new, and the readiness wait reads it to fail a
+        # fail-closed start at once instead of timing out.
+        METHOD_KAS_MCP_GOVERNANCE_DISABLED,
     )
     assert aliases.mcp_readiness
 
