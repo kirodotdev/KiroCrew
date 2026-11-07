@@ -76,7 +76,7 @@ const API_KEY_ORDER = [
   'setChatSlotEnvironment', 'chatSlotWorkspace', 'chatSlotReload', 'chatSlotProject',
   'createWorktree', 'recentProjects', 'favoriteProjects', 'addFavoriteProject',
   'removeFavoriteProject', 'projectAwsProfile', 'setProjectAwsProfile', 'browseDirs', 'browseDrives',
-  'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
+  'createBrowseDir', 'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
   'projectTree', 'sessionFiles', 'sessionFileDiff', 'workspaces', 'createWorkspace', 'updateWorkspace',
   'deleteWorkspace', 'crons', 'createCron', 'deleteCron',
   'batchDeleteCron', 'updateCron', 'runCron', 'cronSecretsGrant',
