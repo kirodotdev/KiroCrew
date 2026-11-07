@@ -396,12 +396,13 @@ def _build_knowledge_config(knowledge_data: dict) -> KnowledgeConfig:
             "embed_rate_limit", _safe_nonnegative_int, EMBED_RATE_LIMIT_MAX
         ),
         extraction_model=str(section.get("extraction_model")).strip(),
-        extraction_pool_size=max(
-            EXTRACTION_POOL_SIZE_MIN,
-            min(
-                EXTRACTION_POOL_SIZE_MAX,
-                section.read("extraction_pool_size", _safe_nonnegative_int),
+        extraction_pool_size=section.read(
+            "extraction_pool_size",
+            lambda raw, default: max(
+                EXTRACTION_POOL_SIZE_MIN,
+                _safe_nonnegative_int(raw, default, EXTRACTION_POOL_SIZE_MAX),
             ),
+            unclamped=_safe_nonnegative_int,
         ),
         extraction_effort=coerce_effort(section.get("extraction_effort")),
     )
@@ -478,8 +479,8 @@ def _name_list(value: Any) -> list[str]:
 
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
-    _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
-    _spawn_max = max(_spawn_min, section.read("spawn_concurrency_max", _safe_int))
+    _spawn_min = section.read("spawn_concurrency_min", _safe_int, 1)
+    _spawn_max = section.read("spawn_concurrency_max", _safe_int, _spawn_min)
     return McpGatewayConfig(
         enabled=bool(section.get("enabled")),
         # Absent -> True so installs that never configured this keep
@@ -507,28 +508,24 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         forward_declared_env=section.read("forward_declared_env", _safe_bool),
         socket_path=str(section.get("socket_path")),
         overlay_dir=str(section.get("overlay_dir")),
-        idle_timeout_secs=max(10, section.read("idle_timeout_secs", _safe_int)),
+        idle_timeout_secs=section.read("idle_timeout_secs", _safe_int, 10),
         # 0 is meaningful (re-resolve every pass), so the floor is 0 and
         # not the usual "at least something" clamp.
-        resolve_once_refresh_hours=max(0, section.read("resolve_once_refresh_hours", _safe_int)),
-        max_backends=max(1, section.read("max_backends", _safe_int)),
+        resolve_once_refresh_hours=section.read("resolve_once_refresh_hours", _safe_int, 0),
+        max_backends=section.read("max_backends", _safe_int, 1),
         # Admission keys. Clamps mirror the dataclass defaults: floor
         # >= 1, ceiling >= floor, initial inside the band; 0 keeps the
         # "auto" meaning on the host-budget ceilings.
         spawn_concurrency_min=_spawn_min,
         spawn_concurrency_max=_spawn_max,
-        spawn_concurrency_initial=min(
-            _spawn_max,
-            max(
-                _spawn_min,
-                section.read("spawn_concurrency_initial", _safe_int),
-            ),
+        spawn_concurrency_initial=section.read(
+            "spawn_concurrency_initial", _safe_int, _spawn_min, _spawn_max
         ),
-        spawn_queue_wait_secs=max(1, section.read("spawn_queue_wait_secs", _safe_int)),
-        initialize_timeout_secs=max(1, section.read("initialize_timeout_secs", _safe_int)),
-        host_budget_max_procs=max(0, section.read("host_budget_max_procs", _safe_int)),
-        host_budget_max_rss_mb=max(0, section.read("host_budget_max_rss_mb", _safe_int)),
-        host_budget_max_fds=max(0, section.read("host_budget_max_fds", _safe_int)),
+        spawn_queue_wait_secs=section.read("spawn_queue_wait_secs", _safe_int, 1),
+        initialize_timeout_secs=section.read("initialize_timeout_secs", _safe_int, 1),
+        host_budget_max_procs=section.read("host_budget_max_procs", _safe_int, 0),
+        host_budget_max_rss_mb=section.read("host_budget_max_rss_mb", _safe_int, 0),
+        host_budget_max_fds=section.read("host_budget_max_fds", _safe_int, 0),
         poolable_servers=[s for s in section.get("poolable_servers") if isinstance(s, str)],
         stub_servers=_resolve_stub_servers(mcp_gateway_data),
         # The operator's deviations, kept ALONGSIDE the resolved set above
@@ -549,18 +546,12 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         pool_identity_env=[
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
-        prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
+        prewarm_count=section.read("prewarm_count", _safe_int, 0),
         # Server names: only a list of non-blank strings counts, so a stray
         # string or object keeps nothing alive.
         keep_alive_servers=_name_list(section.get("keep_alive_servers")),
-        read_buffer_limit_bytes=max(
-            1024,
-            section.read("read_buffer_limit_bytes", _safe_int),
-        ),
-        response_spill_threshold_bytes=max(
-            0,
-            section.read("response_spill_threshold_bytes", _safe_int),
-        ),
+        read_buffer_limit_bytes=section.read("read_buffer_limit_bytes", _safe_int, 1024),
+        response_spill_threshold_bytes=section.read("response_spill_threshold_bytes", _safe_int, 0),
     )
 
 
@@ -680,42 +671,14 @@ def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig
 def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
     section = SectionReader(ComputerUseConfig, computer_use_data)
     return ComputerUseConfig(
-        max_tree_nodes=min(
-            _CU_MAX_TREE_NODES,
-            max(
-                1,
-                section.read("max_tree_nodes", _safe_int),
-            ),
-        ),
-        max_tree_depth=min(
-            _CU_MAX_TREE_DEPTH,
-            max(
-                1,
-                section.read("max_tree_depth", _safe_int),
-            ),
-        ),
-        text_limit=min(
-            _CU_MAX_TEXT_LIMIT,
-            max(
-                1,
-                section.read("text_limit", _safe_int),
-            ),
-        ),
+        max_tree_nodes=section.read("max_tree_nodes", _safe_int, 1, _CU_MAX_TREE_NODES),
+        max_tree_depth=section.read("max_tree_depth", _safe_int, 1, _CU_MAX_TREE_DEPTH),
+        text_limit=section.read("text_limit", _safe_int, 1, _CU_MAX_TEXT_LIMIT),
         attach_screenshot=section.read("attach_screenshot", _safe_bool),
-        screenshot_max_px=min(
-            _CU_MAX_SCREENSHOT_MAX_PX,
-            max(
-                _CU_MIN_SCREENSHOT_MAX_PX,
-                section.read("screenshot_max_px", _safe_int),
-            ),
+        screenshot_max_px=section.read(
+            "screenshot_max_px", _safe_int, _CU_MIN_SCREENSHOT_MAX_PX, _CU_MAX_SCREENSHOT_MAX_PX
         ),
-        screenshot_jpeg_quality=min(
-            100,
-            max(
-                1,
-                section.read("screenshot_jpeg_quality", _safe_int),
-            ),
-        ),
+        screenshot_jpeg_quality=section.read("screenshot_jpeg_quality", _safe_int, 1, 100),
         # Default False: a missing or unparseable value must mean "do not
         # draw on the operator's screen", never the reverse.
         cursor_motion=section.read("cursor_motion", _safe_bool),

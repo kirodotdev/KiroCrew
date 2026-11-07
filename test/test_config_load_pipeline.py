@@ -435,6 +435,54 @@ class TestReadConfigDocument:
             line,
         ]
 
+    @pytest.mark.parametrize(
+        ("document", "line"),
+        [
+            # A coercer with a clamp of its own, which keeps 0 as "use the default".
+            (
+                {"session": {"compact_wait_secs": 0.01}},
+                "SessionConfig.compact_wait_secs = 0.01 is outside its allowed range; using 60.0",
+            ),
+            # The same, in a crew record.
+            (
+                {"agents": {"helper": {"autocompact_pct": 1}}},
+                "KiroCrewAgentConfig.autocompact_pct = 1 is outside its allowed range;"
+                f" using {sections.AUTOCOMPACT_PCT_MIN}",
+            ),
+            # Each value of a map.
+            (
+                {"agent": {"lane_weights": {"system": 500}}},
+                "AgentConfig.lane_weights = {'system': 500} is outside its allowed range;"
+                " using {'system': 64}",
+            ),
+            # Read with a fallback of its own: an unreadable bucket is 0, not 100.
+            (
+                {"decisions": {"bucket": 500}},
+                "DecisionsConfig.bucket = 500 is outside its allowed range; using 100",
+            ),
+            # A floor that was a max() around the read.
+            (
+                {"mcp_gateway": {"idle_timeout_secs": 1}},
+                "McpGatewayConfig.idle_timeout_secs = 1 is outside its allowed range; using 10",
+            ),
+            # A range the DTO's __post_init__ held.
+            (
+                {"agent": {"max_channels": 9}},
+                "AgentConfig.max_channels = 9 is outside its allowed range; using 5",
+            ),
+        ],
+        ids=["own-coercer", "crew-record", "map-values", "own-fallback", "floor", "post-init"],
+    )
+    def test_a_value_clamped_outside_a_bounded_read_is_reported(
+        self, config_home, caplog, document, line
+    ):
+        caplog.set_level(logging.WARNING, logger=_LOGGER)
+        _write(config_home / "config.json", document)
+        loader.build_config(loader.read_config_document())
+        assert [r.getMessage() for r in caplog.records if "allowed range" in r.getMessage()] == [
+            f"Config: {line}"
+        ]
+
 
 # persist_write_back and the whole load.
 
