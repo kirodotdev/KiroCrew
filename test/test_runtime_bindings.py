@@ -51,6 +51,8 @@ SHARED_BINDINGS_CHECKS = (
     "the_field_scan_counts_every_read_and_write_shape",
     "the_signature_digest_ignores_an_object_address_in_either_spelling",
     "the_bound_function_scans_include_every_static_method",
+    "the_class_only_scan_can_fail",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
 )
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
@@ -573,11 +575,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
-
-
 @pytest.mark.parametrize("owner", _OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     tree = _tree(sys.modules[owner])
@@ -978,19 +975,6 @@ def test_the_import_check_reports_only_what_nothing_accounts_for() -> None:
 
 def test_every_base_import_stays_bound_on_the_facade() -> None:
     assert sorted(_BASE_IMPORTS - set(vars(runtime))) == []
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    import source_corpus
-
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve()
-    assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
 
 
 #: ``typing.get_type_hints(AcpRuntime.__init__)`` before the class left ``runtime.py``.

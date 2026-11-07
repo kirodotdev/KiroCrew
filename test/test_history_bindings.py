@@ -41,6 +41,8 @@ from kiro_crew.history import ConversationLog
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_history_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _PACKAGE = "kiro_crew"
 _REPO = Path(__file__).resolve().parents[1]
 
@@ -338,15 +340,6 @@ def _class_only_constructs(fn: ast.FunctionDef) -> list[str]:
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == [  # type: ignore[arg-type]
-        "__class__",
-        "__hidden",
-        "super()",
-    ]
 
 
 @pytest.mark.parametrize("owner", history._OWNERS)

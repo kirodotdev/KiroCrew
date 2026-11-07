@@ -53,6 +53,9 @@ SHARED_BINDINGS_CHECKS = (
     "the_member_set_is_the_frozen_inventory",
     "the_resolution_scan_can_fail",
     "nothing_else_in_src_imports_an_owner",
+    "the_class_only_scan_sees_each_shape",
+    "the_test_tree_walk_reaches_every_collected_tree",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
 )
 
 _PACKAGE = "kiro_crew.subagent_manager.admission"
@@ -287,21 +290,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-@pytest.mark.parametrize(
-    ("source", "flagged"),
-    [
-        ("def f(self):\n    return super().g()\n", True),
-        ("def f(self):\n    return __class__\n", True),
-        ("def f(self):\n    return self.__secret\n", True),
-        ("def f(self):\n    return super(type(self), self).g()\n", False),
-        ("def f(self):\n    return self.__dict__, self._private\n", False),
-    ],
-)
-def test_the_class_only_scan_sees_each_shape(source: str, flagged: bool) -> None:
-    (fn,) = _self_functions(ast.parse(source))
-    assert bool(_class_only_constructs(fn)) is flagged
-
-
 @pytest.mark.parametrize("owner", _OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     tree = _tree(_owner(owner))
@@ -518,14 +506,6 @@ def _reach_gaps(patched: set[str], reads: dict[str, set[str]]) -> list[str]:
     return sorted(f"{owner}.{name}" for owner, names in reads.items() for name in patched & names)
 
 
-def test_the_test_tree_walk_reaches_every_collected_tree() -> None:
-    files = _test_tree_files()
-    assert Path(__file__).resolve() in files
-    assert _REPO_ROOT / "conftest.py" in files
-    assert any("/apps/builtins/" in path.as_posix() for path in files)
-    assert len(files) > 1000
-
-
 def test_no_name_patched_through_the_gate_is_read_by_an_owner() -> None:
     assert _reach_gaps(set(_corpus_patched_names()), _owner_reads()) == []
 
@@ -550,13 +530,3 @@ def test_the_reach_scan_can_fail(tmp_path: Path) -> None:
         f"{_PACKAGE}.gate_pressure.read_memory_pressure_level",
         f"{_PACKAGE}.gate_reporting._SPAWN_APPROVAL_TOOL",
     ]
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    monkeypatch.syspath_prepend(str(_REPO_ROOT / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    rel = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
-    assert rel in leaf_test_scope.corpus_gates(_REPO_ROOT)

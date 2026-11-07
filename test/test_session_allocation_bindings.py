@@ -38,6 +38,11 @@ from kiro_crew.session_allocation import SessionAllocationService
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_allocation_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_class_only_scan_can_fail",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
+)
+
 #: Owner label -> module. ``facade`` is ``kiro_crew.session_allocation`` itself.
 _HOMES: dict[str, str] = {
     "facade": "kiro_crew.session_allocation",
@@ -241,13 +246,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    node = tree.body[0]
-    assert isinstance(node, ast.FunctionDef)
-    assert sorted(_class_only_constructs(node)) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", facade._ALLOCATION_OWNERS)
@@ -514,16 +512,3 @@ def test_the_reach_check_can_fail() -> None:
     assert f"{owner} reads record_session_started without binding it" in (
         guards.unreached_readers(blind, sources)
     )
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    import source_corpus
-
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve()
-    assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

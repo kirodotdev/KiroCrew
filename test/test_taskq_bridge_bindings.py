@@ -52,7 +52,12 @@ from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_taskq_bridge_bindings")
 
-SHARED_BINDINGS_CHECKS = ("the_member_set_is_the_frozen_inventory",)
+SHARED_BINDINGS_CHECKS = (
+    "the_member_set_is_the_frozen_inventory",
+    "the_class_only_scan_sees_each_shape",
+    "the_test_tree_walk_reaches_every_collected_tree",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
+)
 
 _FACADE = "kiro_crew.subagent_manager.admission.taskq_bridge"
 _PACKAGE = "kiro_crew.subagent_manager.admission"
@@ -338,21 +343,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         ):
             found.append(f"{fn.name}: {node.attr}")
     return found
-
-
-@pytest.mark.parametrize(
-    ("source", "flagged"),
-    [
-        ("def f(self):\n    return super().g()\n", True),
-        ("def f(self):\n    return __class__\n", True),
-        ("def f(self):\n    return self.__secret\n", True),
-        ("def f(self):\n    return super(type(self), self).g()\n", False),
-        ("def f(self):\n    return self.__dict__, self._private\n", False),
-    ],
-)
-def test_the_class_only_scan_sees_each_shape(source: str, flagged: bool) -> None:
-    (fn,) = _self_functions(ast.parse(source))
-    assert bool(_class_only_constructs(fn)) is flagged
 
 
 @pytest.mark.parametrize("stem", _OWNERS)
@@ -860,14 +850,6 @@ def _reach_gaps(patched: set[str], reads: dict[str, set[str]]) -> list[str]:
     return sorted(f"{owner}.{name}" for owner, names in reads.items() for name in patched & names)
 
 
-def test_the_test_tree_walk_reaches_every_collected_tree() -> None:
-    files = _test_tree_files()
-    assert Path(__file__).resolve() in files
-    assert _REPO_ROOT / "conftest.py" in files
-    assert any("/apps/builtins/" in path.as_posix() for path in files)
-    assert len(files) > 1000
-
-
 def test_the_patch_scan_reads_the_files_that_name_the_facade() -> None:
     _patched, naming = _corpus_patches()
     # This file, the queued-visibility, queue-depth and max-wait suites at least.
@@ -899,13 +881,3 @@ def test_the_reach_scan_can_fail(tmp_path: Path) -> None:
         f"{_PACKAGE}.taskq_bridge_cancel._STATE_READ_ATTEMPTS",
         f"{_PACKAGE}.taskq_bridge_reads.QUEUED_LISTING_CAP",
     ]
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    monkeypatch.syspath_prepend(str(_REPO_ROOT / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    rel = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
-    assert rel in leaf_test_scope.corpus_gates(_REPO_ROOT)

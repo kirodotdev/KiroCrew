@@ -52,6 +52,8 @@ from kiro_crew.cron_service import service as service_package
 # The reach checks read the whole test tree; keep them on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_cron_service_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _REPO = Path(__file__).resolve().parents[1]
 _PACKAGE = service_package.__name__
 
@@ -327,11 +329,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", _OWNERS)
