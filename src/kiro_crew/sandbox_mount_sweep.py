@@ -55,6 +55,72 @@ logger = logging.getLogger("kiro_crew.sandbox")
 _MOUNT_SOURCE_PREFIX = "kirocrew_sb_"
 _MOUNT_SOURCE_MAX_AGE_SECONDS = 24 * 3600
 
+#: Private latch the directory age-backstop consults when the pin scan could
+#: not prove coverage. A dir is reclaimed on that path only after TWO
+#: CONSECUTIVE sweeps both saw it dead-pid, over-age and unpinned: the first
+#: records its name here and keeps it; the second, finding the name recorded,
+#: removes it. One sweep's pinned set can miss a holder that forks a successor
+#: and exits inside the listing-to-mountinfo-read window on every stabilization
+#: pass; that holder would have to lose the same race on two separate sweeps to
+#: be reclaimed, while any sweep that reads it (pinned) or sees its pid alive
+#: drops the name and keeps the dir. Stored under the sweep's own run dir, one
+#: name per line; a missing or unreadable latch reads as the empty set, so a
+#: first-sighting dir is always kept.
+_MOUNT_SWEEP_LATCH_NAME = ".mount-source-reclaim-latch"
+
+
+def _read_mount_sweep_latch(path: Path) -> set[str]:
+    """Entry names a prior sweep recorded as dead-pid/over-age/unpinned.
+
+    Fails closed: any read error (missing file, unreadable, a symlink we refuse
+    to follow) yields the empty set, so every candidate is treated as a first
+    sighting and kept this sweep. The file is plain newline-delimited basenames.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return set()
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return set()
+    names: set[str] = set()
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        name = line.strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _write_mount_sweep_latch(path: Path, names: set[str]) -> None:
+    """Record the names still awaiting a second confirmation.
+
+    Written atomically through a sibling temp + rename so a crashed write never
+    leaves a half file a later sweep would misread. Symlink-proof and
+    create-private (0o600). Any failure is swallowed: an unwritten latch only
+    means the next sweep sees fewer recorded names and keeps more dirs, which
+    is the safe direction.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, ("".join(f"{n}\n" for n in sorted(names))).encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 # Pin-scan stabilization budget: a mount-namespace holder can fork a successor
 # and exit between the /proc listing and its own mountinfo read, so a pass
 # that observed a vanish rescans newly appeared pids; past this many passes
@@ -683,7 +749,9 @@ _SWEEP_TIME_BUDGET_SECONDS = 10.0
 _SWEEP_BUDGET_CHECK_EVERY = 4096
 
 
-def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) -> int:
+def _cleanup_stale_sandbox_mount_sources(
+    *, roots: Sequence[str] | None = None, latch_store: Path | None = None
+) -> int:
     """Reclaim orphaned bind-mount sources staged by the namespace launcher.
 
     The launcher stages one empty dir per sensitive_dirs entry, one empty file
@@ -707,13 +775,28 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
 
     - Plain files: ``os.remove``. A file source's inode is held by the mount
       like an open descriptor, so the masked view is unaffected.
-    - Dirs, empty or not: removed only when no readable mount namespace
-      references the entry (:func:`_mount_pinned_source_names`) AND absence
-      of a pin is positively established — by the scan proving it covered
-      every namespace on the host, OR by it having read every task that
-      could hold one (:class:`_PinScanCoverage`: this uid's, the overflow
-      uid's and root's tasks, none unreadable, none departed between the
-      final listing and its read). The second is what this fix adds. The
+    - Dirs, empty or not: removed when no readable mount namespace references
+      the entry (:func:`_mount_pinned_source_names`) AND one of three holds —
+      the scan proved it covered every namespace on the host, OR it read every
+      task that could hold one (:class:`_PinScanCoverage`: this uid's, the
+      overflow uid's and root's tasks, none unreadable, none departed between
+      the final listing and its read), OR the entry's launcher pid is dead and
+      it is past ``_MOUNT_SOURCE_MAX_AGE_SECONDS``. The third is the age
+      backstop for an unprovable scan: a host whose constant ``/proc`` churn
+      keeps coverage permanently unproven (a task that could be a descendant
+      departing within each of three passes, or a pid-namespaced/``hidepid``
+      gateway) would otherwise strand every dead-pid directory forever and
+      refill the runtime tmpfs to 100% of its inodes again. Absence from
+      ``pinned`` under an unproven scan is NOT on its own proof of no holder:
+      one sweep's scan can miss a holder that forks a successor and exits
+      inside the listing-to-read window on every stabilization pass. So the
+      age backstop reclaims a dead-pid, over-age, unpinned dir only after TWO
+      CONSECUTIVE sweeps both found it that way (:func:`_read_mount_sweep_latch`
+      / :func:`_write_mount_sweep_latch`): the first records its name and keeps
+      it, the second removes it. A sweep that reads it (``pinned``) or sees its
+      pid alive drops the name and keeps the dir, so a holder has to lose the
+      same read race on two separate sweeps to be reclaimed. A proven scan
+      (covered or complete) reclaims at once, with no latch. The
       host-wide flag also drops for another user's unreadable or departing
       task, which cannot be holding a source this uid staged (the sandboxed
       child keeps this uid with NO_NEW_PRIVS; only root can enter a foreign
@@ -751,6 +834,19 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
     budget_spent = False
     if roots is None:
         roots = _mount_source_candidate_roots()
+    if latch_store is None:
+        # Imported lazily so this module adds no new top-level binding (the
+        # sandbox facade's boundary test tracks those); the default path is the
+        # sweep's own run dir, resolved the same way as the other cleaners.
+        from kiro_crew.config.paths import config_dir
+
+        latch_store = config_dir() / "run" / _MOUNT_SWEEP_LATCH_NAME
+    # Names a prior sweep saw dead-pid/over-age/unpinned under an unproven
+    # scan. The second such sighting is what clears a dir for the age backstop;
+    # a missing/unreadable latch reads empty, so every dir is a first sighting.
+    latched_prior = _read_mount_sweep_latch(latch_store)
+    # Names seen that way THIS sweep, carried to the latch for the next one.
+    latched_now: set[str] = set()
     # (pinned set, scan-was-complete) — built lazily, once, on the first
     # directory candidate (empty ones included: rmdir is gated too).
     pin_scan: tuple[set[str], bool] | None = None
@@ -810,9 +906,35 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                 if pin_scan is None:
                     pin_scan = _mount_pinned_source_names(coverage=coverage)
                 pinned, scan_complete = pin_scan
-                if entry in pinned or not (scan_complete or coverage.covered):
+                # A pin found among the tasks that WERE read is authoritative:
+                # the entry is in use, retain it however old and whatever its
+                # pid, regardless of coverage.
+                if entry in pinned:
                     dirs_held_back += 1
                     continue
+                if not (scan_complete or coverage.covered):
+                    # Coverage unproven: the scan could not rule out a holder
+                    # among tasks it failed to read. Fail closed for an entry
+                    # whose staging group might still be live -- a pid still
+                    # alive, or an entry young enough that a very recent sandbox
+                    # could own it.
+                    if not (over_age and not alive):
+                        dirs_held_back += 1
+                        continue
+                    # Dead-pid and over-age, but one unproven scan can miss a
+                    # holder that forks a successor and exits inside the
+                    # listing-to-read window on every pass, so absence from
+                    # ``pinned`` is not yet proof. Require a SECOND consecutive
+                    # sweep to see it the same way: record it now and keep it
+                    # unless a prior sweep already did. A sweep that reads it
+                    # (pinned) or sees its pid alive never reaches here, so the
+                    # name drops from the latch and the dir is kept.
+                    if entry not in latched_prior:
+                        latched_now.add(entry)
+                        dirs_held_back += 1
+                        continue
+                    # Second confirmation: reclaim, and let its name lapse from
+                    # the latch (not re-added to ``latched_now``).
                 try:
                     os.rmdir(path)
                     removed += 1
@@ -863,6 +985,12 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
             examined,
             removed,
         )
+        # A truncated sweep did not re-examine every entry, so a prior latch
+        # name it never reached must not lapse: carry the old set forward.
+        # This only ever delays a reclaim (the safe direction), never hastens
+        # one, since a second confirmation still requires a full later sweep.
+        latched_now |= latched_prior
+    _write_mount_sweep_latch(latch_store, latched_now)
     return removed
 
 
