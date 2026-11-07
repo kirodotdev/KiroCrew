@@ -17080,6 +17080,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "オフィス",
+        "office_desc": "クラシックなピクセルオフィス",
+        "panda_label": "パンダのすみか",
+        "panda_desc": "竹林のワークスペース、全員パンダ",
+        "neural_label": "ニューラルネットワーク",
+        "neural_desc": "星座マップ",
+        "wizard_label": "魔法使いの塔",
+        "wizard_desc": "錬金術の実験室",
+        "underwater_label": "深海ラボ",
+        "underwater_desc": "海中ステーション",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA の運用センター",
+        "serengeti_label": "水飲み場",
+        "serengeti_desc": "キリン、イボイノシシ、ゾウがいるセレンゲティのサバンナ",
+        "ghost_label": "Kiro ゴースト",
+        "ghost_desc": "帽子、メガネ、マントを身につけた Kiro のゴーストたち"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "友好的な幽霊だけ",
         "kiro_ghost_haunt_animation": "Kiro ゴーストの出没アニメーション",

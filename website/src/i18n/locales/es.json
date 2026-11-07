@@ -17990,6 +17990,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "Oficina",
+        "office_desc": "Oficina clásica en píxeles",
+        "panda_label": "Guarida de pandas",
+        "panda_desc": "Espacio de trabajo en un bosque de bambú, todo pandas",
+        "neural_label": "Red neuronal",
+        "neural_desc": "Mapa de constelaciones",
+        "wizard_label": "Torre del mago",
+        "wizard_desc": "Laboratorio de alquimia",
+        "underwater_label": "Laboratorio de las profundidades",
+        "underwater_desc": "Estación submarina",
+        "mission_label": "Mission Control",
+        "mission_desc": "Centro de operaciones de la NASA",
+        "serengeti_label": "Abrevadero",
+        "serengeti_desc": "Sabana del Serengueti con jirafas, facóqueros y elefantes",
+        "ghost_label": "Ronda de Kiro",
+        "ghost_desc": "Fantasmas de Kiro con sombreros, gafas y capas"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "solo apariciones amistosas",
         "kiro_ghost_haunt_animation": "Animación del fantasma de Kiro rondando",

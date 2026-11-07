@@ -17535,6 +17535,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "Büro",
+        "office_desc": "Klassisches Pixel-Büro",
+        "panda_label": "Panda-Höhle",
+        "panda_desc": "Arbeitsplatz im Bambuswald, nur Pandas",
+        "neural_label": "Neuronales Netz",
+        "neural_desc": "Sternbildkarte",
+        "wizard_label": "Zauberturm",
+        "wizard_desc": "Alchemielabor",
+        "underwater_label": "Tiefseelabor",
+        "underwater_desc": "Unterwasserstation",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA-Kontrollzentrum",
+        "serengeti_label": "Wasserloch",
+        "serengeti_desc": "Serengeti-Savanne mit Giraffen, Warzenschweinen und Elefanten",
+        "ghost_label": "Kiro-Spuk",
+        "ghost_desc": "Kiro-Geister mit Hüten, Brillen und Umhängen"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "nur freundliches Spuken",
         "kiro_ghost_haunt_animation": "Animation des Kiro-Geisterspuks",
