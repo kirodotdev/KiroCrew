@@ -1507,6 +1507,15 @@ skills/crons/MCP registration overwrite in place.
 
 Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`.
 
+That reconcile runs in dashboard startup, after the gateway has built the MCP
+overlay from `~/.kiro/agents` (and not at all under `--no-dashboard`). An app
+agent's copied managed-server spec names the running launcher, so when a server
+is routed (`mcp_gateway.stub_servers` non-empty) the boot first re-materializes
+every enabled app's agents, and only those, with `refresh_enabled_app_agents`,
+from the same source and behind the same admission gate as `register_app`. Otherwise the first start after an upgrade bakes the previous launcher into the
+overlay, and a later overlay refresh cannot fix it: a new routed target waits
+for a restart. Pinned by `test/test_app_agents_refresh_before_mcp_overlay.py`.
+
 Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
 The four built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
 Mission Control, Design Tweak — gate every agent route on `is_app_enabled` (a 403

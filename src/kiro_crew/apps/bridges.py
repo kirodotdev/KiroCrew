@@ -169,6 +169,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         reconcile_enabled_app_resources,
         refresh_app_agents,
         refresh_app_agents_if_enabled,
+        refresh_enabled_app_agents,
         register_app,
     )
     from kiro_crew.apps.bridges_skills import (  # noqa: F401

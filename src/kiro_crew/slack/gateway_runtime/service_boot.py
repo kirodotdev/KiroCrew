@@ -926,6 +926,17 @@ async def run(self: GatewayOrchestrator) -> None:
     # the broker-wired MCP entries the moment a session starts.  No-op
     # when ``mcp_gateway.enabled`` is False.
     await cautious_boot.pause_before("MCP gateway sidecar")
+    # The overlay is built from the agent specs on disk, and an app agent's spec names
+    # the running launcher. The dashboard's app reconcile rewrites it only after this
+    # (and never under --no-dashboard), so refresh it first when a broker will run.
+    if self._cfg.mcp_gateway.stub_servers:
+        # Gated with the step itself (no-new-work-on-gateway-boot-path).
+        from kiro_crew.apps.bridges import refresh_enabled_app_agents
+
+        try:
+            await asyncio.to_thread(refresh_enabled_app_agents)
+        except Exception:  # a refresh failure leaves the old specs; boot goes on
+            logger.warning("App agent refresh before the MCP overlay failed", exc_info=True)
     await self._init_mcp_gateway()
 
     # Loading the cron scheduler reads and reconciles durable jobs. Under
