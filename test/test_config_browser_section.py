@@ -362,7 +362,7 @@ class TestRetiredBrowserKeysOnDashboardSaves:
             assert resp.status == 200, await resp.text()
         assert self._assert_dropped(cfg_home)["agent"]["max_subagents"] == 8
 
-    def test_the_helper_touches_only_the_warned_keys(self) -> None:
+    def test_the_helper_keeps_renamed_spellings(self) -> None:
         from kiro_crew.config.resolution import drop_retired_section_keys
 
         data = {
