@@ -61,8 +61,14 @@ TUNNEL_DOWN = "tunnel_down"
 NOT_CONNECTED = "not_connected"
 UNKNOWN = "unknown"
 # SSM-specific first-rung failure: the target isn't a reachable managed node
-# (agent offline, missing instance profile, wrong region/profile, or IAM denial).
+# (agent offline, missing instance profile, or a read that failed -- no
+# credentials, an IAM denial, an invalid region).
 SSM_UNREACHABLE = "ssm_unreachable"
+# SSM first-rung failure where the read succeeded and SSM lists no managed node
+# with the instance's ssm_target at all: what a terminated or replaced instance
+# (e.g. after an Auto Scaling instance refresh) looks like, as distinct from a
+# node that is listed but whose agent is offline.
+SSM_TARGET_MISSING = "ssm_target_missing"
 
 _REASONS = {
     OK: "All checks passed — SSH, remote dashboard, and local forward are healthy.",
@@ -78,6 +84,11 @@ _REASONS = {
     "instance is running with the SSM agent online, that its instance profile "
     "grants AmazonSSMManagedInstanceCore, and that your AWS profile/region and "
     "ssm:StartSession permissions are correct.",
+    SSM_TARGET_MISSING: "SSM has no managed node with this instance's ssm_target in the "
+    "selected AWS account and region. If the instance was terminated or replaced (for "
+    "example by an Auto Scaling instance refresh), edit this instance and set ssm_target "
+    "to the new instance id; otherwise check that the AWS profile and region point at the "
+    "account the instance runs in.",
 }
 
 # SSM variants of the shared rungs, worded for the SSM transport so the UI copy
@@ -307,24 +318,39 @@ async def diagnose_instance(
 # ── SSM transport ─────────────────────────────────────────────────────────
 
 
-async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "") -> bool:
-    """Return True if SSM reports *ssm_target* as an Online managed node.
+#: :func:`_probe_ssm_managed` answers.
+_NODE_ONLINE = "online"
+_NODE_MISSING = "missing"
+_NODE_UNREACHABLE = "unreachable"
+
+
+async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "") -> str:
+    """Whether SSM reports *ssm_target* as an Online managed node, and if not, why.
 
     The SSM analogue of :func:`_probe_ssh`: it answers "can the control plane
     reach this box at all?" before we blame the remote gateway. Delegates to
-    :func:`kiro_crew.cloud.ssm.instance_is_managed` (read-only
+    :func:`kiro_crew.cloud.ssm.managed_node_ping_status` (one read-only
     ``describe-instance-information`` through the launcher's ``run_aws``
-    chokepoint) rather than re-implementing the call. A ``False`` covers agent
-    offline, wrong region/profile, and an IAM denial alike — all of which are
-    "the SSM path can't reach the target", which is what this rung reports.
+    chokepoint) rather than re-implementing the call.
+
+    Returns :data:`_NODE_ONLINE`; :data:`_NODE_MISSING` when the read succeeded
+    and SSM lists no node with that id (a terminated or replaced instance, or the
+    wrong account/region); or :data:`_NODE_UNREACHABLE` for everything else --
+    agent offline, an IAM denial, a timeout -- all of which are "the SSM path
+    can't reach the target".
     """
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(cloud_ssm.instance_is_managed, ssm_target, profile, region),
+        status = await asyncio.wait_for(
+            asyncio.to_thread(cloud_ssm.managed_node_ping_status, ssm_target, profile, region),
             timeout=_SSM_PING_TIMEOUT_SECS,
         )
     except Exception:  # timeout, AWSError, dispatch failure — all "unreachable"
-        return False
+        return _NODE_UNREACHABLE
+    if status == "Online":
+        return _NODE_ONLINE
+    if status == cloud_ssm.NODE_NOT_REGISTERED:
+        return _NODE_MISSING
+    return _NODE_UNREACHABLE
 
 
 async def _probe_remote_dashboard_ssm(
@@ -364,7 +390,8 @@ async def diagnose_instance_ssm(
 ) -> DiagnosisResult:
     """SSM-transport diagnosis ladder — the SSM sibling of :func:`diagnose_instance`.
 
-        1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable
+        1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable,
+                                   or ssm_target_missing when SSM lists no such node
         2. Remote dashboard up?    ``send-command`` + curl :RP        → no ⇒ remote_down
         3. Local forward reachable? TCP connect 127.0.0.1:LP          → no ⇒ tunnel_down
         else                                                              ⇒ ok
@@ -383,9 +410,11 @@ async def diagnose_instance_ssm(
 
     probes: list[dict] = []
 
-    managed_ok = await _probe_ssm_managed(target, profile, region)
-    probes.append({"name": "ssm_managed_node", "ok": managed_ok})
-    if not managed_ok:
+    node = await _probe_ssm_managed(target, profile, region)
+    probes.append({"name": "ssm_managed_node", "ok": node == _NODE_ONLINE})
+    if node == _NODE_MISSING:
+        return DiagnosisResult(SSM_TARGET_MISSING, _REASONS[SSM_TARGET_MISSING], probes)
+    if node != _NODE_ONLINE:
         return DiagnosisResult(SSM_UNREACHABLE, _REASONS[SSM_UNREACHABLE], probes)
 
     remote_ok = await _probe_remote_dashboard_ssm(target, remote_port, profile, region, run_as)
