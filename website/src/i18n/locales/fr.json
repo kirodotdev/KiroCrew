@@ -17806,6 +17806,7 @@
       "generating_execution_plan": "Génération du plan d'exécution",
       "go_to_task": "Aller à la tâche →",
       "idea": "Idée",
+      "layout_label": "Disposition des tâches",
       "no_idea_or_spec_content_available": "Aucun contenu d'idée ou de spécification disponible.",
       "phased": "Par phases",
       "task_is_waiting_for_your_decision": "Tâche {{index}} \"{{title}}\" attend votre décision",
