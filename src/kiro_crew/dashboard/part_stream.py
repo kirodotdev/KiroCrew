@@ -1,8 +1,9 @@
 """Stream one multipart part to disk without ever publishing a partial file.
 
 Three handlers write an uploaded part to a temp file: composer uploads
-(``handlers/files.py``), state import (``handlers/portability.py``) and knowledge
-ingest (``handlers/knowledge_ingest.py``). They share this one implementation because
+(``handlers/files.py``), state import (``handlers/portability.py``, through
+:func:`stream_part_off_loop`) and knowledge ingest (``handlers/knowledge_ingest.py``).
+They share this one implementation because
 every way of getting it wrong is a variation on the same thing: a coroutine
 owning a file it can be cancelled away from.
 
@@ -36,13 +37,24 @@ a task that may never produce one.
 The deliberate cost, stated plainly rather than hidden: ``__enter__``'s single
 ``os.open`` and ``__exit__``'s single ``close``+``unlink`` run on the event loop.
 That is bounded work on one freshly-named local path -- microseconds -- and it
-buys an ordering guarantee that no off-loop arrangement provides. The *bulk*
+buys an ordering guarantee that no awaited off-loop step provides. The *bulk*
 cleanup of (5) -- a request unlinking up to 20 published paths, a 512 MB video
 among them -- still runs in a worker, at the caller's level. Writes, the commit, and the sniff all run in workers too: only
 the create/discard of one temp is on the loop, and only because correctness
 requires it.
 
-Two further properties the callers rely on:
+**Off the loop entirely.** :func:`stream_part_off_loop` serves a destination on a
+filesystem that may stall (a data home on NFS), where even that one on-loop create
+would freeze the gateway. It does not offload the coroutine's cleanup; it takes
+ownership away from the coroutine. ONE dedicated worker thread runs the create,
+every write, the close and the discard, in the order they were submitted.
+``Executor.submit`` is synchronous, so the discard is queued with no ``await``
+before it on every failure, and that queue runs it after whatever create or write
+was in flight. (3), (6) and (7) each need a second thread or a result to wait on,
+and there is neither. Nothing is renamed there: its one caller owns a private
+per-request directory and uses the file only after the call has returned.
+
+Two further properties :func:`stream_part_to_file`'s callers rely on:
 
 * **Atomic publish.** ``dest`` is created solely by ``os.replace`` from a
   fully-written temp, so no failure path can leave anything at ``dest`` that
@@ -57,6 +69,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Callable
@@ -229,10 +242,60 @@ async def stream_part_to_file(
     return total
 
 
+async def stream_part_off_loop(
+    part: BodyPartReader,
+    open_sink: Callable[[], IO[bytes]],
+    discard: Callable[[], None],
+    *,
+    max_bytes: int,
+) -> int:
+    """Stream *part* into the file *open_sink* creates, with no filesystem call on the loop.
+
+    Returns the byte count written. *open_sink* creates the destination and returns
+    it open for writing; *discard* removes whatever *open_sink* created and must be a
+    no-op when it never ran. All three, every write and the close run on one worker
+    thread in submission order (this module's docstring says why that is safe).
+
+    On any failure -- :class:`PartTooLarge`, a failed read or write, a
+    ``CancelledError`` -- the file is closed and *discard* has run before this
+    raises. A second cancellation abandons only that wait: the discard is already
+    queued and still runs.
+    """
+    owner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="part-stream-owner")
+    sinks: list[IO[bytes]] = []
+    closed = False
+    try:
+        await asyncio.wrap_future(owner.submit(lambda: sinks.append(open_sink())))
+        total = 0
+        while chunk := await part.read_chunk(CHUNK_BYTES):
+            total += len(chunk)
+            if total > max_bytes:
+                raise PartTooLarge(total, max_bytes)
+            await asyncio.wrap_future(owner.submit(sinks[0].write, chunk))
+        await asyncio.wrap_future(owner.submit(sinks[0].close))
+        closed = True
+        return total
+    finally:
+        if not closed:
+            discarded = owner.submit(_close_and_discard, sinks, discard)
+        owner.shutdown(wait=False)
+        if not closed:
+            await asyncio.shield(asyncio.wrap_future(discarded))
+
+
+def _close_and_discard(sinks: list[IO[bytes]], discard: Callable[[], None]) -> None:
+    """Close the sink if one was opened, then discard. Runs on the owner thread."""
+    for sink in sinks:
+        with contextlib.suppress(OSError):
+            sink.close()
+    discard()
+
+
 __all__ = [
     "CHUNK_BYTES",
     "SNIFF_BYTES",
     "PartContentMismatch",
     "PartTooLarge",
+    "stream_part_off_loop",
     "stream_part_to_file",
 ]
