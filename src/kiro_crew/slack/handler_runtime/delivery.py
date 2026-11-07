@@ -318,6 +318,10 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             if not await _post_review_draft(
                 answer, slack, channel, reply_ts, thread_ts, user_id, session_key, clean_text
             ):
+                # No draft landed, so nothing owns "Awaiting review…". The clear
+                # at the top of delivery kept the status for the draft; take it
+                # down here or the requester waits on a review that never comes.
+                await turn.clear_working_indicators()
                 if _turn_completed_ok:
                     await turn.book_failure()
                 turn.release_permit()
