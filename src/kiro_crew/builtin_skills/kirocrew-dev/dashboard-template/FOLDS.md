@@ -224,6 +224,8 @@ Moved by: `session/opened`, `turn/started`.
 | `opened` | `boolean` | no |
 | `opened_agent_kind` | `string` | no |
 | `opened_ts` | `number` | no |
+| `resumed_ts` | `number` | no |
+| `resumed_turns` | `object` | no |
 | `turns` | `object` | no |
 
 ## `otel_session_tree`

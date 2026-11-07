@@ -184,8 +184,21 @@ def _otel_usage_start() -> dict[str, Any]:
     genuinely new session, whose opening it should count once) from one whose opening
     predates this process (a resumed session, which it must not re-count). ``0`` until
     the opening entry is folded.
+
+    ``resumed_ts`` and ``resumed_turns`` are the RESUME FLOOR: the newest re-attach's
+    own timestamp and the ``turns`` totals standing when it landed. The export counts
+    a session's turns from this floor only when ``resumed_ts`` is newer than its own
+    install anchor (``metrics/crew_log_export.py``). ``0`` and empty until a second
+    ``session/opened`` is folded.
     """
-    return {"opened": False, "opened_agent_kind": _AGENT_KIND_UNSET, "opened_ts": 0, "turns": {}}
+    return {
+        "opened": False,
+        "opened_agent_kind": _AGENT_KIND_UNSET,
+        "opened_ts": 0,
+        "resumed_ts": 0,
+        "resumed_turns": {},
+        "turns": {},
+    }
 
 
 def _otel_usage_step(state: dict[str, Any], entry: Entry) -> None:
@@ -194,7 +207,10 @@ def _otel_usage_step(state: dict[str, Any], entry: Entry) -> None:
             # A re-attach to an existing crew log (``resumed=True``) still carries
             # ``session/opened`` with the SAME agent the unit was created with -- this
             # fold counts the unit's opening once, not once per claim that reattaches to
-            # it, so a second one is skipped rather than double-opening the state.
+            # it, so a second one does not re-open the state. It only moves the resume
+            # floor to this entry.
+            state["resumed_ts"] = _as_int(getattr(entry, "time", 0))
+            state["resumed_turns"] = dict(state["turns"])
             return
         agent = entry.data.get("agent")
         # The session's slot KEY, read for its SHAPE only: a crewmate's pinned DM
@@ -231,27 +247,32 @@ def _otel_usage_step(state: dict[str, Any], entry: Entry) -> None:
 def _otel_usage_render(state: dict[str, Any]) -> dict[str, Any]:
     """This session's usage facts, as the fixed shape the export subscriber reads.
 
-    ``turns`` is copied rather than handed out live: the export subscriber keeps its
-    own last-seen copy per session across separate ``FoldAdvanced`` deliveries, and a
-    shared dict would let this fold's next ``step`` mutate a snapshot the subscriber
-    has not yet compared against.
+    ``turns`` and ``resumed_turns`` are copied rather than handed out live: the export
+    subscriber keeps its own last-seen copy per session across separate
+    ``FoldAdvanced`` deliveries, and a shared dict would let this fold's next ``step``
+    mutate a snapshot the subscriber has not yet compared against.
     """
     turns: Mapping[str, int] = state["turns"]
+    floor: Mapping[str, int] = state["resumed_turns"]
     return {
         "opened": bool(state.get("opened")),
         "opened_agent_kind": str(state.get("opened_agent_kind") or _AGENT_KIND_UNSET),
         "opened_ts": _as_int(state.get("opened_ts")),
+        "resumed_ts": _as_int(state.get("resumed_ts")),
+        "resumed_turns": {actor: _as_int(count) for actor, count in floor.items()},
         "turns": {actor: _as_int(count) for actor, count in turns.items()},
     }
 
 
 def _otel_usage_copy(state: dict[str, Any]) -> dict[str, Any]:
-    """*state* copied one level deep -- the only container ``step`` reaches into is
-    ``turns``, so a shallow copy of it is enough to keep ``step`` off the original.
+    """*state* copied one level deep -- the containers ``step`` reaches are ``turns``
+    and ``resumed_turns``, so a shallow copy of each keeps ``step`` off the original.
     """
     return {
         "opened": state.get("opened", False),
         "opened_ts": state.get("opened_ts", 0),
         "opened_agent_kind": state.get("opened_agent_kind", _AGENT_KIND_UNSET),
+        "resumed_ts": state.get("resumed_ts", 0),
+        "resumed_turns": dict(state.get("resumed_turns") or {}),
         "turns": dict(state.get("turns") or {}),
     }
