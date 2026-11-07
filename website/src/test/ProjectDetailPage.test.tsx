@@ -41,6 +41,21 @@ describe('ProjectDetailPage', () => {
     expect(screen.getByText('Tasks')).toBeInTheDocument()
   })
 
+  it('announces Idea / Tasks as a named tablist with the open tab selected', () => {
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    const list = screen.getByRole('tablist', { name: 'Project view' })
+    expect(within(list).getAllByRole('tab').map(t => t.textContent)).toEqual(['Idea', 'Tasks'])
+    expect(within(list).getByRole('tab', { selected: true }).textContent).toBe('Tasks')
+    fireEvent.click(within(list).getByRole('tab', { name: 'Idea' }))
+    expect(within(list).getByRole('tab', { selected: true }).textContent).toBe('Idea')
+    // Roving tabindex: the rail is one Tab stop, and the arrow keys move the
+    // selection, as in every other Tablist.
+    expect(within(list).getByRole('tab', { name: 'Idea' })).toHaveAttribute('tabindex', '0')
+    expect(within(list).getByRole('tab', { name: 'Tasks' })).toHaveAttribute('tabindex', '-1')
+    fireEvent.keyDown(within(list).getByRole('tab', { name: 'Idea' }), { key: 'ArrowRight' })
+    expect(within(list).getByRole('tab', { selected: true }).textContent).toBe('Tasks')
+  })
+
   it('announces the DAG / Phased layout as a named radio group with the chosen one checked', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun()} />)
     const layout = screen.getByRole('radiogroup', { name: 'Task layout' })

@@ -1997,6 +1997,7 @@
       },
       "modes": {
         "edit": "Modifica",
+        "label": "Modalità",
         "preview": "Anteprima"
       },
       "page": {
@@ -17944,7 +17945,8 @@
       "task_is_waiting_for_your_decision": "Attività {{index}} \"{{title}}\" è in attesa della tua decisione",
       "tasks": "Attività",
       "the_dag_view_will_appear_once_the_plan_is_ready": "La vista DAG apparirà quando il piano sarà pronto",
-      "failed_to_update_task": "Impossibile aggiornare l'attività"
+      "failed_to_update_task": "Impossibile aggiornare l'attività",
+      "view_label": "Vista del progetto"
     },
     "projectsPage": {
       "agent": "Agente:",

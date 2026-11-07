@@ -1921,6 +1921,7 @@
       },
       "modes": {
         "edit": "संपादन",
+        "label": "मोड",
         "preview": "पूर्वावलोकन"
       },
       "page": {
@@ -17488,7 +17489,8 @@
       "task_is_waiting_for_your_decision": "कार्य {{index}} \"{{title}}\" आपके निर्णय की प्रतीक्षा कर रहा है",
       "tasks": "कार्य",
       "the_dag_view_will_appear_once_the_plan_is_ready": "प्लान तैयार होने पर DAG व्यू दिखाई देगा",
-      "failed_to_update_task": "कार्य अपडेट नहीं हो सका"
+      "failed_to_update_task": "कार्य अपडेट नहीं हो सका",
+      "view_label": "प्रोजेक्ट दृश्य"
     },
     "projectsPage": {
       "agent": "एजेंट:",

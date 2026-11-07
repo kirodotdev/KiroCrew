@@ -1845,6 +1845,7 @@
       },
       "modes": {
         "edit": "编辑",
+        "label": "模式",
         "preview": "预览"
       },
       "page": {
@@ -17032,7 +17033,8 @@
       "task_is_waiting_for_your_decision": "任务 {{index}}“{{title}}”正在等待你的决定",
       "tasks": "任务",
       "the_dag_view_will_appear_once_the_plan_is_ready": "计划就绪后将显示 DAG 视图",
-      "failed_to_update_task": "更新任务失败"
+      "failed_to_update_task": "更新任务失败",
+      "view_label": "项目视图"
     },
     "projectsPage": {
       "agent": "代理：",

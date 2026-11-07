@@ -551,7 +551,7 @@ describe('ProjectDetailPage pending edits and selection', () => {
 describe('ProjectDetailPage idea tab and export', () => {
   it('hands the idea to the chat composer', () => {
     const { store } = renderWithProviders(<ProjectDetailPage run={mockRun()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Idea' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Idea' }))
     fireEvent.click(screen.getByRole('button', { name: 'Edit in Chat' }))
     expect(store.getState().chat.pendingInput).toBe('# Test spec')
   })
@@ -561,8 +561,8 @@ describe('ProjectDetailPage idea tab and export', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Phased' }))
     fireEvent.click(screen.getByRole('radio', { name: 'DAG' }))
     expect(screen.getByTestId('dag-view')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Idea' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Idea' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Tasks' }))
     expect(screen.getByTestId('dag-view')).toBeInTheDocument()
   })
 

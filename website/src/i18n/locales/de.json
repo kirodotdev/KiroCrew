@@ -1994,6 +1994,7 @@
       },
       "modes": {
         "edit": "Bearbeiten",
+        "label": "Modus",
         "preview": "Vorschau"
       },
       "page": {
@@ -17488,7 +17489,8 @@
       "task_is_waiting_for_your_decision": "Aufgabe {{index}} „{{title}}“ wartet auf Ihre Entscheidung",
       "tasks": "Aufgaben",
       "the_dag_view_will_appear_once_the_plan_is_ready": "Die DAG-Ansicht erscheint, sobald der Plan bereit ist",
-      "failed_to_update_task": "Aufgabe konnte nicht aktualisiert werden"
+      "failed_to_update_task": "Aufgabe konnte nicht aktualisiert werden",
+      "view_label": "Projektansicht"
     },
     "projectsPage": {
       "agent": "Agent:",

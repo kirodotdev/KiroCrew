@@ -9937,7 +9937,8 @@
       "no_idea_or_spec_content_available": "No idea or spec content available.",
       "phased": "Phased",
       "tasks": "Tasks",
-      "the_dag_view_will_appear_once_the_plan_is_ready": "The DAG view will appear once the plan is ready"
+      "the_dag_view_will_appear_once_the_plan_is_ready": "The DAG view will appear once the plan is ready",
+      "view_label": "Project view"
     },
     "projectsPage": {
       "agent": "Agent:",
