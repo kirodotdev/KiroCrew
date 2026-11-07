@@ -6,7 +6,7 @@ created: 2026-10-26
 last-audited: 2026-10-28
 audited-at: 47c71cbc9e
 doc-pr: null
-implementation-prs: []
+implementation-prs: [25101]
 tracking-issues: [24226]
 supersedes: []
 superseded-by: []
