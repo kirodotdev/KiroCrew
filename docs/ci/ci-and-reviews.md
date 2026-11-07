@@ -3349,10 +3349,21 @@ The markers are the **only** gate:
   header line. Any other word reads as no verdict, and a `BLOCK` with no `Trigger:`
   and no `Outcome:` line is published as `PASS`.
 
-A missing reviewed-marker for the current head fails the gate closed, because a
-no-output review must not look clean. A BLOCKING-labelled finding without the
-`[BLOCK-MERGE]` marker is only a non-gating **warning**, since a coherence
-check on that pairing mis-fires whenever the model quotes prior text.
+A missing reviewed-marker for the current head fails the Opus and GPT gates
+closed, because a no-output review must not look clean. A BLOCKING-labelled
+finding without the `[BLOCK-MERGE]` marker is only a non-gating **warning**, since
+a coherence check on that pairing mis-fires whenever the model quotes prior text.
+
+The whole-design lanes (Design, UX and First Principles, same-repo and fork) take
+a verdict only next to the current head's `[<LANE>-REVIEWED] <sha>` marker. With
+no marker, or another head's, every verdict reads as `UNKNOWN`, `BLOCK` included:
+the lane reports the review as incomplete (a warning on the same-repo status step,
+a neutral check-run on a fork) and does not fail. An unverified `BLOCK` is
+deliberately not kept. The guard cannot tell a marker lost to truncation from one
+copied out of an earlier run, so keeping it would also honour a `BLOCK` earned on
+other code. Asking for the marker first would not help on its own: each lane cuts
+everything above the verdict header before the guard reads it. Pinned by
+`TestAnUnverifiedBlockIsNotHonoured`.
 
 The Opus discovery pass has its own marker, `[OPUS-DISCOVERY] <sha>`, and the
 `Capture discovery candidates` step fails closed when it is absent, before
