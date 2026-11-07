@@ -542,6 +542,15 @@ class IncidentClosed(ValueError):
         self.incident_id = incident_id
 
 
+class IllegalTransition(ValueError):
+    """``transition`` found no ``LEGAL_TRANSITIONS`` edge from the stored status to the new one.
+
+    A ``ValueError`` so every existing arm still maps it to ``illegal_transition``. It is a
+    fact about the stored record, not a store fault, so retrying the same move cannot
+    succeed; a caller that must tell it from a read or write failure catches it first.
+    """
+
+
 class TransitionRefused(Exception):
     """A ``transition`` check refused the change; nothing was written.
 
@@ -570,8 +579,8 @@ def transition(
 ) -> Incident:
     """Move an incident to ``new_status``, refusing illegal transitions.
 
-    Raises ``KeyError`` for an unknown incident and ``ValueError`` for a
-    transition the grammar does not allow. Extra keyword arguments update
+    Raises ``KeyError`` for an unknown incident and ``IllegalTransition`` (a
+    ``ValueError``) for a transition the grammar does not allow. Extra keyword arguments update
     matching ``Incident`` fields in the same locked write, so a caller never has
     to do a second read-modify-write to attach a diagnosis or a slot key.
 
@@ -603,7 +612,7 @@ def transition(
         if new_status != incident.status:
             allowed = LEGAL_TRANSITIONS.get(incident.status, frozenset())
             if new_status not in allowed:
-                raise ValueError(
+                raise IllegalTransition(
                     f"illegal transition {incident.status!r} -> {new_status!r} "
                     f"for {incident_id}"
                 )

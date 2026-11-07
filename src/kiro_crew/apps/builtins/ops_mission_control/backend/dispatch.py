@@ -740,6 +740,11 @@ def _cleared_resolution_check(entry: Signal) -> Callable[[Incident], dict[str, A
     """
 
     def _check(stored: Incident) -> dict[str, Any]:
+        # Re-read the spool under the index lock, as the route guard does: a firing
+        # delivered after this cycle's poll means the fault is back, so the earlier ok
+        # entry is not evidence. Lock order matches `webhook.peek`'s note.
+        if cleared_event(webhook.peek(), stored.signal.id) is None:
+            raise store.TransitionRefused(refusal_text(stored), RECOVERY_EVIDENCE_REQUIRED)
         return {
             "resolution": cleared_event_resolution(entry, note="", diagnosed=bool(stored.diagnosis))
         }
@@ -766,8 +771,10 @@ async def _resolve_on_cleared_push_events(
 
     ``require_open``: an incident closed between the cycle's index read and this write (by
     reconcile, the dashboard or an agent) keeps the resolution its closer wrote, and its id
-    stays ackable. A write that failed for any other tolerated reason puts the id in the
-    failed set, so the caller keeps its spooled entries for the next cycle to retry.
+    stays ackable, and so does one whose stored status has no legal move to resolved
+    (``IllegalTransition``), which a retry could never fix. A write that failed for any other
+    tolerated reason (an unreadable index, an ``OSError``) puts the id in the failed set, so
+    the caller keeps its spooled entries for the next cycle to retry.
     """
     resolved: list[Incident] = []
     failed: set[str] = set()
@@ -792,6 +799,26 @@ async def _resolve_on_cleared_push_events(
             logger.debug(
                 "ops-mission-control: %s closed before its cleared event was applied",
                 incident.incident_id,
+            )
+            continue
+        except store.TransitionRefused:
+            # A firing delivery landed after the poll: left open, and the ack keeps that
+            # delivery because this cycle's poll never observed it.
+            logger.debug(
+                "ops-mission-control: %s fired again before its cleared event was applied",
+                incident.incident_id,
+            )
+            continue
+        except store.IllegalTransition:
+            # The stored status has no edge to resolved (a hand-edited `unclaimed`, say). That
+            # is a fact about the record, not a store fault, so a retry can never succeed:
+            # keeping the id spooled would pile up one entry and one warning per cycle. Left
+            # open and acked, like a close in between; the next cleared delivery logs again.
+            logger.warning(
+                "ops-mission-control: %s cannot be resolved from %r on its cleared event; "
+                "left open for an operator",
+                incident.incident_id,
+                incident.status,
             )
             continue
         except json.JSONDecodeError:
@@ -1026,14 +1053,21 @@ async def run_cycle(
     # on disk, so dropping the spooled copy loses nothing — and if that incident later goes
     # terminal or stale, the id leaves `owned` and the next genuine delivery is claimable again.
     #
-    # The one exception is an id whose cleared-event resolve just failed: its entries, the
-    # cleared one included, stay spooled so the next cycle retries the resolve.
+    # The one exception is an id whose cleared-event resolve just failed on a store read or
+    # write: its entries, the cleared one included, stay spooled so the next cycle retries
+    # the resolve. An illegal move to resolved is not a failure here (a retry cannot fix it).
+    #
+    # Incidents claimed THIS cycle join the resolve: a sender that delivered firing then ok
+    # before this heartbeat has its ok entry in this poll, and the ack below would drop it.
+    # The ack drops only the entries this poll observed; a later delivery stays spooled.
+    claimed_ids = {result.incident.signal.id for result in claimed}
     resolved, resolve_failed = await _resolve_on_cleared_push_events(
-        signals, index, owned, registry
+        signals,
+        {**index, **{result.incident.incident_id: result.incident for result in claimed}},
+        owned | claimed_ids,
+        registry,
     )
-    acked = webhook.ack(
-        ({result.incident.signal.id for result in claimed} | owned) - resolve_failed
-    )
+    acked = webhook.ack((claimed_ids | owned) - resolve_failed, observed=signals)
     if acked:
         logger.debug("ops-mission-control: acked %d webhook signal(s) after claim", acked)
 
