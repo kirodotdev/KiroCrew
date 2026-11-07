@@ -127,21 +127,25 @@ keeping the shipped dashboard. Covered by `test/test_frontend_edition_build.py`.
 ## Pre-boot shell branding: `branding.json` and the `public/` overlay
 
 Everything the registry seams brand is rendered by React — which means none of it
-exists before React mounts. Three surfaces are shown earlier: the `<title>` during
+exists before React mounts. Four surfaces are shown earlier: the `<title>` during
 boot (and whenever a PWA-install dialog or bookmark samples it), the
-`<meta name="theme-color">`, and the PWA identity (`manifest.json` plus
-`icon-192.png` / `icon-512.png`). `registerThemeBranding()` cannot reach any of
-them. The edition plugin patches them instead — the HTML fields on every build
-and dev transform, the `public/` overlay at build emit — from two optional
-inputs in the edition dir:
+`<meta name="theme-color">`, the boot-failure panel's "worth reporting at" issue
+tracker links (shown when the bundle never arrived), and the PWA identity
+(`manifest.json` plus `icon-192.png` / `icon-512.png`). `registerThemeBranding()`
+cannot reach any of them. The edition plugin patches them instead — the HTML
+fields on every build and dev transform, the `public/` overlay at build emit —
+from two optional inputs in the edition dir:
 
-- **`branding.json`** — `{"title": "Acme Crew", "themeColor": "#0055aa"}`. Both
-  keys optional; values are HTML-escaped into the root `index.html` only (app
-  panel pages are untouched). An unknown key, a non-string value, or malformed
-  JSON **fails the build** — a typoed key silently shipping the stock title is
-  the exact silent-degrade class this seam bans. So does a missing target tag:
-  if the core shell drops `<title>` or the theme-color meta, the edition build
-  breaks loudly rather than quietly reverting to stock.
+- **`branding.json`** — `{"title": "Acme Crew", "themeColor": "#0055aa",
+  "issuesUrl": "https://tracker.example.com/issues"}`. Every key optional;
+  values are HTML-escaped into the root `index.html` only (app panel pages are
+  untouched). `issuesUrl` must be an absolute `http(s)` URL and replaces both the
+  target and the visible text of every boot-failure tracker link. An unknown
+  key, a non-string value, or malformed JSON **fails the build** — a typoed key
+  silently shipping the stock title is the exact silent-degrade class this seam
+  bans. So does a missing target tag: if the core shell drops `<title>`, the
+  theme-color meta or the boot-failure tracker link, the edition build breaks
+  loudly rather than quietly reverting to stock.
 - **`public/`** — files here overlay the stock copies in the built `dist`,
   edition-wins, emitted through the bundler (`generateBundle`/`emitFile`, which
   takes precedence over the `publicDir` copy). Only an allowlist is accepted —
@@ -732,7 +736,9 @@ Out of scope: the **Report a Problem** flow's issue link is built by the
 gateway (`diagnostics.github_issue_url`), so the backend `feedback` Composed
 Platform Provider retargets it
 ([platform-context](../../docs/system-specs/modules/platform-context.md)), not
-this seam. An edition sets both.
+this seam. The boot-failure panel's tracker links are static pre-boot HTML, so
+`branding.json`'s `issuesUrl` retargets them ("Pre-boot shell branding" above).
+An edition sets all three.
 
 ## API methods: exported transport, not a registry
 
