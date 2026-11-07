@@ -400,8 +400,10 @@ def build_refusal_recovery_prompt(
             "has read it. If the task is NOT finished, continue from there: use an "
             "allowed alternative (for a shell command, a read-only variant) or a "
             "different tool, and say what it changed. Only if the task IS finished "
-            "and the block left nothing missing, reply with one short line noting "
-            "the block and stop."
+            "and the block left nothing missing, open with a one-line recap of the "
+            "outcome of the work (the one restatement allowed here: this reply "
+            "becomes the last message the user sees), then one short line noting "
+            "the block, and stop."
             if answered
             else "Decide how to proceed: use an allowed alternative (for a shell "
             "command, a read-only variant), a different tool, or — if the block is "
