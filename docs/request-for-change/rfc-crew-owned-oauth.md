@@ -228,7 +228,7 @@ This reuse is why §5's estimate is ~1,200 lines smaller than a fresh build (vau
 3. Bridge connects to C4 over the socket; C4 attests the session (ancestry) and pins the bridge pid (§4.3).
 4. Each message: C4 checks policy, logs `tools/call`, gets a fresh token from C2/C3, POSTs to the vendor, relays the answer.
 
-**Disconnect.** C1 revokes upstream where the vendor has an endpoint (GitHub, Google, Asana: endpoint names per vendor docs, **unverified live**), C2 deletes the entry with `delete_if_revision`, C4 drops open sessions for that slug.
+**Disconnect.** C1 revokes upstream where the vendor has an endpoint (GitHub, Google, Asana: endpoint names per vendor docs, **unverified live**), C2 deletes the entry with `delete_if_revision`. C4 keeps open sessions' bridges registered: with no stored pair each call is answered 409 "reconnect it" and nothing is sent upstream, and a later Connect makes them work again (#31149 item 1). Only when the cleanup itself fails does C4 drop every bridge of the slug, so a pair that may survive is never reachable.
 
 ### 3.5 Verified key unknown: can KAS use a plain local MCP endpoint?
 
@@ -316,7 +316,7 @@ The vault's own doc says: "The protection is enforced by Kiro Crew, not by the o
 
 ### 4.8 Revocation and disconnect
 
-Crew-owned custody adds upstream revocation, which today is impossible (`mcp-oauth-ownership.md`, "How this works today"; `revoke_local_grant` in `mcp_grant.py` only unlinks local files). Disconnect: revoke upstream (best effort, report failure), delete the vault entry, end live proxy sessions. A vendor-side revoke (user removes the app at the vendor) shows up as a refresh failure and flips status to `needs_auth`.
+Crew-owned custody adds upstream revocation, which today is impossible (`mcp-oauth-ownership.md`, "How this works today"; `revoke_local_grant` in `mcp_grant.py` only unlinks local files). Disconnect: revoke upstream (best effort, report failure), delete the vault entry; live proxy sessions are refused until reconnect (and cut if the cleanup fails). A vendor-side revoke (user removes the app at the vendor) shows up as a refresh failure and flips status to `needs_auth`.
 
 ### 4.9 Audit
 

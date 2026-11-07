@@ -154,7 +154,7 @@ def is_connection_server(session_key: str, server: str) -> bool:
 
 
 def drop_slug(slug: str) -> None:
-    """Forget every bridge of *slug* (Disconnect); their next call is refused."""
+    """Forget every bridge of *slug* (a failed Disconnect); their next call is refused."""
     with _lock:
         for version in [v for v, b in _bridges.items() if b.slug == slug]:
             _bridges.pop(version, None)
