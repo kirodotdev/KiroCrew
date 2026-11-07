@@ -1,11 +1,4 @@
-"""A shared runtime dying during a session start and the auto-nudge start streak.
-
-``_mark_dead`` fails every pending request with an untagged ``AcpRuntimeDead``, so
-a ``session/new`` cut short by the death reaches the chat runner without the
-``session_start_failed`` tag that ``_note_cycle_start_failure`` counts. No loop on
-that process -- the one whose start was interrupted or a sibling -- has its
-start-failure streak advanced by the death.
-"""
+"""Runtime-death attribution for a session start on a shared ACP process."""
 
 import asyncio
 
@@ -16,53 +9,95 @@ from acp_runtime_helpers import _await_pending, _make_runtime, _start_reader, _s
 
 from kiro_crew import autonudge as _an
 from kiro_crew.acp.runtime import AcpRuntimeDead
-from kiro_crew.acp.transport_errors import AcpProcessDied
-from kiro_crew.dashboard.chat_turn.recovery import _note_cycle_start_failure
+from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.types import METHOD_SET_MODE
+from kiro_crew.dashboard.chat_turn.recovery import (
+    _note_cycle_failure,
+    _note_cycle_start_failure,
+)
 from kiro_crew.testing.wait import await_until
 
-SLOT = "chat-1-987"
+STARTING_SLOT = "chat-1-987"
+SIBLING_SLOT = "chat-2-654"
 
 
 @pytest.mark.asyncio
-async def test_a_runtime_death_during_session_new_advances_no_start_streak(monkeypatch):
-    """Drives the real raise: ``session/new`` is in flight when stdout hits EOF.
-
-    The exception the start raises is the one ``_mark_dead`` built, read off the
-    interrupted ``create_session`` itself rather than constructed here, so a raise
-    site that began tagging a death would redden this -- as would the helper
-    counting a death without the tag. The ``AcpProcessDied`` form is the one the
-    provider's ``_translate_dead`` hands callers that only catch ``AcpError``; it
-    is checked too because the chat runner meets the death in that shape.
-    """
-    reported: list[str] = []
+async def test_session_new_death_charges_only_the_starting_loop(monkeypatch):
+    """Real EOF tags the interrupted start without mutating a sibling request."""
+    start_failures: list[str] = []
+    failed_cycles: list[tuple[str, str, int]] = []
 
     class _Svc:
         _inflight_adds: set = set()
 
         def notify_cycle_start_failed(self, slot_key: str) -> None:
-            reported.append(slot_key)
+            start_failures.append(slot_key)
+
+        async def notify_cycle_failed(
+            self, slot_key: str, *, loop_id: str, expected_generation: int
+        ) -> None:
+            failed_cycles.append((slot_key, loop_id, expected_generation))
 
         def stop(self) -> None:
             return None
 
     monkeypatch.setattr(_an, "_INSTANCE", _Svc(), raising=False)
 
-    rt, reader, _ = _make_runtime()
-    task = await _start_reader(rt)
-    start = asyncio.create_task(rt.create_session(mcp_servers=[]))
+    runtime, reader, _ = _make_runtime()
+    reader_task = await _start_reader(runtime)
+    starting = asyncio.create_task(runtime.create_session(mcp_servers=[]))
+    sibling = None
     try:
-        await _await_pending(rt)
-        reader.feed_eof()  # empty readline -> process exited -> _mark_dead
-        with pytest.raises(AcpRuntimeDead) as info:
-            await await_until(start, what="the session/new cut short by the death")
+        starting_request = await _await_pending(runtime)
+        sibling = asyncio.create_task(runtime._send_and_await(METHOD_SET_MODE, {}))
+        await _await_pending(runtime, exclude={starting_request})
+
+        reader.feed_eof()
+        with pytest.raises(AcpRuntimeDead) as starting_info:
+            await await_until(starting, what="the session/new interrupted by runtime death")
+        with pytest.raises(AcpRuntimeDead) as sibling_info:
+            await await_until(sibling, what="the sibling request interrupted by runtime death")
     finally:
-        await _stop_reader(task)
+        for pending in (starting, sibling):
+            if pending is not None and not pending.done():
+                pending.cancel()
+        await asyncio.gather(
+            *(task for task in (starting, sibling) if task), return_exceptions=True
+        )
+        await _stop_reader(reader_task)
 
-    death = info.value
-    assert rt._dead is True
-    assert getattr(death, "session_start_failed", False) is False
+    starting_death = starting_info.value
+    sibling_death = sibling_info.value
+    assert runtime._dead is True
+    assert starting_death is not sibling_death
+    assert getattr(starting_death, "session_start_failed", False) is True
+    assert getattr(sibling_death, "session_start_failed", False) is False
 
-    _note_cycle_start_failure(SLOT, death, self_wake=True)
-    _note_cycle_start_failure(SLOT, AcpProcessDied(str(death)), self_wake=True)
+    _note_cycle_start_failure(STARTING_SLOT, starting_death, self_wake=True)
+    _note_cycle_start_failure(SIBLING_SLOT, sibling_death, self_wake=True)
+    await _note_cycle_failure(
+        STARTING_SLOT,
+        starting_death,
+        self_wake=True,
+        loop_id="loop-starting",
+        expected_generation=1,
+    )
+    assert start_failures == [STARTING_SLOT]
+    assert failed_cycles == []
 
-    assert reported == []
+    provider = AcpSessionProvider.__new__(AcpSessionProvider)
+    provider._runtime = runtime
+    translated_start = provider._translate_dead(starting_death)
+    translated_sibling = provider._translate_dead(sibling_death)
+    start_failures.clear()
+    _note_cycle_start_failure(STARTING_SLOT, translated_start, self_wake=True)
+    _note_cycle_start_failure(SIBLING_SLOT, translated_sibling, self_wake=True)
+    await _note_cycle_failure(
+        STARTING_SLOT,
+        translated_start,
+        self_wake=True,
+        loop_id="loop-starting",
+        expected_generation=1,
+    )
+    assert start_failures == [STARTING_SLOT]
+    assert failed_cycles == []
