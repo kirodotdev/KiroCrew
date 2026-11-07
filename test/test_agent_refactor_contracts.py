@@ -126,7 +126,7 @@ BASE_SURFACE: dict[str, str] = {
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",
-    "_WORKER_EXCLUDED_GRANTS": "value frozenset 1a2756dd420ed333",
+    "_WORKER_EXCLUDED_GRANTS": "value frozenset cbd44b91361131e5",
     "_WORKER_MIRRORED_KEYS": "value tuple 27234a2a963813c9",
     "_WORKER_MIRRORED_SHAPES": "value dict 245618c04df2519f",
     "_WORKER_SYSTEM_PROMPT": "value str a77eb5dc601ae983",

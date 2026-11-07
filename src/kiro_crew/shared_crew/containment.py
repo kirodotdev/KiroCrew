@@ -251,8 +251,12 @@ def probe_containment(*, hard_limits: bool, slices_enabled: bool) -> Containment
 # -- slice names -------------------------------------------------------------
 
 
+#: Hex characters of a principal's slice token.
+_PRINCIPAL_SLICE_TOKEN_CHARS = 12
+
+
 def principal_slice_token(principal_id: str) -> str:
-    return hashlib.sha256(principal_id.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha256(principal_id.encode("utf-8")).hexdigest()[:_PRINCIPAL_SLICE_TOKEN_CHARS]
 
 
 def instance_slice_name() -> str:
@@ -265,6 +269,18 @@ def principal_slice_name(principal_id: str, *, instance_slice: str | None = None
     parent = instance_slice or instance_slice_name()
     stem = parent[: -len(".slice")] if parent.endswith(".slice") else parent
     return f"{stem}-p{principal_slice_token(principal_id)}.slice"
+
+
+def is_principal_slice(name: str, *, instance_slice: str) -> bool:
+    """Whether *name* is a slice :func:`principal_slice_name` makes under *instance_slice*."""
+    stem = instance_slice[: -len(".slice")] if instance_slice.endswith(".slice") else instance_slice
+    prefix, suffix = f"{stem}-p", ".slice"
+    if not (name.startswith(prefix) and name.endswith(suffix)):
+        return False
+    token = name[len(prefix) : -len(suffix)]
+    return len(token) == _PRINCIPAL_SLICE_TOKEN_CHARS and all(
+        c in "0123456789abcdef" for c in token
+    )
 
 
 # -- applying slice limits ---------------------------------------------------

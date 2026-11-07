@@ -930,6 +930,7 @@ def test_the_exclusion_set_is_pinned_and_disjoint_from_the_template_grants():
             "@kirocrew-cron/cron_add",
             "@kirocrew-cron/cron_update",
             "@kirocrew-cron/cron_secret_request",
+            "@kirocrew-cron/background_run",
         }
     )
     template = set(agent.build_agent_config().get("allowedTools") or [])
@@ -1597,6 +1598,7 @@ def test_the_predicate_answers_which_excluded_refs_a_pattern_reaches():
     """Asserted directly, because it is the one place the subtraction's completeness
     lives and every caller trusts it."""
     assert agent._pattern_reaches_excluded("@kirocrew-cron/*") == [
+        "@kirocrew-cron/background_run",
         "@kirocrew-cron/cron_add",
         "@kirocrew-cron/cron_secret_request",
         "@kirocrew-cron/cron_update",
