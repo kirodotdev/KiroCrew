@@ -723,7 +723,12 @@ unit installed — the template `user@.service`, or a hand-installed
 manager unit anywhere on systemd's load path, that remedy cannot work: there is
 no unit for linger to start, which is the case on Enterprise Linux 7 derivatives
 (RHEL 7, CentOS 7, Amazon Linux 2). `require_systemd()` then names the platform
-limit and points at `./dev-backend.sh` instead. `kirocrew doctor` checks for the
+limit and points at `./dev-backend.sh` instead. Which case applies is the SYSTEM
+manager's answer (`systemctl show --property=LoadState user@<uid>.service`, no
+user bus needed), so a masked unit counts as absent and systemd's own unit path is
+honoured; only when that call cannot answer does a walk of the documented load
+path decide. Either way the refusal is `PodBackendAbsent`, decided by the missing
+socket alone. `kirocrew doctor` checks for the
 manager unit BEFORE probing bus reachability, because a stray session
 `dbus-daemon` can create a socket on a host that has no manager behind it. With a
 manager unit present, doctor retains the shared probe's reachable / no-session /
