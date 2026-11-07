@@ -12,6 +12,8 @@ import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -87,14 +89,15 @@ def opened_dump_file(dumps_dir: Path) -> Iterator[crash_dump_store.DumpFile]:
 
 
 def _create_header_only_dump(
-    dumps_dir: Path, name: str, *, pid_domain: str | None = None
+    dumps_dir: Path, name: str, *, pid_domain: str | None = None, clean_exit: bool = True
 ) -> Path:
-    """Create a dump file with only the header (no stacks = clean exit).
+    """Create a dump file with only the header (no stacks).
 
     ``pid_domain`` defaults to THIS process's domain so ownership is
     attributable and the injected liveness check is consulted; pass a foreign
     domain (or empty string for a legacy domain-less header) to exercise the
-    unattributable paths.
+    unattributable paths. ``clean_exit`` leaves the marker an orderly shutdown
+    writes beside its dump; pass False for a gateway that died some other way.
     """
     domain = crash_dump_store._pid_domain() if pid_domain is None else pid_domain
     pid_line = f"# PID: 12345 @ {domain}\n" if domain else "# PID: 12345\n"
@@ -105,7 +108,18 @@ def _create_header_only_dump(
         + "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
     )
-    return p
+    return _mark_clean_exit(p) if clean_exit else p
+
+
+def _marker(dump: Path) -> Path:
+    """Where an orderly shutdown leaves *dump*'s clean-exit marker: ``<dump name>.clean``."""
+    return dump.with_name(dump.name + ".clean")
+
+
+def _mark_clean_exit(dump: Path) -> Path:
+    """Leave the marker ``record_clean_exit`` writes beside *dump*; return *dump*."""
+    _marker(dump).touch()
+    return dump
 
 
 def _create_stacked_dump(dumps_dir: Path, name: str) -> Path:
@@ -202,6 +216,21 @@ def test_open_dump_file_preserves_bytes(dumps_dir: Path, payload: str) -> None:
         dump_file.write(payload)
         os.write(fd, payload.encode("utf-8"))
         assert path.read_bytes() == header + payload.encode("utf-8") * 2
+
+
+def test_open_dump_file_does_not_inherit_a_clean_exit_marker(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dump names have one-second resolution, so a new session can reuse a name an
+    # earlier one already marked; a session that just started has not exited.
+    real_datetime = crash_dump_store.datetime
+    fixed = real_datetime(2026, 7, 17, 1, 0, 0, tzinfo=crash_dump_store.timezone.utc)
+    monkeypatch.setattr(crash_dump_store, "datetime", SimpleNamespace(now=lambda tz: fixed))
+    stale = _marker(dumps_dir / f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    stale.touch()
+    with opened_dump_file(dumps_dir) as dump_file:
+        assert _marker(dump_file.path) == stale
+        assert not stale.exists()
 
 
 # ── Newest dump detection ──
@@ -951,7 +980,92 @@ def test_sweep_mixed_directory(dumps_dir: Path) -> None:
     assert real.exists()
 
 
+def test_sweep_keeps_a_dead_gateways_dump_that_left_no_clean_exit_marker(dumps_dir: Path) -> None:
+    # Header-only says only that faulthandler never fired. A gateway killed or crashed
+    # without the stall alarm firing leaves the same file, and then the header is the
+    # only trace it was running: just the dump whose shutdown marked it is swept.
+    clean = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    killed = _create_header_only_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}", clean_exit=False
+    )
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not clean.exists()
+    assert not _marker(clean).exists()
+    assert killed.exists()
+    assert crash_dump_store.unexplained_exits(dumps_dir, is_pid_alive=_dead_pid) == [killed]
+    assert crash_dump_store.unexplained_exits(dumps_dir, is_pid_alive=_live_pid) == []
+    # Startup replay and cautious boot still read stack-bearing dumps only.
+    assert newest_dump_with_stacks(dumps_dir) is None
+
+
 # ── Stack-aware rotation ──
+
+
+def test_rotate_sacrifices_clean_exits_then_unexplained_exits_then_stacks(
+    dumps_dir: Path,
+) -> None:
+    # Whatever their ages, a dead gateway's unexplained exit outlives a clean exit
+    # under the cap and yields to a dump that carries stacks.
+    stacked = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260710T000000Z{DUMP_SUFFIX}")
+    killed = _create_header_only_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260711T000000Z{DUMP_SUFFIX}", clean_exit=False
+    )
+    clean = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260712T000000Z{DUMP_SUFFIX}")
+    for age, p in enumerate((stacked, killed, clean)):
+        os.utime(p, (1000 + age, 1000 + age))
+
+    assert rotate_dumps(max_dumps=3, dumps_dir=dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not clean.exists()
+    assert not _marker(clean).exists()
+    assert rotate_dumps(max_dumps=2, dumps_dir=dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not killed.exists()
+    assert stacked.exists()
+
+
+@pytest.mark.asyncio
+async def test_an_in_place_restart_marks_the_clean_exit_before_its_exec(dumps_dir: Path) -> None:
+    # The exec skips the gateway's shutdown, which is what marks an orderly stop, so
+    # the marker is a pre-exec stop until the cleanup hook withdraws it. Neither
+    # touches the dump's bytes, which three readers slice after the header.
+    from aiohttp import web
+
+    from kiro_crew.dashboard import server
+    from kiro_crew.pre_exec_stops import run_pre_exec_stops
+
+    with opened_dump_file(dumps_dir) as dump:
+        header = dump.path.read_bytes()
+        marker = _marker(dump.path)
+        app = web.Application()
+        server._register_watchdog_shutdown(app, SimpleNamespace(_loop_watchdog=MagicMock()))
+
+        await run_pre_exec_stops()
+        assert marker.exists()
+        assert dump.path.read_bytes() == header
+        marker.unlink()
+
+        await app.on_cleanup[-1](app)
+        await run_pre_exec_stops()
+        assert not marker.exists()
+
+
+def test_doctor_shows_unexplained_exits_without_raising_an_issue(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A hard kill is an ordinary way to end a gateway, so the row informs only.
+    from kiro_crew import cli_doctor
+    from kiro_crew.doctor_checks import workload
+
+    # Doctor probes liveness for real: this PID can never name a live process.
+    killed = _write_dump_with_start(
+        dumps_dir, "20260717T020000Z", _UNREACHABLE_PID, "1788000000.000001"
+    )
+    monkeypatch.setattr(cli_doctor, "get_dumps_dir", lambda: dumps_dir)
+    issues: list[str] = []
+    workload._doctor_crash_dumps(issues)
+    out = capsys.readouterr().out
+    assert "1 earlier gateway session(s) ended without a clean shutdown" in out
+    assert killed.name in out
+    assert issues == []
 
 
 def test_rotate_sacrifices_header_only_before_stacked(dumps_dir: Path) -> None:
@@ -1065,6 +1179,7 @@ def test_owner_alive_detects_pid_reuse_via_start_id(dumps_dir: Path) -> None:
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
     )
+    _mark_clean_exit(p)
     assert crash_dump_store._owner_alive(p, _live_pid) is False
     removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid)
     assert removed == 1
@@ -1242,6 +1357,7 @@ def test_pid_reuse_detected_without_procfs(
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
     )
+    _mark_clean_exit(p)
     assert crash_dump_store._owner_alive(p, _live_pid) is False
     assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
     assert not p.exists()
@@ -1377,8 +1493,8 @@ def test_current_format_mismatch_still_detects_pid_reuse(
     # BOTH in the current representation and differ are still proof the PID was
     # recycled, and the stale dump is still swept.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
-    p = _write_dump_with_start(
-        dumps_dir, "20260717T210000Z", _UNREACHABLE_PID, "1788000000.000001"
+    p = _mark_clean_exit(
+        _write_dump_with_start(dumps_dir, "20260717T210000Z", _UNREACHABLE_PID, "1788000000.000001")
     )
     assert crash_dump_store._owner_alive(p, _live_pid) is False
     assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
@@ -1403,7 +1519,9 @@ def test_current_format_mismatch_on_own_pid_sweeps_the_dump(
     # different start id is not this process's dump: swept, as pid_identity_alive
     # answers. The matching start id stays this process's live dump.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
-    reused = _write_dump_with_start(dumps_dir, "20260717T213000Z", os.getpid(), "1788000000.000001")
+    reused = _mark_clean_exit(
+        _write_dump_with_start(dumps_dir, "20260717T213000Z", os.getpid(), "1788000000.000001")
+    )
     own = _write_dump_with_start(dumps_dir, "20260717T214000Z", os.getpid(), _LIBPROC_TOKEN)
     assert crash_dump_store._owner_alive(reused, _live_pid) is False
     assert crash_dump_store._owner_alive(own, _dead_pid) is True
@@ -1419,7 +1537,9 @@ def test_legacy_token_does_not_resurrect_a_dead_owner(
     # PID liveness. It must never turn confirmed-dead evidence into alive: a dead
     # PID is still dead, and its header-only dump is still swept.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
-    p = _write_dump_with_start(dumps_dir, "20260717T220000Z", _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    p = _mark_clean_exit(
+        _write_dump_with_start(dumps_dir, "20260717T220000Z", _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    )
     assert crash_dump_store._owner_alive(p, lambda pid: False) is False
     assert sweep_stale_dumps(dumps_dir, is_pid_alive=lambda pid: False) == 1
     assert not p.exists()

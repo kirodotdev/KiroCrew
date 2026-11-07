@@ -149,6 +149,14 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
         wd = getattr(self.dashboard_state, "_loop_watchdog", None)
         if wd is not None:
             wd.stop()
+            # Marked here, not in a cleanup hook: the graceful bound can cut the
+            # teardown before the runner's cleanup, and an unmarked header-only
+            # dump reads as a gateway that was killed. Bounded like the steps
+            # around it, so a stalled data home cannot eat the slot saves' budget.
+            from kiro_crew.dashboard.crash_dump_store import record_clean_exit
+
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.to_thread(record_clean_exit), timeout=1.0)
         hb = getattr(self.dashboard_state, "_loop_heartbeat", None)
         if hb is not None:
             hb.cancel()

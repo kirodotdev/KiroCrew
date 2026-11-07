@@ -2,7 +2,8 @@
 
 The crash-dump file and exit budget the watchdog is armed with, the 5-second heartbeat
 that beats it, the prior session's crash dump reported once, the healthy-boot
-marker both entrypoints dispatch once ready, and the watchdog's shutdown.
+marker both entrypoints dispatch once ready, the watchdog's shutdown, and the
+clean-exit marker an in-place restart leaves before its exec.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
         newest_dump_with_stacks,
         open_dump_file,
         platform_compat,
+        record_clean_exit,
         record_healthy_boot,
+        register_pre_exec_stop,
         resolve_loop_stall_exit_after,
         rotate_dumps,
         sweep_stale_dumps,
@@ -42,13 +45,24 @@ def _register_watchdog_shutdown(app: web.Application, state: DashboardState) -> 
     created after ``runner.setup()`` and stored on ``state._loop_watchdog``; this
     hook only fires at shutdown — long after that assignment — so the lazy
     ``getattr`` always resolves it.
+
+    An orderly stop's clean-exit marker is written by the orchestrator's
+    ``_shutdown()`` (``slack/gateway_runtime/exit_path.py``) as it disarms the
+    watchdog, so the next boot reads the header-only dump as a clean exit rather
+    than a gateway that was killed. An in-place restart's exec skips that
+    shutdown, so the marker is also a pre-exec stop, which this hook withdraws.
     """
 
+    async def _record_clean_exit() -> None:
+        await asyncio.to_thread(record_clean_exit)
+
     async def _watchdog_shutdown(app_: web.Application) -> None:
+        unregister_before_exec()
         wd = getattr(state, "_loop_watchdog", None)
         if wd is not None:
             wd.stop()
 
+    unregister_before_exec = register_pre_exec_stop("Crash-dump clean exit", _record_clean_exit)
     app.on_cleanup.append(_watchdog_shutdown)
 
 
@@ -59,9 +73,9 @@ async def _open_loop_watchdog(_launch_environment: dict[str, str]) -> LoopStallW
     ~/.kiro/crew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
     and startup warnings, rather than buried in interleaved stderr/journal.
     Crash-dump hygiene: sweep header-only dumps left by prior sessions that
-    exited without ever wedging (every startup pre-creates one for
-    faulthandler's fd), THEN rotate. Sweeping first keeps empty startup files
-    from aging real stall dumps out of the rotation window.
+    exited cleanly (every startup pre-creates one for faulthandler's fd), THEN
+    rotate. Sweeping first keeps empty startup files from aging real stall
+    dumps out of the rotation window.
     """
     await asyncio.to_thread(sweep_stale_dumps)
     await asyncio.to_thread(rotate_dumps)

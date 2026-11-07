@@ -80,6 +80,7 @@ from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     dump_replay_lines,
     newest_dump_with_stacks,
     open_dump_file,
+    record_clean_exit,
     record_healthy_boot,
     rotate_dumps,
     sweep_stale_dumps,

@@ -11,10 +11,12 @@ This module provides:
    to directly (faulthandler needs a stable fd for process lifetime).
 2. Rotation: keeps last N dumps, removes oldest on startup.
 3. Newest-dump detection for doctor/startup surfacing.
+4. A clean-exit marker an orderly shutdown leaves beside its dump, so a
+   header-only dump tells a clean exit from a gateway that died some other way.
 
 Dump directory: ``<data home>/logs/crash-dumps/`` (data home = ``config_dir()``,
 i.e. ``~/.kiro/crew`` or ``$KIROCREW_HOME``)
-Filename pattern: ``loopstall-<ISO timestamp>.txt``
+Filename pattern: ``loopstall-<ISO timestamp>.txt``, marker ``<that name>.clean``
 
 **fd lifetime guarantee:**
 
@@ -57,6 +59,9 @@ _DEFAULT_MAX_DUMPS = 10
 _DUMP_DIR_NAME = "crash-dumps"
 DUMP_PREFIX = "loopstall-"
 DUMP_SUFFIX = ".txt"
+#: Appended to a dump's name for its empty clean-exit marker. The result does
+#: not end in ``DUMP_SUFFIX``, so no dump listing or body reader ever sees it.
+CLEAN_EXIT_SUFFIX = ".clean"
 
 # Module-level reference to the open dump file — kept alive for process lifetime
 # because faulthandler requires the fd to remain valid.
@@ -241,16 +246,38 @@ def _read_dump_lines(dump_path: Path) -> list[str]:
 def _is_header_only(dump_path: Path) -> bool:
     """True iff *dump_path* contains only the startup header (no thread stacks).
 
-    A header-only dump means that gateway session never wedged — the file was
+    A header-only dump means faulthandler never fired into it — the file was
     pre-created at startup (faulthandler needs a stable fd for the process
-    lifetime) and faulthandler never fired into it.  Raises ``OSError`` through
-    to the caller on read failure so callers can choose their own conservative
-    fallback.
+    lifetime). It does NOT say the session ended cleanly: that is
+    :func:`_exited_cleanly`.  Raises ``OSError`` through to the caller on read
+    failure so callers can choose their own conservative fallback.
     """
     content, truncated = _read_dump_head(dump_path)
     if truncated:
         return False  # far larger than any header — has stack content
     return len(content.splitlines()) <= _HEADER_LINES
+
+
+def _clean_exit_marker(dump_path: Path) -> Path:
+    return dump_path.with_name(dump_path.name + CLEAN_EXIT_SUFFIX)
+
+
+def _exited_cleanly(dump_path: Path) -> bool:
+    """True iff the gateway that wrote *dump_path* left its clean-exit marker.
+
+    See :func:`record_clean_exit`. Without it, a header-only dump whose owner is
+    dead belongs to a gateway that was killed or crashed without the stall alarm
+    firing, and the header is the only trace that it was running.
+    """
+    return os.path.lexists(_clean_exit_marker(dump_path))
+
+
+def _unlink_clean_exit_marker(dump_path: Path) -> None:
+    """Remove *dump_path*'s marker once the dump itself is gone."""
+    try:
+        _clean_exit_marker(dump_path).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("could not remove clean-exit marker of %s", dump_path, exc_info=True)
 
 
 @functools.lru_cache(maxsize=1)
@@ -467,7 +494,7 @@ def sweep_stale_dumps(
     *,
     is_pid_alive: Callable[[int], bool] = pid_exists,
 ) -> int:
-    """Remove header-only dumps left behind by dead gateway sessions.
+    """Remove header-only dumps left behind by cleanly exited gateway sessions.
 
     Every gateway startup pre-creates a dump file so faulthandler has a stable
     fd; a session that exits without ever wedging leaves that file behind as a
@@ -485,12 +512,16 @@ def sweep_stale_dumps(
       namespace, cannot be liveness-checked locally and is left alone), and
     * that PID is confirmed no longer alive (a live PID means a concurrently
       running gateway on this data home still owns the file — e.g. an
-      isolated pod or an overlapping restart — so it is left alone).
+      isolated pod or an overlapping restart — so it is left alone), and
+    * its owner left the clean-exit marker (:func:`record_clean_exit`). A dead
+      owner without one ended some other way, and its header is the only trace
+      of that death: it is kept for ``kirocrew doctor``
+      (:func:`unexplained_exits`) and left to rotation.
 
     Unreadable files, headers without a PID line, and headers whose PID
     belongs to a foreign PID domain are all left alone (conservative:
-    rotation will reap them eventually).  Returns the number of files
-    removed.
+    rotation will reap them eventually).  A swept dump's marker goes with it.
+    Returns the number of dumps removed.
     """
     removed = 0
     for path in _list_dumps(dumps_dir):
@@ -506,11 +537,15 @@ def sweep_stale_dumps(
                 continue
         except OSError:
             continue
+        if not _exited_cleanly(path):
+            continue
         try:
             path.unlink()
             removed += 1
         except OSError:
             logger.debug("could not sweep stale dump %s", path, exc_info=True)
+            continue
+        _unlink_clean_exit_marker(path)
     if removed:
         logger.info("swept %d stale header-only crash dump(s) from prior sessions", removed)
     return removed
@@ -525,9 +560,11 @@ def rotate_dumps(
     """Remove dumps if count exceeds max_dumps.  Returns number removed.
 
     Header-only dumps (no stack content — the session never wedged) are
-    sacrificed first, oldest-first; dumps with real stacks are only removed
-    once no header-only candidates remain.  This keeps genuine stall evidence
-    alive as long as possible when empty startup files share the directory.
+    sacrificed first, oldest-first: clean exits and unattributable files, then
+    the unexplained exits (:func:`unexplained_exits`); dumps with real stacks
+    are only removed once no header-only candidates remain.  This keeps genuine
+    stall evidence alive as long as possible when empty startup files share the
+    directory. A victim's clean-exit marker goes with it.
 
     A dump whose ``# PID:`` owner is this process, or is confirmed alive in
     this PID domain, is never a victim: faulthandler holds that file's fd for
@@ -547,10 +584,12 @@ def rotate_dumps(
 
     def _sacrifice_order(dumps: list[Path]) -> list[Path]:
         header_only: list[Path] = []
+        unexplained: list[Path] = []
         unreadable: list[Path] = []
         stacked: list[Path] = []
         for p in dumps:
-            if _owner_alive(p, is_pid_alive) is True:
+            alive = _owner_alive(p, is_pid_alive)
+            if alive is True:
                 continue  # a live session still owns this fd — never a victim
             if _owner_foreign(p):
                 # A foreign-domain owner (another host/namespace sharing the
@@ -560,13 +599,18 @@ def rotate_dumps(
                 # inode. Its own gateway's rotation reaps it in its domain.
                 continue
             try:
-                (header_only if _is_header_only(p) else stacked).append(p)
+                if not _is_header_only(p):
+                    stacked.append(p)
+                elif alive is False and not _exited_cleanly(p):
+                    unexplained.append(p)
+                else:
+                    header_only.append(p)
             except OSError:
                 # Unreadable is ambiguous: junk (symlink, wrong type) or real
                 # evidence behind a transient read error. Sacrifice it after
                 # known header-only files but before confirmed stack evidence.
                 unreadable.append(p)
-        return header_only + unreadable + stacked
+        return header_only + unexplained + unreadable + stacked
 
     victims = _sacrifice_order(dumps)
     # Compute the excess ONCE and attempt exactly that many victims (keep
@@ -581,7 +625,8 @@ def rotate_dumps(
             victim.unlink()
             removed += 1
         except OSError:
-            pass
+            continue
+        _unlink_clean_exit_marker(victim)
     return removed
 
 
@@ -613,6 +658,7 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     else:
         flags |= os.O_CLOEXEC
     fd = os.open(str(path), flags, 0o600)  # a dump holds stacks and paths: owner-only
+    _unlink_clean_exit_marker(path)  # this session has not exited, whatever the name held
 
     f = DumpFile(fd, path)
     # Write a header so the file is identifiable even before a dump fires.
@@ -631,6 +677,29 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     return f
 
 
+def record_clean_exit() -> None:
+    """Mark the dump :func:`open_dump_file` opened as ending in an orderly shutdown.
+
+    Creates an empty ``<dump name>.clean`` beside it and never touches the
+    dump's own bytes, so every reader that slices the body after the header
+    sees what it always saw. Called from the gateway's shutdown right after it
+    disarms the watchdog, and before an in-place restart's exec, which skips
+    that shutdown.
+
+    ``O_EXCL`` creates the name or fails, and never follows a link planted
+    there. Never raises: a missing marker reads as an unexplained exit, the
+    answer that keeps the evidence.
+    """
+    dump = _active_dump_file
+    if dump is None:
+        return
+    marker = _clean_exit_marker(dump.path)
+    try:
+        os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except OSError:
+        logger.debug("could not record clean-exit marker %s", marker, exc_info=True)
+
+
 def newest_dump(dumps_dir: Path | None = None) -> Path | None:
     """Return the most recent dump file, or None if no dumps exist."""
     dumps = _list_dumps(dumps_dir)
@@ -640,8 +709,10 @@ def newest_dump(dumps_dir: Path | None = None) -> Path | None:
 def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
     """Return the newest dump that actually contains thread stacks (not just the header).
 
-    A dump file that only has the 4-line header means the gateway exited cleanly
-    without ever wedging.  We only surface dumps that have real content.
+    A dump file that only has the 4-line header has no stacks to replay: its
+    gateway either exited cleanly or died some other way, which
+    :func:`unexplained_exits` tells apart for ``kirocrew doctor``.  Startup
+    replay and cautious boot only surface dumps that have real content.
     """
     dumps = _list_dumps(dumps_dir)
     for path in reversed(dumps):
@@ -669,6 +740,31 @@ def dumps_with_stacks(dumps_dir: Path | None = None) -> int:
         except OSError:
             continue
     return total
+
+
+def unexplained_exits(
+    dumps_dir: Path | None = None,
+    *,
+    is_pid_alive: Callable[[int], bool] = pid_exists,
+) -> list[Path]:
+    """Header-only dumps whose owner is confirmed dead with no clean-exit marker, oldest first.
+
+    Each is a gateway that ended with neither an orderly shutdown nor a stall
+    dump: killed or crashed without the stall alarm firing.
+    :func:`sweep_stale_dumps` keeps them, because the header is the only trace
+    that gateway was running. A live, foreign-domain or unattributable owner is
+    not one, as for the sweep.
+    """
+    found = []
+    for path in _list_dumps(dumps_dir):
+        if _owner_alive(path, is_pid_alive) is not False:
+            continue
+        try:
+            if _is_header_only(path) and not _exited_cleanly(path):
+                found.append(path)
+        except OSError:
+            continue
+    return found
 
 
 def dump_superseded(dump_path: Path, dumps_dir: Path | None = None) -> bool:
