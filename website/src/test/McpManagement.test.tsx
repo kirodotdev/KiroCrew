@@ -17,6 +17,7 @@ import { McpManagement } from '../pages/settings/McpManagement'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { CATALOGS } from '../i18n/catalogs'
 /** The page's own English copy, so a wording change never breaks a test. */
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 
@@ -124,6 +125,24 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('McpManagement', () => {
+  it('names the per-server view so it does not read like the MCP Servers sub-tab it sits under', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+
+    mount()
+    // Still the default view: the `servers` key it is selected by did not change.
+    const tab = await screen.findByRole('tab', { name: M('view_servers') }, { timeout: 5000 })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+    // A label the outer sub-tab's name contains reads as a way back to that list,
+    // in any language.
+    const pick = (lang: string, path: string) =>
+      String(path.split('.').reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], CATALOGS[lang].translation))
+    for (const lang of Object.keys(CATALOGS)) {
+      const outer = pick(lang, 'pages.connectionsPage.mcp_servers').toLowerCase()
+      expect(outer, lang).not.toContain(pick(lang, 'pages.mcpManagement.view_servers').toLowerCase())
+    }
+  })
+
   it('reports a stub that saved but did not come up', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
