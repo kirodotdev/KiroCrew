@@ -12407,7 +12407,7 @@
       "clear_context_done": "Контекст очищен.",
       "clear_context_channel_gone": "Этот канал больше не существует. Обнови список каналов.",
       "clear_context_agent_gone": "Этого агента больше нет в канале. Обнови канал.",
-      "clear_context_messages_deleted": "Сообщения канала также удалены.",
+      "clear_context_done_messages_deleted": "Контекст очищен. Сообщения канала также удалены.",
       "close": "Закрыть",
       "close_agents_panel": "Закрыть панель агентов",
       "close_channel": "Закрыть канал",
@@ -15409,7 +15409,6 @@
         "approval_unverified": "{{productName}} не может подтвердить, что этот агент спрашивает перед вызовом инструмента.",
         "approval_verified_gate_extension": "Спрашивает перед каждым инструментом через расширение, которое {{productName}} загружает и проверяет.",
         "approval_verified_seeded_settings": "Спрашивает перед каждым инструментом. {{productName}} задаёт это и читает обратно.",
-        "can_still_switch": "Переключиться на него всё равно можно. Если он не установлен, сеанс сообщит об этом при запуске.",
         "card_available": "Доступно.",
         "card_crew_tools": "Инструменты {{productName}} работают в чате",
         "card_manual_compact": "Команда /compact работает",
@@ -15436,6 +15435,7 @@
         "experimental": "Экспериментальный",
         "in_use": "Используется.",
         "install_check_failed": "Не удалось проверить, установлено ли это на данной машине.",
+        "install_check_failed_can_still_switch": "Не удалось проверить, установлено ли это на данной машине. Переключиться на него всё равно можно. Если он не установлен, сеанс сообщит об этом при запуске.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "kiro_runs_on_kas": "Kiro CLI теперь работает на Kiro Agent, поэтому новые сеансы уже используют его. Сохранить Kiro Agent в настройке?",
@@ -17592,6 +17592,7 @@
         "not_recorded": "не записано"
       },
       "agentTemplatesTab": {
+        "model_auto_title": "Модель: auto (по умолчанию бэкенда)",
         "title": "Пользовательские агенты",
         "new_template": "Новый пользовательский агент",
         "new_template_intro": "Сохраняется в ~/.kiro/agents/<name>.json и сразу появляется в выборе чата. Ничего не добавляется как Bot.",

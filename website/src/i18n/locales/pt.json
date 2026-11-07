@@ -12159,7 +12159,7 @@
       "clear_context_done": "Contexto limpo.",
       "clear_context_channel_gone": "Este canal não existe mais. Atualize a lista de canais.",
       "clear_context_agent_gone": "Este agente não está mais no canal. Atualize o canal.",
-      "clear_context_messages_deleted": "As mensagens do canal também foram excluídas.",
+      "clear_context_done_messages_deleted": "Contexto limpo. As mensagens do canal também foram excluídas.",
       "close": "Fechar",
       "close_agents_panel": "Fechar painel de agentes",
       "close_channel": "Fechar canal",
@@ -15049,7 +15049,6 @@
         "approval_unverified": "O {{productName}} não consegue confirmar que este agente pergunta antes de usar uma ferramenta.",
         "approval_verified_gate_extension": "Pergunta antes de cada ferramenta por meio de um complemento que o {{productName}} carrega e confere.",
         "approval_verified_seeded_settings": "Pergunta antes de cada ferramenta. O {{productName}} ajusta isso e lê de volta.",
-        "can_still_switch": "Ainda é possível mudar para ele. Se não estiver instalado, a sessão avisa ao iniciar.",
         "card_available": "Disponível.",
         "card_crew_tools": "As ferramentas do {{productName}} funcionam no chat",
         "card_manual_compact": "O comando /compact funciona",
@@ -15076,6 +15075,7 @@
         "experimental": "Experimental",
         "in_use": "Em uso.",
         "install_check_failed": "Não foi possível verificar se isto está instalado nesta máquina.",
+        "install_check_failed_can_still_switch": "Não foi possível verificar se isto está instalado nesta máquina. Ainda é possível mudar para ele. Se não estiver instalado, a sessão avisa ao iniciar.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "kiro_runs_on_kas": "O Kiro CLI agora roda no Kiro Agent, então as novas sessões já o usam. Salvar o Kiro Agent como sua configuração?",
@@ -17183,6 +17183,7 @@
         "not_recorded": "não registrado"
       },
       "agentTemplatesTab": {
+        "model_auto_title": "Modelo: auto (padrão do backend)",
         "title": "Agentes personalizados",
         "new_template": "Novo agente personalizado",
         "new_template_intro": "Salvo em ~/.kiro/agents/<name>.json e oferecido imediatamente no seletor do chat. Nenhum Bot é inscrito.",

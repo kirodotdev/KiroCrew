@@ -11663,7 +11663,7 @@
       "clear_context_done": "コンテキストを消去しました。",
       "clear_context_channel_gone": "このチャンネルはもう存在しません。チャンネル一覧を更新してください。",
       "clear_context_agent_gone": "このエージェントはもうチャンネルにいません。チャンネルを更新してください。",
-      "clear_context_messages_deleted": "チャネルのメッセージも削除されました。",
+      "clear_context_done_messages_deleted": "コンテキストを消去しました。チャネルのメッセージも削除されました。",
       "close": "閉じる",
       "close_agents_panel": "エージェントパネルを閉じる",
       "close_channel": "チャネルを閉じる",
@@ -14329,7 +14329,6 @@
         "approval_unverified": "{{productName}} は、このエージェントがツールの前に確認するかどうかを確かめられません。",
         "approval_verified_gate_extension": "{{productName}} が読み込んで確認する拡張を通して、ツールごとに確認します。",
         "approval_verified_seeded_settings": "ツールごとに確認します。{{productName}} がその設定を入れ、読み返します。",
-        "can_still_switch": "それでも切り替えられます。未インストールなら、セッション開始時に知らせます。",
         "card_available": "利用できます。",
         "card_crew_tools": "{{productName}} のツールがチャットで使えます",
         "card_manual_compact": "/compact コマンドが使えます",
@@ -14356,6 +14355,7 @@
         "experimental": "実験的",
         "in_use": "使用中。",
         "install_check_failed": "このマシンにインストールされているか確認できませんでした。",
+        "install_check_failed_can_still_switch": "このマシンにインストールされているか確認できませんでした。それでも切り替えられます。未インストールなら、セッション開始時に知らせます。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "kiro_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作するため、新しいセッションはすでにそれを使っています。Kiro Agent を設定として保存しますか？",
@@ -16365,6 +16365,7 @@
         "not_recorded": "記録なし"
       },
       "agentTemplatesTab": {
+        "model_auto_title": "モデル：auto（バックエンドのデフォルト）",
         "title": "カスタムエージェント",
         "new_template": "新規カスタムエージェント",
         "new_template_intro": "~/.kiro/agents/<name>.json に保存され、すぐにチャットの選択肢に表示されます。Bot として登録されることはありません。",
