@@ -1338,6 +1338,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_folders_records import (  # noqa: F401
         _KNOWN_INTERNAL_CALLERS,
         CREATED_BY_SESSION,
+        FOLDER_MEMBER_LABELS_MARKER,
         LAYOUT_ONLY_FIELDS,
         MAX_CHAT_FOLDERS,
         MAX_FOLDER_DEFAULT_PROMPT_CHARS,
@@ -1360,6 +1361,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         create_folder_record,
         folder_ids_filed_into,
         live_slot_names_in_folders,
+        migrate_folder_member_labels,
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
         _ICON_PREVIEW_ATTEMPTS,
