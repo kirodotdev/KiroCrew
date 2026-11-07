@@ -523,14 +523,18 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
 
   const handleImmediateSend = () => {
     if (pending || dimmed) return
+    const firstClickArmed = timerRef.current !== null
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
     const clickedKey = armedSourceKeyRef.current !== undefined ? armedSourceKeyRef.current : sourceKey
     armedSourceKeyRef.current = undefined
     // The arrow is withheld for these, so this is the double-click. It takes the ordinary
     // select path rather than sending, which stages the label in the composer: the
-    // refusal is about the LABEL, not about which gesture reached it.
+    // refusal is about the LABEL, not about which gesture reached it. Select only when
+    // this gesture's first click is still waiting on the debounce timer. Otherwise that
+    // click already picked the chip (the non-debounced Quick Send path, or a timer that
+    // already fired), and a second select would un-pick it within the same gesture.
     if (commandShaped) {
-      onSelect(option, { shiftKey: false, detail: 1 } as unknown as React.MouseEvent, clickedKey)
+      if (firstClickArmed) onSelect(option, { shiftKey: false, detail: 1 } as unknown as React.MouseEvent, clickedKey)
       return
     }
     // Pass option text directly to send() so it doesn't race with setInput.

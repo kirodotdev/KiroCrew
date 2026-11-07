@@ -36,7 +36,7 @@ import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { ChatSlot } from '../../types'
 import { crewApprovalDecidableHere } from '../../lib/crewMode'
-import { replyOptions } from '../chat/command-center/model'
+import { offeredReplyOptions } from '../chat/command-center/model'
 import { parseOptions } from '../../app-sdk/protocol'
 import { approvalKey, collectAsks, lastAssistantText, pickRecap, slotNeedsMe, type CardQuestion, type NeedsMeAsk } from './needsMeCard'
 
@@ -208,7 +208,7 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
   const slotKey = slot?.key ?? ''
   const questions = useAppSelector(s => (slotKey ? s.chat.pendingQuestions?.[slotKey]?.questions : undefined)) ?? NO_QUESTIONS
   const needsMe = !!slot && slotNeedsMe(slot, questions.length > 0)
-  const options = useMemo(() => (slot ? replyOptions(slot) : []), [slot])
+  const options = useMemo(() => (slot ? offeredReplyOptions(slot) : []), [slot])
 
   const summary = useQuery({
     queryKey: ['session-summary', slotKey],

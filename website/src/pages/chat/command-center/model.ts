@@ -228,7 +228,10 @@ export function replyOptions(s: ReplySlot): string[] {
 
 type ReplySlot = Pick<ChatSlot, 'has_options' | 'options' | 'running' | 'interrupted' | 'queue_depth'>
 
-function offeredReplyOptions(s: ReplySlot): string[] {
+/** Every option an idle slot's last reply offers, command-shaped labels included.
+ *  Whether the slot waits on the person reads this; which labels may be sent bare
+ *  reads `replyOptions`. */
+export function offeredReplyOptions(s: ReplySlot): string[] {
   const offered = s.has_options ? (s.options || []).filter(Boolean) : []
   if (!offered.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0) return []
   return offered

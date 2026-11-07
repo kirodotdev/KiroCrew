@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { FAILED_WORKFLOW_BLOCKED_MS, buildCommandCenter, questionText, runTitle, scopedSlots, slotKey, type CommandCenterSources } from '../pages/chat/command-center/model'
+import { slotNeedsMe } from '../pages/chat-sidebar/needsMeCard'
 import type { ChatSlot, SubagentActivity } from '../types'
 
 const slot = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({ key, messages: 0, running: false, ...extra })
@@ -121,6 +122,11 @@ describe('command center projection', () => {
     expect(model.attention[0].kind).toBe('question')
     expect(model.attention[0].question!.questions[0].options).toEqual([])
     expect(model.attention[0].sessionOnlyOptions).toBe(2)
+  })
+  it('flags the sidebar needs-me signal for the same all-withheld reply the card keeps', () => {
+    const waiting = slot('root', { has_options: true, options: ['@deploy', 'Approve $40 spend'] })
+    expect(slotNeedsMe(waiting, false)).toBe(true)
+    expect(slotNeedsMe(slot('root', { has_options: true, options: ['@deploy'], running: true }), false)).toBe(false)
   })
   it('keys identical options separately for each new reply but keeps the same reply stable', () => {
     const card = (options_ts: string) => buildCommandCenter(sources({ slots: [slot('root', {

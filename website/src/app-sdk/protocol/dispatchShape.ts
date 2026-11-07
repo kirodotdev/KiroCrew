@@ -15,10 +15,8 @@
  * `test_dispatch_fence_parity.py`.
  */
 
-import { PASTE_TOKEN_REGEX } from '../../utils/pasteTokens'
 import { SKILL_TOKEN_RE } from '../../utils/skillToken'
 
-const PASTE_TOKEN_RE = new RegExp(PASTE_TOKEN_REGEX.source)
 
 // Labels opening with one of these dispatch as a harness command or a prompt mention.
 // `!` is absent: only the Slack and Discord handlers read it, and the composer's own
@@ -35,8 +33,31 @@ function hasSkillToken(text: string): boolean {
 
 // The send path trims before dispatching, and its trim drops characters `\s` does not
 // cover, so a guard reading the untrimmed string tests a value the dispatch never sees.
-const DISPATCH_LEADING_RE =
-  /^[\u0009-\u000D\u001C-\u0020\u0085\u00A0\u1680\u200B-\u200D\u2000-\u200A\u2028\u2029\u202F\u205F\u2060\u3000\uFEFF]+/
+// Each entry is an inclusive [first, last] code-point range.
+const DISPATCH_TRIMMED_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x0009, 0x000d],
+  [0x001c, 0x0020],
+  [0x0085, 0x0085],
+  [0x00a0, 0x00a0],
+  [0x1680, 0x1680],
+  [0x2000, 0x200d],
+  [0x2028, 0x2029],
+  [0x202f, 0x202f],
+  [0x205f, 0x2060],
+  [0x3000, 0x3000],
+  [0xfeff, 0xfeff],
+]
+
+function isDispatchTrimmed(cp: number): boolean {
+  return DISPATCH_TRIMMED_RANGES.some(([first, last]) => cp >= first && cp <= last)
+}
+
+// Every trimmed code point is in the BMP, so one UTF-16 unit is one code point here.
+function stripDispatchLeading(text: string): string {
+  let i = 0
+  while (i < text.length && isDispatchTrimmed(text.charCodeAt(i))) i++
+  return text.slice(i)
+}
 
 /**
  * Report whether *text* dispatched as-is would execute rather than read as prose.
@@ -47,12 +68,14 @@ const DISPATCH_LEADING_RE =
  * resolves `$name` at any offset.
  */
 export function dispatchIsCommandShaped(text: string): boolean {
-  const dispatched = text.replace(DISPATCH_LEADING_RE, '')
+  const dispatched = stripDispatchLeading(text)
   if (!dispatched) return false
   if (RESERVED_DISPATCH_SIGILS.some(sigil => dispatched.startsWith(sigil))) return true
   if (hasSkillToken(dispatched)) return true
   // The send path expands a paste token into the staged block it names, so the label
-  // the user read is not the text that goes out.
-  if (PASTE_TOKEN_RE.test(dispatched)) return true
+  // the user read is not the text that goes out. Every token opens with this fixed
+  // text (see `formatToken` in `utils/pasteTokens.ts`); a false positive only puts the
+  // label in the draft for review, which is the safe direction.
+  if (dispatched.includes('[ Paste #')) return true
   return false
 }
