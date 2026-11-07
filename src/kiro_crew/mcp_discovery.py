@@ -949,6 +949,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         hash_command,
         hash_effective_env,
     )
+    from kiro_crew.mcp_gateway.read_limits import (  # noqa: F401
+        resolve_read_buffer_limit,
+    )
     from kiro_crew.mcp_gateway.secret_uri import (  # noqa: F401
         remote_header_secret_ref_error,
     )

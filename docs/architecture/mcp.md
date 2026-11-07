@@ -1342,7 +1342,10 @@ each stub's argv as `--read-limit`, and the stub resolves its ceiling as
 default. Because the value rides the overlay, `read_buffer_limit` is an input to the
 rewrite fingerprint, so changing the key regenerates the overlays.
 `test_mcp_gateway_stub_import_budget.py` pins the module set a running stub holds,
-which is what keeps the config package out of it. `socket_path`, `overlay_dir`,
+which is what keeps the config package out of it. The Connections page's stdio
+discovery probe calls `read_limits.resolve_read_buffer_limit()` each time it spawns
+a server, so a server whose `tools/list` the gateway reads does not probe as an
+error. `socket_path`, `overlay_dir`,
 `idle_timeout_secs`, `max_backends`, `prewarm_count`, `stub_servers`,
 `poolable_servers`, `stub_overrides`, `pool_identity_env`,
 `forward_declared_env`, `spawn_concurrency_initial`, `spawn_concurrency_min`,
