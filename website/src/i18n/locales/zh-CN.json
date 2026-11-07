@@ -15133,6 +15133,7 @@
         "kiro_requests_left": "完成还需约 {{calls}} 次 Kiro 请求",
         "knowledge_base_ids": "知识库 ID",
         "max_file_size": "每个文件最大 {{max}} MB。",
+        "file_too_large": "文件过大：{{name}}（最大 {{max}} MB）",
         "max_file_size_unavailable": "无法加载大小上限。仍可上传，由服务器检查每个文件。",
         "manual": "○ 手动",
         "name_optional": "名称（可选）",

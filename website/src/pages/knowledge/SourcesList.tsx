@@ -347,9 +347,24 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // failed read shows no figure at all, even a cached one beside the failure
   // notice: the default is not what the gateway enforces when the operator
   // changed it, so it is never presented as loaded.
-  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number; knowledge_upload_max_bytes?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
+  // The MB figure is rounded for display, so the pre-check uses the exact bytes.
+  const maxUploadBytes = maxUploadMb === null ? null : servedUploadMb(dashCfg?.knowledge_upload_max_bytes)
   const [showAdd, setShowAdd] = useState(false)
+  // A file over the ceiling is refused here, before any request; the rest of
+  // the drop still uploads (each file is its own request). The panel stays open
+  // when anything was refused: the refusal and the upload rows live in it.
+  // Cleared on the next drop and when it closes.
+  const [uploadRefusal, setUploadRefusal] = useState('')
+  useEffect(() => { if (!showAdd) setUploadRefusal('') }, [showAdd])
+  const dropFiles = (files: File[]) => {
+    const big = maxUploadBytes === null ? [] : files.filter(f => f.size > maxUploadBytes)
+    const ok = files.filter(f => !big.includes(f))
+    setUploadRefusal(big.length ? i18nT('pages.knowledge.sourcesList.file_too_large', { name: fmtList(big.map(f => f.name)), max: maxUploadMb }) : '')
+    if (ok.length) onIngest(ok)
+    if (!big.length) setShowAdd(false)
+  }
   // Files and folders share one view (#26892): files upload at once, and a
   // folder opens the watched-folder form below the drop zone.
   const [addType, setAddType] = useState<'local' | 'url' | 'bedrock_kb'>('local')
@@ -860,13 +875,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
             </>
           ) : addType === 'local' ? (
             <>
-              <DropZone inputRef={fileInputRef} onFiles={(files) => { onIngest(files); setShowAdd(false) }} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
+              <DropZone inputRef={fileInputRef} onFiles={dropFiles} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
               {/* Browsers have no one picker for files and folders, so each gets its own button. */}
               <div className="flex gap-2 flex-wrap">
                 <Btn type="button" onClick={() => fileInputRef.current?.click()}><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.choose_files')}</Btn>
                 <Btn type="button" onClick={chooseFolder} aria-expanded={folderOpen}><FolderOpen size={12} /> {folderPickerAvailable ? i18nT('pages.knowledge.sourcesList.choose_folder') : i18nT('pages.knowledge.sourcesList.add_folder_by_path')}</Btn>
               </div>
               <IngestionProgress jobs={ingestionJobs} />
+              {/* A local size check, not a failed request, so a validation hint rather than an ErrorNotice. */}
+              {uploadRefusal && <div role="status" data-testid="sources-upload-refusal" className="text-[11px] text-warn">{uploadRefusal}</div>}
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
                 {maxUploadMb !== null && ' ' + i18nT('pages.knowledge.sourcesList.max_file_size', { max: maxUploadMb })}

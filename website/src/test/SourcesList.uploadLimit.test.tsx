@@ -8,12 +8,12 @@ import { api as clientApi } from '../api/client'
 vi.mock('../pages/knowledge/api', () => ({ knowledgeApi: vi.fn() }))
 vi.mock('../api/client', () => ({ api: { dashboardConfig: vi.fn() } }))
 
-function renderList() {
+function renderList(onIngest: (files: File[]) => void = () => {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <SourcesList
-        onIngest={() => {}}
+        onIngest={onIngest}
         uploadNamespace="default"
         setUploadNamespace={() => {}}
         namespaces={['default']}
@@ -50,6 +50,64 @@ describe('SourcesList upload limit copy', () => {
     renderList()
     await openLocalFile()
     expect(await screen.findByText(/Max 0\.5 MB per file\./)).toBeInTheDocument()
+  })
+
+  it('refuses an over-limit file before sending it, naming the file and the limit', async () => {
+    vi.mocked(clientApi.dashboardConfig).mockResolvedValue({ upload_max_mb: 1, knowledge_upload_max_mb: 1, knowledge_upload_max_bytes: 1024 * 1024 })
+    const onIngest = vi.fn()
+    renderList(onIngest)
+    await openLocalFile()
+    await screen.findByText(/Max 1 MB per file\./)
+    const big = new File(['x'], 'big.md')
+    Object.defineProperty(big, 'size', { value: 1024 * 1024 + 1 })
+    fireEvent.change(screen.getByLabelText('Upload files'), { target: { files: [big] } })
+    // Nothing is sent, and the panel stays open with the refusal in view.
+    expect(onIngest).not.toHaveBeenCalled()
+    expect(await screen.findByTestId('sources-upload-refusal')).toHaveTextContent('File too large: big.md (max 1 MB)')
+  })
+
+  it('still sends a file at the limit and closes the panel', async () => {
+    vi.mocked(clientApi.dashboardConfig).mockResolvedValue({ upload_max_mb: 1, knowledge_upload_max_mb: 1, knowledge_upload_max_bytes: 1024 * 1024 })
+    const onIngest = vi.fn()
+    renderList(onIngest)
+    await openLocalFile()
+    await screen.findByText(/Max 1 MB per file\./)
+    const ok = new File(['x'], 'ok.md')
+    Object.defineProperty(ok, 'size', { value: 1024 * 1024 })
+    fireEvent.change(screen.getByLabelText('Upload files'), { target: { files: [ok] } })
+    expect(onIngest).toHaveBeenCalledWith([ok])
+    expect(screen.queryByTestId('sources-upload-refusal')).not.toBeInTheDocument()
+  })
+
+  it('still sends the in-limit files of a mixed drop and names every refused one', async () => {
+    vi.mocked(clientApi.dashboardConfig).mockResolvedValue({ upload_max_mb: 1, knowledge_upload_max_mb: 1, knowledge_upload_max_bytes: 1024 * 1024 })
+    const onIngest = vi.fn()
+    renderList(onIngest)
+    await openLocalFile()
+    await screen.findByText(/Max 1 MB per file\./)
+    const sized = (name: string, size: number) => { const f = new File(['x'], name); Object.defineProperty(f, 'size', { value: size }); return f }
+    const small = sized('small.md', 10)
+    const big1 = sized('big1.md', 2 * 1024 * 1024)
+    const big2 = sized('big2.md', 3 * 1024 * 1024)
+    fireEvent.change(screen.getByLabelText('Upload files'), { target: { files: [big1, small, big2] } })
+    expect(onIngest).toHaveBeenCalledWith([small])
+    const hint = await screen.findByTestId('sources-upload-refusal')
+    expect(hint).toHaveTextContent('big1.md')
+    expect(hint).toHaveTextContent('big2.md')
+    expect(hint).not.toHaveTextContent('small.md')
+  })
+
+  it('checks against the exact byte ceiling, not the rounded MB figure', async () => {
+    // A 0.54 MB ceiling is 566,231 bytes, shown as 0.5 MB.
+    vi.mocked(clientApi.dashboardConfig).mockResolvedValue({ upload_max_mb: 1, knowledge_upload_max_mb: 0.5, knowledge_upload_max_bytes: 566231 })
+    const onIngest = vi.fn()
+    renderList(onIngest)
+    await openLocalFile()
+    await screen.findByText(/Max 0\.5 MB per file\./)
+    const under = new File(['x'], 'under.md')
+    Object.defineProperty(under, 'size', { value: 550000 })
+    fireEvent.change(screen.getByLabelText('Upload files'), { target: { files: [under] } })
+    expect(onIngest).toHaveBeenCalledWith([under])
   })
 
   it('reports a failed settings read through the error notice and shows no figure rather than a default', async () => {

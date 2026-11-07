@@ -15512,6 +15512,7 @@
         "kiro_requests_left": "पूरा करने में ~{{calls}} Kiro अनुरोध और लगेंगे",
         "knowledge_base_ids": "नॉलेज बेस ID",
         "max_file_size": "हर फ़ाइल अधिकतम {{max}} MB.",
+        "file_too_large": "फ़ाइल बहुत बड़ी है: {{name}} (अधिकतम {{max}} MB)",
         "max_file_size_unavailable": "आकार सीमा लोड नहीं हो सकी। तुम फिर भी अपलोड कर सकते हो; सर्वर हर फ़ाइल की जाँच करता है।",
         "manual": "○ मैनुअल",
         "name_optional": "नाम (वैकल्पिक)",
