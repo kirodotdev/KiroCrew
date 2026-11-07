@@ -1,4 +1,5 @@
-"""Route registration for SSO login, terminal, projects, channels, auth tokens, instances, cloud.
+"""Route registration for SSO login, terminal, projects, channels, auth tokens, instances,
+cloud, relay viewer.
 
 One contiguous slice of the dashboard's route table, kept in its original
 order. aiohttp resolves routes in REGISTRATION order, and several routes here
@@ -27,6 +28,10 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_refresh,
 )
 from kiro_crew.dashboard.handlers.mobile_connect import api_mobile_connect_methods
+from kiro_crew.dashboard.handlers.relay_viewer import (
+    api_relay_viewer_crews,
+    api_relay_viewer_token,
+)
 from kiro_crew.platform import current_context, safe_context_call
 
 
@@ -201,3 +206,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
     app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)
     app.router.add_delete("/api/cloud/{tag}", handlers_cloud.api_cloud_destroy)
+
+    # Relay viewer (off by default): the owner's list of remote Crews, and the
+    # desktop app's access token mint (loopback plus the local secret, checked in
+    # the handler, which token auth lets through for POST only).
+    app.router.add_get("/api/relay-viewer/crews", api_relay_viewer_crews)
+    app.router.add_post("/api/relay-viewer/token", api_relay_viewer_token)
