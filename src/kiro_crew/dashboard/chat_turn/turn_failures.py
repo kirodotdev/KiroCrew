@@ -15,7 +15,7 @@ import functools
 from typing import TYPE_CHECKING
 
 from kiro_crew.agent_capabilities import CapabilityError
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils import MODEL_UNAVAILABLE_KIND, TRANSIENT_RETRY_KIND
 from kiro_crew.security import redact
 from kiro_crew.session_capabilities import CapabilityStartupError
 
@@ -410,6 +410,18 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The same seam carries the sign-in tag: a session the upstream
         # rejected gets a "Sign in to Kiro" affordance instead.
         _unentitled_meta = _terminal_error_meta(exc)
+        if slot._fallback_walked:
+            # A card that ends a fallback walk is judged by the SELECTED model,
+            # the one a Resume returns to (the start-of-turn restore probe
+            # re-selects it), not by the last candidate's error: a refused
+            # primary whose candidate only throttled must not offer Resume, and
+            # a throttled primary whose candidate was refused keeps it.
+            _primary_refused = getattr(slot, "_fallback_walk_refused", False) is True
+            _last_kind = (_unentitled_meta or {}).get("kind")
+            if _primary_refused and _unentitled_meta is None:
+                _unentitled_meta = {"kind": MODEL_UNAVAILABLE_KIND}
+            elif not _primary_refused and _last_kind == MODEL_UNAVAILABLE_KIND:
+                _unentitled_meta = None
         # Stays English: ``_err_text`` is the entitlement/startup formatter's own
         # output (the provider's rejection story), which a token cannot localize
         # without dropping that text.
@@ -505,6 +517,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # moves it back).
         slot._fallback_candidate_idx = 0
         slot._fallback_walked = []
+        slot._fallback_walk_refused = False
 
 
 async def _on_session_closing(turn: _ChatTurn) -> None:

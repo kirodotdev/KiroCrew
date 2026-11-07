@@ -174,6 +174,9 @@ class AcpError(Exception):
         # ``connection_failure``. The interactive ladder waits longer for it and
         # rewinds the failed prompt before re-sending. ``None`` means unclassified.
         self.throttle: bool | None = None
+        # A TRANSIENT capacity/rollout refusal of the selected model, from the raw
+        # frame; a spent ladder's card offers the picker instead of Resume.
+        self.model_unavailable: bool = False
         # Set by :func:`_raise_acp_error` when the frame's ``data`` names
         # ``errorKind: cloud_credential_error``: the process cached credentials
         # it cannot reload, so the remedy is a fresh process, not a retry.
@@ -1911,6 +1914,9 @@ def _raise_acp_error(
     # the same context.
     raw_data_field = provider_data_text(error)  # the same field the verdict above read
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
+    # Transient only, so an unentitled model (terminal) never carries it.
+    _kind = classify_provider_error(raw_data, data=raw_data_field).kind
+    err.model_unavailable = bool(err.transient) and _kind == PROVIDER_ERROR_MODEL_UNAVAILABLE
     # The claude adapter's overflow rides in ``message`` (anchored match, see
     # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
     # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag
