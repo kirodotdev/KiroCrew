@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 
 from .denied_rules_catalog import BUILTIN_DENIED_RULES, DeniedCommandRule
 from .denied_rules_tables import (  # noqa: F401
+    _GH_FILE_BODY_PATTERN,
     _GIT_PUBLISH_FLOOR_BY_ID,
     _GIT_PUBLISH_FLOOR_NOTES,
     _GIT_PUBLISH_RULE_PATTERNS,

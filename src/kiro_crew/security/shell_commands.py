@@ -170,6 +170,7 @@ def read_commands(
     _base: int = 0,
     nested: bool = True,
     heredocs: bool = False,
+    whole_words: bool = False,
 ) -> "list[ShellCommand]":
     """*command* as the commands a shell would run, in reading order.
 
@@ -179,8 +180,11 @@ def read_commands(
     substitution body (its :data:`SUBST` step stays). *heredocs* reads past a live
     ``<<`` instead of stopping: each body goes to its command's :attr:`ShellCommand.heredocs`,
     and the substitutions in an unquoted body are read as commands of their own, listed
-    after the line. The list is never empty: the last command holds whatever follows the
-    last separator.
+    after the line. *whole_words* reads an unquoted ``$(…)``, backtick, ``<(…)`` or ``>(…)``
+    as a quoted one is read: its commands are listed first and the outer word keeps one
+    :data:`SUBST` step (a process substitution's has an empty char, as it names a pipe),
+    so the words after it stay the outer command's. The list is never empty: the last
+    command holds whatever follows the last separator.
     """
     out: list[ShellCommand] = []
     steps: list[ShellStep] = []
@@ -217,35 +221,48 @@ def read_commands(
                 newline = text.find("\n", step.offset)  # a comment's quotes open nothing
                 resume = len(command) if newline < 0 else pos + newline
                 break
-            if step.state == 2 and text.startswith("$(", step.offset):
+            # an unquoted one (inside ``${…}`` too), read as a quoted one is
+            whole = whole_words and step.active
+            arith = whole and text.startswith("$((", step.offset)  # ``$((…))`` is one word
+            dollar_paren = text.startswith("$(", step.offset) and (step.state == 2 or whole)
+            if dollar_paren or (whole and text.startswith(("<(", ">("), step.offset)):
                 # bash reads "$(…)" from an unquoted start, then the double quote resumes
                 body = text[step.offset + 2 :]
                 close, proven = _shell._matching_close_paren(body, 0)
-                if nested:
-                    inner = body[: close - 1 if proven else close]
-                    out.extend(read_commands(inner, track, at + 2, heredocs=heredocs))
+                inner = body[: close - 1 if proven else close]
+                if nested and arith:  # substitutions run, never the arithmetic itself
+                    out.extend(_body_substitutions(inner, at + 2, track, True))
+                elif nested:
+                    out.extend(read_commands(inner, track, at + 2, True, heredocs, whole_words))
                 end = pos + step.offset + 2 + close
-                steps.append(ShellStep(at, _base + end, SUBST, SUBST, 2, False, False))
+                char = SUBST if dollar_paren else ""
+                steps.append(ShellStep(at, _base + end, SUBST, char, step.state, False, False))
                 in_redirect = False
-                resume, resume_state = end, 2
+                resume, resume_state = end, step.state
                 break
-            if step.state == 2 and step.char == "`" and len(step.text) == 1:
+            if (step.state == 2 or whole) and step.char == "`" and len(step.text) == 1:
                 # a backtick body in double quotes is read on its own, then the quote resumes
                 closer = _shell._backtick_closer(text, step.offset + 1)
                 closed = closer != -1
                 end = closer + 1 if closed else len(text)
                 if nested:
                     inner = text[step.offset + 1 : end - closed]
-                    out.extend(read_commands(inner, track, at + 1, heredocs=heredocs))
-                steps.append(ShellStep(at, _base + pos + end, SUBST, SUBST, 2, False, False))
+                    out.extend(read_commands(inner, track, at + 1, True, heredocs, whole_words))
+                steps.append(
+                    ShellStep(at, _base + pos + end, SUBST, SUBST, step.state, False, False)
+                )
                 in_redirect = False
-                resume, resume_state = pos + end, 2
+                resume, resume_state = pos + end, step.state
                 break
             if track and dollars % 2 and text.startswith(("${", "$["), step.offset):
                 expansion.append("}" if text[step.offset + 1] == "{" else "]")
             elif step.active and expansion and step.char == expansion[-1]:
                 expansion.pop()
             redirect = False
+            if whole_words and expansion:  # inside ``${…}`` nothing cuts or redirects
+                end_at = at + len(step.text)
+                steps.append(ShellStep(at, end_at, step.text, step.char, step.state, False, False))
+                continue
             prev = steps[-1].char if steps else ""
             amp_opens = step.char == "&" and text.startswith(">", step.offset + 1)  # ``&>``
             if step.active and in_redirect and step.char + prev in ("&&", "&>", "&<", "|>"):
@@ -257,7 +274,7 @@ def read_commands(
                 in_redirect = False
                 if step.char == "\n" and pending:  # the bodies start on the next line
                     resume = _read_bodies(
-                        command, pos + step.offset + 1, pending, out, track, _base
+                        command, pos + step.offset + 1, pending, out, track, _base, whole_words
                     )
                     pending = []
                     break
@@ -294,7 +311,13 @@ def _heredoc_tag(text: str, at: int) -> "tuple[str, bool, bool]":
 
 
 def _read_bodies(
-    command: str, at: int, pending: "list[list]", out: "list[ShellCommand]", track: bool, base: int
+    command: str,
+    at: int,
+    pending: "list[list]",
+    out: "list[ShellCommand]",
+    track: bool,
+    base: int,
+    whole_words: bool = False,
 ) -> int:
     """Take each pending body from *at* up to its tag line, attach it to its command,
     read the substitutions of an unquoted one, and return the offset past the last tag line."""
@@ -318,11 +341,13 @@ def _read_bodies(
         doc = HereDoc(body, base + start, base + body_end, quoted, base + tail)
         out[owner] = out[owner]._replace(heredocs=out[owner].heredocs + (doc,))
         if not quoted:
-            out.extend(_body_substitutions(body, base + start, track))
+            out.extend(_body_substitutions(body, base + start, track, whole_words))
     return min(at, len(command))
 
 
-def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand]":
+def _body_substitutions(
+    body: str, base: int, track: bool, whole_words: bool = False
+) -> "list[ShellCommand]":
     """The commands of each ``$(…)`` / backtick in an unquoted heredoc body. There a quote
     is a plain character and only a backslash escapes, so each body is read once."""
     out: list[ShellCommand] = []
@@ -334,12 +359,14 @@ def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand
             rest = body[i + 2 :]  # the walk starts unquoted inside the substitution
             close, proven = _shell._matching_close_paren(rest, 0)
             inner = rest[: close - 1 if proven else close]
-            out.extend(read_commands(inner, track, base + i + 2, heredocs=True))
+            out.extend(read_commands(inner, track, base + i + 2, True, True, whole_words))
             i += 2 + close
         elif body[i] == "`":
             closer = _shell._backtick_closer(body, i + 1)
             end = len(body) if closer < 0 else closer
-            out.extend(read_commands(body[i + 1 : end], track, base + i + 1, heredocs=True))
+            out.extend(
+                read_commands(body[i + 1 : end], track, base + i + 1, True, True, whole_words)
+            )
             i = end + 1
         else:
             i += 1
