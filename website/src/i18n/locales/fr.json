@@ -11377,6 +11377,8 @@
       "focus_pending_approval": "Placer le focus sur l’approbation en attente",
       "focus_text_input": "Placer le focus sur la zone de saisie",
       "edit_last_message": "Modifier le dernier message",
+      "indent_list_line": "Ajouter un retrait à la ligne de liste",
+      "outdent_list_line": "Retirer le retrait de la ligne de liste",
       "reopen_closed_session": "Rouvrir la session fermée",
       "no_recently_closed_session": "Aucune session fermée récemment.",
       "group_actions": "Actions",

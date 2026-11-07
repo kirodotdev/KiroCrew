@@ -11625,6 +11625,8 @@
       "focus_pending_approval": "Перейти к ожидающему подтверждению",
       "focus_text_input": "Перейти к полю ввода",
       "edit_last_message": "Редактировать последнее сообщение",
+      "indent_list_line": "Увеличить отступ строки списка",
+      "outdent_list_line": "Уменьшить отступ строки списка",
       "reopen_closed_session": "Снова открыть закрытый сеанс",
       "no_recently_closed_session": "Нет недавно закрытых сеансов.",
       "group_actions": "Действия",

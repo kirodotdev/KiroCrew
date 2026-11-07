@@ -11377,6 +11377,8 @@
       "focus_pending_approval": "Focar a aprovação pendente",
       "focus_text_input": "Focar a caixa de texto",
       "edit_last_message": "Editar a última mensagem",
+      "indent_list_line": "Aumentar o recuo da linha de lista",
+      "outdent_list_line": "Reduzir o recuo da linha de lista",
       "reopen_closed_session": "Reabrir a sessão fechada",
       "no_recently_closed_session": "Nenhuma sessão fechada recentemente.",
       "group_actions": "Ações",

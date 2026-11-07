@@ -9,6 +9,7 @@ import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortc
 import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
+import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle, SearchInput, FilteredEmpty } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -79,8 +80,12 @@ export function groupShortcuts(group: string, macCtrl: boolean): ShortcutDef[] {
   // handler never binds (see useInstanceShortcuts). Don't advertise a binding
   // the host environment will steal.
   if (group === 'remote-crews' && !isElectron) return []
+  // Only the plain message input indents a list line on Tab; with Style Markdown
+  // While Typing on, Tab leaves the editor, so the two Tab rows are not listed.
+  const tabIndents = !loadChatConfig().inlineMarkdown
   const out: ShortcutDef[] = []
   for (const s of DEFAULT_SHORTCUTS.filter(s => s.group === group)) {
+    if (!tabIndents && (s.id === 'list-indent' || s.id === 'list-outdent')) continue
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
       out.push({ ...s, ctrl: false, alt: true })
