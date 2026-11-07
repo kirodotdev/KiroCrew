@@ -6712,9 +6712,9 @@
       "additional_instruction": "Instrução geral",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Clique para copiar o slug",
-      "comment_many": "{{count}} comentários",
-      "comment_one": "{{count}} comentário",
-      "comment_other": "{{count}} comentários",
+      "comments_to_send_many": "{{count}} comentários para enviar a este chat",
+      "comments_to_send_one": "{{count}} comentário para enviar a este chat",
+      "comments_to_send_other": "{{count}} comentários para enviar a este chat",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Não foi possível carregar este artefato. Ele pode ter sido excluído ou a requisição de rede falhou.",
       "couldn_t_send_your_comments_are_still_pending": "Não foi possível enviar — seus comentários continuam pendentes.",
       "couldn_t_send_your_comments_are_still_pending_reason": "Não foi possível enviar — seus comentários continuam pendentes. ({{error}})",
@@ -6729,7 +6729,6 @@
       "overall_instruction_hint": "Adicione uma instrução que vale para todos os comentários pendentes",
       "show_comments": "Mostrar comentários",
       "submit": "Enviar",
-      "to_send_to_this_chat": "para enviar a este chat",
       "toggle_additional_instruction": "Adicionar instrução geral"
     },
     "askAgent": {

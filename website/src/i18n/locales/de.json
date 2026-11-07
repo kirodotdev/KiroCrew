@@ -6537,8 +6537,8 @@
       "additional_instruction": "Gesamtanweisung",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Klicken, um den Slug zu kopieren",
-      "comment_one": "{{count}} Kommentar",
-      "comment_other": "{{count}} Kommentare",
+      "comments_to_send_one": "{{count}} Kommentar zum Senden an diesen Chat",
+      "comments_to_send_other": "{{count}} Kommentare zum Senden an diesen Chat",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Dieses Artefakt konnte nicht geladen werden. Es wurde möglicherweise gelöscht oder die Netzwerkanfrage ist fehlgeschlagen.",
       "couldn_t_send_your_comments_are_still_pending": "Senden nicht möglich – deine Kommentare sind weiterhin ausstehend.",
       "couldn_t_send_your_comments_are_still_pending_reason": "Senden nicht möglich – deine Kommentare sind weiterhin ausstehend. ({{error}})",
@@ -6553,7 +6553,6 @@
       "overall_instruction_hint": "Füge eine Anweisung hinzu, die für alle ausstehenden Kommentare gilt",
       "show_comments": "Kommentare anzeigen",
       "submit": "Absenden",
-      "to_send_to_this_chat": "um an diesen Chat zu senden",
       "toggle_additional_instruction": "Gesamtanweisung hinzufügen"
     },
     "askAgent": {

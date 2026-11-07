@@ -6887,10 +6887,10 @@
       "additional_instruction": "Общая инструкция",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Нажмите, чтобы скопировать slug",
-      "comment_few": "{{count}} комментария",
-      "comment_many": "{{count}} комментариев",
-      "comment_one": "{{count}} комментарий",
-      "comment_other": "{{count}} комментария",
+      "comments_to_send_few": "{{count}} комментария для отправки в этот чат",
+      "comments_to_send_many": "{{count}} комментариев для отправки в этот чат",
+      "comments_to_send_one": "{{count}} комментарий для отправки в этот чат",
+      "comments_to_send_other": "{{count}} комментария для отправки в этот чат",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Не удалось загрузить этот артефакт. Возможно, он был удалён или сетевой запрос не выполнен.",
       "couldn_t_send_your_comments_are_still_pending": "Не удалось отправить — твои комментарии всё ещё ожидают отправки.",
       "couldn_t_send_your_comments_are_still_pending_reason": "Не удалось отправить — твои комментарии всё ещё ожидают отправки. ({{error}})",
@@ -6905,7 +6905,6 @@
       "overall_instruction_hint": "Добавь одну инструкцию для всех ожидающих комментариев",
       "show_comments": "Показать комментарии",
       "submit": "Отправить",
-      "to_send_to_this_chat": "чтобы отправить в этот чат",
       "toggle_additional_instruction": "Добавить общую инструкцию"
     },
     "askAgent": {

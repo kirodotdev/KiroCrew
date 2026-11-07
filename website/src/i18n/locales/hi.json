@@ -6537,8 +6537,8 @@
       "additional_instruction": "समग्र निर्देश",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "स्लग कॉपी करने के लिए क्लिक करें",
-      "comment_one": "{{count}} टिप्पणी",
-      "comment_other": "{{count}} टिप्पणियाँ",
+      "comments_to_send_one": "इस चैट में भेजने के लिए {{count}} टिप्पणी",
+      "comments_to_send_other": "इस चैट में भेजने के लिए {{count}} टिप्पणियाँ",
       "couldn_t_load_this_artifact_it_may_have_been_del": "यह आर्टिफ़ैक्ट लोड नहीं हो सका। इसे हटाया जा चुका हो सकता है, या नेटवर्क अनुरोध विफल हुआ।",
       "couldn_t_send_your_comments_are_still_pending": "भेजा नहीं जा सका — तुम्हारी टिप्पणियाँ अभी भी लंबित हैं।",
       "couldn_t_send_your_comments_are_still_pending_reason": "भेजा नहीं जा सका — तुम्हारी टिप्पणियाँ अभी भी लंबित हैं। ({{error}})",
@@ -6553,7 +6553,6 @@
       "overall_instruction_hint": "सभी लंबित टिप्पणियों पर लागू होने वाला एक निर्देश जोड़ो",
       "show_comments": "टिप्पणियाँ दिखाएँ",
       "submit": "सबमिट करें",
-      "to_send_to_this_chat": "इस चैट में भेजने के लिए",
       "toggle_additional_instruction": "समग्र निर्देश जोड़ो"
     },
     "askAgent": {
