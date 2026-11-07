@@ -17,6 +17,7 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { i18nT } from '../../i18n/t'
 import { publishNoticeKey } from '../PublishHub'
+import { LiveSiteLink } from './LiveSiteLink'
 import ErrorNotice from '../ErrorNotice'
 import { useOpenInEditor } from '../FilePathMenu'
 import { canOpenFileInEditor, editorAcceptsPath } from '../../lib/electron'
@@ -475,6 +476,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
               )}
             </div>
             {a.description && <div className="text-[12px] text-muted truncate max-w-[400px]">{a.description}</div>}
+            <LiveSiteLink slug={a.slug} />
           </td>
           <td className="px-2.5 py-2 border-b border-border">
             <code className="text-[12px] text-muted">{a.slug}</code>
