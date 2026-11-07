@@ -148,6 +148,22 @@ class TestClassifyAgainstRealProducers:
         assert reason
         assert dg.classify_deny(reason) == dg.DENY_CLASS_AWS_CREDENTIAL
 
+    @pytest.mark.parametrize(
+        "var", ["AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN"]
+    )
+    def test_glob_tier_refusal_naming_an_aws_variable_classifies(self, var):
+        """The glob tier names no catalog rule, so the anchor scan classifies it.
+
+        Every AWS credential variable name continues with ``_`` after its first
+        two words, so the anchors spell the whole name: the end boundary has to
+        fall after the name, not inside it.
+        """
+        command = f"node deploy.js --key ${var}"
+        reason = security.is_denied(command, extra_patterns=[f"*{var.lower()}*"], denied_regexes=[])
+        assert reason, "the glob tier must refuse this for the test to mean anything"
+        assert dg.classify_deny(reason, f"Running: {command}") == dg.DENY_CLASS_AWS_CREDENTIAL
+        assert dg.remediation_for(reason, f"Running: {command}")
+
     def test_unclassified_refusal_yields_no_guidance(self):
         """Most denials explain themselves; inventing prose for them buries the rest."""
         reason = security.is_denied("rm -rf /", denied_regexes=_builtin_regexes())

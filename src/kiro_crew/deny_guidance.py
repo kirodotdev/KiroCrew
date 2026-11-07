@@ -116,6 +116,12 @@ _CLASS_ANCHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
         DENY_CLASS_AWS_CREDENTIAL,
         (
             ".aws",
+            # The variable names are spelled in full: the end boundary refuses a
+            # following "_", so a prefix such as "aws_secret" can never match
+            # AWS_SECRET_ACCESS_KEY. The short forms stay for bare mentions.
+            "aws_secret_access_key",
+            "aws_access_key_id",
+            "aws_session_token",
             "aws_secret",
             "aws_access",
             "aws_session",
