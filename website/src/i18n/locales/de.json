@@ -184,6 +184,7 @@
       "proxy_challenge_reload": "Lade diesen Browser-Tab neu — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. Wenn nicht, hat ein Proxy oder eine Firewall vor diesem Dashboard die Anfrage abgewiesen; prüfe die Protokolle des Proxys oder versuche es später erneut.",
       "proxy_challenge_framed": "Öffne {{origin}} in einem neuen Tab — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. In diesem Panel funktioniert die Anmeldung nicht. Melde dich dort an und lade dann diese Seite neu.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
+      "server_temporarily_unavailable_http_status": "Der Server ist vorübergehend nicht verfügbar (HTTP {{status}})",
       "too_many_open_sessions_http_429_close_old": "Zu viele Sitzungen sind geöffnet. Schließe ein paar alte Sitzungen (sie bleiben im Verlauf und lassen sich jederzeit wieder öffnen) und versuche es erneut.",
       "subagents_still_running_or_queued": "Noch aktiv oder in der Warteschlange: {{list}}.",
       "subagents_could_not_be_checked": "Einige Unteragenten konnten nicht geprüft werden.",
