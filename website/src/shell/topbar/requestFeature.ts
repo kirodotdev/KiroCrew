@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useAppDispatch, useAppStore } from '../../store'
 import { appendSlotMessage, startLocalTurn, endLocalTurn } from '../../store/chatSlice'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { mintSendId } from '../../utils/sendDelivery'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
@@ -18,7 +18,10 @@ export function useRequestFeature(colorTheme: string) {
   // the module-level singleton would bypass a test-injected store.
   const appStore = useAppStore()
   const requestFeature = useCallback(async () => {
+    // The pill has no error surface of its own, so a failed create goes to the shell notice.
     const view = await createChatForView(dispatch, appStore.getState, { sessionFolder: false })
+      .catch((err: unknown) => reportCreateFailure(dispatch, err))
+    if (!view) return
     const slot = view.slot.key
     // This flow is an agent turn by design (the skill drafts and files the
     // request), so it consumes metered inference and a spent plan allowance

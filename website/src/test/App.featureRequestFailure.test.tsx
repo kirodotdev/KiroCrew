@@ -15,7 +15,7 @@
  * is undone. The accepted-receipt case pins that success stays untouched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
@@ -135,6 +135,14 @@ describe('Request a Feature — failed send is reported (#4198)', () => {
     const chat = store.getState().chat
     expect(chat.messages.some(m => m.role === 'error' && m.content === i18nT('pages.chatPage.send_failed'))).toBe(true)
     expect(chat.slotRunning).toBe(false)
+  })
+
+  it('reports a failed create on the shell notice and sends nothing', async () => {
+    createChatSlotMock.mockRejectedValue(new Error('zzq create failed'))
+    const { store } = await clickRequestFeature()
+
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice).toEqual({ title: "Couldn't create a new chat.", message: 'zzq create failed', error: true }))
+    expect(sendChatMock).not.toHaveBeenCalled()
   })
 
   it('says NOTHING when a 2xx receipt will not parse — the request was accepted (#4217)', async () => {

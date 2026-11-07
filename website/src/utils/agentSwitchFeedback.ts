@@ -51,6 +51,9 @@ export function isMemberNeedsNewChatError(error: unknown): boolean {
  *  pick, no effort to cycle, no closed session to reopen, the focus-mode hint). */
 export interface AgentSwitchNotice {
   message: string
+  /** An error notice's plain-language lead, shown before `message`; `message`
+   *  stays the raw failure so the agent hand-off can find its journal entry. */
+  title?: string
   newChatAgent?: string
   error?: true
 }
