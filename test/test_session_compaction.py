@@ -1044,6 +1044,28 @@ class TestCompactTimeout:
         assert mgr._compact_cooldown_until.get("k1", 0.0) > time.monotonic()
         assert callback_calls == [("k1", 92.0, False)]
         assert "k1" not in mgr._compacting
+        # The abandoned /compact can still finish, so the next prompt carries
+        # the startup context again.
+        assert mgr.consume_needs_reinjection("k1") is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_compact_timeout_parked_on_turn_arms_no_reinjection(self, cfg):
+        """A budget spent waiting behind a live turn sent no /compact, so it arms nothing."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        provider.compact = AsyncMock()
+
+        with (
+            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            # flake-ok: the 0.05 s budget is meant to expire: the held turn is released only after it, so the timeout arm runs on any host
+            patch("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.05),
+        ):
+            await mgr._compact_session("k1", 92.0)
+
+        provider.compact.assert_not_awaited()
+        assert mgr.consume_needs_reinjection("k1") is False
+        mgr.release("k1")
         await mgr.close_all()
 
 
