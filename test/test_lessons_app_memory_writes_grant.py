@@ -147,3 +147,18 @@ async def test_an_evaluation_error_keeps_the_tools_degrade_posture() -> None:
         status, body, store = await _post({"X-Test-App": APP})
     assert status == 200, body
     store.write_lesson.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_closed_tabs_in_flight_lesson_is_refused_not_read_as_the_person() -> None:
+    """A key naming a popped slot resolves to no app; it must not pass as the person.
+
+    The session check is stubbed to admit it, as the slot's retained transcript does.
+    """
+    from kiro_crew.dashboard.handlers import cron_lessons
+
+    with patch.object(cron_lessons, "_recognize_session", new=AsyncMock(return_value=None)):
+        status, body, store = await _post({"X-Session-Key": "dashboard:closed-tab"})
+    assert status == 403, body
+    assert body["code"] == "caller_unattributable"
+    store.write_lesson.assert_not_called()

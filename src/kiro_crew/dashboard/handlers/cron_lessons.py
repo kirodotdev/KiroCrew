@@ -309,9 +309,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # session. A caller no app owns is the person, whose surface profile the tool
     # already vets, so it is not re-asked. Same posture as the tool's vet: an
     # evaluation error does not refuse, and the decision lands in the SEL trail.
-    from kiro_crew.dashboard.token_auth_callers import effective_request_app
+    from kiro_crew.dashboard.token_auth_callers import (
+        effective_request_app,
+        refuse_unattributable_caller,
+    )
     from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, vet_and_audit
 
+    # A tab closed mid-call reads as "" too; refuse it rather than treat it as the person.
+    if (refusal := refuse_unattributable_caller(state, request, "learn_add")) is not None:
+        return refusal
     request_app = effective_request_app(state, request)
     if request_app:
         decision = await asyncio.to_thread(
