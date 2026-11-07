@@ -11880,10 +11880,13 @@
       },
       "phasedView": {
         "cancelled": "Отменено",
+        "done": "Готово",
         "failed": "Ошибка",
+        "in_progress": "В работе",
         "none": "Нет",
         "skipped": "Пропущено",
-        "task": "Задача"
+        "task": "Задача",
+        "to_do": "К выполнению"
       },
       "taskDetailPanel": {
         "approve": "Разрешить",

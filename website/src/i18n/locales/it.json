@@ -11631,10 +11631,13 @@
       },
       "phasedView": {
         "cancelled": "Annullato",
+        "done": "Fatto",
         "failed": "Non riuscito",
+        "in_progress": "In corso",
         "none": "Nessuno",
         "skipped": "Saltato",
-        "task": "Attività"
+        "task": "Attività",
+        "to_do": "Da fare"
       },
       "taskDetailPanel": {
         "approve": "Approva",

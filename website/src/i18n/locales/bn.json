@@ -11382,10 +11382,13 @@
       },
       "phasedView": {
         "cancelled": "বাতিল করা হয়েছে",
+        "done": "সম্পন্ন",
         "failed": "ব্যর্থ",
+        "in_progress": "চলমান",
         "none": "কোনোটি নয়",
         "skipped": "এড়িয়ে যাওয়া হয়েছে",
-        "task": "টাস্ক"
+        "task": "টাস্ক",
+        "to_do": "করণীয়"
       },
       "taskDetailPanel": {
         "approve": "অনুমোদন করুন",

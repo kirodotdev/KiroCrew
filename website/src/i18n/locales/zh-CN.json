@@ -11133,10 +11133,13 @@
       },
       "phasedView": {
         "cancelled": "已取消",
+        "done": "已完成",
         "failed": "失败",
+        "in_progress": "进行中",
         "none": "无",
         "skipped": "已跳过",
-        "task": "任务"
+        "task": "任务",
+        "to_do": "待办"
       },
       "taskDetailPanel": {
         "approve": "批准",

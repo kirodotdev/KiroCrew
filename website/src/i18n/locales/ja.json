@@ -11133,10 +11133,13 @@
       },
       "phasedView": {
         "cancelled": "キャンセル済み",
+        "done": "完了",
         "failed": "失敗",
+        "in_progress": "進行中",
         "none": "なし",
         "skipped": "スキップ済み",
-        "task": "タスク"
+        "task": "タスク",
+        "to_do": "未着手"
       },
       "taskDetailPanel": {
         "approve": "承認",
