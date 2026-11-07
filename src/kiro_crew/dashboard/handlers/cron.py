@@ -126,8 +126,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.cron_secret_grants import (  # noqa: F401
         _SHA256_HEX_RE,
+        _expected_ts_value,
         _is_str_mapping,
         _promote_pending_grant,
+        _unrepresentable_ts_response,
         api_cron_secret_grant,
     )
     from kiro_crew.dashboard.handlers.cron_shared import (  # noqa: F401
