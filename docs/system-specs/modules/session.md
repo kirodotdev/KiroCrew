@@ -3173,7 +3173,10 @@ them and no entry in memory binds a Slack thread or a mirror, whose one-owner
 checks could not see the file (`_reread_after_failed_load`). A key removed in
 memory since then comes back from the file, as it would after a restart.
 Otherwise, or when the re-read fails or does not parse, writes raise until a
-restart reads the file.
+restart reads the file. While writes raise, `/api/status` reports
+`session_map_writes_refused: true` (from `SessionMap.writes_refused()`) with the
+remedy in `session_map_remedy`, which `kirocrew status` prints as a `Session map:`
+line; otherwise they read `false` and `""`.
 
 **Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
 itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
@@ -3184,7 +3187,7 @@ binds its other members by name from two owner modules:
 
 | Owner | Owns |
 |---|---|
-| `session_map_store.py` | `_MAP_LOCK` and `_guarded`, the load, the deferred flush's scheduling and snapshot claims, and the atomic write (`batched_save`, `_save`, `flush`, `aflush`, `aclose`, `_write_payload`); the debounced task itself, `_flush_async`, stays in the facade, where tests patch its debounce |
+| `session_map_store.py` | `_MAP_LOCK` and `_guarded`, the load and the refuse-writes state it can leave (`writes_refused`), the deferred flush's scheduling and snapshot claims, and the atomic write (`batched_save`, `_save`, `flush`, `aflush`, `aclose`, `_write_payload`); the debounced task itself, `_flush_async`, stays in the facade, where tests patch its debounce |
 | `session_map_links.py` | the Slack thread link and its reverse index, the channel-neutral mirror binding, the session's own link, the compare-and-clear unlinks, the mutes, the binding nonces and `ConversationOwnershipConflict` |
 
 New work goes to the module that owns its responsibility. A bound member reads as a method of
