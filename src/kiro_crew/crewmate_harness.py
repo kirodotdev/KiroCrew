@@ -242,6 +242,19 @@ def crewmate_stored_pin(config: Any, session_key: str | None) -> CrewBackendPin 
     return crewmate_pin_for(config, crewmate_for_session(config, session_key))
 
 
+def route_pin(config: Any, session_key: str | None, backend_override: str | None) -> str:
+    """The Bot pin KAS's route rule 2 judges *session_key* by, as stored, or ``""``.
+
+    In the selection's order: an explicit *backend_override* outranks the pin,
+    so an overridden session carries none and is judged by the installation's
+    pick.
+    """
+    if backend_override is not None:
+        return ""
+    pin = crewmate_stored_pin(config, session_key)
+    return pin.stored if pin is not None else ""
+
+
 def crewmate_backend_pin(config: Any, session_key: str | None) -> StartableCrewPin | None:
     """The pre-gate check (H17): *session_key*'s crewmate pin, confirmed startable.
 

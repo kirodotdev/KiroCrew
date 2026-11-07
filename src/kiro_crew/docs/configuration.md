@@ -206,7 +206,10 @@ yet, the gateway downloads it the first time a chat needs it, and the dashboard
 shows the download (and, when it fails, why and the `kirocrew kas install` command
 to retry). The switch is logged in the gateway log, shown on the KAS engine card
 under Settings → Agent Harness, and printed by `kirocrew doctor` as the `route:`
-row. A stored `agent.acp_backend: "kiro"` is not moved: it stays on kiro-cli.
+row. A stored Kiro CLI pick (`"kiro"`) is not moved: it stays on kiro-cli. A
+session that runs on its Bot's own harness pin (`agents.<name>.acp_backend`) is
+judged by that pin, every other session by `agent.acp_backend`; doctor's
+`route:` row and `kirocrew kas route` describe the `agent.acp_backend` case.
 
 Harness capabilities differ: agent-spec projection, MCP transport, model
 selection, permission routing, resume, compaction, and subagent continuation are
