@@ -224,9 +224,12 @@ jobs:
             fi
           done
           # The same surface Denial Differential gates, plus this lane's own three
-          # inputs. That lane's `paths:` also names its own workflow file; the
-          # analogue here is this file, which is named below. Another LANE's workflow file
-          # stays out -- a change to it is not a tightening of anything.
+          # inputs, which this lane reads from the base commit. No workflow file is
+          # on it, this one included, though Denial Differential's `paths:` names
+          # its own. On `pull_request` the lane runs the head's copy of this file,
+          # so listing it only has an edit judge itself, and an edit that tightens
+          # nothing leaves the model nothing to propose: `validate` refuses that
+          # empty candidate file by design (exit 2), which would red every such head.
           #
           # THE FORK LANE READS THIS ARRAY OUT OF THIS FILE, at the base commit, so
           # the two lanes resolve one list rather than two that drift. That is why
@@ -248,7 +251,6 @@ jobs:
             'scripts/scope_candidates.py'
             'scripts/scope_redact.py'
             '.github/review-prompts/security-scope.md'
-            '.github/workflows/security-scope-review.yml'
           )
           # SCOPE-SURFACE-END
           # `|| true` on this diff was the same defect one layer down: a git
@@ -754,31 +756,6 @@ jobs:
     # Keeps its `_PERMANENT_EXCEPTIONS` entry: this change does not argue this
     # job onto the CodeBuild fleet, and the larger-runner group is not the
     # fleet. Label rather than `group:` for the reason `generate` gives.
-    #
-    # READ THIS BEFORE EDITING THIS FILE AT ALL, for any reason. This workflow
-    # is itself an entry of the `SCOPE-SURFACE` array above, so ANY diff
-    # touching it sets `in_scope=true`. A diff whose only `SCOPE-SURFACE` path
-    # is this file supplies no
-    # tightening to probe, so `candidates.json` is honestly empty.
-    # `scope_candidates.py validate` treats that the same as an untrustworthy
-    # file (`CandidateError`, exit 2), deliberately: exit 3 ("nothing new to
-    # adjudicate") means the model DID
-    # propose candidates and they are already covered by the committed corpus,
-    # which is a different, stronger claim than "nothing was proposed at all" --
-    # merging the two would let a failed or empty model call pass as a
-    # reviewed, honest empty set, which is the exact false green this lane
-    # exists to prevent (test_an_untrustworthy_candidate_file_is_exit_2's
-    # `empty` case pins this). Only a diff that ALSO changes the deny or
-    # classifier surface gives the model something to propose.
-    #
-    # So a diff whose only `SCOPE-SURFACE` path is this file reds a lane
-    # `PR Readiness` watches, and
-    # the only same-head exit is a human override --
-    # `/ai-review override scope <sha> <class>: <reason>` -- which `generate`'s
-    # "Resolve human override" step reads. The class is the poster's to choose;
-    # this comment deliberately does not draft one. The record is keyed to ONE
-    # head, so every push needs a fresh one. Fixing this belongs in a change to
-    # this lane's own design.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # `contents: read` and NOTHING else. This job can execute the pull request's own
     # harness, so it must hold nothing worth reaching: no `id-token`, so no AWS

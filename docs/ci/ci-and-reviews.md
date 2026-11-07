@@ -1634,15 +1634,6 @@ to a broken resolver.
 `ai-review-human-override.yml` is the mechanism that clears a red scope lane, so
 it does not move in a change that could need it.
 
-**Any diff touching `security-scope-review.yml` reds that lane.** The file is on
-the lane's own scope surface, so a diff touching it sets `in_scope=true` while
-giving the model no shell, flow or cron surface to propose candidates for, and
-`scope_candidates.py validate` refuses the resulting empty `candidates.json` as
-`CandidateError`, exit 2, by design -- which reds a lane `PR Readiness` watches.
-Clearing it needs `/ai-review override scope <head-sha> <class>: <reason>` on
-every head, since the record is keyed to one commit. A rollback of that
-workflow's own `runs-on` lines pays the same cost.
-
 **The same-repo lanes are provisional, not permanent.** `codex-review`,
 `claude-review`, `first-principles-review`, `design-review` and `ux-review` are
 about 18 average concurrent slots. Unlike the fork lanes, they have a plausible
@@ -4076,7 +4067,12 @@ composite's own modules (`src/kiro_crew/security/`, `src/kiro_crew/hooks.py`,
 `src/kiro_crew/platform/security_authority.py`), the security-conductor's
 `rules-of-engagement.json` and `golden-paths.json`, and the lane's own harness
 (`scripts/deny_diff.py`, `scripts/scope_candidates.py`, `scripts/scope_redact.py`,
-`.github/review-prompts/security-scope.md`, and this workflow). A tightening can
+`.github/review-prompts/security-scope.md`), which the lane reads from the base
+commit. No workflow file is on it, the lane's own included: on `pull_request` the
+lane runs the head's copy of its workflow, so listing it only has an edit judge
+itself, and an edit that tightens nothing leaves the model no candidate to
+propose, which `scope_candidates.py validate` refuses by design (exit 2) so that a
+failed or empty model call never reads as a reviewed empty set. A tightening can
 also live outside those paths, so the `security-scope-review` label forces the
 lane on. The surface list is a sentinel-delimited array in the same-repo workflow,
 and the fork lane reads that one array from the base commit, so the two lanes
