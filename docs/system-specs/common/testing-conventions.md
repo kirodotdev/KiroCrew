@@ -194,7 +194,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), and five frontend shapes. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -278,7 +278,11 @@ thread, so a synchronous helper that ends in a session-file rename
 `async def` test loses to any handle a scanner holds on the destination for a few
 milliseconds (`[WinError 5]` on `sessions/<key>.jsonl`). `member_memory_helpers`'
 `env.bind_session` refuses to run on the loop for this reason; a coroutine awaits
-`env.bind_session_async`, which runs the same writes on a worker thread.
+`env.bind_session_async`, which runs the same writes on a worker thread. The
+flake-pattern ratchet counts an `update_metadata` or `update_metadata_if` call made in
+a coroutine's own frame (K20; a sync helper that calls it is not counted), so a new one
+fails a change; hand the method to
+`await asyncio.to_thread(log.update_metadata, ...)` instead.
 
 A test that drives code to `RecursionError` on purpose must hold the cyclic
 collector off for the walk. Its innermost frames have no headroom, and a gen0
