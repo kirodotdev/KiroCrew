@@ -902,7 +902,8 @@ knows the name: claude is in `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS`, so
 Claude Code commands (`claude/compact-live.jsonl` shows the SDK running a
 `/compact` prompt as its own command). The dashboard's own commands (`/agent`,
 `/goal`, `/workflow`, `/prompts`, `/side`) and a quick-prompt macro such as
-`/plain` still win first. The cost is that a message which merely opens with a
+`/plain`, or a user's own opted-in saved prompt (`quick_prompts.user_quick_prompt`),
+still win first. The cost is that a message which merely opens with a
 slash (a pasted `/etc/hosts` line) is forwarded without context too. The slash
 gate and the app-grant send refusal read the same predicate
 (`_forwards_harness_command`). Such a command answers like a prompt, so its echo
@@ -916,7 +917,8 @@ the configured `agent.acp_backend` because that endpoint has no session key: whe
 `runs_own_slash_commands` holds it lists Claude Code's commands (`/compact`,
 `/clear`, `/context`, `/help`, `/init`, `/review`, `/security-review`, `/todos`,
 `/usage`) and the dashboard's own ones above, minus the blocked set, never kiro-cli's
-`/hooks`, `/code`, `/experiment`, `/logdump`, `/changelog` or `/tools`. Project
+`/hooks`, `/code`, `/experiment`, `/logdump`, `/changelog` or `/tools`. The user's
+opted-in saved prompts join either list. Project
 commands and skills are not listed: nothing records the adapter's
 `available_commands_update` yet. Pinned by `test/test_api_slash_commands.py`.
 

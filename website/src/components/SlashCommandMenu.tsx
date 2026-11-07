@@ -159,7 +159,7 @@ const WORKFLOWS_STALE_MS = 30_000
 export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter', hidden }: Props) {
   const source = usePickerSource()
   const load = source.slashCommands
-  const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError, refetch } = useQuery<SlashCommand[]>({
+  const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError, isRefetchError, refetch } = useQuery<SlashCommand[]>({
     queryKey: pickerQueryKey(source, ['slash-commands']),
     queryFn: ({ signal }) => load!(signal),
     enabled: typeof load === 'function',
@@ -179,6 +179,13 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
   const workflowMatch = workflowsOn ? input.match(WORKFLOW_PICK_QUERY) : null
   const workflowMode = !!workflowMatch
   const visible = open && (!!match || workflowMode)
+  // The list carries the user's saved prompts that opted in as commands, which
+  // change outside this page, so each opening of the menu re-reads it.
+  const wasVisible = useRef(visible)
+  useEffect(() => {
+    if (visible && !wasVisible.current && typeof load === 'function') void refetch({ cancelRefetch: false })
+    wasVisible.current = visible
+  }, [visible, load, refetch])
   const filter = match?.[1] ?? ''
   const workflowFilter = workflowMatch?.[1] ?? ''
 
@@ -411,11 +418,11 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
             ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(loadingKey)}</div>
             : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>)
         : <>
-        {/* A refresh of the saved workflows can fail while the last list is
-          * still cached: the rows stay pickable, and the failure is named above
-          * them with its Retry. The command list needs no such row: its rows on
-          * a failed read are the offline fallback list, by design. */}
-        {workflowMode && (listError || retryInFlight) && failureNotice(false)}
+        {/* A refresh can fail while the last list is still cached: the rows
+          * stay pickable, and the failure is named above them with its Retry.
+          * A first command read that fails needs no such row: its rows are the
+          * offline fallback list, by design. */}
+        {(workflowMode ? listError : isRefetchError) || retryInFlight ? failureNotice(false) : null}
         {displayed.map((row, i) => (
         <button
           role="option"
