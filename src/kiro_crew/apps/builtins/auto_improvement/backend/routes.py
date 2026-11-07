@@ -333,7 +333,7 @@ async def _handle_put_config(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
-    """Validate a GitHub URL, clone it push-disabled, and record it as the target.
+    """Validate a GitHub URL, clone it push-disabled, and record its repository as the target.
 
     This is the ONLY path that may set ``clone``/``target_url`` in config —
     ``PUT /config`` deliberately cannot, because these decide which repository
@@ -366,9 +366,10 @@ async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
     # visible instead of scope-dependent.
     def _persist(result: dict) -> dict[str, Any]:
         current = store.read_json(store.config_path(), {}) or {}
-        retargeted = str(current.get("target_url") or "") != url
+        target_url = result["target_url"]
+        retargeted = str(current.get("target_url") or "") != target_url
         current["clone"] = result["clone"]
-        current["target_url"] = url
+        current["target_url"] = target_url
         # The real remote lives HERE, not in the clone's git config: the clone has both
         # urls neutralized so agent-run Bash inside it cannot discover a push target.
         # Only the trusted publishers read this key. NOT in `_CONFIG_WRITABLE` — like
