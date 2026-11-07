@@ -317,6 +317,21 @@ function StrandsField({
   serial: <T>(write: () => Promise<T>) => Promise<T>
 }) {
   const qc = useQueryClient()
+  // A save or remove unmounts the pressed button once the card's queries catch
+  // up: a saved key turns into the masked view with Replace, a removed one into
+  // an empty input. Focus waits for that control and moves to it, so it does
+  // not stay on the page. Armed only when focus was in this field at the press.
+  const fieldRef = useRef<HTMLDivElement>(null)
+  const armed = useRef(false)
+  const [refocus, setRefocus] = useState<'none' | 'replace' | 'input' | 'remove'>('none')
+  const aim = (target: 'replace' | 'input' | 'remove') => {
+    if (armed.current) setRefocus(target)
+    armed.current = false
+  }
+  const disarm = () => {
+    armed.current = false
+    setRefocus('none')
+  }
   const [draft, setDraft] = useState('')
   // The latest draft, for the save callback, which runs after the click's render.
   const draftRef = useRef('')
@@ -375,10 +390,15 @@ function StrandsField({
     onSuccess: (_result, saved) => {
       // Keep the field open on a newer draft: once saved, the field would
       // otherwise flip to its masked view and hide that unsaved text.
-      if (draftRef.current.trim() !== saved) return setEditing(true)
+      if (draftRef.current.trim() !== saved) {
+        disarm()
+        return setEditing(true)
+      }
       setDraft('')
       setEditing(false)
+      aim('replace')
     },
+    onError: disarm,
     onSettled: refresh,
   })
   const removeMut = useMutation({
@@ -389,18 +409,54 @@ function StrandsField({
       // value is Settings > Secrets' job, where every reader is in view.
       await api.patchConfig(STRANDS_ENV_KEY, { [field.env]: null })
     }),
-    onSettled: () => {
+    // The confirmation closes on success only: a refused remove keeps the
+    // focused confirm Remove in place to retry, beside the failure notice.
+    onSuccess: () => {
       setConfirmRemove(false)
-      return refresh()
+      aim('input')
     },
+    // A refused dangling Remove was hidden while it ran; focus goes back to it.
+    onError: () => aim('remove'),
+    onSettled: refresh,
   })
-  const busy = !known || saveMut.isPending || removeMut.isPending
+  const writing = saveMut.isPending || removeMut.isPending
+  const busy = !known || writing
+  // A save or remove swaps this field's controls when it settles (Save leaves
+  // for the masked view, the confirm row and the dangling Remove go), so the
+  // pressed button can unmount. When it does and focus has fallen to the page,
+  // it moves to the field's first live control instead. A control the user
+  // moved to meanwhile keeps it.
+  // The latest write owns the handoff: one still pending from an earlier
+  // press is dropped.
+  const startWrite = (write: () => void) => {
+    setRefocus('none')
+    armed.current = Boolean(fieldRef.current?.contains(document.activeElement))
+    write()
+  }
+  const showsReplace = isSet && known && !editing
+  useEffect(() => {
+    if (refocus === 'none' || busy) return
+    if (refocus === 'replace' ? !showsReplace : refocus === 'input' ? isSet : false) return
+    setRefocus('none')
+    // Only focus that fell to the page moves: a control the user picked
+    // meanwhile keeps it.
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    const root = fieldRef.current
+    const buttons = [...(root?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+    const target = refocus === 'replace'
+      ? buttons.find(b => b.textContent?.includes(i18nT('pages.developer.strandsSetup.replace')))
+      : refocus === 'remove'
+        ? buttons.findLast(b => b.textContent?.trim() === i18nT('pages.developer.strandsSetup.remove'))
+        : root?.querySelector<HTMLInputElement>('input:not([disabled])')
+    target?.focus()
+  }, [refocus, busy, showsReplace, isSet])
   const label = field.optional
     ? i18nT('pages.developer.strandsSetup.field_label_optional', { name: field.env })
     : field.env
 
   return (
-    <div data-testid={`strands-field-${field.env}`}>
+    <div ref={fieldRef} data-testid={`strands-field-${field.env}`}>
       <SecretField
         label={label}
         description={fieldDescription(field.env)}
@@ -424,7 +480,14 @@ function StrandsField({
               <span className="text-[13px] text-warn">
                 {i18nT('pages.developer.strandsSetup.remove_confirm')}
               </span>
-              <Btn danger disabled={busy} onClick={() => removeMut.mutate()}>
+              {/* `aria-disabled` plus the guard, NOT `disabled`, so the pressed
+                  Delete keeps focus while the remove runs. */}
+              <Btn
+                danger
+                aria-disabled={busy || undefined}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+                onClick={() => { if (!busy) startWrite(() => removeMut.mutate()) }}
+              >
                 {i18nT('pages.developer.strandsSetup.remove_delete')}
               </Btn>
               <Btn ref={cancelRemoveRef} disabled={removeMut.isPending} onClick={cancelRemove}>
@@ -437,11 +500,21 @@ function StrandsField({
       {dangling && !removeMut.isPending && (
         <div className="flex flex-wrap items-center gap-2" data-testid={`strands-dangling-${field.env}`}>
           <span className="text-[12px] text-warn">{i18nT('pages.developer.strandsSetup.value_missing')}</span>
-          <Btn onClick={() => removeMut.mutate()}>{i18nT('pages.developer.strandsSetup.remove')}</Btn>
+          <Btn onClick={() => startWrite(() => removeMut.mutate())}>{i18nT('pages.developer.strandsSetup.remove')}</Btn>
         </div>
       )}
       {known && !removeMut.isPending && !confirmRemove && (!isSet || editing) && (
-        <Btn disabled={!draft.trim() || busy} onClick={() => saveMut.mutate(draft.trim())}>
+        // An empty draft stays natively disabled: nothing was pressed. A write in
+        // flight uses `aria-disabled` plus the guard, so the pressed Save keeps
+        // focus while it runs and after a refusal.
+        <Btn
+          // Stays natively enabled while a write runs: a successful save clears
+          // the draft before the masked view replaces this button.
+          disabled={!draft.trim() && !writing}
+          aria-disabled={writing || undefined}
+          className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+          onClick={() => { if (!writing) startWrite(() => saveMut.mutate(draft.trim())) }}
+        >
           {i18nT('pages.developer.strandsSetup.save')}
         </Btn>
       )}

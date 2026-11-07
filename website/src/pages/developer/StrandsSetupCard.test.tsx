@@ -257,6 +257,155 @@ describe('StrandsSetupCard', () => {
     expect(calls).toEqual([])
   })
 
+  it('keeps keyboard focus on a key Save while it runs and after a refusal', async () => {
+    config.agent.strands_provider = 'anthropic'
+    let refuse: (reason: Error) => void = () => {}
+    vi.mocked(api.secretsSave).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject }) as never,
+    )
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field.getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    fireEvent.click(save)
+    expect(api.secretsSave).toHaveBeenCalledTimes(1)
+
+    await act(async () => { refuse(new Error('refused')) })
+    await waitFor(() => expect(save).not.toHaveAttribute('aria-disabled'))
+    expect(save).toHaveFocus()
+  })
+
+  it('moves focus to the saved field, not the page, when a key Save lands', async () => {
+    config.agent.strands_provider = 'anthropic'
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = () => within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field().getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    const replace = await field().findByRole('button', { name: /Replace/ })
+    await waitFor(() => expect(replace).toHaveFocus())
+  })
+
+  it('keeps the landed key Save enabled and focused until Replace shows', async () => {
+    // The save clears the draft before the re-read lands; a natively disabled
+    // Save in that gap would drop focus to the page.
+    config.agent.strands_provider = 'anthropic'
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = () => within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field().getByRole('button', { name: 'Save' })
+    let reread: () => void = () => {}
+    const read = vi.mocked(api.kirocrewConfig).getMockImplementation()!
+    vi.mocked(api.secretsSave).mockImplementationOnce(async (name: string) => {
+      vault.push(name)
+      vi.mocked(api.kirocrewConfig).mockImplementation(
+        () => new Promise(resolve => { reread = () => resolve(read() as never) }) as never,
+      )
+      return {} as never
+    })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe(''))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+    vi.mocked(api.kirocrewConfig).mockImplementation(read)
+    await act(async () => { reread() })
+    const replace = await field().findByRole('button', { name: /Replace/ })
+    await waitFor(() => expect(replace).toHaveFocus())
+  })
+
+  it('keeps focus on the confirm Remove when the remove is refused', async () => {
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = ['STRANDS_GEMINI_API_KEY']
+    vi.mocked(api.patchConfig).mockRejectedValueOnce(new Error('refused'))
+    renderCard()
+    const field = () => within(screen.getByTestId('strands-field-GEMINI_API_KEY'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    const del = field().getAllByRole('button', { name: 'Remove' }).at(-1)!
+    del.focus()
+    fireEvent.click(del)
+    expect(await screen.findByText('refused', { exact: false })).toBeInTheDocument()
+    await waitFor(() => expect(del).not.toHaveAttribute('aria-disabled'))
+    expect(del).toBeInTheDocument()
+    expect(del).toHaveFocus()
+  })
+
+  it('returns focus to the dangling Remove when its remove is refused', async () => {
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = []
+    let refuse: (reason: Error) => void = () => {}
+    vi.mocked(api.patchConfig).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject }) as never,
+    )
+    renderCard()
+    const dangling = () => within(screen.getByTestId('strands-dangling-GEMINI_API_KEY'))
+    const remove = await waitFor(() => dangling().getByRole('button', { name: 'Remove' }))
+    remove.focus()
+    fireEvent.click(remove)
+    // The dangling row hides while its remove runs, taking the focused button.
+    await waitFor(() => expect(screen.queryByTestId('strands-dangling-GEMINI_API_KEY')).toBeNull())
+    await act(async () => { refuse(new Error('refused')) })
+    expect((await screen.findAllByText('refused', { exact: false })).length).toBeGreaterThan(0)
+    await waitFor(() => expect(dangling().getByRole('button', { name: 'Remove' })).toHaveFocus())
+  })
+
+  it('leaves focus on another field the user moved to while a key save ran', async () => {
+    config.agent.strands_provider = 'anthropic'
+    let land: () => void = () => {}
+    const save0 = vi.mocked(api.secretsSave).getMockImplementation()!
+    vi.mocked(api.secretsSave).mockImplementationOnce(
+      (name: string, value: string) => new Promise(resolve => { land = () => resolve(save0(name, value)) }) as never,
+    )
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = () => within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field().getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    const model = screen.getByLabelText('Model')
+    model.focus()
+    await act(async () => { land() })
+    await field().findByRole('button', { name: /Replace/ })
+    expect(model).toHaveFocus()
+  })
+
+  it('keeps focus on the confirm Delete while the remove runs, then moves it into the field', async () => {
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = ['STRANDS_GEMINI_API_KEY']
+    let land: () => void = () => {}
+    const patch = vi.mocked(api.patchConfig).getMockImplementation()!
+    vi.mocked(api.patchConfig).mockImplementationOnce(
+      (path: string, value: unknown) => new Promise(resolve => { land = () => resolve(patch(path, value)) }) as never,
+    )
+    renderCard()
+    const field = () => within(screen.getByTestId('strands-field-GEMINI_API_KEY'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    const del = field().getAllByRole('button', { name: 'Remove' }).at(-1)!
+    del.focus()
+    fireEvent.click(del)
+    await waitFor(() => expect(del).toHaveAttribute('aria-disabled', 'true'))
+    expect(del).not.toBeDisabled()
+    expect(del).toHaveFocus()
+
+    await act(async () => { land() })
+    await waitFor(() => expect(field().getByLabelText('GEMINI_API_KEY')).toHaveFocus())
+  })
+
   it('asks Bedrock for an API key and a region, and no profile', async () => {
     renderCard()
     await screen.findByTestId('strands-field-AWS_REGION')
