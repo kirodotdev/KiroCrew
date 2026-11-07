@@ -40,8 +40,8 @@ _TOO_LONG = "https://github.com/o/" + "r" * clone_setup._MAX_URL_LEN
 @pytest.mark.parametrize(
     ("url", "blocked", "reason"),
     [
-        (None, False, "Enter a GitHub repository URL."),
-        ("   ", False, "Enter a GitHub repository URL."),
+        (None, False, "Enter a GitHub or GitLab repository URL."),
+        ("   ", False, "Enter a GitHub or GitLab repository URL."),
         (_TOO_LONG, False, "URL is too long."),
         ("https://github.com/o/r", True, "URL host is not allowed (blocked address)."),
         ("https://github.com/lonely", False, "URL did not match a github.com/<owner>/<repo> URL."),
@@ -62,7 +62,7 @@ def test_validate_target_url_clones_over_the_transport_gh_is_set_up_for(
     monkeypatch.setattr(clone_setup, "_host_is_blocked", lambda host: False)
     monkeypatch.setattr(clone_setup, "_gh_prefers_ssh", lambda: ssh)
     spec, err = clone_setup.validate_target_url("https://www.github.com/o/r.git/tree/main")
-    assert (spec, err) == (CloneSpec("o/r", clone_url, "o--r"), "")
+    assert (spec, err) == (CloneSpec("o/r", clone_url, "o--r", "github", "github.com", "o/r"), "")
 
 
 def _gh(returncode: int, stdout: str) -> subprocess.CompletedProcess:
