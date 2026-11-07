@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import AsyncIterator, _make_state
+from real_session_manager import fake_provider, real_sessions
 
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
 
@@ -801,22 +803,21 @@ class TestRuntimeWiringTurn:
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: cfg)
         slot = state.get_or_create_slot("member-rearm-test", agent="rearm-test", mode="member")
 
-        mock_client = MagicMock()
+        mock_client = fake_provider()
         # Empty stream: the turn ends with no landing and NO exception — the
         # same observable shape as a Stop's cancelled completion.
         mock_client.stream = MagicMock(return_value=AsyncIterator([]))
-        # is_new=True: this is the member session's FIRST turn.
-        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
-        state.sessions.get_pid = MagicMock(return_value=None)
-        # The compaction flag is OFF, so only the member condition can re-arm.
-        state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
-        state.sessions.mark_needs_reinjection = MagicMock()
+        # A fresh real session: this is the member session's FIRST turn, and
+        # its compaction flag is OFF, so only the member condition can re-arm.
+        state.sessions = real_sessions(mock_client)
 
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "first member turn")
 
-        assert state.sessions.mark_needs_reinjection.called, (
+        key = effective_session_key(slot)
+        assert state.sessions.has_session(key)
+        assert state.sessions.consume_needs_reinjection(key) is True, (
             "a member first turn that never landed must re-arm reinjection on "
             "EVERY exit path (finally), or the next warm turn runs without the "
             "member section and its [PERMANENT RULES]"
