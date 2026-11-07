@@ -795,21 +795,9 @@ def _audit_theme_install_governance(
     extended to also record the permitted admission (an install is a rare,
     high-consequence mutation, unlike a routine per-call tool gate).
     """
-    try:
-        from kiro_crew.sel import sel
+    from kiro_crew.extension_governance import audit_theme_install
 
-        sel().log_governance_decision(
-            session_key="",
-            tool_name="api_themes_install",
-            scope="capabilities.theme_install",
-            outcome=outcome,
-            rule=getattr(decision, "rule", ""),
-            layer=getattr(decision, "layer", ""),
-            reason=reason or getattr(decision, "reason", ""),
-        )
-    except Exception:
-        # SEL writes to a file, but an audit failure must never wedge install.
-        pass
+    audit_theme_install("api_themes_install", outcome, decision, reason)
 
 
 def _theme_install_admission() -> web.Response | None:
@@ -818,29 +806,19 @@ def _theme_install_admission() -> web.Response | None:
     # (local move or server-side git clone) and serves sandboxed JS into the
     # dashboard, so an enterprise POLICY must be able to ban it wholesale
     # (capabilities.theme_install SCOPE_CATALOG row, default-allow standalone).
-    # fail_closed=True: this is an admission chokepoint for external content, so
-    # a governance-evaluation error DENIES rather than silently ingesting; the
-    # DENY is produced inside governance_permits (it swallows its own errors).
-    try:
-        from kiro_crew.platform.governance_profiles import governance_permits
+    # The decision is extension_governance.theme_install_denied, shared with the
+    # marketplace apply path; it fails closed on an evaluation error.
+    from kiro_crew.extension_governance import theme_install_denied
 
-        _gd = governance_permits(
-            "capabilities.theme_install", "", log_warning=False, fail_closed=True
-        )
-        _permitted = getattr(_gd, "permitted", False)
-        _audit_theme_install_governance("allowed" if _permitted else "denied", _gd)
-        if not _permitted:
-            return web.json_response(
-                {"error": getattr(_gd, "reason", "theme installation disabled by policy")},
-                status=403,
-            )
-    except Exception:
-        _audit_theme_install_governance(
-            "denied", None, reason="governance unavailable (fail-closed)"
-        )
-        return web.json_response(
-            {"error": "theme installation blocked (governance unavailable)"}, status=403
-        )
+    reason = theme_install_denied(
+        "api_themes_install",
+        # Looked up at call time, so the module-level audit hook stays patchable.
+        audit=lambda outcome, decision, reason="": _audit_theme_install_governance(
+            outcome, decision, reason
+        ),
+    )
+    if reason is not None:
+        return web.json_response({"error": reason}, status=403)
     return None
 
 

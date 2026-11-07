@@ -255,6 +255,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "4096",
         _BOUNDED_EXPLICIT,
     ),
+    # Marketplace install routes: a listing ref and, for apply, a 64-hex digest.
+    "handlers/market.py::_gate": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # agents.py tranche.
     "agent_admin/agent_config.py::api_agent_config": ("None", _UNBOUNDED_USER_CONTENT),
     "agent_admin/default_agent.py::api_default_agent": ("None", _CONTROL_FIELDS_CAP_PENDING),

@@ -20,7 +20,8 @@ size its pre-lock uninstall phase budget from the same source of truth.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from kiro_crew import extension_governance as _gov
 from kiro_crew.mcp_utils import registry_accepts_query
@@ -58,6 +59,40 @@ async def _off_loop(fn: Any, *args: str) -> "str | None":
     from kiro_crew.executors import governance_executor
 
     return await asyncio.get_running_loop().run_in_executor(governance_executor(), fn, *args)
+
+
+#: A server or skill id as a direct install names it: one path segment.
+_INSTALL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_MCP_TARGET_PREFIX = "mcpServers."
+
+
+def market_install_id(item: object) -> Optional[str]:
+    """The id a marketplace plan item is installed as, or ``None`` if unreadable.
+
+    That is the name a direct ``install_mcp`` / ``install_skill`` uses, so
+    governance can ask both install paths under the same list entry. An edition
+    may say it outright as ``installId``; otherwise it is read from ``target``:
+    ``mcpServers.<id>`` for an MCP item, the last path segment of the folder for
+    a skill. Only ``mcp`` and ``skill`` items have one.
+    """
+    if not isinstance(item, dict) or item.get("kind") not in ("mcp", "skill"):
+        return None
+    explicit = item.get("installId")
+    if explicit is not None:
+        ident = explicit if isinstance(explicit, str) else ""
+    else:
+        target = item.get("target")
+        if not isinstance(target, str):
+            return None
+        if item["kind"] == "mcp":
+            if not target.startswith(_MCP_TARGET_PREFIX):
+                return None
+            ident = target[len(_MCP_TARGET_PREFIX) :]
+        else:
+            ident = target.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if ".." in ident or not _INSTALL_ID_RE.match(ident):
+        return None
+    return ident
 
 
 def _refused(reason: str) -> "CapabilityResult":
@@ -202,6 +237,68 @@ class BoundedCapabilityManager:
             return _refused(denied)
         return await asyncio.wait_for(
             self._inner.sync_plugins(), timeout=CAPABILITY_INSTALL_TIMEOUT
+        )
+
+    def market_available(self) -> bool:
+        # Feature-detected, unlike every other op: an edition written before the
+        # marketplace ops has none of them, and must keep working unchanged
+        # rather than fail every marketplace route with an AttributeError.
+        probe = getattr(self._inner, "market_available", None)
+        return bool(self._inner.available() and callable(probe) and probe())
+
+    async def market_plan(self, ref: str) -> Dict[str, Any]:
+        # A read: resolving a plan writes nothing, so governance is asked at apply.
+        if not self.market_available():
+            return {}
+        return await asyncio.wait_for(self._inner.market_plan(ref), timeout=CAPABILITY_READ_TIMEOUT)
+
+    async def market_apply(self, ref: str, plan_digest: str) -> "CapabilityResult":
+        # A plan can carry several kinds at once (a skill with the MCP server it
+        # needs), so each item is asked as its own ``extensions:<kind>:<ref>``,
+        # the way plugin sync asks each drifted package. The plan is re-read here
+        # and must still carry the confirmed digest, so the items asked are the
+        # items the edition is told to install: it refuses any other plan.
+        # A theme item is asked of capabilities.theme_install, below.
+        denied = await _off_loop(_gov.extensions_off, "market_apply")
+        if denied:
+            return _refused(denied)
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        plan = await self.market_plan(ref)
+        if not isinstance(plan, dict) or plan.get("planDigest") != plan_digest:
+            return CapabilityResult(
+                ok=False,
+                message="the plan changed since it was shown; nothing was installed",
+            )
+        items = plan.get("items")
+        items = items if isinstance(items, list) else []
+        # A theme serves sandboxed JS into the dashboard, so a theme in a listing
+        # (alone or bundled) answers to the same capabilities.theme_install
+        # ceiling as a theme installed from the Themes page.
+        if any(isinstance(i, dict) and i.get("kind") == "theme" for i in items):
+            denied = await _off_loop(_gov.theme_install_denied, "capability_market_apply")
+            if denied:
+                return _refused(denied)
+        for item in items:
+            kind = item.get("kind") if isinstance(item, dict) else None
+            if kind not in ("mcp", "skill"):
+                continue
+            # Asked under the id the item is installed as (the name a direct
+            # install_mcp / install_skill asks under) AND under the listing ref,
+            # so a list entry written either way binds both install paths. An
+            # item whose installed id cannot be read is refused (fail closed).
+            install_id = market_install_id(item)
+            if install_id is None:
+                return CapabilityResult(
+                    ok=False,
+                    message=f"cannot tell what {kind} the plan installs; nothing was installed",
+                )
+            for ident in (install_id, str(item.get("ref", ""))):
+                denied = await _off_loop(_gov.extension_install_denied, kind, ident)
+                if denied:
+                    return _refused(denied)
+        return await asyncio.wait_for(
+            self._inner.market_apply(ref, plan_digest), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
 
 
