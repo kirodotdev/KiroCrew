@@ -30,6 +30,7 @@ from kiro_crew.embeddings_model import (
     models_dir,
     resolve_custom_model,
 )
+from kiro_crew.embeddings_ollama import build_ollama_backend, ollama_backend_selected
 from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
     _MAX_EMBED_CHARS,
@@ -466,7 +467,14 @@ def default_embedding_backend() -> EmbeddingBackend:
     model reaches every consumer (vector memory, knowledge library, the MCP
     server process) without any of them knowing it exists.
     :func:`register_embedding_backend` still overrides it for other runtimes.
+
+    ``memory.embedding_provider = "ollama_http"`` selects the Ollama server backend
+    and wins over a custom model path: the provider names the runtime, and the
+    model path is a setting of the in-process one.
     """
+    memory = _read_memory_config()
+    if ollama_backend_selected(memory):
+        return build_ollama_backend(memory)
     spec = resolve_custom_model()
     if spec is None:
         backend = LlamaCppEmbedder()
