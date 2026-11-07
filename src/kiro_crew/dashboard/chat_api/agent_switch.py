@@ -652,24 +652,34 @@ async def switch_slot_agent(
             await warm_project_agent_names(
                 pre_await_project or None, operation="api_chat_slot_agent", source="dashboard"
             )
-            if owner_request:
+            resolve_kind = agent_kind if owner_request else choice.selection_kind
+            bindings = await asyncio.to_thread(
+                resolve_agent_bindings,
+                cfg,
+                agent_name,
+                pre_await_project or None,
+                validate_memory_files=False,
+                selection_kind=resolve_kind,
+            )
+            if agent_kind == "template" and not bindings.requested_resolved:
+                # A spec written outside the registered write paths is on disk
+                # but not in a warm snapshot: rescan once (gated, off the loop)
+                # and resolve again before the refusal below. The rebind and
+                # compare-and-set checks after this block cover the extra await.
+                from kiro_crew.dashboard.handlers.agent_catalog import (
+                    rescan_agents_after_miss,
+                )
+
+                await rescan_agents_after_miss()
                 bindings = await asyncio.to_thread(
                     resolve_agent_bindings,
                     cfg,
                     agent_name,
                     pre_await_project or None,
                     validate_memory_files=False,
-                    selection_kind=agent_kind,
+                    selection_kind=resolve_kind,
                 )
-            else:
-                bindings = await asyncio.to_thread(
-                    resolve_agent_bindings,
-                    cfg,
-                    agent_name,
-                    pre_await_project or None,
-                    selection_kind=choice.selection_kind,
-                    validate_memory_files=False,
-                )
+            if not owner_request:
                 selected_store = cfg.memory_stores.get(bindings.memory_store_name)
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No

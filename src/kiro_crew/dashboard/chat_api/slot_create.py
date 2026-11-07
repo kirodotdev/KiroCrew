@@ -475,6 +475,25 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
+            if agent_kind == "template" and not bindings.requested_resolved:
+                # A warm snapshot never learns of a spec written outside the
+                # registered write paths (by hand, by kiro-cli), so a file
+                # already on disk would be refused until something rescans.
+                # Rescan once (gated, off the loop) and resolve again; the
+                # staleness check below covers the extra await. Only a
+                # template miss: a member is read from the config just loaded.
+                from kiro_crew.dashboard.handlers.agent_catalog import (
+                    rescan_agents_after_miss,
+                )
+
+                await rescan_agents_after_miss()
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    agent,
+                    validate_memory_files=False,
+                    selection_kind=agent_kind,
+                )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             if agent_kind and not bindings.requested_resolved:
                 # A stated namespace never falls back to whoever answers by

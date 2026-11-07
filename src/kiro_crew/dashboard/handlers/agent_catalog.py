@@ -233,6 +233,24 @@ def _refresh_for_catalog(*, owner: bool) -> None:
 _REFRESH_GATE = _RefreshGate()
 
 
+async def rescan_agents_after_miss() -> None:
+    """One gated, awaited, off-loop snapshot scan for a stated agent that missed.
+
+    The chat create and agent switch handlers refuse a stated agent the snapshot
+    does not hold. A file written outside the registered write paths (by hand,
+    by kiro-cli) is on disk but not in a warm snapshot, so they call this once
+    and resolve again before refusing. It shares the catalog's gate: while
+    nothing the scan reads has moved since the gate's last scan, a miss costs a
+    stat of the agents directories, not a scan. Never raises.
+    """
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _REFRESH_GATE.refresh
+        )
+    except Exception:  # noqa: BLE001 -- a failed scan only leaves the refusal in place
+        logger.warning("agent snapshot rescan after a miss failed", exc_info=True)
+
+
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
     """Discover shared templates without enrolling members or allocating memory."""
     return _choosable_templates(list_agents(project_dir=project_dir))

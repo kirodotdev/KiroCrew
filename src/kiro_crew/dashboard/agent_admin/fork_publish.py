@@ -305,6 +305,13 @@ async def api_agent_fork(request: web.Request) -> web.Response:
     except Exception:
         logger.warning("post-fork governance refresh failed", exc_info=True)
     clear_list_agents_cache()
+    # The dispatch snapshot learns the new name now (a loop-safe set union),
+    # as the template create handler does, so a chat started on the copy right
+    # away resolves it; the scheduled rescan brings the full view.
+    from kiro_crew.config import loader as _loader
+
+    _loader.publish_materialized_agents([copy_name])
+    _loader.schedule_materialized_agents_refresh()
     state.push_refresh("agents")
     return web.json_response(
         {"ok": True, "template": copy_name, "filename": dest.name, "forked_from": source_name}
@@ -669,6 +676,12 @@ async def api_agent_publish(request: web.Request) -> web.Response:
 
         await asyncio.to_thread(_cleanup_superseded)
     clear_list_agents_cache()
+    # Same as the fork above: publish the new template name to the dispatch
+    # snapshot, then rescan for the full view (the superseded copy may be gone).
+    from kiro_crew.config import loader as _loader
+
+    _loader.publish_materialized_agents([new_name])
+    _loader.schedule_materialized_agents_refresh()
     state.push_refresh("agents")
     result: dict[str, object] = {"ok": True, "template": new_name, "filename": dest.name}
     if publish_warning:
