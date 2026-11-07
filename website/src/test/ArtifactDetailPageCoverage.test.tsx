@@ -1410,6 +1410,18 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     expect(screen.queryByText(/Published to/)).toBeNull()
   })
 
+  // PublishProvider.source_problem: the provider's reason the remote copy could
+  // not be read reaches the page inline, and the local copy stays open.
+  it('shows why the remote copy cannot be read', async () => {
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({
+      source_notice: 'The remote copy is in the trash.',
+      source_notice_code: 'remote_trashed',
+    })
+    await mount(mkArtifact({ publication }))
+    expect(await screen.findByText('The remote copy is in the trash.', {}, PUBLISHED_LINE_WAIT)).toBeInTheDocument()
+    expect(screen.getByText('CR Queue')).toBeInTheDocument()
+  })
+
   it('shows no published link when the publication carries no URL', async () => {
     vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
     await mount(mkArtifact({ publication: { ...publication, view_url: '' } }))

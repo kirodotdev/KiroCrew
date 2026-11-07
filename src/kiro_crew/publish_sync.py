@@ -1361,6 +1361,30 @@ def _source_target(art: Artifact, source: str):
     return None
 
 
+#: Ceiling on one ``PublishProvider.source_problem`` call from ``upstream_status``:
+#: the status probe runs whenever an artifact page opens, so a slow destination
+#: must not hold it.
+SOURCE_PROBLEM_TIMEOUT_S = 5.0
+
+
+async def _attach_source_problem(provider, ext_id: str, base: dict[str, object]) -> None:
+    """Add the provider's reason the copy cannot be read to ``base``. Never raises."""
+    try:
+        found = await asyncio.wait_for(
+            provider.source_problem(external_id=ext_id), SOURCE_PROBLEM_TIMEOUT_S
+        )
+    except Exception as exc:  # best-effort: a hook failure must not fail the probe
+        logger.warning("upstream_status: source_problem failed for %s: %s", ext_id, exc)
+        return
+    if (
+        isinstance(found, tuple)
+        and len(found) == 2
+        and all(isinstance(part, str) for part in found)
+        and found[0].strip()
+    ):
+        base["source_notice"], base["source_notice_code"] = found[0], found[1]
+
+
 async def upstream_status(slug: str) -> dict[str, object]:
     """Cheap (metadata-only) check of whether a tracked upstream has changes to
     pull. Reports the PRIMARY source (my publication if present, else the fork
@@ -1402,12 +1426,20 @@ async def upstream_status(slug: str) -> dict[str, object]:
         logger.warning("upstream_status: provider unavailable for %s: %s", slug, exc)
         return base
     if not provider.available():
+        # Listed but not usable here (e.g. its account is gone): fetch_state
+        # cannot run, but the provider may still say why the copy is out of reach.
+        await _attach_source_problem(provider, ext_id, base)
         return base
     try:
         state = await provider.fetch_state(external_id=ext_id)
-    except Exception as exc:  # pragma: no cover — best-effort
+    except Exception as exc:  # best-effort
         logger.warning("upstream_status: fetch_state failed for %s: %s", slug, exc)
+        await _attach_source_problem(provider, ext_id, base)
         return base
+    if state is None:
+        # Unreadable is not the same as "nothing to sync": let the provider say
+        # why, then carry on exactly as before.
+        await _attach_source_problem(provider, ext_id, base)
     cur_v = state.get("current_version") if state else None
     # LIVE (CRDT): snapshot_seq bumps on mere viewing (presence/reveal), so a
     # seq-based "upstream_ahead" produces phantom pull banners. Detect drift by
