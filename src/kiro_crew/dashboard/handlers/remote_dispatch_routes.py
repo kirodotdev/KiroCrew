@@ -212,16 +212,19 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     3. The slot was not opened on another caller's behalf (``_created_by`` or
        ``_lineage_minted``): a worker cannot reach a crew, so dispatch stays one
        level deep, and is not a crew member's own thread (``owner_only``).
-    4. The session is not bound to a private member memory store
+    4. The session is persistent (``ephemeral_caller``) and is an Ultra Mode chat
+       (``crew_mode.slot_is_crew_mode_root``, the Ultra Mode agent lock's own
+       predicate; ``ultra_mode_only``).
+    5. The session is not bound to a private member memory store
        (``private_memory``).
-    5. A ``user`` claim, when present, is the owner.
-    6. The session is not the bound worker of any work-ledger item
+    6. A ``user`` claim, when present, is the owner.
+    7. The session is not the bound worker of any work-ledger item
        (:func:`caller_is_bound_worker`, ``crew_caller_is_worker``); an unreadable
        binding refuses too.
-    7. The running turn is one the owner sent (:func:`owner_unverifiable_reason`,
+    8. The running turn is one the owner sent (:func:`owner_unverifiable_reason`,
        ``crew_owner_unverifiable``).
 
-    Arms 1-6 refuse first, with their own codes, so a refusal still says which
+    Arms 1-7 refuse first, with their own codes, so a refusal still says which
     rule a caller fails.
     """
     from kiro_crew import members as members_mod
@@ -264,6 +267,14 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         raise CrewCallError(
             403, "ephemeral_caller", "incognito and temporary sessions cannot use crew="
         )
+    from kiro_crew import crew_mode
+
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        # The predicate the Ultra Mode agent lock uses (``crew_mode_locked``).
+        _audit(caller_key, verb, "denied", error=ULTRA_MODE_ONLY)
+        raise CrewCallError(
+            403, ULTRA_MODE_ONLY, "remote dispatch runs only from an Ultra Mode chat"
+        )
     try:
         fenced = await asyncio.to_thread(private_memory_store_for_session, caller_key)
     except (OSError, ValueError):
@@ -299,6 +310,9 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         )
     return slot_key
 
+
+#: The refusal for a caller tab that is not an Ultra Mode chat.
+ULTRA_MODE_ONLY = "ultra_mode_only"
 
 #: The refusal while a non-owner dashboard user is possible on this gateway.
 OWNER_UNVERIFIABLE = "crew_owner_unverifiable"
