@@ -343,6 +343,9 @@ _AWS_SETTINGS: dict[str, Any] = {
         ["@builtin/execute_bash"],
         ["@builtin/shell"],
         ["fs_read", " execute_bash "],
+        ["executeCmd"],
+        ["execute_cmd"],
+        ["@builtin/execute_cmd"],
     ],
 )
 def test_an_agent_whose_allowed_tools_names_the_shell_is_not_refused(
