@@ -9691,6 +9691,7 @@
         "episodic_search_label": "Search episodic memories",
         "inspector_query_label": "Test query",
         "filter_by_tag": "Filter by tag:",
+        "event_filter_label": "Event type",
         "inspector": "Inspector",
         "key_e_g_pref_backend_framework": "Key (e.g. pref.backend.framework)",
         "load_more": "Load more…",

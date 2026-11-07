@@ -17002,6 +17002,7 @@
         "episodic_search_label": "Episodische Erinnerungen durchsuchen",
         "inspector_query_label": "Testabfrage",
         "filter_by_tag": "Nach Tag filtern:",
+        "event_filter_label": "Ereignistyp",
         "inspector": "Inspektor",
         "key_e_g_pref_backend_framework": "Schlüssel (z. B. pref.backend.framework)",
         "load_more": "Mehr laden…",

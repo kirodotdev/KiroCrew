@@ -17431,6 +17431,7 @@
         "episodic_search_label": "Rechercher dans les souvenirs épisodiques",
         "inspector_query_label": "Requête de test",
         "filter_by_tag": "Filtrer par tag :",
+        "event_filter_label": "Type d’événement",
         "inspector": "Inspecteur",
         "key_e_g_pref_backend_framework": "Clé (ex. pref.backend.framework)",
         "load_more": "Charger plus…",
