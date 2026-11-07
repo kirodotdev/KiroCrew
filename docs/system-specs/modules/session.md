@@ -6154,7 +6154,9 @@ taken on the loop because it walks live objects; the classification
 (`SessionHealthMonitor.compute`), the store read and the log tail run off it.
 The `gateway.log` regex scan (`scan_log_for_stalls`) is a SECONDARY source: it
 adds evidence to a running slot and is the sole source only when no state
-objects are reachable; it never overrides a structured wait.
+objects are reachable; it never overrides a structured wait. A signature that
+follows the `ACP error frame in slot` label (`session_health.RAW_FRAME_LOG_LABEL`)
+is provider text echoed into the raw-frame record, so it is not read as a stall.
 
 Payload: `{generated_at, stalled{slot: {reason, since_ts, evidence, age_secs}},
 slots{slot: {classification, evidence, age_secs, since_ts, source, native_children?}},
