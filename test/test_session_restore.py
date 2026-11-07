@@ -51,6 +51,20 @@ def _write_session(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _race_on_tail_read_too(monkeypatch, log, hook) -> None:
+    """Fire a race *hook* on the tail read as well as the full transcript read.
+
+    The startup restore builds a person's own recent tab as a sidebar row, which
+    reads only the transcript's tail, so a race injected on the full read alone
+    would never fire there.
+    """
+
+    def _tail(key, limit):
+        return hook(key)[-limit:]
+
+    monkeypatch.setattr(log, "read_messages_chained_tail", _tail)
+
+
 def _make_config_app(tmp_path):
     """Minimal aiohttp app with dashboard config endpoint."""
     from kiro_crew.dashboard.handlers import api_dashboard_config
@@ -1479,6 +1493,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return real_chained(key)
 
         monkeypatch.setattr(log, "read_messages_chained", _publish_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _publish_then_read)
 
         restored = await restore_recent_sessions_async(state, window_minutes=60)
 
@@ -1517,6 +1532,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return real_chained(key)
 
         monkeypatch.setattr(log, "read_messages_chained", _close_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _close_then_read)
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 0
         assert "dismissed" not in state._slots, "resurrected a tab the user closed"
@@ -1583,6 +1599,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
             return msgs
 
         monkeypatch.setattr(log, "read_messages_chained", _delete_then_read)
+        _race_on_tail_read_too(monkeypatch, log, _delete_then_read)
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 0
         assert "doomed" not in state._slots, (

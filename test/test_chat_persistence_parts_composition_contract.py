@@ -51,11 +51,13 @@ _COMPOSED: dict[str, str] = {
     "_carry_unread_slot_keys": "restore_drivers",
     "_display_tail": "restore_drivers",
     "_kept_past_budget": "restore_drivers",
+    "_loop_slot_keys": "restore_drivers",
     "_may_restore_as_row": "restore_drivers",
     "_open_slot_restore_plan": "restore_drivers",
     "_over_restore_budget": "restore_drivers",
     "_PERSON_ORIGINS": "restore_drivers",
     "_prefetch_open_slot_inputs": "restore_drivers",
+    "_recent_row_tail": "restore_drivers",
     "_record_unrestored_open_tabs": "restore_drivers",
     "_recover_mcp_app_claims_async": "restore_drivers",
     "_report_restore_budget": "restore_drivers",
@@ -82,6 +84,7 @@ _COMPOSED: dict[str, str] = {
     "_apply_restored_open_slot": "slot_builders",
     "_await_takeover_ordering_settled": "slot_builders",
     "_IDENTITY_UNRESOLVED": "slot_builders",
+    "_WINDOW_ROWS": "slot_builders",
     "_load_rehydrated_window": "slot_builders",
     "_PendingWindow": "slot_builders",
     "_prefetch_recent_session": "slot_builders",
@@ -130,6 +133,7 @@ _OWNER_ALIASES = {
     "_metadata_codec": "kiro_crew.dashboard.slot_persistence.metadata_codec",
     "_metadata_line": "kiro_crew.dashboard.slot_persistence.metadata_line",
     "_transcript_merge": "kiro_crew.dashboard.slot_persistence.transcript_merge",
+    "_window_tail": "kiro_crew.dashboard.slot_window_tail",
     "_write_guards": "kiro_crew.dashboard.slot_persistence.write_guards",
 }
 
@@ -162,7 +166,7 @@ _BASE_IMPORTS = frozenset("""
     _rehydrate_title_refresh_mark _rehydrated_refresh_mark _restore_dismissed_source_links
     _restore_model_fields _restored_agent_name _restored_mode _sanitize_open_slot_key
     _stable_durable_queue _sync_dashboard_slots _tighten_carried_execution _transcript_merge
-    _validate_autocompact_pct _validate_turn_timeout_secs _window_holds_row _write_guards
+    _validate_autocompact_pct _validate_turn_timeout_secs _window_holds_row _window_tail _write_guards
     agent_model_map annotations apply_pending_slot_memory_mode asyncio atomic_write
     canonical_memory_mode carry_provenance carry_unowned_metadata chain
     committed_filtered_note_ids config_dir crew_bound_on_disk deque

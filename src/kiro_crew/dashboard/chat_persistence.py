@@ -712,10 +712,12 @@ from kiro_crew.dashboard.chat_persistence_parts.restore_drivers import (  # noqa
     _carry_unread_slot_keys,
     _display_tail,
     _kept_past_budget,
+    _loop_slot_keys,
     _may_restore_as_row,
     _open_slot_restore_plan,
     _over_restore_budget,
     _prefetch_open_slot_inputs,
+    _recent_row_tail,
     _record_unrestored_open_tabs,
     _recover_mcp_app_claims_async,
     _report_restore_budget,
@@ -737,6 +739,7 @@ from kiro_crew.dashboard.chat_persistence_parts.save_transaction import (  # noq
 )
 from kiro_crew.dashboard.chat_persistence_parts.slot_builders import (  # noqa: E402,F401
     _IDENTITY_UNRESOLVED,
+    _WINDOW_ROWS,
     _apply_recent_session,
     _apply_restored_open_slot,
     _await_takeover_ordering_settled,
@@ -759,6 +762,8 @@ _facade_compose(
     ),
 )
 
+
+from kiro_crew.dashboard import slot_window_tail as _window_tail  # noqa: E402
 
 # ── Composed owners ─────────────────────────────────────────────────────────────
 # Imported last, once every binding above exists, so loading them leaves the

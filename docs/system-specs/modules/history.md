@@ -1201,13 +1201,25 @@ prefetch reads they share) and `member_store.py` (the private member-store
 assignment). New orchestration goes to the part of its responsibility. The rules
 those consult live in `dashboard/slot_persistence/`, and each file names the work
 that belongs in it. Only the newest `EAGER_WINDOW_RESTORES` open tabs are built with
-their transcript window loaded; every later tab that only a person drives (its own
-dashboard origin, no linked, app, remote or creator binding, not a member or crew-bound
-worker tab, not driven by a loop, and no unsettled local turn or held notes) is built
+their transcript window loaded; every later tab that only a person or a peer session
+drives (its own dashboard origin, no linked, app or remote binding, not a member or
+crew-bound worker tab, not driven by a loop, and no unsettled local turn or held
+notes; a tab another session created qualifies, since `session_send`, retry and read
+load the target's window off the loop first) is built
 from its metadata line and a bounded tail (`LAZY_TAIL_ROWS`), and its window loads on
-the slot's first read of `messages`. The async paths that act on an existing tab await
+the slot's first read of `messages`. The startup recent-session restore
+(`restore_recent_sessions_async`: foldered, pinned and recently modified sessions)
+builds every such tab the same way, with no eager budget, through
+`_recent_row_tail`; the synchronous `restore_recent_sessions` still loads every
+window. Only the in-memory window waits: the transcript is not rewritten, and the
+window that loads is the one an eager restore builds, so older rows still page in
+from disk. The load reads that window through the page index
+(`dashboard/slot_window_tail.py`): the newest `_WINDOW_ROWS` rows from
+`read_messages_chained_page`, the older row count from its total, and the durable
+prefix count proved equal to it by a byte search for transient roles. A hit, or
+a page read that fails, takes the full chained read instead. The async paths that act on an existing tab await
 `state.load_window_off_loop` first, which reads on a worker thread: every
-`/api/chat/slots/{slot}` route but the close (`slot_ownership.load_routed_slot_window`),
+`/api/chat/slots/{slot}` route but the close and a bounded open (`slot_ownership.load_routed_slot_window`),
 a send, a session-control send, retry, read or fork, a message, file card, MCP app
 message, OpenAI-compatible turn, script cron result, heartbeat result, loop nudge or
 subagent notice delivered into a session, a reply in a Slack or transport thread linked
@@ -1215,7 +1227,13 @@ to the tab (which resolves the link again after the load), a change card or guid
 recorded or settled in its conversation (`chat_cards.load_conversation_window`), a
 workflow result, a resume of the live tab,
 and every consistent-transcript read (`transcript_snapshot.read_consistent_transcript`:
-the slot detail page read, a fork and a peer transfer). A read that reaches a pending
+the slot detail page read, a fork and a peer transfer). A bounded open (`GET
+/api/chat/slots/{slot}` with `limit`) of a row whose window has not loaded does not
+load it: the row holds nothing in memory, so `slot_window_tail.read_row_page`
+serves the page as a ranged read of the transcript, decoding only the rows it
+returns, behind the same transient-role byte search. A hit, a failed read, a load
+that lands during the read, or a rotated archive sends the open down the usual
+path, which loads the window first. A read that reaches a pending
 row on the loop without that still loads it and logs a warning. A load reads the
 transcript before it takes the load lock, which covers only the replay, and the row
 stays pending until the replay ends, so a reader on another thread waits for the
@@ -1309,7 +1327,13 @@ no longer destroy older turns.
   from `len(disk) - window`). A save never changes their count or order. The
   one change it makes to their bytes is the **file-change copy bound**
   (`transcript_merge._file_change_prefix_bound`), applied when the prefix is
-  read from disk and never on the cached fast path or a rewrite save: a row
+  read from disk and never on the cached fast path or a rewrite save. After a
+  committed save `slot._frozen_prefix_cache` holds where the prefix sits in the
+  file it wrote (`transcript_merge.prefix_range`: byte offset and size), not its
+  text, and the fast path reads that range back (`read_prefix_range`); a range
+  that does not read back as whole UTF-8 lines takes the full read instead. The
+  cache written before the write keeps the text, so a failed write retries on
+  the same bytes. A row
   older than the chat's newest `session.file_changes_keep_turns` rows carrying
   `meta.file_changes` (default `0`, which turns the bound off and keeps every
   row's copies) loses each entry's `before`/`after`

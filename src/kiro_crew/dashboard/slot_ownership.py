@@ -594,6 +594,14 @@ async def load_routed_slot_window(request: web.Request) -> None:
         return
     if request.method == "DELETE" and canonical == f"/api/chat/slots/{{{param}}}":
         return
+    if (
+        request.method == "GET"
+        and canonical == f"/api/chat/slots/{{{param}}}"
+        and "limit" in request.query
+    ):
+        # A bounded page read serves a row that has not loaded its window
+        # straight from disk, and loads the window itself on every other path.
+        return
     name = request.match_info.get(param, "")
     slot = getattr(request.app.get("state"), "_slots", {}).get(name) if name else None
     if slot is not None:

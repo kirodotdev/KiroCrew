@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _restored_agent_name,
         _seed_session_tree,
         _takeover_ordering,
+        _window_tail,
         carry_provenance,
         durable_row_count,
         effective_session_key,
@@ -260,6 +261,11 @@ def _apply_restored_open_slot(
     return 1 if slot is not None else 0
 
 
+#: Rows a restored slot holds in memory: its newest window. The rows before it
+#: are the frozen prefix, on disk only.
+_WINDOW_ROWS = 500
+
+
 class _PendingWindow:
     """The deferred window load of a tab the open-tab restore built as a row.
 
@@ -277,16 +283,26 @@ class _PendingWindow:
         self._history_key = history_key
         self._applied = applied
 
-    def read(self, slot: _ChatSlot) -> tuple[list[dict], list[set[str]]]:
-        """Every disk read the load needs. BLOCKING; touches no slot state."""
+    def read(self, slot: _ChatSlot) -> tuple[list[dict] | Any, list[set[str]]]:
+        """Every disk read the load needs. BLOCKING; touches no slot state.
+
+        The newest window through the page index when it can be read that way
+        (:mod:`~kiro_crew.dashboard.slot_window_tail`), else the
+        whole chained transcript. The older rows stay on disk either way.
+        """
         conv_log = self._state.conversation_log
-        messages = conv_log.read_messages_chained(self._history_key) if conv_log else []
-        return messages, _read_mcp_app_claims(effective_session_key(slot))
+        claims = _read_mcp_app_claims(effective_session_key(slot))
+        if not conv_log:
+            return [], claims
+        tail = _window_tail.read_window_tail(conv_log, self._history_key, _WINDOW_ROWS)
+        if tail is not None:
+            return tail, claims
+        return conv_log.read_messages_chained(self._history_key), claims
 
     def __call__(
         self,
         slot: _ChatSlot,
-        messages: list[dict] | None = None,
+        messages: list[dict] | Any | None = None,
         claims: list[set[str]] | None = None,
     ) -> None:
         if messages is None or claims is None:
@@ -301,28 +317,37 @@ class _PendingWindow:
 
 
 def _load_rehydrated_window(
-    state: DashboardState, slot: _ChatSlot, messages: list[dict], applied: Any
+    state: DashboardState, slot: _ChatSlot, messages: list[dict] | Any, applied: Any
 ) -> None:
     """Replay *messages* into *slot* as its window and settle what needs it.
 
     The window half of :func:`_rehydrate_slot_from_history`, shared with the
     deferred load of a sidebar row (:class:`_PendingWindow`). LOOP-AFFINE like
     the rest of slot construction. *applied* is the ``metadata_codec.apply``
-    result for this slot, whose ``settle`` needs the loaded rows.
+    result for this slot, whose ``settle`` needs the loaded rows. *messages* is
+    every on-disk row, or a ``slot_window_tail.WindowTail`` carrying only the newest
+    ones plus the counts of the rows before them.
     """
-    # Only the recent window is loaded into memory; older on-disk lines become
-    # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
-    # therefore count those older lines so the save model preserves them.
-    older_cut = max(0, len(messages) - 500)
+    if isinstance(messages, _window_tail.WindowTail):
+        # Read through the page index: the older rows were counted, not loaded.
+        older_cut = messages.total - len(messages.rows)
+        older_durable = messages.older_durable
+        messages = messages.rows
+    else:
+        # Only the recent window is loaded into memory; older on-disk lines become
+        # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
+        # therefore count those older lines so the save model preserves them.
+        older_cut = max(0, len(messages) - _WINDOW_ROWS)
+        # Recomputed from the on-disk rows on every load (never trusted from any
+        # stored value): the durable-only view of the same prefix, which is what
+        # absolute message positions are built over. See ``init_transcript_fields``
+        # in dashboard/state_parts/slot_transcript.py. ``islice``, not
+        # ``messages[:older_cut]`` — this can run on the event loop for a large
+        # transcript, and a slice would copy the whole prefix.
+        older_durable = durable_row_count(islice(messages, older_cut))
     slot._disk_older_count = older_cut
-    # Recomputed from the on-disk rows on every load (never trusted from any
-    # stored value): the durable-only view of the same prefix, which is what
-    # absolute message positions are built over. See ``init_transcript_fields`` in
-    # dashboard/state_parts/slot_transcript.py.
-    # ``islice``, not ``messages[:older_cut]`` — this can run on the event
-    # loop for a large transcript, and a slice would copy the whole prefix.
-    slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
-    for m in messages[-500:]:
+    slot._disk_older_durable_count = older_durable
+    for m in messages[-_WINDOW_ROWS:]:
         role = m.get("role", "assistant")
         cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
         content = m.get("content", "")
@@ -897,14 +922,26 @@ def _prefetch_recent_session(
     *,
     folders_only: bool,
     cutoff: float | None,
-) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool]:
+    row_tail: (
+        Callable[[ConversationLog, str, dict, str, tuple[str, str] | None], list[dict] | None]
+        | None
+    ) = None,
+) -> tuple[
+    dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool, list[dict] | None
+]:
     """Read one candidate session's metadata + transcript, off the loop.
 
     Applies the selection filters BETWEEN the two reads so a session that is
     going to be skipped never pays for its transcript walk — the metadata read is
     what the filters need, and it is the cheap one.
 
-    Returns ``(None, None, None, None, False)`` for a session this pass must skip (not
+    *row_tail* lets the caller build the session as a sidebar row: given the
+    log, the key, the metadata, the slot name and the member identity, it returns the bounded tail
+    rows to stand in for the window (the transcript is then not read, and the
+    messages value is ``None``), or ``None`` to read the window as usual. The
+    sixth value is that tail.
+
+    Returns ``(None, None, None, None, False, None)`` for a session this pass must skip (not
     folder'd / pinned under ``folders_only``, closed with ✕, or outside the
     mtime window). The third element is the prefetched
     ``_member_restore_identity`` answer — dm.json is file IO too, and the apply
@@ -925,29 +962,36 @@ def _prefetch_recent_session(
         # deleted. ``_rehydrate_slot_from_history`` already refuses on empty
         # metadata for exactly this reason ("don't create a phantom slot"); this
         # makes the recent-sessions path agree with it.
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     has_folder = bool(meta.get("folder_id"))
     has_pin = bool(meta.get("pinned"))
     if folders_only and not has_folder and not has_pin:
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     if meta.get("closed"):
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
-            return None, None, None, None, False
+            return None, None, None, None, False, None
     _seed_session_tree(meta)
+    slot_name = _recent_session_slot_name(key) or ""
+    member_identity = _member_restore_identity(slot_name)
+    agent = _restored_agent_name(
+        str(meta.get("linked_session_key") or slot_transcript_key(slot_name or key)),
+        meta,
+    )
+    effort_marker = _has_validated_effort_marker(meta.get("reasoning_effort"))
+    tail = (
+        row_tail(conv_log, key, meta, slot_name, member_identity) if row_tail is not None else None
+    )
+    if tail:
+        return meta, None, member_identity, agent, effort_marker, tail
     return (
         meta,
         conv_log.read_messages_chained(key),
-        _member_restore_identity(_recent_session_slot_name(key) or ""),
-        _restored_agent_name(
-            str(
-                meta.get("linked_session_key")
-                or slot_transcript_key(_recent_session_slot_name(key) or key)
-            ),
-            meta,
-        ),
-        _has_validated_effort_marker(meta.get("reasoning_effort")),
+        member_identity,
+        agent,
+        effort_marker,
+        None,
     )
 
 
@@ -966,8 +1010,16 @@ def _apply_recent_session(
     agent: str | None = None,
     effort_marker: bool = False,
     pending_backfills: list[tuple[str, dict]] | None = None,
+    lazy_tail: list[dict] | None = None,
 ) -> None:
     """Build the slot for one prefetched recent session.
+
+    *lazy_tail* builds it as a sidebar row, as the open-tab restore does past
+    its eager budget: every metadata field is applied, the bounded tail stands in
+    for the sidebar summary, and the window loads on the slot's first read of
+    ``messages`` (:class:`_PendingWindow`). *messages* is then ignored. Only the
+    in-memory window waits; the transcript on disk is untouched, and the window
+    that loads is the one an eager restore builds.
 
     LOOP-AFFINE — everything here mutates slot state, and slot creation
     broadcasts through ``asyncio.Queue.put_nowait`` / ``Event.set`` (neither
@@ -1036,6 +1088,16 @@ def _apply_recent_session(
             pending_backfills.append((key, {"tab_id": applied.minted_tab_id}))
         else:
             update_metadata_off_loop(conv_log, key, {"tab_id": applied.minted_tab_id})
+    if lazy_tail is not None:
+        # Same as the open-tab row in _rehydrate_slot_from_history: the loader
+        # keeps the parsed fields its settle needs, never the raw line, and a
+        # row that can wait carries no local-turn marker.
+        slot._lazy_tail = lazy_tail
+        applied.meta = {}
+        slot._lazy_window = _PendingWindow(state, key, applied)
+        slot._dirty = False
+        logger.info("Restored session %s (%s) as a sidebar row", slot_name, slot.title)
+        return
     older_cut = max(0, len(messages) - 500)
     slot._disk_older_count = older_cut
     # Durable-only view of the same prefix, recomputed from disk on every load —
