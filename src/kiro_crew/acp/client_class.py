@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import pinned_fs
 from kiro_crew.acp import batch_guard
+from kiro_crew.acp import client_antigravity as _client_antigravity
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
 from kiro_crew.acp import client_copilot as _client_copilot
@@ -38,6 +39,7 @@ from kiro_crew.acp import client_tool_events as _client_tool_events
 from kiro_crew.acp import client_transport as _client_transport
 from kiro_crew.acp import client_turn as _client_turn
 from kiro_crew.acp import client_turn_control as _client_turn_control
+from kiro_crew.acp import client_unasked_watch as _client_unasked_watch
 from kiro_crew.acp import client_usage as _client_usage
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
@@ -58,6 +60,7 @@ from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
@@ -379,6 +382,9 @@ class AcpClient:
         # of denied calls, which must never reach ``completed``.
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
+        # toolCallId -> {kind, asked} for a harness whose state-changing calls must
+        # ask (``ACP_BACKEND_MUST_ASK_TOOL_KINDS``); bounded, consumed per call.
+        self._unasked_watch: dict[str, dict] = {}
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
@@ -849,6 +855,7 @@ class AcpClient:
     _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
     _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
+    _antigravity_session_mcp_servers = _client_mcp_array._antigravity_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
@@ -914,6 +921,10 @@ class AcpClient:
     @property
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
+
+    @property
+    def _is_antigravity(self) -> bool:
+        return self.backend == ACP_BACKEND_ANTIGRAVITY
 
     @property
     def _is_opencode(self) -> bool:
@@ -1372,6 +1383,9 @@ class AcpClient:
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
     _note_goose_version = _client_permissions._note_goose_version
     _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
+    _refuse_unverified_antigravity_version = (
+        _client_antigravity._refuse_unverified_antigravity_version
+    )
     _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
     _tripwire_session_config = _client_permissions._tripwire_session_config
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
@@ -1381,6 +1395,9 @@ class AcpClient:
     _drop_superseded_config_frames = _client_permissions._drop_superseded_config_frames
     _refuse_session_config_drift = _client_permissions._refuse_session_config_drift
     _tripwire_pi_gate = _client_permissions._tripwire_pi_gate
+    # Stop a harness whose must-ask tool call ran unasked: ``kiro_crew.acp.client_unasked_watch``.
+    _tripwire_unasked_call = _client_unasked_watch._tripwire_unasked_call
+    _watch_tool_call = _client_unasked_watch._watch_tool_call
     # Answer an MCP server's elicitation on this client: ``kiro_crew.acp.client_elicitation``.
     _handle_elicitation_request = _client_elicitation._handle_elicitation_request
     _audit_elicitation_decision = _client_elicitation._audit_elicitation_decision

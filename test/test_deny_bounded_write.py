@@ -1627,6 +1627,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "approve_tool: security floor rejected req=%s: %s",
             "auto-approve identity gate rejected req=%s: %s",
         ],
+        "src/kiro_crew/acp/client_unasked_watch.py": [],
         "src/kiro_crew/acp/client_claude_seed.py": [],
         "src/kiro_crew/acp/client_claude_session.py": [],
         "src/kiro_crew/acp/client_model_selection.py": [],

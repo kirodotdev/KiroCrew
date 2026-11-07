@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     RefusalInfo,
 )
 from kiro_crew.acp_backends import (  # noqa: F401
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
@@ -671,11 +672,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.acp._dispatch_parts.tool_call_identity import (  # noqa: F401
         _ACP_SHELL_KIND,
+        _ANTIGRAVITY_COMMAND_KEYS,
+        _ANTIGRAVITY_COMMAND_NAME_PARTS,
+        _ANTIGRAVITY_KNOWN_COMMAND_KEYS,
+        _ANTIGRAVITY_PATH_KEYS,
+        _ANTIGRAVITY_PATH_NAME_PARTS,
         _CODEX_MCP_TOOL_CALL_MARKER,
         _HARNESS_TOOL_ID_RE,
         _MAX_HARNESS_TOOL_ID_LEN,
         _MCP_IDENTITY_META_CHANNELS,
         ToolCallIdentity,
+        _antigravity_file_uri_paths,
+        _antigravity_name_has,
+        _antigravity_named_paths,
+        _antigravity_other_commands,
+        _antigravity_stated_commands,
         _harness_identifier,
         _kiro_mcp_server_name,
         _kiro_tool_name,
@@ -684,6 +695,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MetaIdentityChannel,
         _permission_tool_id,
         _str_field,
+        antigravity_command_conflict,
+        antigravity_gate_params,
         classify_tool_call,
         harness_tool_name,
         is_shell_kind,
@@ -745,6 +758,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         NamedTuple,
         cast,
     )
+    from urllib.parse import (  # noqa: F401
+        unquote,
+        urlsplit,
+    )
+    from urllib.request import url2pathname  # noqa: F401
+
+    from kiro_crew.platform.tool_paths import _TARGET_PATH_MAX_NODES  # noqa: F401
 
 
 def _token_count(value: Any) -> int | float | None:

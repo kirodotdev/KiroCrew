@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -158,6 +159,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -398,6 +400,13 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # project's own, vended or MCP -- which the CLI forwards as
 # ``session/request_permission``, so ``_deny_zero_tools`` sees each one; it is
 # mirrored, enforced (``Routing.VERIFIED_GATE_EXTENSION``) and ``AcpClient``-served.
+#
+# antigravity is NOT a member yet although its routing is enforced and it is
+# ``AcpClient``-served: no authenticated turn has shown that every native and MCP
+# call reaches ``session/request_permission``. Its live handshake advertises the
+# ``default`` permission flow, but an advertisement is not a completed turn. The
+# knowledge/research pool therefore does not select it as a zero-tool-safe worker
+# until a live zero-tool capture lands.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -434,9 +443,17 @@ ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 # that does not exist starts the session, logs "MCP server connection failed ...
 # failed to spawn MCP server process" and nothing reaches the wire -- so its launch
 # file is built from the pruned elements and the wire array is pruned the same way,
-# which is what names the server on the session's MCP report.
+# which is what names the server on the session's MCP report. antigravity drops it
+# the same way -- measured on Antigravity ACP 1.4.4 on Linux with an invalid API key:
+# a ``session/new`` whose array names a command that does not exist still creates
+# the session, and neither the wire nor the server's stderr names the server.
 ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset(
-    {ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_COPILOT}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
+    }
 )
 
 # Backends that read reasoning effort from the workspace ``cli.json`` overlay
@@ -569,6 +586,11 @@ ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
 # Disjoint from both sets above: the process does not watch a file and takes no
 # projection on a live session; the relaunch is the mechanism, with its own
 # failure mode (a load that falls back to a fresh session).
+#
+# antigravity is NOT a member: it takes its MCP servers on each ``session/new``
+# array (``ACP_BACKENDS_SESSION_MCP_ARRAY``) and reads none at launch, so a
+# relaunch has no launch-time config to change, and none was captured. Outside all
+# three sets, an MCP write resets its sessions.
 ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
 
 # Backends on which a per-template MCP addition reaches a session of a template

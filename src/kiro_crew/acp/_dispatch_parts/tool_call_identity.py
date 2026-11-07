@@ -14,9 +14,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN
+from kiro_crew.acp_backends import ACP_BACKEND_ANTIGRAVITY
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
+from kiro_crew.platform.tool_paths import _TARGET_PATH_MAX_NODES
 
 _ACP_SHELL_KIND = "execute"
 
@@ -208,15 +212,17 @@ def _permission_tool_id(params: dict[str, Any]) -> str:
     return _harness_identifier(tool_id)
 
 
-def harness_tool_name(update: dict[str, Any]) -> str:
+def harness_tool_name(update: dict[str, Any], *, backend: str = "") -> str:
     """The tool's own name as a ``tool_call`` frame states it, or "".
 
     goose writes it in ``_meta.goose.toolCall.toolName`` and claude-agent-acp in
     ``_meta.claudeCode.toolName``; opencode writes it as the first frame's
-    ``title`` (``bash``), where later updates carry the command. Read from that
-    first frame only, and only as an identifier: a title with whitespace or any
-    other prose character is not a name and yields "". Which backend's table the
-    name is looked up in is decided by the permission event's caller
+    ``title`` (``bash``), where later updates carry the command. On *backend*
+    Antigravity, a native non-execution tool name is wrapped as ``Run <name>?``;
+    that spelling is unwrapped only there. Read from the first frame only, and
+    only as an identifier: a title with whitespace or any other prose character
+    is not a name and yields "". Which backend's table the name is looked up in
+    is decided by the permission event's caller
     (:func:`kiro_crew.acp.harness_tool_names.qualified_harness_tool_id`), so the
     title of a backend with no table is never read as a name.
     """
@@ -231,6 +237,13 @@ def harness_tool_name(update: dict[str, Any]) -> str:
         name = claude.get("toolName") or ""
     if name is None:
         name = update.get("title")
+        if (
+            backend == ACP_BACKEND_ANTIGRAVITY
+            and isinstance(name, str)
+            and name.startswith("Run ")
+            and name.endswith("?")
+        ):
+            name = name[4:-1]
     # Bounded by MAX_HARNESS_TOOL_NAME_LEN, not KAS's 128: an opencode MCP title
     # fuses an operator-chosen server name with the tool's, and one dropped here
     # leaves a deny hook matching the title alone.
@@ -241,6 +254,181 @@ def harness_tool_name(update: dict[str, Any]) -> str:
     ):
         return ""
     return name
+
+
+#: How Antigravity's tools spell the command and the files they act on. Every key
+#: has a PascalCase form and a snake_case twin. In the Windows archive the names are
+#: strings in the helper ``localharness_external.exe`` only (none is a whole token
+#: in ``agy_acp_server.exe``, and ``search_path`` is not one in the helper either);
+#: on macOS and Linux they are in both executables. The counts are the same in
+#: 1.4.4 and 1.4.5. They have not yet been seen on the wire. The shared readers
+#: look for neither: they read ``command`` and the ``TARGET_PATH_KEYS`` spellings
+#: (``path``, ``file_path``, ``filePath``, ``targetFile``). The runtime defines
+#: more argument names than these, so the lists are not trusted to be complete:
+#: any argument NAMED like a path or a command is read too (below).
+_ANTIGRAVITY_COMMAND_KEYS = ("CommandLine", "command_line")
+_ANTIGRAVITY_PATH_KEYS = (
+    "AbsolutePath",
+    "absolute_path",
+    "TargetFile",
+    "target_file",
+    "SearchPath",
+    "search_path",
+    "DirectoryPath",
+    "directory_path",
+    "SearchDirectory",
+    "search_directory",
+)
+#: Parts of an argument name (lower-cased, ``_`` and ``-`` removed) that mark its
+#: value as a file target, or as a command. Over-reading is the safe direction: the
+#: path check refuses on any hit and a value that is no path matches nothing, and a
+#: second command can only make a shell call unverifiable. ``target`` is not a part:
+#: ``TargetFile`` is listed above, and the edit tool's ``TargetContent`` is a body.
+_ANTIGRAVITY_PATH_NAME_PARTS = (
+    "path",
+    "file",
+    "dir",
+    "folder",
+    "uri",
+    "url",
+    "cwd",
+    "workspace",
+    "location",
+    "glob",
+    "include",
+    "exclude",
+)
+_ANTIGRAVITY_COMMAND_NAME_PARTS = ("command", "cmd")
+
+
+def _antigravity_name_has(key: object, parts: tuple[str, ...]) -> bool:
+    plain = key.lower().replace("_", "").replace("-", "") if isinstance(key, str) else ""
+    return any(part in plain for part in parts)
+
+
+_ANTIGRAVITY_KNOWN_COMMAND_KEYS = (*_ANTIGRAVITY_COMMAND_KEYS, "command")
+
+
+def _antigravity_stated_commands(params: dict[str, Any]) -> list[Any]:
+    """Every non-empty command spelling *params* state, ``command`` included."""
+    return [params[k] for k in _ANTIGRAVITY_KNOWN_COMMAND_KEYS if params.get(k) not in (None, "")]
+
+
+def _antigravity_other_commands(params: dict[str, Any]) -> list[Any]:
+    """Every other argument named like a command holding a string, a list or a mapping.
+
+    These only take part in the agreement check and never supply ``command``: a list
+    or mapping is no one command string, and a lone one leaves the call unverifiable.
+    """
+    return [
+        value
+        for key, value in params.items()
+        if key not in _ANTIGRAVITY_KNOWN_COMMAND_KEYS
+        and _antigravity_name_has(key, _ANTIGRAVITY_COMMAND_NAME_PARTS)
+        and ((isinstance(value, str) and value) or isinstance(value, (list, dict)))
+    ]
+
+
+def _antigravity_file_uri_paths(uri: str) -> list[str]:
+    """The local paths a ``file:`` URI may name, once and twice percent-decoded.
+
+    Never raises: a URI the platform decoder rejects yields its percent-decoded
+    path instead, which the path check still reads.
+    """
+    try:
+        path = urlsplit(uri).path
+    except ValueError:
+        rest = uri[5:].lstrip("/")
+        path = "/" + rest
+    found = []
+    for candidate in (path, unquote(path)):
+        try:
+            found.append(url2pathname(candidate))
+        except (OSError, ValueError):
+            found.append(unquote(candidate))
+    return found
+
+
+def _antigravity_named_paths(params: dict[str, Any]) -> list[str]:
+    """Every string under an argument named like a path, at any depth.
+
+    Everything under such a name counts, a nested list or mapping included. A
+    ``file:`` value also yields the local paths it may name. The walk stops where
+    ``target_paths`` does; a call that large is refused there as unverifiable,
+    since the copy it walks is no smaller.
+    """
+    found: dict[str, None] = {}
+    stack: list[tuple[object, bool]] = [(params, False)]
+    nodes = 0
+    while stack and nodes < _TARGET_PATH_MAX_NODES:
+        node, named = stack.pop()
+        nodes += 1
+        if isinstance(node, str):
+            if named and node.strip():
+                found[node] = None
+                if node[:5].lower() == "file:":
+                    found.update(dict.fromkeys(_antigravity_file_uri_paths(node)))
+        elif isinstance(node, dict):
+            stack.extend(
+                (v, named or _antigravity_name_has(k, _ANTIGRAVITY_PATH_NAME_PARTS))
+                for k, v in reversed(node.items())
+            )
+        elif isinstance(node, list):
+            stack.extend((v, named) for v in reversed(node))
+    return [path for path in found if path.strip()]
+
+
+def antigravity_command_conflict(params: object) -> bool:
+    """True when *params* state a command and its spellings are not one string.
+
+    Such a call has no command the gate can verify, whichever spelling runs.
+    """
+    if not isinstance(params, dict):
+        return False
+    stated = [*_antigravity_stated_commands(params), *_antigravity_other_commands(params)]
+    return bool(stated) and not (all(isinstance(v, str) for v in stated) and len(set(stated)) == 1)
+
+
+def antigravity_gate_params(params: dict[str, Any] | None, *, shell: bool) -> dict[str, Any] | None:
+    """*params* with Antigravity's argument names also under the names the gate reads.
+
+    Without this a shell call carries no ``command`` and the unverifiable-shell tier
+    refuses it, and a file tool carries no path the sensitive-path check can see.
+    Returns a copy; the cached trusted params are never edited. The spellings were
+    read from the pinned runtime's strings, not from a signed-in session.
+
+    ``command`` is set only on a shell call (*shell*), and only when every spelling
+    present, an existing ``command`` included, states the same string. Any
+    disagreement removes ``command``, so the call stays unverifiable and is refused.
+    Any other argument named like a command takes part in that agreement but never
+    supplies ``command``.
+    Each path-spelling value, and every string under any other argument named like
+    a path, is added to ``path``. A lone value leaves ``path`` a
+    string, so a rule that reads a string ``path`` still sees it.
+    """
+    if not isinstance(params, dict):
+        return params
+    out = dict(params)
+    if shell:
+        if antigravity_command_conflict(params):
+            out.pop("command", None)
+        else:
+            stated = _antigravity_stated_commands(params)
+            if stated:
+                out["command"] = stated[0]
+    targets = [params[k] for k in _ANTIGRAVITY_PATH_KEYS if params.get(k) not in (None, "")]
+    listed = {t for t in targets if isinstance(t, str)}
+    targets.extend(p for p in _antigravity_named_paths(params) if p not in listed)
+    if targets:
+        prior = out.get("path")
+        kept = prior if isinstance(prior, list) else ([prior] if prior not in (None, "") else [])
+        kept_strs = {k for k in kept if isinstance(k, str)}
+        merged = [
+            *kept,
+            *(t for t in targets if (t not in kept_strs if isinstance(t, str) else t not in kept)),
+        ]
+        out["path"] = merged if isinstance(prior, list) or len(merged) > 1 else merged[0]
+    return out
 
 
 class _MetaIdentityChannel(NamedTuple):
@@ -340,6 +528,14 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # carries no ``kind`` -- so this pair is the only thing on the wire that says
         # "this is a command".
         builtin_shell=("developer", "shell"),
+    ),
+    # Google Antigravity states an MCP call in the tool frame's ``_meta.mcp``
+    # object. Both halves are harness-authored; eager MCP tools carry the same
+    # pair, so an identity does not depend on the dispatch-envelope spelling.
+    _MetaIdentityChannel(
+        key="mcp",
+        server_field="server",
+        tool_field="tool",
     ),
 )
 

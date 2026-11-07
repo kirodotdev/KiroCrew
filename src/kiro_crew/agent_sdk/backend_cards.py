@@ -390,6 +390,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "with its own reason, and the card appears where it applies, so a card "
         "line would repeat what the refusal says"
     ),
+    "ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL": (
+        "which advertised model vocabulary the picker sends. A wrong membership "
+        "accepts a write that leaves the model unchanged, so it is a defect rather "
+        "than a missing feature a user would choose a harness by"
+    ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
         "that template's sessions here. The approval card asks the same question for "

@@ -911,16 +911,21 @@ class TestKasMcpServedIdentity:
 
     def test_only_the_kas_channel_bounds_its_halves(self) -> None:
         """The bound is a property of the KAS channel row (``bounds_names``): its
-        two halves are bounded before retention and goose/kiro-cli/codex -- the
-        first-class channels -- retain a string verbatim as they always did, so no
-        first-class path gains a bound or a refusal (H13)."""
+        two halves are bounded before retention and goose/kiro-cli/codex/
+        Antigravity -- the first-class channels -- retain a string verbatim as
+        they always did, so no first-class path gains a bound or a refusal (H13)."""
         from kiro_crew.acp._dispatch import (
             _CODEX_MCP_TOOL_CALL_MARKER,
             _MCP_IDENTITY_META_CHANNELS,
             _meta_identity,
         )
 
-        assert [c.bounds_names for c in _MCP_IDENTITY_META_CHANNELS] == [True, False, False]
+        assert [c.bounds_names for c in _MCP_IDENTITY_META_CHANNELS] == [
+            True,
+            False,
+            False,
+            False,
+        ]
         # A kiro-cli built-in (toolName, no server of either spelling) falls
         # through the KAS row to its own, unbounded.
         builtin = {"_meta": {"kiro": {"toolName": "t" * 600}}}
@@ -936,6 +941,8 @@ class TestKasMcpServedIdentity:
             "_meta": {"goose": {"toolCall": {"extensionName": "ext", "toolName": "ext__tool"}}}
         }
         assert _meta_identity(goose_ok) == ("ext", "tool")
+        antigravity = {"_meta": {"mcp": {"server": huge, "tool": huge}}}
+        assert _meta_identity(antigravity) == (huge, huge)
         codex = {
             "sessionUpdate": "tool_call",
             "toolCallId": "tc-cx",

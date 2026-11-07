@@ -3,8 +3,8 @@
 kiro-cli reads the field itself and KAS receives it as ``permissions`` rules and gate
 allowlists. Every mirrored harness rules it ``no-channel`` or ``withheld``, so a new
 chat session there whose spec sets it gets one notice naming the key. Backends Crew
-fires spec hooks on (goose, opencode, strands) already name it in the notice their
-spec-key read posts, and keep exactly that one row. ``subagent.availableAgents`` is
+fires spec hooks on (goose, opencode, strands, antigravity) already name it in the
+notice their spec-key read posts, and keep exactly that one row. ``subagent.availableAgents`` is
 the exception: Crew's spawn gate reads it on every backend, so no notice names it.
 On claude Crew's gate applies the shell and write allowlists, so its notice names
 only the rest.
@@ -22,6 +22,7 @@ import pytest
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -48,7 +49,12 @@ _APPLIED_NOWHERE = [
 ]
 #: The mirrored backends whose gate is never fed the shell and write allowlists.
 _ALLOWLIST_UNAPPLIED = [b for b in _APPLIED_NOWHERE if b != ACP_BACKEND_CLAUDE]
-_CREW_FIRED = [ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS]
+_CREW_FIRED = [
+    ACP_BACKEND_ANTIGRAVITY,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_STRANDS,
+]
 _SPAWN_GATED = {"subagent": {"availableAgents": ["helper-*"]}}
 
 

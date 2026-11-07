@@ -47,6 +47,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
@@ -217,7 +218,12 @@ def session_models_envelope(resp: dict[str, Any], backend: str) -> Any:
     stay exactly as they were.
     """
     models = resp.get("models") or resp.get("availableModels")
-    if models is None or models == {} or models == []:
+    if (
+        backend in ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL
+        or models is None
+        or models == {}
+        or models == []
+    ):
         models = models_from_config_options(resp, backend) or models
     return models
 
