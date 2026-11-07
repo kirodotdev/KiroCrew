@@ -443,6 +443,12 @@ pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
 
+Create the venv and run either form under `umask 022`. Under umask `002`,
+`python -m venv` and pip leave the venv group-writable, and `kirocrew service
+install` then refuses to attach the
+[AppArmor profile](#linux-the-agent-sandbox-and-unprivileged-user-namespaces);
+`chmod -R g-w <venv>` repairs an existing install.
+
 Swap `stable` for `insider` or `nightly` in either URL. The two names split by
 class as a convention — `updates.crew.kiro.dev` for mutable pointers and indexes,
 `download.crew.kiro.dev` for the bytes — and today both alias the same

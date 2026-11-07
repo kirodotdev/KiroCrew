@@ -250,6 +250,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
 
         assert problem is not None
         assert "group- or world-writable" in problem
+        assert "Move the AppImage" in problem and "umask" not in problem
 
     def test_a_writable_ancestor_is_enough_to_refuse(self, tmp_path, monkeypatch):
         """Renaming a writable parent re-points the same absolute path."""
@@ -636,6 +637,30 @@ class TestExpectedUidOverride:
 
         assert resolved is None
         assert "not by the expected account" in problem
+
+    def test_a_group_writable_venv_names_the_umask_cause_and_the_chmod(self, tmp_path, monkeypatch):
+        """pip and venv honour the umask, so an install made under umask 002
+        leaves ``<venv>/bin`` at 0775. The service refusal names that cause
+        and its fix, not the AppImage advice."""
+        from kiro_crew.service import apparmor as aa
+
+        bin_dir = tmp_path / "kc" / "bin"
+        bin_dir.mkdir(parents=True)
+        app = bin_dir / "kirocrew"
+        app.write_text("#!/bin/sh\n")
+        os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+        os.chmod(bin_dir, 0o775)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the umask-002 venv bin dir IS the fixture: the test proves its refusal names the cause.  # noqa: E501  # fmt: skip
+        # tmp_path sits under /tmp on Linux CI, which the prefix denylist
+        # refuses before the mode walk runs.
+        monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
+
+        resolved, problem = aa.validate_exec_path(str(app), expected_uid=app.stat().st_uid)
+
+        assert resolved is None
+        assert f"the directory {bin_dir.resolve()} is group- or world-writable" in problem
+        assert "umask 002" in problem
+        assert "chmod -R g-w <venv>" in problem
+        assert "AppImage" not in problem
 
 
 class TestLauncherProfileRendering:
