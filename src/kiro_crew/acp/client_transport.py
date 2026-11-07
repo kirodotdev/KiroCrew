@@ -11,9 +11,9 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_activity``,
 ``_last_substitution_model``, ``_mcp_notifications``, ``_mcp_report_frame_floor``,
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
-``_pending_oauth_requests``, ``_stdin_lock``, ``_stdin_stalled``.
+``_pending_oauth_requests``, ``_stale_eligible``, ``_stdin_lock``, ``_stdin_stalled``.
 
-Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+Instance fields read: ``_active_tool_calls``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
 ``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
 ``_turn_done``, ``memory_mode``.
@@ -557,8 +557,10 @@ def _claiming_stdout(
     async def claimed(*args: Any, **kwargs: Any) -> _R:
         await self._claim_stdout()
         held: list[JsonRpcMessage] | None = None
+        hold_end: asyncio.Event | None = None
         if self._agent_turn_held is None and self._agent_turn_pending():
             held = self._agent_turn_held = []
+            hold_end = self._agent_turn_hold_end = asyncio.Event()
         try:
             return await read(*args, **kwargs)
         finally:
@@ -566,6 +568,8 @@ def _claiming_stdout(
             if held is not None and self._agent_turn_held is held:
                 self._agent_turn_held = None
                 self._buffer.extendleft(reversed(held))
+            if hold_end is not None:
+                hold_end.set()
             self._release_stdout()
 
     return claimed
@@ -609,6 +613,10 @@ async def _read_turn(
                 else:
                     yield action, msg
                     saw_activity = saw_activity or _starts_agent_turn(msg)
+                    if saw_activity:
+                        # Only silence ends a cycle that sends no closing frame, so the
+                        # stale-turn gate arms from its first activity frame, not after text.
+                        self._stale_eligible = not self._active_tool_calls.possibly_open
                     if not (saw_activity and _ends_agent_started_turn(msg)):
                         continue
                     # A prompt's late response keeps its own stop reason and usage.
@@ -657,6 +665,21 @@ def _cancel_idle_reader(self: AcpClient) -> None:
     self._idle_reader = None
     self._agent_turn_start = None
     self._agent_turn_held = None
+    if self._agent_turn_hold_end is not None:
+        self._agent_turn_hold_end.set()
+
+
+def has_pending_agent_turn(self: AcpClient) -> bool:
+    """True while a turn the agent started waits to be read.
+
+    Its first frame is in ``_buffer``, or a claimed reader other than the turn
+    holds it and puts it back when it returns (``_claiming_stdout``).
+    """
+    start = self._agent_turn_start
+    held = self._agent_turn_held
+    return self._agent_turn_pending() or (
+        start is not None and held is not None and any(frame is start for frame in held)
+    )
 
 
 def _agent_turn_pending(self: AcpClient) -> bool:
@@ -664,8 +687,8 @@ def _agent_turn_pending(self: AcpClient) -> bool:
 
     A turn that takes it ends the hand-off by reading it as its own. Any other
     claimed reader holds it for the turn and puts it back when it returns
-    (``_claiming_stdout``); until then this is False, so ``stream_unsolicited``
-    does not read beside that reader.
+    (``_claiming_stdout``); until then this is False, and
+    ``has_pending_agent_turn`` is what counts the held frame.
     """
     start = self._agent_turn_start
     return start is not None and any(frame is start for frame in self._buffer)

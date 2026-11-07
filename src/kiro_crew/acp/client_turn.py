@@ -872,9 +872,13 @@ async def stream_unsolicited(
 
     Yields nothing when no such turn is pending, or when a prompt is in
     flight: that prompt's turn reads those frames as its own. A prompt started
-    while this stream is open waits until it closes.
+    while this stream is open waits until it closes. While another reader holds
+    the turn's frames (a request wait in the hand-off window), this waits until
+    that reader has put them back.
     """
     timeout = await _effective_prompt_timeout_async(timeout)
+    while (hold_end := self._agent_turn_hold_end) is not None and not hold_end.is_set():
+        await hold_end.wait()
     gate = self._agent_turn_gate
     if gate is None or not self._agent_turn_pending():
         return
