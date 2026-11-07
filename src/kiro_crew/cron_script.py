@@ -1090,7 +1090,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew import agent_scratch  # noqa: F401
     from kiro_crew.agent_discovery import _read_agent_spec  # noqa: F401
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
-    from kiro_crew.config.loader import read_local_secret  # noqa: F401
+    from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_agents_dir  # noqa: F401
     from kiro_crew.cron_script_child_env import (  # noqa: F401
         _CRON_ENV_DENY,
@@ -1151,6 +1151,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,
+        _data_home_spec,
         _split_script_spec,
         _trusted_script_bundle_roots,
     )
