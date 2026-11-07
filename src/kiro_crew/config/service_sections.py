@@ -233,9 +233,9 @@ class WatchdogConfig:
     """ACP per-session watchdog / liveness-oracle tuning (acp/session_handle_watchdog.py).
 
     Wellness (the liveness oracle) is the primary detector; these windows govern
-    only the UNKNOWN-verdict backstop class. A WORKING verdict is never acted on
-    at any elapsed time, and every watchdog action is non-lethal (auto-recovery,
-    never a silent kill).
+    only the UNKNOWN-verdict backstop class and the hard cap on the WORKING
+    readings that cannot be tied to the work. Every watchdog action is non-lethal
+    (auto-recovery, never a silent kill).
     """
 
     check_after_secs: float = field(
@@ -291,8 +291,8 @@ class WatchdogConfig:
             "watchdog_tool_stall_* override. Also bounds an opaque MCP tool "
             "whose only WORKING evidence is movement somewhere in the runtime's "
             "process tree, and a Windows shell tool whose only WORKING evidence "
-            "is CPU movement in processes started since its dispatch. Every "
-            "other WORKING reading (a matched shell child, "
+            "is CPU movement in processes started since its dispatch, and a model "
+            "wait's WORKING reading. Every other WORKING reading (a matched shell child, "
             "a declared wait, a keepalive-pinging core tool) is deferred before "
             "this cap is consulted and is bounded only by the turn's own ceiling. "
             "Default 2h, clamped against the transport's per-prompt timeout like "
