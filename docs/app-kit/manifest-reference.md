@@ -45,6 +45,45 @@ are dropped with one log line; the rest of the manifest still loads. There is
 no host allowlist: each button shows the URL's host under its label, so the
 reader sees where it goes, and it opens in a new tab.
 
+### Writing `useCases`
+
+`highlights` lists what the app can do. `useCases` says when an operator should
+reach for it. Write each entry as a situation: what the operator is facing,
+what they do in the app, and what they get. A useful shape is "when X, do Y to
+get Z". Do not restate the feature list as one comma-separated line.
+
+- **Write 3-5 entries.** Each is one situation, not a list of features.
+- **Ground every entry in what the app ships.** Each workflow must follow from
+  the app's own `highlights` and from the `agents`, `skills` and `crons` it
+  declares. A reviewer can check that against the manifest. Do not describe a
+  feature or an integration the app does not have.
+- **Mention composition only when it is declared.** If the app declares an
+  agent, skill or cron, at least one entry should show the operator using it
+  and name it. If the app declares none, describe workflows in terms of the
+  app's own capabilities. Do not invent a link to cron, subagents, memory or
+  Knowledge that the app does not ship.
+- **Leave `highlights` as the feature list.** Each field does a different job
+  on the detail page.
+
+Bad, because it restates the features and names no situation:
+
+```json
+"useCases": [
+  "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history."
+]
+```
+
+Good, because each entry is a situation an operator recognises, and each one is
+backed by a shipped highlight:
+
+```json
+"useCases": [
+  "When the morning queue fills up, read each new issue's AI summary and suggested labels, and apply the ones you agree with",
+  "When a pull request is ready, approve, request changes or re-run CI from the app, while the host still enforces its required reviews and checks",
+  "When a report looks familiar, open its investigation history instead of investigating it again"
+]
+```
+
 ## Admission metadata
 
 | Field | Type | Description |
@@ -2183,7 +2222,11 @@ before it runs your command, which is the same silent failure:
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
   "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
-  "useCases": ["Keep a shared view of firing alerts and active investigations"],
+  "useCases": [
+    "When you take over the on-call rotation, open the board to see every firing alert and active investigation in one place",
+    "When a high-severity ticket arrives, let the ticket-refresh cron surface it within five minutes and hand it to the ticket analyst agent",
+    "When an alert matches a known failure, follow the oncall-runbook skill instead of rediscovering the fix"
+  ],
   "configuration": ["Connect an alert provider in Settings, then start in read-only mode"],
   "screenshots": ["ui/screenshots/board.png"],
   "agents": ["agents/ticket-analyst.json"],
