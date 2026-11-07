@@ -15549,6 +15549,7 @@
         "last_search_ok": "前回の検索：成功",
         "last_search_refused": "前回の検索：拒否",
         "last_search_failed": "前回の検索：失敗",
+        "pending_import_budget": "待機中：この1分間のインポート予算（knowledge.import_chunk_budget）を使い切りました。1分後にもう一度同期してください。",
         "confirm_account_to_enable": "上の AWS アカウントを確認すると、このソースを追加できます。",
         "enter_region_to_add": "このソースを追加するには AWS リージョンを入力してください。",
         "profile_blank_uses_default_chain": "空欄の場合はデフォルトの AWS 認証情報を使用します。",

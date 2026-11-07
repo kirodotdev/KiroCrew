@@ -15951,6 +15951,7 @@
         "last_search_ok": "Letzte Suche: OK",
         "last_search_refused": "Letzte Suche: abgelehnt",
         "last_search_failed": "Letzte Suche: fehlgeschlagen",
+        "pending_import_budget": "Wartet: Das Importbudget dieser Minute (knowledge.import_chunk_budget) ist aufgebraucht. Synchronisiere in einer Minute erneut.",
         "confirm_account_to_enable": "Bestätige oben das AWS-Konto, um diese Quelle hinzuzufügen.",
         "enter_region_to_add": "Gib die AWS-Region ein, um diese Quelle hinzuzufügen.",
         "profile_blank_uses_default_chain": "Leer lassen, um die Standard-AWS-Anmeldedaten zu verwenden.",

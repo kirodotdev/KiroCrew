@@ -63,6 +63,8 @@ from .store_parts.source_rows import _ACCOUNT_BOUND_URI_PREFIX  # noqa: F401
 from .store_parts.source_rows import _WALKING_SOURCE_TYPES  # noqa: F401
 from .store_parts.source_rows import AUTO_ADDED_PROP  # noqa: F401
 from .store_parts.source_rows import AUTO_REGISTRATION_RETIRED_PROP  # noqa: F401
+from .store_parts.source_rows import PENDING_REASON_IMPORT_BUDGET  # noqa: F401
+from .store_parts.source_rows import PENDING_REASON_PROP  # noqa: F401
 from .store_parts.source_rows import _without_sync_status  # noqa: F401
 from .store_parts.source_rows import is_auto_registered  # noqa: F401
 

@@ -16353,6 +16353,7 @@
         "last_search_ok": "Ultima ricerca: OK",
         "last_search_refused": "Ultima ricerca: rifiutata",
         "last_search_failed": "Ultima ricerca: non riuscita",
+        "pending_import_budget": "In attesa: il budget di importazione di questo minuto (knowledge.import_chunk_budget) è esaurito. Sincronizza di nuovo tra un minuto.",
         "confirm_account_to_enable": "Conferma l'account AWS qui sopra per aggiungere questa fonte.",
         "enter_region_to_add": "Inserisci la regione AWS per aggiungere questa fonte.",
         "profile_blank_uses_default_chain": "Lascia vuoto per usare le credenziali AWS predefinite.",
