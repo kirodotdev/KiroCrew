@@ -28,11 +28,9 @@ export const CRED_PATTERNS: readonly RegExp[] = [
   // So it would buy two avoided false positives and cost two leaks. A miss is a
   // leak; a false positive is mangled display text.
   //
-  // The residual false positive is therefore shared with the backend rather than
-  // unique to this mirror, which keeps it ONE defect to fix in one place. Closing
-  // it needs a structural test, not a boundary: decode segment one as a JOSE
-  // header and require `alg`/`enc`. That belongs in the backend first, with this
-  // mirror following, so it is deliberately out of scope here.
+  // The false positive is closed by a structural test instead, as in the backend:
+  // `CredentialScan` counts a hit only when its first segment decodes to a JSON
+  // object (`isJsonObjectSegment`), so `honeyJar.atlassian.net` stays intact.
   /eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}/g,
   // Two-segment dashboard link token (`base64url(payload).base64url(hmac_sig)`).
   // `security.py` carries the full derivation of both bounds and is the single
@@ -113,6 +111,8 @@ function decodeB64Safe(chunk: string): string {
 // below runs. `sanitizeCredentialsGlued.test.ts` runs `CRED_PATTERNS` itself, one
 // `replace` per pattern, and checks this scan redacts exactly the same on text with no
 // glued credentials, so a change to a pattern fails that test until its reader follows.
+// The one intended difference is the JWT header check below, which those patterns, and
+// the base64 check that runs them, lack: that check over-redacts, the safe direction.
 
 function isDigit(c: number): boolean { return c >= 48 && c <= 57 }
 function isUpper(c: number): boolean { return c >= 65 && c <= 90 }
@@ -125,6 +125,24 @@ function isSlackChar(c: number): boolean { return isUpper(c) || isLower(c) || is
 function isSegmentChar(c: number): boolean { return isSlackChar(c) || c === 95 }
 // `\S`. `trim` strips exactly the characters `\s` matches.
 function isNonSpace(c: number): boolean { return String.fromCharCode(c).trim() !== '' }
+
+/** Whether a JWT's first segment base64url-decodes to a JSON object, as every JWS/JWE
+ *  header does and a hostname label does not: the backend's `jwt_header` check. A
+ *  parse that fails on anything but syntax (a stack overflow) counts as one. */
+function isJsonObjectSegment(segment: string): boolean {
+  let decoded: string
+  try {
+    decoded = atob(segment.replace(/-/g, '+').replace(/_/g, '/'))
+  } catch {
+    return false
+  }
+  try {
+    const value: unknown = JSON.parse(decoded)
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+  } catch (e) {
+    return !(e instanceof SyntaxError)
+  }
+}
 
 // The key-assignment names, lower case. Their patterns carry the `i` flag, which
 // without `u` matches ASCII letters in either case and every other character exactly.
@@ -258,7 +276,8 @@ class CredentialScan {
   // `eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}` (a JWS, or a compact JWE whose key
   // segment may be empty) and `eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])`
   // (the two-segment dashboard link token). The segment class has no `.`, so the
-  // first segment always runs to the end of its run.
+  // first segment always runs to the end of its run. A JWS/JWE hit counts only when
+  // its header is a JSON object or holds a second `eyJ`, as in the backend.
   private jwt(pos: number): number {
     const t = this.text
     if (!t.startsWith('eyJ', pos) || pos < this.jwtRun) return -1
@@ -272,7 +291,10 @@ class CredentialScan {
       i = this.runEnd(i + 1, isSegmentChar)
       dots++
     }
-    if (dots >= 2) end = i
+    if (dots >= 2) {
+      const header = t.slice(pos, first)
+      if (header.indexOf('eyJ', 1) !== -1 || isJsonObjectSegment(header)) end = i
+    }
     if (first - (pos + 3) >= 96 && t[first] === '.') {
       const sig = this.runEnd(first + 1, isSegmentChar)
       if (sig - (first + 1) === 43) end = Math.max(end, sig)

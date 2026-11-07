@@ -45,6 +45,7 @@ RULE_SOURCES: tuple[str, ...] = (
     "security/redaction_switch.py",
     "security/exfil.py",
     "credential_patterns.py",
+    "jwt_header.py",
     "slack_manifest.py",
     "slack-manifest.yaml",
     "security/redaction_patterns.py",
