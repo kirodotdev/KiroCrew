@@ -436,6 +436,24 @@ class TestFileIO:
         store.delete_file(project, "references.bib")
         assert not (project / "references.bib").exists()
 
+    def test_delete_refuses_the_resolved_main_when_the_configured_one_is_absent(
+        self, project: Path
+    ) -> None:
+        """With the configured main missing, `resolve_main_file` falls back to
+        `main.tex`, and the project view and compile both use it. Deleting that
+        document must be refused too, even though `.papyrus.json` names another file."""
+        store.set_main_file(project, "never-created.tex")
+        assert store.resolve_main_file(project) == "main.tex"
+
+        refused = False
+        try:
+            store.delete_file(project, "main.tex")
+        except ValueError:
+            refused = True
+        assert (refused, (project / "main.tex").is_file()) == (True, True)
+        # The guard does not rewrite the config as a side effect.
+        assert store.read_project_config(project)["main_file"] == "never-created.tex"
+
     def test_delete_missing_file_raises(self, project: Path) -> None:
         with pytest.raises(FileNotFoundError):
             store.delete_file(project, "absent.tex")
