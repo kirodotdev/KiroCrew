@@ -1066,7 +1066,11 @@ path with unchanged ranges folded. The content limit is measured in JavaScript U
 code units rather than encoded bytes so the guard stays allocation-free while an
 editor changes. Editable live diffs use the same
 predicate and degrade to the ordinary editable file surface rather than becoming
-read-only. Do not duplicate or weaken the limits at call sites.
+read-only; the editor reports that drop through `onLiveDiffDegraded`, and a
+Files panel tab in diff mode then shows a clean buffer's read-only diff view in
+its place. There, and only on the visible tab, the pair starts its worker diff
+without the click (`autoLineByLine`); chat file cards and the Turn Diff tab stay
+click-to-start. Do not duplicate or weaken the limits at call sites.
 
 ## Typography scale
 
