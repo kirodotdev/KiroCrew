@@ -15,7 +15,7 @@ import type { ChatMessage } from '../../../types'
 import { mergeIntoDraft } from '../../../utils/chatDrafts'
 import { detectPreviewUrl, previewFeedDecision } from '../../../utils/detectPreviewUrl'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../../../utils/fenceShell'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../../../utils/fileReadQuery'
 import { safeSetItem } from '../../../utils/safeStorage'
 import { onTerminalReady, sendRawToTerminalSession } from '../../../utils/terminalRegistry'
 import { errMessage } from '../../../utils/thunkError'
@@ -244,7 +244,7 @@ export function useColdFileTabHydration({ tabsCtl, showActionError }: {
         const text = r.data.ok ? r.data.text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
         // The verdict is re-established by the same read that refills the
         // buffer -- it was stripped from persistence alongside the content.
-        tabsCtl.patchTab(t.id, { content: text, savedContent: text, binary: r.data.ok && r.data.binary, partial: r.data.ok && isPartialRead(r.data), placeholder: !r.data.ok })
+        tabsCtl.patchTab(t.id, { content: text, savedContent: text, binary: r.data.ok && r.data.binary, partial: r.data.ok && partialReadCause(r.data), placeholder: !r.data.ok })
       } else if ((r.data || r.isError) && !reportedColdReadsRef.current.has(t.id)) {
         // The tab stays cold (its buffer untouched, so the next chip/tree click
         // retries the read) and the failure is reported above the composer.
