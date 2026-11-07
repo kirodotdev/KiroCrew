@@ -414,7 +414,7 @@ def is_pending_overdue(item: WorkItem, *, now: datetime | None = None) -> bool:
     free runner, a deleted required check, a fork run nobody approves) answers
     ``pending`` on every cycle, and polling it never ends. ``pending_since`` is when the
     current run of ``pending`` verdicts began; past :data:`PENDING_BUDGET_SECS` the
-    conductor stops evaluating the item and asks the user. Derived at read time, like
+    conductor re-arms the item once, then closes it. Derived at read time, like
     :func:`is_stale`.
 
     Never for a terminal item, nor for a ``human_approval`` bar: that one is ``pending``
