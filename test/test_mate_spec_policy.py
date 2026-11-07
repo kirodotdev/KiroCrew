@@ -435,7 +435,6 @@ _UNCARRIED_SETTINGS = {
         ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
         ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
         ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
-        ({"subagent": {"availableAgents": []}}, "toolsSettings.subagent.availableAgents"),
         (
             {"use_subagent": {"availableAgents": ["reviewer"]}},
             "toolsSettings.use_subagent.availableAgents",
@@ -460,6 +459,21 @@ def test_a_tools_setting_crew_cannot_carry_is_refused_by_name(settings, named):
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert named in caught.value.fields
+
+
+def test_a_template_with_a_subagent_allowlist_is_added_and_trusted_agents_still_refused(home):
+    user, mates = home
+    allow = {"subagent": {"availableAgents": ["gpu-*"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": allow})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["toolsSettings"] == allow
+    trusted = {"subagent": {"availableAgents": ["gpu-*"], "trustedAgents": ["gpu-*"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": trusted})
+    with pytest.raises(WorkerKitError) as caught:
+        mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert "toolsSettings.subagent.trustedAgents" in caught.value.detail
+    assert "toolsSettings.subagent.availableAgents" not in caught.value.detail
 
 
 def test_the_kit_copy_refuses_a_template_whose_deny_kas_cannot_enforce(home):
@@ -536,6 +550,24 @@ def test_each_carried_deny_reaches_the_workers_kas_rules(settings, capability):
     mate_spec_policy.layer_policy(spec, {"toolsSettings": settings})
     assert spec["toolsSettings"] == settings
     assert any(r["capability"] == capability for r in _deny_rules(spec["toolsSettings"]))
+
+
+@pytest.mark.parametrize("names", [["gpu-*", "reviewer"], []])
+def test_a_subagent_allowlist_is_carried_and_becomes_a_kas_deny(names):
+    """``[]`` is kiro-cli's "spawn nothing" and travels as KAS's deny on every sub-agent."""
+    settings = {"subagent": {"availableAgents": names}}
+    spec: dict = {}
+    mate_spec_policy.layer_policy(spec, {"toolsSettings": settings})
+    assert spec["toolsSettings"] == settings
+    rules = [r for r in _deny_rules(spec["toolsSettings"]) if r["capability"] == "subagent"]
+    assert rules and all(r.get("exclude", []) == names for r in rules)
+
+
+def test_a_subagent_allowlist_kas_cannot_express_is_refused_by_name():
+    settings = {"subagent": {"availableAgents": ["re[v]iewer"]}}
+    with pytest.raises(SpecPolicyUncarried) as caught:
+        mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
+    assert "toolsSettings.subagent.availableAgents" in caught.value.fields
 
 
 def test_a_carried_allowed_command_is_answered_by_crews_gate():
