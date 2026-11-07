@@ -196,6 +196,34 @@ class TestAgentsSliceHeadroom:
         assert sa._agents_slice_available_gb() == -1.0
         assert sa._cgroup_available_gb() == -1.0
 
+    def test_a_pods_own_child_ceiling_binds(self, tmp_path, monkeypatch, no_container_cgroup):
+        """A pod writes its MemoryMax on its own child slice. When that child
+        is nearer its wall than the parent, admission must measure the child,
+        or it starts subagents the child then OOM-kills."""
+        parent = _fabricate_slice(tmp_path, high="max", maximum=100 * GIB, current=10 * GIB)
+        child = parent / sb._agents_slice_name()
+        child.mkdir()
+        (child / "memory.high").write_text("max\n", encoding="utf-8")
+        (child / "memory.max").write_text(f"{4 * GIB}\n", encoding="utf-8")
+        (child / "memory.current").write_text(f"{int(3.5 * GIB)}\n", encoding="utf-8")
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        assert sa._agents_slice_available_gb() == pytest.approx(0.5)
+        # A non-pod instance's ceiling is the parent's, whatever its child holds.
+        monkeypatch.delenv("KIROCREW_POD")
+        assert sa._agents_slice_available_gb() == pytest.approx(90.0)
+
+    def test_an_unbounded_pod_child_leaves_the_parent_wall(
+        self, tmp_path, monkeypatch, no_container_cgroup
+    ):
+        parent = _fabricate_slice(tmp_path, high="max", maximum=10 * GIB, current=4 * GIB)
+        child = parent / sb._agents_slice_name()
+        child.mkdir()
+        (child / "memory.max").write_text("max\n", encoding="utf-8")
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        assert sa._agents_slice_available_gb() == pytest.approx(6.0)
+
     def test_absent_slice_does_not_constrain(self, tmp_path, monkeypatch, no_container_cgroup):
         monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path / "nothing-here"))
         assert sa._agents_slice_available_gb() == -1.0
