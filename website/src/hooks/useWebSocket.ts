@@ -664,6 +664,11 @@ export function useWebSocket() {
             dispatch(sseActivityEvent(ev))
             break
           }
+          case 'models_changed':
+            // A cold model list was filled by a background session the server
+            // started for it (no chat spawned, so no `spawned` frame came).
+            queryClient.invalidateQueries({ queryKey: ['available-models'] })
+            break
           case 'subagent_spawn':
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string }))
             break

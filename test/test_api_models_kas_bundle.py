@@ -135,6 +135,21 @@ class TestTheList:
         assert row["model_name"] == "auto"
         assert row["context_window"] > 0
 
+    async def test_cold_starts_the_background_probe_and_a_recording_does_not(
+        self, ready, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import models_cold_probe
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            models_cold_probe, "start_cold_model_probe", lambda _s, b: calls.append(b) or True
+        )
+        await bundle.api_models_kas_bundle(_request())
+        assert calls == [ACP_BACKEND_KAS]
+        _record({"id": "auto", "name": "Auto", "rate": 1})
+        await bundle.api_models_kas_bundle(_request())
+        assert calls == [ACP_BACKEND_KAS]
+
     async def test_recorded_rows_carry_the_multiplier_and_only_known_windows(self, ready):
         _record({"id": "auto", "name": "Auto", "rate": 1}, {"id": "model-x", "rate": 2})
         known_windows = {"model-x": None}

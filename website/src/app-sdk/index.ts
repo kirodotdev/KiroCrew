@@ -71,7 +71,7 @@ export function useAppApi(): AppApi {
 // ---------------------------------------------------------------------------
 
 /** Tier 0 — always delivered to every connected client. */
-const WS_TIER0_EVENTS = new Set(['dashboard', 'refresh', 'update_progress'])
+const WS_TIER0_EVENTS = new Set(['dashboard', 'refresh', 'update_progress', 'models_changed'])
 
 /**
  * Slot-scoped events — they carry a `slot` field. An app token receives these
