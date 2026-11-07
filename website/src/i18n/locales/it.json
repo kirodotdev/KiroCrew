@@ -6858,7 +6858,7 @@
       "that_request_already_timed_out_and_was_denied": "Quella richiesta {{source}} è già scaduta ed è stata rifiutata — il job non è più in attesa. Controlla il feed delle approvazioni per il registro.",
       "total": "Totale",
       "dictation_added": "Dettatura aggiunta al messaggio",
-      "mic_in_use_elsewhere": "Microfono in uso in un'altra chat",
+      "mic_in_use_elsewhere": "Microfono in uso altrove",
       "mic_in_use_in": "Microfono in uso in “{{chat}}”",
       "type_label": "Scrivi invece",
       "transcribing": "Trascrizione in corso…",

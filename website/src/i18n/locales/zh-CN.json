@@ -6512,7 +6512,7 @@
       "that_request_already_timed_out_and_was_denied": "此 {{source}} 请求已超时，系统已拒绝 — 任务不再等待。在审批动态中查看记录。",
       "total": "总计",
       "dictation_added": "已将口述内容加入消息",
-      "mic_in_use_elsewhere": "麦克风正在另一个对话中使用",
+      "mic_in_use_elsewhere": "麦克风正在别处使用",
       "mic_in_use_in": "麦克风正在“{{chat}}”中使用",
       "type_label": "改为打字",
       "transcribing": "转写中…",

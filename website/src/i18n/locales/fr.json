@@ -6858,7 +6858,7 @@
       "that_request_already_timed_out_and_was_denied": "Cette demande {{source}} a déjà expiré et a été refusée — la tâche n’attend plus. Consulte le flux des approbations pour la trace.",
       "total": "Total",
       "dictation_added": "Dictée ajoutée à votre message",
-      "mic_in_use_elsewhere": "Micro utilisé dans une autre conversation",
+      "mic_in_use_elsewhere": "Micro utilisé ailleurs",
       "mic_in_use_in": "Micro utilisé dans « {{chat}} »",
       "type_label": "Écrire à la place",
       "transcribing": "Transcription…",
