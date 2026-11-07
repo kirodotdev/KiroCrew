@@ -2040,8 +2040,13 @@ operator exclusion may exist while the process holding it cannot answer for it, 
 empty set that arrives with this reason is unknown rather than permissive, and serving it
 as a permission is exactly how an excluded tool runs. The refusal is bounded at both
 ends: a session that resolves its policy once is served from the per-session cache and
-never reaches a failure path again, and for one that has not, the refusal lasts at most
-the 60s negative-cache window.
+never reaches a failure path again, and for one that has not, the refusal ends at most
+`_NEGATIVE_CACHE_PROBE_INTERVAL` (10s) after the gateway answers again. Past that
+interval one call dials as a half-open probe, and any answered read, a `200` or any
+`4xx`, clears the window for every session in the process. A probe that fails, a `5xx`
+included, re-arms the window and refuses as the cache would have. The
+`tool_policy.resolution_failed` audit row names the port it dialled and the
+resolution step that chose it (`port=`, `port_source=`) beside `error_class=`.
 
 The other reasons stay permissive, each because no operator exclusion is known to exist
 for that caller or because refusal would be permanent rather than a window that closes. `agent_not_resolved` is the `404`, returned both for a session still
@@ -2071,7 +2076,8 @@ never been read once.
 A missing session key is not cached as a policy (a startup race must be
 retryable, and it clears in milliseconds); a resolved key whose policy call fails
 gets a 60s negative cache so a persistently unreachable gateway does not add a 5s
-timeout to every tool call. That negative cache reports the reason of the clock it
+timeout to every tool call. Inside that window the half-open probe dials at most once
+per 10s per process. That negative cache reports the reason of the clock it
 hit -- the short window an identity race, the long window `resolution_failed` -- so
 a cached read lands in the same class its live form would. Serving one shared reason
 would repeat the conflation the resolver exists to undo, one level down. The gateway
