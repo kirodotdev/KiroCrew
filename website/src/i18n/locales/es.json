@@ -6079,6 +6079,17 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "No se pudo comprobar a quién pertenecen los archivos de {{productName}}.",
+      "message": "Algunos archivos de {{productName}} pertenecen a otro usuario, así que {{productName}} no puede leerlos.",
+      "run_this": "Ejecuta este comando en una terminal de este equipo y vuelve a intentarlo.",
+      "fix_button": "Arreglar permisos",
+      "fixing": "Arreglando…",
+      "fixed": "Arreglado. Reinicia {{productName}} y vuelve a intentarlo.",
+      "fix_failed": "No se pudieron arreglar los archivos. Ejecuta el comando de abajo en una terminal.",
+      "blocks": "Hasta que se arregle, {{productName}} no puede crear un Bot nuevo.",
+      "or_run_this": "O ejecuta este comando en una terminal de este equipo y vuelve a intentarlo."
+    },
     "mateWorkers": {
       "approvals_label": "Aprobaciones de herramientas de las sesiones de este Bot: {{n}}",
       "trust": "Confiar en esta sesión",

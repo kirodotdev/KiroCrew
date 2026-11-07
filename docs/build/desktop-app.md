@@ -834,6 +834,37 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+The **Fix permissions** button on the data-home notice (files another account
+owns, see `docs/system-specs/modules/cli.md` "Data home owned by another
+account") rides the same gate. `window.dataHomeFixAPI` has two calls, and each
+passes one value: the data home the connected gateway reports in `/api/status`
+(`data_home_access.home`). It only gates the repair: the main process repairs
+the home it resolves itself (`home-dir.js`), and refuses both calls unless the
+two resolve to the same real path, since a gateway started with another
+`KIROCREW_HOME` would stay broken after a repair of this one. `available(home)`
+invokes `data-home:can-fix`, which runs the three checks and answers whether this
+host offers an admin prompt (`/usr/bin/osascript` on macOS, `pkexec` on Linux,
+each at a fixed path) and the homes match; the notice leads with the button only
+on `true`, and keeps the command to copy everywhere. `fix(home)` invokes
+`data-home:fix`, which runs the same checks, refuses a data home that is a link, not a
+directory or a filesystem root, and asks the OS to run exactly
+`find <real path> -xdev ! -user <uid> \( -type d -o -links 1 \) -exec chown -h <uid> {} +`
+with admin rights (fixed binary paths): macOS through
+`do shell script ... with administrator privileges`, Linux through `pkexec`. The
+OS draws the password prompt, so the password never reaches the app. As root it
+changes only entries another account owns, on the home's own filesystem; `find`
+follows no link and `chown -h` changes a symlink itself, never its target; and a
+non-directory with a second hard link is skipped, because a link planted in the
+folder to a root-owned file would otherwise hand that file to this account. The
+owner-only modes are then restored with `chmod -R u+rwX` as the person, without
+privilege; a missing or failed `chmod` answers `failed`, since modes left
+unreadable still block the app. It answers `{ ok }`, or `{ ok: false, reason }`
+with `cancelled` for a dismissed prompt and `unavailable` for a mismatched home;
+[`data-home-fix.js`](../../website/electron/data-home-fix.js) owns the route.
+After a fix the notice stays and asks for a restart: the running gateway keeps
+the config it could not read marked unreadable for the life of the process, so
+creating a Bot works only after Kiro Crew restarts.
+
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
 ([`bundle-integrity.js`](../../website/electron/bundle-integrity.js)). The

@@ -5745,6 +5745,17 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "无法检查 {{productName}} 文件归谁所有。",
+      "message": "部分 {{productName}} 文件属于另一个用户，所以 {{productName}} 无法读取它们。",
+      "run_this": "请在这台电脑的终端里运行下面的命令，然后再试一次。",
+      "fix_button": "修复权限",
+      "fixing": "正在修复…",
+      "fixed": "已修复。请重启 {{productName}}，然后再试一次。",
+      "fix_failed": "无法修复这些文件。请改为在终端里运行下面的命令。",
+      "blocks": "修好之前，{{productName}} 无法创建新的 Bot。",
+      "or_run_this": "或者在这台电脑的终端里运行下面的命令，然后再试一次。"
+    },
     "mateWorkers": {
       "approvals_label": "来自此 Bot 会话的工具批准：{{n}}",
       "trust": "信任此会话",

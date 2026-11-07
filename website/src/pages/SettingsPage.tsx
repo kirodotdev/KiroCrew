@@ -30,6 +30,7 @@ import { SecretsPanel } from './settings/SecretsPanel'
 import { ConnectionsPanel } from './settings/ConnectionsPanel'
 import SettingsSearch from './settings/SettingsSearch'
 import { Btn, ContentSkeleton } from '../components/ui'
+import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
 
 /**
@@ -280,6 +281,7 @@ export default function SettingsPage() {
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>
+        <DataHomeOwnerStatusNotice />
         {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
           <div>
             {/* No hand-off: the active Settings panel may hold an unsaved configuration draft. */}

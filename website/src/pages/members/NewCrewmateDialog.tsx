@@ -62,6 +62,7 @@ import CrewAvatar, { type CrewAvatarOverride } from '../../components/CrewAvatar
 import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
+import { DataHomeRepair } from '../../components/DataHomeOwnerNotice'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -247,6 +248,18 @@ const CREATE_STORAGE_CODES = new Set([
   'workspace_dir_uncreatable',
   'workspace_dir_not_a_directory',
 ])
+/** The create refusal for a data home another account owns (409). */
+const DATA_HOME_NOT_OWNED = 'data_home_not_owned'
+
+/** A string field of a JSON refusal body, or `''`. */
+function errorBodyField(body: string, field: string): string {
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown>)?.[field]
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
 /** Longest server reason shown after a create failure, in characters. */
 const CREATE_REASON_MAX = 200
 
@@ -378,6 +391,9 @@ export default function NewCrewmateDialog({
   // marked on the Name field, since the field is what the answer is about.
   const [nameRefused, setNameRefused] = useState(false)
   const [error, setError] = useState('')
+  // The repair line the server sent with `data_home_not_owned`, shown under the
+  // notice to copy. Every other failure clears it (see `fail`).
+  const [fixCommand, setFixCommand] = useState('')
   // The one failure that is NOT "nothing was created": the request got no
   // answer and the roster could not be read to reconcile it. It is rendered
   // through the same notice as every other failure, but under its own lead
@@ -525,6 +541,7 @@ export default function NewCrewmateDialog({
   // Every failed create is said on the card AND reported up, so a card the
   // user left while it was busy cannot swallow the failure out of sight.
   const fail = useCallback((message: string) => {
+    setFixCommand('')
     setError(message)
     onFailedRef.current?.(message)
   }, [])
@@ -651,6 +668,13 @@ export default function NewCrewmateDialog({
         // Every other answer is said in the product's words with its next
         // step, followed by the server's short reason. The server answered,
         // so nothing was created.
+        // Files another account owns: the cause and the repair line, which no
+        // retry from here can get past.
+        if (code === DATA_HOME_NOT_OWNED) {
+          fail(t('components.dataHomeOwnerNotice.message'))
+          setFixCommand(errorBodyField(e.body, 'fix_command'))
+          return
+        }
         if (code === 'invalid_model') {
           failWithReason(t('pages.membersPage.create_failed_model'), e.message)
           return
@@ -901,6 +925,11 @@ export default function NewCrewmateDialog({
               id="crewmate-create-error"
               testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
             />
+            {fixCommand && (
+              <div data-testid="crewmate-create-fix-command">
+                <DataHomeRepair fixCommand={fixCommand} />
+              </div>
+            )}
           </div>
         )}
         {/* The secondary line, centred under the name: the Advanced settings

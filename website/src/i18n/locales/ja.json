@@ -5745,6 +5745,17 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "{{productName}} のファイルの所有者を確認できませんでした。",
+      "message": "一部の {{productName}} のファイルが別のユーザーのものになっているため、{{productName}} が読み込めません。",
+      "run_this": "このコンピューターのターミナルでこのコマンドを実行してから、もう一度お試しください。",
+      "fix_button": "権限を修正",
+      "fixing": "修正中…",
+      "fixed": "修正しました。{{productName}} を再起動してから、もう一度お試しください。",
+      "fix_failed": "ファイルを修正できませんでした。代わりに下のコマンドをターミナルで実行してください。",
+      "blocks": "これを直すまで、{{productName}} は新しい Bot を作成できません。",
+      "or_run_this": "または、このコンピューターのターミナルでこのコマンドを実行してから、もう一度お試しください。"
+    },
     "mateWorkers": {
       "approvals_label": "この Bot のセッションからのツール承認: {{n}}",
       "trust": "このセッションを信頼",

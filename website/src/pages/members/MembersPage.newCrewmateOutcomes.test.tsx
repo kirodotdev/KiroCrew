@@ -32,6 +32,8 @@ vi.mock('../../api/client', () => ({
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
     memberThread: vi.fn(),
+    // The data-home repair reads the gateway's data home from the status.
+    status: vi.fn(() => Promise.resolve({})),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
@@ -782,6 +784,72 @@ describe('New mate dialog', () => {
     expect(notice).toHaveTextContent("Couldn't create the Bot: Kiro Crew couldn't save its files on this computer. Nothing was created. Make sure the disk has free space, then try again.")
     expect(notice).toHaveTextContent(`Details: ${reason}`)
     expect(screen.getByLabelText('Name')).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('a data home another account owns says so and gives the server\'s repair line to copy', async () => {
+    const fix = "sudo chown -R ann '/srv/crew-data' && chmod -R u+rwX '/srv/crew-data'"
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, 'files belong to another user', JSON.stringify({
+        error: 'Some Kiro Crew files belong to another user: /srv/crew-data/config.json',
+        code: 'data_home_not_owned',
+        fix_command: fix,
+      })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent("Some Kiro Crew files belong to another user, so Kiro Crew can't read them.")
+    expect(notice).not.toHaveTextContent('Details')
+    const block = screen.getByTestId('crewmate-create-fix-command')
+    expect(block.querySelector('code')?.textContent).toBe(fix)
+    // Editing the name clears the notice and its command together.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar2' } })
+    expect(screen.queryByTestId('crewmate-create-fix-command')).toBeNull()
+  })
+
+  it('a one-click repair keeps the refusal and asks for a restart, and is not a create', async () => {
+    const fix = vi.fn(async () => ({ ok: true }))
+    window.dataHomeFixAPI = { available: vi.fn(async () => true), fix }
+    ;(api.status as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data_home_access: { ok: false, home: '/srv/crew-data', foreign: ['/srv/crew-data'], fix_command: 'FIX' },
+    })
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, 'x', JSON.stringify({ error: 'x', code: 'data_home_not_owned', fix_command: 'FIX' })),
+    )
+    try {
+      await renderPage([row()])
+      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+      await openDialog()
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+      fireEvent.click(await screen.findByTestId('data-home-fix-button'))
+      expect(await screen.findByText('Fixed. Restart Kiro Crew, then try again.')).toBeInTheDocument()
+      expect(fix).toHaveBeenCalledWith('/srv/crew-data')
+      // The running gateway still refuses until it restarts, so the refusal stays.
+      expect(screen.getByTestId('crewmate-create-error')).toBeInTheDocument()
+      // The repair is not a create: the person presses Create when ready.
+      expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      delete window.dataHomeFixAPI
+    }
+  })
+
+  it('a later failure of another kind drops the repair line', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new ApiError(409, 'x', JSON.stringify({ error: 'x', code: 'data_home_not_owned', fix_command: 'FIX' })))
+      .mockRejectedValueOnce(new ApiError(500, 'config lock held', ''))
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await screen.findByTestId('crewmate-create-fix-command')
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(screen.getByTestId('crewmate-create-error')).toHaveTextContent('config lock held'))
+    expect(screen.queryByTestId('crewmate-create-fix-command')).toBeNull()
   })
 
   it('a model refusal points at the Model field under Advanced settings', async () => {

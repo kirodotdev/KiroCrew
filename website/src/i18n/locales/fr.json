@@ -6079,6 +6079,17 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "Impossible de vérifier à qui appartiennent les fichiers de {{productName}}.",
+      "message": "Certains fichiers de {{productName}} appartiennent à un autre utilisateur, donc {{productName}} ne peut pas les lire.",
+      "run_this": "Lance cette commande dans un terminal sur cet ordinateur, puis réessaie.",
+      "fix_button": "Réparer les autorisations",
+      "fixing": "Réparation…",
+      "fixed": "Réparé. Redémarre {{productName}}, puis réessaie.",
+      "fix_failed": "Impossible de réparer les fichiers. Lance plutôt la commande ci-dessous dans un terminal.",
+      "blocks": "Tant que ce n’est pas réglé, {{productName}} ne peut pas créer de nouveau Bot.",
+      "or_run_this": "Ou lance plutôt cette commande dans un terminal sur cet ordinateur, puis réessaie."
+    },
     "mateWorkers": {
       "approvals_label": "Approbations d’outils des sessions de ce Bot : {{n}}",
       "trust": "Faire confiance à cette session",

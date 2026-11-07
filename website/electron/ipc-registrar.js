@@ -50,6 +50,9 @@ function createIpcRegistrar({
   // The terminal-app allowlist and its grant-gated launcher. Injected so the
   // channel can be exercised without probing real install paths.
   externalTerminal = require("./external-terminal"),
+  // The data-home ownership repair. Injected so the channels can be exercised
+  // without asking the OS for admin rights.
+  dataHomeFix = require("./data-home-fix"),
   // The gateway's internal secret, re-read per call (it rotates per boot). Used
   // only to redeem an external-terminal grant at this shell's own gateway.
   readInternalSecret = () => "",
@@ -660,6 +663,26 @@ function createIpcRegistrar({
         fetchFn,
         log,
       });
+    });
+
+    // Give the data home back to the person running this app after an
+    // earlier root run left it owned by another account. It asks the OS for
+    // admin rights on this machine, so both channels take the full
+    // local-dashboard gate. The one argument is the data home the gateway
+    // reports; it only gates the repair (both must be the home the main
+    // process resolves itself, which stays the only target), and `can-fix`
+    // answers a bare boolean so the notice shows the button only where it works.
+    ipcMain.handle("data-home:can-fix", async (event, gatewayHome) => {
+      try {
+        await assertLocalDashboard(event, "data-home:can-fix");
+      } catch {
+        return false;
+      }
+      return dataHomeFix.canFix({ gatewayHome });
+    });
+    ipcMain.handle("data-home:fix", async (event, gatewayHome) => {
+      await assertLocalDashboard(event, "data-home:fix");
+      return dataHomeFix.fixDataHome({ gatewayHome, log });
     });
 
     ipcMain.handle("zoom:get", (event) =>
