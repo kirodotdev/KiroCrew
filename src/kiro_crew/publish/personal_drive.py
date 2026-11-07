@@ -123,7 +123,7 @@ logger = logging.getLogger(__name__)
 #: the default path. Flipping this key to ``DEFAULT_PROVIDER`` is the last step of that
 #: work, not a step of this change.
 #:
-#: The value satisfies the ``^[a-z0-9-]{1,32}$`` shape the one HTTP boundary that
+#: The value satisfies the ``^[a-z0-9_-]{1,32}$`` shape the one HTTP boundary that
 #: accepts a provider id validates against, so the picker row it renders can actually
 #: be submitted.
 PERSONAL_DRIVE_PROVIDER = "personal-drive"
@@ -208,7 +208,7 @@ class PersonalDriveProvider(PublishProvider):
         """One destination, one registry key.
 
         There is deliberately no per-account variant: a provider id is validated at the
-        HTTP boundary against ``^[a-z0-9-]{1,32}$``, so an account-qualified key could be
+        HTTP boundary against ``^[a-z0-9_-]{1,32}$``, so an account-qualified key could be
         listed in the picker but never submitted -- a row that 400s on click is worse
         than no row. Which account a NEW publish uses is the profile registry's default;
         an EXISTING publication pins the ACCOUNT ID that holds it into its ``external_id``,
@@ -1845,7 +1845,7 @@ def register_public_edition_providers() -> None:
     back and what has to land before the key moves.
 
     There is deliberately no per-account key. A provider id is validated at the one HTTP
-    boundary that accepts one against ``^[a-z0-9-]{1,32}$``, so an account-qualified key
+    boundary that accepts one against ``^[a-z0-9_-]{1,32}$``, so an account-qualified key
     would be listed by ``list_providers`` and rejected on submit -- a picker row that
     400s when clicked is worse than no row at all. Choosing an account per publish needs
     a real publish argument on the shared seam, which is its own change. Until then a

@@ -46,7 +46,7 @@ def test_provider_implements_the_whole_abc():
 
 
 def test_no_per_account_provider_key_is_registered(monkeypatch):
-    """A provider id is validated at the HTTP boundary against ^[a-z0-9-]{1,32}$, so a
+    """A provider id is validated at the HTTP boundary against ^[a-z0-9_-]{1,32}$, so a
     colon-qualified per-account key would be listed in the picker and rejected on
     submit. A row that 400s when clicked is worse than no row."""
     import re as _re
