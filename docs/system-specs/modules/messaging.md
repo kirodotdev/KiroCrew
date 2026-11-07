@@ -6310,8 +6310,20 @@ runs without bound, and each rule below is what closes it.
    expressly so an `is_from_me` correction can land), so an echo can arrive
    looking exactly like user input. The client therefore keeps a short-lived
    **ledger of what it sent** — one record per sent message, holding both the
-   body it went out with and the guid the bridge reported, consumed whole on a
+   body key (a SHA-256 digest of the handle and the body it went out with, the
+   same size however long the body) and the guid the bridge reported, consumed
+   whole on a
    match — and the transport consults it as the LAST gate before dispatch.
+   A self-chat on an account with other devices also receives copies of a send
+   hours or days later, each with a new guid and ROWID but the sent row's date.
+   So when no record matches, the client checks a bounded history of
+   `(body key, sent_at)` for every send that may have gone out (`ECHO_WINDOW`
+   entries, never consumed, since one send gets several copies): a row with that
+   handle and body whose bridge `created_at` is within `ECHO_TTL_S` of the send is
+   the echo however late it arrives. The match keys on when the agent sent, not
+   on when the copy arrives, so a row is never dropped for being old: the
+   cursor's restart replay and a message Messages delivers late are legitimately
+   old.
 
 The ordering constraints are the part a refactor must preserve:
 
@@ -6326,8 +6338,13 @@ The ordering constraints are the part a refactor must preserve:
   before its result does.
 
 Reordering any of those reintroduces the loop. The accepted cost is a bounded
-one: an allow-listed sender who repeats the agent's exact text within the TTL has
-that message suppressed once, in any chat rather than only a self-chat.
+one: an allow-listed sender's message carrying the agent's exact text and dated
+within the TTL of that send is suppressed, in any chat rather than only a
+self-chat. The history lives in memory and holds the last `ECHO_WINDOW` sends,
+so a late copy of a send from before a restart, or from more than `ECHO_WINDOW`
+sends back, is answered. That answer's own copies are suppressed only if they
+arrive within the next `ECHO_WINDOW` sends; a channel that sends more than that
+between a send and its copies answers those copies too.
 
 **Rendering.** Only the final answer is delivered; reasoning and tool activity
 stay in the gateway. There is no placeholder message, because there is no edit
