@@ -2,7 +2,7 @@
    One solid accent from the theme, `--ultra-accent`, is the ghost's colour and
    every icon's. It is the theme's `--aim` pulled toward the strongest text
    colour so it holds contrast on idle, hover and selected rows in light and
-   dark. The words "Ultra Mode" alone (the sidebar eyebrow, the composer chip
+   dark (the composer chip while off stays grey). The words "Ultra Mode" alone (the sidebar eyebrow, the composer chip
    while on, the welcome title) wear a purple-to-blue text gradient, from the
    theme's `--aim` to its `--info`. Nothing here covers other UI: each rule
    colours the element it is set on. */
@@ -15,10 +15,6 @@
 .crew-grad {
   background-color: var(--aim);
   color: var(--aim-fg);
-}
-
-.crew-chip-text {
-  color: var(--ultra-accent);
 }
 
 /* The "Ultra Mode" words. The purple stop is the theme's `--aim` and the blue
@@ -97,8 +93,8 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
 
 /* The composer's Ultra Mode chip. Off and on must differ in the edge and the
    fill, not only in the label, so a glance tells them apart.
-   Off: an untinted glass chip with the app's plain 1px border, like any other
-   composer chip; only the bolt and the label carry the accent.
+   Off: an untinted glass chip with the app's plain 1px border and a grey bolt
+   and label, like any other composer chip.
    Pressed (`aria-pressed="true"`): an accent tint, a 2px solid accent edge
    (border plus an inset ring), a filled bolt and the gradient label.
    Panes are solid by default (liquid-glass.css forces fill and outline with
