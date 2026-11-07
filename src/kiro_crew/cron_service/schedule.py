@@ -673,6 +673,21 @@ _BAD_CRON_WARNED_MAX = 1024
 _BAD_CRON_REFUSED = [0]  # evaluations the full memo refused a row
 
 
+def _next_wall_clock_ts(cron: croniter, tz: tzinfo, now: float) -> float:
+    """The next run of ``cron``, started on ``tz``'s naive wall clock, as a UTC epoch.
+
+    Given an aware start, croniter 2 shifts a run past a DST change by the offset
+    change a second time, so the wall time is stepped here and the zone attached, as
+    ``_humanize_cron`` does. A repeated wall time whose first instant is not after
+    ``now`` takes its second.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    wall = cron.get_next(seams.datetime)
+    ts = wall.replace(tzinfo=tz).timestamp()
+    return ts if ts > now else wall.replace(tzinfo=tz, fold=1).timestamp()
+
+
 def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
     """Return the immediate next cron boundary as a UTC epoch, ignoring skip_dates.
 
@@ -692,8 +707,8 @@ def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
         return None
     try:
         tz = _job_tz(job)
-        base = seams.datetime.fromtimestamp(now, tz=tz)
-        nxt = croniter(sched.cron_expr, base).get_next(float)
+        base = seams.datetime.fromtimestamp(now, tz=tz).replace(tzinfo=None)
+        nxt = _next_wall_clock_ts(croniter(sched.cron_expr, base), tz, now)
     except Exception as exc:  # CroniterBadDateError for an unsatisfiable expression
         # Re-armed every poll: warn once per job+expression; a full memo refuses rows, said once.
         key, val = hash(job.id), hash(sched.cron_expr)
@@ -760,9 +775,8 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
         if sched.kind == "at" and sched.at_ts is not None:
             return _next_unskipped_ts(job, sched.at_ts) if sched.at_ts > now else None
         if sched.kind == "cron" and sched.cron_expr is not None:
-            # croniter interprets cron_expr in base's timezone; get_next(float) returns UTC epoch
             tz = _job_tz(job)
-            base = seams.datetime.fromtimestamp(now, tz=tz)
+            base = seams.datetime.fromtimestamp(now, tz=tz).replace(tzinfo=None)
             cron = croniter(sched.cron_expr, base)
             # Advance past any skip_dates, bounded by a wall-clock horizon so the
             # bound does not depend on schedule granularity (a daily and a */5
@@ -770,7 +784,7 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
             # safety ceiling against a pathological all-skipped sub-minute config.
             horizon = now + _MAX_SKIP_DATE_HORIZON_SECS
             for _ in range(_MAX_SKIP_DATE_LOOKAHEAD):
-                nxt = cron.get_next(float)
+                nxt = _next_wall_clock_ts(cron, tz, now)
                 # The slot that repeats the last run's occurrence in a new host zone
                 # is not its next run (see _already_ran_by_wall_clock).
                 if _already_ran_by_wall_clock(job, seams.datetime.fromtimestamp(nxt, tz=tz)):
