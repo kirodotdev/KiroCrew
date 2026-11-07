@@ -155,6 +155,31 @@ class TestSessionManager:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_a_noted_replay_delivery_lasts_as_long_as_its_lease(self, cfg):
+        """A delivery is noted only on an armed lease and binds to the native
+        conversation it reached: it survives a re-arm, a respawned process does
+        not inherit it, and a lease armed after the old one settled starts without it."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+        live, respawned = ("client", "sid", "pid-1"), ("client", "sid", "pid-2")
+
+        assert mgr.note_provider_switch_replay_delivered("thread1", live) is False
+        mgr.mark_provider_switch_replay("thread1")
+        assert mgr.provider_switch_replay_delivered("thread1", live) is False
+        assert mgr.note_provider_switch_replay_delivered("thread1", live) is True
+        mgr.mark_provider_switch_replay("thread1")
+        assert mgr.provider_switch_replay_delivered("thread1", live) is True
+        assert mgr.provider_switch_replay_delivered("thread1", respawned) is False
+        assert mgr.provider_switch_replay_pending("thread1") is True
+
+        mgr.consume_provider_switch_replay("thread1")
+        assert mgr.provider_switch_replay_delivered("thread1", live) is False
+        mgr.mark_provider_switch_replay("thread1")
+        assert mgr.provider_switch_replay_delivered("thread1", live) is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_compaction_marks_reinjection_without_any_callback(self, cfg):
         """The mark lives at the compaction chokepoint, not in one surface.
 
