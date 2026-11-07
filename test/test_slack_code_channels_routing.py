@@ -1100,6 +1100,7 @@ async def test_the_first_message_is_the_request_alone_with_the_framing_as_contex
         slot = await real_create(state, spec, **kwargs)
         slot._pending_context = queued
         slot._deferred_notes = []
+        slot._inflight_merge_contexts = []
         slot.append_pending_context = lambda entry: queued.append(entry) is None
         return slot
 

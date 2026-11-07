@@ -28,10 +28,11 @@ and skill expansion), ``_output`` (metrics, snapshots, OAuth banners, channel
 mirroring, segment flush and native subagent cards), ``_trust`` (hook verdicts, trust
 predicates and command patterns), ``_approval`` (the auto-approve rungs and the
 approval window), ``_pending`` (pending resets and discards, eager spawn, prefetch and
-steer), ``_queue`` (the queue drain and synthesis) and ``_commands`` (model guards,
-local commands and the recovery ladders). The shared builders are in
-``chat_runner_coverage_helpers.py``; this module re-exports the ones other suites
-import from it.
+steer), ``_queue`` (the queue drain and synthesis), ``_commands`` (model guards,
+local commands and the recovery ladders) and ``_merge_cards`` (the merge cards a turn
+takes from its session's other slots and carries through a verbatim replay). The
+shared builders are in ``chat_runner_coverage_helpers.py``; this module re-exports the
+ones other suites import from it.
 """
 
 from __future__ import annotations
