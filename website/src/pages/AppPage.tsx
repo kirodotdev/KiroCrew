@@ -1,7 +1,7 @@
 /**
  * AppPage — loads an installed app via AppHost (dynamic ESM import).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
@@ -27,6 +27,20 @@ export default function AppPage() {
   const [error, setError] = useState<string | null>(null)
   // Bumped by Retry; the load effect re-runs on it.
   const [attempt, setAttempt] = useState(0)
+  // A retry swaps this view for the loading line, which unmounts the focused
+  // Retry button. When that retry fails too, focus goes back to the new Retry
+  // instead of staying on <body>. The press is claimed by the one load run it
+  // starts, so a load a route change started never refocuses; and focus the
+  // user moved elsewhere meanwhile is left alone.
+  const retryRef = useRef<HTMLButtonElement>(null)
+  const retryPressed = useRef(false)
+  const [refocusRetry, setRefocusRetry] = useState(false)
+  useEffect(() => {
+    if (!refocusRetry) return
+    setRefocusRetry(false)
+    const focusLost = !document.activeElement || document.activeElement === document.body
+    if (focusLost) retryRef.current?.focus()
+  }, [refocusRetry])
 
   useEffect(() => {
     if (!name) return
@@ -35,6 +49,9 @@ export default function AppPage() {
     // user has left: it must neither render nor redirect.
     let cancelled = false
     let redirecting = false
+    const fromRetry = retryPressed.current
+    retryPressed.current = false
+    let failed = false
     setError(null)
     setLoading(true)
     api.getApp(name)
@@ -56,10 +73,16 @@ export default function AppPage() {
         if (cancelled) return
         setApp(null)
         // Only a 404 means the app is absent; anything else is a failure to say so.
-        if (!isNotFoundError(e)) setError(e instanceof Error ? e.message : String(e))
+        if (!isNotFoundError(e)) {
+          setError(e instanceof Error ? e.message : String(e))
+          failed = true
+        }
       })
       .finally(() => {
-        if (!cancelled && !redirecting) setLoading(false)
+        if (cancelled || redirecting) return
+        setLoading(false)
+        // Same batch as the loading flip, so the effect sees the Retry mounted.
+        if (fromRetry && failed) setRefocusRetry(true)
       })
     return () => { cancelled = true }
   }, [name, navigate, attempt])
@@ -79,7 +102,7 @@ export default function AppPage() {
       <div className="flex-1 p-4 flex flex-col gap-3">
         <ErrorNotice title={i18nT('pages.appPage.failed_to_load_app')} message={error} askAgent />
         <div className="flex items-center gap-2">
-          <Btn onClick={() => setAttempt(a => a + 1)}>{i18nT('pages.appPage.retry')}</Btn>
+          <Btn ref={retryRef} onClick={() => { retryPressed.current = true; setAttempt(a => a + 1) }}>{i18nT('pages.appPage.retry')}</Btn>
           <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appPage.back_to_apps')}</Btn>
         </div>
       </div>
