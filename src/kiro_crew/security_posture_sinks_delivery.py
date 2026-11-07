@@ -642,7 +642,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential sitting in a legacy row — written by an older build, or by any "
         "path other than the redacting POST /ledger route — would be fetched by every "
         "teammate and require a history rewrite to recall. The pre-push scan takes the "
-        "UNION of `security.get_credential_patterns()` and this app's own "
+        "UNION of `security.iter_credential_matches` and this app's own "
         "`secrets.redact_tokens`, because neither is a superset: the core patterns "
         "carry AKIA/ASIA and miss a prefixed Datadog application key, while "
         "redact_tokens knows the provider shapes and misses an AWS access key id. A "

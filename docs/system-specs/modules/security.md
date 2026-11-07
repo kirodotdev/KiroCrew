@@ -4350,7 +4350,11 @@ opt-outs and governance pins), because that is what is actually enforced.
 `exfil_query_min_len()` (returning tuples/ints, so a caller cannot mutate a live
 blocklist) — the same decoupling rationale as `get_credential_patterns()`: a
 future rename of the private name cannot silently turn the posture view into a
-lie. The `security_posture` modules are leaves; the two `token_auth` TTL constants are
+lie. A caller outside the package scans text with `iter_credential_matches(text)`, the
+linear scan `redact_credentials` runs, never with the raw pattern: its `search` re-walks a
+long `eyJ` or digit run from each start, and its `finditer` reads to the end of the text once
+per unterminated PEM header, both quadratic.
+The `security_posture` modules are leaves; the two `token_auth` TTL constants are
 imported function-locally to avoid the `kiro_crew.dashboard` package cycle.
 
 ### Frontend Security

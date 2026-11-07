@@ -1443,6 +1443,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sans_jwt_start,
         _segment_run_end,
         get_credential_patterns,
+        iter_credential_matches,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
     import kiro_crew.security.pem_scan as pem_scan  # noqa: F401

@@ -9,7 +9,8 @@ rejects is a silent leak, not a missed optimisation. The comment above
 
 The shape-only JWT branch is searched apart from the others, so one scan stays
 linear on text that repeats a lookalike. :func:`get_credential_patterns` hands
-the alternation to callers outside the package.
+the alternation to callers outside the package, and :func:`iter_credential_matches`
+scans a text with it in linear time.
 
 :mod:`kiro_crew.security.redaction` is the import path of every name defined
 here.
@@ -497,6 +498,11 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
             m = alt
         yield m
         pos = max(m.end(), m.start() + 1)
+
+
+def iter_credential_matches(text: str) -> Iterator[re.Match[str]]:
+    """Public name for :func:`_credential_matches`, the linear scan ``redact_credentials`` runs."""
+    return _credential_matches(text)
 
 
 def _contains_credential_pattern(text: str) -> bool:
