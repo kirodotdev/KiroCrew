@@ -7018,8 +7018,13 @@ record identity, explicit subject/predicate/scope, category, validity interval,
 source reference and revision distinguish a fact's identity from its wording.
 Revisions retain before/after evidence and conflict proposals. V1 keeps the
 latest 20 accepted snapshots per record; V2 keeps all accepted snapshots. Neither
-version automatically removes proposals. Metadata helpers never commit or
-embed; each writer owns the transaction with its content.
+version automatically removes proposals. `propose_conflict` adds one pending
+proposal per record, base revision, operation and change, and returns the pending
+row when only provenance differs (the writer's `source` and `confidence`, the
+metadata's `source_ref` and `observed_at`, the row's `updated_at` clock),
+because consolidation proposes as `consolidation:<session>` every session.
+Metadata helpers never commit or embed; each writer owns the transaction with
+its content.
 
 Research informing these choices: [LongMemEval](https://arxiv.org/html/2410.10813v2)
 studies granularity, fact-expanded retrieval keys and temporal filtering;
