@@ -3197,10 +3197,10 @@
         "clear_filters": "フィルターをクリア",
         "resize_list": "リストのサイズを変更",
         "resize_sidebar": "サイドバーのサイズを変更",
-        "select_a": "を選択",
+        "select_subject_to_see_details": "{{subject}} を選択すると詳細が表示されます。",
+        "select_crew_to_see_details": "クルーを選択すると詳細が表示されます。",
         "selected_change_hidden_by_filters": "選択した {{subject}} はアクティブなフィルターによって非表示になっています。",
         "selected_issue_hidden_by_filters": "選択した Issue はアクティブなフィルターによって非表示になっています。",
-        "to_see_its_details": "その詳細を表示するには",
         "select_an_issue_to_see_its_details": "詳細を表示する Issue を選択してください。",
         "select_a_work_item_to_see_its_details": "作業項目を選択すると詳細が表示されます。"
       }
