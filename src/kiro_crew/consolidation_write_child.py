@@ -608,6 +608,8 @@ def _run_job(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
     facets_raw = job.get("facets")
     facets = MemoryFacets(**facets_raw) if isinstance(facets_raw, dict) else None
     args = job.get("args") or {}
+    # Lesson rows the job changed, by kind; the gateway announces them.
+    lesson_changes: dict[str, int] = {}
     try:
         if job["kind"] == "structured":
             visible = args.get("visible_keys")
@@ -620,10 +622,17 @@ def _run_job(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
                 visible_keys=None if visible is None else frozenset(visible),
                 messages=None,
                 commit_state=commit_state,
+                changes_out=lesson_changes,
             )
         elif job["kind"] == "lessons":
             host._save_lessons(
-                args["raw"], store, None, facets=facets, key=job["key"], commit_state=commit_state
+                args["raw"],
+                store,
+                None,
+                facets=facets,
+                key=job["key"],
+                commit_state=commit_state,
+                changes_out=lesson_changes,
             )
         else:
             return {"ok": False, "kind": "error", "message": f"unknown job kind {job['kind']!r}"}
@@ -653,7 +662,7 @@ def _run_job(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
             "message": f"{type(exc).__name__}: {exc}",
             "committed": commit_state.committed,
         }
-    return {"ok": True, "committed": commit_state.committed}
+    return {"ok": True, "committed": commit_state.committed, "lesson_changes": lesson_changes}
 
 
 def facets_to_json(facets: Any) -> dict[str, Any] | None:

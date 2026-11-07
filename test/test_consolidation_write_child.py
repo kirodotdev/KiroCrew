@@ -241,6 +241,85 @@ def test_lessons_are_written_by_the_child(world, client) -> None:
     assert embedder.calls
 
 
+@pytest.fixture
+def lesson_frames():
+    """Every ``lessons.changed`` signal the gateway raises while the test runs."""
+    from kiro_crew import lesson_events
+
+    seen: list[dict] = []
+    lesson_events.set_lessons_changed_hook(seen.append)
+    yield seen
+    lesson_events.set_lessons_changed_hook(None)
+
+
+def test_lessons_the_child_wrote_are_announced_by_the_gateway(world, client, lesson_frames) -> None:
+    store, consolidator, _embedder, here = world
+
+    offload.save_lessons(
+        consolidator,
+        [
+            {"rule": "run the repo venv mypy before pushing", "category": "tool"},
+            {"rule": "send each wait call alone in its own message", "category": "workflow"},
+        ],
+        store,
+        None,
+        key=_KEY,
+        commit_state=_RunCommitState(),
+    )
+
+    assert here["lessons"] == 0, "the job ran in the gateway"
+    assert lesson_frames == [{"action": "added", "source": "consolidation", "count": 2}]
+
+
+def test_a_lesson_the_child_retired_is_announced_by_the_gateway(
+    world, client, lesson_frames
+) -> None:
+    from kiro_crew.lesson_validation import LESSON_APPLIES_ON_TOPIC
+    from kiro_crew.vector_memory import _lesson_key
+
+    store, consolidator, _embedder, here = world
+    rule = "in repo foo the flaky timing test needs a wider bound"
+    assert store.write_lesson(
+        rule, "knowledge", source="consolidation", applies=LESSON_APPLIES_ON_TOPIC
+    )
+    lesson_frames.clear()
+
+    offload.write_structured_memory(
+        consolidator,
+        {"semantic": [{"key": _lesson_key(rule), "delete": True}]},
+        _KEY,
+        store,
+        commit_state=_RunCommitState(),
+    )
+
+    assert here["structured"] == 0, "the job ran in the gateway"
+    assert store.get_semantic(_lesson_key(rule)) is None
+    assert lesson_frames == [{"action": "removed", "source": "consolidation", "count": 1}]
+
+
+def test_lessons_the_child_wrote_into_a_named_store_are_silent(
+    world, client, lesson_frames, tmp_path
+) -> None:
+    _store, consolidator, embedder, here = world
+    silo = VectorMemoryStore(db_path=tmp_path / "silo.db", embedding_dim=_DIM)
+    silo.init()
+    silo.embed_fn = embedder
+    try:
+        offload.save_lessons(
+            consolidator,
+            [{"rule": "a crew's own correction", "category": "tool"}],
+            silo,
+            None,
+            key=_KEY,
+            commit_state=_RunCommitState(),
+        )
+        assert here["lessons"] == 0
+        assert len(silo.get_lessons()) == 1
+    finally:
+        silo.close()
+    assert lesson_frames == []
+
+
 def test_a_lost_lease_is_refused_in_the_child_and_raised_here(world, client) -> None:
     store, consolidator, _embedder, here = world
     # The metadata line names no lease token, so a run holding "mine" has lost it.
