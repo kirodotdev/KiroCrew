@@ -23,10 +23,10 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -176,6 +176,11 @@ class InstalledApp:
     # consent moment. Kept separate from ``enabled`` so a normal manual disable
     # never shows the re-consent warning.
     sessionApprovalConsentPending: bool = False  # noqa: N815
+    # True once the owner consented to ``permissions.memberThreads``: set only
+    # by an enable that recorded their consent while the manifest declared the
+    # scope. A record from a host that ignored the scope never carries it, so an
+    # app consented there reaches no member thread until the owner re-consents.
+    memberThreadsConsented: bool = False  # noqa: N815
     # True once this app's approved-grants file has been written. That file
     # sits in the app tree, which an update swaps out before the new set is
     # written, so a reader can find no file for a moment. A record carrying
@@ -220,6 +225,7 @@ class InstalledApp:
             sourceCommit=str(data.get("sourceCommit", "")),
             sourceSigner=str(data.get("sourceSigner", "")),
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
+            memberThreadsConsented=data.get(MEMBER_THREADS_CONSENT_KEY) is True,
             approvedGrantsStored=data.get("approvedGrantsStored") is True,
         )
         # Migrate old "managed" field to new classification fields
@@ -371,6 +377,7 @@ def _read_installed(name: str, *, manifest: AppManifest | None = None) -> Instal
 
 
 SESSION_APPROVAL_PENDING_KEY = "sessionApprovalConsentPending"
+MEMBER_THREADS_CONSENT_KEY = "memberThreadsConsented"
 
 
 def _session_approval_consent_unrecorded(
@@ -383,9 +390,25 @@ def _session_approval_consent_unrecorded(
     host that ignored ``permissions.sessionApproval``. If the live manifest
     declares that grant, nobody ever consented to it. Key absence is only read
     in this fail-closed direction: it makes the grant pending, never approved.
+
+    The member-thread scope is held to the same rule. A record that holds the
+    grant's consent (the key present, not pending) covers
+    ``permissions.memberThreads`` only when it also says
+    ``memberThreadsConsented``, which an enable records only while the
+    manifest declares the scope. Without it -- a record consented on a host that
+    ignored the scope, or a manifest that gained the scope outside an update --
+    the consent never covered the scope, so the grant reads pending again.
     """
     if isinstance(data, dict) and SESSION_APPROVAL_PENDING_KEY in data:
-        return False
+        if data.get(SESSION_APPROVAL_PENDING_KEY) is True:
+            return False
+        if data.get(MEMBER_THREADS_CONSENT_KEY) is True:
+            return False
+        if manifest is None:
+            manifest = get_app_manifest(name)
+        return bool(
+            manifest and manifest.permissions.sessionApproval and manifest.permissions.memberThreads
+        )
     if manifest is None:
         manifest = get_app_manifest(name)
     return bool(manifest and manifest.permissions.sessionApproval)
@@ -866,6 +889,56 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
 
         permissions[family] = staged_app_grants(name, family, _read)
     return permissions
+
+
+class SessionControlWidening(NamedTuple):
+    """What a manifest newly asks of the owner's user-session consent.
+
+    ``keys`` names the manifest keys added, for the SEL row; ``words`` says the
+    same in plain words, for the operator-facing message. Both say exactly what
+    the owner has not consented to yet, so a row never reports the grant itself
+    as added when it was already held and only its member-thread scope is new.
+    """
+
+    keys: str
+    words: str
+
+
+_GRANT_WIDENING = SessionControlWidening(
+    keys="permissions.sessionApproval",
+    words="session approval control",
+)
+_GRANT_AND_SCOPE_WIDENING = SessionControlWidening(
+    keys="permissions.sessionApproval and permissions.memberThreads",
+    words="session approval control, including your chats with your Bots",
+)
+_SCOPE_WIDENING = SessionControlWidening(
+    keys="permissions.memberThreads",
+    words="session approval control over your chats with your Bots",
+)
+
+
+def _session_control_widening(
+    prior: Permissions | None, requested: Permissions
+) -> SessionControlWidening | None:
+    """What user-session control *requested* adds that the owner has not consented to.
+
+    Consent is captured when the owner enables the app, against the manifest of
+    that moment, so any later manifest that reaches further must go back through
+    it: the grant itself (``sessionApproval``) newly declared, or its
+    member-thread scope (``memberThreads``) newly declared on a held grant.
+    *prior* is the manifest consented to, ``None`` for a first install or
+    registration. A scope flag without the grant widens nothing, because it
+    grants nothing; the grant arriving later is judged then, scope included.
+    ``None`` when nothing is added.
+    """
+    if not requested.sessionApproval:
+        return None
+    if prior is None or not prior.sessionApproval:
+        return _GRANT_AND_SCOPE_WIDENING if requested.memberThreads else _GRANT_WIDENING
+    if requested.memberThreads and not prior.memberThreads:
+        return _SCOPE_WIDENING
+    return None
 
 
 def _pending_session_approval_after_manifest_change(

@@ -45,6 +45,7 @@
         },
         "version": "0.1.0"
       },
+      "memberThreadsConsented": false,
       "name": "fixture-former",
       "origin": "registry",
       "resources": "gateway",
@@ -103,6 +104,7 @@
         },
         "version": "9.0.0"
       },
+      "memberThreadsConsented": false,
       "name": "fixture-former",
       "origin": "registry",
       "resources": "gateway",
@@ -156,6 +158,7 @@
         },
         "version": "0.1.0"
       },
+      "memberThreadsConsented": false,
       "name": "fixture-former",
       "origin": "builtin",
       "resources": "gateway",
@@ -206,6 +209,7 @@
         },
         "version": "0.1.0"
       },
+      "memberThreadsConsented": false,
       "name": "fixture-former",
       "origin": "builtin",
       "resources": "gateway",
@@ -256,6 +260,7 @@
         },
         "version": "0.1.0"
       },
+      "memberThreadsConsented": false,
       "name": "fixture-former",
       "origin": "builtin",
       "resources": "gateway",
@@ -305,6 +310,7 @@
         },
         "version": "0.1.0"
       },
+      "memberThreadsConsented": false,
       "name": "fixture-former",
       "origin": "builtin",
       "resources": "gateway",
@@ -361,6 +367,7 @@
           },
           "version": "0.1.0"
         },
+        "memberThreadsConsented": false,
         "name": "fixture-former",
         "origin": "registry",
         "resources": "gateway",

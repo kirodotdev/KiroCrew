@@ -16,7 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { consumeChatHandoff, installSoftNavigate, __resetErrorJournalForTests, __resetNavSeamForTests } from '../utils/errorReport'
+import { consumeChatHandoff, installSoftNavigate, recordError, __resetErrorJournalForTests, __resetNavSeamForTests } from '../utils/errorReport'
 
 // The resolved colour mode drives screenshot-set and hero selection, so it has
 // to be switchable per test. `vi.hoisted` keeps the box defined before the mock
@@ -122,6 +122,15 @@ async function loaded() {
 }
 
 /** Collect `mc:apps-changed` dispatches for the duration of one test. */
+/** The next enable fails as the transport fails it: journaled with its code, then thrown. */
+function rejectEnableWithConsentRequired(message: string): void {
+  const code = 'session_approval_consent_required'
+  enableApp.mockImplementationOnce(async () => {
+    recordError({ source: 'api', message, status: 400, code, endpoint: `/api/apps/${NAME}/enable` })
+    throw Object.assign(new Error(message), { code })
+  })
+}
+
 function watchAppsChanged(): { count: () => number; stop: () => void } {
   let n = 0
   const onChange = () => { n += 1 }
@@ -618,7 +627,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await loaded()
 
     fireEvent.click(screen.getByRole('button', { name: /^enable$/i }))
-    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, undefined, false))
     await waitFor(() => expect(changed.count()).toBeGreaterThan(0))
     changed.stop()
   })
@@ -636,9 +645,87 @@ describe('AppDetailPage — uncovered surfaces', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/Allow .* to control your chats\?/)).toBeInTheDocument()
     expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
+    // A grant that stops at the owner's own chats says nothing about Bots.
+    expect(within(dialog).queryByText(/Bots/)).not.toBeInTheDocument()
     expect(enableApp).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
-    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, false))
+  })
+
+  it('names the member threads in the consent dialog when the manifest widens to them', async () => {
+    // An update that only adds `memberThreads` to a held grant leaves the app
+    // disabled pending re-consent; on a trusted repository this dialog is the
+    // whole ceremony, so it must say what the owner is now consenting to.
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      sessionApprovalConsentPending: true,
+      manifest: {
+        displayName: 'Ledger Lens',
+        permissions: { sessionApproval: true, memberThreads: true },
+      },
+    }))
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your Bots.")).toBeInTheDocument()
+    expect(enableApp).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, true))
+  })
+
+  it('reloads the grant when the server refuses a consent that missed a new scope', async () => {
+    // The chat-only dialog was open when an update added `memberThreads`: the
+    // server refuses that click, and the page re-reads the app so the next
+    // dialog names the scope instead of repeating the stale one.
+    getApp.mockResolvedValueOnce(installedApp({ enabled: false, sessionApprovalConsentPending: true }))
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      sessionApprovalConsentPending: true,
+      manifest: {
+        displayName: 'Ledger Lens',
+        permissions: { sessionApproval: true, memberThreads: true },
+      },
+    }))
+    // The server's sentence is English whatever the page language, so it differs
+    // here from the catalog's on purpose: the banner must show the catalog's.
+    rejectEnableWithConsentRequired('server sentence for the missing scope')
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
+    let dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, false))
+    expect(await screen.findByText(
+      'This app now also asks to reach your chats with your Bots. Review it and enable again.',
+    )).toBeInTheDocument()
+    expect(screen.queryByText('server sentence for the missing scope')).not.toBeInTheDocument()
+    // The stale dialog has closed; only the page's own button is left.
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Enable and allow chat control' })).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
+    dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText("This includes your own chats with your Bots.")).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
+    await waitFor(() => expect(enableApp).toHaveBeenLastCalledWith(NAME, true, undefined, true))
+  })
+
+  it('keeps the server sentence for a consent refusal when the manifest declares no member threads', async () => {
+    // The same code also answers an enable whose grant went pending after the
+    // page loaded; with no scope declared, the Bots sentence would be wrong.
+    getApp.mockResolvedValue(installedApp({ enabled: false }))
+    rejectEnableWithConsentRequired('session approval consent must be confirmed from a disclosure surface')
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: /^enable$/i }))
+    expect(await screen.findByText(
+      'session approval consent must be confirmed from a disclosure surface',
+    )).toBeInTheDocument()
+    expect(screen.queryByText(/your chats with your Bots/)).not.toBeInTheDocument()
   })
 
   it('a disabled self-managed app pending chat-control consent can be enabled from the detail page (#23336)', async () => {
@@ -651,7 +738,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     const dialog = await screen.findByRole('dialog')
     expect(enableApp).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
-    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, false))
   })
 
   it('a disabled self-managed app keeps two controls: Enable plus an overflow menu holding Update and Uninstall', async () => {

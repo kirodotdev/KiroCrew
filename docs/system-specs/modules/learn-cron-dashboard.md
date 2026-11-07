@@ -1994,8 +1994,10 @@ specified compatibility change.
   - `pending_context` — the pending-context route, with the validators and the
     per-source cap the note route shares;
   - `slot_note` — the note route and its deferred hold;
-  - `chat_send` — the send path (`api_chat`), its SSE writer and the
-    steer-or-queue decision a busy slot's human send asks for;
+  - `chat_send`: the send path (`api_chat`) and the steer-or-queue decision a
+    busy slot's human send asks for;
+  - `sse_write`: the SSE frame write with a client-read deadline
+    (`write_sse_or_abort`) that the send path and the OpenAI-compatible stream share;
   - `app_admission` — whether an app may take a slot for a send, a create or a
     resume, send to or cancel on a slot, or change its session settings, and the
     re-check a slot write runs after every await (`_reauthorize_after_await`);
