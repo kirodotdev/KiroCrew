@@ -116,7 +116,7 @@ def test_cleared_error_lands_entries_in_order_with_contiguous_seq(code, monkeypa
     contiguous seq.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     real_append = lg.CrewLog.append
     failures = {"left": 1}
@@ -133,7 +133,7 @@ def test_cleared_error_lands_entries_in_order_with_contiguous_seq(code, monkeypa
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     asyncio.run(_emit())
     assert failures["left"] == 0, "the injected error never fired"
@@ -164,7 +164,7 @@ def test_no_drops_under_sustained_pressure_and_peak_reflects_truth(monkeypatch, 
     """
     emit.reset_caches(limits=WriterLimits(pending_high_water=4))
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     release = threading.Event()
     real_append = lg.CrewLog.append
@@ -216,7 +216,7 @@ def test_buffer_overflow_is_rejected_at_the_tail_and_counted(monkeypatch, caplog
     # meets the ceiling in the pending count, none is claimed out of it mid-burst.
     emit.reset_caches(limits=_held_drain_limits(pending_high_water=2, max_pending_count=4))
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     release = threading.Event()
     real_append = lg.CrewLog.append
@@ -272,7 +272,7 @@ def test_a_ceiling_above_the_load_sheds_nothing(monkeypatch):
     """
     emit.reset_caches(limits=_held_drain_limits(max_pending_count=100_000))
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     release = threading.Event()
     real_append = lg.CrewLog.append
@@ -314,7 +314,7 @@ def test_oversize_raw_entry_is_refused_immediately_not_retried(caplog):
     not retried forever.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         emit.on_tool_called(SESSION, 1, name="x" * (70 * 1024), call_id="tc-big")
@@ -332,7 +332,7 @@ def test_oversize_body_is_chunked_not_refused():
     _open_session()
     huge = "y" * (lg.MAX_ENTRY_BYTES + 5000)
     emit.on_message_sent(SESSION, 1, step=1, text=huge)
-    assert emit.flush()
+    assert_drained()
 
     chunks = [e for e in _body() if e["type"] == "message/chunk"]
     sent = [e for e in _body() if e["type"] == "message/sent"]
@@ -348,7 +348,7 @@ def test_body_exactly_at_ceiling_fits_on_one_line():
     _open_session()
     body = "a" * (lg.MAX_ENTRY_BYTES - emit._ENVELOPE_HEADROOM - 200)
     emit.on_message_sent(SESSION, 1, step=1, text=body)
-    assert emit.flush()
+    assert_drained()
 
     chunks = [e for e in _body() if e["type"] == "message/chunk"]
     sent = [e for e in _body() if e["type"] == "message/sent"]
@@ -364,7 +364,7 @@ def test_body_exactly_at_ceiling_fits_on_one_line():
 def test_shutdown_drains_buffered_entries_within_deadline():
     """Entries emitted on the event loop are buffered; the drain writes them."""
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     async def _emit():
         emit.on_turn_started(SESSION, 1, "user")
@@ -385,7 +385,7 @@ def test_a_retained_batch_is_written_at_shutdown_not_abandoned(monkeypatch):
     because the schedule outlives the process.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
 
     allow = threading.Event()
     real_append = lg.CrewLog.append
