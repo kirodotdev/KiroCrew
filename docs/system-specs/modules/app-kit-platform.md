@@ -5219,6 +5219,58 @@ Writers: `apps/selection_action_frame.py`, `apps/selection_action_grants.py`,
 `apps/manifest_contributes.py`, `website/src/selectionActions/*`,
 `pages/chat/AssistantMessage.tsx`, `pages/AppDetailPage.tsx`.
 
+## 18g. The pull-request panel reaches an app through the SDK, behind the declared read
+
+`PullRequestPanel` on `@kirocrew/app-sdk` (`website/src/app-sdk/PullRequestPanel.tsx`)
+is the chat window's own `components/PullRequestPanel`, the Changes side panel, offered
+to an app page. It is App Kit seam level 2. The panel and the `CommentThreads` it renders
+call the provider through one injected client (`components/pullRequestClient.tsx`),
+whose nine members are all required: with no provider in context they use the
+dashboard's `api`, and no dashboard surface provides one. The panel draws every control
+and runs every poll the provider supports, whichever client is behind it.
+
+Which client the SDK export hands the panel is decided by the identity the host
+published, never by a prop the app passes:
+
+- **external** (an app UI under `AppHost`, a panel tab, a session control): a client over
+  the app's scoped transport (`scopedPullRequestClient`), built once `apiPathAllowed`
+  covers the read (`/api/source/pull-request`). With it undeclared the export renders an
+  `ErrorNotice` naming the path, with the agent hand-off on, and mounts nothing, so no
+  request is sent. Each member posts the body the dashboard client posts. Every other
+  endpoint the panel calls (`checks`, `status`, `ready`, `auto-merge`, `reply`, `comment`,
+  `resolve`, `unresolve`) is a child of the read's path, which covers its children, so
+  the declaration that admits the read admits every write: no manifest expresses a
+  read-only panel, and the scoped transport still checks each request.
+- **builtin**: the dashboard's client, the same rule that keeps the dashboard's query
+  client for a builtin page (§ Shared frontend module resolution). A builtin page is host
+  code, and its manifest's `permissions.api` was never what scoped it.
+- **none** (no identity in context): the external answer with nothing declared, the
+  refusal. Every app UI the host mounts carries an identity, and `AppIdentityProvider` is
+  off the barrel, so an app cannot reach the builtin answer.
+
+This grants nothing the app does not have already. The matcher is the scoped client's,
+which mirrors the gateway's token check, and a bare path covers its children at a slash
+boundary, so declaring `/api/source/pull-request` declares the whole family. The
+scoping is the frontend guardrail of the trust model, not a boundary: the panel's
+requests carry the dashboard user's own authority, as every scoped request does. The
+export takes no `onAddToChat`, `onDismiss` or `onReconcile`: those write into the
+dashboard's composer and source strip. The export loads the host panel behind a
+`React.lazy` boundary: the SDK barrel is in the dashboard shell every app loads, and the
+panel is needed only once a page shows a pull request.
+
+An external app's queries live in its own query client, so its panel never reads the
+dashboard's `['pull-request-source', url]` entries. Code Review Sage's built-in page
+imports the panel from the SDK (`codeReviewSageBoundary.test.ts` pins that no file of
+the app imports the host module), and keeps the dashboard client as a builtin.
+`AppSdkPullRequestPanel.test.tsx` pins the three answers, that the read's declaration
+alone covers every endpoint the panel calls, that an external panel's writes go through
+the app's transport, and the request bodies.
+
+Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.ts`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/components/pullRequestClient.tsx`,
+`website/src/components/PullRequestPanel.tsx`, `website/src/components/CommentThreads.tsx`,
+`website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -6238,8 +6290,9 @@ app to one wheel's private layout and breaks silently on the next upgrade. Level
 the set of seams a built-in's code needed from core, published generically. Nothing in
 any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
-`test/test_app_sdk_level_mirror.py`. An app reads `ctx.sdk_level` or the SDK export to
-detect an older host and degrade, instead of failing on a missing attribute.
+`test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
+pull-request panel (§18g). An app reads `ctx.sdk_level` or the SDK export to detect an
+older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
 `_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,

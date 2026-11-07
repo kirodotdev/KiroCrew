@@ -315,6 +315,9 @@
     "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。"
   },
   "appSdk": {
+    "pullRequestPanel": {
+      "not_declared": "このアプリはプルリクエストを表示できません。権限に {{path}} が宣言されていません。"
+    },
     "chatEmbed": {
       "delivery_seen_text_kept": "メッセージは上の会話に表示されています。再利用できるよう、テキストは入力欄に残してあります。",
       "agent_is_working": "エージェントが処理中…",

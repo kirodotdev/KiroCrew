@@ -48,6 +48,19 @@ describe('Code Review Sage app UI boundary', () => {
     expect(outside).toEqual(['apps/builtinRegistry.ts'])
   })
 
+  it('reaches the shared pull-request panel only through the App SDK', () => {
+    // The panel is an SDK export (app-sdk/PullRequestPanel.tsx), the surface an
+    // app outside this repository has too; a direct import of the host module
+    // would be one more thing the app could not take with it.
+    const hostPanel = ['components/PullRequestPanel', 'components/CommentThreads', 'components/pullRequestClient']
+      .map((m) => join(SRC, m))
+    const direct = walk(APP_DIR)
+      .filter((file) => [...readFileSync(file, 'utf8').matchAll(SPEC_RE)].some(([, spec]) =>
+        spec.startsWith('.') && hostPanel.includes(resolve(dirname(file), spec).replace(/\.tsx?$/, ''))))
+      .map((p) => relative(SRC, p).split('\\').join('/'))
+    expect(direct).toEqual([])
+  })
+
   it('is the page its registry row lazy-loads, under the app id', () => {
     expect(BUILTIN_COMPONENT_REGISTRY['/code-review-sage']?.appId).toBe('code-review-sage')
   })

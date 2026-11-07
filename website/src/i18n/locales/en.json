@@ -58,6 +58,9 @@
     "you_re_on_the_latest_version": "You're on the latest version"
   },
   "appSdk": {
+    "pullRequestPanel": {
+      "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
+    },
     "chatEmbed": {
       "chat_message": "Chat message",
       "connection_lost": "Lost connection to this chat. Showing its last update.",
