@@ -436,13 +436,16 @@ are published, and they serve different needs:
 
 ```bash
 # 1. Track a channel. A PEP 503 simple index per channel, so pip resolves the
-#    newest version itself. --pre is required: every published version carries a
-#    prerelease suffix on nightly and insider.
+#    newest version itself. Stable versions carry no prerelease suffix, so the
+#    stable line needs no --pre. Every insider and nightly version does carry
+#    one, so those channels need it — and --pre then applies to every package
+#    pip resolves, third-party dependencies included:
+#      pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/insider/simple/
 #    NOTE: --extra-index-url ADDS the channel index beside default PyPI, so pip
 #    pools `kirocrew` candidates across both and a higher-versioned public-PyPI
 #    package of the name would win. Prefer form 2 (or verify the installed
 #    artifact) where that exposure matters.
-pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+pip install kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 
 # 2. Pin one exact wheel by hash. Every version directory publishes a SHA256SUMS
 #    file beside the wheel; take your wheel's hash from there. pip verifies it and
