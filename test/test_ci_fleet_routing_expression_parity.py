@@ -160,6 +160,7 @@ _PERMANENT_EXCEPTIONS = {
     # work where a human waits to merge, so they run on the larger-runner group for
     # queue position. A runner may only be pinned for a job this set names.
     ("issue-gate.yml", "issue-gate"),
+    ("issue-gate-retrigger.yml", "retrigger"),
     ("pr-size-override.yml", "record"),
     ("sensitive-change-review-comment.yml", "rerun"),
     # Scheduled lanes whose schedule event carries no live collaborator actor for
@@ -261,6 +262,7 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     ),
+    ("issue-gate-retrigger.yml", "retrigger"): _GROUP_LABEL_EXPR,
     ("pr-size-override.yml", "record"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
