@@ -532,6 +532,14 @@ class LLMProvider(ABC):
         return ""
 
     @property
+    def reported_effort(self) -> str | None:
+        """Reasoning effort confirmed by the harness, or None when unknown.
+
+        A configured level or a model-id suffix is not a runtime report.
+        """
+        return None
+
+    @property
     def prompts_written(self) -> int | None:
         """Prompts this provider's turns have written to the backend, or ``None``.
 

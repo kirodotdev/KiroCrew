@@ -803,6 +803,7 @@ async def _cron_run_single(
                 float(_turn_usage.credits or 0.0),
                 float(_turn_usage.cost_usd or 0.0),
                 read_turn_model(client),
+                model_source=client,
             )
             await persist_token_record_async(
                 session_key,
