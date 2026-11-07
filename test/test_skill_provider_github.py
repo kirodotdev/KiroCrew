@@ -285,6 +285,39 @@ class TestParseRepoSpec:
         assert spec is not None
         assert spec.ref == "main" and spec.path == "skills"
 
+    @pytest.mark.parametrize(
+        ("raw", "path"),
+        [
+            # "Copy link" on a skill's own instruction file: the natural way to share
+            # one skill. The address is the directory that holds the file.
+            (
+                "https://github.com/acme/widgets/blob/main/skills/reviewer/SKILL.md",
+                "skills/reviewer",
+            ),
+            (
+                "https://github.com/acme/widgets/blob/main/skills/reviewer/AGENTS.md",
+                "skills/reviewer",
+            ),
+            ("https://github.com/acme/widgets/blob/main/SKILL.md", ""),
+            (
+                "https://github.com/acme/widgets/blob/main/skills/reviewer/SKILL.md#L3",
+                "skills/reviewer",
+            ),
+            # Any other file still reads as a directory and is refused by the
+            # listing, as before: only the two instruction files name a skill.
+            (
+                "https://github.com/acme/widgets/blob/main/skills/reviewer/notes.md",
+                "skills/reviewer/notes.md",
+            ),
+            # A tree URL never names a file, so nothing is trimmed from it.
+            ("https://github.com/acme/widgets/tree/main/skills/SKILL.md", "skills/SKILL.md"),
+        ],
+    )
+    def test_a_blob_url_to_an_instruction_file_addresses_its_directory(self, raw, path):
+        spec = gh.parse_repo_spec(raw)
+        assert spec is not None
+        assert (spec.ref, spec.path) == ("main", path)
+
     def test_tree_url_combined_with_at_ref_is_refused(self):
         # Two refs in one address have no defensible resolution order, so it is
         # refused rather than silently resolved one way.
@@ -675,6 +708,20 @@ class TestSearch:
         with fake.install():
             await gh.GitHubRepoProvider().search("acme/widgets:skills/reviewer")
         assert any(f"{_COMMIT}:skills/reviewer" in u for u in fake.json_urls)
+
+    @pytest.mark.asyncio
+    async def test_pasted_skill_md_blob_url_finds_its_skill(self):
+        # "Copy link" on skills/reviewer/SKILL.md gives a blob URL. It names the
+        # reviewer skill, so search lists that directory rather than asking GitHub
+        # for a tree rooted at a file, which answers 404/422 ("no directory").
+        fake = _one_skill_repo()
+        with fake.install():
+            (row,) = await gh.GitHubRepoProvider().search(
+                "https://github.com/acme/widgets/blob/main/skills/reviewer/SKILL.md"
+            )
+        assert row.id == f"acme/widgets@{_COMMIT}:skills/reviewer"
+        assert any(u.endswith(f"{_COMMIT}:skills/reviewer?recursive=1") for u in fake.json_urls)
+        assert not any("SKILL.md?recursive" in u for u in fake.json_urls)
 
     @pytest.mark.asyncio
     async def test_blobs_are_fetched_from_the_raw_host_pinned_to_the_commit(self):
