@@ -9,6 +9,7 @@ import {
 import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
+  isAppDetailPath,
   claimChatLaunch,
   takeDeferredPendingInput,
   writePrefill,
@@ -707,5 +708,20 @@ describe('claimChatLaunch', () => {
 
   it('is undefined when nothing is staged', () => {
     expect(claimChatLaunch()).toBeUndefined()
+  })
+})
+
+describe('isAppDetailPath', () => {
+  it('recognises one app\u2019s detail page', () => {
+    expect(isAppDetailPath('/apps/detail/demo-app')).toBe(true)
+    expect(isAppDetailPath('/apps/detail/demo-app?tab=logs')).toBe(true)
+  })
+
+  it('rejects other routes and a detail prefix with no app name', () => {
+    expect(isAppDetailPath('/apps/detail/')).toBe(false)
+    expect(isAppDetailPath('/apps/detail')).toBe(false)
+    expect(isAppDetailPath('/apps')).toBe(false)
+    expect(isAppDetailPath('/settings/about')).toBe(false)
+    expect(isAppDetailPath('/chat?sid=apps/detail/x')).toBe(false)
   })
 })

@@ -20,7 +20,7 @@ Two main pages, one set of data:
 |---|---|---|
 | **Discover** | `/apps` | The storefront: featured collections, a category rail, and every app the catalog offers. Install from here. |
 | **Library** | `/apps/library` | Your installed apps as an icon grid: enabled apps first, disabled ones in their own section below. Click a tile to open the app; its ⋯ menu holds the actions that apply to it in its current state. |
-| Detail | `/apps/detail/:name` | One app's description, screenshots, highlights, publisher and version. |
+| Detail | `/apps/detail/:name` | One app's description, screenshots, highlights, publisher and version. On the desktop app, another program can open it with `kirocrew://apps/detail/<name>`; the link shows the page and nothing more. |
 | Updates | `/apps/-/updates` | Every pending update in one worklist, with **Update All**. |
 | Migration | `/apps/migrate/:name` | Guidance for an app that used to ship inside the package and no longer does. |
 

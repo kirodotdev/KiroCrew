@@ -14,6 +14,7 @@ import type { NavIntent } from '../utils/popoutController'
 import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
+  isAppDetailPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -845,6 +846,13 @@ export function useAppShell() {
           },
         )
         return
+      }
+      // An app detail link names an app installed in the local Crew. Over a
+      // Remote Crew pane a bare navigate would route the hidden local pane, so
+      // bring the local Crew forward first, as a session link does: the leave
+      // prompt then sits over the draft it is asking about.
+      if (isAppDetailPath(path) && appStore.getState().instances?.activeId != null) {
+        dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry
       // replaces the page on screen just like a sidebar click does.
