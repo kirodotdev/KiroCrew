@@ -16630,6 +16630,7 @@
         "episodic_search_label": "एपिसोडिक यादों की खोज",
         "inspector_query_label": "परीक्षण क्वेरी",
         "filter_by_tag": "टैग से फ़िल्टर करें:",
+        "event_filter_label": "इवेंट का प्रकार",
         "inspector": "इंस्पेक्टर",
         "key_e_g_pref_backend_framework": "कुंजी (उदा. pref.backend.framework)",
         "load_more": "और लोड करें…",

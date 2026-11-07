@@ -16630,6 +16630,7 @@
         "episodic_search_label": "এপিসোডিক স্মৃতি অনুসন্ধান",
         "inspector_query_label": "পরীক্ষামূলক কোয়েরি",
         "filter_by_tag": "ট্যাগ দিয়ে ফিল্টার:",
+        "event_filter_label": "ইভেন্টের ধরন",
         "inspector": "ইন্সপেক্টর",
         "key_e_g_pref_backend_framework": "কী (যেমন pref.backend.framework)",
         "load_more": "আরও লোড করুন…",

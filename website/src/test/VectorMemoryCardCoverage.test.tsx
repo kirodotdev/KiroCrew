@@ -446,11 +446,11 @@ describe('VectorMemoryCard — Audit tab', () => {
     await waitFor(() => expect(screen.getByText(footer(/Showing 4 events$/))).toBeInTheDocument())
 
     // One filter button per distinct event_type, plus All.
-    await user.click(screen.getByRole('button', { name: 'injection_block' }))
+    await user.click(screen.getByRole('radio', { name: 'injection_block' }))
     await waitFor(() => expect(screen.getByText(footer(/Showing 1 event \(4 total\)/))).toBeInTheDocument())
     expect(screen.queryByText('terse')).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'All' }))
+    await user.click(screen.getByRole('radio', { name: 'All' }))
     await waitFor(() => expect(screen.getByText(footer(/Showing 4 events$/))).toBeInTheDocument())
   })
 
@@ -462,7 +462,7 @@ describe('VectorMemoryCard — Audit tab', () => {
     await user.click(tab(/^Audit$/))
     await waitFor(() => expect(screen.getByText(footer(/Showing 4 events$/))).toBeInTheDocument())
 
-    await user.click(screen.getByRole('button', { name: 'consolidation_skip' }))
+    await user.click(screen.getByRole('radio', { name: 'consolidation_skip' }))
     await waitFor(() => expect(screen.getByText(footer(/Showing 1 event\b/))).toBeInTheDocument())
 
     vi.mocked(api.vectorEvents).mockResolvedValue({ events: [AUDIT_ROWS[0]] } as never)

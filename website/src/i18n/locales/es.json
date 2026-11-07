@@ -17033,6 +17033,7 @@
         "episodic_search_label": "Buscar recuerdos episódicos",
         "inspector_query_label": "Consulta de prueba",
         "filter_by_tag": "Filtrar por etiqueta:",
+        "event_filter_label": "Tipo de evento",
         "inspector": "Inspector",
         "key_e_g_pref_backend_framework": "Clave (p. ej. pref.backend.framework)",
         "load_more": "Cargar más…",

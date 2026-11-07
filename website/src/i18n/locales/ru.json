@@ -17436,6 +17436,7 @@
         "episodic_search_label": "Поиск по эпизодическим воспоминаниям",
         "inspector_query_label": "Тестовый запрос",
         "filter_by_tag": "Фильтр по тегу:",
+        "event_filter_label": "Тип события",
         "inspector": "Инспектор",
         "key_e_g_pref_backend_framework": "Ключ (например: pref.backend.framework)",
         "load_more": "Загрузить ещё…",

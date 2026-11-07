@@ -16227,6 +16227,7 @@
         "episodic_search_label": "搜索情景记忆",
         "inspector_query_label": "测试查询",
         "filter_by_tag": "按标签筛选：",
+        "event_filter_label": "事件类型",
         "inspector": "检查器",
         "key_e_g_pref_backend_framework": "键（例如 pref.backend.framework）",
         "load_more": "加载更多…",
