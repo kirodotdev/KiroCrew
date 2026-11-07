@@ -48,6 +48,7 @@ from kiro_crew.dashboard.handlers_instances_gate import (
     _ADDRESSING_FIELDS,
     _CHAIN_MUTATION_LOCK,
     _PEER_FIELD_MAX_CHARS,
+    _TRANSPORT_FIELDS,
     _apply_update,
     _audit,
     _chain_refusal,
@@ -55,6 +56,7 @@ from kiro_crew.dashboard.handlers_instances_gate import (
     _instance_view,
     _is_correlated_cloud_instance,
     _manager_unavailable_response,
+    _moves_the_tunnel,
     _registry,
     _status_for,
 )
@@ -353,24 +355,6 @@ async def api_instances_update(request: web.Request) -> web.Response:
     if bad is not None:
         _audit("update", "denied", request_id=instance_id, error=bad)
         return web.json_response({"error": bad, "code": "instance_invalid"}, status=400)
-    # A tunnel is opened from these fields, so editing one of them makes a live
-    # tunnel wrong rather than merely out of date: it keeps forwarding the old
-    # port to the old host under the new label. Tear it down as part of the save
-    # so the next connect builds from what the user just entered.
-    transport_keys = {
-        "ssh_host",
-        "remote_port",
-        "connection_method",
-        "ssm_target",
-        "ssm_run_as",
-        "aws_profile",
-        "aws_region",
-        "remote_bin",
-        # The far end of a chained forward. A live tunnel holding the parent's
-        # OLD port forwards to a port nothing listens on any more, which is the
-        # same wrongness as an edited host.
-        "via_remote_port",
-    }
     current = await asyncio.to_thread(reg.get, instance_id)
     if current is None:
         _audit("update", "denied", request_id=instance_id, error="not found")
@@ -442,11 +426,11 @@ async def api_instances_update(request: web.Request) -> web.Response:
     # Disabling is a teardown too, and it takes the same locked path: the
     # tunnel closes and the flag lands in one critical section, so a connect
     # racing it is either torn down here or reads the flag and is refused.
-    # Every disable takes it, even one `current` reads as off: that read precedes
-    # the lock, so an enable and a connect can land after it.
-    transport_changed = changes.get("disabled") is True or any(
-        k in transport_keys and v != getattr(current, k) for k, v in changes.items()
-    )
+    # Every disable takes it, and every edit naming a transport field: `current`
+    # precedes the lock, so an edit and a connect can land after it. Whether a
+    # transport edit tears down is decided under the lock (`_moves_the_tunnel`).
+    disabling = changes.get("disabled") is True
+    locked_edit = disabling or not _TRANSPORT_FIELDS.isdisjoint(changes)
     # Validate the PROPOSED record before touching the tunnel. The registry
     # validates too, but that happens after the teardown — so a rejected edit
     # would answer 400 having already disconnected a healthy crew, punishing the
@@ -467,7 +451,7 @@ async def api_instances_update(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
 
     try:
-        if transport_changed and mgr is not None:
+        if locked_edit and mgr is not None:
             # The teardown and the coordinate rewrite must not be observable
             # apart. With the lock released between them a `connect` can read the
             # OLD record, and whether its tunnel is already CONNECTED or still
@@ -477,10 +461,16 @@ async def api_instances_update(request: web.Request) -> web.Response:
             # connect either finishes before (and is torn down inside) or starts
             # after (and reads the new coordinates).
             inst = await mgr.reconfigure(
-                instance_id, functools.partial(_apply_update, reg, instance_id, changes)
+                instance_id,
+                functools.partial(_apply_update, reg, instance_id, changes),
+                needs_teardown=(
+                    None
+                    if disabling
+                    else functools.partial(_moves_the_tunnel, reg, instance_id, changes)
+                ),
             )
         else:
-            if transport_changed:
+            if locked_edit:
                 # No manager: nothing to tear down, but say so — a silent skip
                 # would look identical to a teardown that ran.
                 logger.warning(

@@ -6,7 +6,8 @@ refused, and the startup revive skips it. Enabling it again lets it reconnect.
 
 Driven through the real ``SshTunnelManager`` (with a fake tunnel factory and
 mint) and the real handlers, so the teardown runs through the manager's own
-``reconfigure`` lock rather than a stub of it.
+``reconfigure`` lock rather than a stub of it. A transport edit shares that
+locked path, so its race against the route's pre-lock read is pinned here too.
 """
 
 from __future__ import annotations
@@ -192,6 +193,66 @@ async def test_a_repeated_disable_closes_a_forward_the_record_already_calls_off(
         assert r.status == 200 and _body(r)["disabled"] is True
         assert _body(r)["status"]["state"] == "disconnected"
         assert mgr.status("cd-1") is None
+    finally:
+        await mgr.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_revert_raced_by_an_edit_and_a_connect_still_tears_down(env, monkeypatch):
+    """The route's pre-lock read must not decide a transport edit's teardown either.
+
+    A PATCH setting a field back to what that read showed, after another edit and a
+    connect moved it, still closes the forward the other edit built: otherwise the
+    record names one machine while the tunnel serves another.
+    """
+    reg, mgr, state = env
+    before_the_race = reg.get("cd-1")
+    real_get = reg.get
+    locked_at_read: list[bool] = []
+
+    def get(instance_id):
+        # The route's own read comes first, before the lock, and sees the record
+        # as it was before the other edit landed.
+        locked_at_read.append(mgr._lock.locked())
+        return before_the_race if len(locked_at_read) == 1 else real_get(instance_id)
+
+    try:
+        reg.update("cd-1", ssh_host="cd-2-alias")
+        assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
+        monkeypatch.setattr(reg, "get", get)
+        r = await handlers.api_instances_update(
+            _Req(state, match={"id": "cd-1"}, body={"ssh_host": "cd-1-alias"})
+        )
+        assert r.status == 200 and _body(r)["ssh_host"] == "cd-1-alias"
+        assert _body(r)["status"]["state"] == "disconnected"
+        assert mgr.status("cd-1") is None, "the cd-2-alias forward outlived the edit"
+        assert locked_at_read[:2] == [False, True], "the teardown was decided outside the lock"
+    finally:
+        await mgr.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_moves_no_transport_field_leaves_the_tunnel_and_its_self_heal(
+    env, monkeypatch
+):
+    """Re-sending a transport field's stored value moves nothing, so the forward stays
+    up and the reconfiguration barrier never cancels a self-heal it overlaps."""
+    reg, mgr, state = env
+    cancelled: list[str] = []
+
+    async def cancel_recovery(instance_id):
+        cancelled.append(instance_id)
+
+    monkeypatch.setattr(mgr, "_cancel_recovery", cancel_recovery)
+    try:
+        assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
+        r = await handlers.api_instances_update(
+            _Req(state, match={"id": "cd-1"}, body={"name": "Renamed", "ssh_host": "cd-1-alias"})
+        )
+        assert r.status == 200 and _body(r)["name"] == "Renamed"
+        status = mgr.status("cd-1")
+        assert status is not None and status.state == TunnelState.CONNECTED
+        assert _Tunnel.built == ["cd-1"] and cancelled == []
     finally:
         await mgr.shutdown()
 
