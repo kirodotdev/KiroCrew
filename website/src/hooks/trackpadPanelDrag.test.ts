@@ -2,10 +2,13 @@
  * The trackpad drag's settle and its mid-drag speed commit (rule C).
  * The phone drawer's own timings live in useDrawerSwipe and are not touched.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, onTestFinished } from 'vitest'
+import { motionValue } from 'framer-motion'
 import {
-  trackpadSettleShape, speedCommitTrackpadDrag, moveTrackpadDrag, idleTrackpadDrag, releaseTrackpadDrag, type TrackpadPanelDrag,
+  trackpadSettleShape, speedCommitTrackpadDrag, moveTrackpadDrag, idleTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag,
+  type TrackpadPanelDrag,
 } from './trackpadPanelDrag'
+import { takeOverDrawer } from './useDrawerSwipe'
 
 /** A cubic-bezier's progress per step over `n` equal steps of time. */
 function speeds([x1, y1, x2, y2]: readonly number[], n = 200): number[] {
@@ -116,5 +119,26 @@ describe('releaseTrackpadDrag: the projected landing', () => {
     const { d, x } = drag(1, 70)
     // 70px out (17.5%), then a 400ms quiet gap before the release.
     expect(releaseTrackpadDrag(d, x, 'gap', 69 * 16 + 400).open).toBe(true)
+  })
+})
+
+describe('settleTrackpadDrag', () => {
+  it('a takeover after its time ran out drops its arrival', async () => {
+    // A busy main thread: the settle's whole duration passes before its first frame.
+    const realNow = performance.now.bind(performance)
+    let busy = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => realNow() + busy)
+    onTestFinished(() => { now.mockRestore() })
+    const x = motionValue(400)
+    const first = vi.fn()
+    settleTrackpadDrag(x, 0, first, 0)
+    busy = 1000
+    // One microtask and no frame: framer caches its clock until the next microtask.
+    await Promise.resolve()
+    takeOverDrawer(x)
+    const next = vi.fn()
+    settleTrackpadDrag(x, 400, next, 0)
+    await vi.waitFor(() => expect(next).toHaveBeenCalled())
+    expect(first).not.toHaveBeenCalled()
   })
 })

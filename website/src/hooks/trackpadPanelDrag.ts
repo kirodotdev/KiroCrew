@@ -67,15 +67,16 @@ export function trackpadSettleShape(
 /** Settle a trackpad drag to `to`: the one settle both pages use. On the main
  *  thread, so a page reading the offset (its chat spacer) sees every frame.
  *  Interruptible like any settle: `takeOverDrawer(x)` stops it where it is,
- *  and its `onDone` never runs. */
+ *  and its `onDone` never runs, even when framer's `stop()` completes it. */
 export function settleTrackpadDrag(x: MotionValue<number>, to: number, onDone: () => void, velocity: number): void {
   const { ease, secs } = trackpadSettleShape(to, x.get(), velocity)
   holdStreamingFlushes(secs * 1000 + 100)
+  let stopped = false
   animate(x, to, {
     duration: secs,
     ease,
-    onComplete: () => { releaseStreamingFlushes(); onDone() },
-    onStop: () => { releaseStreamingFlushes() },
+    onComplete: () => { if (stopped) return; releaseStreamingFlushes(); onDone() },
+    onStop: () => { stopped = true; releaseStreamingFlushes() },
   })
 }
 
