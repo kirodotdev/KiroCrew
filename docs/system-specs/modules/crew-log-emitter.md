@@ -1569,6 +1569,33 @@ not spent a retry attempt until it returns.
 One worker drains it in batches. It pauses `WriterLimits.batch_deadline_seconds` before each pass, so a
 turn's burst of entries becomes one pass rather than a wake per entry; the deadline is fixed
 rather than adaptive so the worst case a producer can impose on the file is a constant.
+A `flush()` waiter, a shutdown drain, and a bucket that already holds
+`WriterLimits.group_max_entries` jobs skip it.
+
+**Group commit.** The pause is also the group-commit window. A longer one buys nothing
+under load (a busy writer's next pass already finds a full bucket) and costs latency when
+idle: in the #31502 bench a 100 ms window raised the idle append p50 from 21 ms to 94 ms
+and left the loaded numbers unchanged, so it stays 20 ms. Every plain `_write` entry
+carries a `GroupPart`, and a pass writes a session's consecutive run of them with ONE
+`CrewLog.append_many`: one lock, one tail read, one `write()` and one `fsync` for up to
+`group_max_entries` entries, each with its own seq in order (they share one `time`). It
+exists because on a loaded host every syscall of an append re-takes the GIL, so the writer
+thread paid the whole lock/stat/open/fsync sequence per entry (#31502). The contract an
+acknowledgement gives does not change: a member's post-append step (`on_settled`'s "wrote",
+the eager wake, the board relay) and its `after` run only once the whole run's `append_many`
+returned, so nothing is reported recorded before it is durable. A run fails, is retained
+and is dropped as a whole, with the usual `write/dropped` marker. A run that is REFUSED
+(decided before any byte, e.g. one oversize or malformed entry) is retried one job at a
+time, so the bad entry stays the only casualty. A job without a part (a lifecycle record
+with its own post-append logic, a loss marker, a follow-on) is a barrier: the run before it
+is durable before it runs. The inline path writes one entry at a time, as before. A crash
+between the write and the fsync can leave part of an unacknowledged run on disk; the
+torn-tail repair drops a partial last line, and no caller was told any of it was recorded.
+
+A synchronous caller (no event loop) whose writer thread is already in a pass or its pause
+hands its job to the writer at once instead of waiting up to
+`WriterLimits.inline_order_seconds` for it to go idle: under steady load the writer never
+goes idle, and a bounded waiter such as `on_work_recorded` spent its whole timeout there.
 
 With no event loop running the write happens inline on the calling thread. That is not the
 fallback described above: there is no loop to protect, the caller is a thread that asked for

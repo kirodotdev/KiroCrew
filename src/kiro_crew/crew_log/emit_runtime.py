@@ -15,6 +15,7 @@ adapter; the submit and settle path every append takes (:func:`_write`, :func:`_
 from __future__ import annotations
 
 import atexit
+import functools
 import sys
 import time
 import traceback
@@ -55,7 +56,13 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay g
     # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
     from kiro_crew.crew_log.store import CrewLog
     from kiro_crew.crew_log.turn_tracker import TurnTracker
-    from kiro_crew.crew_log.writer import CrewLogWriter, WarningBudget, WriteJob, WriterLimits
+    from kiro_crew.crew_log.writer import (
+        CrewLogWriter,
+        GroupPart,
+        WarningBudget,
+        WriteJob,
+        WriterLimits,
+    )
 
 
 #: How many child origins were dropped while their child was still running, so
@@ -399,6 +406,7 @@ def _submit(
     *,
     after: Callable[[], None] | None = None,
     on_permanent_drop: Callable[[], None] | None = None,
+    group: "GroupPart | None" = None,
 ) -> None:
     """Hand one ordinary append to the writer.
 
@@ -412,7 +420,9 @@ def _submit(
 
     _hand_over(
         session_id,
-        WriteJob.append(job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop),
+        WriteJob.append(
+            job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop, group=group
+        ),
     )
 
 
@@ -737,11 +747,24 @@ def _write(
         # names, which is nearly all of them.
         _note_eager(entry, entry_type, session_id, data)
 
+    def _landed(entry: Any) -> None:
+        # The grouped twin of the job's tail above: the same steps, run once the whole
+        # group commit is durable. None is a session with no log, as in the job.
+        if entry is None:
+            if settle is not None:
+                settle.fail()
+            return
+        if settle is not None:
+            settle.wrote()
+        _note_eager(entry, entry_type, session_id, data)
+
     def _after() -> None:
         if settle is not None:
             settle.after()
         if after is not None:
             after()
+
+    from kiro_crew.crew_log.writer import GroupPart
 
     _submit(
         _job,
@@ -749,7 +772,28 @@ def _write(
         session_id,
         after=_after if (settle is not None or after is not None) else None,
         on_permanent_drop=settle.fail if settle is not None else on_permanent_drop,
+        group=GroupPart(
+            key=("append", src),
+            item={"type": entry_type, "data": data, "ignorable": ignorable},
+            commit=functools.partial(_commit_appends, session_id, src),
+            landed=_landed,
+        ),
     )
+
+
+def _commit_appends(session_id: str, src: str, items: "list[dict[str, Any]]") -> "list[Any]":
+    """Write a run of :func:`_write` entries for *session_id* as ONE durable append.
+
+    One lock, one tail read, one ``write()`` and one ``fsync`` for the run
+    (``CrewLog.append_many``), which is the point: on a loaded host every one of those
+    syscalls re-takes the GIL, and the writer thread pays that per append otherwise.
+    Each entry keeps its own seq, in order; they share one ``time``. Returns one Entry
+    per item, or ``None`` for each when the session has no log (the job's own no-op).
+    """
+    log = _handle(session_id)
+    if log is None:
+        return [None] * len(items)
+    return list(log.append_many(items, src=src))
 
 
 def _queue_tail_repair(previous_sid: str, slot: str, *, walked: "tuple[str, ...]" = ()) -> None:

@@ -14,7 +14,9 @@ Interface -- a caller learns these and nothing else:
   :meth:`~CrewLogWriter.forget` and :meth:`~CrewLogWriter.close`.
 * :class:`WriteJob`, built only through its named constructors -- ``append``,
   ``opening``, ``follow_on`` -- each of which selects one row of the policy table
-  below, so a caller names what a job IS rather than which flags it needs.
+  below, so a caller names what a job IS rather than which flags it needs. An
+  ``append`` may carry a :class:`GroupPart`, which lets the writer commit a run of them
+  with one lock, one ``write()`` and one ``fsync``, acknowledging none before all land.
 * :class:`WarningBudget`, the rate-limited failure report the writer and the emitter
   share.
 
@@ -77,6 +79,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
+from kiro_crew.crew_log.writer_group import GroupPart, group_run
+
 if TYPE_CHECKING:  # pragma: no cover -- typing only; the store stays unloaded at import
     from kiro_crew.crew_log.store import CrewLog
 
@@ -92,7 +96,13 @@ class WriterLimits:
     """Every bound and pace the writer runs on. One frozen value per writer.
 
     ``batch_deadline_seconds``: pause before a drain pass, so one pass takes a turn's
-    burst. Fixed, so a producer's worst case on the file is a constant.
+    burst. Fixed, so a producer's worst case on the file is a constant. It is also the
+    group-commit window: consecutive grouped jobs of one unit gathered in it are written
+    with one lock, one ``write()`` and one ``fsync`` (see :class:`GroupPart`). A
+    :meth:`CrewLogWriter.flush` waiter and a shutdown drain skip it.
+
+    ``group_max_entries``: most jobs one group commit takes, which bounds the size of one
+    ``write()``. A unit whose bucket reaches it is drained without waiting out the window.
 
     ``pending_high_water``: buffered appends past which the backlog is reported once.
     NOT a cap; it makes a filesystem that stopped keeping up visible in the log.
@@ -126,6 +136,7 @@ class WriterLimits:
     """
 
     batch_deadline_seconds: float = 0.02
+    group_max_entries: int = 128
     pending_high_water: int = 4096
     max_pending_count: int = 100_000
     max_pending_bytes: int = 256 * 1024 * 1024
@@ -235,6 +246,9 @@ class WriteJob:
 
     ``on_drop`` runs once, ahead of ``after``, when the job is given up on permanently --
     a refusal, or its attempt budget spent. Never raises into the writer.
+
+    ``group`` lets the writer commit this job together with its neighbours; see
+    :class:`GroupPart`. ``None`` keeps the job on its own.
     """
 
     run: Callable[[], None]
@@ -243,6 +257,7 @@ class WriteJob:
     nbytes: int = 0
     after: Callable[[], None] | None = None
     on_drop: Callable[[], None] | None = None
+    group: GroupPart | None = None
 
     @classmethod
     def append(
@@ -253,9 +268,10 @@ class WriteJob:
         nbytes: int = 0,
         after: Callable[[], None] | None = None,
         on_drop: Callable[[], None] | None = None,
+        group: GroupPart | None = None,
     ) -> "WriteJob":
         """An ordinary entry. Bounded by the ceilings; written inline when it may be."""
-        return cls(run, what, JobKind.APPEND, nbytes, after, on_drop)
+        return cls(run, what, JobKind.APPEND, nbytes, after, on_drop, group)
 
     @classmethod
     def opening(
@@ -285,6 +301,7 @@ class _Pending:
     after: Callable[[], None] | None = None
     on_drop: Callable[[], None] | None = None
     loss: "_PendingLoss | None" = None
+    group: GroupPart | None = None
     #: True while this job's ``nbytes`` are included in the process byte total. The
     #: inline path runs a job without ever buffering it, so a job can leave through
     #: the drop path having never been added; subtracting it anyway would drive the
@@ -666,6 +683,9 @@ class CrewLogWriter:
         #: absolute points inside it -- a rolling "now + slice" is always in the future
         #: and would never become claimable at all.
         self._shutdown_started = 0.0
+        #: How many :meth:`flush` callers are waiting. While any is, the writer skips
+        #: the batching pause: a caller that needs the file now must not wait it out.
+        self._flush_waiters = 0
 
     # -- the interface ---------------------------------------------------------------
 
@@ -696,6 +716,7 @@ class CrewLogWriter:
             nbytes=job.nbytes,
             after=job.after,
             on_drop=job.on_drop,
+            group=job.group,
         )
         # The only thread that can notice a write which stopped answering is a
         # PRODUCER: the one that would notice is blocked inside the call. Checked before
@@ -708,6 +729,14 @@ class CrewLogWriter:
                 # nothing to wait for: queueing behind them keeps the order and costs the
                 # caller nothing, while waiting for the debt to clear would put a real
                 # thread behind the filesystem for as long as the debt lasts.
+                return self._buffer(unit, pending)
+            with self._lock:
+                writer_running = self._executor is not None and self._busy_locked()
+            if writer_running:
+                # The writer thread is in a pass or its batching pause, so it reaches
+                # this job in order within one window. Waiting for it to go idle instead
+                # costs up to ``inline_order_seconds`` under steady load, which a waiter
+                # bounded by the same five seconds reads as an unrecorded write.
                 return self._buffer(unit, pending)
             with self._drained:
                 self._drained.wait_for(
@@ -750,8 +779,19 @@ class CrewLogWriter:
         """
         if self._executor is None:
             return self._run_passes_here(self._clock() + timeout)
-        with self._drained:
-            return self._drained.wait_for(self._quiet, timeout=timeout)
+        if self._quiet():
+            # Nothing to hurry, and a wake set now would cut the NEXT burst's pause.
+            return True
+        with self._lock:
+            self._flush_waiters += 1
+        # Cut a batching pause already in progress; the count keeps the next one away.
+        self._wake.set()
+        try:
+            with self._drained:
+                return self._drained.wait_for(self._quiet, timeout=timeout)
+        finally:
+            with self._lock:
+                self._flush_waiters -= 1
 
     def drain_for_shutdown(self, timeout: float) -> DrainReport:
         """Write out everything buffered, then stop accepting batching pauses.
@@ -1475,6 +1515,9 @@ class CrewLogWriter:
         deferred_loss: "set[str]" = set()
         try:
             while True:
+                # A wake left over from before this pass stands for state the delay
+                # below re-reads anyway; left set, it would cut this pass's pause short.
+                self._wake.clear()
                 with self._lock:
                     loss_owed = any(unit not in deferred_loss for unit in self._pending_loss)
                     if not self._pending and not loss_owed:
@@ -1491,7 +1534,6 @@ class CrewLogWriter:
                     # Interruptible: a shutdown that clamps the backoff sets this so the
                     # pause is recomputed against the new deadline rather than slept out.
                     self._wake.wait(delay)
-                    self._wake.clear()
                 deferred_loss.update(self._drain_once(deferred_loss))
         except BaseException:
             with self._lock:
@@ -1551,7 +1593,8 @@ class CrewLogWriter:
         """How long to wait before the next pass. ``_lock`` held, work is owed.
 
         The batching pause when a unit is claimable now -- skipped once shutdown has asked
-        for quiescence, which is the only thing that pause gives up. Nothing claimable
+        for quiescence, while a :meth:`flush` caller waits, or when a claimable bucket
+        already holds ``group_max_entries`` jobs (the window fills by size). Nothing claimable
         means every owed bucket is inside a backoff or held by an inline write, so the
         wait is exactly what the soonest of those has left: the writer sleeps instead of
         spinning, and one wedged crew log paces only its own entries.
@@ -1564,6 +1607,7 @@ class CrewLogWriter:
         """
         now = self._clock()
         soonest: float | None = None
+        window = False
         deferred_loss = deferred_loss or set()
         units = list(self._pending)
         units.extend(
@@ -1576,16 +1620,23 @@ class CrewLogWriter:
             if not jobs and unit not in self._pending_loss:
                 continue
             if self._claimable_locked(unit, now):
-                if not batching or self._draining_for_shutdown:
+                if (
+                    not batching
+                    or self._draining_for_shutdown
+                    or self._flush_waiters
+                    or len(jobs or ()) >= self.limits.group_max_entries
+                ):
                     return 0.0
-                return self.limits.batch_deadline_seconds
+                # Keep looking: another claimable bucket may already be full.
+                window = True
+                continue
             state = self._retry.get(unit)
             if state is None:
                 continue  # held by an inline write rather than by a backoff
             ready_at = self._backoff_ready_at_locked(state)
             if soonest is None or ready_at < soonest:
                 soonest = ready_at
-        if soonest is None:
+        if window or soonest is None:
             return self.limits.batch_deadline_seconds
         return max(0.0, soonest - now)
 
@@ -1694,6 +1745,10 @@ class CrewLogWriter:
         so the attempt budget starts over. That is what makes the retry terminate: the
         budget bounds a WEDGED writer, and a pass that shortened the buffer is not wedged.
 
+        A run of grouped jobs (:class:`GroupPart`) is one step here: one ``commit`` for
+        the run, then each member's ``landed`` and ``after`` in order. It fails, retains
+        and lands as a whole; a refused run is tried again one job at a time.
+
         Returns whether this batch's loss marker landed, so a failed marker can be
         deferred without also deferring new loss created after a successful marker.
         """
@@ -1709,10 +1764,14 @@ class CrewLogWriter:
         # only question is whether there is anything new on disk -- so the signal belongs
         # where every exit passes through rather than repeated at each of them, where an
         # exit added later would silently miss it.
+        #
+        # Jobs before `solo_until` were in a group commit that was REFUSED, so each is
+        # now tried alone: the refusal wrote nothing, and alone only the bad entry fails.
+        solo_until = 0
+        index = 0
         try:
-            for index, job in enumerate(jobs):
-                unattempted -= 1
-                self._release_claim(unit, 1)
+            while index < len(jobs):
+                job = jobs[index]
                 if job.loss is None:
                     with self._lock:
                         loss_waiting = unit in self._pending_loss
@@ -1721,6 +1780,33 @@ class CrewLogWriter:
                             self._note_progress(unit)
                         self._retain_without_failure(unit, jobs[index:])
                         return loss_marker_landed
+                run = (
+                    group_run(jobs, index, self.limits.group_max_entries)
+                    if index >= solo_until
+                    else 1
+                )
+                if run > 1:
+                    group = jobs[index : index + run]
+                    failure, results = self._commit_group(group)
+                    if failure is not None and _is_refusal(failure):
+                        solo_until = index + run
+                        continue
+                    unattempted -= run
+                    self._release_claim(unit, run)
+                    if failure is None:
+                        for member, result in zip(group, results):
+                            self._land_member(member, result)
+                        landed = True
+                        index += run
+                        continue
+                    if landed:
+                        self._note_progress(unit)
+                    self._retain(unit, jobs[index:])
+                    return loss_marker_landed
+                at = index
+                index += 1
+                unattempted -= 1
+                self._release_claim(unit, 1)
                 failure = self._run_job(job.run, job.what)
                 if failure is None:
                     with self._lock:
@@ -1733,7 +1819,7 @@ class CrewLogWriter:
                     continue
                 if _is_refusal(failure):
                     if job.loss is not None:
-                        self._drop(unit, jobs[index:], mark=True)
+                        self._drop(unit, jobs[at:], mark=True)
                         return False
                     # A permanent refusal owes a marker like any other loss. The refusal
                     # check cannot split a CrewLogError into its two causes -- a malformed
@@ -1744,7 +1830,7 @@ class CrewLogWriter:
                     continue
                 if landed:
                     self._note_progress(unit)
-                self._retain(unit, jobs[index:])
+                self._retain(unit, jobs[at:])
                 return loss_marker_landed
             self._note_progress(unit)
             return loss_marker_landed
@@ -1762,6 +1848,37 @@ class CrewLogWriter:
                     self._on_grew(unit)
                 except Exception as exc:
                     self._warnings.report("growth listener", exc, op="growth-listener")
+
+    def _commit_group(
+        self, group: "list[_Pending]"
+    ) -> "tuple[type[BaseException] | None, list[Any]]":
+        """Write *group* with its one ``commit`` call. Returns ``(failure, results)``."""
+        results: "list[Any]" = []
+        parts = [job.group for job in group if job.group is not None]
+
+        def _run() -> None:
+            results.extend(parts[0].commit([part.item for part in parts]))
+
+        failure = self._run_job(_run, f"{group[0].what} (+{len(group) - 1} grouped)")
+        return failure, results
+
+    def _land_member(self, job: _Pending, result: Any) -> None:
+        """Finish one member of a group commit that landed: ``landed``, then ``after``.
+
+        The entry is durable already, so a continuation that raises is reported and does
+        not unwrite it or stop its neighbours.
+        """
+        part = job.group
+        if part is not None:
+            try:
+                part.landed(result)
+            except Exception as exc:
+                self._warnings.report(f"finishing {job.what}", exc, op="finish-write")
+        with self._lock:
+            if job.counted:
+                self._pending_total_bytes -= job.nbytes
+                job.counted = False
+        self._finish(job)
 
     def _release_claim(self, unit: str, count: int) -> None:
         """Stop counting *count* of *unit*'s claimed entries. Takes ``_lock``.
@@ -1843,6 +1960,7 @@ __all__ = [
     "DEFAULT_LIMITS",
     "CrewLogWriter",
     "DrainReport",
+    "GroupPart",
     "JobKind",
     "WarningBudget",
     "WriteJob",
