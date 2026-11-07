@@ -670,6 +670,25 @@ async def switch_slot_agent(
                     selection_kind=choice.selection_kind,
                     validate_memory_files=False,
                 )
+            from kiro_crew.config.loader_snapshots import rescan_if_incomplete
+
+            if (
+                agent_kind == "template"
+                and not bindings.requested_resolved
+                and await rescan_if_incomplete()
+            ):
+                # A scan that could not read a spec may lack this template while
+                # its file is on disk. The rebind and compare-and-set checks
+                # below cover the extra await.
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    agent_name,
+                    pre_await_project or None,
+                    validate_memory_files=False,
+                    selection_kind=agent_kind,
+                )
+            if not owner_request:
                 selected_store = cfg.memory_stores.get(bindings.memory_store_name)
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No
