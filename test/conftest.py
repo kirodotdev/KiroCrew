@@ -721,6 +721,7 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
         # (where the fixture is inert) and silently asserting nothing on Windows.
         "test_platform_compat_coverage_filesystem",
         "test_config_rmw_preserves_settings",
+        "test_sel_log_lockdown",
         "test_spawn_audit",
     ):
         yield
