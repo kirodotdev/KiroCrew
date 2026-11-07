@@ -16441,6 +16441,8 @@
         "signed_in_help": "Kiro CLI conserva un accesso per {{provider}}. Il sondaggio viene eseguito senza quel token, quindi {{productName}} non può confermare che l’accesso sia ancora valido.",
         "probe_failing": "Con errori",
         "probe_failing_help": "{{failures}} sondaggi consecutivi non sono riusciti, quindi {{productName}} ha smesso di sondare questo server. Le sessioni di chat possono ancora usarlo. Seleziona Azzera conteggio e poi il pulsante di aggiornamento (↻, in alto a destra) per verificare di nuovo.",
+        "agent_dropped_not_found": "Il programma '{{command}}' non è stato trovato su questo computer, quindi il tuo agente non può usare gli strumenti di questo server.",
+        "agent_dropped_fix": "Installalo, oppure indica il percorso completo del programma nel comando di questo server, in {{page}}. Poi riavvia il gateway (Impostazioni → Informazioni → Riavvia il gateway).",
         "reset_failures": "Azzera conteggio",
         "reset_failures_help": "Azzera il conteggio degli errori consecutivi di questo server.",
         "disabled_in_config": "Disattivato nella configurazione",

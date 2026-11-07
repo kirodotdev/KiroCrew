@@ -16441,6 +16441,8 @@
         "signed_in_help": "Kiro CLI conserva un inicio de sesión para {{provider}}. El sondeo se ejecuta sin ese token, por lo que {{productName}} no puede confirmar que el inicio de sesión siga siendo válido.",
         "probe_failing": "Con fallos",
         "probe_failing_help": "Fallaron {{failures}} sondeos seguidos, así que {{productName}} dejó de sondear este servidor. Las sesiones de chat aún pueden usarlo. Selecciona Restablecer recuento y luego el botón de actualizar (↻, arriba a la derecha) para comprobarlo de nuevo.",
+        "agent_dropped_not_found": "No se encontró el programa '{{command}}' en este equipo, así que tu agente no puede usar las herramientas de este servidor.",
+        "agent_dropped_fix": "Instálalo o escribe la ruta completa del programa en el comando de este servidor, en {{page}}. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela).",
         "reset_failures": "Restablecer recuento",
         "reset_failures_help": "Borra el recuento de fallos consecutivos de este servidor.",
         "disabled_in_config": "Desactivado en la configuración",

@@ -372,6 +372,9 @@ class ResolvedServers(NamedTuple):
     unresolved: set[str]
     #: URL servers whose operator OAuth client is bound at write time -> store-owned?
     oauth_targets: dict[str, bool]
+    #: ``unresolved`` with the declared command each one named, for the dashboard's
+    #: record of what the latest rebuild dropped (``mcp_dropped_servers``).
+    unresolved_commands: dict[str, str]
 
     @property
     def narrowed_away(self) -> set[str]:
@@ -713,6 +716,7 @@ def resolve_mcp_servers(
     # no command at all, a spec that is not a dict -- is a real absence whose
     # refs must go, so it is kept out of this set.
     _unresolved_this_pass: set[str] = set()
+    _unresolved_commands: dict[str, str] = {}
     # URL servers whose operator OAuth client is bound at write time, by name ->
     # whether the store owns the entry (see `_apply_operator_oauth_client`).
     _oauth_client_targets: dict[str, bool] = {}
@@ -1029,6 +1033,7 @@ def resolve_mcp_servers(
             # below keeps this server's refs (see prune_dangling_tool_refs for why
             # a per-tool grant cannot be re-derived).
             _unresolved_this_pass.add(name)
+            _unresolved_commands[name] = str(spec.get("command", ""))
             # The searched directories belong in the WARNING, not only at DEBUG:
             # a default-level reader is exactly who needs to tell "installed
             # somewhere this path does not cover" from "not installed at all".
@@ -1059,7 +1064,7 @@ def resolve_mcp_servers(
                 )
             agent_mod.logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
     config["mcpServers"] = valid_servers
-    return ResolvedServers(_unresolved_this_pass, _oauth_client_targets)
+    return ResolvedServers(_unresolved_this_pass, _oauth_client_targets, _unresolved_commands)
 
 
 def sync_shared_server_refs(
