@@ -1494,41 +1494,51 @@ async def _resume_slot_from_history_noted(
         # Restore the protected choice read before construction, not the
         # editable transcript's provisional agent name.
         slot.agent = restored_agent
-    # Same model + effort restore as the restart loaders. Without it the resumed
-    # slot runs on the default model, and its next save writes ``model: ""``
-    # over the user's pick. Resume only: import deliberately does not carry a
-    # model (see session_transfer). The marker was read for the pre-await
-    # snapshot, so it only vouches for an unchanged effort value.
-    _restore_model_fields(
-        slot,
-        meta,
-        cfg=restore_cfg,
-        effort_marker=effort_marker and meta.get("reasoning_effort") == _prefetched_effort,
-    )
-    if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
-        # The hook reads the slot's own fields; ``_app`` comes from the request
-        # (none here), so the line's app scope is restored onto the built slot
-        # the way the restart path restores it, and the hook's app check is a
-        # real read rather than a constant. From the fresh re-read, as below.
-        slot._app = str(post_read_meta["app"])
-    if containment is not None:
-        # Same for the channel link: the resume core does not hydrate
-        # ``linked_session_key`` (the restart path and the History surfacing do),
-        # so the hook's link check would read an empty field whatever the line
-        # says. Restored from the FRESH re-read (``post_read_meta``), not the
-        # pre-transcript snapshot, so a link written to the line inside the read
-        # window is what the hook sees; a channel-born key marks the origin the
-        # way the surfacing path does.
-        fresh_link = str(post_read_meta.get("linked_session_key") or "")
-        if fresh_link and not getattr(slot, "linked_session_key", ""):
-            slot.linked_session_key = fresh_link
-            # Beside the assignment, as every link-setting site records it
-            # (``test_crew_log_class_recorder``). The built slot has no open
-            # log yet, so this is the in-memory restriction mark; a hook that
-            # refuses the linked build discards the slot and the mark with it.
-            note_crew_log_class(state, slot)
-        if fresh_link or post_read_meta.get("channel_origin"):
-            slot.channel_origin = True
+    # The reads below run on a slot that is registered and under construction,
+    # after the materialiser's own rollback ended and before the reserved tail's
+    # ``_discard`` begins. A raise here undoes the build the way the materialiser
+    # does, or the construction mark leaks for the process lifetime.
+    try:
+        # Same model + effort restore as the restart loaders. Without it the resumed
+        # slot runs on the default model, and its next save writes ``model: ""``
+        # over the user's pick. Resume only: import deliberately does not carry a
+        # model (see session_transfer). The marker was read for the pre-await
+        # snapshot, so it only vouches for an unchanged effort value.
+        _restore_model_fields(
+            slot,
+            meta,
+            cfg=restore_cfg,
+            effort_marker=effort_marker and meta.get("reasoning_effort") == _prefetched_effort,
+        )
+        if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
+            # The hook reads the slot's own fields; ``_app`` comes from the request
+            # (none here), so the line's app scope is restored onto the built slot
+            # the way the restart path restores it, and the hook's app check is a
+            # real read rather than a constant. From the fresh re-read, as below.
+            slot._app = str(post_read_meta["app"])
+        if containment is not None:
+            # Same for the channel link: the resume core does not hydrate
+            # ``linked_session_key`` (the restart path and the History surfacing do),
+            # so the hook's link check would read an empty field whatever the line
+            # says. Restored from the FRESH re-read (``post_read_meta``), not the
+            # pre-transcript snapshot, so a link written to the line inside the read
+            # window is what the hook sees; a channel-born key marks the origin the
+            # way the surfacing path does.
+            fresh_link = str(post_read_meta.get("linked_session_key") or "")
+            if fresh_link and not getattr(slot, "linked_session_key", ""):
+                slot.linked_session_key = fresh_link
+                # Beside the assignment, as every link-setting site records it
+                # (``test_crew_log_class_recorder``). The built slot has no open
+                # log yet, so this is the in-memory restriction mark; a hook that
+                # refuses the linked build discards the slot and the mark with it.
+                note_crew_log_class(state, slot)
+            if fresh_link or post_read_meta.get("channel_origin"):
+                slot.channel_origin = True
+    except BaseException:
+        state.end_slot_construction(slot.key)
+        state._slots.pop(slot.key, None)
+        state._restricted_keys.discard(f"dashboard:{slot.key}")
+        raise
     # Hydrated length, not the raw disk count: materialisation may append one
     # unsaved interruption row, and the wrapper's paging cursor has to account
     # for it or the next older page repeats a row.
