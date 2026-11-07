@@ -205,7 +205,12 @@ def build_session_context(
         # Minimal runs still render tool-call pills in the dashboard, so the
         # UI-language contract (chrome, not style) is kept; empty on "auto".
         _min_cfg = ctx.KiroCrewConfig.load()
-        parts.append(ctx._build_ui_language_section(_min_cfg))
+        parts.append(
+            ctx._build_ui_language_section(
+                _min_cfg,
+                frame_delivered=ctx._response_preferences_apply(session_key or "", runtime_source),
+            )
+        )
         # A minimal run still calls Kiro Crew's tools, so it gets the same
         # spelling rule; nothing at all on a harness that needs none.
         parts.append(_tool_names.tool_names_block(provider_type))
@@ -367,7 +372,12 @@ def build_session_context(
 
     # UI language: a rendering contract like [RUNTIME], naming the language of
     # the chrome around tool calls. Empty unless the user picked one.
-    append_required(ctx._build_ui_language_section(_cfg))
+    append_required(
+        ctx._build_ui_language_section(
+            _cfg,
+            frame_delivered=ctx._response_preferences_apply(session_key or "", runtime_source),
+        )
+    )
     _mark("preamble")
 
     # Name any group the parent withheld, before the sections themselves, so

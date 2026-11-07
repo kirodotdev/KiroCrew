@@ -21,7 +21,7 @@ import {
   VERBOSITY_OPTIONS, MEMORY_MODE_OPTIONS, FOLDER_ROOT_EXAMPLE, memoryModeLabels, asMemoryMode,
   asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
   COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape, COMPACT_CUSTOM, AUTOCOMPACT_PCT_MIN,
-  AUTOCOMPACT_PCT_MAX,
+  AUTOCOMPACT_PCT_MAX, PREFERRED_LANGUAGE_OPTIONS, preferredLanguageLabels, asPreferredLanguage,
 } from './chatPanelOptions'
 import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
@@ -1013,6 +1013,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} hint={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} draft={linkPatternsDraft} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} hint={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} hint={i18nT('pages.settings.chatPanel.response_verbosity_hint')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.preferred_language')} hint={i18nT('pages.settings.chatPanel.preferred_language_hint')} value={asPreferredLanguage(dashCfg.preferred_language)} options={PREFERRED_LANGUAGE_OPTIONS} optionLabels={preferredLanguageLabels()} onChange={v => setDash({ preferred_language: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} hint={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_token_usage')} hint={i18nT('pages.settings.chatPanel.display_used_and_total_tokens_next_to_the_contex')} checked={chatCfg.showContextTokens} onChange={v => setChat('showContextTokens', v)} />
         </SettingsCard>
