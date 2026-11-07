@@ -155,10 +155,10 @@ class TestSlotDetailPaginationPersistedSuffix:
             out, _ = redact_credentials(out)
             return out
 
-        # Two credential KINDS that redact to the same tag, so no second key-shaped
-        # literal is needed.
-        mine = "key AKIAIOSFODNN7EXAMPLE here"
-        theirs = "key aws_secret_access_key=x here"
+        # Two labelled secret-key assignments: the redactor keeps the label and
+        # writes the same tag for each value, so no key-shaped literal is needed.
+        mine = "key aws_secret_access_key=x here"
+        theirs = "key aws_secret_access_key=y here"
         assert mine != theirs, "fixture needs two DISTINCT bodies"
         assert (
             red(mine) == red(theirs) != mine

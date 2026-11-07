@@ -150,3 +150,15 @@ describe('sanitizeCredentials: JWT family', () => {
     }
   })
 })
+
+describe('sanitizeCredentials: AWS key assignments', () => {
+  it('leaves a value the backend already replaced with its tag', () => {
+    for (const text of [
+      'aws_secret_access_key = [REDACTED: credential]',
+      "SessionToken: '[REDACTED: credential]' next",
+      'AccessKeyId=[REDACTED: encoded credential]',
+      JSON.stringify({ answer: 'SecretAccessKey="[REDACTED: credential]"' }),
+    ]) expect(sanitizeCredentials(text)).toBe(text)
+    expect(sanitizeCredentials('aws_secret_access_key = abc next')).toBe('[REDACTED] next')
+  })
+})
