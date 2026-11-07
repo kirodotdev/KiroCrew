@@ -428,7 +428,7 @@ class TestBackgroundTurnCap:
 
         assert "run_background_turn" in inspect.getsource(chat_handlers._api_chat_send)
         assert "run_background_turn" in inspect.getsource(
-            gw.GatewayOrchestrator._fire_dashboard_nudge
+            gw.GatewayOrchestrator._start_dashboard_wake_turn
         )
 
 
