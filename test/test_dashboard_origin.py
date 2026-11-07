@@ -999,18 +999,19 @@ class TestBuildHostCanonicalRedirect:
             ]
         )
         app[RELAY_INGRESS_APP_KEY] = ingress
-        app.router.add_get("/", _ok)
+        # Not the bare root, which a verified handover sends to /chat.
+        app.router.add_get("/chat", _ok)
         headers = {"Host": "127.0.0.1:7777", "Sec-Fetch-Dest": "document"}
 
         async with TestClient(TestServer(app)) as client:
             # A caller header alone cannot exempt a local navigation from canonicalization.
             for local_headers in (headers, {**headers, RELAY_USER_HEADER: owner}):
-                local = await client.get("/", headers=local_headers, allow_redirects=False)
+                local = await client.get("/chat", headers=local_headers, allow_redirects=False)
                 assert local.status == 302
-                assert local.headers["Location"] == "http://localhost:7777/"
+                assert local.headers["Location"] == "http://localhost:7777/chat"
 
             relayed = await client.get(
-                "/",
+                "/chat",
                 headers=ingress.stamp_headers(headers.items(), relay_user=owner),
                 allow_redirects=False,
             )

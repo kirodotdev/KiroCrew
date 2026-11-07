@@ -243,6 +243,7 @@ class FakeCrew:
 
             app.middlewares.append(build_host_canonical_redirect("localhost"))
             app.router.add_get("/", self._sessions)
+            app.router.add_get("/chat", self._sessions)
         app[RELAY_INGRESS_APP_KEY] = self.gateway
         app.router.add_route("*", "/api/sessions", self._sessions)
         app.router.add_post("/upload", self._upload)

@@ -990,6 +990,7 @@ carries any relay header:
 | a personal Crew, and the named user is not its owner | `403 relay_not_owner` |
 | a remote limit applies (below) | `403` with that limit's code |
 | a verified handover whose headers can't be rebuilt without the relay header (a value that can't be re-encoded) | `400 relay_header_invalid`, never served with the header |
+| a `GET` or `HEAD` of the bare `/`, with no query and no `Upgrade` | `302` to `/chat`: the relay root is the Crew address the control plane hands out, and the dashboard's home is `/chat`. Every other path, a query on `/`, and a direct (non-relay) `/` are served as before |
 | otherwise | served as relayed |
 
 **The strip inside the rule.** Both layers name relay headers by one definition,
