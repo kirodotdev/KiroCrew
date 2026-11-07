@@ -48,9 +48,12 @@ import ticktickLogoUrl from './logos/ticktick.svg'
  *     used on a product, so the tile stands until that confirmation.
  *     The marks themselves remain each vendor's trademark and are used only to
  *     indicate compatibility.
- *   - FULL-COLOUR marks (Linear, Atlassian, Stripe) carry their identity in
- *     their own hues, so they render as a plain `<img>` and are never flattened
- *     to `currentColor`.
+ *   - FULL-COLOUR marks (Linear, Atlassian, Stripe, GitLab, TickTick) carry
+ *     their identity in their own hues, so they render as a plain `<img>` and
+ *     are never flattened to `currentColor`. TickTick's is the simple-icons
+ *     path split into its two brand colours (blue ring #4772FA, amber check
+ *     #FFB000, the hues of the vendor's own app icon); a single-hue mask lost
+ *     the mark's identity among the coloured cards.
  */
 
 /** Monochrome marks — CSS mask over `currentColor`. */
@@ -78,7 +81,6 @@ const MASKED: Record<string, string> = {
   neon: neonLogoUrl,
   prisma: prismaLogoUrl,
   todoist: todoistLogoUrl,
-  ticktick: ticktickLogoUrl,
 }
 
 /** Full-colour marks — plain `<img>`, colours preserved. */
@@ -87,6 +89,7 @@ const COLOURED: Record<string, string> = {
   atlassian: atlassianLogoUrl,
   stripe: stripeLogoUrl,
   gitlab: gitlabLogoUrl,
+  ticktick: ticktickLogoUrl,
 }
 
 /** The provider's brand mark, or null for a slug we ship no mark for (the card
