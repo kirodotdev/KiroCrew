@@ -1,5 +1,5 @@
 import type { NavigateFunction } from 'react-router-dom'
-import { useId, useMemo, useState, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { useId, useMemo, useRef, useState, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { OverlayPortal } from '../../../components/overlayRoot'
 import { Undo2 } from 'lucide-react'
 import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
@@ -31,6 +31,8 @@ import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
+import type { OptionAction } from '../../../app-sdk/protocol/options'
+import { closeFromActionChip } from './actionChipClose'
 import { Input } from '../../../components/ui'
 import { KnowledgeBubbleChip } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
@@ -197,6 +199,8 @@ interface ComposerDockViewProps {
   followUpPicked: Set<string>
   followUpPickedRef: MutableRefObject<Set<string>>
   followUpSourceKey: string | null
+  /** The zero-turn action the newest reply offers, or `null`. */
+  followUpAction: OptionAction | null
   toggleFollowUpOption: (o: string) => void
   dashCfg: ReturnType<typeof usePageFlags>['dashCfg']
   jevAutoConsented: boolean
@@ -328,7 +332,7 @@ export default function ComposerDockView({
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
-  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, projectSwitching, switchAgent,
+  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, followUpAction, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, projectSwitching, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
@@ -337,6 +341,9 @@ export default function ComposerDockView({
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
+  // Read at click time AND after the close's handshake wait, so a newer reply refuses it.
+  const followUpSourceKeyRef = useRef(followUpSourceKey)
+  followUpSourceKeyRef.current = followUpSourceKey
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
@@ -808,6 +815,8 @@ export default function ComposerDockView({
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
               followUpMulti={followUpMulti}
+              followUpAction={followUpAction}
+              onFollowUpAction={(_action, sourceKeyAtClick) => dispatch(closeFromActionChip(activeSlot, sourceKeyAtClick, () => followUpSourceKeyRef.current))}
               onFollowUpSelect={(o: string, e: React.MouseEvent, _key: string | null | undefined, sendNow: (text: string) => void) => {
                 // One-click: enabled + no shift + not busy + not already in multi-select.
                 // `sendNow` is the composer's chip send: it steers or queues per the slot's busy-send mode.

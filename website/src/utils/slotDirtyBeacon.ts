@@ -201,13 +201,16 @@ export function retractSlotDirty(composerId: string): void {
  * reporting `false` would let a confirmed close destroy it. Over-reporting costs a
  * confirm the user can dismiss; under-reporting costs the only copy of their text.
  */
-export function anyWindowSlotDirty(slot: string): boolean {
+export function anyWindowSlotDirty(slot: string, exceptComposer?: string): boolean {
+  // A composer asking about OTHER work skips its own claim: its retraction runs after the
+  // render that reads this, so counting it reports the composer's own cleared draft.
+  const own = exceptComposer === undefined ? null : claimKey(exceptComposer)
   const now = Date.now()
   try {
     for (const key of claimKeys()) {
       // The probe's own leftover, if a removal ever failed. Inert by design: reading it
       // as an unattributable claim would pin EVERY slot permanently.
-      if (key === SLOT_DIRTY_KEY_PREFIX) continue
+      if (key === SLOT_DIRTY_KEY_PREFIX || key === own) continue
       const raw = localStorage.getItem(key)
       // Any composer's failure record, not just this window's: whoever could not persist a
       // claim is invisible in the scan below, so its record is the only evidence of it.

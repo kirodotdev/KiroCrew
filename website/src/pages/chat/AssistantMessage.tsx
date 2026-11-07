@@ -8,6 +8,7 @@ import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFail
 import { copyRichToClipboard, copyToClipboard } from '../../utils/clipboard'
 import { markdownToCleanHtml, rangeToCleanHtml } from '../../components/markdown/richTextClipboard'
 import { stripKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
+import { stripOptionActionTag } from '../../app-sdk/protocol/optionActionTag'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { isTouchDevice } from '../../utils/isTouchDevice'
@@ -444,7 +445,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // parsing consumed (an options-only reply) has nothing to quote, so no
   // seat, no menu item and no context-menu entry offer a control that would
   // do nothing on click.
-  const quotableText = stripKeepVisibleMarker(steerCleaned).trimEnd()
+  const quotableText = stripKeepVisibleMarker(stripOptionActionTag(steerCleaned)).trimEnd()
   const quoteOffered = !!onQuoteMessage && quotableText.length > 0
   const forkRow = !!onFork && forkIndex !== undefined && !forkMessageId
   const regenRow = !!onRegenerate && !slotRunning
@@ -480,7 +481,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // only (More where the reply has one, and the right-click menu on every
   // finished reply): the footer row gains no button and loses none.
   const copyMessage = (format: 'markdown' | 'rich' = 'markdown', fromClosedMenu = false) => {
-    const stripped = stripKeepVisibleMarker(steerCleaned)
+    const stripped = stripKeepVisibleMarker(stripOptionActionTag(steerCleaned))
     const markdown = stripped === steerCleaned ? stripped : stripped.trimEnd()
     const write = format === 'rich'
       ? copyRichToClipboard(markdownToCleanHtml(markdown), markdown)

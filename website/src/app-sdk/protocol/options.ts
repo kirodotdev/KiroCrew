@@ -6,6 +6,11 @@ import { isNoteRow } from '../../lib/noteContract'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
 import { extractInlineThinking } from './inlineThinking'
+import { optionActionOf, type OfferedAction } from './optionActionTag'
+
+/** A zero-turn action a reply offers through its `<!-- option-action:… -->` tag. The action and
+ *  the label are separate fields so the label stays inert prose: shown, never interpreted. */
+export type OptionAction = OfferedAction
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -62,13 +67,15 @@ export interface FollowUpDerivation {
    * options are on offer, so a caller that ignores it keeps multi-select.
    */
   followUpMulti: boolean
+  /** The zero-turn action the same row's control tag offers, or `null`. */
+  followUpAction: OptionAction | null
 }
 
 /** The one "no options on offer" array. A fresh `[]` per derivation changes
  *  identity on every streamed chunk and re-renders every memoized consumer of
  *  `followUpOptions`, so every empty result returns this same frozen array. */
 const NO_FOLLOW_UPS: readonly string[] = Object.freeze([])
-const NONE: FollowUpDerivation = Object.freeze({ followUpOptions: NO_FOLLOW_UPS, followUpSourceKey: null, followUpMulti: true })
+const NONE: FollowUpDerivation = Object.freeze({ followUpOptions: NO_FOLLOW_UPS, followUpSourceKey: null, followUpMulti: true, followUpAction: null })
 
 /**
  * Identity of the transcript row *m* sits at index *i* of, stable across
@@ -196,11 +203,12 @@ export function deriveFollowUpOptions(
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
       const parsed = parseOptions(m.content)
-      if (parsed.options.length) {
+      const action = optionActionOf(m.content)
+      if (parsed.options.length || action) {
         if (movedOn) return NONE
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi }
+        return { followUpOptions: parsed.options.length ? parsed.options : NO_FOLLOW_UPS, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi, followUpAction: action }
       }
       continue
     }
@@ -208,13 +216,16 @@ export function deriveFollowUpOptions(
       // A marker inside an inline `<thinking>` block is the model planning
       // its reply, not an offer: the bubble hides that block, so its choices
       // must not surface as chips either.
-      const { options, multi } = parseOptions(extractInlineThinking(m.content).cleaned)
+      const cleaned = extractInlineThinking(m.content).cleaned
+      const { options, multi } = parseOptions(cleaned)
+      const action = optionActionOf(cleaned)
+      const offers = options.length > 0 || action !== null
       // A failed turn can flush the text it streamed as a real assistant row before the
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
-      if (!options.length && sawError) continue
-      if (!options.length || movedOn) return NONE
-      return { followUpOptions: options, followUpSourceKey: rowIdentity(m, i), followUpMulti: multi }
+      if (!offers && sawError) continue
+      if (!offers || movedOn) return NONE
+      return { followUpOptions: options.length ? options : NO_FOLLOW_UPS, followUpSourceKey: rowIdentity(m, i), followUpMulti: multi, followUpAction: action }
     }
   }
   return NONE

@@ -44,6 +44,10 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import { hasUnsentComposerWork } from '../utils/composerWork'
+import { useSlotUnsentWorkSource, useSlotWorkBeacon } from '../hooks/useSlotWorkBeacon'
+
+const NO_FOLLOW_UP_OPTIONS: readonly string[] = Object.freeze([])
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerMentionSlice, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
@@ -123,28 +127,7 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
-// Half the one-row box: the 44px text line plus its 1px border each side.
-const COMPOSER_ONE_ROW_RADIUS = 23
-// The one-row text line's padding, equal above and below so the line sits on
-// the buttons' centre whatever its height. INPUT_TYPO's 12px over 4px puts it
-// lower by half of (line height - 20px): 2px at the 16px touch floor. Set on
-// the text column, so the textarea, its paste mirror and the Lexical editor
-// all take it; `1.5em` is INPUT_TYPO's `leading-normal` line, and resolves on
-// each of them at its own font size. Not `1lh`: Safari before 16.4 has no
-// such unit, and an invalid value would drop the padding to 0.
-const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]'
-// The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
-// gives up besides the clusters themselves.
-const ONE_ROW_CLUSTER_PAD_PX = 12
-// How far the one-row text column tucks under the attach cluster (`-ml-2.5`).
-// The text keeps its own px-4 (the paste-highlight layer is drawn at that
-// same inset), so the column moves instead: without the pull the caret sits
-// 18px past the attach button, twice the send side's gap.
-const ONE_ROW_TEXT_PULL_PX = 10
-// The glass rim is a slice of the pane's smaller side. A one-row composer
-// would get half the rim of a two-row one, so the rim is sized from the
-// two-row height (one wrapped line of text plus the toolbar) in both shapes.
-const COMPOSER_RIM_FROM_PX = 102
+import { COMPOSER_ONE_ROW_RADIUS, ONE_ROW_TEXT_PAD, ONE_ROW_CLUSTER_PAD_PX, ONE_ROW_TEXT_PULL_PX, COMPOSER_RIM_FROM_PX } from './chat-input/composerShape'
 const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
@@ -275,6 +258,8 @@ function ChatInput({
   followUpPendingOptions,
   followUpRefusedOptions,
   followUpError,
+  followUpAction,
+  onFollowUpAction,
   pasteBlocks: pasteBlocksProp = [],
   onPasteBlocksChange: onPasteBlocksChangeProp,
   showFullPastes = false,
@@ -804,6 +789,13 @@ function ChatInput({
     onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
     voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
+  const composerCaptureInFlight = uploading || voiceCaptureActive || transcribeInFlight
+  const composerHasUnsentWork = hasQuote || hasUnsentComposerWork({
+    text: value, files: pendingFiles, dirs: pendingDirs, sessionRefs: pendingSessions, pasteBlocks,
+    knowledge: !!knowledgeChip, uploading, voiceCapture: voiceCaptureActive || transcribeInFlight,
+  })
+  const beaconId = useSlotWorkBeacon(slotId, composerHasUnsentWork)
+  const actionBlockedBySlot = useSlotUnsentWorkSource(slotId, beaconId, Boolean(followUpAction && onFollowUpAction))
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
   const micHeldElsewhereAction = micOwnerTitle && voiceBusyElsewhereSession
@@ -1035,8 +1027,10 @@ function ChatInput({
       )}
 
       {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {!showGhost && ((followUpOptions && followUpOptions.length > 0) || (followUpAction && onFollowUpAction)) && onFollowUpSelect && (
+          <FollowUpBar options={followUpOptions ?? NO_FOLLOW_UP_OPTIONS} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError}
+            action={onFollowUpAction ? followUpAction : null} onAction={onFollowUpAction} composerHasUnsentWork={composerHasUnsentWork}
+            actionBlockedBySlot={actionBlockedBySlot} composerCaptureInFlight={composerCaptureInFlight} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always
