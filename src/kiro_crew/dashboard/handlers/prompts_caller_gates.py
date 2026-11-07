@@ -102,14 +102,24 @@ def _deny_foreign_app_skill_slot(
     state: DashboardState,
     session_key: str,
     operation: str,
+    *,
+    allow_projectless: bool = False,
 ) -> web.Response | None:
-    """Require an app caller to own a project-bound slot selected by its header.
+    """Require an app caller to own the slot selected by its header.
 
     Dashboard requests have owner-wide visibility. An app permission only opens
     the endpoint; it does not let the app select a foreign or unscoped slot and
-    use another slot's project as a metadata/read oracle. Missing, projectless,
-    and foreign slots return 404 so the isolation check does not enumerate slot
-    identities or project bindings.
+    use another slot's project as a metadata/read oracle. Missing and foreign
+    slots return 404 so the isolation check does not enumerate slot identities
+    or project bindings.
+
+    An owned slot with no project is refused too unless *allow_projectless*:
+    the ``kiro-workspace/`` browse routes resolve through
+    :func:`active_project_dir`, whose shared-project fallback would lend that
+    slot another chat's checkout. A route that resolves strictly through
+    :func:`requesting_slot_project` passes ``True``, because ``None`` there
+    reads no project at all. App chat slots are created without a project, so
+    without that pass ``skill_search`` refuses every app chat.
     """
     request_app = request.get("app", "")
     if not request_app:
@@ -117,7 +127,9 @@ def _deny_foreign_app_skill_slot(
     slot_name = session_key.split(":", 1)[-1] if session_key else ""
     slot = _named_slot(state, session_key)
     owner = getattr(slot, "_app", "") if slot is not None else ""
-    if owner == request_app and requesting_slot_project(state, session_key) is not None:
+    if owner == request_app and (
+        allow_projectless or requesting_slot_project(state, session_key) is not None
+    ):
         try:
             _sel().log_api_access(
                 caller=request_app,
