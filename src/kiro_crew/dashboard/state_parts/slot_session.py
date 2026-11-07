@@ -25,7 +25,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
-``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
+``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
@@ -201,10 +201,6 @@ def init_session_fields(self: _ChatSlot) -> None:
     # choice landed even when that choice returned to the level it saw.
     self._effort_pick_gen = 0
     self._reasoning_effort = ""
-    # Per-session auto-compact threshold override (percent). None = follow
-    # the global session.autocompact_pct. Persisted with the slot and
-    # re-seeded into the SessionManager after restore.
-    self.autocompact_pct = None
     # Per-session turn time limit (seconds). None = follow the global
     # agent.chat_turn_timeout_secs. Persisted with the slot; read by the turn
     # dispatch (turn_dispatch.resolve_turn_limit) when each turn starts.

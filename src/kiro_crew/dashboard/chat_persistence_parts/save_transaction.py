@@ -163,6 +163,8 @@ def _save_slot_to_history(
     after_commit_under_lock: Callable[[], None] | None = None,
     refuse_stale_empty_merge: bool = False,
     turn_timeout_override: tuple[int | None] | None = None,
+    autocompact_override: tuple[float | None] | None = None,
+    after_commit_on_transcript: Callable[[], None] | None = None,
     retired_rows: list[dict] | None = None,
     takeover_basis: TakeoverBasis | None = None,
 ) -> bool:
@@ -378,6 +380,8 @@ def _save_slot_to_history(
                 muted_override=muted_override,
                 after_commit_under_lock=after_commit_under_lock,
                 turn_timeout_override=turn_timeout_override,
+                autocompact_override=autocompact_override,
+                after_commit_on_transcript=after_commit_on_transcript,
             )
             if refusal is not None:
                 logger.warning("Slot %s empty-window save refused: %s", slot.key, refusal)
@@ -552,6 +556,7 @@ def _save_slot_to_history(
                     mutes_opened_override=mutes_opened_override,
                     muted_override=muted_override,
                     turn_timeout_override=turn_timeout_override,
+                    autocompact_override=autocompact_override,
                 )
             )
             meta_str = json.dumps(meta_line) + "\n"
@@ -660,9 +665,13 @@ def _save_slot_to_history(
             # flush -- which needs this same lock to serialize the slot -- cannot
             # observe the still-prior flag and overwrite the committed value.
             # This is the full-save twin of the empty-window merge's
-            # ``after_commit_under_lock`` hook; one or the other runs, never both.
+            # ``after_commit_under_lock`` hook; one save path or the other runs,
+            # never both. Both hooks run on every commit here; only the merge
+            # skips the first for a rebound slot (see ``merge_empty_window``).
             if after_commit_under_lock is not None:
                 after_commit_under_lock()
+            if after_commit_on_transcript is not None:
+                after_commit_on_transcript()
             _record_pending_memory_mode(pending_mode_target, _mode)
             # The write committed: the deferred-note drop records it retired
             # are now safe to consume (see ``build_full_line``). Discard is
@@ -770,6 +779,8 @@ async def save_slot_off_loop(
     muted_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
+    autocompact_override: tuple[float | None] | None = None,
+    after_commit_on_transcript: Callable[[], None] | None = None,
     retired_rows: list[dict] | None = None,
     takeover_basis: TakeoverBasis | None = None,
     verdict_source: str | None = None,
@@ -944,6 +955,8 @@ async def save_slot_off_loop(
             muted_override=muted_override,
             after_commit_under_lock=after_commit_under_lock,
             turn_timeout_override=turn_timeout_override,
+            autocompact_override=autocompact_override,
+            after_commit_on_transcript=after_commit_on_transcript,
             retired_rows=retired_rows,
             takeover_basis=_basis,
         )

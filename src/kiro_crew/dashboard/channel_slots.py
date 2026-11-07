@@ -79,7 +79,11 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
-from kiro_crew.dashboard.transcript_binding import bind_transcript, seed_project_from_disk
+from kiro_crew.dashboard.transcript_binding import (
+    bind_transcript,
+    seed_autocompact_from_disk,
+    seed_project_from_disk,
+)
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT
 from kiro_crew.loop_lock import LoopBoundLock
@@ -591,11 +595,13 @@ def surface_channel_session(
         # Restore the per-session compaction threshold, mirroring the
         # persistence loaders: without this, a surfaced slot's field stays
         # None and the next save overwrites the persisted override with null.
+        # A live alias's threshold, which the slot just joined, is newer than
+        # this snapshot and stays (``seed_autocompact_from_disk``).
         # Local import: chat_persistence imports from this module, so a
         # module-level import here would be circular.
         from kiro_crew.dashboard.chat_persistence import _validate_autocompact_pct
 
-        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        seed_autocompact_from_disk(state, slot, _validate_autocompact_pct(meta["autocompact_pct"]))
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     # The session's own turn time limit, for the same reason: without it a
