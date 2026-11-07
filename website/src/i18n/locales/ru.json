@@ -18457,6 +18457,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "Офис",
+        "office_desc": "Классический пиксельный офис",
+        "panda_label": "Логово панды",
+        "panda_desc": "Рабочее место в бамбуковом лесу, одни панды",
+        "neural_label": "Нейросеть",
+        "neural_desc": "Карта созвездий",
+        "wizard_label": "Башня волшебника",
+        "wizard_desc": "Алхимическая лаборатория",
+        "underwater_label": "Глубоководная лаборатория",
+        "underwater_desc": "Подводная станция",
+        "mission_label": "Mission Control",
+        "mission_desc": "Операционный центр NASA",
+        "serengeti_label": "Водопой",
+        "serengeti_desc": "Саванна Серенгети с жирафами, бородавочниками и слонами",
+        "ghost_label": "Призраки Kiro",
+        "ghost_desc": "Призраки Kiro в шляпах, очках и плащах"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "только дружелюбные призраки",
         "kiro_ghost_haunt_animation": "Анимация призрака Kiro",

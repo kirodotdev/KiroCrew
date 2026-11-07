@@ -17089,6 +17089,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "오피스",
+        "office_desc": "클래식 픽셀 오피스",
+        "panda_label": "판다 소굴",
+        "panda_desc": "대나무 숲 작업 공간, 모두 판다",
+        "neural_label": "뉴럴 네트워크",
+        "neural_desc": "별자리 지도",
+        "wizard_label": "마법사의 탑",
+        "wizard_desc": "연금술 실험실",
+        "underwater_label": "심해 연구소",
+        "underwater_desc": "수중 기지",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA 운영 센터",
+        "serengeti_label": "물웅덩이",
+        "serengeti_desc": "기린, 혹멧돼지, 코끼리가 있는 세렝게티 사바나",
+        "ghost_label": "Kiro 유령 출몰",
+        "ghost_desc": "모자, 안경, 망토를 걸친 Kiro 유령들"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "친절한 유령만",
         "kiro_ghost_haunt_animation": "Kiro 유령 출몰 애니메이션",

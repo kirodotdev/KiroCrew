@@ -18001,6 +18001,24 @@
       "v": "v"
     },
     "scenes": {
+      "config": {
+        "office_label": "Bureau",
+        "office_desc": "Bureau classique en pixel art",
+        "panda_label": "Repaire des pandas",
+        "panda_desc": "Espace de travail dans une forêt de bambous, rien que des pandas",
+        "neural_label": "Réseau neuronal",
+        "neural_desc": "Carte des constellations",
+        "wizard_label": "Tour du sorcier",
+        "wizard_desc": "Laboratoire d’alchimie",
+        "underwater_label": "Laboratoire abyssal",
+        "underwater_desc": "Station sous-marine",
+        "mission_label": "Mission Control",
+        "mission_desc": "Centre des opérations de la NASA",
+        "serengeti_label": "Point d’eau",
+        "serengeti_desc": "Savane du Serengeti avec girafes, phacochères et éléphants",
+        "ghost_label": "Repaire hanté de Kiro",
+        "ghost_desc": "Fantômes Kiro avec chapeaux, lunettes et capes"
+      },
       "ghostScene": {
         "friendly_hauntings_only": "hantises amicales uniquement",
         "kiro_ghost_haunt_animation": "Animation du fantôme Kiro",
