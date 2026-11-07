@@ -3167,10 +3167,10 @@
         "clear_filters": "फ़िल्टर साफ़ करें",
         "resize_list": "सूची का आकार बदलें",
         "resize_sidebar": "साइडबार का आकार बदलें",
-        "select_a": "एक",
+        "select_subject_to_see_details": "विवरण देखने के लिए एक {{subject}} चुनो।",
+        "select_crew_to_see_details": "विवरण देखने के लिए एक क्रू चुनो।",
         "selected_change_hidden_by_filters": "चयनित {{subject}} सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
         "selected_issue_hidden_by_filters": "चयनित इश्यू सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
-        "to_see_its_details": "चुनें ताकि उसका विवरण दिखे।",
         "select_an_issue_to_see_its_details": "विवरण देखने के लिए एक इश्यू चुनें।",
         "select_a_work_item_to_see_its_details": "विवरण देखने के लिए कोई वर्क आइटम चुनो।"
       }

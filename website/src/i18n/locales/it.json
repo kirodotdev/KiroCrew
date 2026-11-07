@@ -3274,10 +3274,10 @@
         "clear_filters": "Cancella filtri",
         "resize_list": "Ridimensiona l'elenco",
         "resize_sidebar": "Ridimensiona la barra laterale",
-        "select_a": "Seleziona un",
+        "select_subject_to_see_details": "Seleziona un {{subject}} per vederne i dettagli.",
+        "select_crew_to_see_details": "Seleziona una crew per vederne i dettagli.",
         "selected_change_hidden_by_filters": "L’elemento {{subject}} selezionato è nascosto dai filtri attivi.",
         "selected_issue_hidden_by_filters": "La issue selezionata è nascosta dai filtri attivi.",
-        "to_see_its_details": "per vederne i dettagli.",
         "select_an_issue_to_see_its_details": "Seleziona una issue per vederne i dettagli.",
         "select_a_work_item_to_see_its_details": "Seleziona un elemento di lavoro per vederne i dettagli."
       }

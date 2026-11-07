@@ -3060,10 +3060,10 @@
         "clear_filters": "清除筛选",
         "resize_list": "调整列表大小",
         "resize_sidebar": "调整侧边栏大小",
-        "select_a": "选择一个",
+        "select_subject_to_see_details": "选择一个 {{subject}} 以查看其详情。",
+        "select_crew_to_see_details": "选择一个小队以查看其详情。",
         "selected_change_hidden_by_filters": "所选 {{subject}} 已被当前筛选条件隐藏。",
         "selected_issue_hidden_by_filters": "所选 issue 已被当前筛选条件隐藏。",
-        "to_see_its_details": "以查看其详情。",
         "select_an_issue_to_see_its_details": "选择一个 issue 查看其详情。",
         "select_a_work_item_to_see_its_details": "选择一个工作项以查看详情。"
       }

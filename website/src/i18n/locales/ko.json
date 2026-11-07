@@ -3148,10 +3148,10 @@
         "clear_filters": "필터 지우기",
         "resize_list": "목록 크기 조절",
         "resize_sidebar": "사이드바 크기 조절",
-        "select_a": "선택:",
+        "select_subject_to_see_details": "세부 정보를 보려면 {{subject}}을(를) 선택하세요.",
+        "select_crew_to_see_details": "세부 정보를 보려면 크루를 선택하세요.",
         "selected_change_hidden_by_filters": "선택한 {{subject}}은(는) 활성 필터에 의해 숨겨져 있습니다.",
         "selected_issue_hidden_by_filters": "선택한 이슈는 활성 필터에 의해 숨겨져 있습니다.",
-        "to_see_its_details": "세부 정보를 보려면",
         "select_an_issue_to_see_its_details": "세부 정보를 보려면 이슈를 선택하세요.",
         "select_a_work_item_to_see_its_details": "작업 항목을 선택하면 세부 정보가 표시됩니다."
       }
