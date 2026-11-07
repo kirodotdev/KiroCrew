@@ -11,6 +11,7 @@ test that passes says the file survived rather than that a code path was taken.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import logging
@@ -20,14 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import pinned_fs, session_storage
+from conftest import make_dir_link
+from kiro_crew import pinned_fs, platform_compat, session_storage
 
 _NOW = 1_700_000_000.0
 _BATCH = "20231114-batch"
 
-pytestmark = pytest.mark.skipif(
+_needs_pinned_walk = pytest.mark.skipif(
     not pinned_fs.supports_pinned_tree_walk(),
-    reason="the pinned removal needs openat/O_NOFOLLOW; the coarse branch is tested elsewhere",
+    reason="the pinned removal needs openat/O_NOFOLLOW; TestTheCoarsePlatform covers the rest",
 )
 
 
@@ -67,16 +69,17 @@ def _identity(path: Path) -> tuple[int, int]:
 
 
 def _swap_parent_for_a_link(parent: Path, victim: Path) -> None:
-    """Replace *parent* with a symbolic link to *victim*, keeping the real one aside.
+    """Replace *parent* with a link to *victim*, keeping the real one aside.
 
     This is the ancestor swap, done exactly as an attacker would: the batch's own path
     is untouched and still spelled the same, but every component above it now resolves
-    somewhere else.
+    somewhere else. On Windows the link is a junction, which needs no symlink privilege.
     """
     parent.rename(parent.with_name(parent.name + ".real"))
-    parent.symlink_to(victim, target_is_directory=True)
+    make_dir_link(parent, victim)
 
 
+@_needs_pinned_walk
 class TestAncestorSwapContainment:
     """Neither sibling path may delete through a swapped ancestor."""
 
@@ -262,6 +265,7 @@ class TestAncestorSwapContainment:
         assert "identity was never established" in caplog.text
 
 
+@_needs_pinned_walk
 class TestUnswappedRemovalStillHappens:
     """The containment must not turn either path into a no-op."""
 
@@ -386,6 +390,7 @@ class TestUnswappedRemovalStillHappens:
         assert "which nothing here may remove" in caplog.text
 
 
+@_needs_pinned_walk
 class TestTheManifestGoesLast:
     """A tree that will not empty must stay LISTED, which means keeping its manifest.
 
@@ -493,6 +498,7 @@ class TestTheManifestGoesLast:
         assert sorted(p.name for p in tmp_path.iterdir()) == [], "no debris left behind"
 
 
+@_needs_pinned_walk
 class TestTheApprovalReadsOneFile:
     """The header and the listing must describe ONE manifest, bound to the scanned inode.
 
@@ -566,6 +572,7 @@ class TestTheApprovalReadsOneFile:
             os.close(fd)
 
 
+@_needs_pinned_walk
 class TestPutBackNoClobber:
     """The undo half of "move it aside, remove the tree, put it back"."""
 
@@ -924,7 +931,215 @@ class TestTheCoarsePlatform:
         assert (victim / _BATCH).is_dir()
         assert not any(p.name.startswith(".") for p in victim.iterdir())
 
+    def test_a_batch_with_a_locked_file_keeps_its_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A survivor keeps the manifest, so the batch put back is still listed."""
+        root = tmp_path / "trash"
+        batch = _batch_with_manifest(root, _BATCH, entries=[])
+        identity = _identity(batch)
+        (batch / "cli").mkdir()
+        (batch / "cli" / "held.jsonl").write_text("held open")
+        real_unlink = platform_compat.PinnedDirectory.unlink
 
+        def _locked(self: platform_compat.PinnedDirectory, name: str) -> None:
+            if name == "held.jsonl":
+                raise PermissionError(13, "the file is held open", name)
+            real_unlink(self, name)
+
+        monkeypatch.setattr(session_storage, "_FD_SAFE_DELETE", False)
+        monkeypatch.setattr(platform_compat.PinnedDirectory, "unlink", _locked)
+        removed = session_storage._remove_emptied_batch(batch, "the empty batch", expect=identity)
+
+        assert removed is False
+        assert (batch / session_storage.MANIFEST_NAME).is_file(), "must outlive a survivor"
+        assert (batch / "cli" / "held.jsonl").read_text() == "held open"
+        assert list(root.iterdir()) == [batch], "put back under the name the user saw"
+
+    @pytest.mark.skipif(os.name != "nt", reason="a reparse point is a Windows object")
+    def test_a_directory_that_is_a_non_link_reparse_point_is_still_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cloud-files or dedup directory stands for no other name, so it is swept."""
+        from kiro_crew import platform_compat_links
+
+        root = tmp_path / "trash"
+        batch = _batch_with_manifest(root, _BATCH, entries=[])
+        identity = _identity(batch)
+        (batch / "cli").mkdir()
+        (batch / "cli" / "trashed.jsonl").write_text("trashed")
+
+        real_fstat = os.fstat
+
+        class _ReparseTagged:
+            """A directory's stat with the reparse bit set, as a cloud-files folder has."""
+
+            def __init__(self, info: os.stat_result) -> None:
+                self._info = info
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._info, name)
+
+            @property
+            def st_file_attributes(self) -> int:
+                attrs = self._info.st_file_attributes
+                return attrs | 0x400 if attrs & 0x10 else attrs
+
+        # Every directory answers as a reparse point that is not a link.
+        monkeypatch.setattr(os, "fstat", lambda fd: _ReparseTagged(real_fstat(fd)))
+        monkeypatch.setattr(platform_compat_links, "win_fd_is_link", lambda fd: False)
+        monkeypatch.setattr(
+            platform_compat_links,
+            "_win_reparse_refused",
+            lambda fd, attributes, *, links_only: not links_only,
+        )
+        removed = session_storage._remove_emptied_batch(batch, "the empty batch", expect=identity)
+
+        assert removed
+        assert list(root.iterdir()) == [], "no staging name may be left behind"
+
+    @pytest.mark.skipif(os.name != "nt", reason="the containment check is Windows-only")
+    def test_the_containment_check_does_not_fold_case(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``Trash`` and ``trash`` are distinct under a case-sensitive directory."""
+        from kiro_crew import platform_compat_links
+
+        finals = {1: r"C:\store\Trash", 2: r"C:\store\trash\keep.jsonl", 3: r"C:\store\Trash\x"}
+        monkeypatch.setattr(
+            platform_compat_links, "_win_final_path", lambda fd, flags=0: finals[fd]
+        )
+
+        with pytest.raises(OSError):
+            platform_compat_links._win_check_within(1, 2, "keep.jsonl")
+        platform_compat_links._win_check_within(1, 3, "x")
+
+    @pytest.mark.skipif(os.name != "nt", reason="a junction is a Windows object")
+    def test_an_empty_pinned_directory_turned_into_a_junction_deletes_nothing_outside(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pinned EMPTY directory can become a junction in place; nothing outside goes.
+
+        A handle with FILE_WRITE_ATTRIBUTES is enough to set a mount point on an empty
+        directory another process holds open, so the sweep's listing then reaches the
+        target. Each delete must check the entry it opened really sits in the pinned
+        directory.
+        """
+        import ctypes
+        import struct
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+
+        def _set_mount_point(path: str, target: str) -> None:
+            handle = kernel32.CreateFileW(path, 0x100, 7, None, 3, 0x02200000, None)
+            assert handle not in (None, wintypes.HANDLE(-1).value), ctypes.get_last_error()
+            try:
+                sub = ("\\??\\" + target).encode("utf-16-le")
+                prn = target.encode("utf-16-le")
+                body = struct.pack("<HHHH", 0, len(sub), len(sub) + 2, len(prn))
+                body += sub + b"\0\0" + prn + b"\0\0"
+                buf = struct.pack("<IHH", 0xA0000003, len(body), 0) + body
+                done = wintypes.DWORD()
+                assert kernel32.DeviceIoControl(
+                    handle, 0x000900A4, buf, len(buf), None, 0, ctypes.byref(done), None
+                ), ctypes.get_last_error()
+            finally:
+                kernel32.CloseHandle(handle)
+
+        root = tmp_path / "trash"
+        batch = _batch_with_manifest(root, _BATCH, entries=[])
+        identity = _identity(batch)
+        (batch / "cli").mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.jsonl").write_text("the only copy")
+        (outside / "sub").mkdir()
+        (outside / "sub" / "deep.jsonl").write_text("the only copy")
+
+        real_listdir = os.listdir
+        converted: list[bool] = []
+
+        def _listdir(path: object = ".") -> list[str]:
+            if not converted and os.path.basename(os.fspath(path)) == "cli":  # type: ignore[arg-type]
+                converted.append(True)
+                _set_mount_point(os.fspath(path), str(outside))  # type: ignore[arg-type]
+            return real_listdir(path)  # type: ignore[arg-type]
+
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "listdir", _listdir)
+            session_storage._remove_emptied_batch(batch, "the restored batch", expect=identity)
+
+        assert converted, "the conversion point must be reached for this to mean anything"
+        assert (outside / "keep.jsonl").read_text() == "the only copy"
+        assert (outside / "sub" / "deep.jsonl").read_text() == "the only copy"
+
+    @pytest.mark.skipif(os.name != "nt", reason="a junction is a Windows object")
+    def test_a_junction_in_the_staged_batch_is_removed_as_a_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A junction swapped in after the screen is removed as a link, never walked.
+
+        A path walker screens ``cli`` as a real directory, then lists it by name. The
+        swap lands in that window: ``cli`` is renamed away and a junction to a directory
+        outside the trash takes its name. A walker then empties the junction's target.
+        The pinned sweep holds ``cli`` open while it lists it, so the rename is refused.
+        """
+        import _winapi
+
+        root = tmp_path / "trash"
+        batch = _batch_with_manifest(root, _BATCH, entries=[])
+        identity = _identity(batch)
+        (batch / "cli").mkdir()
+        (batch / "cli" / "trashed.jsonl").write_text("trashed")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.jsonl").write_text("the only copy")
+
+        real_scandir, real_listdir = os.scandir, os.listdir
+        swapped: list[bool] = []
+
+        def _swap_once(path: object) -> None:
+            if swapped or os.path.basename(os.fspath(path)) != "cli":  # type: ignore[arg-type]
+                return
+            swapped.append(True)
+            with contextlib.suppress(OSError):  # refused while pinned: the protection
+                os.rename(os.fspath(path), str(tmp_path / "cli.aside"))  # type: ignore[arg-type]
+                _winapi.CreateJunction(str(outside), os.fspath(path))  # type: ignore[attr-defined]
+
+        def _scandir(path: object = ".") -> object:
+            _swap_once(path)
+            return real_scandir(path)  # type: ignore[arg-type]
+
+        def _listdir(path: object = ".") -> list[str]:
+            _swap_once(path)
+            return real_listdir(path)  # type: ignore[arg-type]
+
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "scandir", _scandir)
+            patched.setattr(os, "listdir", _listdir)
+            removed = session_storage._remove_emptied_batch(
+                batch, "the restored batch", expect=identity
+            )
+
+        assert swapped, "the swap point must be reached for this to mean anything"
+        assert (outside / "keep.jsonl").read_text() == "the only copy"
+        assert not (tmp_path / "cli.aside").exists(), "the pin must refuse the rename"
+        assert removed
+        assert list(root.iterdir()) == [], "no staging name may be left behind"
+
+
+@_needs_pinned_walk
 class TestScanTreePinned:
     """The traversal, and the claim the by-name ratchet's exemption rests on."""
 
@@ -987,6 +1202,7 @@ class TestScanTreePinned:
             os.close(fd)
 
 
+@_needs_pinned_walk
 class TestRemoveDirVerified:
     """The primitive the three former inline spellings now share."""
 
@@ -1058,6 +1274,7 @@ class TestRemoveDirVerified:
         assert (tmp_path / "full" / "child").read_text() == "x"
 
 
+@_needs_pinned_walk
 class TestRemoveTreePinned:
     """The composition, including its two refusals."""
 
