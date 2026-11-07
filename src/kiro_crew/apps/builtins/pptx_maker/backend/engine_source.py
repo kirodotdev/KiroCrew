@@ -37,6 +37,7 @@ already be off the event loop — see ``routes.off_loop`` and the
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -81,11 +82,17 @@ ENGINE_COMMIT = "b7c7fcf0972b33a480f1b717a3de5bc288d53742"
 #: for a fixed commit sha the generated archive is stable (the only variable
 #: input, the pax ``comment`` header, is the commit sha itself).
 #:
-#: Bumping the engine means bumping :data:`ENGINE_COMMIT`, this digest and
-#: :data:`ENGINE_TAG` together. Bumping the commit alone fails verification on
-#: every host, which is the intended failure mode — the digest, not the tag and
-#: not the commit, is what decides whether code runs.
+#: Bumping the engine means bumping :data:`ENGINE_COMMIT`, this digest,
+#: :data:`ENGINE_LOCK_SHA256` and :data:`ENGINE_TAG` together. Bumping the commit
+#: alone fails verification on every host, which is the intended failure mode:
+#: the digest, not the tag and not the commit, is what decides whether code runs.
 ENGINE_TARBALL_SHA256 = "ffe8e10b973cada1f6e99629ac780bde25461b432ad07943b4f15ca11c07dfe0"
+
+#: sha256 of ``mcp-local/uv.lock`` inside that archive (see :func:`is_installed`),
+#: from the same download::
+#:
+#:     tar -xzOf engine.tar.gz '*/mcp-local/uv.lock' | shasum -a 256
+ENGINE_LOCK_SHA256 = "599d5386f7d1c07683291fc7b9cbeca2b7bd39fe6bb8c800a2164283410542dc"
 
 _ARCHIVE_URL_TEMPLATE = "{repo}/archive/{commit}.tar.gz"
 
@@ -347,9 +354,21 @@ def is_installed(engine_root: Path) -> bool:
     ``(engine_root / ".git").is_dir()`` + ``git rev-parse HEAD``: it answers the
     same question ("is the vetted tree on disk?") from a marker that only a
     digest-verified extraction can have written.
+
+    The engine's ``uv.lock`` must also still be the archive's
+    (:data:`ENGINE_LOCK_SHA256`). Every ``uv`` call installs that lock as-is
+    (``--frozen``), so a lock rewritten after install (a ``uv run`` without
+    ``--frozen``) would keep installing what it now names; reading it as not
+    installed is what lets the next provision re-fetch the tree and rebuild its venv.
     """
     marker = read_source_marker(engine_root)
-    return marker.get("commit") == ENGINE_COMMIT and marker.get("sha256") == ENGINE_TARBALL_SHA256
+    if marker.get("commit") != ENGINE_COMMIT or marker.get("sha256") != ENGINE_TARBALL_SHA256:
+        return False
+    try:
+        lock = (engine_root / "mcp-local" / "uv.lock").read_bytes()
+    except OSError:
+        return False
+    return hashlib.sha256(lock).hexdigest() == ENGINE_LOCK_SHA256
 
 
 def installed_tag(engine_root: Path) -> str:
