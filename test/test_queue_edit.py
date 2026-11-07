@@ -88,6 +88,20 @@ class TestEditQueuedMessagesHelper:
         assert _edit_queued_by_id(messages, "q1", "new") is True
         assert messages[1]["content"] == "new"
 
+    def test_edit_an_app_twin_keyed_in_meta(self):
+        """The app twin wears plain CSS in ``cls`` and its id in ``meta.queueId``,
+        the spelling remove and reorder already match; edit matches it too."""
+        messages = [
+            {
+                "role": "queued",
+                "content": "old",
+                "cls": "msg msg-queued",
+                "meta": {"queueId": "q1"},
+            },
+        ]
+        assert _edit_queued_by_id(messages, "q1", "new") is True
+        assert messages[0]["content"] == "new"
+
     def test_edit_placeholder_not_found(self):
         messages = [{"role": "queued", "content": "old", "cls": json.dumps({"queue_id": "q1"})}]
         assert _edit_queued_by_id(messages, "q2", "new") is False

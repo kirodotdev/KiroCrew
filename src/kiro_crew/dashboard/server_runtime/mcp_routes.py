@@ -604,6 +604,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
     app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
     app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
+    app.router.add_post(
+        "/api/session-control/queue", _deferred("session_control", "api_session_control_queue")
+    )
     # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
     # the engine's install state and connection, the install job, a bounded
     # connect test and a disconnect. Owner cookie/token only; every one of them

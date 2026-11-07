@@ -127,7 +127,8 @@
     "session_release": "Release session",
     "session_read_message": "Read session message",
     "session_summary": "Read session summary",
-    "work_dispatch": "Dispatch work item"
+    "work_dispatch": "Dispatch work item",
+    "session_queue": "Manage session queue"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",
