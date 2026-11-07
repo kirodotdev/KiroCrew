@@ -12,8 +12,9 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
-``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
+``_bound_workspace_fd``, ``_expect_mcp_reports``, ``_kiro_native_spec_lookup``,
+``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
 ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
 ``_native_skill_projection``, ``_session_queues``, ``_start_launch_name``, ``_tool_search_wire``, ``_wire_mode_id``,
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew import member_essential_context
-from kiro_crew.acp import runtime_start
+from kiro_crew.acp import kas_engine_features, runtime_start
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
 from kiro_crew.acp.mcp_ref_guard import warn_remote_header_secret_refs, warn_unresolved_server_refs
@@ -392,6 +393,7 @@ async def _kas_custom_agents(
         member_dispatch=member_dispatch,
         crew_panel=crew_panel,
         session_key=session_key,
+        engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
