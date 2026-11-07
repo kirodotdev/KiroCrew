@@ -12499,6 +12499,9 @@
         "chip_done_other": "{{count}} 个代理已完成",
         "chip_failed_other": "{{count}} 个代理失败",
         "chip_stopped_other": "{{count}} 个代理已停止",
+        "chip_parent_stopped_other": "父轮次已停止: {{count}}",
+        "parent_turn_stopped": "父轮次已停止",
+        "parent_stopped_still_running": "父级已停止，仍在运行",
         "chip_stalled_other": "{{count}} 个代理可能已停滞",
         "more_running_normally_count_other": "另有 {{count}} 个正常运行中…"
       },

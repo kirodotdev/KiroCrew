@@ -53,7 +53,7 @@ import { composerCardReducers } from './chat/composerCards'
 import { messageReducers } from './chat/messages'
 import { queueReducers } from './chat/queue'
 import { activityReducers } from './chat/activity'
-import { subagentReducers } from './chat/subagents'
+import { markParentStopped, subagentReducers } from './chat/subagents'
 import { automationReducers } from './chat/automations'
 import { sideReducers } from './chat/side'
 import { workflowReducers } from './chat/workflows'
@@ -176,6 +176,15 @@ export const batchedTextAboveFloor = (parts: BatchedChunkPart[], floor: number |
 /** One `chat_message` frame as the WebSocket hook hands it to `sseChatMessage`. */
 type ChatFrame = TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }
 
+/** A Stop card that settled as stopped ended the parent turn, which leaves
+ *  any still-running subagent without its parent. A declined or failed Stop
+ *  (`stop_declined_compacting`, `stop_failed_reset`) and the in-flight
+ *  `stopping` card leave the parent as it was. */
+function stopCardStoppedTurn(meta: ChatFrame['meta']): boolean {
+  const s = meta?.state
+  return s === 'stopped' || s === 'force_stopped'
+}
+
 /**
  * Path B (native session grid): apply a WS chat frame for a NON-active slot
  * into the per-slot store so a pane rendering that slot streams live. The
@@ -201,6 +210,7 @@ function applyNonActiveFrame(
     const msg: ChatMessage = ensureMsgId({ role, content, cls: cls || '', ts, meta: { ...meta, kind: 'stop_event' }, kind: 'stop_event' })
     if (idx >= 0) msgs[idx] = msg
     else msgs.push(msg)
+    if (stopCardStoppedTurn(meta)) markParentStopped(state, slot)
     return
   }
   if (role === '_segment') {
@@ -395,6 +405,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     countLiveFrame(state)
     const msg: ChatMessage = ensureMsgId({ role, content, cls: cls || '', ts, meta: { ...meta, kind: 'stop_event' }, kind: 'stop_event' })
     if (idx >= 0) { state.messages[idx] = msg } else { state.messages.push(msg) }
+    if (stopCardStoppedTurn(meta)) markParentStopped(state, slot)
     return
   }
   // WS segment — finalize streaming into assistant without resetting sequence or slot state

@@ -2006,6 +2006,23 @@ thread, and the race-safety argument (the state test and the cancel sharing one
 `only_from` under the generation the read returned) is the same code rather than the same
 intent restated.
 
+### Dashboard Stop and subagent UI
+
+Stop ends the parent turn but leaves its subagents running: Stop is a
+turn-level verb and **Stop all** is the process-level one. The frontend reads
+the existing `stop_event` card for this. When a slot's card settles as
+`stopped` or `force_stopped`, every active subagent card in that slot gets
+`parentStopped = true` and a dimmed "Parent stopped, still running" label, and
+the header histogram counts them. A `stopping`, `stop_declined_compacting` or
+`stop_failed_reset` card leaves the cards alone, because the parent was not
+stopped. A new parent turn on the slot lifts the mark, and a reconnect
+snapshot keeps it. Stop all stays reachable, so the user can still kill the
+processes.
+
+| Caller | Marks subagent cards? | Kills processes? |
+|--------|-----------------------|------------------|
+| Any Stop through `stop_slot_turn` (it opens the card) | yes, once its card settles as stopped | no |
+
 **After the snapshot's ids, the store rows accepted before the snapshot.** A row held
 only by the store — a memory-deferred spawn, or one waiting past the window — is in
 neither the queue nor `_agents`, so no snapshot names it, and left alone it would stay
