@@ -131,6 +131,10 @@ class ConnectionStatus(TypedDict, total=False):
     #: Connect and on a connected row; it never blocks the mint, which runs on
     #: kiro-cli and writes a grant kiro-cli chats use.
     backendLacksOauth: bool
+    #: True while Crew holds this Connection's sign-in (``connections.crew_oauth``
+    #: on KAS). Present only when true. Test runs on kiro-cli's grant and is
+    #: refused for such a row, so the card does not offer it.
+    crewHeld: bool
 
 
 def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
@@ -535,6 +539,8 @@ async def collect_connection_statuses(
         }
         if granted is None:
             entry["grantIndeterminate"] = True
+        if slug in crew_managed:
+            entry["crewHeld"] = True
         if not backend_oauth and is_preregistered(provider) and slug not in crew_managed:
             # A caveat, not a refusal: the mint runs on kiro-cli, so the grant it
             # writes is real for kiro-cli chats. Whether a KAS chat can use it is
