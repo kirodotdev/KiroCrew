@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useCallback, useRef, useState } from 'react'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type IDisposable } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
@@ -19,13 +19,14 @@ import { Btn } from './ui'
 import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { useTerminalSearch } from '../hooks/useTerminalSearch'
 import { copyToClipboard } from '../utils/clipboard'
+import { attachOsc52Copy } from '../lib/terminalOsc52'
 
 import { i18nT } from '../i18n/t'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
  * switches (so scrollback + cursor survive), and are only torn down when the
  * owning terminal TAB is closed (disposeTerminalSession). */
-const termCache = new Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }>()
+const termCache = new Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon; osc52: IDisposable }>()
 
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
@@ -209,7 +210,9 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: S
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon(openTerminalLink))
     term.loadAddon(search)
-    entry = { term, fit, search }
+    // Copies requested by programs in the terminal (OSC 52), e.g. tmux or herdr.
+    const osc52 = attachOsc52Copy(term)
+    entry = { term, fit, search, osc52 }
     termCache.set(id, entry)
   }
   return entry
@@ -218,6 +221,7 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: S
 function destroyTerm(id: string) {
   const entry = termCache.get(id)
   if (entry) {
+    entry.osc52.dispose()
     entry.term.dispose()
     termCache.delete(id)
   }

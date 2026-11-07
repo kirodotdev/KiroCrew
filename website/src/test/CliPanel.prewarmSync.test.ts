@@ -13,6 +13,7 @@ const xt = vi.hoisted(() => {
     options: Record<string, unknown>
     element: HTMLElement | undefined = undefined
     constructor(options: Record<string, unknown>) { this.options = { ...options }; FakeTerminal.instances.push(this) }
+    parser = { registerOscHandler: () => ({ dispose() {} }) }
     loadAddon() {}
     open(container: HTMLElement) { const el = document.createElement('div'); container.appendChild(el); this.element = el }
     dispose() {}
