@@ -727,7 +727,7 @@ describe('ChatPage row callbacks — quote and ask', () => {
   it('a pane\'s open-full click records the chat open', async () => {
     const { store } = await renderSplit()
     await act(async () => { gridProps!.onCollapse!('chat-2', undefined, undefined, true) })
-    await waitFor(() => expect(store.getState().chat.userOpen?.key).toBe('chat-2'))
+    await waitFor(() => expect(store.getState().chat.userOpen).toMatchObject({ key: 'chat-2', landed: true }))
   })
 
   it('withholds Ask from the panes while disconnected instead of switching slots offline', async () => {

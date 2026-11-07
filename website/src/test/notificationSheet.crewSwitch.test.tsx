@@ -5,7 +5,7 @@ import { setActiveSlot, switchSlot } from '../store/chatSlice'
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
 import type { Notification } from '../types'
-import { addNotification } from '../store/notificationsSlice'
+import { addNotification, fetchNotifications } from '../store/notificationsSlice'
 import { Provider, useSelector } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -54,6 +54,8 @@ describe('notification sheet across Crew switches', () => {
       const store = createTestStore()
       store.dispatch(setActiveId(hidden ? 'remote-crew' : null))
       store.dispatch(setActiveSlot('cron-a'))
+      // The bell's first fetch has landed (empty), so an open can read the list.
+      store.dispatch(fetchNotifications.fulfilled({ items: [], seq: 0, ackSeq: 0, membershipSeq: 0 }, 'boot'))
       function Root({ children }: { children: ReactNode }) {
         const remoteActive = useSelector((s: RootState) => s.instances.activeId !== null)
         return <LocalOverlayRoot hidden={remoteActive}>{children}</LocalOverlayRoot>
@@ -123,10 +125,12 @@ describe('notification sheet across Crew switches', () => {
       act(() => { result.current.closePanel() })
       expect(result.current.phase).not.toBe('open')
       act(() => {
+        const open = { key: 'cron-a', announceOnMissing: true, gesture: true }
+        store.dispatch(switchSlot.pending('req-go-to-chat', open))
         store.dispatch(switchSlot.fulfilled(
           { key: 'cron-a', messages: [], running: false, stopping: false, hasMore: false, total: 0, queue: [] } as never,
           'req-go-to-chat',
-          { key: 'cron-a', announceOnMissing: true, gesture: true },
+          open,
         ))
       })
       await waitFor(() => expect(ackedTs(store)).toContain('run-2'))
