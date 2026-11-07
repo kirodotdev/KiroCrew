@@ -9,12 +9,14 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The sixteen registry seams
+## The seventeen registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these sixteen in its header.
+already calls. `src/extensions.ts` names exactly these seventeen in its header.
 `src/test/extensionSeams.test.tsx` exercises each one except the source-provider
-seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
+seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`, and the
+Feature Preview row seam, which has its own suite in
+`src/pages/settings/FeaturePreviewsEditionRows.test.tsx`.
 
 File/tree/folder menu rows are **not** a composition-root seam: an installed app
 declares them in its manifest under `contributes.fileMenuItems[]` and core
@@ -30,6 +32,7 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 | Top-bar widgets | `apps/topBarWidgets.tsx` | `registerTopBarWidgets()` to `getTopBarWidgets()` |
 | Readout-capsule segments | `apps/capsuleSegments.tsx` | `registerCapsuleSegment()` to `getCapsuleSegments()` |
 | Overview status cards | `pages/overviewStatCards.tsx` | `registerOverviewStatCards()` to `getOverviewStatCards()` |
+| Feature Preview rows | `pages/settings/featurePreviewRows.ts` | `registerFeaturePreviewRows()` to `getFeaturePreviewRows()` (duplicate id refused through `reportSeamCollision`) |
 | Overview lower panel (single owner) | `pages/overviewPanel.tsx` | `registerOverviewPanel()` to `getOverviewPanel()` |
 | Overview built-in suppression (subtractive) | `pages/overviewBuiltins.ts` | `suppressOverviewBuiltin()` to `isOverviewBuiltinSuppressed()` |
 | Panel-navigation chords | `hooks/useKeyboardShortcuts.ts` | `registerPanelShortcut()`, read by the shortcut handler and `DEFAULT_SHORTCUTS` |
@@ -48,9 +51,9 @@ methods" and "Highlighting languages" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets) are core-internal wiring, not edition
-seams. Only the sixteen above are called from the composition root.
+seams. Only the seventeen above are called from the composition root.
 
-Fifteen of the sixteen are **additive** — the edition contributes a surface. The
+Sixteen of the seventeen are **additive** — the edition contributes a surface. The
 remaining one is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
 Overview surface for a distribution whose environment makes it permanently
 inapplicable, which no additive seam can express. It is named `suppress*` rather
@@ -504,6 +507,15 @@ actions group clips from the leading edge.
 adds a self-contained `StatCard` (owning its own query and state, like the core
 `TunnelStatus`) to the Settings Overview grid, after the core cards, in ascending
 `order`. Each receives a `delay` prop for the grid's stagger animation.
+
+**Feature Preview rows.** `registerFeaturePreviewRows([{ id, component }])` adds a
+self-contained row to Settings > Developer > Feature Previews, after the core cards
+and before the Decisions card, in registration order. The component renders its
+own `SettingsCard` and switch and owns its own read and write, through the
+edition's own route (`contribute_routes`) and API module (`apiTransport`). Each
+row is wrapped in its own `ErrorBoundary` with the standard crash card, so a
+throwing row shows that card in its place and the other rows stay. A duplicate
+`id` is a collision (`reportSeamCollision`) and is ignored.
 
 **Overview lower panel.** `registerOverviewPanel({ id, component })` claims the
 region below the Usage/Memory summary grid, which the stock build leaves empty.
