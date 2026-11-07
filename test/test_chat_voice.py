@@ -903,6 +903,78 @@ class TestVoiceSynthesize:
             # rejection carries the cleaned text a manual Read aloud speaks.
             assert carried["speakable"] == "First. Second."
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("aws_on_path", "code", "speakable"),
+        [(True, "voice_synthesis_failed", None), (False, "voice_unavailable", "First. Second.")],
+    )
+    async def test_polly_no_audio_is_a_failure_unless_the_cli_is_missing(
+        self, tmp_path, monkeypatch, aws_on_path, code, speakable
+    ):
+        """With the CLI present, AccessDenied on every sentence gets the notice.
+
+        Only a host without the AWS CLI answers the client-fallback code, so
+        an account fault is never masked by browser speech.
+        """
+        from kiro_crew import aws_consent
+        from kiro_crew.config.loader import config_dir
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        config_dir().mkdir(parents=True, exist_ok=True)
+        _consent_to_polly(profile="polly-reader", region="us-east-1")
+
+        async def _granted(_profile, _region, *, use_cache=True):
+            return aws_consent.Identity(ok=True, account="111122223333")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _granted)
+        monkeypatch.setattr("kiro_crew.voice_reply.resolve_aws_bin", lambda: "aws")
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.shutil.which",
+            lambda name, *a, **k: "/usr/bin/aws" if aws_on_path and name == "aws" else None,
+        )
+        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.voice_reply.cgroup_scope_argv", lambda argv: list(argv))
+        denied_proc = AsyncMock()
+        denied_proc.communicate = AsyncMock(
+            return_value=(
+                b"",
+                b"An error occurred (AccessDeniedException) when calling the "
+                b"SynthesizeSpeech operation: not authorized to perform polly:SynthesizeSpeech",
+            )
+        )
+        denied_proc.returncode = 255
+
+        async def _spawn(*_argv, **_kw):
+            return denied_proc
+
+        monkeypatch.setattr("kiro_crew.voice_reply.create_subprocess_limited", _spawn)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice._vc",
+            MagicMock(
+                provider="polly",
+                default_voice="Ruth",
+                default_engine="generative",
+                default_rate="100%",
+                default_pitch="+0%",
+                aws_profile="polly-reader",
+                region="us-east-1",
+            ),
+        )
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.post(
+                "/api/voice/synthesize", json={"text": "First. Second.", "slot": "s1"}
+            )
+            assert resp.status == 502
+            data = await resp.json()
+        event, payload = state.broadcast_ws.call_args[0]
+        assert event == "voice_error"
+        assert (data["code"], payload["code"]) == (code, code)
+        assert (data["speakable"], payload.get("speakable")) == (speakable, speakable)
+
 
 def _consent_to_polly(*, profile: str, region: str) -> None:
     """Record operator consent for Polly under one profile+region pair."""
