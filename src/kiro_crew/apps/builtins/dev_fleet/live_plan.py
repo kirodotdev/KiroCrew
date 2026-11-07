@@ -59,7 +59,7 @@ def _make_live_status_error(code: str) -> str:
         "no_user_unit": (
             f"the live gateway is not running as the user service "
             f"{_LIVE_GATEWAY_UNIT} — Dev Fleet cannot restart it for you (a "
-            "`kirocrew service install` system unit needs root to bounce)"
+            "`kirocrew service install` unit is its own manager's to restart)"
         ),
         "user_unit_inactive": (
             f"the user service {_LIVE_GATEWAY_UNIT} exists but is not running, so "
