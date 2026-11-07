@@ -198,6 +198,10 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
         "@kirocrew-work/work_brief",
     }
 )
+#: The goal conductor's two fixed checks (``mcp_work.CHECK_TOOLS``).
+_HISTORY_CHECK_VERBS: frozenset[str] = frozenset(
+    {"@kirocrew-work/accept_eval", "@kirocrew-work/patrol_budget"}
+)
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
 #: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
 #: tuple the table holds exactly that entry (pinned by test), so an entry can join
@@ -213,6 +217,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
+        | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-ledger-conductor": (
         frozenset({"session", "report", "tool_search"})
@@ -222,6 +227,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
+        | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-pipeline-conductor": (
         frozenset({"session", "report", "tool_search"})

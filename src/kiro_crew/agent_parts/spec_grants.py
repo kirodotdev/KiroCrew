@@ -453,9 +453,18 @@ _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
 )
 
 
+#:
+#: ``accept_eval`` and ``patrol_budget`` are the goal-conductor skill's two bundled
+#: checks served in-process (``mcp_work.CHECK_TOOLS``). Granted because, unlike
+#: ``execute_bash``, their arguments are typed data: no field names a command, an
+#: argv or a path to run, the evaluator builds every argv itself and refuses a
+#: ``cmd`` kind, and the budget check is arithmetic. Each READS world state and
+#: writes nothing, so a verify cycle waits on no shell approval.
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
     "@kirocrew-work/work_brief",
+    "@kirocrew-work/accept_eval",
+    "@kirocrew-work/patrol_budget",
 )
 
 

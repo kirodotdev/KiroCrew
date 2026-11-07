@@ -58,12 +58,29 @@ PATROL_CALLER = "conductor-patrol"
 PATROL_MESSAGE = (
     "Conductor patrol (armed by the gateway when you dispatched work and had no "
     "active loop). Run work_ledger_read with compact=true. For each item with status "
-    "done, read its bar with a full work_ledger_read, pipe the done-only "
-    "accept_batch into the goal-conductor skill's accept_eval.py, and record the "
+    "done, read its bar with a full work_ledger_read, pass the done-only "
+    "accept_batch to the accept_eval tool, and record the "
     "answer with work_ledger_record action=verdict. Answer question and blocked "
     "items with session_send. Ignore progress. Tune this loop with "
     "monitor_update; call autonudge_stop when every item is terminal or the user "
     "says stop."
+)
+
+#: Every text the gateway has armed a default patrol with. A persisted loop keeps
+#: the text it was armed with, so the fire-time check accepts each one; the old
+#: text names the evaluator script, which still runs (by shell) for its reader.
+SHIPPED_PATROL_MESSAGES: frozenset[str] = frozenset(
+    {
+        PATROL_MESSAGE,
+        "Conductor patrol (armed by the gateway when you dispatched work and had no "
+        "active loop). Run work_ledger_read with compact=true. For each item with status "
+        "done, read its bar with a full work_ledger_read, pipe the done-only "
+        "accept_batch into the goal-conductor skill's accept_eval.py, and record the "
+        "answer with work_ledger_record action=verdict. Answer question and blocked "
+        "items with session_send. Ignore progress. Tune this loop with "
+        "monitor_update; call autonudge_stop when every item is terminal or the user "
+        "says stop.",
+    }
 )
 
 #: Rides the bind reply whenever no ``work-ledger`` watch is active after the
@@ -144,7 +161,7 @@ def is_fixed_patrol_payload(loop: Any) -> bool:
         # Gated, as armed: an ungated row would hand delivery to the structured
         # monitor controller, whose envelope carries text this grant never covered.
         and getattr(loop, "gate", False) is True
-        and getattr(loop, "message", None) == PATROL_MESSAGE
+        and getattr(loop, "message", None) in SHIPPED_PATROL_MESSAGES
         and not getattr(loop, "banner", "")
         and not getattr(loop, "judge", None)
         and monitor is not None
