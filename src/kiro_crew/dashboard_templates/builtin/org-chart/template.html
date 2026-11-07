@@ -164,6 +164,7 @@
     background: color-mix(in oklab, var(--oc-card) 80%, var(--oc-done) 20%); }
   .oc-fbtn[aria-pressed="true"]:before { content: '\2713'; margin-right: 4px; }
   .oc-fn { margin-left: 5px; font-variant-numeric: tabular-nums; opacity: .8; }
+  .oc-empty .oc-fbtn { margin-left: 8px; }
 
   @media (max-width: 520px) {
     .oc { padding: 10px 10px 13px; }
@@ -250,7 +251,8 @@
         fold_hint: 'Collapses this group in the graph only. The cards below stay.',
         filter_label: 'Show tasks by state', filter_open: 'Open', filter_closed: 'Closed',
         filter_all: 'All', filter_prefix: 'Tasks:', fact_shown_of: '{n} of {m} shown', scope_filtered: 'filtered', fact_context: 'kept for the tasks under it',
-        filter_none_open: 'No open task to show.', filter_none_closed: 'No closed task to show.'
+        filter_none_open: 'No open task to show.', filter_none_closed: 'No closed task to show.',
+        filter_show_all: 'Show all'
       },
       'zh-CN': {
         oc_title: '\u8c01\u6d3e\u53d1\u4e86\u8c01', oc_last_write: '\u8bb0\u5f55\u6700\u540e\u5199\u5165',
@@ -289,7 +291,8 @@
         filter_closed: '\u5df2\u5173\u95ed', filter_all: '\u5168\u90e8',
         filter_prefix: '\u4efb\u52a1\uff1a', fact_shown_of: '{m} \u4e2d\u663e\u793a {n} \u4e2a', scope_filtered: '\u5df2\u7b5b\u9009', fact_context: '\u56e0\u5176\u4e0b\u7684\u4efb\u52a1\u800c\u4fdd\u7559',
         filter_none_open: '\u6ca1\u6709\u8fdb\u884c\u4e2d\u7684\u4efb\u52a1\u3002',
-        filter_none_closed: '\u6ca1\u6709\u5df2\u5173\u95ed\u7684\u4efb\u52a1\u3002'
+        filter_none_closed: '\u6ca1\u6709\u5df2\u5173\u95ed\u7684\u4efb\u52a1\u3002',
+        filter_show_all: '\u663e\u793a\u5168\u90e8'
       }
     };
     function locale() {
@@ -997,12 +1000,14 @@
       if (!graph || !holder || !cardsTitle || !foot || !scope) return;
       /* The rebuild below replaces every fold button, so a reader who toggled one
          from the keyboard would land on the page body at each host push. Note which
-         group's button had focus, and give focus to its replacement. */
+         group's button had focus, and give focus to its replacement. The empty
+         line's Show all button is rebuilt the same way. */
       var focusKey = null;
       for (var fk in foldButtons) {
         if (Object.prototype.hasOwnProperty.call(foldButtons, fk)
             && foldButtons[fk] === document.activeElement) focusKey = fk;
       }
+      var backFocus = !!document.activeElement && document.activeElement.id === 'oc-show-all';
       foldButtons = {};
       graph.textContent = '';
       holder.textContent = '';
@@ -1034,7 +1039,19 @@
          graph nor the cards have a row: a filter can leave cards with no graph root
          to hang them on (a board whose parent task was cut from the fold). */
       if (filterMode !== 'all' && !roots.length && !rows.length) {
-        graph.appendChild(el('div', 'oc-empty', i18n('filter_none_' + filterMode)));
+        var empty = el('div', 'oc-empty', i18n('filter_none_' + filterMode));
+        var back = el('button', 'oc-fbtn', i18n('filter_show_all'));
+        back.type = 'button';
+        back.id = 'oc-show-all';
+        /* The button goes with the line it sits in, so focus moves to the All pill. */
+        back.addEventListener('click', function () {
+          var all = document.querySelector('[data-oc-filter="all"]');
+          all.click();
+          all.focus();
+        });
+        empty.appendChild(back);
+        graph.appendChild(empty);
+        if (backFocus) back.focus({ preventScroll: true });
         cardsTitle.hidden = true;
       }
       for (var i = 0; i < roots.length; i++) drawNode(roots[i], graph, now);
