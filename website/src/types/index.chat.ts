@@ -826,6 +826,10 @@ export interface CrewWorker {
   /** Its direct dispatcher by the lineage the server walks (the parent edge,
    *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
   dispatched_by?: string
+  /** Set when remote dispatch placed the worker on another crew: that crew's
+   *  display name (else its instance id). Its `key` names no local session, so
+   *  the row offers no open, steer or approval. Absent on a local worker. */
+  remote_crew?: string
 }
 
 /** One session's recap from records only, no model call

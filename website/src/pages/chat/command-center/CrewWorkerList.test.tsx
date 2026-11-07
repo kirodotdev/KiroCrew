@@ -85,6 +85,24 @@ describe('Ultra Mode Crew tab', () => {
     expect(within(finished).getByText('Old one')).toBeInTheDocument()
   })
 
+  it('List: each row says where its worker runs, and a remote row opens nothing here', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [
+      D('local', 'Local one', 'root-1'),
+      { ...D('remote:it_r', 'Remote one', 'root-1'), ledger_item: 'it_r', remote_crew: 'Build box' },
+    ] })
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    const local = await findRowOf('Local one')
+    const remote = rowOf('Remote one')
+    expect(within(local).getByTestId('ultra-member-location')).toHaveTextContent('This machine')
+    expect(within(remote).getByTestId('ultra-member-location')).toHaveTextContent('Build box')
+    const open = within(remote).getByText('Remote one').closest('button') as HTMLButtonElement
+    expect(open).toBeDisabled()
+    fireEvent.click(open)
+    expect(store.getState().chat.activeSlot).not.toBe('remote:it_r')
+    expect(within(local).getByText('Local one').closest('button')).not.toBeDisabled()
+  })
+
   it('List: ONE tree, a finished member stays under its open lead and an open one under its finished lead', async () => {
     api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [
       D('kid', 'Kid', 'sub', 'done'), D('sub', 'Sub team', 'root-1', 'working'),
