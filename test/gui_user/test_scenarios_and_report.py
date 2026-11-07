@@ -572,6 +572,19 @@ class TestShippedScenarios:
                 assert f'"{label}"' in text, (name, label)
             assert "Activity will appear here" not in text, name
 
+    def test_crewmate_panel_tabs_quotes_the_bot_panels_workspace_label(self) -> None:
+        """The Bot panel titles its Files view with the Profile card's word.
+
+        A scenario that asks for a "Files" tab there stalls the tester every night.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        workspace = en["pages"]["membersPage"]["profile_workspace"]
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-panel-tabs.yaml")
+        text = " ".join([*sc.steps, *sc.expectations])
+        assert f'Click the "{workspace}" tab' in text
+        assert '"Files"' not in text
+
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.
 
