@@ -133,7 +133,7 @@
   "components.appstore.categoryRail.app",
   "components.artifactFolderDeleteDialog.artifact",
   "components.artifactFolderDeleteDialog.subfolder",
-  "components.artifactPanel.comment",
+  "components.artifactPanel.comments_to_send",
   "components.autoNudgePopover.judge_verdict",
   "components.autoNudgePopover.judge_verdict_untimed",
   "components.chatInput.cancel_n_uploads",

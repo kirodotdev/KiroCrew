@@ -6440,8 +6440,8 @@
       "additional_instruction": "সার্বিক নির্দেশ",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "slug কপি করতে ক্লিক করুন",
-      "comment_one": "{{count}}টি মন্তব্য",
-      "comment_other": "{{count}}টি মন্তব্য",
+      "comments_to_send_one": "এই চ্যাটে পাঠানোর জন্য {{count}}টি মন্তব্য",
+      "comments_to_send_other": "এই চ্যাটে পাঠানোর জন্য {{count}}টি মন্তব্য",
       "couldn_t_load_this_artifact_it_may_have_been_del": "এই আর্টিফ্যাক্ট লোড করা যায়নি। এটি মুছে ফেলা হয়ে থাকতে পারে, বা নেটওয়ার্ক অনুরোধ ব্যর্থ হয়েছে।",
       "couldn_t_send_your_comments_are_still_pending": "পাঠানো যায়নি — তোমার মন্তব্যগুলি এখনও অপেক্ষমাণ।",
       "couldn_t_send_your_comments_are_still_pending_reason": "পাঠানো যায়নি — তোমার মন্তব্যগুলি এখনও অপেক্ষমাণ। ({{error}})",
@@ -6456,7 +6456,6 @@
       "overall_instruction_hint": "সব অপেক্ষমাণ মন্তব্যের জন্য একটা নির্দেশ যোগ করো",
       "show_comments": "মন্তব্য দেখাও",
       "submit": "জমা দিন",
-      "to_send_to_this_chat": "এই চ্যাটে পাঠাতে",
       "toggle_additional_instruction": "সার্বিক নির্দেশ যোগ করো"
     },
     "askAgent": {
