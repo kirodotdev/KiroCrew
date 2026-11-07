@@ -15,6 +15,8 @@
  */
 import { memo, useMemo } from 'react'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
+import { splitFrontmatter } from './markdown/frontmatter'
+import { FrontmatterCard } from './markdown/FrontmatterCard'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
 import { PierreCode, type PierreEditorHandle } from '../pierre'
 import { CodeEditor } from './CodeEditor'
@@ -65,7 +67,7 @@ export const ContentRenderer = memo(function ContentRenderer({
   lang, lineNums, wordWrap, onChange, onSave,
   previewRef, displayContent, isMarkdown,
   markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged,
-  onFileOpen, onFolderOpen,
+  onFileOpen, onFolderOpen, findRootRef,
 }: {
   isRichType: boolean
   /** A text-backed rich type (json, csv, ...) shown as its source: the code
@@ -87,6 +89,9 @@ export const ContentRenderer = memo(function ContentRenderer({
   /** Cmd/Ctrl+S inside the editor surface. */
   onSave?: () => void
   previewRef: React.RefObject<HTMLElement | null>
+  /** Markdown preview only: the element holding the frontmatter strip and the
+   *  body together, for a host's find. `previewRef` stays body-only. */
+  findRootRef?: React.Ref<HTMLDivElement>
   displayContent: string
   isMarkdown: boolean
   markdownClassName?: string
@@ -106,6 +111,10 @@ export const ContentRenderer = memo(function ContentRenderer({
   diffSplit?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // File-preview only: split a leading YAML frontmatter block so it renders as
+  // a metadata strip instead of a GFM thematic break + setext heading. Cheap
+  // when there is no block (the raw string is returned as `body`).
+  const frontmatter = useMemo(() => splitFrontmatter(displayContent), [displayContent])
   const codeFile = useMemo(
     () => ({ name: filePath?.split('/').pop() || `file.${lang}`, contents: content }),
     [filePath, lang, content],
@@ -200,13 +209,28 @@ export const ContentRenderer = memo(function ContentRenderer({
           diffExpandUnchanged={diffExpandUnchanged}
         />
       )}
-      {!isRichType && !editing && isMarkdown && (
-        <div ref={previewRef as React.RefObject<HTMLDivElement>} className={markdownClassName ?? 'msg-content text-sm leading-relaxed'}>
-          <BasePathCtx.Provider value={filePath || null}>
-            <MarkdownRenderer content={displayContent} sourcePos onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
-          </BasePathCtx.Provider>
-        </div>
-      )}
+      {!isRichType && !editing && isMarkdown && (() => {
+        const body = (
+          <div ref={previewRef as React.RefObject<HTMLDivElement>} className={markdownClassName ?? 'msg-content text-sm leading-relaxed'}>
+            <BasePathCtx.Provider value={filePath || null}>
+              <MarkdownRenderer content={frontmatter.body} sourcePos onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
+            </BasePathCtx.Provider>
+          </div>
+        )
+        if (!frontmatter.hasFrontmatter) return body
+        // Two roots. `findRootRef` holds the strip AND the body, so Cmd+F reaches
+        // every visible word. `previewRef` holds only the body: comment capture
+        // and highlight lookup measure text offsets under it, so rows that
+        // collapse inside it would shift every stored offset and move highlights
+        // onto the wrong occurrence. With no strip there is no wrapper, so the
+        // preview's DOM is unchanged and a host's find falls back to `previewRef`.
+        return (
+          <div ref={findRootRef}>
+            <FrontmatterCard entries={frontmatter.entries} />
+            {body}
+          </div>
+        )
+      })()}
       {!isRichType && !editing && !isMarkdown && (
         <div
           ref={previewRef as React.RefObject<HTMLDivElement>}

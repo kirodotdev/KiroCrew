@@ -5468,7 +5468,7 @@
         "backup_others_on_drive": "이 드라이브에 백업하는 다른 설치본: {{count}}",
         "backup_show_others": "다른 설치본의 아카이브 포함",
         "backup_others_truncated": "처음 {{max}}개의 다른 설치본만 표시됩니다.",
-"backup_archives_truncated": "일부 {{kind}} 아카이브를 나열할 수 없습니다. 최신 아카이브가 빠져 있을 수 있습니다.",
+        "backup_archives_truncated": "일부 {{kind}} 아카이브를 나열할 수 없습니다. 최신 아카이브가 빠져 있을 수 있습니다.",
         "backup_shared_note": "두 설치본이 하나의 드라이브를 공유해도 메모리 공유나 세션 공유가 되는 것은 아닙니다. 각 백업은 한 시점의 개별 아카이브이며, 복원은 해당 파일을 스테이징 폴더로 다운로드할 뿐입니다 — 파일은 gateway를 멈춘 상태에서 직접 교체합니다.",
         "backup_restore_foreign_confirm": "이 아카이브는 다른 설치본({{install}})이 업로드했습니다. 복원하면 이 설치본이 아니라 그 설치본의 데이터를 다운로드합니다. 그래도 다운로드하시겠습니까?",
         "backup_restore_unverified_confirm": "이 아카이브는 이 설치본 자체 폴더에 저장되어 있지만, 이 설치본에는 업로드한 기록이 없습니다. 드라이브에 쓸 수 있는 누구나 그 폴더를 만들 수 있으므로, 이 설치본의 것이 아닐 수도 있습니다. 그래도 다운로드하시겠습니까?",
@@ -10858,6 +10858,9 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (일시 중지됨) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (일시 중지됨)"
+    },
+    "frontmatterCard": {
+      "heading_other": "Frontmatter · 필드 {{count}}개"
     }
   },
   "hooks": {

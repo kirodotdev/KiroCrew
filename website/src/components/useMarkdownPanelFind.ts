@@ -39,9 +39,14 @@ const FIND_HL_CURRENT = 'mc-find-current'
 // the artifact hosts paint through the same registry name, and ranges are
 // aggregated per owner so one host's open/close cannot erase another's paint.
 
-export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fullscreen, content, previewRef, fullscreenPreviewRef }: {
+export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fullscreen, content, previewRef, fullscreenPreviewRef, findRootRef, fullscreenFindRootRef }: {
   active: boolean; editing: boolean; diffMode: boolean; isMarkdown: boolean; fullscreen: boolean; content: string
   previewRef: RefObject<HTMLDivElement>; fullscreenPreviewRef: RefObject<HTMLDivElement>
+  /** What find searches, when it is wider than the preview root: the frontmatter
+   *  strip renders beside `previewRef` (outside the comment-offset root) but is
+   *  visible text a reader expects Cmd+F to reach. Absent, find searches the
+   *  preview root. */
+  findRootRef?: RefObject<HTMLDivElement>; fullscreenFindRootRef?: RefObject<HTMLDivElement>
 }) {
   // ── Preview-mode find (Cmd+F) ─────────────────────────────────────────────
   // Three surfaces compete for Cmd+F: the editor owns it while editing (it stops
@@ -117,7 +122,7 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   // already open; omitted, the term is new and the find starts over.
   const runFind = useCallback((term: string, caseSensitive: boolean, keep?: number) => {
     clearFindMarks()
-    const root = fullscreen ? fullscreenPreviewRef.current : previewRef.current
+    const root = fullscreen ? (fullscreenFindRootRef?.current ?? fullscreenPreviewRef.current) : (findRootRef?.current ?? previewRef.current)
     if (!root || !term) { setFindCount(0); setFindIdx(0); return }
     const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi')
     // Code blocks are drawn into shadow roots a TreeWalker cannot enter; the
@@ -130,7 +135,7 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
     if (!ranges.length) return
     paintFind(ranges, idx)
     if (keep === undefined) ranges[0].startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, [clearFindMarks, paintFind, fullscreen, previewRef, fullscreenPreviewRef])
+  }, [clearFindMarks, paintFind, fullscreen, previewRef, fullscreenPreviewRef, findRootRef, fullscreenFindRootRef])
 
   const stepFind = useCallback((dir: number) => {
     const n = findRangesRef.current.length
@@ -158,10 +163,10 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   // A code block is swapped for its highlighted copy after a find has run, which
   // drops the ranges taken on the first one; find again on the same match.
   useEffect(() => {
-    const root = fullscreen ? fullscreenPreviewRef.current : previewRef.current
+    const root = fullscreen ? (fullscreenFindRootRef?.current ?? fullscreenPreviewRef.current) : (findRootRef?.current ?? previewRef.current)
     if (!findOpen || !findTerm || !root) return
     return watchText(root, () => runFind(findTerm, findCase, findIdx))
-  }, [findOpen, findTerm, findCase, findIdx, fullscreen, runFind, previewRef, fullscreenPreviewRef])
+  }, [findOpen, findTerm, findCase, findIdx, fullscreen, runFind, previewRef, fullscreenPreviewRef, findRootRef, fullscreenFindRootRef])
 
   // Find highlight names belong to the one active panel, so clear them if it
   // unmounts. Annotation ranges use per-owner cleanup in MarkdownPanel.tsx; deleting their

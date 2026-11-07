@@ -125,4 +125,31 @@ describe('InlineCommentOverlay', () => {
     expect(boxes).toEqual([['0px', '50px'], ['100px', '40px']])
     vi.restoreAllMocks()
   })
+
+  it('re-measures when content above the text root (the frontmatter strip) collapses', () => {
+    // Collapsing the strip moves the body up without resizing the body or the
+    // scroller, so only the wrapper holding both reports a size change.
+    const observed: Element[] = []
+    globalThis.ResizeObserver = class extends FakeRO {
+      observe(el: Element) { observed.push(el) }
+    } as unknown as typeof ResizeObserver
+    function StripHarness({ comments }: { comments: ArtifactComment[] }) {
+      const scrollRef = useRef<HTMLDivElement>(null)
+      const textRef = useRef<HTMLDivElement>(null)
+      return (
+        <div ref={scrollRef} style={{ position: 'relative' }}>
+          <div data-testid="wrapper">
+            <div>strip</div>
+            <div ref={textRef}>The quick brown fox</div>
+          </div>
+          <InlineCommentOverlay scrollRef={scrollRef} textRef={textRef} comments={comments} activeId={null} onActivate={vi.fn()} />
+        </div>
+      )
+    }
+    // No comments: the measuring pass needs Range rects happy-dom lacks. The
+    // rerender lets the effect run once the outer scroller's ref is set.
+    const { getByTestId, rerender } = render(<StripHarness comments={[]} />)
+    rerender(<StripHarness comments={[]} />)
+    expect(observed).toContain(getByTestId('wrapper'))
+  })
 })
