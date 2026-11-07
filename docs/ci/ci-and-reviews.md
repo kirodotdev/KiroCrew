@@ -2704,8 +2704,27 @@ The big tiers wait on a person for everyone, fork PRs and in-repo PRs alike: a
 maintainer who wants one through sooner applies the `issue-gate: waived` label.
 One bad reference fails the whole PR: a sized issue beside an unsized one is
 still work nobody sized. The job summary lists each problem and says how to go
-green: once the label lands, any edit to the description re-runs the check, which
-is how a fork author -- who cannot press re-run -- gets there without a push.
+green: once the label lands the check re-runs on its own (below), and any edit to
+the description re-runs it too, with no push.
+
+**A label landing on the issue re-runs a red gate.** A label on an issue is not
+an event on any pull request, so a PR whose gate went red before its issue was
+tiered, or before a `tier:T3` / `tier:T4` one was flipped to `triaged`, would
+stay red after the label landed. `issue-gate-retrigger.yml` closes that: on
+`issues: labeled` / `unlabeled`, a job-level `if:` drops every label the gate does
+not read before a runner starts; then, for each open PR of this repository among
+the issue's last 100 cross-references, it re-runs the newest `Issue Gate` run on
+the PR's head with `gh run rerun --failed` if, and only if, that run failed. The
+run is matched on the head's repository and branch as well as its SHA, because two
+open PRs can share a head SHA and the newest run on it may be the other PR's. The
+re-run reads the body and the labels from the API, so it judges today's state; a
+green, running or absent run is left alone. The new attempt reaches `PR Readiness`
+through `pr-readiness-sweep.yml`'s re-run path. GitHub refuses a re-run more than
+30 days after the run started; that PR, like one whose run was still in flight
+when the label landed, goes green on a description edit. The job checks out
+nothing, its step reads only the issue number from the event, and it holds
+`actions: write` plus reads. `TestRetrigger` in `test/test_issue_gate_refs.py`
+pins its label filter to the gate's and runs its step against a stubbed `gh`.
 
 Deterministic on purpose: no model, one checkout of the default branch (for the
 grammar, nothing built), two API reads. The body is read from the API at run time rather than from
@@ -2768,18 +2787,18 @@ carries `Part of #16362`, the standing tracking issue for workflow-generated PRs
 so the gate passes mechanically once that issue is tiered. The release
 version-drop PR uses the waiver label, above.
 
-**Known residual.** The gate judges the declared issue when a PR event runs it.
-An issue that is closed as not planned, or loses its tier or `triaged` label, after the PR's
+**Known residual.** The retrigger re-runs only a FAILED gate, and only on a label
+event. An issue that is closed as not planned, or loses its tier or `triaged`
+label, after the PR's
 last `opened` / `synchronize` / `reopened` / `edited` / `labeled` / `unlabeled` event
-and before merge is not re-read: no issue-side event re-runs a `pull_request`
-lane, and `pr-readiness-sweep.yml` re-fires the readiness recompute, not the
+and before merge is not re-read on a PR whose gate is already green, and
+`pr-readiness-sweep.yml` re-fires the readiness recompute, not the
 Issue Gate lane (its whole-design-review re-run path, #13100, covers only the three
 whole-design lanes). Both reversals are deliberate maintainer writes that no
 workflow in
 `.github/` performs, the window closes on any PR activity, and the remedy is a
-revert; an issue-side revalidation lane (a reverse index from issue to the open
-PRs declaring it, plus a write path to re-dispatch their gate runs) would exist for
-this path alone and is not built.
+revert, so re-running green gates on them is left out. Closing and reopening an
+issue is not a label event either, so a reopen re-runs nothing.
 
 ## `pr-policy.yml`: four read-only policies, one runner
 
