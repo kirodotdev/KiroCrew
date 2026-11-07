@@ -2128,6 +2128,13 @@ it as a read, then a decision, then a write would let two apps sharing a
 dependency be uninstalled concurrently and both conclude they were the sole
 owner.
 
+A ledger that exists but cannot be read is never rewritten, so every app's
+entries survive a transient read error: the install (or enable) records nothing
+and reports that dependency as failed until a later install or enable records
+it, and the uninstall removes no dependency and goes on. Each logs a warning. One
+that does not decode, or is not an object, still reads as empty and the next
+install rewrites it as an object.
+
 A dependency type with no cleanup operation (`capability.agents`) keeps its
 ledger row and only loses this app's ownership even when classified removable:
 dropping the row for something nothing can uninstall would orphan the installed
