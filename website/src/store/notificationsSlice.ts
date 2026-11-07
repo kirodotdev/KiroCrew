@@ -65,6 +65,11 @@ interface NotificationsState {
    *  notice, its Approve/Reject are withdrawn, and its close X (always
    *  shown) tries again. */
   dismissFailed?: Record<string, 'decided'>
+  /** True once a fetch has landed in this tab. Until then `items` holds only
+   *  live arrivals, not the notes the server already has, so it cannot say
+   *  which of a chat's cron notes are unread (`useAckCronNotesInView`, #24080).
+   *  A failed fetch leaves it as it was. */
+  loaded?: boolean
 }
 
 /** Why a listed approval row can no longer be decided (`retiredApprovals`). */
@@ -468,6 +473,8 @@ const notificationsSlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(fetchNotifications.fulfilled, (state, action) => {
+        // Also when stale: the clear that made it stale emptied the server's list too.
+        state.loaded = true
         // Stale response: a clear landed while this fetch was in flight, so
         // its payload predates the clear. Applying it would restore the rows
         // and the badge with them.
