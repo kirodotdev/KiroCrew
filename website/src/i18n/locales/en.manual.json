@@ -10167,6 +10167,38 @@
     "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here."
   },
   "settings": {
+    "advanced": {
+      "title": "All settings",
+      "intro": "Change one here, or follow its link to the page where it lives. A change made here saves right away, and you can undo it.",
+      "search_placeholder": "Filter by name, key or description",
+      "read_only": "Read only",
+      "why_safety": "Read only: it decides what the agent may run, or do without asking you.",
+      "why_sign_in": "Read only: it decides how your sign-ins are kept.",
+      "why_reach": "Read only: it decides who can reach this computer, the agent or a chat.",
+      "why_share": "Read only: it sends your activity to another service.",
+      "why_owned": "Read only: another step changes it together with other settings.",
+      "why_marker": "Read only: {{productName}} sets it when you finish a step.",
+      "why_alias": "Read only: {{productName}} reads this value from another setting, so a change here would do nothing.",
+      "why_text": "Read only: it holds free text, such as a file path, a web address or a command.",
+      "why_locked": "Read only: your organization's policy sets it.",
+      "why_compound": "Read only: it holds several values that must change together.",
+      "restart": "Applies after gateway restart",
+      "default_label": "Default: {{value}}",
+      "current_label": "Current: {{value}}",
+      "saves_now": "Saves at once",
+      "not_saved": "Not saved",
+      "put_back": "Undo my edit ({{value}})",
+      "reset": "Reset to default",
+      "reset_aria": "Reset {{key}} to its default",
+      "list_hint": "One item per line",
+      "open_setting": "Change it in {{page}}",
+      "empty": "No setting matches.",
+      "load_error": "Could not load the settings.",
+      "empty_value": "(empty)",
+      "value_on": "Enabled",
+      "value_off": "Disabled",
+      "top_level": "General"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
@@ -10234,6 +10266,10 @@
       "connections_client_secret_manage": "Manage in OAuth Apps"
     },
     "tabs": {
+      "advanced": {
+        "description": "Every setting in one list",
+        "label": "Advanced"
+      },
       "about": {
         "description": "Version, update channel, check for updates, and license",
         "label": "About"

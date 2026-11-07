@@ -33,6 +33,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "auto_update"
   },
   {
+    "id": "advanced.all-settings",
+    "labelKey": "settings.advanced.title",
+    "tab": "advanced",
+    "type": "input",
+    "occurrence": 1,
+    "label": "All settings",
+    "description": "Change one here, or follow its link to the page where it lives. A change made here saves right away, and you can undo it."
+  },
+  {
     "id": "agent.kiro-sign-in",
     "labelKey": "pages.developer.kiroSignInCard.search_label",
     "tab": "agent",

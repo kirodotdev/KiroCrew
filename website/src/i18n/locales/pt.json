@@ -21882,6 +21882,38 @@
     "envOverrideWithSettingRef": "O heartbeat está desativado porque <settingRef/> está definida neste ambiente. Remova-a para gerenciar a telemetria aqui."
   },
   "settings": {
+    "advanced": {
+      "title": "Todas as configurações",
+      "intro": "Altere uma aqui ou siga o link dela até a página onde ela fica. Uma alteração feita aqui é salva na hora, e você pode desfazê-la.",
+      "search_placeholder": "Filtrar por nome, chave ou descrição",
+      "read_only": "Somente leitura",
+      "why_safety": "Somente leitura: decide o que o agente pode executar ou fazer sem perguntar a você.",
+      "why_sign_in": "Somente leitura: decide como seus logins são guardados.",
+      "why_reach": "Somente leitura: decide quem pode alcançar este computador, o agente ou um chat.",
+      "why_share": "Somente leitura: envia sua atividade para outro serviço.",
+      "why_owned": "Somente leitura: outra etapa altera isso junto com outras configurações.",
+      "why_marker": "Somente leitura: o {{productName}} define isso quando você termina uma etapa.",
+      "why_alias": "Somente leitura: o {{productName}} lê este valor de outra configuração, então alterá-lo aqui não faria nada.",
+      "why_text": "Somente leitura: contém texto livre, como um caminho de arquivo, um endereço web ou um comando.",
+      "why_locked": "Somente leitura: a política da sua organização define isso.",
+      "why_compound": "Somente leitura: contém vários valores que precisam mudar juntos.",
+      "restart": "Aplica após reiniciar o gateway",
+      "default_label": "Padrão: {{value}}",
+      "current_label": "Atual: {{value}}",
+      "saves_now": "Salvo na hora",
+      "not_saved": "Não salvo",
+      "put_back": "Desfazer minha alteração ({{value}})",
+      "reset": "Restaurar padrão",
+      "reset_aria": "Restaurar {{key}} para o padrão",
+      "list_hint": "Um item por linha",
+      "open_setting": "Alterar em {{page}}",
+      "empty": "Nenhuma configuração corresponde.",
+      "load_error": "Não foi possível carregar as configurações.",
+      "empty_value": "(vazio)",
+      "value_on": "Ativado",
+      "value_off": "Desativado",
+      "top_level": "Geral"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Persistente usa o que já sabe e salva nova memória. Anônimo usa o que sabe, mas não salva nova memória. Temporário começa em branco e não salva nada. Todos os chats continuam aparecendo no histórico. Você pode mudar o modo de qualquer chat.",
@@ -21912,6 +21944,10 @@
       "system": "Sistema"
     },
     "tabs": {
+      "advanced": {
+        "description": "Todas as configurações em uma lista",
+        "label": "Avançado"
+      },
       "about": {
         "description": "Versão, canal de atualização, verificação de atualizações e licença",
         "label": "Sobre"

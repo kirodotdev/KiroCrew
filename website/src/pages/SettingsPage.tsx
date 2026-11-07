@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, SlidersHorizontal, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -37,6 +37,9 @@ import ErrorNotice from '../components/ErrorNotice'
  * chooser, which no other Settings tab needs, so the chunk is fetched when the
  * Agent Harness tab is first opened rather than on every Settings visit.
  */
+const AdvancedPanel = lazy(() =>
+  import('./settings/AdvancedPanel').then(m => ({ default: m.AdvancedPanel })),
+)
 const AgentBackendTab = lazy(() =>
   import('./developer/AgentBackendTab').then(m => ({ default: m.AgentBackendTab })),
 )
@@ -107,6 +110,7 @@ function buildTabs() {
     { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
     { key: 'session-environments', tile: 'var(--tile-blue)', label: i18nT('sessionEnvironments.title'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('sessionEnvironments.settingsDescription') },
     { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description'), hostsSubNav: true },
+    { key: 'advanced', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.advanced.label'), icon: <SlidersHorizontal size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.advanced.description') },
     // The trailing divider fences off the entries that are not settings at all.
     // About was its only occupant; the release archive is the same kind of thing
     // (a document about the product, not a preference), so it joins the fence
@@ -330,6 +334,11 @@ export default function SettingsPage() {
           </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
+        {tab === 'advanced' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <AdvancedPanel />
+          </Suspense>
+        )}
         {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}
       </>}

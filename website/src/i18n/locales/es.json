@@ -21882,6 +21882,38 @@
     "envOverrideWithSettingRef": "El heartbeat está desactivado porque <settingRef/> está configurada en este entorno. Desactívala para gestionar la telemetría aquí."
   },
   "settings": {
+    "advanced": {
+      "title": "Todos los ajustes",
+      "intro": "Cambia uno aquí o sigue su enlace a la página donde está. Un cambio hecho aquí se guarda al instante y puedes deshacerlo.",
+      "search_placeholder": "Filtrar por nombre, clave o descripción",
+      "read_only": "Solo lectura",
+      "why_safety": "Solo lectura: decide qué puede ejecutar el agente o hacer sin preguntarte.",
+      "why_sign_in": "Solo lectura: decide cómo se guardan tus inicios de sesión.",
+      "why_reach": "Solo lectura: decide quién puede llegar a este equipo, al agente o a un chat.",
+      "why_share": "Solo lectura: envía tu actividad a otro servicio.",
+      "why_owned": "Solo lectura: otro paso lo cambia junto con otros ajustes.",
+      "why_marker": "Solo lectura: {{productName}} lo establece cuando terminas un paso.",
+      "why_alias": "Solo lectura: {{productName}} lee este valor de otro ajuste, así que cambiarlo aquí no haría nada.",
+      "why_text": "Solo lectura: contiene texto libre, como una ruta de archivo, una dirección web o un comando.",
+      "why_locked": "Solo lectura: lo fija la política de tu organización.",
+      "why_compound": "Solo lectura: contiene varios valores que deben cambiar juntos.",
+      "restart": "Se aplica tras reiniciar el gateway",
+      "default_label": "Predeterminado: {{value}}",
+      "current_label": "Actual: {{value}}",
+      "saves_now": "Se guarda al instante",
+      "not_saved": "No guardado",
+      "put_back": "Deshacer mi cambio ({{value}})",
+      "reset": "Restablecer valor predeterminado",
+      "reset_aria": "Restablecer {{key}} a su valor predeterminado",
+      "list_hint": "Un elemento por línea",
+      "open_setting": "Cambiar en {{page}}",
+      "empty": "Ningún ajuste coincide.",
+      "load_error": "No se pudieron cargar los ajustes.",
+      "empty_value": "(vacío)",
+      "value_on": "Activado",
+      "value_off": "Desactivado",
+      "top_level": "General"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Persistente usa lo que ya sabe y guarda memoria nueva. Incógnito usa lo que sabe, pero no guarda memoria nueva. Temporal empieza en blanco y no guarda memoria. Todos los chats siguen apareciendo en el historial. Puedes cambiar el modo de cualquier chat.",
@@ -21912,6 +21944,10 @@
       "system": "Sistema"
     },
     "tabs": {
+      "advanced": {
+        "description": "Todos los ajustes en una sola lista",
+        "label": "Avanzado"
+      },
       "about": {
         "description": "Versión, canal de actualizaciones, buscar actualizaciones y licencia",
         "label": "Acerca de"
