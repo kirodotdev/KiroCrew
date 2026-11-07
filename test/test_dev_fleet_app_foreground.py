@@ -173,6 +173,33 @@ async def test_restart_of_a_desktop_supervised_gateway_names_the_app(monkeypatch
     assert mod._MAKE_LIVE_COMMITTED is False
 
 
+@pytest.mark.asyncio
+async def test_restart_of_a_service_launched_gateway_spawns_nothing(monkeypatch, tmp_path):
+    """A `kirocrew service install` unit's gateway is its manager's to restart: a
+    detached restart would run in the unit's cgroup and die with the gateway it
+    stops. Restart spawns nothing and names the service, not a foreground one."""
+    from kiro_crew.config.loader import consume_managed_service_launch_environment
+
+    monkeypatch.setenv("KIROCREW_SERVICE_MANAGED", "1")
+    # The gateway takes the marker out of its environment at start and keeps it.
+    consume_managed_service_launch_environment()
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, launcher=str(kc))
+    assert await fg.status() == "ok"
+    monkeypatch.setattr(live_mod, "_gateway_backend", lambda: None)
+    monkeypatch.setattr(live_mod, "_live_user_unit_status", AsyncMock(return_value="no_user_unit"))
+    monkeypatch.setattr(live_mod, "_foreground_backend", lambda: fg)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    res = await mod._restart_gateway()
+
+    assert res["ok"] is False
+    assert "service install` unit" in res["error"] and "kirocrew restart" in res["error"]
+    assert "foreground" not in res["error"]
+    assert spawned == []
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
 def test_default_desktop_supervised_asks_the_cli_check_for_that_port(monkeypatch):
     from kiro_crew import cli_server_stop
     from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
@@ -317,8 +344,8 @@ async def test_make_live_foreground_spawn_failure_keeps_advisory(monkeypatch, tm
 @pytest.mark.asyncio
 async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_path):
     """Eligible codes without a usable foreground gateway (no/ambiguous marker,
-    unresolvable binary, confined backend) keep the pre-existing staged_only
-    behaviour."""
+    unresolvable binary, confined backend, a service-launched gateway) keep the
+    pre-existing staged_only behaviour."""
     kc = _mk_kcbin(tmp_path)
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -328,7 +355,12 @@ async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_
         # The CLI's restart refuses a desktop-supervised gateway, so a spawn
         # would latch a cutover that never lands.
         ("desktop", dict(launcher=str(kc), desktop=True)),
+        # A generated service definition launched the gateway, so its manager
+        # owns the restart (last: the marker stays set).
+        ("service_managed", dict(launcher=str(kc))),
     ):
+        if label == "service_managed":
+            monkeypatch.setenv("KIROCREW_SERVICE_MANAGED", "1")
         _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir / label)
         monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
         fg, spawned = _fg(tmp_path, **fg_kwargs)
