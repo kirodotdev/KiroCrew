@@ -86,6 +86,7 @@ import type { ErrorReport } from '../utils/errorReport'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
 import type { DragGap } from '../lib/dragGaps'
 import { useFocusMode, useFocusChromeVisible, setFocusModeEnabled, setFocusChromeVisible } from '../hooks/useFocusMode'
+import { useChatCompleteNotify } from '../hooks/chatCompleteNotify'
 
 import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -212,6 +213,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // bar does. Reactive like the pins: a change re-broadcasts the model, and an
   // embedded toggle routes back here via `mc-set-stable-order`.
   const [stableOrder] = useCrewSwitcherStableOrder()
+  // Relayed in the host model (`HostModel.chatCompleteNotify`).
+  const chatCompleteNotify = useChatCompleteNotify()
   // Focus mode is a property of the WINDOW, not of one pane: a remote crew shown
   // inside a focused window must hide its chrome too. Relayed down the host model
   // below, and it also gates the host drag strips (see their render site).
@@ -1372,12 +1375,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // boundary in some engines and the receiver validates element-wise anyway.
         pinnedCrews,
         stableOrder,
+        chatCompleteNotify,
         // This host performs image copies for the pane (mc-clipboard-image).
         // Advertised so a pane relays only to a host that will answer.
         clipboardRelay: PANE_CLIPBOARD_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1434,7 +1438,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
+  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder, chatCompleteNotify])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
