@@ -521,7 +521,9 @@ def safe_read_file_bytes_nolink(
                 pass
 
 
-def safe_read_prefix(raw: str, n: int) -> bytes | None:
+def safe_read_prefix(
+    raw: str, n: int, *, refuse: Callable[[str], bool] | None = None
+) -> bytes | None:
     """Read the first *n* bytes of a file through is_sensitive_path enforcement.
 
     Like :func:`safe_read_file_bytes` but reads only a bounded prefix, for
@@ -533,6 +535,10 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     :func:`kiro_crew.platform_compat.open_file_no_reparse` as TOCTOU defense
     against a final-component link swap after the check — a refusal that holds on
     Windows too, where ``O_NOFOLLOW`` does not exist.
+
+    *refuse*, when given, is asked about the descriptor's kernel path after the
+    open, so a caller's own fence judges the file actually read, never an
+    earlier resolution a link swap could have moved.
 
     Returns up to *n* bytes, or None if the path is rejected or unreadable.
     """
@@ -548,6 +554,10 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     try:
         if not _opened_file_matches_validated_path(fd, path):
             return None
+        if refuse is not None:
+            opened = _fd_real_path(fd)
+            if opened is None or refuse(opened):
+                return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
             return fh.read(n)
     except OSError:
