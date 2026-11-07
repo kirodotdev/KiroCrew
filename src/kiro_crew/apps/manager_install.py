@@ -438,7 +438,15 @@ def install_app(
         approvedGrantsStored=True,
         installedAt=_now_iso(),
         source=market_source or str(source),
-        origin="local" if market_source else InstalledApp.origin,
+        # A marketplace install and a plain local-folder install (CLI
+        # ``app install <dir>`` / dashboard install-from-path) both take their
+        # bytes from a directory on this machine, so both record origin "local".
+        # A registry install reaches here through ``install_from_registry`` with
+        # the clone's repository scoped (``registry_source_repository``), so
+        # ``source_repository`` is non-empty there and only there -- it is the
+        # discriminator that keeps a registry install's origin "registry".
+        # ``set_app_provenance`` runs after this write and preserves origin.
+        origin="local" if market_source or not source_repository else InstalledApp.origin,
         # Persist the server-resolved repository at the first durable metadata
         # write.  The registry's richer set_app_provenance bookkeeping happens
         # later and may fail after the copied app is already the live occupant;
@@ -620,6 +628,15 @@ def update_app(
     # Carry every persisted field forward from ``existing``, overriding only
     # what the update changes. Keeping this metadata inside the file transaction
     # means any write failure restores the old tree and old metadata together.
+    #
+    # A registry install over an already-installed app reaches here with the
+    # clone's repository scoped (``source_repository`` non-empty, resolved
+    # above), so the record it writes takes origin "registry" to match the
+    # source its bytes now come from; a local-folder re-copy (empty
+    # ``source_repository``) keeps whatever origin the record already carries. A
+    # builtin record never loses "builtin" this way -- adoption, below, is the
+    # only path that moves a builtin onto a registry coordinate.
+    registry_sourced = bool(source_repository) and existing.origin != "builtin"
     meta = replace(
         existing,
         version=manifest.version,
@@ -632,6 +649,7 @@ def update_app(
             widened_session_approval=widened_session_approval,
         ),
         source=str(source),
+        origin="registry" if registry_sourced else existing.origin,
         sourceUrl=source_repository.strip(),
         sourceRegistry="",
         sourceCommit="",

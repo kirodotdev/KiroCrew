@@ -32,7 +32,9 @@ from kiro_crew.apps.manager import (
     get_app_manifest,
     install_app,
     list_apps,
+    registry_source_repository,
     uninstall_app,
+    update_app,
 )
 
 # App-name admission contract
@@ -166,6 +168,74 @@ class TestInstall:
         assert meta.version == "1.0.0"
         assert meta.enabled is False  # installed but not enabled
         assert meta.installedAt != ""
+
+    def test_install_from_directory_records_origin_local(self, tmp_path, app_home):
+        """A plain local-folder install (CLI/dashboard install-from-path) records
+        origin "local". The bytes come from a directory on this machine, and the
+        consent/trust dialog and API record read this field for provenance."""
+        src = _make_app_source(tmp_path, name="local-folder-app")
+        result = install_app(src)
+        assert result.ok
+        meta = _read_installed("local-folder-app")
+        assert meta is not None
+        assert meta.origin == "local"
+
+    def test_registry_sourced_install_still_records_origin_registry(self, tmp_path, app_home):
+        """A registry install reaches install_app() with the clone's repository
+        scoped via registry_source_repository(); that non-empty source repository
+        is the discriminator that keeps its origin "registry"."""
+        src = _make_app_source(tmp_path, name="registry-app")
+        with registry_source_repository("https://example.com/org/registry-app.git"):
+            result = install_app(src)
+        assert result.ok
+        meta = _read_installed("registry-app")
+        assert meta is not None
+        assert meta.origin == "registry"
+
+    def test_uninstall_of_local_origin_app_removes_the_app_tree(self, tmp_path, app_home):
+        """Uninstalling a local-origin app removes its tree. uninstall_app
+        branches on lifecycle, not origin, so origin "local" and origin
+        "registry" delete the same tree."""
+        src = _make_app_source(tmp_path, name="local-uninstall-app")
+        install_app(src)
+        installed_dir = app_home / "apps" / "local-uninstall-app"
+        assert installed_dir.is_dir()
+        assert _read_installed("local-uninstall-app").origin == "local"
+        result = uninstall_app("local-uninstall-app", keep_data=False)
+        assert result.ok
+        assert not installed_dir.exists()
+        assert _read_installed("local-uninstall-app") is None
+
+    def test_registry_update_over_local_install_promotes_origin_to_registry(
+        self, tmp_path, app_home
+    ):
+        """A registry install over an app first installed from a folder makes the
+        record match the source its bytes now come from: the update runs with the
+        clone's repository scoped, so origin becomes "registry". Otherwise the
+        record would run registry code while the consent dialog and source label
+        still showed it as local."""
+        src = _make_app_source(tmp_path, name="promote-app")
+        assert install_app(src).ok
+        assert _read_installed("promote-app").origin == "local"
+        new_src = _make_app_source(tmp_path / "v2", name="promote-app", version="1.1.0")
+        with registry_source_repository("https://example.com/org/promote-app.git"):
+            result = update_app(str(new_src))
+        assert result.ok
+        meta = _read_installed("promote-app")
+        assert meta.origin == "registry"
+
+    def test_local_recopy_update_keeps_origin_local(self, tmp_path, app_home):
+        """A local-folder re-copy update (POST /api/apps/{name}/update, no scoped
+        repository) keeps origin "local": the bytes still come from a directory on
+        this machine, so promoting to "registry" would be the same mislabel this
+        fix removes on the install path."""
+        src = _make_app_source(tmp_path, name="recopy-app")
+        assert install_app(src).ok
+        assert _read_installed("recopy-app").origin == "local"
+        new_src = _make_app_source(tmp_path / "v2", name="recopy-app", version="1.1.0")
+        result = update_app(str(new_src))
+        assert result.ok
+        assert _read_installed("recopy-app").origin == "local"
 
     def test_install_creates_data_dir(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
