@@ -3068,7 +3068,12 @@ change card, and the server is written to the template's additions record
   `DELETE /api/agents/detail/{name}/mcp-additions/{server}?card_id=<card>`, both
   card-hooked routes that refuse any internal caller `403 owner_only`; the POST
   also refuses a request with no card (`403 card_required`), so the only entry
-  ever recorded is one a card showed. The Undo calls `remove_addition` with the
+  ever recorded is one a card showed. The one exception is the Settings write
+  (Settings > Developer > Agent MCP servers): a card-less body of exactly
+  `{server, mount_only: true}` for a set in
+  `template_server_request.MANAGED_MOUNT_ONLY_SETS` on the default agent. It
+  sends no entry, so the gateway builds the managed launch line, and it is
+  recorded under `SETTINGS_CARD_ID`. The Undo calls `remove_addition` with the
   card id, so a later approval of the same server on another card survives it.
   The Apply records with `only_if_absent=True` too: a server another card added
   after this card's own check answers `409 already_added` and is left as it is.
