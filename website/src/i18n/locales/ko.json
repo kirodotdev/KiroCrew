@@ -18011,6 +18011,8 @@
         "single_line": "한 줄",
         "spellcheck_input": "메시지 입력 맞춤법 검사",
         "spellcheck_input_desc": "메시지 입력란에서 맞춤법이 틀린 단어를 빨간 물결선으로 표시합니다. 입력하는 동안 빨간 밑줄을 없애려면 끄세요.",
+        "arrow_key_prompt_history": "화살표 키로 보낸 메시지 불러오기",
+        "arrow_key_prompt_history_desc": "메시지 입력란이 비어 있거나 커서가 맨 앞에 있을 때 ↑를 누르면 이 채팅에서 보낸 메시지를 불러오고 ↓를 누르면 다시 앞으로 이동합니다. ↑와 ↓를 커서 이동에만 쓰려면 끄세요.",
         "inline_markdown_input": "입력하는 동안 Markdown 서식 표시",
         "inline_markdown_input_desc": "메시지 입력란에서 굵게, 기울임꼴, 취소선, 인라인 코드를 입력하는 동안 표시합니다. 켜면 메시지 입력란도 아직 베타 단계인 서식 있는 텍스트 편집기로 전환됩니다. 끄면 일반 입력란으로 돌아갑니다. Markdown 기호는 그대로 보이며 보내는 메시지는 바뀌지 않습니다.",
         "optimize_before_sending": "보내기 전에 최적화",

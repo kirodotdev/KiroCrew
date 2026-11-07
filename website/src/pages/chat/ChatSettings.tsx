@@ -53,6 +53,9 @@ export interface ChatConfig {
    *  `spellCheck={false}` so the browser draws no red misspelled-word
    *  underlines. Default true — the behaviour every install has always had. */
   spellcheck: boolean
+  /** ↑/↓ in the composer recall the prompts this chat sent (#17498). Default
+   *  true. When false the keys only move the caret. */
+  arrowKeyPromptHistory: boolean
   /** Style bold, italic, strikethrough and inline code in the composer as the
    *  user types. Display only: the markers stay visible and the sent message is
    *  the markdown they typed. A textarea cannot draw styled text, so turning
@@ -148,7 +151,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, inlineMarkdown: false, optimizeBeforeSend: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -188,6 +191,7 @@ export function loadChatConfig(): ChatConfig {
     // Coerced, not trusted: a stored non-boolean must not decide whether the
     // composer draws the browser's red spellcheck underlines.
     if (typeof cfg.spellcheck !== 'boolean') cfg.spellcheck = true
+    if (typeof cfg.arrowKeyPromptHistory !== 'boolean') cfg.arrowKeyPromptHistory = true
     if (typeof cfg.inlineMarkdown !== 'boolean') cfg.inlineMarkdown = false
     if (typeof cfg.optimizeBeforeSend !== 'boolean') cfg.optimizeBeforeSend = false
     // Coerced, not trusted: a stored non-boolean would otherwise make the empty

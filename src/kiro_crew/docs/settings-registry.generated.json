@@ -813,6 +813,13 @@
       "route": "/settings/chat/composer?highlight=chat.quick-send"
     },
     {
+      "id": "chat.recall-sent-messages-with-arrow-keys",
+      "label": "Recall Sent Messages with Arrow Keys",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.recall-sent-messages-with-arrow-keys",
+      "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
+    },
+    {
       "id": "chat.require-a-second-escape-to-stop-the-turn",
       "label": "Require a second Escape to stop the turn",
       "tab": "chat",

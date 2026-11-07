@@ -8748,6 +8748,8 @@
         "single_line": "Single line",
         "spellcheck_input": "Spell Check Message Input",
         "spellcheck_input_desc": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type.",
+        "arrow_key_prompt_history": "Recall Sent Messages with Arrow Keys",
+        "arrow_key_prompt_history_desc": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
         "inline_markdown_input": "Style Markdown While Typing",
         "inline_markdown_input_desc": "Show bold, italic, strikethrough and inline code in the message input as you type. Turning it on also switches the message input to a rich-text editor that is still in beta; turn this off to go back to the plain input. The markdown markers stay visible and the message you send is unchanged.",
         "optimize_before_sending": "Optimize Before Sending",

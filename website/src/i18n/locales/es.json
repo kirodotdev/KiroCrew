@@ -18945,6 +18945,8 @@
         "single_line": "Una sola línea",
         "spellcheck_input": "Revisar la ortografía en la entrada de mensajes",
         "spellcheck_input_desc": "Subraya las palabras mal escritas en el campo de mensaje con una línea roja ondulada. Desactívalo para dejar de ver los subrayados rojos mientras escribes.",
+        "arrow_key_prompt_history": "Recuperar mensajes enviados con las flechas",
+        "arrow_key_prompt_history_desc": "Con el campo de mensaje vacío, o con el cursor justo al principio, ↑ recupera un mensaje que enviaste en este chat y ↓ vuelve a avanzar. Desactívalo para usar ↑ y ↓ solo para mover el cursor.",
         "inline_markdown_input": "Dar formato al Markdown mientras escribes",
         "inline_markdown_input_desc": "Muestra negrita, cursiva, tachado y código en línea en el campo de mensaje mientras escribes. Al activarlo, el campo de mensaje también pasa a un editor de texto enriquecido que aún está en beta; desactívalo para volver al campo simple. Las marcas de Markdown siguen visibles y el mensaje que envías no cambia.",
         "optimize_before_sending": "Optimizar antes de enviar",
