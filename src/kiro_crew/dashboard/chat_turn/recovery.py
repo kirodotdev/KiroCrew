@@ -131,9 +131,10 @@ def _model_unentitled_meta(exc: BaseException) -> dict[str, object] | None:
 def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: bool) -> None:
     """Report a cycle that never obtained a model session to its nudge loop.
 
-    ``self_wake`` is the fire path's own marker: only the loop's OWN cycle may
-    spend its stand-down budget, or a human turn that happened to be starved on a
-    slot that also carries a loop would stop one the human never drove.
+    ``self_wake`` marks the loop's OWN cycle, a recovery it queued for itself
+    included (``_ChatTurn._wake_cycle``): only that may spend its stand-down
+    budget, or a human turn that happened to be starved on a slot that also
+    carries a loop would stop one the human never drove.
 
     Only a start that TIMED OUT or whose reply was dropped as oversize carries the
     tag: the ``session/new`` and ``session/load`` arms in ``acp/runtime`` and the
@@ -193,7 +194,8 @@ async def _note_cycle_failure(
 
     The gate, in the one place it is defined:
 
-    * ``self_wake`` -- only the loop's OWN delivered cycle counts; a human turn
+    * ``self_wake`` -- only the loop's OWN cycle counts, a recovery it queued
+      for itself included; a human turn
       that happened to error on a slot that also carries a loop must not spend
       the loop's stand-down budget. Same marker ``_note_cycle_start_failure``
       relies on.

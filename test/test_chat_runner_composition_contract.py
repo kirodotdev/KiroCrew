@@ -533,6 +533,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_self_wake",
         "_directive_loop_id",
         "_directive_loop_gen",
+        "_recovered_wake",
         "_skill_trigger_text",
         "_directive_channel_origin",
         "_directive_source_channels",
