@@ -110,18 +110,19 @@ const readLayout = page => page.evaluate(() => {
 
 async function boot(context, base, previewUrl) {
   const page = await context.newPage()
-  await stubDashboardApi(page, { slots, theme: THEME })
-  // Registered AFTER the stub, whose init script clears localStorage.
-  await page.addInitScript(([slot, url]) => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-lang', 'en')
-    localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({
-      activeId: 'browser', tabs: [{ id: 'browser', kind: 'browser' }],
-    }))
-    localStorage.setItem('mc-webpreview-url:' + slot, url)
-  }, [SLOT, previewUrl])
+  await stubDashboardApi(page, {
+    slots, theme: THEME,
+    localStorageEntries: {
+      'mc-active-slot': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      'mc-privacy-notice-v1': '1',
+      'mc-lang': 'en',
+      ['mc-panel-tabs:' + SLOT]: JSON.stringify({
+        activeId: 'browser', tabs: [{ id: 'browser', kind: 'browser' }],
+      }),
+      ['mc-webpreview-url:' + SLOT]: previewUrl,
+    },
+  })
   logPageProblems(page)
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2600)

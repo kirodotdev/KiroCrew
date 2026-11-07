@@ -46,25 +46,25 @@ async function main() {
   logPageProblems(page)
 
   for (const theme of ['light', 'dark']) {
-    // Re-stub per theme: /api/theme/boot decides the mode, and the init script
-    // that seeds localStorage is registered by the stub (it clears storage, so
-    // the panel seed below must be registered AFTER it).
-    await stubDashboardApi(page, { slots, theme })
-    await page.addInitScript(slot => {
-      localStorage.setItem('mc-active-slot', slot)
-      // chatSlice rehydrates the panel's open state from this per-slot key.
-      localStorage.setItem('mc-activity-open:' + slot, 'true')
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      // Seed the strip so the shot shows the menu beside real tabs.
-      localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({
-        tabs: [
-          { id: 'changes', kind: 'changes', title: 'Changes' },
-          { id: 'files', kind: 'files', title: 'Files' },
-          { id: 'artifacts', kind: 'artifacts', title: 'Artifacts' },
-        ],
-        activeId: 'files',
-      }))
-    }, SLOT)
+    // Re-stub per theme: /api/theme/boot decides the mode.
+    await stubDashboardApi(page, {
+      slots, theme,
+      localStorageEntries: {
+        'mc-active-slot': SLOT,
+        // chatSlice rehydrates the panel's open state from this per-slot key.
+        ['mc-activity-open:' + SLOT]: 'true',
+        'mc-privacy-notice-v1': '1',
+        // Seed the strip so the shot shows the menu beside real tabs.
+        ['mc-panel-tabs:' + SLOT]: JSON.stringify({
+          tabs: [
+            { id: 'changes', kind: 'changes', title: 'Changes' },
+            { id: 'files', kind: 'files', title: 'Files' },
+            { id: 'artifacts', kind: 'artifacts', title: 'Artifacts' },
+          ],
+          activeId: 'files',
+        }),
+      },
+    })
 
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)

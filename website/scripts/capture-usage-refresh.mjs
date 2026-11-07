@@ -164,10 +164,9 @@ async function scene(theme, get, refresh, config = 'ok') {
     }
     return false
   }
-  await stubDashboardApi(page, { theme, extra })
   // Pin the locale: without it the SPA picks one from the environment and the
   // shot comes out in whatever language the runner happens to negotiate.
-  await page.addInitScript(() => { localStorage.setItem('mc-lang', 'en') })
+  await stubDashboardApi(page, { theme, extra, localStorageEntries: { 'mc-lang': 'en' } })
   return { page, count: () => posts, configCount: () => configReads, release: () => release() }
 }
 

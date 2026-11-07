@@ -46,9 +46,6 @@ const NOTE_DOC = mdnbNoteDoc(NOTE_PATH, `# ${NOTE_TITLE}\n\nA note, so the vault
 
 /**
  * Open Settings and photograph the Sync section.
- *
- * The shared stub clears localStorage in its own init script, so the active
- * vault is written in a LATER init script to survive it.
  */
 async function shoot(browser, base, { file, on }) {
   const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 2, locale: 'en-US' })
@@ -61,11 +58,9 @@ async function shoot(browser, base, { file, on }) {
       doc: NOTE_DOC,
       settings: { autoSync: on, autoSyncMins: 30 },
     }),
+    localStorageEntries: { 'mdnb-active-vault': MDNB_VAULT_ID },
   })
   logPageProblems(page)
-  await page.addInitScript(vaultId => {
-    localStorage.setItem('mdnb-active-vault', vaultId)
-  }, MDNB_VAULT_ID)
 
   await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
   try {

@@ -67,13 +67,13 @@ async function main() {
         if (path.startsWith('/api/chat/slots/')) return json(route, { running: false, has_more: false, total: 0, queue: [], messages: [] }), true
         return false
       },
+      localStorageEntries: {
+        'mc-theme-mode': theme,
+        'mc-onboarded': '1',
+        'mc-lang': 'en',
+        'mc-dev-mode': '1',
+      },
     })
-    await page.addInitScript(t => {
-      localStorage.setItem('mc-theme-mode', t)
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-lang', 'en')
-      localStorage.setItem('mc-dev-mode', '1')
-    }, theme)
 
     await page.goto(`${base}/settings?tab=overview&view=memory`, { waitUntil: 'domcontentloaded' })
     const valueBtn = page.getByRole('button', { name: EDIT_NAME })

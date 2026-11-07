@@ -89,13 +89,15 @@ function check(label, cond) {
 async function load(context, { theme, active }) {
   const page = await context.newPage()
   logPageProblems(page)
-  await stubDashboardApi(page, { slots: SLOTS, theme, extra })
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-sidebar-pinned', 'true')
-    localStorage.setItem('mc-session-stale-collapse-ms', '0')
-  }, active)
+  await stubDashboardApi(page, {
+    slots: SLOTS, theme, extra,
+    localStorageEntries: {
+      'mc-active-slot': active,
+      'mc-privacy-notice-v1': '1',
+      'mc-sidebar-pinned': 'true',
+      'mc-session-stale-collapse-ms': '0',
+    },
+  })
   await page.goto(context._base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.locator('.session-row').first().waitFor({ state: 'visible', timeout: 20_000 })
   await page.waitForTimeout(1500)
@@ -256,11 +258,10 @@ async function main() {
       context._base = base
       const page = await context.newPage()
       logPageProblems(page)
-      await stubDashboardApi(page, { slots: SLOTS, theme, extra })
-      await page.addInitScript(slot => {
-        localStorage.setItem('mc-active-slot', slot)
-        localStorage.setItem('mc-privacy-notice-v1', '1')
-      }, BOUND)
+      await stubDashboardApi(page, {
+        slots: SLOTS, theme, extra,
+        localStorageEntries: { 'mc-active-slot': BOUND, 'mc-privacy-notice-v1': '1' },
+      })
       await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
       await page.getByTestId('mobile-topbar-title').waitFor({ state: 'visible', timeout: 20_000 })
       await page.waitForTimeout(1200)

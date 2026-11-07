@@ -27,10 +27,6 @@ async function capture(theme) {
   })
   const page = await context.newPage()
   logPageProblems(page)
-  await page.addInitScript(mode => {
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-theme-mode', mode)
-  }, theme)
 
   await stubDashboardApi(page, {
     slots: [],
@@ -45,6 +41,7 @@ async function capture(theme) {
       }
       return false
     },
+    localStorageEntries: { 'mc-onboarded': '1', 'mc-theme-mode': theme },
   })
 
   await page.goto(base + '/settings/secrets', { waitUntil: 'domcontentloaded' })
