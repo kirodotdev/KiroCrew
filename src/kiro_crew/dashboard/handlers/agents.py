@@ -288,7 +288,7 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
     _UnverifiableLineage,
     _write_spec_file,
 )
-from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
+from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _DASHBOARD_SERVED_SLASH_COMMANDS,
@@ -323,6 +323,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     validate_definition_patch,
 )
 from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
+from kiro_crew.dashboard.handlers.agents_effort_levels import api_effort_levels  # noqa: F401
 from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
@@ -1539,30 +1540,6 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "model list unavailable", "code": _CATALOG_UNAVAILABLE_CODE}, status=503
         )
-
-
-async def api_effort_levels(request: web.Request) -> web.Response:
-    """GET /api/effort-levels — list available reasoning effort levels.
-
-    Per-slot: when a ``?slot=`` query param resolves to a live ACP provider,
-    return the levels that slot's CURRENT model reported (ACP escalation order),
-    so concurrent slots on different models/backends each see their own set and
-    a model switch is reflected immediately. Falls back to the process-global
-    ordered list (cold start / no live provider / provider without the getter).
-    """
-    slot = request.query.get("slot")
-    if slot:
-        try:
-            state: DashboardState = request.app["state"]
-            provider = state.sessions.get_provider(_history_key_for(slot))
-            getter = getattr(provider, "get_valid_effort_levels", None) if provider else None
-            if callable(getter):
-                levels = getter()
-                if levels:
-                    return web.json_response(levels)
-        except (KeyError, AttributeError):
-            pass
-    return web.json_response(get_reasoning_effort_ordered())
 
 
 async def api_slash_commands(request: web.Request) -> web.Response:
