@@ -204,6 +204,7 @@ class _ChatSlot:
         "_synthesis_recheck",
         "_synthesis_rechecks",
         "_synthesis_completion_turns",
+        "_synthesis_final_turn_ran",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -571,6 +572,7 @@ class _ChatSlot:
     _synthesis_recheck: asyncio.TimerHandle | None
     _synthesis_rechecks: int
     _synthesis_completion_turns: int
+    _synthesis_final_turn_ran: bool
     _subagent_deliveries_inflight: int
     _subagents_inline_collected: set[str]
     _prompt_busy_retries: int

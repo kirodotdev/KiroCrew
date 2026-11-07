@@ -2946,10 +2946,25 @@ per-sub-agent completion note. Dashboard chat only.
   the turn-end fire gate (`_finish_queue_cycle`) answers `clear` and the count
   is exactly 1, that one turn already reported the whole batch:
   `_drop_single_turn_synthesis` consumes the arm and the cycle ends as an
-  ordinary one. Any other count fires as before, and so does the outage
+  ordinary one. A count of 2 or more is dropped the same way when the turn that
+  took the batch's last result ended successfully on reply text after its last tool call:
+  the completion that arms the synthesis carries `SUBAGENT_FINAL_COMPLETION_NOTE` at the end of its
+  announce. The arm reads in-memory state only (a sibling queued in the task
+  store is not counted), so the note is conditional: this may be the batch's
+  last result, and the model writes the consolidated report in that reply if no
+  other sub-agent of the batch is still queued or running. The drop itself is
+  store-safe, because it is evaluated only after `synthesis_fire_verdict`
+  answers `clear`; a store-queued sibling holds the synthesis. Every turn end
+  (`_turn_record_outcome`) records in `slot._synthesis_final_turn_ran` whether the newest turn took that note,
+  landed, ended with a successful stop (`turn._stop_class.is_success`: `end_turn`
+  or an absent stop reason), and wrote reply text after its last tool call
+  (`turn.assistant_text`, which every tool boundary flushes and resets).
+  A quiet end (`nothing_to_do`), a failed or refused turn, or a turn whose only
+  text is narration before a tool call
+  leaves it false, so the synthesis fires. A count of 0 fires, and so does the outage
   re-check: it runs only after an `unknown` verdict, so the occasional extra
-  synthesis it allows is one main already ran. The count resets when the
-  synthesis runs or is dropped, and when a user message drained at a turn's end
+  synthesis it allows is one main already ran. The count and the flag reset
+  when the synthesis runs or is dropped, and when a user message drained at a turn's end
   disarms an armed synthesis after the fire gate answered `clear`: the turn-end
   hand-off (`_hand_off_queue`) reads `synthesis_fire_verdict` while the ending
   turn still holds `slot.task`, so no turn can start during the read, and

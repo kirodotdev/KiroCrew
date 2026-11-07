@@ -60,6 +60,19 @@ SUBAGENT_SYNTHESIS_PROMPT = (
 )
 
 
+# Appended to the announce of a completion that arms the synthesis. The arm
+# reads only in-memory state, so a sibling queued in the task store can still
+# be out: the note is conditional and promises nothing about what follows. A
+# turn that takes it and ends on visible reply text lets the fire gate drop the
+# synthesis (`_drop_single_turn_synthesis`), but only once the gate's store
+# read answers clear.
+SUBAGENT_FINAL_COMPLETION_NOTE = (
+    "[SYSTEM] This may be the last sub-agent result of this batch. If no other "
+    "sub-agent of this batch is still queued or running, give the consolidated "
+    "report across all of its results in this reply."
+)
+
+
 # Synthetic continuation injected after a recoverable tool refusal (host-gate
 # policy deny or the read-only bash gate) ended a turn early. Carries the
 # refusal reason back to the model so it can adapt instead of stalling for the

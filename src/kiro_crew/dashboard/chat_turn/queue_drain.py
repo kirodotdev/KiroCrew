@@ -926,6 +926,7 @@ async def _start_next_queued_turn(
         # synthesis; clearing a live batch's count loses its one.
         if end_batch:
             slot._synthesis_completion_turns = 0
+            slot._synthesis_final_turn_ran = False
         slot._pending_synthesis = False
         slot._synthesis_rechecks = 0
 
