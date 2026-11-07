@@ -2491,6 +2491,22 @@ atomic against every keystone writer, so whichever rebuild finishes last is the 
 that read the final state. It is a plain reacquisition: the write block has already
 exited its own, and `rebuild_agent_config` never takes this lock.
 
+App agents are rewritten in the same step, after the host rebuild and before the
+reset. An app agent that references `@kirocrew-computer` gets the entry in its
+materialized config (`<app>--<agent>.json`) only while the gate is open, so the
+handler re-materializes every enabled app's agents through
+`apps.bridges.refresh_app_agents_if_enabled`, one app at a time under that app's
+`app_lifecycle_lock`. That lock keeps an update, disable or uninstall in flight from
+interleaving with the rewrite; it is taken outside the config lock, because other
+paths take the config lock inside it. The keystone is read live under each app's
+lock and every flip runs its own pass, so overlapping saves still end on the final
+setting. A CLI disable runs in another process, so each app's enablement is also
+re-read after its rewrite, as `backend_runtime.registration` does: an app disabled
+meanwhile has its agents removed again, and an unreadable state writes nothing
+before the rewrite and deletes nothing after it. A failure is logged, does not fail
+the save, and leaves that app's agents on their old server set until the next
+gateway start.
+
 
 Deliberately narrow, so a restart is never gratuitous:
 

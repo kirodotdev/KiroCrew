@@ -546,6 +546,36 @@ async def api_computer_use_config_get(request: web.Request) -> web.Response:
 # ── PUT ──
 
 
+async def _refresh_app_agents() -> None:
+    """Rewrite every enabled app's agent configs after an enable flip. Never raises.
+
+    App agents copy the same gated ``kirocrew-computer`` entry as the host spec. Each
+    app is rewritten under its ``app_lifecycle_lock``, so an update, disable or
+    uninstall in flight is never interleaved, and outside the config lock, which is
+    taken inside that lock elsewhere. The keystone is read live under each app's lock
+    and every enable flip runs its own pass, so overlapping saves still end on the
+    final setting. A failure leaves that app on its old server set until the next
+    gateway start.
+    """
+    from kiro_crew.apps import bridges
+    from kiro_crew.apps.manager import app_lifecycle_lock
+
+    try:
+        apps = await asyncio.to_thread(bridges.list_apps)
+    except Exception:
+        logger.warning("app agent refresh skipped: cannot list apps", exc_info=True)
+        return
+    for info in apps:
+        name = info.get("name") or ""
+        if not name or not info.get("enabled"):
+            continue
+        try:
+            async with app_lifecycle_lock(name):
+                await asyncio.to_thread(bridges.refresh_app_agents_if_enabled, name)
+        except Exception:
+            logger.warning("app agent refresh failed for %s", name, exc_info=True)
+
+
 async def api_computer_use_config_save(request: web.Request) -> web.Response:
     """PUT /api/computer-use/config — write the enable (keystone) + limits (config).
 
@@ -817,6 +847,7 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
             spec_rewritten = await asyncio.to_thread(
                 rebuild_agent_spec, "computer-use enable change"
             )
+        await _refresh_app_agents()
 
         from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
 

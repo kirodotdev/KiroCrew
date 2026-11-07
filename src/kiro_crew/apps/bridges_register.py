@@ -39,7 +39,7 @@ from kiro_crew.apps.bridges_sources import (
     _registration_source,
     _safe_link_name,
 )
-from kiro_crew.apps.manager import get_app, get_app_manifest, list_apps
+from kiro_crew.apps.manager import app_enabled_state, get_app, get_app_manifest, list_apps
 from kiro_crew.apps.manifest import (
     AppManifest,
     Containment,
@@ -313,6 +313,25 @@ def refresh_app_agents(app_name: str, io_failures: list[str] | None = None) -> l
         _deregister_agents(app_name)
         return []
     return _register_agents(app_name, manifest, app_root, io_failures=io_failures)
+
+
+def refresh_app_agents_if_enabled(app_name: str) -> None:
+    """Re-materialize *app_name*'s agent configs if it is enabled. Blocking.
+
+    For a host-wide input those configs derive from that changed at runtime: the
+    computer-use enable decides whether ``kirocrew-computer`` is copied in
+    (``_materialize_managed_refs``). The caller holds the app's
+    ``app_lifecycle_lock``, which serializes this with the gateway's own update,
+    disable and uninstall. A CLI disable runs in another process, so enablement is
+    re-read after the rewrite too, as ``backend_runtime.registration`` does: a
+    disable that landed meanwhile gets the agents removed again. An unreadable state
+    writes nothing before the rewrite and deletes nothing after it.
+    """
+    if app_enabled_state(app_name) is not True:
+        return
+    refresh_app_agents(app_name)
+    if app_enabled_state(app_name) is False:
+        _deregister_agents(app_name)
 
 
 def reconcile_enabled_app_resources() -> dict[str, int]:

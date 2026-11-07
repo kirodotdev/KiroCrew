@@ -699,6 +699,9 @@ class AcpSessionHandle:
         # The upgrade notice when that batch's prompt is dropped by the KAS this
         # process runs (``harness.kas.kas_agent_prompt_issue``); "" otherwise.
         self.kas_agent_prompt_notice: str = ""
+        # Whether that KAS is known to apply the batch's prompts
+        # (``KasHarness.agent_prompt_applied``); False without that evidence.
+        self.kas_agent_prompt_applied: bool = False
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.

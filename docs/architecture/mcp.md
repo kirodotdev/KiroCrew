@@ -627,6 +627,25 @@ Probes run from `POST /api/mcp/probe`:
   in the probe's spawn. Any other name stays literal, so no other variable's
   value is written into a spec or put on argv; the source `mcp.json` keeps its
   `${HOME}` text.
+- At session start, a stdio server whose `env` references a variable that is not
+  set is named: `acp.mcp_ref_guard.warn_unset_env_placeholders` logs one warning
+  listing each such server and variable, and the session's MCP problem summary
+  carries the same entries (`McpSessionReport.record_env_placeholder_refs`). Names
+  only, never a value: a reference that is not a plain identifier, such as
+  `${NAME:-default}`, is skipped. The server still starts as before, with the
+  literal text, so the names-only summary a spawned run's prompt gets leaves the
+  entry out. "Not set" is judged against the environment that expands the server:
+  a spec server kiro-cli starts itself against the names the launch tail put in
+  the kiro-cli child's environment (`agent.env` and the scrub included, recorded
+  as `_child_env_names`), every other one against `_placeholder_source_env()`,
+  which the routed and session-array paths expand from. Only servers the session
+  starts are judged: a spec server on kiro-cli (which reads the spec itself) when
+  the entry is not muted, a spec server elsewhere when the array as sent carries
+  it (a routed server rides there as a stub), and any other array element on its
+  own. A server the attempt pruned as unstartable is not judged, and neither is a
+  KAS spec server off the wire: KAS's projection withholds its env or hands it to
+  Crew's launcher, whose expansion logs an unset name itself. Both composition
+  sites call it, beside the remote-header `secret://` guard it mirrors.
 - A remote server that answers the handshake with `401` — or with `403` carrying a
   `WWW-Authenticate` challenge — and whose sent headers carry no static
   `Authorization` credential gets status `needs_auth` and an empty `error`, not
@@ -1830,7 +1849,14 @@ An app agent that references a host-managed server (`@kirocrew-core`,
 `_materialize_managed_refs()`. kiro-cli resolves a `@server` ref against the
 agent's own `mcpServers` plus the global `mcp.json`, and managed specs live in
 the host agent's config only, so without that copy the ref dangles and the tool
-silently never mounts.
+silently never mounts. The copy comes from `managed_mcp_spec_entry(name,
+include_opt_in=True)`: the ref is an explicit grant, so an `opt_in` server is
+copied, but a server whose `spec_gate` is closed (`kirocrew-computer` while
+computer use is off or unsupported) is not, as on the host agent. Its backend
+would advertise no tools and hold KAS readiness for its whole timeout, and the
+`@kirocrew-computer` ref it leaves dangling on purpose is not logged as a ref that
+will never mount. The copy carries the same managed `env` as the host spec (the
+`KIROCREW_HOME` pin under a non-default data home).
 
 Containment for app agents has three layers:
 

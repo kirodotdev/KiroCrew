@@ -403,21 +403,30 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     """The names in *stub_names* whose server *spec* does not mount unmuted.
 
     *spec* is the governed worker spec the KAS payload is built from. A stub
-    whose server it drops, mutes (``mcp_cleanup.mcp_entry_is_muted``) or marks
-    registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``) is
-    withdrawn, so a mute or a ``type: registry`` saved after the stubs were
-    selected still takes effect.
+    whose server it drops, mutes, or marks registry-governed
+    (``mcp_cleanup.mcp_entry_is_registry_governed``) is withdrawn, so a mute or a
+    ``type: registry`` saved after the stubs were selected still takes effect. The
+    mute is the entry's own or a config scope's
+    (``mcp_cleanup.mcp_scope_muted_aliases``): MCP Management writes it to a scope
+    file, never into a spec it does not own.
     """
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+    from kiro_crew.mcp_cleanup import (
+        mcp_entry_is_muted,
+        mcp_entry_is_registry_governed,
+        mcp_scope_muted_aliases,
+    )
+    from kiro_crew.mcp_utils import mcp_server_alias
 
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return frozenset(stub_names)
+    scope_muted = mcp_scope_muted_aliases()
     return frozenset(
         name
         for name in stub_names
         if not isinstance(servers.get(name), dict)
         or mcp_entry_is_muted(servers[name])
+        or mcp_server_alias(name) in scope_muted
         or mcp_entry_is_registry_governed(servers[name])
     )
 
@@ -479,6 +488,10 @@ class KasHarness(MembershipHarness):
     #: :func:`kas_agent_prompt_issue` for the process this harness last spawned:
     #: set at each spawn, so it describes the engine running, not the one on disk.
     agent_prompt_notice = ""
+    #: Whether that process is known to apply a custom agent's prompt: a relay
+    #: kiro-cli at or above the floor. Crew's bundled engine and an unknown release
+    #: are not: no capture shows either applying it.
+    agent_prompt_applied = False
 
     # ── Seam 1: spawn ──
 
@@ -570,6 +583,9 @@ class KasHarness(MembershipHarness):
         kiro_cli_version = await asyncio.to_thread(installed_kiro_cli_version)
         warn_kas_vocabulary_drift(kiro_cli_version)
         self.agent_prompt_notice = kas_agent_prompt_issue(kiro_cli_version)
+        self.agent_prompt_applied = (
+            kiro_cli_version is not None and kiro_cli_version >= KAS_AGENT_PROMPT_MIN_KIRO_CLI
+        )
 
         if host_auth is None:
             # Reads the vault off the loop and never raises.
@@ -667,6 +683,7 @@ class KasHarness(MembershipHarness):
         )
         # Crew's own engine: kiro-cli's release says nothing about it.
         self.agent_prompt_notice = ""
+        self.agent_prompt_applied = False
         return SpawnPlan(
             argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
@@ -774,6 +791,7 @@ class KasHarness(MembershipHarness):
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""
+        handle.kas_agent_prompt_applied = self.agent_prompt_applied
 
     async def session_extras(
         self,
