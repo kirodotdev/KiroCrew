@@ -240,8 +240,11 @@
  * shelf is deliberately NOT positioned: the `::before` takes that same wrapper
  * as its containing block, and ChatInput hands it the shelf's border-box
  * height as `--glass-shelf-h` so it can start at the pane's bottom edge; the
- * extra 4px is the input-area's own bottom padding below the shelf. */
-.glass-shelf::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--glass-shelf-h, 32px) + 4px); background: linear-gradient(to bottom, transparent, var(--bg) 6px); z-index: -1; pointer-events: none; }
+ * extra 4px is the input-area's own bottom padding below the shelf. While an
+ * on-screen keyboard lifts the composer (useInputAreaKeyboardLift), the lift is
+ * extra input-area bottom padding, handed over as `--glass-shelf-lift` so the
+ * fade rises with the shelf instead of staying behind the keyboard. */
+.glass-shelf::before { content: ''; position: absolute; left: 0; right: 0; bottom: var(--glass-shelf-lift, 0px); height: calc(var(--glass-shelf-h, 32px) + 4px); background: linear-gradient(to bottom, transparent, var(--bg) 6px); z-index: -1; pointer-events: none; }
 
 /* Neutral rest shadow for EVERY glass pane — the session composer, the mobile
  * Settings capsule, the tip / suggestion / question cards. Offset-free spread,
