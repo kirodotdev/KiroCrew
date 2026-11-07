@@ -284,6 +284,17 @@ except OSError:  # pragma: no cover - only if the install is truncated
 RLIMIT_PROFILE_TOOL = "tool"
 RLIMIT_PROFILE_BUILD = "build"
 RLIMIT_PROFILE_SESSION_HOST = "session_host"
+# A session host the cgroup scope did NOT wrap (no cgroup v2 delegation, or no
+# trusted ``systemd-run``). Same limits as ``session_host``, plus the OOM bias.
+# With no ``memory.max`` on the agent tree, the host-wide OOM killer is the only
+# memory ceiling left. An unbiased agent tree ties the gateway at
+# ``oom_score_adj`` 0, so the kernel picks by size and the gateway, usually the
+# largest single process, dies and takes every session with it. Biased, the
+# kernel kills the largest process in some agent tree instead: at worst that
+# runtime and the sessions it serves, rather than every session on the host.
+# Everything the agent runs inherits the bias, including the shell commands its
+# harness executes itself, which no ``tool`` spawn covers.
+RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST = "unbounded_session_host"
 # A first-party document parser fed untrusted bytes (``pdf_extract_child``). Its
 # ceiling is FIXED, not read from ``resource_limits``: the ``tool`` profile only
 # applies RLIMIT_AS when an operator sets ``max_memory_mb`` (default 0), and a
@@ -310,8 +321,9 @@ _PROFILE_OOM_BIAS = {
     RLIMIT_PROFILE_EXTRACTOR: True,
     # session_host_preexec raises NOFILE and does nothing else -- notably it does
     # NOT bias the OOM score, and a trusted session host should not be the
-    # preferred kill target.
+    # preferred kill target while its cgroup scope bounds it.
     RLIMIT_PROFILE_SESSION_HOST: False,
+    RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST: True,
     RLIMIT_PROFILE_NONE: False,
 }
 
@@ -337,7 +349,7 @@ def _rlimit_spec(profile: str) -> str:
 
     if profile == RLIMIT_PROFILE_NONE:
         return ""
-    if profile == RLIMIT_PROFILE_SESSION_HOST:
+    if profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST):
         # Faithful port of session_host_preexec: it touches NOFILE only, and
         # deliberately leaves NPROC/CPU/AS inherited. A session host multiplexes
         # pipe pairs for a whole tree of MCP servers, and the tool-grade 1024 cap
@@ -465,7 +477,9 @@ def _preexec_for_profile(profile: str) -> "Callable[[], None] | None":
     """Legacy ``preexec_fn`` for *profile*, used only when the shim is missing."""
     if profile == RLIMIT_PROFILE_NONE:
         return None
-    if profile == RLIMIT_PROFILE_SESSION_HOST:
+    if profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST):
+        # The OOM bias rides on the shim only; a shim-less install keeps the
+        # session host's NOFILE headroom, never the tool's 1024 cap.
         return session_host_preexec()
     if profile == RLIMIT_PROFILE_BUILD:
         return build_resource_limit_preexec()
