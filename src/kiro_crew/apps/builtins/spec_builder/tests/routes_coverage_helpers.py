@@ -155,8 +155,10 @@ class _Slot:
         assert isinstance(meta, dict)
         self._queue.append(message)
 
-    def append(self, role: str, content: str) -> None:
-        self.messages.append({"role": role, "content": content, "ts": ""})
+    def append(self, role: str, content: str, *, meta: dict | None = None) -> None:
+        self.messages.append(
+            {"role": role, "content": content, "ts": "", **({"meta": meta} if meta else {})}
+        )
 
 
 class _State:
