@@ -1584,3 +1584,31 @@ class TestShutdown:
         assert order[0] == "watchdog_stop"
         assert "heartbeat_cancel" in order[:2]
         assert order.index("watchdog_stop") < order.index("reap")
+
+    @pytest.mark.asyncio
+    async def test_shutdown_marks_the_clean_exit_as_it_disarms_the_watchdog(self):
+        # The graceful bound can cut the teardown before the dashboard runner's
+        # cleanup, and an unmarked header-only dump reads as a killed gateway, so
+        # the marker lands with the disarm, ahead of any reaping.
+        from kiro_crew.dashboard import crash_dump_store
+
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch.subagent_mgr = None
+        orch.sessions = _mock_sessions()
+        orch.sessions.close_all = AsyncMock(side_effect=lambda: order.append("reap"))
+        ds = _mock_dashboard_state()
+        ds._loop_watchdog = MagicMock()
+        ds._loop_watchdog.stop = MagicMock(side_effect=lambda: order.append("watchdog_stop"))
+        orch.dashboard_state = ds
+        orch._dashboard_runner = MagicMock()
+        orch._dashboard_runner.cleanup = AsyncMock()
+        with patch.object(
+            crash_dump_store, "record_clean_exit", side_effect=lambda: order.append("marked")
+        ):
+            await orch._shutdown()
+        assert order[:2] == ["watchdog_stop", "marked"]
+        assert order.index("marked") < order.index("reap")

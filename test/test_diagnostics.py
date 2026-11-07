@@ -826,6 +826,38 @@ def test_quoted_serialized_headers_are_redacted(tmp_path, monkeypatch):
     assert "keep this line" in gw
 
 
+def test_bundle_keeps_a_stall_dump_ahead_of_unexplained_exits_and_markers(tmp_path, monkeypatch):
+    """The sweep keeps an unexplained exit's header on purpose; neither those headers
+    nor an empty clean-exit marker may push a stall's stacks out of the bundle."""
+    from kiro_crew.dashboard import crash_dump_store
+
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "gateway.log").write_text("ok\n")
+    dumps = home / "logs" / "crash-dumps"
+    dumps.mkdir(parents=True)
+    stall = dumps / "loopstall-20260701T000000Z.txt"
+    stall.write_text("# opened\n# PID: 1\n#\n\nThread 0x1 (most recent call first):\n")
+    os.utime(stall, (1000, 1000))
+    # A PID that can never name a live process, so each header is a dead owner's.
+    dead_header = f"# opened\n# PID: {2**30} @ {crash_dump_store._pid_domain()}\n#\n\n"
+    for i in range(diagnostics._MAX_CRASH_DUMPS):
+        killed = dumps / f"loopstall-2026070{i + 2}T000000Z.txt"
+        killed.write_text(dead_header)
+        os.utime(killed, (2000 + i, 2000 + i))
+    clean = dumps / "loopstall-20260709T000000Z.txt"
+    clean.write_text(dead_header)
+    (dumps / f"{clean.name}.clean").touch()
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+    with zipfile.ZipFile(r.zip_path) as z:
+        bundled = [n for n in z.namelist() if n.startswith("crash-dumps/")]
+
+    assert f"crash-dumps/{stall.name}" in bundled
+    assert not any(n.endswith(".clean") for n in bundled), bundled
+    assert len(bundled) == diagnostics._MAX_CRASH_DUMPS
+
+
 @requires_symlinks
 def test_symlinked_dump_directory_is_not_enumerated(tmp_path, monkeypatch):
     """A symlinked crash-dumps DIRECTORY must not be walked.

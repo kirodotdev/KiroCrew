@@ -88,6 +88,7 @@ _NEW_GATEWAY = textwrap.dedent("""
         "# header\\n\\n",
         encoding="utf-8",
     )
+    (work / "loopstall-old.txt.clean").touch()  # what the old image's pre-exec stop leaves
     owner_alive = cds._owner_alive(dump, cds.pid_exists)
     identity_alive = cds.pid_identity_alive(old_pid, cds._pid_domain(), start_id)
     swept = cds.sweep_stale_dumps(work)

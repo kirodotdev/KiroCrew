@@ -2278,8 +2278,9 @@ specified compatibility change.
   - `crewmate_prune` — the Bot prune migration, its request gate and settle
     wait, and the channel transcript convergence;
   - `heartbeat` — the loop stall watchdog, the 5-second heartbeat that beats it, the
-    prior crash dump's one report, and the healthy-boot marker both entrypoints
-    dispatch once ready;
+    prior crash dump's one report, the healthy-boot marker both entrypoints
+    dispatch once ready, and the pre-exec stop that leaves the clean-exit marker
+    beside the dump before an in-place restart;
   - `diagnostics` — the boot telemetry event and the diagnostic recorder;
   - `stt_hooks` — speech-to-text prewarm and idle sweep, and the local decision
     model's release at cleanup;

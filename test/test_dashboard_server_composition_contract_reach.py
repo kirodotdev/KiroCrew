@@ -802,7 +802,8 @@ _DASHBOARD_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
+    _insert_enterprise_gate register_pre_exec_stop _register_prevent_sleep_shutdown
+    _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
