@@ -20390,6 +20390,7 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "मेरे संपादन क्रू पर उसकी अभी की स्थिति में लागू करें",
         "your_code": "Your code: {{code}}",
+        "view_label": "रिमोट क्रू दृश्य",
         "your_crews": "तुम्हारे क्रू",
         "reported_host": "{{host}} (बताया गया)",
         "reported_host_hint": "यह crew कहता है कि वह इस मशीन पर है। इस डैशबोर्ड का उस तक कोई रास्ता नहीं है।",

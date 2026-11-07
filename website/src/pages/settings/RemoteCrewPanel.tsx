@@ -58,6 +58,7 @@ import { Card, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
   announceChainedCrew,
   clearChainRefusal,
@@ -981,10 +982,11 @@ export function RemoteCrewPanel() {
   }
 
   const Tabs = (
-    <div className="flex gap-1 border-b border-border mb-5">
+    <RadioChipGroup className="flex gap-1 border-b border-border mb-5" ariaLabel={i18nT('pages.settings.remoteCrewPanel.view_label')}>
       <button
         type="button"
         onClick={() => setTab('crews')}
+        {...radioChip(tab === 'crews')}
         aria-label={i18nT('pages.settings.remoteCrewPanel.your_crews')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'crews' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
@@ -994,13 +996,14 @@ export function RemoteCrewPanel() {
       <button
         type="button"
         onClick={() => setTab('setup')}
+        {...radioChip(tab === 'setup')}
         aria-label={i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'setup' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
         <Rocket size={14} /> {i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
         {inProgress.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden />}
       </button>
-    </div>
+    </RadioChipGroup>
   )
 
   const Notices = (
