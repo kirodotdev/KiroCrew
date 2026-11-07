@@ -769,3 +769,37 @@ async def test_a_pipe_upstream_that_fails_closes_both_gateway_ends(
     finally:
         for fd in (to_r, from_w):
             os.close(fd)
+
+
+def test_a_headless_shell_build_is_chosen_headless_even_with_a_display(tmp_path, monkeypatch):
+    """The headless shell has no window, so a windowed pin on a display host is still headless.
+
+    Status, the live card and the startup warm all read ``choice.headless``; they must
+    not offer a window the launched binary cannot show.
+    """
+    discover = supervisor.discover
+    chromium = supervisor.install.chromium
+    monkeypatch.setattr(discover, "probe_host", lambda *a, **kw: discover.HostFacts())
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {"choice": "kiro_chromium"})
+
+    def state(build: str) -> Any:
+        return supervisor.install.InstallState(
+            prefix=tmp_path,
+            installed=True,
+            version=HARNESS_VERSION,
+            python=Path(sys.executable),
+            chromium=chromium.ChromiumState(
+                chromium.CHROMIUM_VERSION, "linux64", True, tmp_path / "exe", build
+            ),
+        )
+
+    full = sup._choose(state(chromium.BUILD_FULL))
+    assert full is not None and full.headless is False
+    shell = sup._choose(state(chromium.BUILD_HEADLESS_SHELL))
+    assert shell is not None and shell.kind == "kiro_chromium" and shell.headless is True
+    # Only Kiro's own Chromium is affected: the person's Chrome keeps its window.
+    chrome = tmp_path / "chrome"
+    monkeypatch.setattr(discover, "probe_host", lambda *a, **kw: discover.HostFacts(chrome=chrome))
+    sup_auto = HarnessSupervisor(tmp_path, config_reader=lambda: {"choice": "auto"})
+    user = sup_auto._choose(state(chromium.BUILD_HEADLESS_SHELL))
+    assert user is not None and user.kind == "user_chrome" and user.headless is False

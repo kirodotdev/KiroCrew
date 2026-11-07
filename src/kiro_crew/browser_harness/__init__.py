@@ -12,6 +12,7 @@ Module map, in the order a first run touches them:
 
 * :mod:`.install` -- the pinned venv at ``<home>/browser-harness`` and its lock file.
 * :mod:`.chromium` -- the Kiro-owned Chromium download for hosts with no Chrome.
+* :mod:`.libcups` -- whether that Chromium can be the full build on this host.
 * :mod:`.discover` -- which browser to drive on this host.
 * :mod:`.relay` -- the one CDP connection, shared between the daemon and the gateway.
 * :mod:`.supervisor` -- browser, relay and daemon lifecycle; the ``status()`` the
