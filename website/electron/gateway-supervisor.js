@@ -42,6 +42,7 @@ const {
 const {
   windowsGatewayExecutablePaths,
   windowsProcessCommand,
+  windowsTaskkill,
 } = require("./windows-port");
 const {
   gatewayWaitTimeoutMs,
@@ -428,6 +429,10 @@ function createGatewaySupervisor({
     sameHomeGatewayPid, runGatewayStop, probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness,
     resolveFamilyConflict, getRunLocalGateway, setGatewayOwnership,
     launchdJobPids: IS_MAC ? launchdJobPids : null,
+    windowsCommand: IS_WIN ? (pid) => windowsProcessCommand(pid, { execFileFn: execFile }) : null,
+    windowsStopPid: IS_WIN
+      ? (pid, isTrustedCommand) => windowsTaskkill(pid, { execFileFn: execFile, isTrustedCommand })
+      : null,
   });
   const {
     stopGatewayGracefully,
