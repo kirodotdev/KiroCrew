@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -347,6 +348,11 @@ class TestCIProgress(unittest.TestCase):
         self.assertIn("--max-worker-restart=0", command)
         self.assertEqual(command.count('"${PROGRESS[@]}"'), 4)
         self.assertEqual(command.count("--timeout=120"), 4)
+        # A hang SIGALRM cannot end still dumps every thread's stack, after
+        # pytest-timeout had its chance; PROGRESS reaches all four invocations.
+        dump_after = re.search(r"PROGRESS=\([^)]*-o faulthandler_timeout=(\d+)", command)
+        self.assertIsNotNone(dump_after, "the Linux shards carry no faulthandler_timeout")
+        self.assertGreater(int(dump_after.group(1)), 120)
         self.assertEqual(command.count('-n "$WORKERS"'), 4)
         self.assertNotIn("-n auto", command)
         self.assertEqual(command.count("-p scripts.ci_file_shards"), 3)
