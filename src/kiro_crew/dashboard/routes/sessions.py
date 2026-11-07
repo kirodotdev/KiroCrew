@@ -1,4 +1,4 @@
-"""Route registration for session workspace, folders, message pins, tags.
+"""Route registration for session workspace, folders, message pins, bookmarks, tags.
 
 One contiguous slice of the dashboard's route table, kept in its original
 order. aiohttp resolves routes in REGISTRATION order, and several routes here
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
+from kiro_crew.dashboard import chat, chat_bookmarks, chat_voice, handlers, openai_compat
 from kiro_crew.dashboard.handlers import chat_elicitation
 from kiro_crew.dashboard.handlers import debug as debug_handlers
 from kiro_crew.dashboard.handlers import session_environments as session_environment_handlers
@@ -163,6 +163,10 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/pins", chat.api_chat_pins_create)
     app.router.add_delete("/api/chat/pins/by-query", chat.api_chat_pins_delete_by_query)
     app.router.add_delete("/api/chat/pins/{id}", chat.api_chat_pins_delete)
+    # Session bookmarks
+    app.router.add_get("/api/chat/bookmarks", chat_bookmarks.api_chat_bookmarks_list)
+    app.router.add_post("/api/chat/bookmarks", chat_bookmarks.api_chat_bookmarks_create)
+    app.router.add_delete("/api/chat/bookmarks/{id}", chat_bookmarks.api_chat_bookmarks_delete)
     # Tags
     app.router.add_get("/api/chat/tags", chat.api_chat_tags)
     app.router.add_post("/api/chat/tags", chat.api_chat_tag_create)

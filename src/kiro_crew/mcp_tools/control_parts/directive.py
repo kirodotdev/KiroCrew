@@ -2,7 +2,7 @@
 
 :func:`_emit_directive` encodes a validated directive into the tool result and publishes
 the call out of band. ``nothing_to_do``, ``set_project``, ``reset_conversation``,
-``chat_tag`` and ``suggest_followup`` validate their arguments and return its marker; the
+``chat_tag``, ``chat_bookmark`` and ``suggest_followup`` validate their arguments and return its marker; the
 session-aware consumer applies the directive to its own session, so none of them resolves
 a session identity. The monitoring tools emit theirs through the same function.
 
@@ -17,6 +17,7 @@ from typing import Any
 
 from kiro_crew import mcp_core, session_directive
 from kiro_crew.validation import (
+    CHAT_BOOKMARK_SCHEMA,
     CHAT_TAG_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
@@ -178,6 +179,25 @@ def chat_tag(name: str, args: dict[str, Any]) -> str:
         "agent-writable it takes effect when this turn's result is processed, "
         "and the result reports the session's resulting tags. A human-only tag, "
         "an unknown tag, or a headless caller (cron/subagent) is refused.",
+    )
+
+
+def chat_bookmark(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, CHAT_BOOKMARK_SCHEMA)
+    # Stateless: the consumer applies the change to ITS OWN slot and answers
+    # with the resulting bookmark list.
+    payload: dict[str, Any] = {}
+    if args.get("add"):
+        payload["add"] = args["add"]
+    if args.get("remove"):
+        payload["remove"] = args["remove"]
+    return _emit_directive(
+        "chat_bookmark",
+        payload,
+        "Bookmark change requested for this session; it takes effect when this "
+        "turn's result is processed, and the result lists the session's "
+        "bookmarks. A URL that is not absolute http or https, a full session, "
+        "or a headless caller (cron/subagent) is refused.",
     )
 
 

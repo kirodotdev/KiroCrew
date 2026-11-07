@@ -68,6 +68,7 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
         "nothing_to_do",
         "reset_conversation",
         "chat_tag",
+        "chat_bookmark",
     }
 )
 

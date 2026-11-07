@@ -7493,6 +7493,25 @@
         "jump_to_named_message": "Jump to message, {{author}}: {{label}}",
         "jump_to_message": "Jump to message"
       },
+      "bookmarks": {
+        "title": "Bookmarks",
+        "add": "Add",
+        "url_label": "Bookmark URL",
+        "title_label": "Bookmark title",
+        "title_placeholder": "Title (optional)",
+        "save": "Save",
+        "cancel": "Cancel",
+        "empty": "No bookmarks yet. Add a link to keep it with this session.",
+        "invalid_url": "Enter a full http or https URL.",
+        "url_contains_credential": "This URL carries a credential, so it was not kept. Remove the token or password and try again.",
+        "limit_reached": "This session already keeps 100 bookmarks. Remove one to add another.",
+        "save_failed": "Could not save the bookmark. Try again.",
+        "load_failed": "Could not load bookmarks.",
+        "remove_failed": "Could not remove the bookmark. Try again.",
+        "remove": "Remove bookmark",
+        "remove_named": "Remove bookmark {{name}}",
+        "added_by_agent": "Added by the agent"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "Load earlier messages"
       },

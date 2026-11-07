@@ -71,6 +71,7 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     _surface_arm_refusal,
 )
 from kiro_crew.dashboard.session_directive_apply_slot import (
+    _apply_chat_bookmark,
     _apply_chat_tag,
     _nothing_to_do,
     _refuse_unvouched_wake_reset,
@@ -321,6 +322,8 @@ async def apply_session_directive_outcome(
                 )
         elif kind == "chat_tag":
             result = await _apply_chat_tag(state, slot, session_key, args)
+        elif kind == "chat_bookmark":
+            result = await _apply_chat_bookmark(state, slot, args)
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
         elif kind == "nothing_to_do":

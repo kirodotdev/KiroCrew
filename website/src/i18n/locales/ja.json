@@ -12785,6 +12785,25 @@
         "jump_to_message": "メッセージに移動",
         "copy_failed": "コピーに失敗しました"
       },
+      "bookmarks": {
+        "title": "ブックマーク",
+        "add": "追加",
+        "url_label": "ブックマークの URL",
+        "title_label": "ブックマークのタイトル",
+        "title_placeholder": "タイトル (任意)",
+        "save": "保存",
+        "cancel": "キャンセル",
+        "empty": "ブックマークはまだありません。リンクを追加すると、このセッションに保存されます。",
+        "invalid_url": "http または https で始まる完全な URL を入力してください。",
+        "url_contains_credential": "この URL には認証情報が含まれているため保存されませんでした。トークンまたはパスワードを削除して、もう一度お試しください。",
+        "limit_reached": "このセッションにはすでに 100 件のブックマークがあります。追加するには 1 件削除してください。",
+        "save_failed": "ブックマークを保存できませんでした。もう一度お試しください。",
+        "load_failed": "ブックマークを読み込めませんでした。",
+        "remove_failed": "ブックマークを削除できませんでした。もう一度お試しください。",
+        "remove": "ブックマークを削除",
+        "remove_named": "ブックマーク {{name}} を削除",
+        "added_by_agent": "エージェントが追加"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "以前のメッセージを読み込む",
         "load_failed": "以前のメッセージを読み込めませんでした",

@@ -13399,6 +13399,25 @@
         "jump_to_message": "Aller au message",
         "copy_failed": "Échec de la copie"
       },
+      "bookmarks": {
+        "title": "Favoris",
+        "add": "Ajouter",
+        "url_label": "URL du favori",
+        "title_label": "Titre du favori",
+        "title_placeholder": "Titre (facultatif)",
+        "save": "Enregistrer",
+        "cancel": "Annuler",
+        "empty": "Aucun favori pour l'instant. Ajoute un lien pour le garder avec cette session.",
+        "invalid_url": "Saisis une URL http ou https complète.",
+        "url_contains_credential": "Cette URL contient un identifiant secret, elle n'a donc pas été gardée. Retire le jeton ou le mot de passe et réessaie.",
+        "limit_reached": "Cette session contient déjà 100 favoris. Supprime-en un pour en ajouter un autre.",
+        "save_failed": "Impossible d'enregistrer le favori. Réessaie.",
+        "load_failed": "Impossible de charger les favoris.",
+        "remove_failed": "Impossible de supprimer le favori. Réessaie.",
+        "remove": "Supprimer le favori",
+        "remove_named": "Supprimer le favori {{name}}",
+        "added_by_agent": "Ajouté par l'agent"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "Charger les messages précédents",
         "load_failed": "Impossible de charger les messages précédents",

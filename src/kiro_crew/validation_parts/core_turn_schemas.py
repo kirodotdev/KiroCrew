@@ -199,6 +199,48 @@ CHAT_TAG_SCHEMA = ToolSchema(
     custom_validator=_validate_chat_tag,
 )
 
+MAX_BOOKMARK_ITEMS = 10
+
+
+def _validate_chat_bookmark(args: dict[str, Any]) -> None:
+    """Validate each ``add`` entry in place and require at least one change.
+
+    ``add`` is a list of ``{url, title?}`` objects, which ``validate_field``
+    does not descend into. The applier enforces the URL rules (absolute
+    http/https only); this gate bounds the shapes and lengths.
+    """
+    adds = args.get("add") or []
+    for idx, item in enumerate(adds):
+        if not isinstance(item, dict):
+            raise ValidationError("add", f"item[{idx}]: expected object")
+        for key in item:
+            if key not in ("url", "title"):
+                raise ValidationError("add", f"item[{idx}]: unknown field {key!r}")
+        url = item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise ValidationError("add", f"item[{idx}].url: required string")
+        if len(url) > 2048:
+            raise ValidationError("add", f"item[{idx}].url: exceeds max length 2048")
+        title = item.get("title", "")
+        if not isinstance(title, str):
+            raise ValidationError("add", f"item[{idx}].title: expected string")
+        item["url"] = url.strip()
+        item["title"] = sanitize_string(title)[:200]
+    if not adds and not args.get("remove"):
+        raise ValidationError("add", "at least one of add or remove is required")
+
+
+# chat_bookmark lets an agent keep links with ITS OWN chat slot. The applier
+# owns the URL grammar and the per-slot cap; this gate bounds the argv.
+CHAT_BOOKMARK_SCHEMA = ToolSchema(
+    tool_name="chat_bookmark",
+    fields=[
+        FieldSpec("add", list, item_type=dict, max_items=MAX_BOOKMARK_ITEMS),
+        FieldSpec("remove", list, item_type=str, item_max_len=2048, max_items=MAX_BOOKMARK_ITEMS),
+    ],
+    custom_validator=_validate_chat_bookmark,
+)
+
 # suggest_followup renders an agent-authored follow-up card in the calling
 # dashboard slot. Every string below is LLM-authored and lands in the DOM and
 # (for the worktree action) in a `git worktree add` argv, so the shapes are

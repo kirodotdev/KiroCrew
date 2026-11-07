@@ -34,6 +34,7 @@
     "set_project": "Set project",
     "reset_conversation": "Reset conversation",
     "chat_tag": "Tag session",
+    "chat_bookmark": "Bookmark links",
     "suggest_followup": "Suggest follow-ups",
     "request_server": "Request MCP server",
     "send_message": "Send message",

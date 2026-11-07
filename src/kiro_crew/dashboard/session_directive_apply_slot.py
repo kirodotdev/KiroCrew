@@ -1,7 +1,7 @@
 """The directives that act on the turn's slot, and the quiet end of a turn.
 
-Setting the slot's project, resetting its conversation, applying a chat tag, suggesting
-a follow-up, and the nothing-to-do outcome, with the push that tells the browser. A new
+Setting the slot's project, resetting its conversation, applying a chat tag, keeping
+bookmarks, suggesting a follow-up, and the nothing-to-do outcome, with the push that tells the browser. A new
 slot-targeted directive goes here. Its function-local imports are deliberate;
 the facade's module docstring says why.
 
@@ -558,6 +558,42 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
     names = [str(name_by_id.get(tid, tid)) for tid in slot.tags]
     shown = ", ".join(names) if names else "(none)"
     return f"Board tags updated. This session now carries: {shown}."
+
+
+async def _apply_chat_bookmark(state: Any, slot: Any, args: dict[str, Any]) -> str:
+    """Apply a ``chat_bookmark`` directive to THIS turn's slot.
+
+    Removals run before additions, each through the same store the HTTP routes
+    use. A refused entry does not stop the others; the result names each
+    refusal and lists the slot's resulting bookmarks (the agent's READ path).
+    """
+    from kiro_crew.dashboard.chat_bookmarks import notify_bookmarks_changed
+    from kiro_crew.dashboard.chat_bookmarks_store import BookmarkError
+
+    store = state.chat_bookmarks
+    refusals: list[str] = []
+    changed = 0
+    for url in args.get("remove") or []:
+        if await store.remove(slot.key, url=str(url)):
+            changed += 1
+        else:
+            refusals.append(f"not_bookmarked:{url}")
+    for item in args.get("add") or []:
+        url = str(item.get("url") or "")
+        try:
+            await store.add(slot.key, url, str(item.get("title") or ""), origin="agent")
+            changed += 1
+        except BookmarkError as exc:
+            refusals.append(f"{exc.code}:{url}")
+    if changed:
+        notify_bookmarks_changed(state, slot.key)
+    rows = await store.list_for(slot.key)
+    shown = "; ".join(f"{r['title']} <{r['url']}>" if r["title"] else r["url"] for r in rows)
+    text = f"This session's bookmarks: {shown or '(none)'}."
+    if refusals:
+        prefix = "Error: " if not changed else "Some bookmarks were not changed: "
+        return f"{prefix}{', '.join(refusals)}. {text}"
+    return f"Bookmarks updated. {text}"
 
 
 async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:

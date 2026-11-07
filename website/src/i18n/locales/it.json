@@ -13399,6 +13399,25 @@
         "jump_to_message": "Vai al messaggio",
         "copy_failed": "Copia non riuscita"
       },
+      "bookmarks": {
+        "title": "Segnalibri",
+        "add": "Aggiungi",
+        "url_label": "URL del segnalibro",
+        "title_label": "Titolo del segnalibro",
+        "title_placeholder": "Titolo (facoltativo)",
+        "save": "Salva",
+        "cancel": "Annulla",
+        "empty": "Ancora nessun segnalibro. Aggiungi un link per conservarlo con questa sessione.",
+        "invalid_url": "Inserisci un URL http o https completo.",
+        "url_contains_credential": "Questo URL contiene una credenziale, quindi non è stato salvato. Rimuovi il token o la password e riprova.",
+        "limit_reached": "Questa sessione ha già 100 segnalibri. Rimuovine uno per aggiungerne un altro.",
+        "save_failed": "Impossibile salvare il segnalibro. Riprova.",
+        "load_failed": "Impossibile caricare i segnalibri.",
+        "remove_failed": "Impossibile rimuovere il segnalibro. Riprova.",
+        "remove": "Rimuovi segnalibro",
+        "remove_named": "Rimuovi il segnalibro {{name}}",
+        "added_by_agent": "Aggiunto dall'agente"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "Carica i messaggi precedenti",
         "load_failed": "Impossibile caricare i messaggi precedenti",

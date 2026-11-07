@@ -1048,6 +1048,48 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "chat_bookmark",
+            "description": (
+                "Keep links with THIS chat session as bookmarks. The user sees them "
+                "in the side panel's Links tab, above the links the transcript "
+                "mentioned. Bookmark the few pages this conversation keeps coming "
+                "back to: the PR or CR you opened, the ticket you are working, a "
+                "design doc or dashboard. Do not bookmark every link you mention."
+                "\n\n"
+                "Arguments (at least one required): add=[{url, title}] bookmarks "
+                "absolute http/https URLs, title optional (adding a URL already "
+                "kept only updates its title); remove=[url] removes bookmarks by "
+                "URL. The result lists the session's RESULTING bookmarks, so this "
+                "is also how you read them. A session keeps at most 100."
+                "\n\n"
+                "Restrictions: dashboard chat sessions only, and only on a turn a "
+                "person sent; cron jobs, sub-agents and monitor wakes are refused. "
+                "The change applies when this turn's result is processed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "add": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string"},
+                                "title": {"type": "string"},
+                            },
+                            "required": ["url"],
+                        },
+                        "description": "Links to bookmark, each {url, title?}.",
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "URLs of bookmarks to remove.",
+                    },
+                },
+            },
+        },
+        {
             "name": "suggest_followup",
             "description": (
                 "Offer the user up to 3 follow-up items as a card below the chat "
