@@ -84,6 +84,7 @@ const mocks = vi.hoisted(() => ({
   chatTags: vi.fn(),
   tagColumns: vi.fn(),
   kirocrewConfig: vi.fn(),
+  models: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -103,7 +104,9 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { requestSlotReveal } from '../store/chatSlice'
+import { sseSlots, updateSlot } from '../store/dashboardSlice'
 import { stubAppConfirm } from './appConfirmStub'
+import { turnOnCrewModePreview } from './crewModePreview'
 
 interface TestSlot {
   key: string
@@ -259,6 +262,7 @@ beforeEach(() => {
   mocks.chatTags.mockResolvedValue([])
   mocks.tagColumns.mockResolvedValue([])
   mocks.kirocrewConfig.mockResolvedValue({ dashboard: { recent_tint_count: 3 } })
+  mocks.models.mockResolvedValue([])
 })
 afterEach(() => {
   vi.clearAllMocks()
@@ -422,15 +426,182 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
   })
 
-  it('reports a partial failure and keeps the panel open', async () => {
+  it('names the sessions a partial failure missed and offers to retry them on the model that failed (#11231)', async () => {
+    mocks.models.mockResolvedValue([{ model_name: 'auto', description: 'Default' }, { model_name: 'opus-4.8', description: 'Opus' }])
     mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Switch all to model…')
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
     await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
-    expect(await screen.findByText('1 session failed to switch')).toBeTruthy()
+    expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
     expect(screen.getByText('Switch All Sessions')).toBeTruthy()
+    // Idle A on Auto is all Switch would send, so it reads as that retry.
+    expect(screen.getByText(/^Retry 1 failed session$/)).toBeTruthy()
+    // Another model is a new request, not a retry, though it reaches the same session.
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(screen.getByText(/^Switch 1 session$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    expect(screen.getByText(/^Retry 1 failed session$/)).toBeTruthy()
+    // Unticking Skip adds Busy B, a session that did not fail: a plain switch again.
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(screen.getByText(/^Switch 2 sessions$/)).toBeTruthy()
+    expect(screen.queryByText(/failed session/)).toBeNull()
+  })
+
+  it('keeps every failed session name in a bounded scrolling notice above Retry', async () => {
+    const slots = Array.from({ length: 20 }, (_, index) => ({
+      key: `failed-${index}`,
+      title: `Session ${index}: investigating the model switch failure across the entire project`,
+      running: false,
+      messages: 1,
+    }))
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: slots.map(slot => slot.key) })
+    renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 20 sessions' }))
+
+    const notice = await screen.findByTestId('bulk-model-error')
+    expect(notice).toHaveClass('max-h-32')
+    const message = within(notice).getByText(/20 sessions failed to switch:/)
+    expect(message).toHaveClass('min-h-0', 'overflow-y-auto')
+    for (const slot of slots) expect(message).toHaveTextContent(slot.title)
+    const retry = screen.getByRole('button', { name: 'Retry 20 failed sessions' })
+    expect(retry).toBeEnabled()
+    expect(notice.contains(retry)).toBe(false)
+    expect(notice.nextElementSibling).toContainElement(retry)
+    expect(within(notice.nextElementSibling as HTMLElement).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
+  it('names a failed session the list hides, a Crew Mode worker, by its title (#11231)', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
+    ] as TestSlot[]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-w'] })
+    renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    expect(await screen.findByText('1 session failed to switch: Worker W')).toBeTruthy()
+  })
+
+  it('counts a hidden Crew Mode worker in the failed-session retry label', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
+    ]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-root', 'k-w'] })
+    renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.queryByText('Worker W')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('2 sessions failed to switch: Crew root and Worker W')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 2 failed sessions' })).toBeEnabled()
+  })
+
+  it('keeps Retry enabled when the only failed session is a hidden Crew Mode worker (#11231)', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: false, messages: 1, crew_root: 'k-root' },
+    ] as TestSlot[]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-w'] })
+    const view = renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('1 session failed to switch: Worker W')).toBeTruthy()
+
+    // The root switched, so every listed session is already on Auto.
+    act(() => { view.store.dispatch(updateSlot({ key: 'k-root', model: 'auto' })) })
+    view.rerender(
+      <QueryClientProvider client={sidebarClient!}>
+        <Provider store={view.store}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatSidebar
+                slots={slots.map(s => (s.key === 'k-root' ? { ...s, model: 'auto' } : s))} activeSlot={null} unreadSlots={[]}
+                history={[]} historyHasMore={false}
+                defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
+              />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const retry = screen.getByRole('button', { name: 'Retry 1 failed session' })
+    expect(retry).toBeEnabled()
+    mocks.chatSlotsModel.mockClear()
+    fireEvent.click(retry)
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+  })
+
+  it('does not label a switch as a retry when a non-chat-page member DM becomes eligible', async () => {
+    const visible = { key: 'k-a', title: 'Idle A', running: false, messages: 1 }
+    const member = { key: 'member-helper', title: 'Helper DM', surface: 'member', running: true, messages: 1 }
+    const peer = { key: 'peer-chat', title: 'Remote chat', peer_id: 'other-crew', running: false, messages: 1 }
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
+    const { store } = renderSidebar({ slots: [visible] })
+    act(() => { store.dispatch(sseSlots([visible, member, peer])) })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.queryByText('Helper DM')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 1 failed session' })).toBeEnabled()
+
+    act(() => { store.dispatch(updateSlot({ key: member.key, running: false })) })
+    expect(screen.queryByRole('button', { name: 'Retry 1 failed session' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Switch 1 session' })).toBeEnabled()
+    expect(screen.queryByText('Helper DM')).toBeNull()
+
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a', member.key] })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('2 sessions failed to switch: Idle A and Helper DM')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 2 failed sessions' })).toBeEnabled()
+  })
+
+  it('does not label a switch as a retry when a hidden Crew Mode worker becomes eligible (#11231)', async () => {
+    turnOnCrewModePreview()
+    const slots = [
+      { key: 'k-a', title: 'Idle A', running: false, messages: 1 },
+      { key: 'k-root', title: 'Crew root', running: false, messages: 1, model: 'auto', crew_mode_root: true },
+      { key: 'k-w', title: 'Worker W', running: true, messages: 1, crew_root: 'k-root' },
+    ] as TestSlot[]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
+    const view = renderSidebar({ slots })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.queryByText('Worker W')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch 1 session' }))
+    expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry 1 failed session' })).toBeTruthy()
+
+    // An idle W joins the next request, so it is not a retry.
+    act(() => { view.store.dispatch(updateSlot({ key: 'k-w', running: false })) })
+    view.rerender(
+      <QueryClientProvider client={sidebarClient!}>
+        <Provider store={view.store}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatSidebar
+                slots={slots.map(s => ({ ...s, running: false }))} activeSlot={null} unreadSlots={[]}
+                history={[]} historyHasMore={false}
+                defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
+              />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByText('Worker W')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry 1 failed session' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Switch 1 session' })).toBeEnabled()
   })
 
   it('closes when the switch fully succeeds', async () => {
