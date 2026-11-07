@@ -190,8 +190,9 @@ systemd at all, use `./dev-backend.sh` from the root of a Kiro Crew source
 checkout; it is a repository script and is not installed with the package.
 
 If doctor reports `session bus: not applicable (no systemd per-user manager on
-this host)`, the host's systemd ships without `user@.service` — Enterprise Linux
-7 derivatives such as RHEL 7, CentOS 7 and Amazon Linux 2 do. There is no
+this host)`, the host's systemd ships without `user@.service` — Enterprise
+Linux 7 derivatives such as RHEL 7, CentOS 7 and Amazon Linux 2 do — or an
+administrator masked it (`systemctl unmask` reverses that). There is no
 per-user manager for linger to start, so `loginctl enable-linger` cannot help.
 Run a worktree gateway with `./dev-backend.sh` from a source checkout, or have an
 administrator hand-install a `user@$(id -u).service` unit as described under
