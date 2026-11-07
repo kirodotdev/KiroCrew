@@ -1796,9 +1796,8 @@ order, so the order is part of the behaviour, and `MembersPage.owners.test.tsx`
 pins it together with the facade's exports and the rule that no owner imports
 the facade. The owners are stretches of the hook sequence the page had as one
 file, so a few pieces sit where their registration falls rather than with the
-responsibility they serve (the Schedules guard state below, say); a change that
-regroups them reorders registrations deliberately, reviews that as a behaviour
-change, and edits the order pin (follow-up #20512 for the Schedules guard state). New work goes to the owner of its responsibility:
+responsibility they serve; a change that regroups them reorders registrations
+deliberately, reviews that as a behaviour change, and edits the order pin. New work goes to the owner of its responsibility:
 
 | Owner | Holds |
 |---|---|
