@@ -387,6 +387,9 @@
       "show_less": "Показать меньше",
       "show_more": "Показать больше"
     },
+    "chatPanel": {
+      "session_gone": "Этот сеанс больше не существует. Открой или начни сеанс в приложении."
+    },
     "newMessagesDivider": {
       "new_messages_one": "{{count}} новое сообщение",
       "new_messages_few": "{{count}} новых сообщения",

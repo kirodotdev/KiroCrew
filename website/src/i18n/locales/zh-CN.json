@@ -342,6 +342,9 @@
       "show_less": "收起",
       "show_more": "展开更多"
     },
+    "chatPanel": {
+      "session_gone": "此会话已不存在。请在应用中打开或新建会话。"
+    },
     "newMessagesDivider": {
       "new_messages_other": "{{count}} 条新消息"
     }

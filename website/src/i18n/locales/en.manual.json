@@ -287,6 +287,9 @@
       "copy_failed": "Copy failed",
       "show_less": "Show less",
       "show_more": "Show more"
+    },
+    "chatPanel": {
+      "session_gone": "This session no longer exists. Open or start a session from the app."
     }
   },
   "apps": {
