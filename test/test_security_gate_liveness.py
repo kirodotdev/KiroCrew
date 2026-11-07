@@ -690,7 +690,12 @@ def _url_payload_command(n: int) -> str:
 #: (``_document_link_spans``, ``_plantuml_verdict``) hands it to its nested call, and
 #: ``_well_formed_token_param_prefixes`` is the one shape gate the live read and a
 #: snapshot share. No rule, pattern or pass changed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_587
+#: Raised by 107, from 34,587, for ``scan_history`` reading ``sessions/*.jsonl``
+#: (``memory_audit``): the transcript row shapes, the fold of one tool call's rows
+#: by ``tool_call_id``, the non-shell tool kinds, row-time merge across files and
+#: the unreadable-file finding, so ``security audit`` never reports an unread
+#: scan as clean. No check was relaxed.
+_PACKAGE_LINE_BUDGET = 34_694
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
