@@ -495,6 +495,35 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     )
 
 
+def _kiro_cli_builtin_reason(agent: str) -> str:
+    """Why kiro-cli's built-in *agent* does not start on KAS, naming what to pick instead.
+
+    KAS has no definition of it, and running KAS's own closest mode would decide
+    some tool calls without asking Crew. Reads config for the default template.
+    """
+    from kiro_crew.config.loader_snapshots import (
+        DEFAULT_KIRO_TEMPLATE,
+        KIRO_CLI_BUILTIN_AGENTS,
+        default_template,
+    )
+
+    try:
+        from kiro_crew.config import KiroCrewConfig
+
+        default = default_template(KiroCrewConfig.load())
+    except Exception:  # noqa: BLE001 - the name is a hint, never a gate
+        logger.debug("no default template for the %r refusal", agent, exc_info=True)
+        default = DEFAULT_KIRO_TEMPLATE
+    if default in KIRO_CLI_BUILTIN_AGENTS:
+        # A configured default that is itself refused here is no pick.
+        default = DEFAULT_KIRO_TEMPLATE
+    return (
+        f'The agent "{agent}" is built into kiro-cli and has no safe match on KAS. '
+        f'Pick Kiro Crew\'s default agent "{default}" instead, or run '
+        f"`kiro-cli --agent {agent}` in this chat's Terminal tab."
+    )
+
+
 def _missing_agent_reason(agent: str, session_key: str) -> str:
     """The reason a session cannot start on *agent*, which has no spec, for the user.
 
@@ -950,10 +979,16 @@ class KasHarness(MembershipHarness):
                 except kas_agents_mod.KasAgentSpecAbsent as exc:
                     # Nothing defines the agent, so name what removed it (an app
                     # switched off, usually) and the fix, rather than a file open
-                    # that failed. Still a refusal: there is no spec to run.
-                    raise AcpAgentUnavailable(
-                        _missing_agent_reason(agent, session_key), agent=agent
-                    ) from exc
+                    # that failed. Still a refusal: there is no spec to run. A
+                    # kiro-cli built-in no app declares gets its own reason.
+                    from kiro_crew.apps.manager import owning_app_for_agent
+                    from kiro_crew.config.loader_snapshots import KIRO_CLI_BUILTIN_AGENTS
+
+                    if agent in KIRO_CLI_BUILTIN_AGENTS and owning_app_for_agent(agent) is None:
+                        reason = _kiro_cli_builtin_reason(agent)
+                    else:
+                        reason = _missing_agent_reason(agent, session_key)
+                    raise AcpAgentUnavailable(reason, agent=agent) from exc
             if agent == MATE_WORKER_AGENT:
                 # A crewmate's worker: its source base plus that crewmate's own
                 # additions, governed as one spec, with its prompt as literal
