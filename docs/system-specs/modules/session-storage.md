@@ -35,7 +35,7 @@ binding: `store_inventory.py` rebinds them, so a copy on the facade would go sta
 | `session_storage_parts/batch_manifest.py` | a batch's manifest: the header and entries, `_manifest_records` under `_MANIFEST_RECORD_CAP`, `_read_manifest`, the summary and rewrite, `_manifest_rels`, `_rels_digest`, `_header_names_this_batch`, and making a batch durable (`_sync_batch`) |
 | `session_storage_parts/crew_staging.py` | a session's crew logs in the trash: `_stage_crew_logs`, putting them back, the holds file, the staged units no manifest lists (which nothing that removes the batch may remove), and discarding a batch's staging after an empty |
 | `session_storage_parts/store_inventory.py` | the read side: the cached scan (`_scan_units`, `_scan_raw`, `invalidate_scan_cache`), `_unit_paths`, `measure`, `list_units`, `select_reclaimable`, `cotenant_sids`, `reclaim_block_reason` and `list_trash` |
-| `session_storage_parts/pinned_delete.py` | deleting a batch's listed files by descriptor (`_FD_SAFE_DELETE`, `_delete_listed_files`), renaming a batch aside and back (`_stage_batch_by_name`), and the coarse path (`_coarse_remove`) |
+| `session_storage_parts/pinned_delete.py` | deleting a batch's listed files by descriptor (`_FD_SAFE_DELETE`, `_delete_listed_files`), renaming a batch aside and back (`_stage_batch_by_name`), and the coarse path (`_coarse_remove`, `_sweep_staged`) |
 | `session_storage_parts/file_moves.py` | `_mutation_lock`, `_batch_dir`, the no-follow movers and the cross-filesystem copy, `_rollback`, `_canonical_origin`, `_origin_path` and `_unlisted_files` |
 | `session_storage_parts/batch_removal.py` | `staged_targets` and its `_approve_batch`, `empty_trash`, and removing a batch a restore or a rolled-back move emptied (`_remove_emptied_batch`) |
 | `session_storage_parts/trash_reclaim.py` | `move_to_trash` and `_purge_search_index` |
@@ -497,8 +497,8 @@ A partial restore is the exception to append-only growth: `_rewrite_manifest()` 
 platform branch, because both delete paths act on what it says. It uses
 `platform_compat.is_link_or_junction()` rather than `is_symlink()`: on Windows a
 junction reports False for the latter, and the coarse path is the Windows path.
-Without it there, `rmtree` removed the link and left any staged file it could not
-delete -- a locked one -- so the batch lost its listing and kept its data.
+Without it there, the coarse sweep would remove the link and leave any staged file it
+could not delete -- a locked one -- so the batch would lose its listing and keep its data.
 
 A manifest cannot be treated as this batch's own: the product writes it with
 `atomic_write`, so a link at that name was not written here, and the entries an
@@ -762,12 +762,17 @@ data and the batch is reported as kept instead. A link recorded by the scan IS r
 because removing a link destroys nothing, and leaving one would make a batch holding it
 impossible to empty for good. Where the platform supports neither `openat` nor
 `O_NOFOLLOW` (Windows) the batch is renamed to an unguessable staging name, verified there,
-and taken with `rmtree(ignore_errors=True)`, and progress degrades to one report per batch —
-a smoother bar is not worth a weaker delete. On that path the bytes freed are measured after
-the attempt and the survivors subtracted, because `ignore_errors=True` returns quietly when
-a locked file leaves the batch standing, and the batch's absence is checked as a
-post-condition so a tree that could not be removed is reported as kept rather than counted
-as emptied.
+and removed by `_sweep_staged`, and progress degrades to one report per batch — a smoother
+bar is not worth a weaker delete. The sweep walks `platform_compat.PinnedDirectory`, the
+same shape as `artifacts_disk._rmtree`: each directory is held still while it is emptied, a
+symlink or junction inside the batch is removed as a link and never entered, so its target
+keeps its files. A path walker cannot promise that, because `os.path.islink` answers False
+for a junction. The sweep pins with `links_only`, so a cloud-files or dedup directory, a
+reparse point that stands for no other name, is swept as the directory it is. The batch's manifest goes last, and only once everything else went, so a
+batch left standing keeps its listing. The sweep logs each entry it cannot remove and carries on, so on that path
+the bytes freed are measured after the attempt and the survivors subtracted, and the batch's
+absence is checked as a post-condition so a tree that could not be removed is reported as
+kept rather than counted as emptied.
 
 Every manifest name goes through one validator, `_plain_parts`, before it is stat'd or
 unlinked. Absoluteness is asked of the PATH in BOTH flavours rather than by comparing
@@ -851,7 +856,8 @@ clears such a batch on the user's own say-so, through an approval that does remo
 Where the platform has no `openat`/`O_NOFOLLOW`, these two paths remove the batch through
 `rename-verify-remove` instead: `_stage_batch_by_name` renames it aside inside the trash root,
 verifies `(st_dev, st_ino)` on the RENAMED directory against the identity the caller captured,
-and only the staged name is removed; a mismatch or an unreadable identity puts the directory
+and only the staged name is removed, by the same `_sweep_staged` the coarse empty uses, so a
+junction inside the batch is removed as a link; a mismatch or an unreadable identity puts the directory
 back under the name the user saw, and so does a tree that will not go. Refusing outright would be
 wrong: this branch is the whole of Windows, so refusing would leave a batch behind after every
 restore and every rolled-back move, still listing sessions it no longer held. What the rename buys
@@ -1033,9 +1039,9 @@ Two properties are load-bearing:
 
 `skipped` carries `SKIP_*` reason codes for every batch that is still there
 afterwards, whether it was refused up front or survived its own delete: the delete
-checks as a POST-CONDITION that the directory is gone, because
-`rmtree(ignore_errors=True)` reports nothing and a tree it could not remove otherwise
-left the batch on screen under a job that said it had succeeded.
+checks as a POST-CONDITION that the directory is gone, because the coarse sweep only
+logs what it could not remove, and a tree left standing would otherwise leave the batch
+on screen under a job that said it had succeeded.
 
 `skipped` carries codes for batches deliberately KEPT. That is a
 refusal a user has to be told: keeping a batch raises nothing, so an outcome read
@@ -1147,11 +1153,12 @@ not be able to be ATTEMPTED with no record that it was.
 
 Where the platform has no descriptor to bind to, the coarse path RENAMES the batch to
 `.<batch-id>.removing-<random>` first — atomic within the trash root — verifies the identity
-of the renamed directory, and removes it under that name. Checking a path and then handing
-the same path to `rmtree` re-resolves it, so a swap in between was followed; after the
-rename the approved name no longer exists, a swap that happened BEFORE it is caught and the
-impostor renamed back rather than destroyed, and the name finally removed is unguessable.
-Not airtight — `rmtree` still resolves the staging path — but failing closed instead would
+of the renamed directory, and removes it under that name with the pinned sweep. Checking a
+path and then handing the same path to a remover re-resolves it, so a swap in between is
+followed; after the rename the approved name does not exist, a swap that happened BEFORE it
+is caught and the impostor renamed back rather than destroyed, and the name finally removed
+is unguessable. Not airtight — the sweep still resolves the staging path once, to pin it —
+but failing closed instead would
 refuse every empty on that platform, which is a worse answer than a window an attacker has
 to guess their way into. A tree that will not go is renamed back, so the batch stays listed
 and restorable rather than stranded under a name `list_trash()` does not offer.

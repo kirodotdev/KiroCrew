@@ -200,6 +200,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
         _WIN_OPEN_ALWAYS _WIN_FILE_ATTRIBUTE_TAG_INFO win_fd_is_link _win_reparse_refused
         win_open_no_reparse open_create_no_reparse names_a_verbatim_only_file
+        _win_check_within _win_final_path _win_unlink_within _WIN_FILE_READ_ATTRIBUTES
         """.split()),
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
