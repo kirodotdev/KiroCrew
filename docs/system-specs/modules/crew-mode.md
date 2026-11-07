@@ -4366,7 +4366,9 @@ or `revision_required` apply makes a fresh preview for the same agent and keeps
 the reason above it, because re-picking the same agent fires no change; a failed
 preview offers **Try again** and **Cancel**. A finished add says so under the
 picker ("Added N to <name>."), and when it granted auto-approvals it says those
-tools now run without asking and offers **Open Approvals**. Its rows name items through
+tools now run without asking and offers **Open Approvals**, a button with an
+opaque `--bg-elevated` fill and a `--border-strong` edge so it reads on the green
+tint before any hover. Its rows name items through
 `components/crew/workerKitLabels.ts`, grouped by kind in a fixed order under a
 counted heading, added before skipped (`components/crew/workerKitGroups.ts`),
 each change word a badge tinted by its hue with a hue-coloured glyph, the word
