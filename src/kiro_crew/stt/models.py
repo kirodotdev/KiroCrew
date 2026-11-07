@@ -195,23 +195,14 @@ _CATALOG_FILENAMES: frozenset[str] = frozenset(m.filename for m in CATALOG)
 _CATALOG_FILENAMES_FOLDED: frozenset[str] = frozenset(n.casefold() for n in _CATALOG_FILENAMES)
 
 #: Names accepted from superseded configuration, mapped to the entry that best
-#: honours what the user actually asked for. Without this table every one of them
-#: falls back to the default, which for someone who deliberately picked the
-#: accuracy ceiling is a silent downgrade to the second-smallest model.
+#: honours what the user asked for; without it they fall back to the default, a
+#: silent downgrade for someone who picked the accuracy ceiling.
 #:
-#: Two mappings deserve their reasoning stated, because they look like
-#: substitutions and are not:
-#:
-#: - The full-size ``large`` lineage resolves to ``large-v3-turbo``. Turbo is the
-#:   same encoder with a distilled decoder, so it keeps the accuracy the user was
-#:   asking for while decoding several times faster.
-#: - ``medium`` also resolves to ``large-v3-turbo``, which is an upgrade rather
-#:   than a compromise: turbo is both more accurate and faster than medium, so
-#:   there is no reading of "medium" that turbo does not satisfy better.
-#:
-#: The English-only (``.en``) names drop to their multilingual sibling of the same
-#: size. That loses a little English accuracy and gains every other language,
-#: which is the right default for a config value nobody will revisit.
+#: - ``large`` and ``medium`` resolve to ``large-v3-turbo``: the same encoder with a
+#:   distilled decoder, as accurate as ``large`` and both more accurate and faster
+#:   than ``medium``.
+#: - English-only (``.en``) names drop to the multilingual sibling of the same size:
+#:   a little English accuracy for every other language.
 _ALIASES: dict[str, str] = {
     "turbo": "large-v3-turbo",
     "large": "large-v3-turbo",
