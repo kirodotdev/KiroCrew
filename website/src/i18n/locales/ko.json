@@ -13193,7 +13193,7 @@
         "annotation_note": "표시만 했을 뿐, 허용하거나 차단하지 않았습니다",
         "confidence_title": "자기 답에 대한 Jev의 확신도, 0에서 1까지",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "피드백 전용",
         "rate_right_jev": "Jev가 위험을 맞게 봤어요",
         "rate_wrong_jev": "Jev가 위험을 틀리게 봤어요",
         "tier_caution": "한 번 볼 만함",
