@@ -2006,6 +2006,19 @@ thread, and the race-safety argument (the state test and the cancel sharing one
 `only_from` under the generation the read returned) is the same code rather than the same
 intent restated.
 
+**A claimed row is left to its claimer, and the parent end is recorded on its run
+folder.** The store refuses to cancel a row that is claimed but not started
+(`allow_admitted=False`), and the teardown does not reap it through the live path either.
+The claimer (`claim_and_start`) reads the teardown mark after its claim and again after
+its start write, and cancels a marked row under the claim's generation instead of starting
+it. The mark lives in memory and ages out, so the teardown also writes a `parent_end`
+tombstone on that row's run folder (`record_parent_end`, an exclusive create that never
+replaces a tombstone the run wrote), and a claimer whose cancel cannot reach the store
+writes one when it retains the claim. The boot reconcile's artifact probe maps the
+tombstone to `cancelled`, and the retained-claim retry reads it before it takes the claim,
+so the row is cancelled after a restart or after the mark has aged out
+(`test_taskq_parent_end_tombstone.py`).
+
 **After the snapshot's ids, the store rows accepted before the snapshot.** A row held
 only by the store — a memory-deferred spawn, or one waiting past the window — is in
 neither the queue nor `_agents`, so no snapshot names it, and left alone it would stay

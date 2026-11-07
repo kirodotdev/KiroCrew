@@ -913,6 +913,18 @@ class CancellationCoordinator(ManagerComponent):
                         "not started; the claimer reads the teardown mark and cancels it",
                         agent_id,
                     )
+                    # The teardown mark lives in memory and ages out. A ``parent_end``
+                    # tombstone on the run folder outlives both, so the boot reconcile
+                    # and the retained-claim retry cancel the row instead of starting
+                    # it. Imported here: this ``_impl`` runs with the facade module's
+                    # globals, which do not hold this module's functions.
+                    from kiro_crew.subagent_manager.cancellation import record_parent_end
+
+                    await record_parent_end(
+                        agent_id,
+                        parent_session_key,
+                        f"parent conversation ended ({verb or 'unnamed'})",
+                    )
                 elif (late := self._manager._agents.get(agent_id)) is not None and not late.done:
                     # ``cancel`` only for a CONFIRMED live record. It reaches ``_unqueue``,
                     # whose store call is the SYNCHRONOUS one, and this method is a
@@ -1904,3 +1916,35 @@ class CancellationCoordinator(ManagerComponent):
                             owner.id,
                             exc_info=True,
                         )
+
+
+async def record_parent_end(agent_id: str, parent_session_key: str, stop_origin: str) -> None:
+    """Write a ``parent_end`` tombstone for a claimed row whose parent conversation ended.
+
+    The boot reconcile reads it and cancels the row, and the retained-claim retry
+    reads it and cancels instead of starting, so the decision outlives the
+    in-memory teardown mark. The create is exclusive, so a tombstone the run
+    writes for itself is never replaced: it records how the run actually ended.
+    Written off the loop, since it is file I/O with an fsync. A write that fails
+    is logged and skipped, leaving the in-memory mark as the only record. Only a
+    persistent run has a durable row, so no incognito or temporary run reaches
+    this write.
+    """
+    import asyncio
+
+    # Imported here: a module-level function keeps this module's namespace, where
+    # the facade's ``logger`` is only a type hint.
+    from kiro_crew.subagent import logger
+    from kiro_crew.subagent_persistence import write_tombstone_if_absent
+
+    try:
+        await asyncio.to_thread(
+            write_tombstone_if_absent,
+            agent_id,
+            cause="parent_end",
+            recovery_action="none",
+            parent_session=parent_session_key,
+            stop_origin=stop_origin,
+        )
+    except Exception:
+        logger.warning("Recording the parent end of claimed row %s failed", agent_id, exc_info=True)
