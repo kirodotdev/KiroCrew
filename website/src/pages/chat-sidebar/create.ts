@@ -18,7 +18,7 @@ import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
-import { currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
+import { crewVersionMismatchText, currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
 import { useStore } from 'react-redux'
 import type { RootState } from '../../store'
 
@@ -369,7 +369,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
       const originWindow = currentCrewWindow()
       const caps = await api.instancesCapabilities(instanceId)
       if (!caps.version_match) {
-        throw new Error(i18nT('pages.chat.crewWindow.version_mismatch', { peer: caps.version || '?', local: caps.local_version }))
+        throw new Error(crewVersionMismatchText(caps))
       }
       const memory_mode = await resolveDefaultMemoryMode(fetchDashboardConfig)
       const created = await api.crewPeerPost(instanceId, 'api/chat/slots', { memory_mode }) as { key?: unknown }

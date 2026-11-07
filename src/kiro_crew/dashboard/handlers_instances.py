@@ -1617,6 +1617,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cap_str,
         _clean_peer_parent,
         _clean_peer_slot,
+        _peer_version,
         _proxy_canonical_path,
         _redact_peer_payload,
         _redact_peer_value,

@@ -40,7 +40,7 @@ import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
 import { errMessage } from '../../../utils/thunkError'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import { capsRetryInterval, closeCrewWindow, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
+import { capsRetryInterval, closeCrewWindow, crewVersionMismatchText, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
 import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
@@ -446,7 +446,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
           {/* No hand-off: the composer below may hold an unsent draft. */}
-          {versionMismatch && <ErrorNotice message={i18nT('pages.chat.crewWindow.version_mismatch', { peer: versionMismatch.version || '?', local: versionMismatch.local_version })} />}
+          {versionMismatch && <ErrorNotice message={crewVersionMismatchText(versionMismatch)} />}
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {feedLost && (
             <div className="flex items-start gap-2">
