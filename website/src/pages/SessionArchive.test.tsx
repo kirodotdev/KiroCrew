@@ -8,7 +8,7 @@
  * to a popover.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import SessionArchive from './SessionArchive'
@@ -60,5 +60,33 @@ describe('SessionArchive list', () => {
       </QueryClientProvider>,
     )
     expect(await findByText('2kB')).toBeTruthy()
+  })
+
+  it('marks the open archive row as current, not by colour alone', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (
+      String(url).includes('a.jsonl') || String(url).includes('b.jsonl')
+        ? { ok: true, text: async () => 'archive body' }
+        : {
+          ok: true,
+          json: async () => ({ archives: [
+            { name: 'a.jsonl', key: 'chat-1', stamp: '20261103T101500', size: 2_000 },
+            { name: 'b.jsonl', key: 'chat-2', stamp: '20261103T101600', size: 3_000 },
+          ] }),
+        }
+    )) as unknown as typeof fetch)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { findByText } = render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionArchive />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const rowA = (await findByText('chat-1')).closest('[role="button"]') as HTMLElement
+    const rowB = (await findByText('chat-2')).closest('[role="button"]') as HTMLElement
+    expect(rowA.getAttribute('aria-current')).toBeNull()
+    fireEvent.click(rowA)
+    await waitFor(() => expect(rowA).toHaveAttribute('aria-current', 'true'))
+    expect(rowB.getAttribute('aria-current')).toBeNull()
   })
 })
