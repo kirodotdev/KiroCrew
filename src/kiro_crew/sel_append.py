@@ -27,6 +27,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew import platform_compat
 from kiro_crew.sel_chain_lock import _on_event_loop
 
 if TYPE_CHECKING:
@@ -233,6 +234,27 @@ def _append_lines_locked(
         os.O_CREAT | os.O_APPEND | os.O_WRONLY,
         0o600,
     )
+    # Owner-only before any byte is written, re-asserted on every append so a log
+    # that pre-existed with a wider mode or DACL is repaired too. Calling-thread
+    # rule of ``write_config_atomically``: on the event loop on Windows a
+    # non-local volume skips the DACL, as the write would stall on SMB.
+    lock_down = True
+    if not platform_compat.IS_POSIX and _on_event_loop():
+        try:
+            lock_down = platform_compat.windows_acl.volume_is_local(self._path)
+        except Exception:  # noqa: BLE001 - an unknown volume is not a local one
+            lock_down = False
+        if not lock_down:
+            logger.warning(
+                "SEL audit log %s is on a non-local volume and this append ran on "
+                "the event loop, so the owner-only DACL was skipped",
+                self._path,
+            )
+    if lock_down:
+        try:
+            platform_compat.restrict_to_owner(self._path)
+        except OSError:
+            logger.warning("Failed to make SEL audit log %s owner-only", self._path, exc_info=True)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         actual = os.fstat(f.fileno())
         if expect is not None and _identity_changed(expect, actual):
@@ -258,25 +280,6 @@ def _append_lines_locked(
         # appended to is the one we must remember, so the NEXT append's guard
         # can see that it has moved on.
         written = os.fstat(f.fileno())
-    # Ensure permissions are correct even if file pre-existed with
-    # wrong mode (e.g. created by an older version). POSIX repair only,
-    # deliberately still NOT ``platform_compat.restrict_to_owner``: on POSIX
-    # that helper IS this exact call, so a swap would add only the Windows
-    # owner-only DACL — and this append path can run inline on a caller's
-    # thread that may be the asyncio event loop (the ``critical=True``
-    # audit-or-deny write, and the fallback taken when the writer thread
-    # cannot start, see ``_may_rotate``), where a DACL write to a UNC or
-    # mapped-drive path costs an unbounded SMB round-trip. Adopting the
-    # helper here therefore means first deciding what a non-local volume
-    # gets, the way ``write_config_atomically`` gates its own lockdown on
-    # ``windows_acl.volume_is_local``; until that is settled the log keeps
-    # whatever DACL it inherits on Windows.
-    try:
-        os.chmod(self._path, 0o600)  # lockdown-ok: unbounded SMB round-trip on the loop
-    except OSError:
-        logger.warning(
-            "Failed to enforce 0o600 permissions on SEL audit log %s", self._path, exc_info=True
-        )
     self._live_seen = (written.st_dev, written.st_ino, written.st_size)
 
 
