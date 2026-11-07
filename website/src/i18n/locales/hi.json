@@ -17672,8 +17672,8 @@
         "batch_failed_one": "{{count}} में से {{failed}} कार्य अपडेट नहीं हो सका",
         "batch_failed_other": "{{count}} में से {{failed}} कार्य अपडेट नहीं हो सके",
         "run_confirm_body": "हर कार्य अभी एक नया रन शुरू करता है। रोके गए और चल रहे कार्य छोड़ दिए जाते हैं।",
-        "run_confirm_title_one": "{{count}} कार्य अभी चलाएँ?",
-        "run_confirm_title_other": "{{count}} कार्य अभी चलाएँ?",
+        "run_confirm_title_one": "{{count}} कार्य अभी चलाओ?",
+        "run_confirm_title_other": "{{count}} कार्य अभी चलाओ?",
         "strict_off": "सख्त शेड्यूल बंद",
         "strict_on": "सख्त शेड्यूल चालू"
       },
