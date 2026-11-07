@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.recipient import (
         _MIRROR_THINKING,
         _deliver_cross_surface_user_message,
+        _mirror_echo_text,
         _prepare_mirror_msg,
         _prompt_typed_in_dashboard,
     )
@@ -585,7 +586,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     # or stray bracket is escaped. Redaction runs first.
                     await state.slack_client.post_message(
                         _mirror_chan,
-                        mirror_prompt_echo(_prepare_mirror_msg(_user_msg_for_mirror)),
+                        mirror_prompt_echo(
+                            _prepare_mirror_msg(await _mirror_echo_text(turn, _user_msg_for_mirror))
+                        ),
                         _mirror_post_ts,
                     )
                 # A separate placeholder, not the task stream's opening text:
@@ -610,7 +613,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # proactive channel (e.g. Telegram) so the remote conversation reads
     # coherently (question then reply), matching the Slack echo above.
     if not _slash_withholds_mirror and _prompt_typed_in_dashboard(turn):
-        await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
+        _echo = await _mirror_echo_text(turn, _user_msg_for_mirror)
+        await _deliver_cross_surface_user_message(state, session_key, _echo)
     # Past this point every echo this turn owes has been made (or the surfaces it
     # would go to were unlinked), so a recovery requeue of it owes none.
     turn._mirror_echo_posted = True

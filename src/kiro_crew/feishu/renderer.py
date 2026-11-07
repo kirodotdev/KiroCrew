@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Feishu takes images up to 10 MB each; ten is the most one answer sends.
-_UPLOAD_LIMITS = ExtractLimits(max_files=10, max_file_bytes=10 * 1024 * 1024)
+FEISHU_UPLOAD_LIMITS = ExtractLimits(max_files=10, max_file_bytes=10 * 1024 * 1024)
 
 #: Refusal lines appended to an answer before the rest collapse into a count.
 _MAX_REJECTION_LINES = 3
@@ -222,7 +222,7 @@ class FeishuRenderer(Renderer):
             result = await extract_local_refs_off_loop(
                 body,
                 within_root=self._upload_root,
-                limits=_UPLOAD_LIMITS,
+                limits=FEISHU_UPLOAD_LIMITS,
                 scratch_root=self._scratch_root,
             )
         except Exception:

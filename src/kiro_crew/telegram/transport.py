@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_NATIVE
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -421,6 +421,26 @@ class TelegramTransport(MessagingTransport):
             message_thread_id=int(thread_id) if thread_id else None,
         )
         return str(mid or "")
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> "ExtractLimits | None":
+        """The renderer's own budgets: it uploads into any conversation it answers."""
+        from kiro_crew.telegram.renderer_uploads import _UPLOAD_LIMITS
+
+        return _UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image through the renderer's own upload call."""
+        sent = await self._client.send_media_group(
+            int(conversation_id),
+            [file],
+            message_thread_id=int(thread_id) if thread_id else None,
+            disable_notification=True,
+        )
+        return bool(sent)
 
     async def resolve_conversation(self, user_id: str) -> str:
         # In a Telegram private chat the chat_id equals the user_id.
