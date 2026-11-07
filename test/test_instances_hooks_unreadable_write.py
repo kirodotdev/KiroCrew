@@ -46,11 +46,12 @@ def _names(path: Path) -> list[str]:
     return [i["name"] for i in json.loads(path.read_text(encoding="utf-8-sig"))["instances"]]
 
 
-def _fail_reads_of(path: Path, monkeypatch, *, text: bool = True, times: int = -1) -> None:
+def _fail_reads_of(path: Path, monkeypatch, *, readers: bool = True, times: int = -1) -> None:
     """Every read of *path* raises the error a Windows share-mode-0 handle gives.
 
-    ``text=False`` leaves ``read_text`` working, so only the byte read a mutation
-    makes fails. ``times`` bounds how many reads fail before the handle is gone.
+    ``readers=False`` fails only the retried read a registry mutation makes, so
+    the registry's readers still see the file. ``times`` bounds how many reads
+    fail before the handle is gone.
     """
     left = [times]
 
@@ -63,9 +64,12 @@ def _fail_reads_of(path: Path, monkeypatch, *, text: bool = True, times: int = -
 
         return read
 
-    monkeypatch.setattr(Path, "read_bytes", _held(Path.read_bytes))
-    if text:
-        monkeypatch.setattr(Path, "read_text", _held(Path.read_text))
+    if readers:
+        monkeypatch.setattr(Path, "read_bytes", _held(Path.read_bytes))
+    else:
+        monkeypatch.setattr(
+            registry_mod, "read_bytes_with_retry", _held(registry_mod.read_bytes_with_retry)
+        )
 
 
 # ── instances.json ───────────────────────────────────────────────────────
@@ -181,7 +185,7 @@ class TestRoutesAnswer503:
     def test_add(self, tmp_path: Path, monkeypatch) -> None:
         state, _, path = self._state(tmp_path, monkeypatch)
         original = path.read_bytes()
-        _fail_reads_of(path, monkeypatch, text=False)
+        _fail_reads_of(path, monkeypatch, readers=False)
         req = _FakeReq(state, body={"name": "gamma", "ssh_host": "gamma.example.invalid"})
         self._assert_refused(asyncio.run(handlers.api_instances_add(req)), path, original)
 
@@ -189,7 +193,7 @@ class TestRoutesAnswer503:
         state, reg, path = self._state(tmp_path, monkeypatch)
         alpha = reg.list()[0].id
         original = path.read_bytes()
-        _fail_reads_of(path, monkeypatch, text=False)
+        _fail_reads_of(path, monkeypatch, readers=False)
         req = _FakeReq(state, match={"id": alpha}, body={"name": "renamed"})
         self._assert_refused(asyncio.run(handlers.api_instances_update(req)), path, original)
 
@@ -197,7 +201,7 @@ class TestRoutesAnswer503:
         state, reg, path = self._state(tmp_path, monkeypatch)
         alpha = reg.list()[0].id
         original = path.read_bytes()
-        _fail_reads_of(path, monkeypatch, text=False)
+        _fail_reads_of(path, monkeypatch, readers=False)
         req = _FakeReq(state, match={"id": alpha})
         self._assert_refused(asyncio.run(handlers.api_instances_remove(req)), path, original)
 
@@ -269,9 +273,17 @@ def test_a_reload_that_raises_keeps_the_store_marked_unloaded(tmp_path: Path) ->
     repaired = path.read_bytes()
     path.write_text("[]", encoding="utf-8")
     store = ScriptHookStore(config_dir=tmp_path)
-    path.write_bytes(b'{"hooks": ["caf\xe9"]}')
-    with pytest.raises(UnicodeDecodeError):
-        store.create(_hook("h3"))
+    real_exists = Path.exists
+
+    def exists(self, *args, **kwargs):
+        if Path(self) == path:
+            raise PermissionError(*_SHARING_VIOLATION)
+        return real_exists(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Path, "exists", exists)
+        with pytest.raises(PermissionError):
+            store.create(_hook("h3"))
     path.write_bytes(repaired)
     store.create(_hook("h3"))
     assert _hook_ids(tmp_path) == ["h1", "h2", "h3"]

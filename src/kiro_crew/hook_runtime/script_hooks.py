@@ -512,11 +512,10 @@ class ScriptHookStore:
     def _load(self) -> None:
         if not self._path.exists():
             return
-        from kiro_crew.user_json import loads_user_json
-
         try:
-            data = loads_user_json(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+            # Bytes: json.loads detects UTF-8 (BOM or not), UTF-16 and UTF-32.
+            data = json.loads(self._path.read_bytes())
+        except (ValueError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
             self._load_failed = True
             return
@@ -595,8 +594,6 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
-        from kiro_crew.user_json import loads_user_json
-
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
             if self._load_failed:
@@ -609,7 +606,7 @@ class ScriptHookStore:
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
+                    loaded = json.loads(self._path.read_bytes())
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"
@@ -622,7 +619,7 @@ class ScriptHookStore:
                     data = {k: v for k, v in loaded.items() if k != "hooks"}
                 except webhooks.WebhookStoreUnreadable:
                     raise
-                except (json.JSONDecodeError, OSError) as exc:
+                except (ValueError, OSError) as exc:
                     logger.warning("hooks.json unreadable, refusing to overwrite it: %s", exc)
                     raise webhooks.WebhookStoreUnreadable(
                         f"{self._path.name} is unreadable; refusing to overwrite it "

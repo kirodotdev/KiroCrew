@@ -726,14 +726,15 @@ class InstancesRegistry:
         one damaged file must not fail every instances route. A mutator reads
         through :meth:`_read_for_update` instead, because writing back the empty
         document this returns for a damaged file would replace every record in it.
-        One leading UTF-8 byte-order mark is dropped (``utf-8-sig``), the form
-        Windows PowerShell 5.1 ``Set-Content -Encoding UTF8`` saves.
+        ``json.loads`` gets the bytes, so it reads UTF-8 with or without a
+        byte-order mark, UTF-16 (what Windows PowerShell 5.1 writes by default)
+        and UTF-32; bytes none of them decode are treated like a parse error.
         """
         if not self._path.exists():
             return _RegistryDoc()
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8-sig"))
-        except (json.JSONDecodeError, OSError) as e:
+            raw = json.loads(self._path.read_bytes())
+        except (ValueError, OSError) as e:
             logger.warning("Failed to read %s: %s — treating as empty", self._path, e)
             return _RegistryDoc()
         if not isinstance(raw, dict):
@@ -745,10 +746,10 @@ class InstancesRegistry:
         """The document a mutation starts from; raises rather than degrading.
 
         A missing file is a fresh registry. A present file is read with the
-        Windows sharing-violation retry and ``utf-8-sig``; any other read error, a
-        decode or parse error, a non-object root or a non-list ``instances`` raises
-        :class:`RegistryUnreadableError`, so the caller's ``_write`` never runs and
-        the records still in the file survive.
+        Windows sharing-violation retry and decoded like :meth:`_read`; any other
+        read error, a decode or parse error, a non-object root or a non-list
+        ``instances`` raises :class:`RegistryUnreadableError`, so the caller's
+        ``_write`` never runs and the records still in the file survive.
         """
         try:
             data = read_bytes_with_retry(self._path)
@@ -759,7 +760,7 @@ class InstancesRegistry:
                 f"{self._path} could not be read ({e}); not saving over it"
             ) from e
         try:
-            raw = json.loads(data.decode("utf-8-sig"))
+            raw = json.loads(data)
         except ValueError as e:
             raise RegistryUnreadableError(
                 f"{self._path} is not valid JSON ({e}); not saving over it"
