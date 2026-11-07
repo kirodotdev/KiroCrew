@@ -120,6 +120,12 @@ describe('LabelPalette', () => {
     expect(toggleLabel).toHaveBeenCalledWith('zzq-perf')
   })
 
+  it('marks only the selected label pills as pressed', () => {
+    renderPalette({ selected: new Set(['zzq-bug']) })
+    expect(screen.getByText('zzq-bug').closest('button')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('zzq-perf').closest('button')).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('keeps non-matching rows mounted but hidden, so the palette morphs', async () => {
     renderPalette()
     await userEvent.click(screen.getByRole('button', { name: 'Search labels' }))
