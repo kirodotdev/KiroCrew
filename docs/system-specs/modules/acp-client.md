@@ -558,6 +558,20 @@ that pid is not running), and never touches another home's or an unreadable one
 bounded discipline as agent scratch: links are refused, the no-follow descriptor
 must name a regular file no larger than 4 KiB, the home id must be 24 hex digits
 and the pid in the kernel range; any other shape keeps the directory.
+
+On the unbound (non-macOS) path, `_session_work_dir` re-checks the cwd just
+before `session/new` and `session/load`. The provider marks its directory once,
+in `start()`, and its shutdown reclaim removes it, so a runtime started or
+resumed again for the same session after that reclaim (a failed resume that
+starts fresh, a killed runtime that respawns) would hand the peer a deleted cwd.
+A process spawn reports a missing cwd as `spawn <command> ENOENT`, so every
+managed MCP server would then fail naming a binary that exists. A missing
+directory whose name has a one-run shape and whose parent is the workspace root
+is re-created through `mark_run_dir`, with the same provenance `start()` writes,
+so the shutdown reclaim and the sweep treat it as before. Any other missing cwd
+is the caller's and is never created; it is logged. When managed MCP readiness
+still fails with ENOENT and the session's bound cwd is gone, the error names that
+cwd (`session_handle_mcp._missing_cwd_hint`).
 `AcpProvider.shutdown` removes a marked-by-flag directory only after its client
 positively confirms the root and every tracked child exited (`process_tree_confirmed_dead`),
 and when it holds only Crew's own residue (`.kiro/settings/` with `cli.json` and
