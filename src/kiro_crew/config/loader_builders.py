@@ -1269,6 +1269,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             section.get("browser_local_origins")
         ),
         verbosity=_sections.normalize_verbosity(section.get("verbosity")),
+        preferred_language=section.get("preferred_language"),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
         terminal=section.get("terminal"),

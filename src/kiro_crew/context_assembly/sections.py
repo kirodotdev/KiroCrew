@@ -322,6 +322,34 @@ def _reply_style_rules(level: str) -> str:
     return ""
 
 
+def _reply_language_rule(code: object) -> str:
+    """Return the rule text for one ``dashboard.preferred_language`` code.
+
+    ``""`` for auto and for any code the setting does not list, so a
+    hand-edited config never puts free text into this trusted block: the
+    language name comes from the fixed table, never from the config value.
+    The rule names itself as outranking the style levels' "user's language"
+    line, which is written for the auto case.
+    """
+    from kiro_crew.config.sections import PREFERRED_LANGUAGES
+
+    name = PREFERRED_LANGUAGES.get(code) if isinstance(code, str) else None
+    if not name:
+        return ""
+    return (
+        "## Reply language\n\n"
+        f"The user reads replies best in {name}, so reply in {name}. A "
+        "reader who mixes languages wants one steady reply language, not "
+        "one that follows each message, tool output or file. Use another "
+        "language only when the user asks for it in this conversation. This "
+        'outranks any "user\'s language" rule above and the reply sentence '
+        "in [UI LANGUAGE]. Code, commands, paths, identifiers, error strings "
+        "and quoted text keep their original form. Text written for other readers -- commit "
+        "messages, pull request text, code comments, public posts -- keeps "
+        "the project's own language."
+    )
+
+
 def _response_preferences_apply(session_key: str, runtime_source: str | None = None) -> bool:
     """Whether the reply-style block belongs in this session's context.
 
@@ -338,7 +366,8 @@ def _response_preferences_apply(session_key: str, runtime_source: str | None = N
 
 
 def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
-    """Build the [RESPONSE PREFERENCES] block from ``dashboard.verbosity``.
+    """Build the [RESPONSE PREFERENCES] block from ``dashboard.verbosity`` and
+    ``dashboard.preferred_language``.
 
     The setting describes how the PERSON wants replies to read, so it is
     chrome for every person-facing agent — built-in, custom, and cron — rather
@@ -357,10 +386,14 @@ def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
     that carries its own style guidance; a bare ``##`` heading in the middle of
     the context would have no stated rank against it.
 
-    Returns ``""`` when the level is ``default`` or unrecognised.
+    Returns ``""`` when the level is ``default`` or unrecognised and no
+    preferred language is set.
     """
-    level = getattr(getattr(cfg, "dashboard", None), "verbosity", "default")
+    dashboard = getattr(cfg, "dashboard", None)
+    level = getattr(dashboard, "verbosity", "default")
     rules = _reply_style_rules(level if isinstance(level, str) else "default")
+    language = _reply_language_rule(getattr(dashboard, "preferred_language", ""))
+    rules = "\n\n".join(part for part in (rules, language) if part)
     if not rules:
         return ""
     return (

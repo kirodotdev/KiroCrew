@@ -258,6 +258,7 @@ from kiro_crew.config.sections_dashboard import (  # noqa: F401
     LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT,
     LOOP_STALL_EXIT_AFTER_MAX,
     LOOP_STALL_EXIT_AFTER_MIN,
+    PREFERRED_LANGUAGES,
     VERBOSITY_LEVELS,
     DashboardConfig,
     JiraAuthEntry,
