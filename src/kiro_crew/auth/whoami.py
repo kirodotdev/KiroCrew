@@ -36,6 +36,14 @@ if TYPE_CHECKING:
 #: non-OIDC identity.
 START_URL_EXTRA_KEY = "start_url"
 
+#: ``KasToken.extra`` key under which an enterprise/IdC sign-in records the human
+#: profile NAME (e.g. ``KiroProfile-us-east-1``) that was resolved for its
+#: ``profile_arn``. ``ListAvailableProfiles`` returns the name only at sign-in, so
+#: it is stashed here to label the signed-in account in the dashboard without a
+#: re-fetch. Absent on tokens stored before it was recorded, and on every identity
+#: with no Kiro profile.
+PROFILE_NAME_EXTRA_KEY = "profile_name"
+
 #: The vault's store slot -> the ``accountType`` kiro-cli prints for that kind of
 #: sign-in. The social slot is spelled from its provider instead (below), as
 #: ``Social<Provider>`` -- the same family :func:`is_personal_account_type` accepts.

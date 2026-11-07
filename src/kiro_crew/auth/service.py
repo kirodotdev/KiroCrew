@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -39,7 +39,7 @@ from kiro_crew.auth.store import (
     TokenStore,
     TokenStoreError,
 )
-from kiro_crew.auth.whoami import START_URL_EXTRA_KEY
+from kiro_crew.auth.whoami import PROFILE_NAME_EXTRA_KEY, START_URL_EXTRA_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,15 @@ class LoopbackUnavailableError(Exception):
 
     The dashboard treats this as 'fall back to the device flow now', so it is a
     coded 409 rather than a failure.
+    """
+
+
+class UnknownProfileError(Exception):
+    """A profile selection named an ARN that was not among the ones offered.
+
+    Raised by ``select_profile`` when the chosen ARN is not in the pending
+    login's ``awaiting_profiles`` -- a stale or forged choice, answered as a
+    coded 400 rather than silently signing in to an unoffered profile.
     """
 
 
@@ -173,6 +182,16 @@ class _PendingOidcLogin:
     start_url: str = ""
     # Same budget as _PendingLogin.transport_failures, for the SSO-OIDC poll.
     transport_failures: int = 0
+    # Set only while a multi-profile IdC login waits for the user to pick one.
+    # The device code is already redeemed by then and cannot be re-obtained, so
+    # the authorized token is held HERE, in memory, between the poll that offered
+    # the choice and the ``select_profile`` call that completes it. It is never
+    # persisted in this state (a profile-less IdC token is unstorable), and it
+    # disappears with the entry on completion, cancel or expiry. ``awaiting`` are
+    # the profiles offered, so the selection can be validated against the exact
+    # set discovered rather than a re-fetch.
+    pending_token: KasToken | None = None
+    awaiting_profiles: list[control_plane.KiroProfile] = field(default_factory=list)
 
 
 # How long the loopback listener waits for the portal to redirect back. Long enough
@@ -223,6 +242,16 @@ def _validate_replaces(replaces: str) -> str:
 
 
 _PendingKind = _PendingLogin | _PendingOidcLogin | _PendingLoopbackLogin
+
+
+def _apply_profile(token: KasToken, profile: control_plane.KiroProfile) -> None:
+    """Attach a resolved Kiro profile to *token*: the ARN that routes KAS traffic,
+    and the human name stashed in ``extra`` so the dashboard can show WHICH profile
+    is active without re-querying the control plane. The name is best-effort: an
+    empty one is simply not recorded."""
+    token.profile_arn = profile.arn
+    if profile.profile_name:
+        token.extra[PROFILE_NAME_EXTRA_KEY] = profile.profile_name
 
 
 def _social_from_login_option(login_option: str) -> SocialProvider | None:
@@ -327,6 +356,15 @@ class KasLoginService:
         # data home lives on, and status is polled by the dashboard.
         token, rejected = await asyncio.to_thread(_read)
         transport = select_transport()
+        profile_arn = token.profile_arn if token else None
+        extra = token.extra if (token and isinstance(token.extra, dict)) else {}
+        profile_name = extra.get(PROFILE_NAME_EXTRA_KEY) or ""
+        # The region is derivable from the ARN, so it is computed rather than
+        # stored; a non-Kiro ARN (none for an enterprise token) yields "".
+        try:
+            profile_cps_region = control_plane.profile_region(profile_arn) if profile_arn else ""
+        except control_plane.ControlPlaneError:
+            profile_cps_region = ""
         return {
             "authenticated": token is not None,
             "provider": token.provider if token else "",
@@ -337,6 +375,13 @@ class KasLoginService:
             "has_refresh_token": bool(token.refresh_token) if token else False,
             "refresh_rejected": rejected is not None,
             "usable": token.is_usable() if token else False,
+            # Which Kiro profile the signed-in account runs as, so the dashboard
+            # can name it. All token-free: an ARN, its human name (when recorded),
+            # and the region parsed from the ARN. Empty for a sign-in with no
+            # Kiro profile (Builder ID, social).
+            "profile_arn": profile_arn or "",
+            "profile_name": profile_name,
+            "profile_region": profile_cps_region,
         }
 
     async def begin_device(
@@ -644,22 +689,69 @@ class KasLoginService:
                     token.access_token, region=pending.region, session=session
                 )
             except control_plane.ControlPlaneError as err:
+                # The control plane could not be reached or answered malformed:
+                # a genuine failure, distinct from "reached it, no profile".
                 logger.warning("could not resolve IdC profile ARN: %s", err)
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "profile_resolution_failed"}
             if not profiles:
+                # Reached every control plane, none has a profile for this
+                # identity: the approval SUCCEEDED, the account just has no Kiro
+                # profile. A distinct code so the dashboard can say that instead
+                # of "the approval failed". ``region`` is the login region that
+                # was probed first, for a human-readable hint.
                 logger.warning("IdC login has no available Kiro profiles")
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "no_profiles", "region": pending.region}
             if len(profiles) > 1:
-                # Multi-profile selection UX is a documented follow-up; until then
-                # the first profile wins, and the choice is visible in the log.
-                logger.info(
-                    "IdC login has %d profiles; using %r",
-                    len(profiles),
-                    profiles[0].profile_name,
-                )
-            token.profile_arn = profiles[0].arn
+                # More than one profile: let the user choose. Hold the authorized
+                # token on the pending entry (the device code is spent and cannot
+                # be re-redeemed) and answer with the choices. ``select_profile``
+                # completes the login. Nothing is persisted yet -- a profile-less
+                # IdC token is unstorable, so the hold stays in memory only.
+                if not await self._await_profile_choice(login_id, token, profiles):
+                    raise UnknownLoginError(login_id)
+                return {
+                    "status": "select_profile",
+                    "profiles": [{"arn": p.arn, "profile_name": p.profile_name} for p in profiles],
+                }
+            _apply_profile(token, profiles[0])
+        return await self._persist_and_finish(login_id, token)
+
+    async def _await_profile_choice(
+        self, login_id: str, token: KasToken, profiles: list[control_plane.KiroProfile]
+    ) -> bool:
+        """Hold *token* and *profiles* on the pending entry for a later selection.
+
+        Returns False when the login is no longer registered (a cancel or
+        sign-out raced the poll), so the caller answers ``UnknownLoginError``
+        rather than offering a choice for a login that is gone.
+        """
+        async with self._lock:
+            pending = self._pending.get(login_id)
+            if not isinstance(pending, _PendingOidcLogin):
+                return False
+            pending.pending_token = token
+            pending.awaiting_profiles = profiles
+            return True
+
+    async def select_profile(self, login_id: str, profile_arn: str) -> dict[str, Any]:
+        """Complete a multi-profile IdC login by choosing one profile ARN.
+
+        The ARN must be one of the profiles the ``select_profile`` poll offered
+        (held on the pending entry); anything else raises ``UnknownProfileError``.
+        On success the held token gets that ARN and is persisted through the same
+        terminal step every other login flavor uses.
+        """
+        async with self._lock:
+            pending = self._pending.get(login_id)
+            if not isinstance(pending, _PendingOidcLogin) or pending.pending_token is None:
+                raise UnknownLoginError(login_id)
+            chosen = next((p for p in pending.awaiting_profiles if p.arn == profile_arn), None)
+            if chosen is None:
+                raise UnknownProfileError(profile_arn)
+            token = pending.pending_token
+            _apply_profile(token, chosen)
         return await self._persist_and_finish(login_id, token)
 
     async def _persist_and_finish(self, login_id: str, token: KasToken) -> dict[str, Any]:

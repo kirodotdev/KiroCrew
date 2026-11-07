@@ -20,6 +20,7 @@ from kiro_crew.auth.service import (
     SignedOutDuringLoginError,
     UnknownIdentityError,
     UnknownLoginError,
+    UnknownProfileError,
 )
 from kiro_crew.auth.store import TokenStore, TokenStoreError
 from kiro_crew.config.paths import data_home
@@ -247,6 +248,61 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
         )
     # Only the authorized transition persists a credential — that is the state
     # change worth an audit line; a pending tick is just a read.
+    if result.get("status") == "authorized":
+        await _audit(request, "kas_login_authorized", "success")
+    return web.json_response(result)
+
+
+async def api_kas_login_select_profile(request: web.Request) -> web.Response:
+    """POST /api/kas-login/select-profile {login_id, profile_arn} — finish a multi-profile login.
+
+    Only reachable after a poll answered ``select_profile`` with more than one
+    profile: the chosen ARN must be one of those offered, and the held token is
+    persisted with it. ``authorized`` is the state change worth an audit line.
+    """
+    denied = await _require_owner(request, "kas_login_select_profile")
+    if denied is not None:
+        return denied
+    service = _service(request)
+    if service is None:
+        return _unavailable()
+    body = await _read_json(request)
+    login_id = str((body or {}).get("login_id") or "")
+    profile_arn = str((body or {}).get("profile_arn") or "")
+    if not login_id:
+        return web.json_response(
+            {"error": "Missing 'login_id'.", "code": "missing_login_id"}, status=400
+        )
+    if not profile_arn:
+        return web.json_response(
+            {"error": "Missing 'profile_arn'.", "code": "missing_profile_arn"}, status=400
+        )
+    try:
+        result = await service.select_profile(login_id, profile_arn)
+    except UnknownLoginError:
+        return web.json_response(
+            {"error": "No pending login with that id.", "code": "unknown_login_id"},
+            status=404,
+        )
+    except UnknownProfileError:
+        return web.json_response(
+            {"error": "That profile was not one of the choices.", "code": "unknown_profile"},
+            status=400,
+        )
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        await _audit(request, "kas_login_select_profile", "failed", error=str(err))
+        return web.json_response(
+            {"error": "Kiro auth service is unreachable.", "code": "auth_service_unreachable"},
+            status=502,
+        )
+    if result.get("code") == "signed_out_during_login":
+        return web.json_response(
+            {
+                "error": "Signed out while the sign-in was pending.",
+                "code": "signed_out_during_login",
+            },
+            status=409,
+        )
     if result.get("status") == "authorized":
         await _audit(request, "kas_login_authorized", "success")
     return web.json_response(result)
