@@ -266,6 +266,21 @@ LEARN_REMOVE_SCHEMA = ToolSchema(
     ],
 )
 
+# ``PATCH /api/lessons`` and ``learn_update``: change one lesson's tier in place.
+LEARN_UPDATE_SCHEMA = ToolSchema(
+    tool_name="learn_update",
+    fields=[
+        # The lesson's whole text as learn_list shows it, NOT-clause included. Bounded
+        # by the stored value rather than learn_add's rule cap: older lessons are
+        # longer than a new rule may be, and a re-tier has to reach them too.
+        FieldSpec("rule", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("repo_scope", str, max_len=MAX_SHORT_STRING, pattern=SCOPE_FRAGMENT_RE),
+        # The tier the caller read, checked before anything is written.
+        FieldSpec("current", str, required=True, allowed=ALLOWED_LESSON_APPLIES),
+        FieldSpec("applies", str, required=True, allowed=ALLOWED_LESSON_APPLIES),
+    ],
+)
+
 # The ``learn_list`` window. The bounds are the route's own (``LESSON_LIST_LIMIT``
 # / ``LESSON_LIST_LIMIT_MAX``), so a value the route would clamp is refused here
 # by name instead of quietly answering a different page than the one asked for.

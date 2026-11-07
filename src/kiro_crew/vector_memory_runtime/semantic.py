@@ -24,7 +24,7 @@ from kiro_crew import context_omissions
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_v2
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
-from kiro_crew.lesson_validation import order_by_request_relevance
+from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES, order_by_request_relevance
 from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
 from kiro_crew.vector_memory_runtime import lessons as _lessons
@@ -362,12 +362,12 @@ def validate_semantic(
     # rule capacity below what the bare string form always allowed, and a
     # caller with a JSONL fallback would report the lesson saved while the
     # vector store had refused it. The exemption applies ONLY when every
-    # unbounded field is measured at its RAW stored size: exact
-    # {rule, category, negative} shape, enum-bounded (or absent) category,
-    # and a None-or-string negative. The basis concatenates the UNSTRIPPED
-    # rule and negative — the same bytes that persist — so whitespace
-    # padding cannot ride past the cap; anything else (oversized category,
-    # extra key, non-string negative) is measured as its full envelope.
+    # unbounded field is measured at its RAW stored size: the known lesson
+    # key set, enum-bounded (or absent) category and tier, and a
+    # None-or-string negative. The basis concatenates the UNSTRIPPED rule
+    # and negative — the same bytes that persist — so whitespace padding
+    # cannot ride past the cap; anything else (oversized category, unknown
+    # tier, extra key, non-string negative) is measured as its full envelope.
     # Every stored byte is therefore either raw-measured or bounded by a
     # constant (the enum member and the key envelope).
     size_basis = vj
@@ -380,9 +380,12 @@ def validate_semantic(
         raw_negative = value.get("negative")
         raw_scope = value.get("repo_scope")
         raw_writer = value.get("written_by")
+        raw_applies = value.get("applies")
         if (
-            set(value.keys()) <= {"rule", "category", "negative", "repo_scope", "written_by"}
+            set(value.keys())
+            <= {"rule", "category", "negative", "repo_scope", "written_by", "applies"}
             and (cat is None or (isinstance(cat, str) and cat in ALLOWED_LESSON_CATEGORIES))
+            and (raw_applies is None or raw_applies in LESSON_APPLIES_VALUES)
             and (raw_negative is None or isinstance(raw_negative, str))
             and (raw_scope is None or isinstance(raw_scope, str))
             and (raw_writer is None or isinstance(raw_writer, dict))

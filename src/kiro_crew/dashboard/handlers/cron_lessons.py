@@ -1,7 +1,7 @@
-"""The lesson routes: ``POST``, ``DELETE`` and ``GET /api/lessons``.
+"""The lesson routes: ``POST``, ``PATCH``, ``DELETE`` and ``GET /api/lessons``.
 
-Each route resolves the lesson store its caller may reach, then writes, deletes or
-pages the lessons there; the create path embeds the rule within a bounded wait
+Each route resolves the lesson store its caller may reach, then writes, re-tiers,
+deletes or pages the lessons there; the create path embeds the rule within a bounded wait
 and hands the contradiction sweep to :mod:`.cron_lesson_supersede`.
 
 Served through :mod:`kiro_crew.dashboard.handlers.cron`, which callers and tests import and patch; this module
@@ -33,6 +33,7 @@ from kiro_crew.history import is_incognito_transcript
 from kiro_crew.lesson_events import (
     LESSON_REMOVED,
     LESSON_SOURCE_USER,
+    LESSON_UPDATED,
     emit_lessons_changed,
     lesson_write_action,
 )
@@ -54,6 +55,7 @@ from kiro_crew.project_scope import (
 from kiro_crew.validation import (
     ALLOWED_LESSON_SCOPES,
     LEARN_ADD_SCHEMA,
+    LEARN_UPDATE_SCHEMA,
     LESSON_LIST_LIMIT,
     LESSON_LIST_LIMIT_MAX,
     WORKSPACE_NAME_RE,
@@ -851,6 +853,88 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok})
 
 
+async def api_lessons_update(request: web.Request) -> web.Response:
+    """PATCH /api/lessons — change one lesson's ``applies`` tier in place.
+
+    Gated like the create route, since a re-tier changes what later sessions are
+    given. Only a vector store holding the lessons can do it; where they live in the
+    JSONL fallback the route answers ``unsupported`` and a re-tier stays a delete
+    plus an add.
+    """
+    state: DashboardState = request.app["state"]
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "lessons.update", blocks_persisted_mode=is_incognito_transcript
+    )
+    if refusal is not None:
+        return refusal
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    writes_off = memory_writes_off_key(cfg.memory)
+    if _is_restricted_session(state, request):
+        code = "restricted_session"
+    elif writes_off == "memory.persistence_enabled":
+        code = "persistence_disabled"
+    elif writes_off is not None:
+        code = "writes_disabled"
+    else:
+        code = ""
+    if code:
+        _sel().log_api_access(
+            caller=sk,
+            operation="lessons.update",
+            outcome="denied",
+            source="dashboard",
+            resources=code,
+        )
+        reason = (
+            "Memory writes are not allowed in this session mode."
+            if code == "restricted_session"
+            else f"Persistent memory writes are disabled ({writes_off} is false)."
+        )
+        return web.json_response({"error": reason, "code": code}, status=403)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    known = {f.name for f in LEARN_UPDATE_SCHEMA.fields}
+    try:
+        cleaned = validate_tool_args(
+            {k: v for k, v in body.items() if k in known}, LEARN_UPDATE_SCHEMA
+        )
+    except ValidationError as exc:
+        return web.json_response({"error": str(exc), "code": "validation_error"}, status=400)
+    _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.update")
+    if refusal is not None:
+        return refusal
+    memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
+    if memory_refusal is not None:
+        return memory_refusal
+    _lesson_mem = (
+        await asyncio.to_thread(ContextBuilder.get_memory_for, memory_store=_lesson_silo)
+        if _lesson_silo
+        else _get_memory(state)
+    )
+    vs = _lesson_mem.vector_store
+    # A V1 vector store with no decodable lesson leaves the lessons in the JSONL
+    # file, which is what the list then shows.
+    if vs is None or (
+        vs.algorithm_version != "v2" and not await asyncio.to_thread(vs.has_any_decodable_lesson)
+    ):
+        return web.json_response({"ok": False, "outcome": "unsupported"})
+    outcome = await asyncio.to_thread(
+        vs.update_lesson_applies,
+        cleaned["rule"],
+        cleaned.get("repo_scope"),
+        current=cleaned["current"],
+        applies=cleaned["applies"],
+    )
+    if outcome == "updated":
+        state.push_refresh("lessons")
+        if not _lesson_silo:
+            emit_lessons_changed(LESSON_UPDATED, LESSON_SOURCE_USER)
+    return web.json_response({"ok": outcome in ("updated", "unchanged"), "outcome": outcome})
+
+
 # ``LESSON_LIST_LIMIT`` / ``LESSON_LIST_LIMIT_MAX`` (the ``GET /api/lessons``
 # window) are imported from ``validation.py`` beside the tool schema that
 # advertises them. Both branches of the handler apply the window, so the
@@ -1227,5 +1311,8 @@ async def api_lessons(request: web.Request) -> web.Response:
 # member's internal call is refused before it runs. These verify and scope
 # their own caller instead.
 guard_owner_surface_routes(
-    globals(), member_scoped=frozenset({"api_lessons", "api_lessons_create", "api_lessons_delete"})
+    globals(),
+    member_scoped=frozenset(
+        {"api_lessons", "api_lessons_create", "api_lessons_delete", "api_lessons_update"}
+    ),
 )
