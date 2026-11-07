@@ -42,7 +42,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import (
     HOP_LEASE_DEADLINE_CAP_SECS,
@@ -173,6 +173,15 @@ class InstanceDisabledError(InstancesError):
 
 class InvalidInstanceError(InstancesError):
     """Raised when an instance record fails validation."""
+
+
+class RegistryUnreadableError(InstancesError):
+    """``instances.json`` exists but cannot be read, so a mutation would replace it.
+
+    Raised by every mutator before anything is written: the file is left exactly
+    as it is, and the caller reports the failure instead of saving a registry that
+    holds only the change it was asked to make.
+    """
 
 
 def _slugify(name: str) -> str:
@@ -687,6 +696,9 @@ class InstancesRegistry:
     dashboard edit, the server's own reads -- cannot interleave a read with a
     write and drop one another's records.
 
+    A mutation refuses a file it cannot read (:class:`RegistryUnreadableError`)
+    rather than starting from the empty document the readers fall back to.
+
     That lock spans threads, not processes. A separate process writing the same
     file serialises only on :func:`atomic_write`'s rename, which keeps the file
     readable at all times but leaves a read-modify-write pair non-atomic across
@@ -708,17 +720,58 @@ class InstancesRegistry:
     # ── persistence ──────────────────────────────────────────────────────
 
     def _read(self) -> _RegistryDoc:
-        """Load the registry document from disk, tolerating absence/corruption."""
+        """Load the registry document from disk, tolerating absence/corruption.
+
+        For readers only (``list``, ``get``, ``get_last_active``, the lease reads):
+        one damaged file must not fail every instances route. A mutator reads
+        through :meth:`_read_for_update` instead, because writing back the empty
+        document this returns for a damaged file would replace every record in it.
+        One leading UTF-8 byte-order mark is dropped (``utf-8-sig``), the form
+        Windows PowerShell 5.1 ``Set-Content -Encoding UTF8`` saves.
+        """
         if not self._path.exists():
             return _RegistryDoc()
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(self._path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s — treating as empty", self._path, e)
             return _RegistryDoc()
         if not isinstance(raw, dict):
             logger.warning("%s is not a JSON object — treating as empty", self._path)
             return _RegistryDoc()
+        return self._doc_from_raw(raw)
+
+    def _read_for_update(self) -> _RegistryDoc:
+        """The document a mutation starts from; raises rather than degrading.
+
+        A missing file is a fresh registry. A present file is read with the
+        Windows sharing-violation retry and ``utf-8-sig``; any other read error, a
+        decode or parse error, a non-object root or a non-list ``instances`` raises
+        :class:`RegistryUnreadableError`, so the caller's ``_write`` never runs and
+        the records still in the file survive.
+        """
+        try:
+            data = read_bytes_with_retry(self._path)
+        except FileNotFoundError:
+            return _RegistryDoc()
+        except OSError as e:
+            raise RegistryUnreadableError(
+                f"{self._path} could not be read ({e}); not saving over it"
+            ) from e
+        try:
+            raw = json.loads(data.decode("utf-8-sig"))
+        except ValueError as e:
+            raise RegistryUnreadableError(
+                f"{self._path} is not valid JSON ({e}); not saving over it"
+            ) from e
+        if not isinstance(raw, dict) or not isinstance(raw.get("instances", []), list):
+            raise RegistryUnreadableError(
+                f"{self._path} is not an instances registry; not saving over it"
+            )
+        return self._doc_from_raw(raw)
+
+    def _doc_from_raw(self, raw: dict) -> _RegistryDoc:
+        """Build the registry document from a parsed JSON object, dropping bad entries."""
         raw_list = raw.get("instances", [])
         instances: list[Instance] = []
         if isinstance(raw_list, list):
@@ -745,9 +798,9 @@ class InstancesRegistry:
             # lapses one cap after the last write and frees its port on its own.
             #
             # The clock is the anchor only when the file cannot be stat'ed -- it was
-            # removed between the existence check at the top of this method and here, so
-            # there is no write time to anchor to. A fresh home does not reach this line
-            # at all: no file means the early return above.
+            # removed between the caller's read and here, so there is no write time to
+            # anchor to. A fresh home does not reach this line at all: both readers
+            # return early when there is no file.
             try:
                 clamped_at = self._path.stat().st_mtime
             except OSError:
@@ -861,7 +914,7 @@ class InstancesRegistry:
         which is the only layer that sees the whole chain.
         """
         with self._lock:
-            doc = self._read()
+            doc = self._read_for_update()
             existing_ids = {inst.id for inst in doc.instances}
 
             if instance_id:
@@ -951,7 +1004,7 @@ class InstancesRegistry:
         if "name" in changes:
             validate_instance_name(str(changes["name"]))
         with self._lock:
-            doc = self._read()
+            doc = self._read_for_update()
             target = _find(doc, instance_id)
             if target is None:
                 raise InstanceNotFoundError(f"no instance with id {instance_id!r}")
@@ -991,7 +1044,7 @@ class InstancesRegistry:
         now = time.time()
         capped = min(float(until), now + HOP_LEASE_DEADLINE_CAP_SECS)
         with self._lock:
-            doc = self._read()
+            doc = self._read_for_update()
             kept = {p: u for p, u in doc.hop_leases.items() if u > now}
             # Only a NEW port can push the count up; re-leasing one already held just
             # moves its deadline, so a refresh of a live lease is never refused.
@@ -1038,7 +1091,7 @@ class InstancesRegistry:
         subtree FIRST, deepest first, matching this order.
         """
         with self._lock:
-            doc = self._read()
+            doc = self._read_for_update()
             if not any(i.id == instance_id for i in doc.instances):
                 return []
             doomed = [*reversed(descendant_ids(list(doc.instances), instance_id)), instance_id]
@@ -1061,7 +1114,7 @@ class InstancesRegistry:
     def remove(self, instance_id: str) -> bool:
         """Remove an instance. Returns ``True`` if it existed, ``False`` otherwise."""
         with self._lock:
-            doc = self._read()
+            doc = self._read_for_update()
             before = len(doc.instances)
             doc.instances = [i for i in doc.instances if i.id != instance_id]
             if len(doc.instances) == before:
