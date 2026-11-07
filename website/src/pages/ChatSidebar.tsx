@@ -404,7 +404,7 @@ function ChatSidebar({
   const modelFilterInverted = filterModelsExcluded && activeModelKeys.size > 0
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, orderedColumns,
+    hideEmptyFolderBody, countSubfolderContents, orderedColumns,
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
@@ -945,7 +945,7 @@ function ChatSidebar({
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
     filterSortOpen, filtersPaused, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
-    folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
+    folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
     foldersShelved, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,

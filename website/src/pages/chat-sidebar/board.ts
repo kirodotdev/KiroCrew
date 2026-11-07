@@ -46,7 +46,7 @@ export function boardSidebarWidth(count: number, current: number, viewport: numb
   return Math.max(current, Math.min(wanted, ceiling))
 }
 
-/** The board columns query and the two chat-config flags it rides with. */
+/** The board columns query and the chat-config flags it rides with. */
 export function useBoardColumns() {
   // Sidebar column layout (flat list; empty = legacy single-lane UX)
   const {
@@ -62,11 +62,14 @@ export function useBoardColumns() {
   // a control. Read through the same `mc-config-changed` listener as the flag
   // above so toggling it in Settings reshapes the open sidebar immediately.
   const [hideEmptyFolderBody, setHideEmptyFolderBody] = useState(() => loadChatConfig().hideEmptyFolderBody)
+  // Opt-in, through the same listener: a folder's count adds its subfolders'.
+  const [countSubfolderContents, setCountSubfolderContents] = useState(() => loadChatConfig().countSubfolderContents)
   useEffect(() => {
     const onChange = () => {
       const cfg = loadChatConfig()
       setTagColumnsEnabled(cfg.tagColumnsEnabled)
       setHideEmptyFolderBody(cfg.hideEmptyFolderBody)
+      setCountSubfolderContents(cfg.countSubfolderContents)
     }
     window.addEventListener('mc-config-changed', onChange)
     return () => window.removeEventListener('mc-config-changed', onChange)
@@ -80,7 +83,7 @@ export function useBoardColumns() {
   }, [rawColumns, tagColumnsEnabled])
   return {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, orderedColumns,
+    hideEmptyFolderBody, countSubfolderContents, orderedColumns,
   }
 }
 

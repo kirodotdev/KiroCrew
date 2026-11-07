@@ -18303,6 +18303,8 @@
         "confirm_before_closing_session": "Vor dem Schließen der Sitzung bestätigen",
         "compact_empty_folders": "Kompakte leere Ordner",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Ein Ordner ohne Chats belegt eine Zeile statt zwei, und seine Schaltfläche für einen neuen Chat wandert in die Ordnerzeile",
+        "folder_count_includes_subfolders": "Inhalt von Unterordnern in die Ordnerzahl einbeziehen",
+        "folder_count_includes_subfolders_description": "Die Zahl eines Ordners zählt auch alles in seinen Unterordnern mit, sodass ein eingeklappter Ordner zeigt, wie viel er enthält",
         "full_titles_on_scroll": "Vollständige Titel beim Scrollen anzeigen",
         "full_titles_on_scroll_description": "Beim Scrollen der Sitzungsliste werden von der Seitenleiste abgeschnittene Titel vollständig angezeigt",
         "session_title_lines": "Titelzeilen auf Sitzungskarten",

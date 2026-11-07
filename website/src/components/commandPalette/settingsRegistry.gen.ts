@@ -1220,6 +1220,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.include-subfolder-contents-in-folder-counts",
+    "label": "Include Subfolder Contents in Folder Counts",
+    "labelKey": "pages.settings.chatPanel.folder_count_includes_subfolders",
+    "hint": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.jump-to-the-bottom-when-you-send",
     "label": "Jump to the bottom when you send",
     "labelKey": "pages.settings.chatPanel.scroll_on_send",

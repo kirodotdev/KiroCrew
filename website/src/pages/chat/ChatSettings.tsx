@@ -75,6 +75,10 @@ export interface ChatConfig {
    *  <name>" affordance those folders have, so it is the user's call rather than
    *  something a client with no stored config inherits. */
   hideEmptyFolderBody: boolean
+  /** Opt in to a folder's count adding up what its subfolders hold, so a
+   *  collapsed folder says how much sits under it. Default false: off, the
+   *  count is what sits directly in the folder. */
+  countSubfolderContents: boolean
   /** While the session list scrolls, titles the rows clip are shown in full
    *  in a floating layer over them; rows keep their width (desktop only).
    *  Off by default. */
@@ -151,7 +155,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -197,6 +201,7 @@ export function loadChatConfig(): ChatConfig {
     // Coerced, not trusted: a stored non-boolean would otherwise make the empty
     // folder shape depend on a truthy string.
     if (typeof cfg.hideEmptyFolderBody !== 'boolean') cfg.hideEmptyFolderBody = false
+    if (typeof cfg.countSubfolderContents !== 'boolean') cfg.countSubfolderContents = false
     if (typeof cfg.fullTitlesOnScroll !== 'boolean') cfg.fullTitlesOnScroll = false
     // Coerced, not trusted: anything but 1, 2 or 3 would pick no clamp class
     // and leave the card's text unbounded.

@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  FOLDER_SORT_MODES, FOLDER_PATH_SEP, bySidebarOrder, folderComparator, naturalNameCompare,
+  FOLDER_SORT_MODES, FOLDER_PATH_SEP, bySidebarOrder, countWithSubfolders, folderComparator, naturalNameCompare,
   orderFoldersWithPaths, readFolderSortMode, type FolderSortMode,
 } from '../utils/folderTree'
 import type { ChatFolder } from '../types'
@@ -337,5 +337,24 @@ describe('the tie-break folds A-Z and nothing else', () => {
   it('leaves the sharp s and an accented capital alone', () => {
     const rows = [f('sharp', 'stra\u00dfe', 0), f('ss', 'strasse', 0)]
     expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['ss', 'sharp'])
+  })
+})
+
+describe('countWithSubfolders', () => {
+  const rows: Record<string, number> = { root: 2, kid: 3, grandkid: 5 }
+  const tree = (rootParent?: string): ChatFolder[] => [
+    { id: 'root', name: 'Root', order: 0, parent_id: rootParent },
+    { id: 'kid', name: 'Kid', order: 0, parent_id: 'root' },
+    { id: 'grandkid', name: 'Grandkid', order: 0, parent_id: 'kid' },
+  ]
+  const total = (fs: ChatFolder[]) => countWithSubfolders(fs[0], f => fs.filter(c => c.parent_id === f.id), f => rows[f.id])
+
+  it('adds each nested folder and its rows at every depth', () => {
+    // root: 2 rows + kid; kid: 3 rows + grandkid; grandkid: 5 rows.
+    expect(total(tree())).toBe(12)
+  })
+
+  it('stops at a parent_id loop instead of recursing forever', () => {
+    expect(Number.isFinite(total(tree('grandkid')))).toBe(true)
   })
 })
