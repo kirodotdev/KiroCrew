@@ -224,8 +224,8 @@ def kept_memories(
 
     1. this is not an owner dashboard call — refuse, before anything else. The
        CALLER decides this (``handlers/memory_member._memory_recall_keep``, gated
-       on membership of ``session_surface.dashboard_surfaced_keys()``): the receipt
-       rides a reply
+       on membership of ``session_surface.dashboard_surfaced_keys()`` and an open
+       owner dashboard socket): the receipt rides a reply
        someone is looking at, and the egress is memory text, so a recall with
        nobody watching is never asked about — a cron, a sub-agent, an integration,
        and any session whose tab is closed. A CHANNEL-born session with its
