@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from kiro_crew.slack.gateway import (
         _BACKGROUND_APPROVAL_SOURCES,
+        DENY_CAUSE_APPROVAL_TIMEOUT,
         HEARTBEAT_KEY,
         Callable,
         DashboardState,
@@ -90,6 +91,7 @@ def _interactive_approval(
     nudge_key: str = "",
     *,
     raise_when_unreachable: bool = False,
+    on_host_decision: Callable[[str, str], None] | None = None,
 ) -> ToolApprovalCallback:
     """Return an approval callback that races dashboard vs Slack DM.
 
@@ -108,12 +110,25 @@ def _interactive_approval(
     received. Only the spawn gate sets it, because only the spawn gate has a
     terminal path that can report the refusal to the calling agent; a mid-run
     tool approval parks on the prompt instead.
+
+    ``on_host_decision`` is told ``(request_id, cause)`` on every answer given
+    with nobody asked: an auto-approve source, the ``--approval`` mode, the YOLO
+    override, slot trust, no UI at all, or a Slack prompt whose window closed.
+    *cause* is a ``DENY_CAUSE_*`` code when one names the host's reason (an expired
+    window), ``""`` otherwise. A dashboard-only prompt's own expiry still returns a
+    bare ``False``.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
 
     async def _approve(event: LLMEvent, parent_session_key: str = "") -> bool:
         request_id = str(event.request_id)
+
+        def _by_host(approved: bool, cause: str = "") -> bool:
+            if on_host_decision is not None:
+                on_host_decision(request_id, cause)
+            return approved
+
         # Low-fidelity CHILD request: the structured security context is
         # absent, so every field a content-matching shortcut below would
         # judge (title, read-only classification, trust patterns) is
@@ -203,9 +218,9 @@ def _interactive_approval(
                     "agent-authored)",
                     source,
                 )
-                return False
+                return _by_host(False)
             logger.info("Auto-approving tool %s from source %s", event.title, source)
-            return True
+            return _by_host(True)
 
         # CLI --approval flag override (composable test mode).
         # 'yolo' auto-approves all; 'reads' auto-approves read-only tools;
@@ -276,11 +291,11 @@ def _interactive_approval(
                     logger.warning(
                         "SEL audit failed for cli --approval auto-approve", exc_info=True
                     )
-                return True
+                return _by_host(True)
 
         # Check both YOLO sources: Slack handler (!yolo on) and dashboard UI
         if safety_override().is_active() and _child_grant_eligible:
-            return True
+            return _by_host(True)
 
         if self.dashboard_state:
             # Check if the parent slot is trusted (not all slots).
@@ -333,7 +348,7 @@ def _interactive_approval(
                         outcome="ok",
                         resources=f"scope:{getattr(_ps, '_trust_scope', '')} {_safe_title}",
                     )
-                    return True
+                    return _by_host(True)
                 elif _ps_trusted:
                     _sel_log(
                         caller=f"slot:{_parent_slot_key}",
@@ -341,7 +356,7 @@ def _interactive_approval(
                         outcome="ok",
                         resources=_safe_title,
                     )
-                    return True
+                    return _by_host(True)
                 elif _ps:
                     _sel_log(
                         caller=f"slot:{_parent_slot_key}",
@@ -506,7 +521,7 @@ def _interactive_approval(
 
                         release_approval_hold_for(nudge_key, why="an approval was answered")
                 except asyncio.TimeoutError:
-                    outcome = "rejected"
+                    outcome = "expired"
                     # Nobody answered on either surface -- this branch also
                     # cancels the dashboard future below, so it is the single
                     # authoritative "unanswered" point for a channel-bound
@@ -536,6 +551,8 @@ def _interactive_approval(
                 except Exception:
                     pass
 
+                if outcome == "expired":
+                    return _by_host(False, DENY_CAUSE_APPROVAL_TIMEOUT)
                 return outcome == "approved"
             except Exception:
                 logger.debug("Slack approval failed, falling back to dashboard", exc_info=True)
@@ -563,8 +580,8 @@ def _interactive_approval(
             # No human surface answered and none of the (skipped)
             # shortcuts may speak for an agent-authored request:
             # fail closed.
-            return False
-        return True  # no UI → auto-approve
+            return _by_host(False)
+        return _by_host(True)  # no UI → auto-approve
 
     return _approve
 
