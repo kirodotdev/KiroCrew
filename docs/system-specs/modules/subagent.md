@@ -442,7 +442,8 @@ cause no run that started can leave behind) FIRST, where the store cannot
 reach: the boot reconcile asks the artifact probe before it requeues an ADMITTED
 row AND reads it for every row left QUEUED ([taskq](taskq.md) § Reconcile-first
 boot), and that tombstone is the probe's `REFUSED` -- a `failed` for the row,
-and the ONE ending the queued pass acts on -- so a store wedged for the whole
+and one of the two endings the queued pass acts on (the queued-stop marker is
+the other) -- so a store wedged for the whole
 shutdown drain still ends with the row settled on the next boot -- whether the
 refusal found the row claimed or, as the memory-pressure expiry does, still
 queued, and never started under an id whose tombstone already records an
@@ -2240,7 +2241,26 @@ row's terminal write, so its queued-stop report skips the settle's `finish`
 (`row_settled`; it could only be refused) and keeps the propagation to a waiting
 parent. The stage Cancel, the parent-end teardown and a single `cancel` pass the
 same flag for the rows whose own cancel landed. A cancel that did not land
-leaves the settle in place and is re-posted (`_repost_unlanded_cancel`). Until the
+keeps the report's settle and, for a `persistent` row, starts
+`taskq_settle_unlanded_cancel` (`_repost_unlanded_cancel`), shaped like the
+refused-row settle (§ Memory, not a count cap, bounds concurrency) and sharing
+its retry (`_retry_held_settle`): one tracked
+store task retained under the row's id in `_pending_defers`, so the refill leaves
+the row out, that retries the cancel until the store answers. It first writes
+the queued-stop marker (`write_queued_stop_tombstone`, `cause="queued_stop"`,
+the probe's `STOPPED`), which the boot reconcile settles a `queued` or `admitted`
+row `cancelled` on; once that marker is confirmed and `_STATE_READ_ATTEMPTS` tries
+were refused, the store holds the row out of every claim for `cancelled` and the
+settle releases its awaiters; with no marker on disk the hold has no bound, as a
+refusal's has not. With the off-loop pump off both run inline, once. A single
+`cancel` of a queued row registers its
+queued-stop record at once, which is what the claimer refuses, and its report
+(the `gate` of `_report_queued_stop`) and its `True` wait on
+`await_pending_defer` (pinned by `test_taskq_queued_stop_settle.py`); Stop all's
+applier (`cancel_queued` included) and the parent-end teardown settle the same way
+but publish without waiting. The shutdown drain keeps a queued-stop marker when it
+cancels that row's undelivered report, where it re-admits other runs to orphan
+recovery. Until the
 applier has reported a row, that row is in neither `_queue` nor `_agents`, so
 every id of the job is filed in `_batched_stops` for that span: the claimer
 above joins it, and a single `cancel` of the row joins the batch's answer
