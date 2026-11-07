@@ -131,6 +131,37 @@ async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_app_token_refused_on_a_held_back_entry_is_told_how_to_fix_it(monkeypatch) -> None:
+    """The middleware's refusal body names the held-back entry and the approval step."""
+    import json
+    import time
+
+    import kiro_crew.dashboard.token_auth as _ta
+    from kiro_crew.dashboard.app_scope_refusal import GrantFacts
+
+    stamp = time.time()
+    monkeypatch.setattr(_ta, "_app_perms_cache", {"file-explorer": (stamp, ("/api/sessions",))})
+    facts = GrantFacts(
+        label="File Explorer",
+        declared=("/api/sessions", "/api/memory/*"),
+        held_back=("/api/memory/*",),
+    )
+    monkeypatch.setattr(_ta, "_app_grant_facts", {"file-explorer": (stamp, facts)})
+    mw = token_auth_middleware()
+    token = generate_token("file-explorer", app="file-explorer")
+    req = _make_request(path="/api/memory/search", query={"token": token})
+
+    resp = await mw(req, _ok_handler)
+
+    assert resp.status == 403
+    body = json.loads(resp.body)
+    assert body["code"] == "app_permission_not_approved"
+    assert body["pending_approval"] == ["/api/memory/*"]
+    assert "/apps/detail/file-explorer" in body["error"]
+    assert "Approve new permissions" in body["error"]
+
+
+@pytest.mark.asyncio
 async def test_app_token_named_registries_denied_on_refresh(monkeypatch) -> None:
     """An app token named 'registries' must NOT reach the shared
     POST /api/apps/registries/refresh (which triggers outbound git fetches of

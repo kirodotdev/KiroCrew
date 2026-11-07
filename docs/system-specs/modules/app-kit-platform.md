@@ -2573,6 +2573,15 @@ needed.
   `approvedGrants`. The approved event set is part of `hook_signature`, so
   approving events reloads the app's hooks and rebuilds its event bus; the API
   and WebSocket caches pick an approval up within their refresh interval.
+  Until the owner approves, an app-token call on an `/api/` path that only a
+  held-back `api` entry covers answers 403 `app_permission_not_approved`, whose
+  body lists those entries as `pending_approval` and tells the app the owner's
+  step: the app's page (`/apps/detail/<name>`), the "Approve new
+  permissions" button, and the refresh interval. A path no declared entry
+  covers answers `app_permission_not_declared`, which names the `app.json`
+  change, the update and the approval (dashboard-token-auth, App-token scope
+  confinement). `held_back_app_grants` supplies the entries; it reads the same
+  approved set and lists nothing when none is stored.
   `get_app` is read-only, like `list_apps`.
 - **Failure direction is closed.** An install without the file whose old
   manifest is unreadable gives an empty previous set on update; an
@@ -5662,7 +5671,7 @@ which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `manager.py` | The facade: the only import path and patch surface. It defines nothing and installs `kiro_crew._facade_mirror` over the owners below |
-| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), `AppResult` and `get_app_manifest` |
+| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), the declared entries still waiting for approval that a refusal names (`held_back_app_grants`), `AppResult` and `get_app_manifest` |
 | `manager_tree.py` | Validating a source directory (`_validate_source_path`, `_check_min_version`), the copy (`_copy_app_tree`, `copy_app_tree_as_installed`), the preserved-`data/` rules (`gateway_data_dir_obstruction`, `_owned_data_dir`), `_remove_any_shape` and `InstalledTreeRefused` |
 | `manager_install.py` | `install_app`, `update_app`, the per-app `app_lifecycle_lock` and the scoped `registry_source_repository` |
 | `manager_activation.py` | `enable_app`, `disable_app` and the governance check every activation passes (`_app_activation_denied`) |

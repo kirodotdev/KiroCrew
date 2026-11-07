@@ -1684,6 +1684,32 @@ except KiroCrewError as e:
     print(e.code, str(e), e.status)
 ```
 
+### Permission refusals
+
+An app token may call its own namespace (`/apps/<name>/...` and
+`/api/apps/<name>/...`), `/api/ws`, `/api/notifications/push`, and the `/api/`
+paths its approved `permissions.api` entries cover. Any other `/api/` path answers
+403 with a body that names the cause and the fix, so `str(e)` is enough to act on:
+
+| `code` | Cause | Fix |
+|--------|-------|-----|
+| `app_permission_not_approved` | The installed version declares an entry that covers the path, but the owner has not approved it yet. An update that adds an entry leaves it this way. | The owner opens the app's page (`/apps/detail/<name>`) and clicks **Approve new permissions**. The call works within 30 seconds of the approval. |
+| `app_permission_not_declared` | No entry in the installed `app.json` covers the path. | Add the path, or a pattern covering it, to `permissions.api`, install that version (`kirocrew app update <name>`, or register the new manifest again for an app that registers itself), then have the owner approve the new entry. |
+| `app_permission_unavailable` | The app's permissions could not be read, or an update of the app is in progress. | Retry. If it persists, check the app with `kirocrew app info <name>`. |
+
+```json
+{
+  "error": "App \"Ledger Lens\" cannot call /api/memory/search yet. Its installed version asks for the new API permission \"/api/memory/*\", which the dashboard owner has not approved. To fix this, the dashboard owner opens the app's page (Apps, Library, then Details on Ledger Lens, or /apps/detail/ledger-lens) and clicks \"Approve new permissions\". ...",
+  "code": "app_permission_not_approved",
+  "pending_approval": ["/api/memory/*"]
+}
+```
+
+`pending_approval` lists the held-back entries that cover the path and is empty
+for the other two codes. A route can also refuse an app token for its own reasons
+after this check passes, for example `403 owner_only`; a `permissions.api` entry
+does not change those.
+
 ---
 
 ## Gateway REST API Endpoints

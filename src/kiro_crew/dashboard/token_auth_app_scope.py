@@ -2,7 +2,8 @@
 
 Deny by default. The short-lived cache of each app's declared ``permissions.api``
 allowlist, which paths an app owns, the implicit allowances every app token gets, and
-the scope check the middleware applies to an app token's request.
+the scope check the middleware applies to an app token's request, whose refusal tells
+the app what clears it (:mod:`kiro_crew.dashboard.app_scope_refusal`).
 
 Served through :mod:`kiro_crew.dashboard.token_auth`, which callers and tests import and
 patch; this module never imports it.
@@ -17,6 +18,7 @@ import time
 
 from aiohttp import web
 
+from kiro_crew.dashboard.app_scope_refusal import GrantFacts, ScopeRefusal, app_label, scope_refusal
 from kiro_crew.dashboard.origin import is_proxied_request
 from kiro_crew.dashboard.token_auth_paths import _deny, _log_auth
 from kiro_crew.sel import sel as _sel_fn
@@ -42,6 +44,11 @@ _APP_PERMS_TTL = 30.0
 _app_perms_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 _app_perms_lock = threading.Lock()
 
+# What a refusal tells the app about its own grant, stored by the same read as its
+# allowlist entry and under the same timestamp, so the refusal path reads no disk.
+# A refusal uses an entry only while that timestamp matches the allowlist entry's.
+_app_grant_facts: dict[str, tuple[float, GrantFacts]] = {}
+
 
 def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
     """Return the app's declared ``permissions.api`` prefixes (cached, deny-safe).
@@ -55,6 +62,7 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
         if entry is not None and now - entry[0] < _APP_PERMS_TTL:
             return entry[1]
     allow: tuple[str, ...] = ()
+    seen: dict[str, tuple[str, tuple[str, ...]]] = {}
     try:
         # circular import: apps.manager imports generate_app_secret/
         # write_app_secret from token_auth, which loads this module, so a top-level
@@ -65,7 +73,10 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
             manifest = get_app_manifest(app_name)
             if manifest is None:
                 return None
-            return [p for p in manifest.permissions.api if p]
+            declared = [p for p in manifest.permissions.api if p]
+            # Only words a refusal, so a missing name must not fail this read.
+            seen["manifest"] = (getattr(manifest, "displayName", ""), tuple(declared))
+            return declared
 
         # An update's added entries stay out until the owner approves them.
         allow = tuple(staged_app_grants(app_name, "api", _declared))
@@ -76,9 +87,36 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
             exc_info=True,
         )
         allow = ()
+    facts = _read_grant_facts(app_name, seen.get("manifest"))
     with _app_perms_lock:
         _app_perms_cache[app_name] = (now, allow)
+        _app_grant_facts[app_name] = (now, facts)
     return allow
+
+
+def _read_grant_facts(app_name: str, manifest: tuple[str, tuple[str, ...]] | None) -> GrantFacts:
+    """The grant facts a refusal of *app_name* words itself from.
+
+    *manifest* is the display name and declared entries the allowlist read saw,
+    ``None`` when it read no manifest. Never raises: these facts only word a
+    refusal, so a failure here must not change the allowlist beside them.
+    """
+    if manifest is None:
+        return GrantFacts(label=app_name, declared=None, held_back=())
+    display_name, declared = manifest
+    label = app_label(app_name, display_name)
+    try:
+        from kiro_crew.apps.manager import held_back_app_grants
+
+        held = held_back_app_grants(app_name, "api", declared)
+    except Exception:
+        logger.debug("app scope: could not read held-back entries for %r", app_name, exc_info=True)
+        held = None
+    if held is None:
+        # The app moved between the allowlist read and this one, or the read
+        # failed: claim no cause rather than pair one manifest with another's grant.
+        return GrantFacts(label=label, declared=None, held_back=())
+    return GrantFacts(label=label, declared=declared, held_back=tuple(held))
 
 
 # A primed entry is refreshed this long before it expires, so the synchronous
@@ -248,10 +286,40 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
     return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
 
 
+def _scope_refusal(app_name: str, path: str) -> ScopeRefusal:
+    """Word the refusal of *app_name*'s token on *path* from the cached grant facts.
+
+    Facts stored by a different read than the allowlist entry that refused the
+    path are not used: they could name an entry the owner has since approved.
+    """
+    with _app_perms_lock:
+        allow_entry = _app_perms_cache.get(app_name)
+        facts_entry = _app_grant_facts.get(app_name)
+    facts = None
+    if allow_entry is not None and facts_entry is not None and facts_entry[0] == allow_entry[0]:
+        facts = facts_entry[1]
+    if facts is None or facts.declared is None:
+        pending: tuple[str, ...] = ()
+        declared: bool | None = None
+    else:
+        pending = tuple(e for e in facts.held_back if _api_pattern_matches(e, path))
+        declared = any(_api_pattern_matches(e, path) for e in facts.declared)
+    return scope_refusal(
+        app_name,
+        facts.label if facts is not None else app_name,
+        path,
+        pending_approval=pending,
+        declared=declared,
+        approval_delay_secs=int(_APP_PERMS_TTL),
+    )
+
+
 def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
     """Return a 403 response if an app token is out of scope, else None.
 
-    No-op for dashboard-user tokens (empty *app_name*).
+    No-op for dashboard-user tokens (empty *app_name*). On an ``/api/`` path the
+    body names why the path is refused and what clears it (:mod:`app_scope_refusal`);
+    any other path keeps the shared sign-in page, which quotes only a fixed reason.
     """
     if not app_name:
         return None
@@ -269,4 +337,16 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
         error="app token out of scope",
     )
     _log_auth(request, app_name, "denied", f"app token out of scope: {path}")
-    return _deny(request, "app token not permitted for this endpoint")
+    if not request.path.startswith("/api/"):
+        return _deny(request, "app token not permitted for this endpoint")
+    refusal = _scope_refusal(app_name, path)
+    return web.json_response(
+        {
+            "error": refusal.message,
+            "code": refusal.code,
+            "pending_approval": list(refusal.pending_approval),
+        },
+        status=403,
+        # The header every middleware refusal carries (``_deny``).
+        headers={"X-Auth-Required": "true"},
+    )
