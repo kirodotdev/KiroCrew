@@ -386,6 +386,9 @@ class McpServerInfo:
     # None means the lookup could not answer. Only meaningful alongside
     # ``auth_challenge``; see :func:`_runtime_grant_present`.
     auth_grant_present: bool | None = None
+    # Crew holds this server's sign-in (``connections.crew_oauth`` on KAS), so
+    # ``auth_grant_present`` is Crew's vault, and a KAS chat uses it via Crew.
+    auth_crew_held: bool = False
     # Spec-declared temp keys the local probe refused, one dict per key:
     # ``key``, ``path`` (redacted like the WARNING) and ``cause`` (``sealed``,
     # ``unclassifiable`` or ``check-failed``). Same facts as the journal line,
@@ -451,6 +454,8 @@ class McpServerInfo:
                 # safe wording, a false would name an action.
                 if self.auth_grant_present is not None:
                     d["authGrantPresent"] = self.auth_grant_present
+                if self.auth_crew_held:
+                    d["authCrewHeld"] = True
         # Omitted when empty, like ``authChallenge``: absent means no refusal.
         if self.temp_refusals:
             d["tempRefusals"] = [dict(r) for r in self.temp_refusals]

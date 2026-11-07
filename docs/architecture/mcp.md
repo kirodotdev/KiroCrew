@@ -663,7 +663,14 @@ Probes run from `POST /api/mcp/probe`:
   `authChallenge`), and it asks both runtimes' grant stores whether they hold a
   grant for the url to set `authGrantPresent`: kiro-cli's cache (a stat of its
   paired grant artifacts) and the KAS grant vault (whether an entry name is
-  listed; see below). Three wordings follow, one per answer the pair supports:
+  listed; see below). A server whose sign-in Crew holds (`crew_oauth.owns`:
+  `connections.crew_oauth` on KAS) is the exception: `authGrantPresent` is
+  Crew's vault (`crew_oauth.holds_grant`) and the row carries `authCrewHeld`,
+  so the table drops Sign in again and the KAS caveat, both false there because
+  Crew serves KAS chats through its proxy. A cached Crew answer is not served
+  once custody ends (flag off, or chats leave KAS): the row reads Not verified
+  until the next probe. Three wordings follow, one per answer
+  the pair supports:
 
   | Evidence | Badge | Why |
   |---|---|---|

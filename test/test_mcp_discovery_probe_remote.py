@@ -457,6 +457,39 @@ class TestProbeRemote:
 
         assert result.status == "needs_auth"
         assert result.auth_grant_present is True
+        assert "authCrewHeld" not in result.to_dict()
+
+    @pytest.mark.asyncio
+    async def test_a_crew_held_grant_reads_from_crew_not_the_runtimes(self, monkeypatch) -> None:
+        """Crew custody: the row reads Crew's vault, so it is signed in through Crew."""
+        from kiro_crew.connections import crew_oauth
+
+        monkeypatch.setattr(crew_oauth, "owns", lambda slug: slug == "github")
+        monkeypatch.setattr(crew_oauth, "holds_grant", lambda slug: True)
+        server = McpServerInfo(name="github", url="https://api.githubcopilot.com/mcp/")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {"WWW-Authenticate": 'Bearer scope="repo"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        runtime = AsyncMock(return_value=False)
+        with (
+            patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session),
+            patch("kiro_crew.mcp_discovery._runtime_grant_present", runtime),
+        ):
+            result = await _probe_remote(server)
+
+        assert result.auth_grant_present is True
+        payload = result.to_dict()
+        assert payload["authGrantPresent"] is True and payload["authCrewHeld"] is True
+        runtime.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_rejected_static_credential_still_records_the_oauth_challenge(self) -> None:

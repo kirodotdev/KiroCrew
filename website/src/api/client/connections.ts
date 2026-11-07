@@ -58,6 +58,9 @@ export interface ConnectionStatus {
   backendLacksOauth?: boolean
   /** True on a connected row while chats run on KAS. Present only when true. */
   signInInChat?: boolean
+  /** True while Crew holds this sign-in (`connections.crew_oauth` on KAS). Test
+   *  runs on Kiro CLI's grant, so the card does not offer it. */
+  crewHeld?: boolean
   /** Other configured MCP entries backed by the SAME OAuth grant as this provider.
    *  Present and non-empty only for a provider whose grant is present AND shared.
    *  It lets the card show, proactively, that a local disconnect/reconnect keeps

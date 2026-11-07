@@ -392,6 +392,30 @@ class TestProbeIdentityWiring:
         assert row.auth_challenge is False
         assert row.auth_grant_present is None
 
+    @pytest.mark.parametrize("still_crew", [True, False], ids=["custody-kept", "custody-ended"])
+    def test_a_crew_held_answer_is_not_served_once_crew_custody_ends(
+        self, tmp_path, monkeypatch, still_crew
+    ) -> None:
+        """Flag off or backend off KAS: Crew's grant must not keep reading as signed in."""
+        from kiro_crew.connections import crew_oauth
+
+        self._configure(tmp_path, monkeypatch, {"url": "https://a.example/mcp"})
+        _cache_probe(
+            McpServerInfo(
+                name="srv",
+                url="https://a.example/mcp",
+                status="needs_auth",
+                auth_challenge=True,
+                auth_grant_present=True,
+                auth_crew_held=True,
+            )
+        )
+        monkeypatch.setattr(crew_oauth, "manages", lambda slug: still_crew)
+        row = list_servers()[0]
+        assert row.auth_challenge is True
+        assert row.auth_crew_held is still_crew
+        assert row.auth_grant_present is (True if still_crew else None)
+
     @pytest.mark.parametrize(
         "spec",
         [
