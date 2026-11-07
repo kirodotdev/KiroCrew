@@ -33,6 +33,58 @@ _PENDING_SCRIPT_MAX_ENTRIES = 64
 _PENDING_SCRIPT_MAX_DEPTH = 8
 
 
+def _is_link_stat(st: os.stat_result) -> bool:
+    """A POSIX symlink, or any Windows reparse point (symlink, junction, UNC link)."""
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _pending_candidate_shape(child: Path) -> str | None:
+    """Classify a pending entry without following any link: ``"plain"``, ``"link"`` or ``None``.
+
+    A candidate directory the agent turned into a symlink or reparse point (a
+    UNC target would make Windows authenticate to that host) is ``"link"``:
+    still listed, so the dashboard can show its failing verdict and dismiss it,
+    but nothing is opened through it. A real directory is ``"plain"`` when an
+    entry named ``SKILL.md`` exists in it, whatever its type; the verdict
+    reports a linked or non-regular one.
+
+    The ``SKILL.md`` probe never re-resolves ``child`` by name: the directory
+    could be swapped for a link between the two checks. It is opened once with
+    ``O_NOFOLLOW``, its identity is matched against the first ``lstat``, and the
+    probe runs relative to that descriptor. A platform without descriptor-relative
+    stat (Windows) skips the probe: a real directory is ``"plain"`` and the
+    pinned verdict reports a missing ``SKILL.md``, because any by-name probe there
+    would traverse whatever reparse point sits at ``child``.
+    """
+    try:
+        dir_st = os.lstat(child)
+    except OSError:
+        return None
+    if _is_link_stat(dir_st):
+        return "link"
+    if not stat.S_ISDIR(dir_st.st_mode):
+        return None
+    if not pinned_fs.supports_pinned_tree_walk():
+        return "plain"
+    try:
+        fd = os.open(child, pinned_fs.dir_flags())
+    except OSError:
+        # ELOOP/ENOTDIR: the name became a link or a non-directory after the lstat.
+        return "link"
+    try:
+        held = os.fstat(fd)
+        if (held.st_dev, held.st_ino) != (dir_st.st_dev, dir_st.st_ino):
+            return "link"
+        return "plain" if pinned_fs.stat_at(fd, "SKILL.md") is not None else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _candidate_has_symlink(pdir: Path) -> bool:
     """True if the candidate dir itself or any entry under it is a link —
     so the read/approve paths never follow an LLM-planted link to a
