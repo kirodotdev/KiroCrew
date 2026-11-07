@@ -288,6 +288,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "pending_identity_sweep_fingerprint": ("property", False, "bb418bb7ece8", "state_views"),
     "project_aws_profile": ("function", False, "cb2074e9df23", "claims"),
     "provider_switch_replay_pending": ("function", False, "1eda252b53bd", "turn_context"),
+    "rearm_first_turn": ("function", False, "44a1bff78c26", "claims"),
     "record_effort_override": ("function", False, "44d509a50877", "claims"),
     "record_failure": ("function", True, "1eda252b53bd", "claims"),
     "record_success": ("function", False, "958babeb61c8", "claims"),

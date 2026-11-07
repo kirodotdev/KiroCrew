@@ -87,6 +87,7 @@ BASE_NAMES = frozenset(
         "ConversationState",
         "DENY_CAUSE_APPROVAL_TIMEOUT",
         "DM_SCOPE_UNIFIED",
+        "EmbedAdmissionTimeout",
         "InboundMessage",
         "InboundRoute",
         "IngestLimits",

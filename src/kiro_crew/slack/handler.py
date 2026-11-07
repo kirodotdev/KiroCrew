@@ -97,7 +97,12 @@ from kiro_crew.dashboard.state import (  # noqa: F401 - read by the owners
 )
 from kiro_crew.dashboard.turn_dispatch import tool_approval_timeout_secs
 from kiro_crew.deny_notice import steer_refusal_notice
-from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
+from kiro_crew.executors import (
+    TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+    EmbedAdmissionTimeout,
+    run_in_embed_pool,
+    run_in_tool_gate_pool,
+)
 from kiro_crew.history import (  # noqa: F401 - read by the owners
     HUMAN_TURN_META_KEY,
     ConversationLog,

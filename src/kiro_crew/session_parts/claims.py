@@ -368,6 +368,26 @@ def fresh_start_unclaimed(self: SessionManager, key: str) -> bool:
     return session is not None and session.first_turn is FirstTurnState.FRESH
 
 
+def rearm_first_turn(self: SessionManager, key: str, provider: Any, *, resumed: bool) -> None:
+    """Hand back the first-turn observation a claim took, when no prompt reached *provider*.
+
+    A turn that claimed a new session and then gave up before its prompt went out
+    (the memory pool never admitted its build) leaves the session's first turn
+    still to come, so the next claim must read it as new, as ``_respawn_as`` re-arms
+    a reset successor. Only while *provider* is still the live session's and no
+    other claim has armed or taken an observation since.
+    """
+    from kiro_crew.session_parts.record import FirstTurnState
+
+    session = self._sessions.get(self._fold_key(key))
+    if (
+        session is not None
+        and session.provider is provider
+        and session.first_turn is FirstTurnState.NOTHING_ARMED
+    ):
+        session.first_turn = FirstTurnState.RESUMED if resumed else FirstTurnState.FRESH
+
+
 def record_effort_override(self: SessionManager, key: str, level: str) -> None:
     """Record *level*, picked on *key*'s live session, as its effort override.
 

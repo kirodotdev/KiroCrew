@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import runtime_death
 from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
 from kiro_crew.context import session_store_for_turn
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import (
+    TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+    EmbedAdmissionTimeout,
+    run_in_embed_pool,
+)
 from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
@@ -359,6 +363,7 @@ async def _run_turn(
             # no @handle, which ``build_message`` treats as "omit the line".
             user_display_name=getattr(msg, "username", "") or None,
             tab_notices=_tab_notices,
+            _admission_timeout=TURN_BUILD_ADMISSION_TIMEOUT_SECS,
         )
 
         # PreToolUse security gate (channel-neutral, off ctx_builder.hooks):
@@ -684,6 +689,11 @@ async def _run_turn(
         # surface their own bounded reason instead of the misleading
         # generic retry text; everything else stays generic (None).
         failure_reason = facade._user_safe_failure_reason(exc)
+        if _acquired and isinstance(exc, EmbedAdmissionTimeout):
+            # Probed: the session manager's own hand-back (`turn_bracket.rearm_first_turn`).
+            _rearm = getattr(self.sessions, "rearm_first_turn", None)
+            if is_new and callable(_rearm):
+                _rearm(session_key, _turn_provider, resumed=resumed)
         if _acquired:
             # A dying runtime reaches this generic handler as one more
             # exception, so without the attribution question every tenant of
