@@ -734,7 +734,8 @@ class TestAnInstallWithNoNamedStoresIsUnchanged:
         # warning block rather than a second tick.
         assert "suspicious memory entries" not in out
         assert f"[{security.LESSON_FINDING_TYPE}]" not in out
-        assert "✅ No suspicious tool usage found in recent history." in out
+        # This home has no session transcripts, so the history pass says it read none.
+        assert "No session transcripts scanned" in out
 
 
 class TestMemberDatabaseAudit:
