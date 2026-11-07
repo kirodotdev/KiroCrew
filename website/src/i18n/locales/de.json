@@ -15106,7 +15106,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Bots laufen auf {{harness}}, dem hier gewählten Harness. Ein Bot kann in seinen Einstellungen einen eigenen festlegen.",
+        "crewmate_harness_legacy": "Bots laufen auf {{harness}}, festgelegt durch agent.member_acp_backend in config.json. Diese Einstellung hat Vorrang vor dem hier gewählten Harness.",
+        "crewmate_harness_fallback": "Bots können nicht auf {{settings}} laufen, daher laufen sie stattdessen auf {{harness}}. Ein Bot kann in seinen Einstellungen einen eigenen Harness festlegen."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Blendet Live-Diagnose zu Scrollposition und Ankern über dem Chat ein",
@@ -21330,7 +21333,11 @@
       "recap_reason_needs_human": "braucht eine Person",
       "recap_state_accepted": "angenommen",
       "recap_state_rejected": "abgelehnt",
-      "recap_state_abandoned": "aufgegeben"
+      "recap_state_abandoned": "aufgegeben",
+      "profile_harness_source_settings": "Festgelegt unter Einstellungen → Agent Harness.",
+      "profile_harness_source_legacy": "Festgelegt durch agent.member_acp_backend in config.json.",
+      "profile_harness_source_fallback": "Einstellungen → Agent Harness ist {{settings}}, worauf Bots nicht laufen können, daher ist es hier {{harness}}.",
+      "profile_harness_source_worker_spec": "Die Worker von diesem Bot nutzen Einstellungen, die {{settings}} nicht übernehmen kann, daher ist es hier {{harness}}."
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

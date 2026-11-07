@@ -184,6 +184,33 @@ class TestBootFloor:
         assert bootstrap.apply_kas_cli_floor(cfg) is not None
         assert registry.resolve_selected_backend(KAS) == KIRO
 
+    def test_an_inherited_member_harness_still_triggers_the_floor(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        """A Bot following Claude Code can still fall back to KAS, so KAS is probed."""
+        from kiro_crew.config.loader_builders import mark_member_backend_inherited
+
+        _help(monkeypatch, _OLD_HELP)
+        monkeypatch.setattr(registry, "_baseline", {KIRO, KAS, "claude"})
+        monkeypatch.setattr(registry, "_selectable", {KIRO, KAS, "claude"})
+        cfg = _cfg(acp_backend="claude", member_acp_backend="claude")
+        cfg.agents = {}
+        mark_member_backend_inherited(cfg.agent, True)
+        assert bootstrap.apply_kas_cli_floor(cfg) is not None
+        assert KAS not in registry.selectable_backends()
+
+    def test_a_stored_member_harness_with_no_kas_pin_never_probes(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        from kiro_crew.config.loader_builders import mark_member_backend_inherited
+
+        calls = _help(monkeypatch, _OLD_HELP)
+        cfg = _cfg(acp_backend=KIRO, member_acp_backend=KIRO)
+        cfg.agents = {}
+        mark_member_backend_inherited(cfg.agent, False)
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert calls == []
+
     def test_kas_not_configured_never_probes(self, monkeypatch, pinned_cli, kas_selectable):
         calls = _help(monkeypatch, _OLD_HELP)
         assert bootstrap.apply_kas_cli_floor(_cfg(acp_backend=KIRO)) is None
@@ -417,6 +444,41 @@ class TestDefaultNoticeWording:
         )
         prefix = "KAS is the default backend, but " if defaulted else "KAS is selected, but "
         assert any(record.message.startswith(prefix) for record in caplog.records)
+
+
+class TestABotThatMayLandOnKasWaitsForTheFloor:
+    """A Bot following Claude Code can fall back to KAS, so its spawns wait for the probe."""
+
+    @pytest.mark.parametrize("inherited", [True, False])
+    def test_the_member_wait_is_armed_and_held_only_for_an_inherited_harness(
+        self, monkeypatch, inherited
+    ):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.config import loader
+        from kiro_crew.config.loader_builders import mark_member_backend_inherited
+        from kiro_crew.slack import gateway
+
+        armed, released = [], []
+        monkeypatch.setattr(kas_floor_wait, "arm_kas_floor_wait", lambda _t, **kw: armed.append(kw))
+        monkeypatch.setattr(
+            kas_floor_wait, "release_kas_floor_wait", lambda _t, **kw: released.append(kw)
+        )
+        monkeypatch.setattr(loader, "acp_backend_declared", lambda: True)
+        monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: False)
+        monkeypatch.setattr(gateway, "apply_kas_cli_floor", lambda cfg, **kwargs: None)
+        monkeypatch.setattr(gateway, "_KAS_CLI_FLOOR_TASK", None)
+        cfg = _cfg(acp_backend="claude", member_acp_backend="claude")
+        cfg.agents = {}
+        mark_member_backend_inherited(cfg.agent, inherited)
+
+        async def _boot():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(cfg), timeout=30)
+
+        asyncio.run(_boot())
+        # Armed on every non-bundle route: judging the roster stays off the boot path.
+        assert armed == [{"main": False, "member": True}]
+        # The off-loop read holds the member role only when a Bot may land on KAS.
+        assert released == [{"main": True, "member": not inherited}]
 
 
 class TestAKiroCliPickWaitsForTheFloor:

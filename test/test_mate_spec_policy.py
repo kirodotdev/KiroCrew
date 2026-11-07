@@ -299,6 +299,43 @@ def test_a_crewmate_off_kas_is_refused_a_template_with_a_policy(home, monkeypatc
     assert _file(mates) == before
 
 
+def test_a_bot_following_claude_takes_a_template_with_a_policy_on_kas(home, monkeypatch):
+    """Judged on the spec being written: an unpinned Bot that follows claude and gains
+    hooks runs on KAS (``crewmate_harness.worker_backend_for_spec``), so the add
+    succeeds as it did when every Bot ran on KAS."""
+    from kiro_crew.config import loader_builders
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+    from kiro_crew.crewmate_harness import worker_backend_for_spec
+
+    _, mates = home
+    agent = SimpleNamespace(acp_backend="claude", member_acp_backend="claude", kas_bundle=False)
+    loader_builders.mark_member_backend_inherited(agent, True)
+    cfg = SimpleNamespace(
+        agent=agent, agents={"pixel": KiroCrewAgentConfig(member_id="pixel", kiro_agent="pixel")}
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    monkeypatch.setattr(
+        mate_worker_kit,
+        "_crewmate_backend",
+        lambda member, held: worker_backend_for_spec(cfg, member, bool(held)),
+    )
+    assert worker_backend_for_spec(cfg, "pixel", False) == "claude"
+    assert worker_backend_for_spec(cfg, "pixel", True) == ACP_BACKEND_KAS
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["hooks"] == TEMPLATE["hooks"]
+    # A pin to claude keeps the refusal: the person chose that harness.
+    pinned = SimpleNamespace(
+        agent=agent,
+        agents={
+            "pixel": KiroCrewAgentConfig(
+                member_id="pixel", kiro_agent="pixel", acp_backend="claude"
+            )
+        },
+    )
+    assert worker_backend_for_spec(pinned, "pixel", True) == "claude"
+
+
 def test_a_template_setting_the_worker_base_sets_differently_is_refused_by_name(home):
     user, mates = home
     base = {**WORKER_BASE, "toolsSettings": {"execute_bash": {"deniedCommands": ["sudo .*"]}}}

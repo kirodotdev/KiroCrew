@@ -479,6 +479,7 @@ class TestServerAppliers:
             "agent.crew_mode_agent",
             "dashboard.feature_previews",
             "apps",
+            "crewmate.harness_fallback",
         }
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():

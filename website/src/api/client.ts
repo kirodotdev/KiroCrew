@@ -217,7 +217,7 @@ export type {
   ConnectionOAuthClientSave,
   ConnectionTestResult,
 } from './client/connections'
-export type { AcpBackendInstalled, AcpBackendProbe } from './client/config'
+export type { AcpBackendInstalled, AcpBackendProbe, CrewmateHarnessReadout } from './client/config'
 export type { MonitorWrite, MonitorResponse } from './client/monitors'
 export type {
   ChannelFolderBackfillMoved,
