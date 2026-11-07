@@ -299,6 +299,8 @@ export interface AgentImportSkipped {
   category: string
   reason: string
   count?: number
+  /** A caught failure (a read, parse or open that raised), not a deliberate skip. */
+  failed?: boolean
 }
 
 export interface AgentImportScanResponse {
