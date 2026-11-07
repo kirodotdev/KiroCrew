@@ -989,6 +989,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         published_autocompact_pct,
         published_config_timezone,
         refresh_materialized_agents,
+        rescan_if_incomplete,
         reset_dangling_default_agent,
         resolve_effective_agent,
         schedule_materialized_agents_refresh,

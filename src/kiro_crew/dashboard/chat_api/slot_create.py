@@ -475,6 +475,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
+            from kiro_crew.config.loader_snapshots import rescan_if_incomplete
+
+            if (
+                agent_kind == "template"
+                and not bindings.requested_resolved
+                and await rescan_if_incomplete()
+            ):
+                # A scan that could not read a spec may lack this template while
+                # its file is on disk (a member comes from the config just loaded).
+                # The staleness check below covers the extra await.
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    agent,
+                    validate_memory_files=False,
+                    selection_kind=agent_kind,
+                )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             if agent_kind and not bindings.requested_resolved:
                 # A stated namespace never falls back to whoever answers by
