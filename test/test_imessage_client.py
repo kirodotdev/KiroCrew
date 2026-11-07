@@ -32,6 +32,7 @@ from kiro_crew.imessage.client import (
 )
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMessageTransport
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import await_until
 
 #: The handle every fixture message comes from, and the one the self-chat tests
@@ -1007,6 +1008,7 @@ class TestOwnEchoLedger:
         with pytest.raises(RpcError):
             await imc.send(OWNER, "on it")
         assert imc._own_sends == []
+        assert not imc._sent_history
         undelivered = parse_inbound(_message(text="on it"))
         assert undelivered is not None
         assert imc.is_own_echo(undelivered) is False
@@ -1246,6 +1248,48 @@ class TestOwnEchoLedger:
         stale = parse_inbound(_message(text="on it"))
         assert stale is not None
         assert imc.is_own_echo(stale) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_late_copy_dated_at_the_send_is_still_an_echo(
+        self, tmp_path: Path, peers: list[StubPeer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A self-chat on an account with other devices delivers copies of a send
+        # days later: a new guid each, long past the TTL, but the sent row's date.
+        clock = ManualClock(start=1_700_000_000.25)
+        clock.install(monkeypatch, client_mod)
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "on it")
+        clock.advance(3 * 24 * 3600)
+        for guid in ("LATE-1", "LATE-2"):
+            copy = parse_inbound(
+                _message(guid=guid, text="on it", created_at="2023-11-14T22:13:20.250Z")
+            )
+            assert copy is not None
+            assert imc.is_own_echo(copy) is True
+        an_hour_later = parse_inbound(
+            _message(guid="USER", text="on it", created_at="2023-11-14T23:13:20.250Z")
+        )
+        other_words = parse_inbound(
+            _message(guid="USER-2", text="thanks", created_at="2023-11-14T22:13:20.250Z")
+        )
+        assert an_hour_later is not None and other_words is not None
+        assert imc.is_own_echo(an_hour_later) is False
+        assert imc.is_own_echo(other_words) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_retained_body_key_has_one_size_however_long_the_body(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "x" * 100_000)
+        ((key, _sent_at),) = imc._sent_history
+        assert len(key) == len(_echo_key(OWNER, ""))
+        assert imc._own_sends[0].body_key == key
+        echo = parse_inbound(_message(text="x" * 100_000))
+        assert echo is not None
+        assert imc.is_own_echo(echo) is True
         await imc.close()
 
     @pytest.mark.asyncio
