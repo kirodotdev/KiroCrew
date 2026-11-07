@@ -17215,11 +17215,11 @@
       "create_your_first_job": "创建你的第一个任务",
       "batchActions": {
         "actions_for_selected": "对勾选任务的操作",
-        "batch_failed_other": "{{count}} 个任务中有 {{failed}} 个无法更新",
+        "batch_failed_other": "{{action}}：{{count}} 个任务中有 {{failed}} 个失败。失败的任务保持选中。",
         "run_confirm_body": "每个任务现在都会开始一次新的运行。已暂停和正在运行的任务会被跳过。",
         "run_confirm_title_other": "立即运行 {{count}} 个任务？",
-        "strict_off": "关闭严格调度",
-        "strict_on": "开启严格调度"
+        "strict_off": "允许少量随机延迟",
+        "strict_on": "按准确时间运行"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}} 个任务中有 {{count}} 个无法移动",
