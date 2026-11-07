@@ -90,6 +90,7 @@ import { useSlotPush } from './slotPush'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
 import type { MessageRenderer } from './messageRenderers'
+import { ProseFencesContext, proseFenceSet } from '../components/codeBlockProse'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
@@ -204,6 +205,16 @@ export interface ChatEmbedProps {
    * Omitted, the built-in rows render as before.
    */
   renderers?: readonly MessageRenderer[]
+  /**
+   * Fence tags this chat draws wrapped, as it draws `markdown` and `text`
+   * fences: lines soft-wrap at the block's edge instead of scrolling sideways.
+   * The tag is the first word of the fence's info string, matched without
+   * regard to case. Use it for a fence the app defines to carry prose or a
+   * record (a proposed reply, a ticket update), not source code, which keeps
+   * its horizontal scroll. The reader's Wrap toggle still works on each block.
+   * Omitted, only the built-in prose tags wrap.
+   */
+  proseFences?: readonly string[]
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -410,9 +421,14 @@ function ChatEmbed({
   onArtifactOpen,
   hide,
   renderers,
+  proseFences,
 }: ChatEmbedProps) {
   const api = useAppApi()
   const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
+  // Keyed on the tags, not the array, so a host that passes a fresh literal
+  // each render does not redraw every code block.
+  const proseKey = (proseFences ?? []).join('\n')
+  const proseFenceTags = useMemo(() => proseFenceSet(proseKey ? proseKey.split('\n') : []), [proseKey])
   // The parking scope for receipts that outlive this instance: this app's
   // embeds for this slot (see embedSendRecovery).
   const appInfo = useAppInfo()
@@ -1318,60 +1334,63 @@ function ChatEmbed({
       {/* canTrust: this embed's approve routes through the slot approve
           endpoint (above), which records standing trust — the one mount
           allowed to offer the tier (#5434). */}
-      <ChatMessageList
-        ref={listRef}
-        messages={shownMessages}
-        running={running}
-        onApprove={approve}
-        onApproveBatch={approveBatch}
-        canTrust
-        toolDetails={!hidden('toolDetails')}
-        onFileOpen={onFileOpen}
-        onArtifactOpen={onArtifactOpen}
-        renderers={renderers}
-        // No hand-off: the embed's composer draft is unsaved local state that
-        // the hand-off's navigation to the main chat would discard.
-        handOff={false}
-        transcript={{
-          sessionId: `embed:${slotKey}`,
-          followOutput: !!startAtBottom,
-          initialPlacement: startAtBottom ? 'bottom' : 'top',
-          onAtBottomChange: setIsAtBottom,
-          scrollerStyle: { paddingTop: 16, paddingBottom: 16, minHeight: 0 },
+      {/* A host's own prose fences wrap like the built-in ones (`proseFences`). */}
+      <ProseFencesContext.Provider value={proseFenceTags}>
+        <ChatMessageList
+          ref={listRef}
+          messages={shownMessages}
+          running={running}
+          onApprove={approve}
+          onApproveBatch={approveBatch}
+          canTrust
+          toolDetails={!hidden('toolDetails')}
+          onFileOpen={onFileOpen}
+          onArtifactOpen={onArtifactOpen}
+          renderers={renderers}
           // No hand-off: the embed's composer draft is unsaved local state that
           // the hand-off's navigation to the main chat would discard.
-          earlier: { hasMore: canWiden, loading: widening, failed: widenFailed, onLoad: widenFailed ? retryWiden : widen, handOff: false },
-          aboveRows: loadFailed ? (
-            <div className="mx-4 my-3 flex items-start gap-2">
-              <ErrorNotice className="flex-1" testId="chat-embed-load-error" message={i18nT('components.chatPane.history_load_failed')} />
-              <button
-                type="button"
-                className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer hover:text-accent-hover"
-                onClick={() => { void refetch() }}
-              >
-                {i18nT('components.chatPane.retry')}
-              </button>
-            </div>
-          ) : messages.length === 0 && !running && !titlePending ? (
-            <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
-          ) : undefined,
-          // The main chat's working indicator (ChatFooter, shared with ChatPage
-          // and ChatPane), after the last row, so a running turn reads as "the
-          // reply is coming" where the reply will land. The poll carries the
-          // stop phase but no compaction state, so the compaction branch never applies.
-          belowRows: (
-            <ChatFooter
-              running={running}
-              stopping={shown?.stopping ?? false}
-              stopState={stopState}
-              state={running ? 'streaming' : ''}
-              lastRole={tail?.role ?? ''}
-              streamTick={tail?.role === 'streaming' ? (tail.content?.length ?? 0) : 0}
-              streamIdleMs={EMBED_STREAM_IDLE_MS}
-            />
-          ),
-        }}
-      />
+          handOff={false}
+          transcript={{
+            sessionId: `embed:${slotKey}`,
+            followOutput: !!startAtBottom,
+            initialPlacement: startAtBottom ? 'bottom' : 'top',
+            onAtBottomChange: setIsAtBottom,
+            scrollerStyle: { paddingTop: 16, paddingBottom: 16, minHeight: 0 },
+            // No hand-off: the embed's composer draft is unsaved local state that
+            // the hand-off's navigation to the main chat would discard.
+            earlier: { hasMore: canWiden, loading: widening, failed: widenFailed, onLoad: widenFailed ? retryWiden : widen, handOff: false },
+            aboveRows: loadFailed ? (
+              <div className="mx-4 my-3 flex items-start gap-2">
+                <ErrorNotice className="flex-1" testId="chat-embed-load-error" message={i18nT('components.chatPane.history_load_failed')} />
+                <button
+                  type="button"
+                  className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer hover:text-accent-hover"
+                  onClick={() => { void refetch() }}
+                >
+                  {i18nT('components.chatPane.retry')}
+                </button>
+              </div>
+            ) : messages.length === 0 && !running && !titlePending ? (
+              <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
+            ) : undefined,
+            // The main chat's working indicator (ChatFooter, shared with ChatPage
+            // and ChatPane), after the last row, so a running turn reads as "the
+            // reply is coming" where the reply will land. The poll carries the
+            // stop phase but no compaction state, so the compaction branch never applies.
+            belowRows: (
+              <ChatFooter
+                running={running}
+                stopping={shown?.stopping ?? false}
+                stopState={stopState}
+                state={running ? 'streaming' : ''}
+                lastRole={tail?.role ?? ''}
+                streamTick={tail?.role === 'streaming' ? (tail.content?.length ?? 0) : 0}
+                streamIdleMs={EMBED_STREAM_IDLE_MS}
+              />
+            ),
+          }}
+        />
+      </ProseFencesContext.Provider>
       {/* The send-tail row is announced visually by the new-message scroll;
           a screen-reader user would otherwise only notice the button
           re-enabling. A polite live region carries the same text. */}
