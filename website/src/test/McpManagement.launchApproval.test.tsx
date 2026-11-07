@@ -4,9 +4,10 @@
 // redesign, in the page's current vocabulary. A launch the gateway refused (a
 // changed command, or one declared outside the dashboard) runs nothing shared
 // until the person approves it on its own button:
-// - the row's switch reads off and, when pressed, writes NOTHING and reads
-//   nothing: it moves focus to the row's Approve button
+// - the row draws no switch: its two controls are Approve and Stop sharing,
+//   with a hint that nothing is approved
 // - Approve re-sends stub=true pinned to the refusal's own expected_launch
+// - Stop sharing takes the mark off (stub=false) and approves nothing
 // - a refusal with no approvable identity has no approve control, only a
 //   Remove button that takes the mark off (stub=false), never an approval
 // - an older gateway that sends no `launch_refused` keeps the plain states
@@ -76,21 +77,17 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('a refused launch', () => {
-  it('sends the switch of a refused row to its Approve button, reading nothing and writing nothing', async () => {
+  it('draws a refused row as Approve and Stop sharing with a hint, and no switch', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
-    const read = vi.spyOn(api, 'mcpGatewayLaunchPreview')
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
-    const control = await screen.findByRole('switch', { name: rowName('share_toggle') }, { timeout: 5000 })
-    expect(control.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(control)
-
-    const approve = screen.getByRole('button', { name: rowName('new_command_button') })
-    expect(document.activeElement).toBe(approve)
-    // The press is synchronous: it only moves focus, so nothing can be in flight.
-    expect(read).not.toHaveBeenCalled()
+    const stop = await screen.findByRole('button', { name: rowName('stop_sharing') }, { timeout: 5000 })
+    expect(screen.getByRole('button', { name: rowName('new_command_button') })).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: rowName('share_toggle') })).toBeNull()
+    expect(stop.getAttribute('aria-describedby')).toContain('mcp-stop-hint-alpha-mcp')
+    expect(screen.getByText(M('stop_sharing_hint'))).toBeTruthy()
     expect(setStub).not.toHaveBeenCalled()
   })
 
@@ -103,6 +100,18 @@ describe('a refused launch', () => {
     fireEvent.click(await screen.findByRole('button', { name: rowName('new_command_button') }, { timeout: 5000 }))
     await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b'), { timeout: 5000 })
     expect(setStub).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops sharing a refused row with stub=false, approving nothing', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: false } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: rowName('stop_sharing') }, { timeout: 5000 }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined), { timeout: 5000 })
+    expect(setStub).toHaveBeenCalledTimes(1)
+    expect(setStub).not.toHaveBeenCalledWith('alpha-mcp', true, expect.anything())
   })
 
   it('offers no approve control for a refusal with no approvable identity, only a Remove button', async () => {

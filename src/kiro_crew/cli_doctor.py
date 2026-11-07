@@ -956,10 +956,18 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     features._doctor_speech_to_text(cfg, issues)
 
     # ── Slack (optional) ──
-    channels._doctor_slack(cfg, dashboard.creds, dashboard.has_slack, issues)
+    channels._doctor_slack(
+        cfg,
+        dashboard.creds,
+        dashboard.has_slack,
+        issues,
+        creds_unreadable=dashboard.creds_unreadable,
+    )
 
     # ── Discord (optional) ──
-    channels._doctor_discord(cfg, dashboard.creds, dashboard.port, issues)
+    channels._doctor_discord(
+        cfg, dashboard.creds, dashboard.port, issues, creds_unreadable=dashboard.creds_unreadable
+    )
 
     # ── WhatsApp (optional) ──
     # Its own section rather than a line in the Slack one: WhatsApp's
@@ -968,7 +976,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     channels._doctor_whatsapp(cfg, issues)
 
     # ── Every other channel (optional) ──
-    channels._doctor_other_channels(cfg, dashboard.creds, issues)
+    channels._doctor_other_channels(
+        cfg, dashboard.creds, issues, creds_unreadable=dashboard.creds_unreadable
+    )
 
     # ── Loop-stall crash dumps ──
     workload._doctor_crash_dumps(issues)

@@ -8,7 +8,7 @@
  * exact launch the gateway resolved whether or not Details was open; a later
  * change to it still pauses sharing until the person presses again.
  */
-import { Fragment, useRef } from 'react'
+import { Fragment } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronRight } from 'lucide-react'
 import { api, type McpManagedServer } from '../../api/client'
@@ -323,10 +323,11 @@ function ShareSwitch({
  * approved, writes the share carrying its `expected_launch` (see
  * `McpManagement`). Turning it off stops sharing, or takes the mark off while
  * page-wide sharing is off. A row whose launch was refused runs nothing
- * shared, so its switch reads off, beside an "Approve update" button carrying
- * the refused launch's own `expected_launch`; pressing the switch writes
- * nothing and moves focus to that button. A refused launch with no approvable identity offers no
- * button and says why, and its switch takes the leftover mark off.
+ * shared, so it draws no switch: it offers an "Approve update" button carrying
+ * the refused launch's own `expected_launch` and a "Stop sharing" button that
+ * takes the mark off and approves nothing, with a one-line hint saying so. A
+ * refused launch with no approvable identity offers one Remove button and the
+ * row says why.
  */
 export function ShareAction({
   server,
@@ -351,13 +352,14 @@ export function ShareAction({
   onConfirm: (expectedLaunch: string) => void
   onStop: () => void
 }) {
-  const approveRef = useRef<HTMLButtonElement>(null)
   if (!server.can_stub) return null
   // Each control's accessible name is its visible label followed by the row's
   // server name, read from the page itself, so a voice command for the label
   // on screen matches it.
   const labelId = `mcp-share-label-${server.name}`
   const approveId = `mcp-approve-label-${server.name}`
+  const stopId = `mcp-stop-label-${server.name}`
+  const stopHintId = `mcp-stop-hint-${server.name}`
   const rowName = serverNameId(server.name)
   // On, the switch always turns off. Off, it turns on only where sharing works.
   // A marked row that cannot share (an env a shared copy would withhold, or a
@@ -399,30 +401,18 @@ export function ShareAction({
     // A server that reached the list without a press was never approved, so
     // its first approval is not an "update".
     const firstApproval = refusal.reason === 'added_outside_dashboard'
-    // A refused row runs nothing shared, so its switch reads off. Pressing it
-    // WRITES NOTHING: a changed launch is approved only by its own Approve
-    // button, after the person had the chance to read it, so the switch only
-    // moves focus there. With no approvable identity there is nothing to
-    // approve; that row is drawn with a Remove button above, never this switch.
-    // An approvable row reads off (nothing runs shared). A row with no
-    // approvable identity reads ON: it is still marked, and the press turns
-    // that mark off, so the switch says what the press does.
-    const refusedToggle = (
-      <ShareSwitch
-        on={false}
-        disabled={busy}
-        labelId={labelId}
-        labelledBy={`${labelId} ${rowName}`}
-        describedBy={describedBy}
-        onClick={() => approveRef.current?.focus()}
-      />
-    )
+    // A refused row runs nothing shared, so it draws no switch: its two
+    // controls are the launch's own Approve button, which approves only after
+    // the person had the chance to read it, and Stop sharing, which takes the
+    // mark off (stub=false) and approves nothing. With no approvable identity
+    // there is nothing to approve; that row is drawn with a Remove button above.
+    // Unreachable today (that row returns above); kept so a refusal that is not
+    // approvable can never fall through to an Approve button.
+    if (!approvable) return null
     return (
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-        {refusedToggle}
-        {approvable ? (
+      <div className="flex min-w-0 flex-col items-end gap-1">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
           <Btn
-            ref={approveRef}
             type="button"
             primary
             className={SHARE_BUTTON_CLASS}
@@ -436,8 +426,20 @@ export function ShareAction({
               {i18nT(firstApproval ? 'pages.mcpManagement.approve_button' : 'pages.mcpManagement.new_command_button')}
             </span>
           </Btn>
-        ) : null}
-        {/* No approvable identity means no button; the row's hint says why. */}
+          <Btn
+            type="button"
+            className={SHARE_BUTTON_CLASS}
+            disabled={busy}
+            aria-labelledby={`${stopId} ${rowName}`}
+            aria-describedby={`${stopHintId}${describedBy ? ` ${describedBy}` : ''}`}
+            onClick={onStop}
+          >
+            <span id={stopId}>{i18nT('pages.mcpManagement.stop_sharing')}</span>
+          </Btn>
+        </div>
+        <span id={stopHintId} className="text-[12px] text-[var(--muted)]">
+          {i18nT('pages.mcpManagement.stop_sharing_hint')}
+        </span>
       </div>
     )
   }

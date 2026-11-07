@@ -16503,6 +16503,8 @@
       "diff_env_added": "Env aggiunta: {{names}}",
       "diff_env_removed": "Env rimossa: {{names}}",
       "remove_mark": "Rimuovi",
+      "stop_sharing": "Interrompi la condivisione",
+      "stop_sharing_hint": "Rimuove il contrassegno di condivisione senza approvare il nuovo comando. I server in pausa contano come non condivisi.",
       "footprint_failed": "Impossibile leggere quanta memoria usano i server MCP.",
       "footprint_owner_only": "I dati sulla memoria sono visibili solo al proprietario della crew.",
       "review_what_approve_does": "Approva: una sola copia lo esegue per tutte le chat, fuori dalla loro sandbox. Salta: continua a girare dentro ogni chat.",

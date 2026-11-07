@@ -15689,6 +15689,8 @@
       "diff_env_added": "追加された環境変数: {{names}}",
       "diff_env_removed": "削除された環境変数: {{names}}",
       "remove_mark": "外す",
+      "stop_sharing": "共有をやめる",
+      "stop_sharing_hint": "新しいコマンドを承認せずに共有の印を外します。一時停止中のサーバーは共有されていないものとして数えます。",
       "footprint_failed": "MCP サーバーのメモリ使用量を読み取れませんでした。",
       "footprint_owner_only": "メモリの数値はクルーのオーナーだけが確認できます。",
       "review_what_approve_does": "承認: 1 つのコピーがすべてのチャットのためにこれを、各チャットのサンドボックスの外で実行します。スキップ: 各チャットの中で動き続けます。",

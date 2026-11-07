@@ -16096,6 +16096,8 @@
       "diff_env_added": "Env hinzugefügt: {{names}}",
       "diff_env_removed": "Env entfernt: {{names}}",
       "remove_mark": "Entfernen",
+      "stop_sharing": "Teilen beenden",
+      "stop_sharing_hint": "Entfernt die Freigabemarkierung, ohne den neuen Befehl zu genehmigen. Pausierte Server zählen als nicht geteilt.",
       "footprint_failed": "Der Speicherverbrauch der MCP-Server konnte nicht gelesen werden.",
       "footprint_owner_only": "Die Speicherwerte sieht nur der Crew-Eigentümer.",
       "review_what_approve_does": "Freigeben: Eine Kopie führt dies für alle Chats aus, außerhalb ihrer Sandbox. Überspringen: Es läuft weiter in jedem Chat.",
