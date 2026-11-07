@@ -14,7 +14,7 @@ import {
   Rocket,
 } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
-import { fmtBytes, fmtPercent, fmtUnit } from '../../i18n/format'
+import { fmtBytes, fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import {
   filterStepMarkers, syncFailureTail, lastLine, provPhase, fmtElapsed, memColor, type PodResources,
   type IssueRef, type TicketRef, type Worktree, type UndoTarget, type FleetData, type SyncRun, type ProvRun,
@@ -60,7 +60,7 @@ export function PodReadout({ r }: { r?: PodResources | null }) {
     parts.push(<span key="cpu" style={chip} title={i18nT('pages.devFleetPage.pod_cpu_usage')}>{fmtPercent(r.cpu_pct / 100, { maximumFractionDigits: 1 })}</span>)
   }
   if (r.tasks != null) {
-    parts.push(<span key="tasks" style={chip} title={i18nT('pages.devFleetPage.pod_task_count')}>{r.tasks} {i18nT('pages.devFleetPage.pod_tasks_label')}</span>)
+    parts.push(<span key="tasks" style={chip} title={i18nT('pages.devFleetPage.pod_task_count')}>{i18nT('pages.devFleetPage.pod_task_chip', { count: r.tasks, n: fmtNumber(r.tasks) })}</span>)
   }
   if (parts.length === 0) return null
   return (

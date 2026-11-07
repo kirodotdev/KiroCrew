@@ -276,6 +276,7 @@
   "pages.chatSidebar.retry_failed_session",
   "pages.chatSidebar.workflow_running",
   "pages.devFleetPage.commits_behind_main_2",
+  "pages.devFleetPage.pod_task_chip",
   "pages.devFleetPage.prune_failed_count",
   "pages.devFleetPage.pruned_worktrees",
   "pages.devFleetPage.pruned_worktrees_some_failed",
