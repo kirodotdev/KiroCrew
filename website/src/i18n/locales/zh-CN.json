@@ -18202,6 +18202,8 @@
         "folder_count_includes_subfolders": "文件夹计数包含子文件夹内容",
         "folder_count_includes_subfolders_description": "文件夹的计数会加上其子文件夹里的全部内容，折叠后也能看出里面有多少",
         "full_titles_on_scroll": "滚动时显示完整标题",
+        "needs_me_hover_card": "悬停时显示快速回复卡片",
+        "needs_me_hover_card_hint": "鼠标停在等你处理的会话上，或在它上面按 →，会打开一张卡片，不离开当前聊天就能回复。",
         "full_titles_on_scroll_description": "滚动会话列表时，完整显示被侧边栏截断的标题",
         "session_title_lines": "会话卡片的标题行数",
         "session_title_lines_desc": "会话标题在被截断前可占用的行数",

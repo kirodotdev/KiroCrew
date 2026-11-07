@@ -10478,6 +10478,8 @@
         "folder_count_includes_subfolders": "Include Subfolder Contents in Folder Counts",
         "folder_count_includes_subfolders_description": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds",
         "full_titles_on_scroll": "Show Full Titles While Scrolling",
+        "needs_me_hover_card": "Quick Reply Card on Hover",
+        "needs_me_hover_card_hint": "Resting on a session that waits on you, or pressing → on it, opens a card to reply without leaving this chat.",
         "full_titles_on_scroll_description": "While you scroll the session list, cut-off titles show in full",
         "session_title_lines": "Title Lines on Session Cards",
         "session_title_lines_desc": "How many lines a session title can use before it is cut off",

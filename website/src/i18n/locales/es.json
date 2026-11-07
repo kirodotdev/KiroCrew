@@ -19174,6 +19174,8 @@
         "folder_count_includes_subfolders": "Incluir el contenido de las subcarpetas en el recuento de carpetas",
         "folder_count_includes_subfolders_description": "El recuento de una carpeta suma también todo lo que hay en sus subcarpetas, así una carpeta contraída muestra cuánto contiene",
         "full_titles_on_scroll": "Mostrar títulos completos al desplazarse",
+        "needs_me_hover_card": "Tarjeta de respuesta rápida al pasar el cursor",
+        "needs_me_hover_card_hint": "Si dejas el cursor sobre una sesión que te espera, o pulsas → en ella, se abre una tarjeta para responder sin salir de este chat.",
         "full_titles_on_scroll_description": "Al desplazar la lista de sesiones, los títulos que recorta la barra lateral se muestran completos",
         "session_title_lines": "Líneas de título en las tarjetas de sesión",
         "session_title_lines_desc": "Cuántas líneas puede ocupar el título de una sesión antes de recortarse",

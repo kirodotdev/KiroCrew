@@ -1562,6 +1562,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.quick-reply-card-on-hover",
+    "label": "Quick Reply Card on Hover",
+    "labelKey": "pages.settings.chatPanel.needs_me_hover_card",
+    "hint": "Resting on a session that waits on you, or pressing → on it, opens a card to reply without leaving this chat.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "labelKey": "pages.settings.chatPanel.quick_send",

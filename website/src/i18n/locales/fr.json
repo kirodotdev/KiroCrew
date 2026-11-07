@@ -19174,6 +19174,8 @@
         "folder_count_includes_subfolders": "Inclure le contenu des sous-dossiers dans le décompte des dossiers",
         "folder_count_includes_subfolders_description": "Le décompte d'un dossier inclut aussi tout ce que contiennent ses sous-dossiers : replié, un dossier montre combien il contient",
         "full_titles_on_scroll": "Afficher les titres complets pendant le défilement",
+        "needs_me_hover_card": "Carte de réponse rapide au survol",
+        "needs_me_hover_card_hint": "Quand tu restes sur une session qui t’attend, ou que tu appuies sur → dessus, une carte s’ouvre pour répondre sans quitter ce chat.",
         "full_titles_on_scroll_description": "Pendant le défilement de la liste des sessions, les titres coupés par la barre latérale s'affichent en entier",
         "session_title_lines": "Lignes de titre sur les cartes de session",
         "session_title_lines_desc": "Nombre de lignes qu'un titre de session peut occuper avant d'être coupé",
