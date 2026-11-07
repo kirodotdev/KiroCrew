@@ -407,7 +407,7 @@ class TestTeardownUsesPortableSignalConstant:
                 "kiro_crew.platform_compat.kill_process_group", return_value=True
             ) as mock_group,
         ):
-            await manager._reap_orphaned_backends()
+            await manager._reap_orphaned_backends("test")
 
         assert mock_group.call_args.args == (111, 9)
         # The reap ran to its end: the record of the gone generation is removed.
@@ -451,7 +451,7 @@ class TestOrphanReapIsPlatformCorrect:
             patch("os.getpgid", side_effect=_forbid, create=True),
             patch("os.killpg", side_effect=_forbid, create=True),
         ):
-            await manager._reap_orphaned_backends()
+            await manager._reap_orphaned_backends("test")
 
         assert calls == [(111, True), (222, True)]
 
