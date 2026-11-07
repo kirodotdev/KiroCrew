@@ -685,7 +685,12 @@ def _url_payload_command(n: int) -> str:
 #: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
 #: it, and the catalog comment on why their call names stand bare (both rows match
 #: exactly what they matched). Nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_548
+#: Raised by 39, from 34,548, for pass 4's prefix snapshot: ``redact_credentials`` takes
+#: an optional ``token_param_prefixes`` that replaces pass 4's live read, the diagram scan
+#: (``_document_link_spans``, ``_plantuml_verdict``) hands it to its nested call, and
+#: ``_well_formed_token_param_prefixes`` is the one shape gate the live read and a
+#: snapshot share. No rule, pattern or pass changed. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_587
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
