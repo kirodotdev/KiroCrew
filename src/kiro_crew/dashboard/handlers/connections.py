@@ -892,17 +892,20 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
         await asyncio.to_thread(crew_oauth.holds_grant, slug) is True
     ):
         # Crew holds one grant per provider and nothing else shares it, so
-        # Disconnect always revokes it upstream, deletes the vault entry and cuts
-        # every live bridge. The native-artifact census above governs only the
-        # runtime's own grant.
-        from kiro_crew.connections import crew_oauth_proxy
-
-        crew_oauth_proxy.drop_slug(slug)
+        # Disconnect always revokes it upstream and deletes the vault entry. Live
+        # bridges stay registered: with no stored pair the proxy answers each call
+        # "reconnect it" (409) and sends nothing upstream, and a later Connect
+        # makes the same bridges work again (#31149 item 1). The native-artifact
+        # census above governs only the runtime's own grant.
         try:
             crew_result = await crew_oauth.disconnect(slug)
         except Exception as exc:  # noqa: BLE001 -- reported, never silently skipped
             logger.warning("Crew-held grant cleanup failed for %s (%s)", slug, type(exc).__name__)
             crew_result = {"removed": False, "revoked": False, "failed": True}
+            # The pair may still be stored: fail closed and cut every live bridge.
+            from kiro_crew.connections import crew_oauth_proxy
+
+            crew_oauth_proxy.drop_slug(slug)
     removed = scope.grant_removed
     # Asked rather than inferred from ``removed``: a survivor is what decides
     # whether this Disconnect actually held. Read outside the lock on purpose --
