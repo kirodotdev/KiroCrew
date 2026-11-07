@@ -40,9 +40,10 @@ const ToolRiskBadge = memo(function ToolRiskBadge({ record }: { record: ToolRisk
   // `text-warn` for both tiers, not `text-danger` for `risky`: the danger colour
   // is what this transcript uses for a call that was BLOCKED, and using it for an
   // annotation on a call that ran would say the opposite of what happened.
+  // `flex-wrap`: on a phone the note and the thumbs wrap rather than squeeze the note.
   return (
     <div
-      className="ml-5 mt-1 flex items-center gap-1.5 min-w-0 text-[12px] leading-5 text-muted"
+      className="ml-5 mt-1 flex flex-wrap items-center gap-1.5 min-w-0 text-[12px] leading-5 text-muted"
       data-testid="tool-risk-badge"
       data-tier={record.tier}
     >
@@ -71,7 +72,8 @@ const ToolRiskBadge = memo(function ToolRiskBadge({ record }: { record: ToolRisk
       <VerdictThumbs
         turnId={record.turnId}
         side="jev"
-        label={i18nT('pages.chat.toolRiskBadge.rate_jev')}
+        // Says a press is only feedback; Jev's name already opens the line.
+        label={i18nT('pages.chat.toolRiskBadge.rate_label')}
         rightLabel={i18nT('pages.chat.toolRiskBadge.rate_right_jev')}
         wrongLabel={i18nT('pages.chat.toolRiskBadge.rate_wrong_jev')}
         testIdStem="tool-risk-badge"

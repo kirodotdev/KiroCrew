@@ -13529,7 +13529,7 @@
         "annotation_note": "simple signalement, n'a rien autorisé ni bloqué",
         "confidence_title": "La confiance de Jev dans sa propre réponse, de 0 à 1",
         "labelled_tier": "Jev : {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "Simple avis",
         "rate_right_jev": "Jev a bien évalué le risque",
         "rate_wrong_jev": "Jev a mal évalué le risque",
         "tier_caution": "à regarder",

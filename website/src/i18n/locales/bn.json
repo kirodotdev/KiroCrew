@@ -13231,7 +13231,7 @@
         "annotation_note": "শুধু চিহ্ন, এটি অনুমতি দেয়নি বা আটকায়নি",
         "confidence_title": "নিজের উত্তরে Jev-এর আত্মবিশ্বাস, 0 থেকে 1",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "শুধু মতামত",
         "rate_right_jev": "Jev ঝুঁকিটা ঠিক বুঝেছে",
         "rate_wrong_jev": "Jev ঝুঁকিটা ভুল বুঝেছে",
         "tier_caution": "দেখে নেওয়া ভালো",
