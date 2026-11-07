@@ -1064,6 +1064,25 @@ def any_configured_profile_governs(ref: str) -> bool:
     )
 
 
+def any_configured_profile_constrains(scope: str) -> bool:
+    """True if ANY loaded profile's ruleset for *scope* constrains anything.
+
+    The scope-level sibling of :func:`any_configured_profile_governs`, for a reader
+    with no ref to ask about: a harness whose calls carry no identity in that scope
+    (``governance.mcp_scope_governed_now``). Same fail-closed rule for an
+    unresolved store.
+    """
+    from kiro_crew.platform.governance import _ruleset_has_an_opinion
+    from kiro_crew.platform.governance_parts.evaluator import policy_level_control
+
+    if not _STORE.resolved():
+        return True
+    return any(
+        _ruleset_has_an_opinion(policy_level_control(profile, scope))  # type: ignore[arg-type]
+        for profile in _STORE.all_profiles()
+    )
+
+
 def any_configured_profile_has_say(ref: str) -> bool:
     """:func:`any_configured_profile_governs` without ``may_skip_gate``'s floor clause.
 

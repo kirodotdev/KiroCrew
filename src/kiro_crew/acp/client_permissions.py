@@ -21,13 +21,14 @@ Instance fields read: ``_acp_config_options``, ``_agent``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
 ``_tool_call_mcp_server``, ``_tool_call_params``, ``_tool_call_tool_name``,
-``_tool_call_unclassified``.
+``_tool_call_unclassified``, ``_unasked_shell_tripwire``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
@@ -47,9 +48,16 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.copilot import COPILOT_IDENTITY_OVERFLOW
+from kiro_crew.acp.harness_tool_names import (
+    HARNESS_TOOL_TABLES,
+    HARNESS_UNASKED_TOOL_IDS,
+    canonical_tool_params,
+    mimocode_actor_asks_nothing,
+)
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     JSONRPC_METHOD_NOT_FOUND,
     OPTION_ALLOW_ALWAYS,
@@ -67,6 +75,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     session_config_drift_issue,
 )
+from kiro_crew.platform.tool_paths import edit_target_candidates
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
@@ -76,6 +85,11 @@ if TYPE_CHECKING:
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
+
+#: MiMo Code's own allow option ids (``acp/agent.ts:147-149`` on 0.1.15), read when
+#: an explicit answer arrives for a request whose options were not recorded.
+_MIMOCODE_OPTION_ONCE = "once"
+_MIMOCODE_OPTION_ALWAYS = "always"
 
 
 # No CODEX_PATH constant: the adapter ships a compatible Codex binary as an npm
@@ -383,6 +397,29 @@ async def approve_tool(
         # allow-always in that slot too.
         once = offered.get("once")
         resolved_id = once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+    if getattr(self, "_unasked_shell_tripwire", False):
+        # On a session the unasked-shell tripwire watches, an "always" answer is
+        # sent as "once". The harness would otherwise stop asking about every later
+        # call matching the approved pattern, and the tripwire cannot tell such a
+        # call from one the harness's own skip-all switch let through: the session
+        # would be killed for the operator's own choice. Crew's side of the grant
+        # is unaffected, so the next ask is still answered by it.
+        # An explicit always id with no recorded options is matched by its spelling:
+        # the canonical one, or the harness's own (``acp/agent.ts:147-149`` on MiMo
+        # Code 0.1.15 advertises ``once``/``always``/``reject``).
+        options = recorded if recorded is not None else self._permission_options.get(request_id)
+        options = options or {}
+        once_by_always = {
+            OPTION_ALLOW_ALWAYS: OPTION_ALLOW_ONCE,
+            _MIMOCODE_OPTION_ALWAYS: _MIMOCODE_OPTION_ONCE,
+        }
+        if options.get("always"):
+            once_by_always[options["always"]] = OPTION_ALLOW_ONCE
+        once_id = once_by_always.get(resolved_id)
+        if once_id is not None:
+            once_id = options.get("once") or once_id
+            if once_id != resolved_id:
+                resolved_id = once_id
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     # The approval mints the single-use mediated-secret capability for this call
@@ -453,7 +490,8 @@ def _note_pi_gate_denied(self: AcpClient, request_id: str | int) -> None:
     pi honours the extension's ``{block: true}`` by not running the call; that
     link is the adapter's and the harness's, not Kiro Crew's, so it is guarded
     in band like the other two: a denied call that later reports ``completed``
-    trips :meth:`_tripwire_pi_gate`. No-op for a request no envelope named.
+    trips :meth:`_tripwire_pi_gate`. No-op for a request :meth:`_note_pi_gate_asked`
+    did not record (no envelope named it, or the session arms no tripwire).
     """
     tool_call_id = getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
     if tool_call_id:
@@ -1046,8 +1084,29 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
     the read-back booted: this is the check that speaks for the SESSION's own
     child, so a session whose real child composed no gate cannot complete a single
     tool call unnoticed.
+
+    Armed a third way for a harness whose seeded asking posture can be switched off
+    mid-session from outside the read-back's sight (MiMo Code's loopback ``skip-all``
+    route, ``acp.harness.mimocode``). There an unasked completion trips unless the
+    harness runs that call without asking by design (:func:`_unasked_call_is_expected`):
+    a tool in its :data:`HARNESS_UNASKED_TOOL_IDS` row, or a file write (its
+    ``fs_write`` row) whose every target lies inside :attr:`_mimocode_memory_root`, the
+    one tree its edit tools write under without asking. Every other tool, MCP tools
+    included, asks under the seeded posture, so its unasked completion is a call the
+    gate never saw. A denied call that completes trips whatever its kind, as on
+    the other two. So does a call that completes while Crew's answer to its
+    permission request is still outstanding: the same listener answers a pending
+    request on ``POST /permission/:id/reply``, and an answer Crew did not send is one
+    its gate never gave. ``approve_tool`` and ``reject_tool`` remove the request from
+    the outstanding set before their answer is written, so Crew's own answer can never
+    arrive after the completion it allowed.
     """
-    if not (getattr(self, "_pi_gate_nonce", "") or getattr(self, "_deepseek_gate_nonce", "")):
+    shell_only = bool(getattr(self, "_unasked_shell_tripwire", False))
+    if not (
+        getattr(self, "_pi_gate_nonce", "")
+        or getattr(self, "_deepseek_gate_nonce", "")
+        or shell_only
+    ):
         return
     params = msg.params if isinstance(msg.params, dict) else {}
     update = params.get("update")
@@ -1081,14 +1140,26 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
     denied = tool_call_id in self._pi_gate_denied_ids
     self._pi_gate_asked_ids.discard(tool_call_id)
     self._pi_gate_denied_ids.discard(tool_call_id)
+    unanswered = shell_only and _consume_unanswered_asks(self, tool_call_id)
     if status != "completed":
         return
+    is_shell = _completed_call_is_shell(
+        update, getattr(self, "_tool_call_is_shell", {}).get(tool_call_id)
+    )
     if denied:
         # Third link: pi did not honour the extension's block. The call the host
         # refused ran anyway, which is the outcome the whole chain exists to
         # prevent, so it ends the session the same way an unasked call does.
         outcome, what = "ran_despite_deny", "after Kiro Crew's gate DENIED it"
+    elif unanswered:
+        outcome, what = "ran_before_answer", "before Kiro Crew answered its permission request"
     elif not asked:
+        if (
+            shell_only
+            and not is_shell
+            and await _unasked_call_is_expected(self, update, tool_call_id)
+        ):
+            return
         outcome, what = "ran_without_gate", "without asking Kiro Crew's gate"
     else:
         return
@@ -1107,7 +1178,10 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
             tool_name=tool_call_id,
             tool_kind="other",
             outcome=outcome,
-            metadata={"reason": "pi_gate_tripwire", "backend": self.backend},
+            metadata={
+                "reason": "unasked_shell_tripwire" if shell_only else "pi_gate_tripwire",
+                "backend": self.backend,
+            },
         )
     except Exception:  # pragma: no cover - audit is best-effort
         logger.debug("pi gate: audit of the tripwire failed", exc_info=True)
@@ -1115,6 +1189,19 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
     # The remedy is per harness because the unpinned link differs: pi's is the
     # adapter that must keep running Crew's launcher and forwarding dialogs, and
     # this harness's is the plugin composition its own launcher performs.
+    if shell_only:
+        remedy = (
+            "Start a new chat. Something answered or switched off the harness's "
+            "approvals mid-session -- for MiMo Code, a request to its own loopback "
+            "permission route, or an approval it stored earlier -- so its tool calls "
+            "no longer reach Kiro Crew's gate."
+        )
+        call = "shell call" if is_shell else "tool call"
+        raise AcpToolGateUnroutable(
+            f"{acp_tool_gate.label_for(self.backend)} ran {call} {tool_call_id} "
+            f"{what}, so its asking posture is no longer in force for this session; the "
+            f"harness was stopped. {remedy}"
+        )
     if self._is_deepseek:
         remedy = (
             "Start a new chat, and if it recurs check the harness version: its "
@@ -1133,6 +1220,111 @@ async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
         "so the gate extension is no longer in force for this session; the harness was "
         f"stopped. {remedy}"
     )
+
+
+def _consume_unanswered_asks(client: AcpClient, tool_call_id: str) -> bool:
+    """Drop every permission request still outstanding for *tool_call_id*; True if any.
+
+    ``_pi_gate_request_tool`` holds a request from the frame that asked until Crew
+    answers it, so an entry left at the call's terminal frame is an ask the call
+    finished without. Consumed whichever way the call ended, like the asked and
+    denied sets, because ids recur within a session.
+    """
+    pending = getattr(client, "_pi_gate_request_tool", {})
+    stale = [request for request, call in pending.items() if call == tool_call_id]
+    for request in stale:
+        pending.pop(request, None)
+    return bool(stale)
+
+
+async def _unasked_call_is_expected(client: AcpClient, update: dict, tool_call_id: str) -> bool:
+    """Whether an unasked completed call is one the harness runs without asking by design.
+
+    The tool is the one the call's first frame named. Expected: a tool in this
+    backend's :data:`HARNESS_UNASKED_TOOL_IDS` row (MiMo Code's ``actor`` only when
+    its input starts no subagent, :func:`mimocode_actor_asks_nothing`), or a tool in
+    its ``fs_write`` row whose every target is inside the memory tree. Anything else,
+    an MCP tool or a tool whose name was never recorded included, is not.
+    """
+    name = getattr(client, "_tool_call_harness_tool_name", {}).get(tool_call_id, "")
+    if name == "actor" and client.backend == ACP_BACKEND_MIMOCODE:
+        return mimocode_actor_asks_nothing(_completed_call_input(client, update, tool_call_id))
+    if name in HARNESS_UNASKED_TOOL_IDS.get(client.backend, frozenset()):
+        return True
+    if name in HARNESS_TOOL_TABLES.get(client.backend, {}).get("fs_write", ()):
+        return not await _unasked_write_outside_memory(client, update, tool_call_id)
+    return False
+
+
+async def _unasked_write_outside_memory(client: AcpClient, update: dict, tool_call_id: str) -> bool:
+    """Whether an unasked completed file write names a target outside the memory tree.
+
+    The tree is :attr:`_mimocode_memory_root`, recorded by the launch that armed the
+    tripwire; a session without one has no tree, so every target counts as outside.
+    The targets are read the way the edit gate reads them (the terminal frame's own
+    input, else the cached one, under the backend's argument aliases, plus any diff
+    block). A target set that cannot be read, or any target whose resolved path is
+    outside the tree, counts as outside: the harness asks for every write elsewhere,
+    so an unasked one is a write its gate never saw. Resolved off the loop, because it
+    reads the filesystem.
+    """
+    root = getattr(client, "_mimocode_memory_root", "")
+    if not root:
+        return True
+    params = canonical_tool_params(
+        client.backend, _completed_call_input(client, update, tool_call_id)
+    )
+    diff_path = ""
+    content = update.get("content")
+    for block in content if isinstance(content, list) else ():
+        if isinstance(block, dict) and block.get("type") == "diff":
+            path = block.get("path")
+            if isinstance(path, str) and path:
+                diff_path = path
+                break
+    candidates = edit_target_candidates(params, diff_path, tool_kind="edit")
+    if candidates.truncated or candidates.unanchored or not candidates:
+        return True
+    work_dir = getattr(client, "_spawn_work_dir", "") or os.getcwd()
+    return await asyncio.to_thread(_any_outside, list(candidates), root, work_dir)
+
+
+def _completed_call_input(client: AcpClient, update: dict, tool_call_id: str) -> dict | None:
+    """A completed call's input: its terminal frame's own, else the one cached for it."""
+    raw = update.get("rawInput")
+    if isinstance(raw, dict) and raw:
+        return raw
+    cached = getattr(client, "_tool_call_params", {}).get(tool_call_id)
+    return cached if isinstance(cached, dict) else None
+
+
+def _any_outside(paths: list[str], root: str, work_dir: str) -> bool:
+    """True when any of *paths*, resolved against *work_dir*, is not under *root*."""
+    real_root = os.path.realpath(root)
+    for path in paths:
+        expanded = os.path.expanduser(path)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(work_dir, expanded)
+        real = os.path.realpath(expanded)
+        try:
+            if os.path.commonpath([real, real_root]) != real_root:
+                return True
+        except ValueError:
+            return True
+    return False
+
+
+def _completed_call_is_shell(update: dict, cached_is_shell: object) -> bool:
+    """Whether a terminal ``tool_call_update`` reports a shell call.
+
+    The frame's own ``kind`` when it carries one (MiMo Code repeats ``execute`` on
+    every update of a shell call), else *cached_is_shell*, the classification the
+    call's earlier frames left in the client's cache.
+    """
+    kind = update.get("kind")
+    if isinstance(kind, str) and kind:
+        return kind == "execute"
+    return cached_is_shell is True
 
 
 def _audit_spec_restriction(
@@ -1284,7 +1476,8 @@ def _note_pi_gate_asked(self: AcpClient, msg: JsonRpcMessage) -> None:
     the gate asked about it first, so this must run on EVERY path that answers a
     permission frame -- the streaming dispatch, which builds the event
     unconditionally, and the auto-approve site, which builds one only under a
-    spec deny set. Idempotent, and a no-op without a session nonce.
+    spec deny set. Idempotent, and a no-op on a session that arms none of the three
+    tripwires (a gate-extension nonce, or ``_unasked_shell_tripwire``).
 
     Two shapes, one tripwire. pi's adapter can only forward a generic confirm
     DIALOG, so the real call rides inside it as the envelope Crew's extension
@@ -1322,7 +1515,9 @@ def _note_pi_gate_asked(self: AcpClient, msg: JsonRpcMessage) -> None:
         envelope = gate_envelope(tool_call, pi_nonce)
         if envelope is not None and envelope["toolCallId"]:
             tool_call_id = envelope["toolCallId"]
-    elif getattr(self, "_deepseek_gate_nonce", ""):
+    elif getattr(self, "_deepseek_gate_nonce", "") or getattr(
+        self, "_unasked_shell_tripwire", False
+    ):
         candidate = tool_call.get("toolCallId")
         if isinstance(candidate, str):
             tool_call_id = candidate

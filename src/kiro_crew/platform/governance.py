@@ -878,6 +878,37 @@ def may_grant_builtin_at_gate_now(ref: str) -> bool:
     return may_grant_builtin_at_gate(ref, ceiling)
 
 
+def mcp_scope_governed_now() -> bool:
+    """Whether the installed ceiling or any configured profile constrains ``mcp`` at all.
+
+    For a harness whose MCP calls reach the gate with NO server or tool identity --
+    an OpenCode-family harness sends a fused ``<server>_<tool>`` title and nothing
+    else -- the gate never asks the ``mcp`` scope about a call
+    (``GateFacts.governance_own_scopes`` is empty for it), so every ``mcp`` control
+    is one the gate cannot apply there: a deny of ``@ops/repo.delete`` as much as an
+    allow-mode list. Such a harness asks this BEFORE it mounts a server and refuses
+    the session when the answer is yes, which is the only place the control can
+    still hold. Scope-level on purpose: a pattern scan would answer "is this server
+    named", and the question here is "is there anything the fused title would hide".
+
+    Fails CLOSED, as :func:`may_skip_gate_now` does: an unreadable ceiling or an
+    unresolved profile store answers True. Reads the POLICY level through
+    :func:`policy_level_control`, so an enterprise build's baseline counts.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        ceiling = getattr(current_context(), "governance", None)
+        if _ruleset_has_an_opinion(policy_level_control(ceiling, "mcp")):
+            return True
+        from kiro_crew.platform.governance_profiles import any_configured_profile_constrains
+
+        return any_configured_profile_constrains("mcp")
+    except Exception:  # noqa: BLE001 -- cannot tell -> governed
+        logger.warning("cannot resolve the governance ceiling or profiles for the mcp scope")
+        return True
+
+
 def withheld_by_confirm_tools(ref: str) -> bool:
     """Whether ``hooks.confirm_tools``, and not the security policy, withholds ``ref``'s grant.
 
