@@ -621,7 +621,7 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
       )}
 
       <div className="flex items-center gap-2 mt-3">
-        <Btn onClick={saveTheme} className="bg-accent text-accent-fg hover:bg-accent-hover" disabled={saving || (creatorMode === 'css' && !cssImport.recognized)}
+        <Btn primary onClick={saveTheme} disabled={saving || (creatorMode === 'css' && !cssImport.recognized)}
           aria-describedby={creatorMode === 'css' && !cssImport.recognized ? 'theme-editor-css-summary' : undefined}>
           {saving ? i18nT('components.themeEditor.saving') : isEditing ? i18nT('components.themeEditor.update_theme') : i18nT('components.themeEditor.save_theme')}
         </Btn>
