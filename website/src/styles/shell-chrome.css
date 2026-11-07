@@ -500,9 +500,9 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
 .focus-peek-rail{width:10px}
 
 /* no-drag only while the chrome is HIDDEN. While it is shown the drag surface is
-   the header (Windows/Linux, below) or the .host-drag-strip gap strips (macOS,
-   App.tsx), and a no-drag strip laid over the band's top 10px could only subtract
-   from it. Hidden, the injected drag bar is collapsed to 0 anyway, so this is a
+   the header (Windows/Linux, below) and the .host-drag-strip gap strips over
+   it (macOS and Windows, App.tsx), and a no-drag strip laid over the band's
+   top 10px could only subtract from it. Hidden, the injected drag bar is collapsed to 0 anyway, so this is a
    backstop rather than load-bearing. */
 body.mc-focus-mode:not(.mc-focus-chrome) .focus-peek-top{-webkit-app-region:no-drag}
 body.mc-focus-mode:not(.mc-focus-rail) .focus-peek-rail{-webkit-app-region:no-drag}

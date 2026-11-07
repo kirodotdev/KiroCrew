@@ -183,7 +183,8 @@ export function observeDocumentLayout(onChange: () => void, doc: Document = docu
     frame = requestAnimationFrame(() => { frame = 0; onChange() })
   }
   const mo = new MutationObserver(schedule)
-  mo.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] })
+  // From <html>, whose inline style carries the Windows caption reserve.
+  mo.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] })
   doc.addEventListener('transitionend', schedule, true)
   doc.addEventListener('animationend', schedule, true)
   // Focus-only styles (a skip link shown on :focus) move boxes without any
