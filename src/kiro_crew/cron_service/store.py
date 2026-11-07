@@ -38,6 +38,7 @@ from kiro_crew.cron_service.zone_default_migration import (
     LOCAL_DEFAULT_STORE_VERSION,
     predates_local_default,
 )
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
 
 logger = logging.getLogger("kiro_crew.cron")
 
@@ -207,7 +208,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
     No ``AttributeError`` is possible for ``json.loads`` output (every ``.get()``
     follows a ``[...]`` subscript, which only a ``dict`` survives), so one here
     is a code defect. ``_load`` lets it propagate: treating it as a malformed
-    record would erase a valid job from disk on the next save.
+    record would quietly stop a valid job from running.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -658,6 +659,7 @@ def encode_store(
     version: int = _STORE_VERSION,
     extra: Mapping[str, Any] | None = None,
     unknown_fields: Mapping[str, UnknownFields] | None = None,
+    skipped: Iterable[Any] = (),
 ) -> str:
     """The whole store document for ``jobs``, as ``_save`` writes it (two-space indent).
 
@@ -669,6 +671,9 @@ def encode_store(
     with them. ``version`` is written as given: the decoder's, never lower than the
     one read, or the older version a store whose upgrade had to wait keeps. A store with no
     unknown keys encodes exactly as it did before.
+
+    ``skipped`` is :attr:`StoreDocument.skipped`, the records the decoder kept,
+    written back after the jobs.
     """
     fields_by_job = unknown_fields or {}
     records = []
@@ -681,6 +686,7 @@ def encode_store(
             for key, value in unknown.job.items():
                 record.setdefault(key, value)
         records.append(record)
+    records.extend(skipped)
     data: dict[str, Any] = {
         "version": version,
         "jobs": records,
@@ -705,6 +711,8 @@ class StoreDocument:
     ``version`` is the document's version when it is an integer above this build's,
     else this build's. ``extra`` holds the top-level keys other than ``version`` and
     ``jobs``; ``unknown_fields`` maps a loaded job's id to its unknown keys.
+    ``skipped`` holds each ``jobs[]`` object no job could be built from, as read, when
+    the store document still nests within ``MAX_DOCUMENT_NESTING`` with it.
     """
 
     jobs: list[CronJob]
@@ -713,6 +721,7 @@ class StoreDocument:
     unknown_fields: Mapping[str, UnknownFields]
     #: Written before an unset zone followed the host; see ``zone_default_migration``.
     predates_local_default: bool = False
+    skipped: tuple[Any, ...] = ()
 
 
 def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
@@ -770,21 +779,35 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             kept_total = extra_size
     unknown_fields: dict[str, UnknownFields] = {}
     past_total = 0
-    # Per-entry isolation: a bad record is warned about and skipped, the
-    # rest survive. Only KeyError/TypeError are bad-data signals; an
-    # AttributeError is a code defect and propagates (see _job_from_record).
+    # Per-entry isolation: a bad record is warned about and skipped, and kept for
+    # the save when it is an object a snapshot restore accepts; the rest survive.
+    # Only KeyError and TypeError are bad-data signals; an AttributeError is a
+    # code defect and propagates (see _job_from_record).
     jobs: list[CronJob] = []
+    skipped: list[Any] = []
     for j in records:
         try:
             job = _job_from_record(j)
         except (KeyError, TypeError) as entry_exc:
             entry_id = j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
+            # Kept only while a snapshot restore still accepts the store: an object,
+            # nested within MAX_DOCUMENT_NESTING with the two levels above it.
+            kept = isinstance(j, dict) and not exceeds_nesting(j, MAX_DOCUMENT_NESTING - 2)
             logger.warning(
-                "Skipping malformed cron job entry (id=%r): %r; "
-                "the entry will be dropped from the store on the next write",
+                "Skipping malformed cron job entry (id=%r): %r; %s",
                 entry_id,
                 entry_exc,
+                (
+                    "it does not run, and the store keeps it until it is fixed or "
+                    "removed by hand"
+                    if kept
+                    else "the store keeps only an object nested at most "
+                    f"{MAX_DOCUMENT_NESTING - 2} levels, so the entry will be "
+                    "dropped from the store on the next write"
+                ),
             )
+            if kept:
+                skipped.append(j)
             continue
         jobs.append(job)
         found = _unknown_fields_of(j)
@@ -810,6 +833,7 @@ def decode_store(raw: bytes) -> StoreDocument | None:
         extra=extra,
         unknown_fields=unknown_fields,
         predates_local_default=predates_local_default(read_version),
+        skipped=tuple(skipped),
     )
 
 

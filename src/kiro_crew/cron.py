@@ -509,6 +509,9 @@ class CronService:
     _store_version: int = _STORE_VERSION
     _store_extra: Mapping[str, Any] = MappingProxyType({})
     _unknown_fields: Mapping[str, UnknownFields] = MappingProxyType({})
+    # The jobs[] objects the last _load could build no job from and kept
+    # (StoreDocument.skipped). _save writes them back after the jobs.
+    _skipped_records: tuple[Any, ...] = ()
 
     def __init__(
         self,
