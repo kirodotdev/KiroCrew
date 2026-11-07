@@ -8,6 +8,7 @@ answer as the readings they replaced, kept below as the oracle.
 
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 
@@ -84,6 +85,57 @@ class TestReader:
         # ' a <sp> b ' then the escape pair "\ " then c: the opening quote and the
         # bare c are live syntax, everything between them is quoted or escaped
         assert word.quoted == (False, True, True, True, True, True, False)
+
+
+class TestSubstitutionWords:
+    """A live ``$(…)``, backtick or ``<(…)`` is one word: the outer argv runs on past it."""
+
+    @pytest.mark.parametrize(
+        ("text", "inner", "outer"),
+        [
+            (
+                "gh release create $(git describe --tags) --notes-file n.md",
+                ["git", "describe", "--tags"],
+                ["gh", "release", "create", SUBST, "--notes-file", "n.md"],
+            ),
+            (
+                "gh api `echo /x` --input s.json",
+                ["echo", "/x"],
+                ["gh", "api", SUBST, "--input", "s.json"],
+            ),
+            (
+                "gh api <(echo /x) --field k=@s",
+                ["echo", "/x"],
+                ["gh", "api", SUBST, "--field", "k=@s"],
+            ),
+            (
+                "gh release create $(echo v1) -F n",
+                ["echo", "v1"],
+                ["gh", "release", "create", SUBST, "-F", "n"],
+            ),
+            ("cat a>(tee b) c", ["tee", "b"], ["cat", f"a{SUBST}", "c"]),
+            ("x$(a;b)y z", ["b"], [f"x{SUBST}y", "z"]),
+        ],
+    )
+    def test_the_words_after_a_substitution_stay_in_its_command(self, text, inner, outer):
+        argvs = [[w.raw for w in c.argv] for c in read_commands(text)]
+        assert argvs[-1] == outer
+        assert inner in argvs[:-1]  # the body is still read as commands of its own
+
+    def test_a_separator_after_the_substitution_still_cuts(self):
+        assert [[w.raw for w in c.argv] for c in read_commands("ls $(pwd) ; rm x")] == [
+            ["pwd"],
+            ["ls", SUBST],
+            ["rm", "x"],
+        ]
+
+    def test_a_subshell_paren_and_an_escaped_dollar_still_cut(self):
+        assert [c.separator for c in read_commands("(a) b")] == ["(", ")", ""]
+        assert [[w.raw for w in c.argv] for c in read_commands("echo \\$(a) b")][-1] == ["b"]
+
+    def test_a_wipe_behind_a_substitution_operand_is_refused(self):
+        for command in (_WIPE + "~/$(true)", _WIPE + "/`true`", "echo $(date) && " + _WIPE + "~"):
+            assert is_denied(command) is not None, repr(command)
 
 
 # -- Parity oracles: the readings the reader replaced, unchanged ------------------
@@ -234,9 +286,23 @@ def _outcome(fn, *args):
         return type(exc)
 
 
+#: The corpus inputs whose segments differ from the old walk on purpose: a live ``$(…)``,
+#: backtick or ``<(…)`` is one word of its command now, where the old walk cut there
+#: (pinned in TestSubstitutionWords). The hand inputs are listed by name. The random
+#: corpus holds hundreds, so per ``track`` its changed ``(input, new segments)`` rows,
+#: in corpus order, are pinned by count and sha256: any other row that changes, or any
+#: carved row that stops changing, fails the parity test.
+_SEGMENTS_CHANGED_ON_PURPOSE = {
+    "hand": frozenset({"`" + _WIPE + "~`"}),
+    True: (865, "0b4c6e2435e2b87d45623811e102c07fe420ae718d59f0c2bb878ef8c21b6cd8"),
+    False: (863, "45e56fdfa8480857b56d6c5bfb02284172a17b6ee50f22688577bc6a43796f69"),
+}
+
+
 class TestParity:
     @pytest.mark.parametrize("track", [True, False])
     def test_rm_segments_match_the_replaced_walk(self, track):
+        changed: list[str] = []
         for command in [*_HAND_CORPUS, *_random_corpus(4000)]:
             if "&>" in command or ">|" in command or "<<" in command:
                 # one redirect operator to bash; the old walk stopped at ``<<`` and ``<<<``,
@@ -249,7 +315,13 @@ class TestParity:
             # segment between the two cuts; an empty segment holds no words.
             if isinstance(old, list) and isinstance(new, list):
                 old, new = [s for s in old if s], [s for s in new if s]
-            assert old == new, repr(command)
+            if command in _HAND_CORPUS:
+                carved = command in _SEGMENTS_CHANGED_ON_PURPOSE["hand"]
+                assert (old != new) == carved, repr(command)
+            if old != new:
+                changed.append(repr((command, new)))
+        digest = hashlib.sha256("\n".join(changed).encode()).hexdigest()
+        assert (len(changed), digest) == _SEGMENTS_CHANGED_ON_PURPOSE[track]
 
     def test_rm_targets_match_the_replaced_walk(self, monkeypatch):
         corpus = [*_HAND_CORPUS, *_random_corpus(4000)]

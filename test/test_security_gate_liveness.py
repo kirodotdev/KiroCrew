@@ -694,7 +694,10 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 20, from 34,733, for the git publish check in ``argv_floor_git``: a git
 #: option word with an unquoted expansion (``git -C $d push ...``) can word-split into
 #: the subcommand and refspecs, so it is handed to the ``$`` check. Deny-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_753
+#: Raised by 6, from 34,753, for the shared reader keeping a live ``$(…)`` / backtick /
+#: ``<(…)`` as one word of its command, and the rm floor reading such a word as possibly
+#: empty (``~/$(true)`` is ``~/``). Re-measured.
+_PACKAGE_LINE_BUDGET = 34_759
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

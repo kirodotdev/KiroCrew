@@ -9,9 +9,9 @@ words built from them, its redirections, and the separator that ended it.
 
 A reader, not a parser: it expands and evaluates nothing. By default it stops at a
 live ``<<`` because a heredoc body is data; with ``heredocs=True`` it hands each body
-to its command as a :class:`HereDoc` and reads on. A ``$(…)`` or backtick body inside double
-quotes is read as commands of its own (listed before the command holding it), and
-that command keeps one :data:`SUBST` step in its place.
+to its command as a :class:`HereDoc` and reads on. A ``$(…)``, backtick, ``<(…)`` or
+``>(…)`` body is read as commands of its own (listed before the command holding it), and
+that command keeps one :data:`SUBST` step in its place, so its words run on past it.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from . import shell_normalizer as _shell
 
 #: The step standing for a substitution read on its own: it may expand to nothing.
 SUBST = "\1"
-#: Live characters that end a command: ``;`` ``&`` ``|`` newline, a backtick or a paren.
+#: Live characters that end a command: ``;`` ``&`` ``|`` newline, a paren; a backtick ends a tag.
 _CUT_CHARS = frozenset(";&|\n`()")
 #: Doubled, these end one command as one operator (``&&``, ``||``).
 _DOUBLED = frozenset("&|")
@@ -103,7 +103,7 @@ class ShellCommand(NamedTuple):
     """One command: its steps and the live separator that ended it (``""`` at the end)."""
 
     steps: "tuple[ShellStep, ...]"
-    #: ``;`` ``&`` ``&&`` ``|`` ``||`` ``\\n`` a backtick or paren, ``<<`` where a
+    #: ``;`` ``&`` ``&&`` ``|`` ``||`` ``\\n`` a subshell paren, ``<<`` where a
     #: heredoc stopped the read, or ``""`` at the end of the text.
     separator: str
     #: The here-documents this command reads, in order (only with ``heredocs=True``).
@@ -217,29 +217,34 @@ def read_commands(
                 newline = text.find("\n", step.offset)  # a comment's quotes open nothing
                 resume = len(command) if newline < 0 else pos + newline
                 break
-            if step.state == 2 and text.startswith("$(", step.offset):
-                # bash reads "$(…)" from an unquoted start, then the double quote resumes
+            quoted, live = step.state == 2, step.active and step.state != 2
+            opener = text[step.offset : step.offset + 2]
+            if (opener == "$(" and (quoted or live and dollars % 2)) or (
+                live and opener in ("<(", ">(") and not in_redirect
+            ):
+                # bash reads a "$(…)", $(…), <(…) or >(…) body from an unquoted start, then
+                # the command's word (and any double quote) resumes after it
                 body = text[step.offset + 2 :]
                 close, proven = _shell._matching_close_paren(body, 0)
-                if nested:
+                if nested or live:
                     inner = body[: close - 1 if proven else close]
                     out.extend(read_commands(inner, track, at + 2, heredocs=heredocs))
                 end = pos + step.offset + 2 + close
-                steps.append(ShellStep(at, _base + end, SUBST, SUBST, 2, False, False))
+                steps.append(ShellStep(at, _base + end, SUBST, SUBST, step.state, False, False))
                 in_redirect = False
-                resume, resume_state = end, 2
+                resume, resume_state = end, step.state
                 break
-            if step.state == 2 and step.char == "`" and len(step.text) == 1:
-                # a backtick body in double quotes is read on its own, then the quote resumes
+            if (quoted or live) and step.char == "`" and len(step.text) == 1:
+                # a backtick body is read on its own, then the word (and any quote) resumes
                 closer = _shell._backtick_closer(text, step.offset + 1)
                 closed = closer != -1
                 end = closer + 1 if closed else len(text)
-                if nested:
+                if nested or live:
                     inner = text[step.offset + 1 : end - closed]
                     out.extend(read_commands(inner, track, at + 1, heredocs=heredocs))
-                steps.append(ShellStep(at, _base + pos + end, SUBST, SUBST, 2, False, False))
+                resume, resume_state = pos + end, step.state
+                steps.append(ShellStep(at, _base + resume, SUBST, SUBST, step.state, False, False))
                 in_redirect = False
-                resume, resume_state = pos + end, 2
                 break
             if track and dollars % 2 and text.startswith(("${", "$["), step.offset):
                 expansion.append("}" if text[step.offset + 1] == "{" else "]")
@@ -354,7 +359,7 @@ def redirect_free_views(command: str) -> "list[str]":
         return []
     folded = _shell._fold_line_continuations(command) if "\\\n" in command else command
     reads = [(folded, read_commands(folded, nested=False))]
-    if any(cmd.separator == "(" for cmd in reads[0][1]):  # ``2>$(x)`` cut its command
+    if any(cmd.separator == "(" for cmd in reads[0][1]):  # a subshell ``(`` cut its command
         plain = without_substitutions(folded)
         reads.append((plain, read_commands(plain, nested=False)))
     return [
@@ -394,7 +399,7 @@ def redirect_hidden_payloads(command: str) -> "list[str]":
 
 def without_substitutions(command: str) -> str:
     """*command* with each unquoted ``$(…)`` / ``<(…)`` / ``>(…)`` as the word ``_``, which
-    :func:`read_commands` would cut (``bash -c 2>$(x) '<script>'``)."""
+    a paren-cutting read would split (``bash -c 2>$(x) '<script>'``)."""
     out: list[str] = []
     pos = 0
     while True:

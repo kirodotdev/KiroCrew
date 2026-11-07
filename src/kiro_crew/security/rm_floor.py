@@ -39,6 +39,7 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
 _LITERAL_SHELLS = _shell._NESTED_SHELL_PROGRAMS - {"busybox"}  # busybox's next word is the applet
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
+_LIVE = "\2"  # an unquoted one, which also leaves no word behind: ``~/$(true)`` is ``~/``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
 _PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
 #: A STANDALONE fd prefix (a bare number or ``{name}``) directly before a redirection
@@ -101,7 +102,7 @@ def _segments(command: str, track: bool = True) -> "list[str]":
                 ):
                     seg.append("\0")
                 else:
-                    seg.append(step.text)
+                    seg.append(_LIVE if step.text == _SUBST and not step.state else step.text)
             out.append("".join(seg))
     return out
 
@@ -126,9 +127,9 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 if consumes_next and words:
                     words = words[1:]
                 continue
-            if _SUBST in words[0]:
+            if _SUBST in words[0] or _LIVE in words[0]:
                 # a substitution in command position may expand to nothing
-                bare = words[0].replace(_SUBST, "")
+                bare = words[0].replace(_SUBST, "").replace(_LIVE, "")
                 words = [bare, *words[1:]] if bare else words[1:]
                 continue
             bare = _PARAM_RE.sub("", words[0])
@@ -154,7 +155,7 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 recursive = recursive or "r" in arg or "R" in arg
                 force = force or "f" in arg
         if recursive and force:
-            kinds |= {kind for arg in operands if (kind := _target_kind(arg))}
+            kinds |= {kind for arg in operands if (kind := _target_kind(arg.replace(_LIVE, "")))}
     return kinds
 
 
