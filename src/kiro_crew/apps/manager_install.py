@@ -350,10 +350,15 @@ def install_app(
             pass
 
         if dest.exists():
-            # No installed metadata for this app (checked above), yet the
-            # dest dir exists — an orphaned partial copy from a prior crash
-            # (e.g. hard kill mid-install). Remove and re-copy fresh.
-            logger.warning("Removing orphaned partial install at %s", dest)
+            # No installed metadata for this app (checked above), yet the dest dir
+            # exists. Emptied by the move above, it is what a default uninstall
+            # keeps: a directory holding only data/, the expected reinstall case.
+            # Anything else left in it is an orphaned partial copy from a prior
+            # crash (e.g. hard kill mid-install). Either way, remove and re-copy.
+            if any(dest.iterdir()):
+                logger.warning("Removing orphaned partial install at %s", dest)
+            else:
+                logger.info("Reinstalling %s into the folder its uninstall kept", name)
             shutil.rmtree(dest)
         _copy_app_tree(source, dest)
         # The gateway's own root entries -- ``.app_secret`` and, when a preserved
