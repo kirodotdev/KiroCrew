@@ -1516,7 +1516,11 @@ away leaves nothing half-done. It is **fail-safe**: an absent, unreadable,
 malformed, or stale pointer (missing binary, same image already running, or
 `KIROCREW_LIVE_EXECED` marker already in env) causes the function to return, and
 the currently-installed build boots normally. A bad pointer can never leave the
-host with no gateway.
+host with no gateway. The exec'd image removes the marker from its own environment
+as it returns, so any gateway it later starts or re-execs into (an in-app restart,
+or the replacement of a detached `kirocrew restart`, which is how Dev Fleet's
+foreground Make live restarts) reads the pointer again instead of booting the
+image that restarted it.
 
 Gateway only — a plain CLI invocation (`kirocrew doctor`, `kirocrew chat`, etc.)
 keeps running the install the user typed, not a worktree someone made live.
