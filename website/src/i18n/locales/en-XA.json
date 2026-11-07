@@ -21800,7 +21800,9 @@
   "providers": {
     "adapters": {
       "acp": {
-        "plugin_registry_name": "[Þàçķàğèş ············]"
+        "hooks_section": "[ÀÇÞ Àğèñţ Ĥøøķş ··············]",
+        "plugin_registry_name": "[Þàçķàğèş ············]",
+        "session_process": "[ÀÇÞ şùƀþŕøçèşş ·············]"
       }
     }
   },
