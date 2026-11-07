@@ -281,6 +281,28 @@ def test_forward_reads_keystone_not_agent_config(monkeypatch, tmp_path):
     assert sb._forward_ssh_auth_sock("strict", ()) is True
 
 
+def test_a_store_that_is_not_utf8_reads_as_no_consent(monkeypatch, tmp_path):
+    """Bytes that do not decode fail closed like bad JSON, without raising.
+
+    A UTF-16 save of ``{"enabled": true}`` is the likely shape. The socket stays
+    scrubbed either way; reading it as "not granted" is what lets the consent
+    notice still tell the operator how to grant it.
+    """
+    from kiro_crew import ssh_auth_sock_consent as consent
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(sb.platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: None)
+    leaf = tmp_path / "c.json"
+    monkeypatch.setattr(consent, "ssh_auth_sock_consent_path", lambda: leaf)
+    monkeypatch.setattr(loader, "ssh_auth_sock_consent_path", lambda: leaf)
+    leaf.write_bytes('{"enabled": true}'.encode("utf-16"))
+
+    assert consent.is_granted() is False
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
+    assert str(leaf) in sb.ssh_auth_sock_consent_notice("kiro", "strict", ())
+
+
 def test_keystone_leaf_is_fenced_and_sealed():
     """The consent leaf sits on both fences that keep it agent-unwritable."""
     from kiro_crew import sandbox as _sb
