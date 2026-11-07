@@ -206,6 +206,7 @@ class TestStartNextQueuedTurn:
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = True
         subs = _children(
             running=children.get("running", ()),
             in_memory=children.get("in_memory", False),
@@ -238,6 +239,7 @@ class TestStartNextQueuedTurn:
         assert spawn.call_count == 1, "the message drained as the next turn"
         assert slot._pending_synthesis is False, "the user takes over, as before"
         assert slot._synthesis_completion_turns == (0 if ends_batch else 2)
+        assert slot._synthesis_final_turn_ran is not ends_batch
 
     @pytest.mark.asyncio
     async def test_a_user_message_waits_while_a_completion_is_being_delivered(self, tmp_path):
@@ -480,6 +482,7 @@ class TestRunPendingSynthesis:
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = True
         state.subagents = _children()
 
         async def _ok():
@@ -496,6 +499,7 @@ class TestRunPendingSynthesis:
             await chat_runner._run_pending_synthesis(state, slot)
 
         assert slot._synthesis_completion_turns == 0
+        assert slot._synthesis_final_turn_ran is False
 
     @pytest.mark.asyncio
     async def test_a_queued_user_message_ends_the_batch_without_a_read(self, tmp_path):
@@ -806,6 +810,123 @@ class TestFinishQueueCycle:
         assert slot._synthesis_completion_turns == 0
         assert slot._synthesis_recheck is None
         assert slot.messages[-1]["role"] == "done"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("final_turn_ran", [True, False], ids=["reported", "no-report"])
+    async def test_a_multi_turn_batch_drops_the_synthesis_only_after_a_final_report(
+        self, tmp_path, final_turn_ran
+    ):
+        """Results spread over two turns: the synthesis is dropped only when the
+        turn that took the last result ended on reply text after its last tool call."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = final_turn_ran
+        state.subagents = _children()
+
+        with patch.object(chat_runner, "_launch_synthesis") as launch:
+            await chat_runner._finish_queue_cycle(state, slot)
+
+        assert launch.called is not final_turn_ran
+        assert slot._pending_synthesis is not final_turn_ran
+        assert slot._synthesis_completion_turns == (0 if final_turn_ran else 2)
+        assert slot._synthesis_final_turn_ran is False
+
+    @pytest.mark.asyncio
+    async def test_a_store_queued_sibling_holds_the_synthesis_after_a_final_report(self, tmp_path):
+        """The arm counts in-memory children only, so a sibling queued in the
+        store can follow the turn that took the note: the fire gate holds and
+        the arm survives for that sibling's own completion turn."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = True
+        state.subagents = _children(queued=1)
+
+        with patch.object(chat_runner, "_launch_synthesis") as launch:
+            await chat_runner._finish_queue_cycle(state, slot)
+
+        launch.assert_not_called()
+        assert slot._pending_synthesis is True
+        assert slot._synthesis_completion_turns == 2
+
+    @pytest.mark.parametrize(
+        "tagged, landed, quiet, earlier, reply, stop_reason, expected",
+        [
+            (True, True, False, "", "Consolidated report.", "end_turn", True),
+            (True, True, True, "", "", "end_turn", False),
+            (True, True, False, "", "", "end_turn", False),
+            (True, False, False, "", "Partial text.", "end_turn", False),
+            (False, True, False, "", "One result.", "end_turn", False),
+            (True, True, False, "Let me read the results.", "", "end_turn", False),
+            (
+                True,
+                True,
+                False,
+                "Let me read the results.",
+                "Consolidated report.",
+                "end_turn",
+                True,
+            ),
+            (True, True, False, "Let me read the results.", "I cannot help.", "refusal", False),
+        ],
+        ids=[
+            "final-report",
+            "nothing-to-do",
+            "no-text",
+            "not-landed",
+            "not-the-last",
+            "narration-then-tool",
+            "report-after-tool",
+            "refusal-after-tool",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_turn_end_records_whether_the_last_result_was_reported(
+        self, tagged, landed, quiet, earlier, reply, stop_reason, expected
+    ):
+        """*earlier* is a reply row flushed at a tool boundary; *reply* is the
+        text after the turn's last tool call. It is a report only on a successful stop."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.types import classify_stop_reason
+        from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+        slot = SimpleNamespace(_inflight_merge_contexts=[], _synthesis_final_turn_ran=not expected)
+        rows = [("m1", earlier), ("m2", reply)] if earlier else []
+        slot.messages = [
+            {"role": "assistant", "content": text, "meta": {"mid": mid}} for mid, text in rows
+        ]
+        message = "[Sub-agent completed] a1"
+        if tagged:
+            message += f"\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
+        turn = SimpleNamespace(
+            slot=slot,
+            state=None,
+            turn_exit=chat_runner._TurnExit(),
+            _directive_self_wake=False,
+            _turn_flushed_visible_text=bool(reply),
+            _turn_priority=None,
+            _turn_tool_calls=0,
+            _turn_tool_identities=[],
+            _drained_merge_contexts=[],
+            _merge_contexts_completed=False,
+            _dispatch_lock_held=False,
+            _auth_required=False,
+            _memory_preparation_admitted=True,
+            _terminal_directive_applied=quiet,
+            _turn_landed=landed,
+            _stop_class=classify_stop_reason(stop_reason),
+            _incoming_message=message,
+            _reply_mids_snapshot=[mid for mid, _ in rows] or None,
+            assistant_text=reply,
+        )
+
+        await chat_runner._turn_record_outcome(turn)
+
+        assert slot._synthesis_final_turn_ran is expected
 
     @pytest.mark.asyncio
     async def test_the_outage_re_check_launches_the_synthesis_whatever_the_count(self, tmp_path):

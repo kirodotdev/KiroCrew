@@ -144,14 +144,21 @@ races the sub-agents. Your reply is what the user sees, so fold the results into
 rather than pasting them.
 
 When every agent in a fan-out has completed and the results reached you in two or
-more completion turns, one further synthesis turn is fired, prefixed
+more completion turns, one further synthesis turn can be fired, prefixed
 `SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM] Sub-agent synthesis:'`. Its visible reply is
 the consolidated, user-facing summary, so treat it as the deliverable: restate the
 goal, synthesize across the agents rather than repeating each in turn, and give
 concrete next actions. A batch whose results all arrived in one turn (a lone
 sub-agent, or one wave digest) normally gets no synthesis turn: that turn's reply
-is the deliverable. The one exception is a task store the turn-end fire gate
-could not read; its later re-check fires the synthesis as before. Because the
+is the deliverable. The completion that arms the synthesis ends with
+`SUBAGENT_FINAL_COMPLETION_NOTE`. The arm sees only in-memory state, so the note
+says this may be the batch's last result and asks for the consolidated report in
+that reply only if no other sub-agent of the batch is still queued or running; it
+promises nothing about what follows. When that turn ends on visible reply text
+and the turn-end fire gate finds nothing running or queued in the store, no
+synthesis turn follows either; a sibling still queued holds the synthesis, and
+its own completion turn decides it. The one exception is a task store the turn-end fire gate could not
+read; its later re-check fires the synthesis as before. Because the
 synthesis turn is not always there, a completed run that made no tool call
 carries its own ``⚠ Agent `<id>` made no tool calls in this run…`` line, in the
 completion event or under its digest entry, asking the parent to check any
