@@ -4,11 +4,8 @@ Covers the eligibility rules (recency window, closed, ephemeral memory modes,
 pin/folder exemption), the slot-creation/binding behaviour, and the async
 reconcile pass.
 
-One conversation has one session key and one transcript. A channel session's
-dashboard tab is BOUND to that key (``linked_session_key``), so metadata — a
-``closed`` flag, a pin, a memory mode — is written once and read once. Fixtures
-therefore key metadata on the channel session key, never on the slot name
-derived from it.
+A channel tab is bound to its session key (``linked_session_key``), so fixtures key
+metadata on that key, never on the slot name derived from it.
 """
 
 from __future__ import annotations
@@ -41,15 +38,10 @@ NOW = time.time()
 
 @pytest.fixture
 def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin ``time.time`` to the module's NOW for tests that call the real
-    reconcile pass.
+    """Pin ``time.time`` to the module's NOW for tests of the real reconcile pass.
 
-    ``reconcile_channel_slots`` derives its recency cutoff from the live clock
-    (``channel_slots.py``: ``cutoff = time.time() - window_minutes * 60``),
-    while fixtures stamp sessions against the import-time NOW. Freezing the one
-    clock both sides read makes eligibility pure arithmetic: the tests hold at
-    any elapsed time, and the ``== 0`` assertions cannot pass vacuously because
-    an eligible stamp can never age out mid-suite.
+    ``reconcile_channel_slots`` reads the live clock while fixtures stamp the
+    import-time NOW; freezing it keeps ``== 0`` assertions from passing vacuously.
     """
     monkeypatch.setattr(time, "time", lambda: NOW)
 
@@ -682,11 +674,8 @@ class TestReconcilePass:
     ) -> None:
         """A rebind changes the slot's effective key, so the registry must be rebuilt.
 
-        Every gate asking whether a session has an open tab reads that registry, so a
-        rebound-but-unpublished tab is falsely refused a question card, an approval
-        prompt or a tab-directed event until some unrelated slot change republishes.
-        The reconciler's own sync is gated on a surfaced count that a rebind never
-        increments, which is why the rebind itself has to republish.
+        Open-tab gates read that registry, and the reconciler's own sync keys on a
+        surfaced count a rebind never increments, so the rebind must republish.
         """
         dashboard_state.conversation_log = _FakeLog([_session("slack_1.1")], {})
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
@@ -728,11 +717,8 @@ class TestReconcilePass:
     ) -> None:
         """Persisted provenance is agent-writable, so it cannot authorize a rebind.
 
-        ``channel_origin`` reaches a rehydrated slot from the transcript's own metadata
-        line, so whoever can write that file can hand a lookalike named for a live stem
-        the marker and the restore arrives already carrying it. Binding on it would route
-        that tab's turns into the real conversation, which is why the rebind additionally
-        requires the in-process record that this run surfaced the slot itself.
+        ``channel_origin`` comes from the transcript, so a forged lookalike could carry it.
+        The rebind also requires the in-process record that this run surfaced the slot.
         """
         dashboard_state.conversation_log = _FakeLog([_session("slack_1.1")], {})
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
@@ -1117,11 +1103,8 @@ class TestClosedAtStamp:
     ) -> None:
         """Closing a tab must not immediately reopen it.
 
-        The reconciler decides whether a close still stands by comparing the
-        transcript's mtime against ``closed_at`` — activity newer than the close
-        means the conversation moved on. Writing the close flag IS a write to the
-        shared transcript, so without preserving the pre-close mtime the close
-        outruns itself and the tab reopens on the next pass.
+        The reconciler compares mtime with ``closed_at``, and writing the close flag
+        touches the transcript, so the pre-close mtime must be kept.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -1304,16 +1287,10 @@ class TestReconcileMore:
 
 
 class TestReconcileClockCoherence:
-    """Regression pins: reconcile eligibility verdicts must be a
-    function of the stamps alone, never of wall-clock time elapsed since this
-    module was imported.
+    """Reconcile eligibility depends on the stamps alone, not time since import.
 
-    ``NOW`` is captured at import while the real pass computes its cutoff from
-    the live clock, so before ``frozen_clock`` the module had a 30-minute shelf
-    life: any CI shard running longer aged every default stamp out of the
-    window, failing the nonzero assertions while the ``== 0`` ones passed
-    vacuously. These pins simulate the long-running shard directly instead of
-    waiting to become one.
+    Without ``frozen_clock`` a shard running past 30 minutes ages every stamp out;
+    these simulate that long shard directly.
     """
 
     #: Simulated seconds since module import — well past every window in use.
@@ -1473,11 +1450,8 @@ class TestFailedTranscriptReadDefers:
 class TestReconcileKeepsMarkedEffort:
     """A backend-advertised effort level outlives a restart on channel surfacing.
 
-    After a restart the process-global effort vocabulary holds only the
-    fallback set, so a persisted ``minimal`` is unknown until a session
-    re-advertises it. The reconcile pass reads the gateway-owned marker off
-    the loop and hands it to ``surface_channel_session``; without that, the
-    strict validator drops the level and the next save persists the loss.
+    After a restart ``minimal`` is unknown to the effort vocabulary, so reconcile
+    hands the gateway-owned marker to ``surface_channel_session`` to keep the level.
     """
 
     @pytest.mark.asyncio

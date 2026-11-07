@@ -1,22 +1,10 @@
 """Pins the seams the crew-panel member mount rides on.
 
-The sibling of ``test_member_dispatch_mount.py``, and the same five seams:
-
-- ``members.member_panel_session_server`` -- the session-level ``mcpServers``
-  element, carrying strict identity via ``KIROCREW_SESSION_KEY`` plus the
-  gateway's bound port, through the one writer both member mounts share.
-- ``kas_agents.to_client_custom_agent(crew_panel=True)`` -- the KAS wire
-  projection widening: the server joins ``tools`` and the panel verbs join the
-  ``allowedTools`` input BEFORE the governance ceiling filter.
-- ``AcpClient._append_member_panel_server`` -- the claude session-array append,
-  honoring the array-level preconditions its dispatch sibling documents.
-- ``members.crew_panel_enabled`` -- the operator ceiling, fail-closed.
-- the premise: ``kirocrew-panel`` is ``opt_in``, so no spec emits it and this
-  mount is the only path to it.
-
-Every branch is pinned in both directions, because the negative is what the
-per-session design exists for: mounting through the on-disk template would hand
-a panel to every session of the agent.
+The sibling of ``test_member_dispatch_mount.py``: the session ``mcpServers`` element,
+the KAS projection (panel verbs join ``allowedTools`` BEFORE the governance ceiling),
+the claude session-array append, the fail-closed ``crew_panel_enabled`` ceiling, and the
+``opt_in`` premise. Every branch is pinned both ways: mounting through the on-disk
+template would hand a panel to every session of the agent.
 """
 
 from __future__ import annotations
@@ -57,11 +45,9 @@ def _base_servers() -> list[dict]:
 class TestThePremise:
     """Why this mount has to exist at all.
 
-    The panel server is ``opt_in``, so no spec emits it, and the Capabilities
-    editor builds its list from CONFIGURED connections rather than from
-    host-managed opt-in servers -- so the only remaining grant surface is a
-    hand-typed custom connection colliding with the managed name. If either half
-    of that premise changes, this feature is the wrong shape and this test says so.
+    The panel server is ``opt_in`` and the Capabilities editor lists only configured
+    connections, so nothing else grants it. If either changes, this feature is the
+    wrong shape.
     """
 
     def test_the_panel_server_is_opt_in(self):
@@ -263,11 +249,8 @@ class TestCrewPanelCeiling:
 class TestTheSwitchReachesALiveSession:
     """The withdrawal is immediate, not mount-time only.
 
-    A mount answers for a session being ESTABLISHED. A member whose session was
-    already running when the switch flipped would keep the grant until that
-    session ended, and ``agent.crew_panel``'s own description promises the
-    withdrawal reaches every member at once. The two sibling switches in this
-    subsystem keep that promise by reading at the gate, and so does this one.
+    ``agent.crew_panel`` promises withdrawal reaches running sessions at once, so the
+    switch is read at the gate, not only at mount.
     """
 
     def test_the_publish_gate_reads_the_switch(self):
@@ -546,11 +529,8 @@ class TestRuntimePanelMountAsksThePerToolSwitch:
 class TestPanelCompositionStaysInsideTheMemberBranch:
     """H13: the Kiro construction path gains no conditional and no awaited step.
 
-    A kiro session can never carry a member key, so the composition must not sit
-    on the path it walks. Asserted on the call site's INDENTATION rather than on
-    behaviour, because the property is about what the non-member path traverses
-    at all, and a behavioural probe of "did not traverse" cannot distinguish an
-    early return from an absent call.
+    A kiro session never carries a member key. Asserted on the call site's indentation,
+    since a behavioural probe cannot tell an early return from an absent call.
     """
 
     @pytest.mark.parametrize("method", ["create_session", "load_session"])

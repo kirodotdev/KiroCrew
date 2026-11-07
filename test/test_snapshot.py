@@ -113,11 +113,8 @@ def _setup_fake_kirocrew(d: Path) -> None:
 def _make_snapshot(src: Path, out: Path, extra_args: list[str] | None = None) -> Path:
     """Create a snapshot and return the tarball path. Caller must set KIROCREW_HOME.
 
-    ``unpinnable_argv()`` is appended, not optional: on a platform with no directory
-    descriptors ``_staging_is_pinned`` refuses instead of falling back, so without it every
-    consumer of this helper dies in the helper itself and reports as a fixture ERROR rather
-    than as its own subject failing. Empty where pinning works, so Linux still exercises the
-    pinned path.
+    ``unpinnable_argv()`` is always appended: without directory descriptors staging refuses,
+    and every caller would fail inside this helper. It is empty where pinning works.
     """
     args = [str(out)] + (extra_args or []) + unpinnable_argv()
     snapshot_main(args)
@@ -309,10 +306,8 @@ class TestRestoreReplace:
         ]
         assert backups
         assert (backups[0] / "memory.db").is_file()
-        # sel_hmac.key is excluded from snapshot bundles (security fix) but the
-        # backup of the pre-restore state DOES include it since it existed locally.
-        # However the fake setup may not create it -- check what _setup_fake_kirocrew does.
-        # The backup captures whatever was in 'existing' before restore.
+        # The backup captures whatever was in 'existing' before restore, including
+        # local-only files that bundles exclude.
         assert (backups[0] / "telemetry_salt").is_file()
         # original.md should be gone (replaced by snapshot content)
         assert not (existing / "workspace/original.md").exists()
@@ -338,9 +333,7 @@ class TestRestoreReplace:
         The ENTIRE rollback set must exist before the first core-file swap. A
         tree backup can refuse through its fatal skip reporter (a symlink in
         the live tree is the injectable case), and that refusal must arrive
-        with every live core file untouched -- the old ordering swapped the
-        databases first, so the abort left mixed state (new databases, old
-        trees) behind an incomplete rollback set.
+        with every live core file untouched, never new databases beside old trees.
         """
         _, _, tarball, tmp_path = env
         existing = tmp_path / "existing2844"
@@ -369,6 +362,83 @@ class TestRestoreReplace:
         assert ret == 1
         assert (existing / "memory.db").read_bytes() == before_db
         assert (existing / "crons.json").read_bytes() == before_crons
+
+    @pytest.mark.parametrize("pinned", [False, True], ids=["by_name", "pinned"])
+    def test_replace_endorses_the_restored_config(self, env, monkeypatch, pinned):
+        """A restore is the owner's write: where the sandbox seals config.json, the
+        restored file takes effect instead of loading as the endorsed copy it replaced."""
+        from kiro_crew.config import loosening_provenance as lp
+        from kiro_crew.config.loader import read_config_for_update
+
+        if pinned and unpinnable_argv():
+            pytest.skip("no pinned staging on this platform")
+        by_name: list[str] = []
+        if not pinned:
+            # The by-name branch `_backup_and_copy` takes where staging is not pinned.
+            def _unpinned(**kwargs) -> bool:
+                by_name.append(kwargs["what"])
+                return False
+
+            monkeypatch.setattr(snapshot_mod, "_staging_is_pinned", _unpinned)
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing-endorse"
+        _setup_fake_kirocrew(existing)
+        (existing / "config.json").write_text('{"agent": {"model": "old"}}')
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+        lp.record("config.json", (existing / "config.json").read_bytes(), strict=True)
+
+        assert restore_main([str(tarball), "--mode", "replace", "--force"] + unpinnable_argv()) == 0
+
+        assert ("restore of 'config'" in by_name) is not pinned, by_name
+        assert read_config_for_update(existing / "config.json")["agent"]["model"] == "test"
+        assert lp.endorsed_bytes("config.json") == (existing / "config.json").read_bytes()
+        assert lp.pending_changes() == []
+
+    def test_failed_replace_puts_the_endorsed_config_back(self, env, monkeypatch):
+        from kiro_crew.config import loosening_provenance as lp
+
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing-endorse-rollback"
+        _setup_fake_kirocrew(existing)
+        (existing / "config.json").write_text('{"agent": {"model": "old"}}')
+        before = (existing / "config.json").read_bytes()
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+        lp.record("config.json", before, strict=True)
+
+        real = snapshot_mod._do_replace_mutations
+
+        def _fail_after_installing(*args, **kwargs):
+            real(*args, **kwargs)  # config.json is installed and endorsed by now
+            raise RuntimeError("late failure")
+
+        monkeypatch.setattr(snapshot_mod, "_do_replace_mutations", _fail_after_installing)
+        with pytest.raises(RuntimeError):
+            restore_main([str(tarball), "--mode", "replace", "--force"] + unpinnable_argv())
+
+        assert (existing / "config.json").read_bytes() == before
+        assert lp.endorsed_bytes("config.json") == before
+        assert lp.pending_changes() == []
+
+
+class TestRestoreMergeEndorses:
+    def test_merge_endorses_a_config_it_restores_because_it_was_missing(self, env, monkeypatch):
+        from kiro_crew.config import loosening_provenance as lp
+        from kiro_crew.config.loader import read_config_for_update
+
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing-merge-endorse"
+        _setup_fake_kirocrew(existing)
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+        lp.record("config.json", b'{"agent": {"model": "old"}}', strict=True)
+        (existing / "config.json").unlink()
+
+        restore_main([str(tarball), "--mode", "merge", "--force"] + unpinnable_argv())
+
+        assert read_config_for_update(existing / "config.json")["agent"]["model"] == "test"
+        assert lp.pending_changes() == []
 
 
 class TestRestoreMerge:
@@ -408,16 +478,9 @@ class TestRestoreMerge:
     ):
         """The CLI must report a refusal, not crash with it.
 
-        ``_merge_notifications`` aborts on a record it cannot deliver intact so a
-        partial copy is never reported as success. That refusal had nowhere to
-        land on this path: ``restore_main`` contains a ``try`` whose whole stated
-        purpose is that "a traceback would read like a crash and bury the one
-        sentence saying what to do about it", and ``UnreadableRecord`` was simply
-        missing from its list of arms.
-
-        Drives the real command end to end rather than calling the merge
-        directly, because the defect was entirely in what the BOUNDARY does with
-        the exception -- a unit test on the merge passes either way.
+        ``restore_main`` must catch ``UnreadableRecord`` from ``_merge_notifications``
+        alongside its other arms. Driven end to end because the property is what the
+        BOUNDARY does with the exception; a unit test on the merge passes either way.
         """
         src, out, dst = tmp_path / "src9", tmp_path / "out9", tmp_path / "dst9"
         _setup_fake_kirocrew(src)
@@ -1171,17 +1234,9 @@ class TestConcurrentSnapshot:
 class TestTheArchiveIsLockedDownBeforeItIsPublished:
     """The snapshot tarball can contain ``sel_hmac.key``, so it is secret-bearing.
 
-    It was built at a ``.tmp`` sibling, renamed into place, and only then locked
-    down — so between the rename and the lockdown the archive sat at its final,
-    predictable path under whatever the destination directory gave it. Unlike
-    the other writers in this family that window is not Windows-only: ``tarfile``
-    does not create its file ``0600``, so on POSIX the archive is readable at the
-    final path until the ``chmod`` lands too.
-
-    Locking the temp down before the rename closes it on both platforms, and
-    makes the "abort rather than ship an under-protected archive" promise in the
-    code's own comment true by construction: a failure now happens before there
-    is anything published to take back.
+    ``tarfile`` does not create its file ``0600``, so locking down after the rename would
+    leave the archive readable at its final, predictable path on POSIX too. The ``.tmp``
+    sibling is locked down before the rename, so a failure has nothing published to take back.
     """
 
     def test_the_lockdown_runs_before_the_archive_is_published(self, tmp_path, monkeypatch):

@@ -214,11 +214,13 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _LEGACY_AUTH_SWEEP_CLEAN _materialize_env_mask_target
+        _materialize_refresh_chains_mask_target _create_absent_mask_target
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
         _voice_runtime_paths_lock _voice_runtime_paths_cache _ensure_voice_runtime_directory
-        _literal_ancestor_guards prime_voice_runtime_sandbox_paths
+        _literal_ancestor_guards _caller_can_rename _renameable_ancestor_guards
+        _MAX_LINK_HOPS _resolution_entries prime_voice_runtime_sandbox_paths
         _restore_missing_voice_runtime_roots _voice_runtime_sandbox_paths
         _voice_runtime_parent_paths _voice_runtime_ancestor_guards _path_identity
         _identity_within_sealed_parent CANONICAL_TEMP_KEYS DECLARED_TEMP_REFUSAL_REASONS
@@ -237,7 +239,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SEATBELT_PROFILE_SUFFIX _PI_GATE_ARTIFACT_PREFIX _PI_GATE_ARTIFACT_SUFFIXES
         _RUN_DIR_ARTIFACTS _DSH_GATE_ARTIFACT_PREFIX _DSH_PATCH_ARTIFACT_PREFIX
         _DSH_GATE_ARTIFACT_SUFFIXES _PI_GATE_DIR_ARTIFACTS _LEGACY_LAUNCHER_DIR
-        _resolve_agent_executable _ssh_supports_accept_new namespace_launcher_script_dir
+        _resolve_agent_executable _ssh_supports_accept_new _runtime_dir_is_durable
+        namespace_launcher_script_dir
         _ensure_run_dir _LAUNCHER_INTERPRETER_FLAGS _launcher_script_of _log_refusals
         _carveout_probes _plan_cwd _live_plan_host _spawn_plan _build_launcher_script
         _build_seatbelt_profile namespace_argv _pinned_env_bin sandbox_exec_argv
@@ -320,6 +323,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         name_scope_unit _CGROUP_TOTAL_MEMORY_FRACTION _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB
         _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_tasks _default_max_total_memory_mb
         _slice_limits_from_config _SLICE_LIMITS_APPLIED ensure_agents_slice_limits
+        _slice_limits_unit _slice_limits_dir _fill_unset_parent_limits
         _USER_MANAGER_CGROUP_BASE _agents_slice_cgroup_dir _read_cgroup_counters
         read_cgroup_int _SLICE_THROTTLE_PROBE_SEEN _SLICE_THROTTLE_EDGE_AT
         _SLICE_THROTTLE_EDGE_HOLD_SECS agents_slice_throttling _SLICE_OOM_SEEN

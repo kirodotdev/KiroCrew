@@ -1,24 +1,11 @@
 """The apps-dir walk and the instances-registry writes stay off the event loop.
 
-``list_apps()`` walks the apps directory and reads two files per installed app;
-``InstancesRegistry``'s write methods each read then atomically rewrite
-``instances.json`` with an fsync. Neither belongs on the asyncio event loop:
-the loop runs callbacks one at a time, so a synchronous filesystem call inside
-an ``async def`` delays every other task (including the watchdog heartbeat) for
-its duration. These are bounded, latency-class costs — not stall-class — but
-the repo convention is to offload them via ``asyncio.to_thread``.
+A synchronous filesystem call inside an ``async def`` delays every other task,
+including the watchdog heartbeat, so these go through ``asyncio.to_thread``.
 
-Two enforcement tiers:
-
-- Behavior tests: drive each async entry point with a recording double and
-  assert the filesystem-touching call executed on a worker thread, not the
-  loop thread. Reverting an offload makes the recorded thread equal the loop
-  thread and fails the test.
-- AST ratchet: no direct (non-offloaded) call of the walk / registry-write
-  functions may appear lexically inside an ``async def`` frame of the owning
-  modules, so a future call site cannot silently regress. A nested ``def`` /
-  ``lambda`` is a separate frame (the offloaded callable itself) and is not
-  scanned, matching the scoping of ``test_no_blocking_call_on_loop.py``.
+Behavior tests check the call ran on a worker thread. An AST ratchet rejects a direct
+call inside an ``async def`` frame of the owning modules; a nested ``def`` / ``lambda``
+is its own frame and is not scanned, as in ``test_no_blocking_call_on_loop.py``.
 """
 
 from __future__ import annotations
@@ -45,9 +32,7 @@ import kiro_crew.dashboard.handlers_instances_peer as handlers_instances_peer_mo
 import kiro_crew.instances.ssh_tunnel_manager as ssh_tunnel_manager_mod
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelStatus
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _recorder(record: list[threading.Thread], result: Any = None) -> Callable[..., Any]:
@@ -117,9 +102,7 @@ def _pin_forwarder_identity(monkeypatch: pytest.MonkeyPatch, *, reachable: bool)
         monkeypatch.setattr(ssh_tunnel_manager_mod, "_reclaim_identity_key", lambda: b"k" * 32)
 
 
-# ---------------------------------------------------------------------------
 # Behavior: the walk / write happens on a worker thread, not the loop thread
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -344,9 +327,7 @@ def test_list_apps_is_read_only_under_version_drift(
     ), "list_apps() wrote installed.json — the listing must be read-only"
 
 
-# ---------------------------------------------------------------------------
 # AST ratchet: no direct sync call of the walk / registry writes in async frames
-# ---------------------------------------------------------------------------
 
 # Scopes not descended into from an async def body: a nested function or lambda
 # is a different execution frame (typically the offloaded callable itself).
@@ -492,9 +473,7 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
     assert not offenders, "direct registry call on the event loop:\n" + "\n".join(offenders)
 
 
-# ---------------------------------------------------------------------------
 # App config writes: the same off-loop rule, applied to config.json
-# ---------------------------------------------------------------------------
 
 
 def _admit_as_owner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -514,12 +493,9 @@ async def test_registries_config_write_runs_off_the_loop_thread(
 ) -> None:
     """The real PUT handler hands the locked config mutation to a worker.
 
-    The per-host trust audit is deliberately NOT asserted here any more: it is
-    emitted by ``_write_registries_config`` itself, on the thread that commits
-    the write, so that a cancellation drained by ``run_config_write`` cannot
-    persist a grant with no record. This stub replaces that function, so the
-    handler must not be the one emitting -- which is what the last assertion
-    pins. See ``test_cancelled_registries_write_still_audits_the_trust_grant``.
+    ``_write_registries_config`` emits the trust audit itself, and this stub replaces
+    it, so the last assertion pins that the handler emits none. See
+    ``test_cancelled_registries_write_still_audits_the_trust_grant``.
     """
     loop_thread = threading.current_thread()
     write_threads: list[threading.Thread] = []
@@ -590,15 +566,9 @@ async def test_cancelled_registries_write_still_audits_the_trust_grant(
 ) -> None:
     """A cancellation between commit and audit must not lose the grant record.
 
-    ``run_config_write`` shields its worker and drains it, so a cancellation
-    arriving while the write is in flight still commits the config -- and then
-    re-raises ``CancelledError``, discarding the return value. An audit emitted
-    by the async caller is therefore skipped on exactly the path where the trust
-    grant DID land, leaving persisted trust with no ``host_trust_granted``
-    event. Gateway shutdown and a client disconnect mid-PUT both reach it.
-
-    Red-before with the audit in the handler: config contains the registry and
-    ``grants == []``.
+    ``run_config_write`` still commits a cancelled write, then re-raises
+    ``CancelledError``, so an audit in the async caller would be skipped. Gateway
+    shutdown and a client disconnect mid-PUT both reach this path.
     """
     cfg = tmp_path / "config.json"
     cfg.write_text("{}", encoding="utf-8")
@@ -687,8 +657,7 @@ def test_failed_registries_write_audits_no_trust_grant(
 ) -> None:
     """The audit stays strictly after the commit, so a failed write announces nothing.
 
-    Guards the ordering the fix depends on: the emission moved into the worker,
-    but it must not move ahead of ``update_config_locked``.
+    The emission runs in the worker, and must not run ahead of ``update_config_locked``.
     """
     cfg = tmp_path / "config.json"
     cfg.write_text("{}", encoding="utf-8")
@@ -770,18 +739,9 @@ async def test_registries_config_write_holds_the_loop_side_config_lock(
 ) -> None:
     """The registry PUT must serialize against the asyncio-lock-only writers.
 
-    ``config.json`` has two writer generations and they do not exclude each
-    other. ``_write_registries_config`` reaches the file through
-    ``update_config_locked``, which takes the sidecar advisory flock ONLY; the
-    dashboard's legacy writers (agents endpoint, ``updates.py``, ``security.py``,
-    ``messaging.py``, ``mcp.py``, ``core_stt_settings.py`` STT) take ``_get_config_lock``
-    ONLY. Dispatching this write with a bare ``asyncio.to_thread`` therefore
-    holds nothing the legacy family respects, and a concurrent PUT there can
-    commit a snapshot taken before this write and silently revert it.
-
-    ``run_config_write`` is the one entry point that holds BOTH, so the loop-side
-    lock must be held while the worker runs. Reverting the dispatch to
-    ``asyncio.to_thread`` makes ``locked()`` observe ``False`` and fails here.
+    ``update_config_locked`` takes only the sidecar flock, while the dashboard's other
+    writers (``updates.py``, ``security.py`` and others) take only ``_get_config_lock``.
+    ``run_config_write`` holds both, so a concurrent PUT cannot revert this write.
     """
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
@@ -818,19 +778,15 @@ async def test_registries_config_write_holds_the_loop_side_config_lock(
     assert lock_held == [True], "the loop-side config lock was not held across the write"
     # The lock must not outlive the request, or the next config writer deadlocks.
     assert not _get_config_lock().locked()
-    # And the fix must not have pulled the blocking work back onto the loop.
+    # And the blocking work still runs off the loop.
     assert write_threads and all(thread is not loop_thread for thread in write_threads)
 
 
 def test_registries_config_write_is_not_dispatched_with_a_bare_to_thread() -> None:
     """``_write_registries_config`` may not be handed straight to a raw offload.
 
-    The behavioral test above proves the lock is held on the path it drives;
-    this ratchet stops a SECOND dispatch site reintroducing the bare form
-    somewhere that test does not reach. ``asyncio.to_thread`` is legitimate
-    throughout this module for work that touches no shared config file, so the
-    scan is deliberately narrow: it fires only when the callable being offloaded
-    is ``_write_registries_config`` itself.
+    This ratchet covers dispatch sites the behavior test does not reach. It fires only
+    on ``_write_registries_config``, since ``asyncio.to_thread`` is fine for other work.
     """
     offenders: list[str] = []
     family = (routes_mod, *(sys.modules[name] for name in routes_mod._OWNERS))

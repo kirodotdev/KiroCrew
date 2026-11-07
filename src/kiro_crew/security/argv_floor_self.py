@@ -38,6 +38,7 @@ from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
+    _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
     _backtick_closer,
@@ -54,6 +55,7 @@ from .shell_normalizer import (
     _resolve_param_defaults,
     _shell_join_continuations,
     _shell_payload_walk,
+    _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
 )
@@ -859,7 +861,7 @@ _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
 )
 
 
-def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
+def _self_cli_operands(tokens: "list[str]", i: int, *, glued_words: bool) -> "list[str]":
     """Non-flag operand words the product CLI at program index *i* receives, in order.
 
     A token that stays a ``-``/``--`` word after quote/redirect normalization is a
@@ -870,6 +872,11 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
     ``kirocrew 2>/tmp/x restart`` still reads ``restart`` as the leading operand.
     Quoting is resolved by ``_normalize_operand``; the walk stops at the argv
     boundary so a chained later command's words are not attributed here.
+
+    With *glued_words*, the word a redirection is glued to (``restart>/tmp/log``) is
+    read as the operand the shell passes. Without it the whole token is skipped: the
+    dequoted token cannot show whether a separator in its target was live
+    (``status>x&&kirocrew restart``), so the floor matches either reading.
     """
     operands: "list[str]" = []
     depth = 0
@@ -885,7 +892,9 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
         if is_redirect:
             # The redirection operator itself is not an operand and never ends the argv.
             skip_target = expects_target
-            continue
+            if not glued_words or _REDIRECT_START_RE.match(later):
+                continue
+            later = _strip_redirect(later)
         operand = _shell_normalizer._normalize_operand(later)
         # ANSI-C ($'...') and locale ($"...") quoting: shlex strips the quotes
         # but leaves the leading ``$``, so a flag hidden as ``$'-v'`` / the hex
@@ -1039,7 +1048,10 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
                 command_disqualified=disqualified,
             ):
                 continue
-            if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+            if any(
+                _operands_lead_with(_self_cli_operands(tokens, prog_idx, glued_words=g), spec)
+                for g in (False, True)
+            ):
                 return True
     return False
 

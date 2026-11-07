@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew.crew_mode import CONDUCTOR_TEMPLATES
+
 
 def _resolve(prompt: str, session_key: str, density: str = "more") -> str:
     """Call the private template resolver with a canned config."""
@@ -39,11 +41,13 @@ class TestWidgetBlockPlaceholder:
             assert result == "prefix  suffix"
 
     def test_dashboard_more_density_emits_pointer(self):
-        # The `more` branch should encourage widgets and point at the skill.
+        # The `more` branch should encourage widgets and point at the skill: it
+        # says WHEN to draw one unasked, not only how.
         result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density="more")
         assert "## Inline Widgets" in result
         assert "<mcwidget" in result
         assert "`widgets` skill" in result
+        assert "draw it as one widget without being asked" in result
 
     def test_dashboard_less_density_emits_pointer(self):
         # The `less` branch should discourage widgets but still point at the skill.
@@ -52,6 +56,7 @@ class TestWidgetBlockPlaceholder:
         assert "<mcwidget" in result
         assert "`widgets` skill" in result
         assert "prefer" in result.lower()
+        assert "without being asked" not in result
 
     def test_pointer_does_not_restate_skill_content(self):
         # The main-prompt pointer must NOT inline the theme-variable table,
@@ -72,10 +77,11 @@ class TestWidgetBlockPlaceholder:
         # (~1000 / ~560) once answer-only widgets shipped unreadable in dark
         # mode because the model never loaded the skill, and once more by the
         # animation baseline (~1320 / ~630), which must reach agents whose
-        # skill:// mapping hides the skill. Budgets sit just above today's
-        # sizes to keep catching accidental regrowth toward inlining full
-        # skill docs.
-        budgets = {"more": 1340, "less": 660}
+        # skill:// mapping hides the skill, and for "more" by the when-to-draw
+        # sentence (~1530), which no skill load can supply. Budgets sit just
+        # above today's sizes to keep catching accidental regrowth toward
+        # inlining full skill docs.
+        budgets = {"more": 1550, "less": 660}
         for density, budget in budgets.items():
             result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density=density)
             assert len(result) < budget, f"{density} pointer too long: {len(result)} chars"
@@ -122,34 +128,37 @@ class TestWidgetBlockPlaceholder:
         assert "prefer" not in result.lower(), "less-branch wording leaked"
 
 
+def _spec_body(agent: str) -> str:
+    """*agent*'s charter, the text its installer's spec prompt is built from."""
+    from kiro_crew.agent_parts import spec_prompts
+
+    return {
+        "kirocrew-worker": spec_prompts._WORKER_SYSTEM_PROMPT,
+        "kirocrew-team-lead": spec_prompts._TEAM_LEAD_SYSTEM_PROMPT,
+        "kirocrew-pipeline-conductor": spec_prompts._PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
+        "kirocrew-security-conductor": spec_prompts._SECURITY_CONDUCTOR_SYSTEM_PROMPT,
+    }.get(agent, spec_prompts._CONDUCTOR_SYSTEM_PROMPT)
+
+
 class TestConductorCarriesTheWidgetBlock:
-    """The conductor draws its introduction and task board as widgets, so its
+    """Every shipped conductor talks to a person in the dashboard chat, so its
     contract block carries the per-surface widget pointer. Its spec prompt does
     not: kiro-cli loads that text natively and a crewmate's essentials deliver it
-    verbatim, so a placeholder there would never be resolved. The worker reports
-    to a ledger, not a person, and gets no pointer."""
+    verbatim, so a placeholder there would never be resolved. A worker reports
+    to its conductor, not a person, and gets no pointer."""
 
     @staticmethod
     def _contract(tmp_path, monkeypatch, agent, session_key, *, private_owner):
         import json
 
-        from kiro_crew.agent_parts.spec_prompts import (
-            _CONDUCTOR_SYSTEM_PROMPT,
-            _TEAM_LEAD_SYSTEM_PROMPT,
-            _WORKER_SYSTEM_PROMPT,
-        )
         from kiro_crew.context import ContextBuilder
         from kiro_crew.memory import MemoryStore
         from kiro_crew.skills import SkillsLoader
 
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
-        body = {
-            "kirocrew-worker": _WORKER_SYSTEM_PROMPT,
-            "kirocrew-team-lead": _TEAM_LEAD_SYSTEM_PROMPT,
-        }.get(agent, _CONDUCTOR_SYSTEM_PROMPT)
         (agents_dir / f"{agent}.json").write_text(
-            json.dumps({"name": agent, "prompt": body}), encoding="utf-8"
+            json.dumps({"name": agent, "prompt": _spec_body(agent)}), encoding="utf-8"
         )
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir)
@@ -170,18 +179,13 @@ class TestConductorCarriesTheWidgetBlock:
                 session_start=True,
             )
 
-    def test_the_spec_prompts_carry_no_unresolved_placeholder(self):
-        from kiro_crew.agent_parts.spec_prompts import (
-            _CONDUCTOR_SYSTEM_PROMPT,
-            _WORKER_SYSTEM_PROMPT,
-        )
+    @pytest.mark.parametrize("agent", [*sorted(CONDUCTOR_TEMPLATES), "kirocrew-worker"])
+    def test_the_spec_prompts_carry_no_unresolved_placeholder(self, agent):
+        assert "{{" not in _spec_body(agent)
 
-        assert "{{" not in _CONDUCTOR_SYSTEM_PROMPT
-        assert "{{" not in _WORKER_SYSTEM_PROMPT
-
-    @pytest.mark.parametrize("agent", ["kirocrew-conductor", "kirocrew-ledger-conductor"])
+    @pytest.mark.parametrize("agent", sorted(CONDUCTOR_TEMPLATES))
     @pytest.mark.parametrize("private_owner", [True, False])
-    def test_a_conductor_gets_the_pointer_on_the_dashboard(
+    def test_every_conductor_gets_the_pointer_on_the_dashboard(
         self, tmp_path, monkeypatch, agent, private_owner
     ):
         # private_owner=True is the crewmate path: its own prompt arrives through
@@ -192,7 +196,7 @@ class TestConductorCarriesTheWidgetBlock:
         assert "## Inline Widgets" in contract
         assert "The frame is themed" in contract
         assert "{{WIDGET_BLOCK}}" not in contract
-        assert ("# Kiro Crew Conductor" in contract) is not private_owner
+        assert (_spec_body(agent).splitlines()[0] in contract) is not private_owner
 
     @pytest.mark.parametrize("private_owner", [True, False])
     def test_a_conductor_gets_no_pointer_off_the_dashboard(
@@ -210,21 +214,6 @@ class TestConductorCarriesTheWidgetBlock:
         # A crewmate whose block held only the pointer gets no block at all.
         assert (contract == "") is private_owner
 
-    @pytest.mark.parametrize("private_owner", [True, False])
-    def test_the_team_lead_gets_the_pointer_on_the_dashboard(
-        self, tmp_path, monkeypatch, private_owner
-    ):
-        contract = self._contract(
-            tmp_path,
-            monkeypatch,
-            "kirocrew-team-lead",
-            "dashboard_member-kirocrew-team-lead",
-            private_owner=private_owner,
-        )
-        assert "## Inline Widgets" in contract
-        assert "{{WIDGET_BLOCK}}" not in contract
-        assert ("# Kiro Crew Team Lead" in contract) is not private_owner
-
     def test_the_team_lead_gets_no_pointer_off_the_dashboard(self, tmp_path, monkeypatch):
         contract = self._contract(
             tmp_path, monkeypatch, "kirocrew-team-lead", "slack:C123:123.456", private_owner=False
@@ -233,12 +222,19 @@ class TestConductorCarriesTheWidgetBlock:
         assert "Inline Widgets" not in contract
         assert "{{WIDGET_BLOCK}}" not in contract
 
-    def test_the_worker_gets_no_pointer(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("agent", "heading"),
+        [("kirocrew-worker", "# Kiro Crew Worker"), ("kirocrew-mate-worker", "## Output Format")],
+    )
+    def test_a_worker_gets_no_pointer(self, tmp_path, monkeypatch, agent, heading):
+        # The crewmate's worker is default-named, so its contract is the default
+        # prompt, whose own token would otherwise resolve to the pointer.
         contract = self._contract(
-            tmp_path, monkeypatch, "kirocrew-worker", "dashboard:abc", private_owner=False
+            tmp_path, monkeypatch, agent, "dashboard:abc", private_owner=False
         )
-        assert "# Kiro Crew Worker" in contract
+        assert heading in contract
         assert "Inline Widgets" not in contract
+        assert "{{WIDGET_BLOCK}}" not in contract
 
 
 class TestMaxSubagentsPlaceholder:

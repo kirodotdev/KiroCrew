@@ -369,6 +369,33 @@ async def api_hook_test(request: web.Request) -> web.Response:
     )
 
 
+async def api_kiro_hooks_rescan(request: web.Request) -> web.Response:
+    """POST /api/kiro-hooks/rescan — rewrite the agent specs from the hooks folder and config.
+
+    Owner-only: an agent can write a script into the hooks folder, so it must not
+    also be able to make that script run.
+    """
+    # Body-scope import, like the gates above: ``_shared`` reaches back into
+    # sibling handler modules, so a module-scope import would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import (
+        rebuild_agent_spec,
+        require_owner_dashboard_request,
+    )
+
+    denied = await require_owner_dashboard_request(request, "hooks.rescan")
+    if denied is not None:
+        return denied
+    rewritten = await asyncio.to_thread(rebuild_agent_spec, "a hooks rescan")
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="hooks.rescan",
+        outcome="success" if rewritten else "error",
+        source="dashboard",
+        resources=f"agent_spec_rewritten={rewritten}",
+    )
+    return web.json_response({"ok": True, "agent_spec_rewritten": rewritten})
+
+
 #: The ``unsent`` row fields the author wrote, which may hold a credential.
 _UNSENT_AUTHORED = frozenset({"name", "matcher", "command"})
 

@@ -13,6 +13,7 @@ import functools
 import logging
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -55,6 +56,7 @@ from kiro_crew.sandbox_staging import (
     _materialize_live_target_mask_target,
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
+    _materialize_refresh_chains_mask_target,
     _md_notebook_degraded_mask_dirs,
     _member_records_move,
     _migrate_md_notebook_legacy_state,
@@ -82,6 +84,8 @@ from kiro_crew.sandbox_tiers import (
 )
 from kiro_crew.sandbox_workspace import (
     _literal_ancestor_guards,
+    _renameable_ancestor_guards,
+    _resolution_entries,
     _voice_runtime_ancestor_guards,
     _voice_runtime_parent_paths,
     _voice_runtime_sandbox_paths,
@@ -175,6 +179,46 @@ def _ssh_supports_accept_new() -> bool:
     except Exception:
         pass
     return False
+
+
+def _runtime_dir_is_durable(runtime_dir: str) -> bool:
+    """Whether *runtime_dir* (the plan's ``/run/user/$UID``) survives session churn.
+
+    The launcher stages the bind sources that mask ``.env`` and the other crew-home
+    leaves on ``/run/user/$UID`` first when this holds (see
+    ``sandbox_plan.namespace_payload``). That runtime directory belongs to the login
+    session; a PER-USER systemd manager keeps it coherent while the user is logged in,
+    and logind removes and remakes it on a host WITHOUT one as sessions come and go. A
+    bind source pinned inside it when that happens leaves the host leaf a bind of a
+    now-empty inode -- a 0-byte ``.env``.
+
+    The caller passes the SAME root the plan stages on
+    (``sandbox_plan.user_runtime_root``), never ``XDG_RUNTIME_DIR``: a manager found
+    under a different runtime dir says nothing about the one the bind sources use.
+
+    "A live manager" is the one LISTENING on its own private control socket,
+    ``<runtime_dir>/systemd/private`` (which ``systemctl --user`` dials). Only the
+    manager creates that socket. The session ``bus`` is not evidence: a plain
+    ``dbus-daemon --session`` listens there with no manager behind it, which is
+    exactly the host this order exists for. The test is a NON-BLOCKING ``connect()``,
+    not a stat of the socket FILE: a manager that died leaves the file behind, and only
+    a connect tells that apart from a live listener. ``connect_ex`` returning 0
+    (connected) or ``EAGAIN`` (listener with a full backlog) proves someone is
+    listening; anything else -- refused, no file, non-POSIX -- reads as not durable and
+    takes the ``/dev/shm`` order, the safe default (being wrong there only trades
+    ``/run/user/$UID``'s login-scoped auto-reclaim for ``/dev/shm``, which the janitor
+    reclaims too). The socket is closed at once, before any handshake, which the
+    manager treats as an ordinary client hang-up.
+    """
+    path = os.path.join(runtime_dir, "systemd", "private")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            err = probe.connect_ex(path)
+    except (OSError, AttributeError) as exc:
+        # AttributeError: no AF_UNIX on this platform.
+        err = getattr(exc, "errno", None) or errno.EIO
+    return err in (0, errno.EAGAIN, errno.EINPROGRESS)
 
 
 def namespace_launcher_script_dir() -> str:
@@ -343,12 +387,26 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     relocated_crew_readonly = tuple(_relocated_crew_targets(_CREW_READONLY_LEAVES))
     kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
     install_root_targets = tuple(_resolved_install_root_targets())
-    # The namespace launcher binds the package directory itself, so a renamed parent
-    # carries the read-only mount with it; Seatbelt matches paths and needs the guards.
-    install_root_ancestor_guards = (
-        ()
+    # A renamed parent carries a seal away on both backends, so every entry resolving a
+    # seal steps on is guarded, and so are the parents of its own spelling, which keep a
+    # name below one not created yet guarded on Seatbelt (the namespace launcher skips an
+    # absent name): Seatbelt denies writing each one, and the namespace launcher pins the
+    # ones this uid could rename.
+    seal_parents = tuple(
+        entry
+        for target in (
+            *voice_runtime_parents,
+            *kiro_agents_targets,
+            *(os.path.join(home, rel) for rel in _CREW_READONLY_TARGETS),
+            *relocated_crew_readonly,
+            *install_root_targets,
+        )
+        for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
+    )
+    readonly_ancestor_guards = (
+        _renameable_ancestor_guards(seal_parents, uid)
         if namespace
-        else _literal_ancestor_guards(tuple(os.path.dirname(t) for t in install_root_targets))
+        else _literal_ancestor_guards(seal_parents)
     )
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     host_paths = [
@@ -363,7 +421,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         *voice_runtime_ancestor_guards,
         *kiro_agents_targets,
         *install_root_targets,
-        *install_root_ancestor_guards,
+        *readonly_ancestor_guards,
     ]
     return sandbox_plan.PlanHost(
         home=home,
@@ -389,11 +447,29 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         voice_runtime_ancestor_guards=voice_runtime_ancestor_guards,
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
-        install_root_ancestor_guards=install_root_ancestor_guards,
+        readonly_ancestor_guards=readonly_ancestor_guards,
         carveout_probes=carveout_probes,
         uid=uid,
         gid=gid,
         ssh_accept_new=_ssh_supports_accept_new() if namespace else False,
+        # ``forward_ssh_auth_sock`` is the forward verdict ``wrap_argv`` re-judged against
+        # the tier it applies: when the spawn keeps the ssh agent, its socket stays
+        # reachable too (``~/.ssh/config`` names it as ``IdentityAgent``).
+        denied_socket_patterns=(
+            ()
+            if namespace
+            else sandbox_plan.denied_socket_patterns(
+                voice_runtime_parents, keep_ssh_agent=request.forward_ssh_auth_sock
+            )
+        ),
+        sealed_socket_patterns=(
+            ()
+            if namespace
+            else sandbox_plan.credential_agent_socket_patterns(request.forward_ssh_auth_sock)
+        ),
+        runtime_dir_durable=(
+            _runtime_dir_is_durable(sandbox_plan.user_runtime_root(uid)) if namespace else False
+        ),
     )
 
 
@@ -506,6 +582,7 @@ def _build_launcher_script(
 def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -521,6 +598,7 @@ def _build_seatbelt_profile(
         _spawn_plan(
             sandbox_plan.BACKEND_SEATBELT,
             sandbox_level,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
@@ -588,8 +666,10 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
-    # The channel-credential file has the same gap: an absent ``.env`` gets no mask.
+    # The channel-credential file and the refresh-chain store have the same gap: an
+    # absent name gets no mask.
     _materialize_env_mask_target(_required_targets)
+    _materialize_refresh_chains_mask_target(_required_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
@@ -887,6 +967,8 @@ def sandbox_exec_argv(
             )
     profile = _build_seatbelt_profile(
         sandbox_level,
+        # The ssh agent's socket stays reachable exactly when its env var is forwarded.
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
         # These entries become path RULES, not binds over an inode. That is weaker than it
         # first appears: the rule keeps naming a path, and nothing here denies a write to the
         # alias's parent or its ancestors while the data home root stays writable in-sandbox,

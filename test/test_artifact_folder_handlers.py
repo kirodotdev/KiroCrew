@@ -485,6 +485,18 @@ class TestSetFolder:
         )
         assert resp.status == 400
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("slug", "status"), [("does-not-exist", 404), ("Bad Slug!", 400)])
+    async def test_refused_slug_creates_no_folders(
+        self, stores, patch_restricted, slug: str, status: int
+    ) -> None:
+        _store, fstore = stores
+        resp = await api_artifact_set_folder(
+            _request(body={"folder": "Inbox/Triage"}, match={"slug": slug})
+        )
+        assert resp.status == status
+        assert fstore.list() == []
+
 
 # ── Create/list artifact with folder ─────────────────────────────────────────
 

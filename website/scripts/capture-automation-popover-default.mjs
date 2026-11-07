@@ -97,9 +97,8 @@ async function main() {
          scripts, and one racing the stub's clear would leave the language
          unset again. Unset means `resolveLanguage` falls through to the
          browser, which is the other half of what `locale` above pins. */
-      localStorageEntries: { 'mc-lang': 'en' },
+      localStorageEntries: { 'mc-lang': 'en', 'mc-active-slot': SLOT },
     })
-    await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
 

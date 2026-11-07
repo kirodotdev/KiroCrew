@@ -54,7 +54,8 @@ logger = logging.getLogger(__name__)
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
     DENY_CAUSE_POLICY: (
-        "was blocked by a Kiro Crew safety policy",
+        "was blocked by a Kiro Crew safety policy before any of it ran: if it "
+        "chained several shell commands, none of them ran, the earlier ones included",
         "use an allowed alternative (for a shell command, a read-only variant), use "
         "a different tool, or — if the block is correct and you genuinely cannot "
         "proceed — say so and stop with the reason.",

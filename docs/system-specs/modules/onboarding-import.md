@@ -229,7 +229,7 @@ Durable tiers only:
    and receives the write instead — via `set_semantic_if_absent`, NOT
    `write_lesson`: that writer deletes an existing lesson on exact-substring or
    >50% topic overlap ("newer replaces older"), which for an import would let a
-   foreign directive delete a correction the *user* taught the agent. Import
+   foreign directive delete a lesson already in the store. Import
    recognizes the same overlap and reports `existing` instead of replacing. `ContextBuilder` reads vector lessons first and
    never falls back to the JSONL when they exist, so a JSONL-only write would be
    recorded as imported yet stay invisible to the agent.
@@ -434,7 +434,7 @@ Rules:
   finer-grained per-item choice is a UI concern layered on top: the UI may issue
   several apply requests with different strategies.
 - `rename` lets the user resolve a collision caused by a source edit: a changed skill or MCP server has a different content-derived fingerprint, so it does not match the ledger record for the installed item.
-- In `AgentImportFlow` a resolution (Keep both / Replace mine) is a second apply request. The results screen keeps the last apply that landed on screen while it runs and after it fails, shows that failure there, and holds Import another and Continue until it settles. A scan `skipped` row shows its `reason` code by kind (credentials, a size or count limit, unsupported, excluded, a refused path, invalid, unreadable) in the reader's language, keeping the code on the row's `data-reason`; a reason that is not a code is shown as sent. Every skipped row stays a muted note, a caught failure included, until the scan sends a failed flag (#29216). The failed-resolution notice says the import itself is saved and offers no agent hand-off, which would unmount the only place the remaining conflicts resolve.
+- In `AgentImportFlow` a resolution (Keep both / Replace mine) is a second apply request. The results screen keeps the last apply that landed on screen while it runs and after it fails, shows that failure there, and holds Import another and Continue until it settles. A scan `skipped` row shows its `reason` code by kind (credentials, a size or count limit, unsupported, excluded, a refused path, invalid, unreadable) in the reader's language, keeping the code on the row's `data-reason`; a reason that is not a code is shown as sent. A row the scan flags `failed` is a caught read, parse or open failure (`read_failed`, `database_open_failed`, `database_read_failed`, `source_unreadable`, `invalid_config`, the JSON-decode arm of `invalid_memory_record`, `workspace_unavailable`, the `OSError` arm of `unsafe_database_sidecar`) and renders as an inline `ErrorNotice` with no hand-off, since the review holds unsaved picks; every other skipped row stays a muted note. `_Scan.diagnostic(failed=True)` sets the flag at each catch site and keeps it when the same row repeats, and `_scan_response` sends it only when true. The failed-resolution notice says the import itself is saved and offers no agent hand-off, which would unmount the only place the remaining conflicts resolve.
 
 ## Idempotency and deduplication
 
@@ -604,7 +604,7 @@ home, and scanning it would walk every file the user owns. Callers treat an abse
 root as "not installed".
 
 A scanner that raises is reported as a `source_unreadable` diagnostic (an
-unsupported one) and its partial
+unsupported, failed one) and its partial
 findings are discarded: one unreadable source must not deny the user the others,
 and half of a source we now know we cannot read correctly must not be offered as
 importable data.

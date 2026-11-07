@@ -69,13 +69,14 @@ from kiro_crew.messaging.dispatch_contract import (
     Verdict,
     _monitor_result,
     _MonitorGenerationChanged,
+    _SenderNoLongerAdmitted,
     exchange_writer,
 )
 from kiro_crew.messaging.dispatch_crew_log import (
     open_turn_crew_log,
-    predecessor_sid,
     requested_model_sid,
     slot_workspace,
+    store_predecessor,
 )
 from kiro_crew.messaging.dispatch_recovery import (
     _record_success,
@@ -539,7 +540,20 @@ class ChannelTurns:
         # holds its lineage; a resumed CHANNEL history has no other opener.
         return not asker.resumed or bool(channel_namespace_of(asker.session_key))
 
-    def _open_crew_log(self, provider: Any, session_key: str, agent: str, resumed: bool) -> None:
+    async def _crew_log_store(self, asker: Asker) -> tuple[str, bool, bool] | None:
+        """The slot's store answer, read BEFORE a claim the opener follows. Never raises."""
+        if not self._opens_crew_log(asker):
+            return None
+        return await store_predecessor(self._sessions, asker.session_key)
+
+    def _open_crew_log(
+        self,
+        provider: Any,
+        session_key: str,
+        agent: str,
+        resumed: bool,
+        store: tuple[str, bool, bool] | None,
+    ) -> None:
         """Open the allocation's crew log. Never raises, never suspends."""
         if self._slot_state is not None:
             state = self._slot_state()
@@ -551,7 +565,8 @@ class ChannelTurns:
             agent=agent,
             resumed=resumed,
             ctx_builder=self._ctx_builder,
-            previous_sid=predecessor_sid(self._sessions, session_key),
+            sessions=self._sessions,
+            store=store,
             model_requested=requested_model_sid(self._sessions, session_key),
             workspace=slot_workspace(state, session_key),
         )
@@ -612,16 +627,20 @@ class ChannelTurns:
                 logger.warning(
                     "%s: maybe_notice failed session=%s", channel, session_key, exc_info=True
                 )
+        self._audit(asker, "success")
+
+    def _audit(self, asker: Asker, outcome: str) -> None:
+        """The turn's ``transport_dispatch.handle`` SEL row, best-effort."""
         try:
             sel().log_api_access(
-                caller=asker.audit_caller or f"{channel}:unknown",
+                caller=asker.audit_caller or f"{self.channel}:unknown",
                 operation="transport_dispatch.handle",
-                outcome="success",
-                source=channel,
-                resources=f"session={session_key}",
+                outcome=outcome,
+                source=self.channel,
+                resources=f"session={asker.session_key}",
             )
         except Exception:
-            logger.debug("%s: success audit failed", channel, exc_info=True)
+            logger.debug("%s: %s audit failed", self.channel, outcome, exc_info=True)
 
     async def _run_admitted(
         self, asker: Asker, text: str, source: RendererSource, **kwargs: Any
@@ -724,6 +743,7 @@ class ChannelTurns:
             # durable claim instead of queueing behind it.
             try:
                 memory_store = await session_store_for_turn(ctx_builder, session_key)
+                crew_log_store = await self._crew_log_store(asker)
                 provider, is_new, resumed = await sessions.get_or_create(
                     session_key,
                     agent=session_agent,
@@ -741,7 +761,7 @@ class ChannelTurns:
             _acquired = claimed = True
             _turn_provider = provider
             if self._opens_crew_log(asker):
-                self._open_crew_log(provider, session_key, agent, resumed)
+                self._open_crew_log(provider, session_key, agent, resumed, crew_log_store)
         # Read ONCE, before anything is rendered: a disconnected conversation never
         # shows a typing indicator, never streams, and has nothing finalized into
         # it. The substitute is what the driver and the ``finally``'s close() both
@@ -893,6 +913,7 @@ class ChannelTurns:
                     # cold provider start. The same identity is then used for this
                     # turn's prompt.
                     memory_store = await session_store_for_turn(ctx_builder, session_key)
+                    crew_log_store = await self._crew_log_store(asker)
                     provider, is_new, resumed = await sessions.get_or_create(
                         session_key,
                         agent=session_agent,
@@ -915,7 +936,7 @@ class ChannelTurns:
                         # opener would leave a live session whose log is first created
                         # on the NEXT turn, by then a warm reuse, so its previous edge
                         # would never be written.
-                        self._open_crew_log(provider, session_key, agent, resumed)
+                        self._open_crew_log(provider, session_key, agent, resumed, crew_log_store)
                 # The wake's claim serves its first attempt only; a replay reacquires.
                 claimed = False
                 if deny_all_tools:
@@ -1067,9 +1088,13 @@ class ChannelTurns:
                     closing_gate: Callable[[], None] = _begin_monitor_turn
                     driver_extra: dict[str, Any] = {"monitor_completion": monitor.hook}
                 else:
-                    closing_gate = turn_ceiling.gate(
-                        session_key, lambda: sessions.begin_turn(session_key)
-                    )
+
+                    def _begin_turn() -> None:
+                        if asker.still_admitted is not None and not asker.still_admitted():
+                            raise _SenderNoLongerAdmitted
+                        sessions.begin_turn(session_key)
+
+                    closing_gate = turn_ceiling.gate(session_key, _begin_turn)
                     driver_extra = {}
                 driver = TurnDriver(
                     provider,
@@ -1298,6 +1323,14 @@ class ChannelTurns:
                 session_key,
             )
             verdict = Verdict.STALE
+        except _SenderNoLongerAdmitted:
+            # Admitted on arrival, refused at the pre-stream gate: nothing was
+            # prompted or recorded, and the stand-in is what the ``finally`` closes,
+            # because a channel's close sends a placeholder for a turn with no output.
+            logger.info("%s: sender no longer admitted for %s", channel, session_key)
+            self._audit(asker, "denied")
+            renderer = SilentRenderer()
+            verdict = Verdict.DENIED
         except TurnCeilingExceeded as exc:
             # The conversation is at its turn ceiling, so this turn never opened.
             # Ahead of the shutdown branch below and deliberately unlike it in two
@@ -1511,6 +1544,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             origin=turn.origin_conversation,
             display_name=turn.user_display_name,
             model=turn.model,
+            still_admitted=turn.still_admitted,
         ),
         turn.user_text,
         _given(turn.renderer),
@@ -1547,6 +1581,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.messaging.dispatch_contract import (  # noqa: F401
         DISCORD_DRIFT,
         PROCESS_GRANT,
+    )
+    from kiro_crew.messaging.dispatch_crew_log import (  # noqa: F401
+        _replay_pending,
+        predecessor_edge,
+        predecessor_sid,
     )
     from kiro_crew.messaging.dispatch_recovery import (  # noqa: F401
         _breaker_threshold,

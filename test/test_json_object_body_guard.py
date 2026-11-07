@@ -173,6 +173,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # A thread reply is one text field (capped at 32 KiB by the handler) plus a
     # slot key, so the shared default ceiling is the right one.
     "chat_threads.py::api_chat_thread_reply": ("<default>", _BOUNDED_BY_DEFAULT),
+    # A merge-back is one summary (capped at 4000 characters by the handler) and
+    # one message id, so the shared default ceiling is the right one.
+    "chat_merge_back.py::api_chat_slot_merge_back": ("<default>", _BOUNDED_BY_DEFAULT),
     # Voice config is a flat set of short scalars (provider name, voice name,
     # rate, paths) and voice synthesis takes one reply's text, which the panel
     # already truncates well below the shared default. Neither has a legitimate
@@ -182,6 +185,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
+    # One diagram source; 64 KB is four times the largest PlantUML source the
+    # redactor decodes (``_PLANTUML_SOURCE_CAP``).
+    "handlers/plantuml_render.py::api_plantuml_svg": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
     # A control click is one short closed name, so 256 bytes is far above any
     # legitimate body.
@@ -190,6 +196,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         _BOUNDED_BY_DEFAULT,
     ),
     "messaging_api/agent_push.py::api_notification_agent_push": (
+        "<default>",
+        _BOUNDED_BY_DEFAULT,
+    ),
+    "messaging_api/agent_push.py::api_notification_agent_dismiss": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
     ),
@@ -384,6 +394,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/prompt_queue.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "queue_edit_hold.py::api_chat_slot_queue_editing": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_steer_retract": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_repair.py::api_chat_slot_reset_conversation": (
         "<default>",
@@ -492,6 +503,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # a capped list of paths, each a FILE_READ_SCHEMA path
     "file_api/pinned_io.py::api_file_kinds": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "file_api/dashboard_config.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # a parent directory and one folder name
+    "file_api/browse.py::api_browse_create_dir": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # The four module-local body guards, which read through the helper.
     # A channel message carries user prose and these routes never had a cap below
     # client_max_size; adding one would be a new limit, not this convergence.

@@ -902,6 +902,14 @@ class TestNamespacesHandler(_SageRoutesBase):
         self.assertEqual(resp.status, 400)
         self.assertEqual(_body(resp)["code"], "name_required")
 
+    async def test_non_object_body_is_400(self):
+        # A JSON array/string/number parses fine and then has no ``.get``.
+        for body in ([1, 2], "proj-a", 7):
+            for method in ("POST", "DELETE"):
+                resp = await self.mod._handle_namespaces(_Req(method=method, body=body))
+                self.assertEqual(resp.status, 400, (method, body))
+                self.assertEqual(_body(resp)["code"], "body_not_object")
+
     async def test_unreadable_body_is_400(self):
         resp = await self.mod._handle_namespaces(_Req(method="POST", body=None))
         self.assertEqual(resp.status, 400)

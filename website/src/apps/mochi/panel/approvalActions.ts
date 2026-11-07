@@ -16,7 +16,7 @@
  * Trust is not an approval verb: it answers this request AND widens the slot's
  * standing policy, which only the slot endpoint can do.
  */
-import { sliceCodePoints } from '../../../components/CommentOverlay'
+import { sliceCodePoints } from '../../../utils/codePoints'
 
 export type ApprovalUiAction = 'approve' | 'reject' | 'trust' | 'trust_reads' | string
 

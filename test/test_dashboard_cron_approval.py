@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from body_stream_helpers import attach_body
 
-from kiro_crew.cron import CronSchedule
+from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers import api_crons, api_crons_create
 
 
@@ -289,11 +289,13 @@ class TestCronListFields:
         mock_job.hide_in_chat = False
         mock_job.minimal_context = False
         mock_job.persistent_session = True
+        mock_job.new_chat_per_run = False
         mock_job.auto_pause_after_failures = 5
         mock_job.alert_after_failures = 1
         mock_job.schedule = CronSchedule(kind="every", every_secs=300)
         mock_job.last_run_ts = None
         mock_job.last_result = None
+        mock_job.last_result_ts = 0.0
         mock_job.last_retry_count = 0
         # Set explicitly, like every other field here: an unset attribute on a
         # MagicMock answers with a MagicMock, which the JSON response cannot
@@ -339,7 +341,25 @@ class TestCronListFields:
         assert job_data["hide_in_chat"] is False
         assert job_data["minimal_context"] is False
         assert job_data["persistent_session"] is True
+        assert job_data["new_chat_per_run"] is False
         assert job_data["channel"] == "C123"
         assert job_data["skip_dates"] is None
         # server_tz top-level field exposes the dashboard's local TZ for client rendering
         assert "server_tz" in data
+
+    @pytest.mark.asyncio
+    async def test_a_default_approval_mode_lists_as_the_stored_empty_string(self):
+        job = CronJob(
+            id="j1", name="t", message="m", schedule=CronSchedule(kind="every", every_secs=300)
+        )
+        mock_state = MagicMock()
+        mock_state.has_slot.return_value = False
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[job])
+        mock_state.crons.running_since.return_value = None
+        mock_state.crons.is_running.return_value = False
+        request = MagicMock()
+        request.app = {"state": mock_state}
+
+        resp = await api_crons(request)
+
+        assert json.loads(resp.body)["jobs"][0]["approval_mode"] == ""

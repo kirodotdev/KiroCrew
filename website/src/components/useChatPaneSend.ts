@@ -35,8 +35,9 @@ import type { useChatPaneDraft } from './useChatPaneDraft'
  * was typed into, through the draft's `restoreIntoComposer`.
  */
 
-/** Client-only commands the pane never runs: it has no knowledge picker. */
-const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb']
+/** Client-only commands the pane never runs: it has no knowledge picker, and
+ *  `/fork` opens its fork in the main chat. */
+const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb', '/fork']
 
 /** Delay before the post-send bottom pin, so the optimistic bubble's commit has
  *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
@@ -82,6 +83,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   markCrewmateSent: (sendId: string) => void
 }) {
   const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer } = draft
+  const project = paneSlot?.project
   // In-pane report of a client-only slash command that did not run, keyed by
   // the slot it was typed in so a rebind does not carry it to another thread.
   const [slashError, setSlashError] = useState<{ slot: string; message: string; elsewhere?: boolean } | null>(null)
@@ -127,8 +129,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   // `/onboarding`) and the knowledge-fetch prefixes (`/kb`, `@kb`): the same
   // matchers and the same `interceptSlashCommand` ChatPage.send runs, so the
   // pane never posts them to the agent as text. The pane has no knowledge
-  // picker, and a host may give it no Side Chat (`openSideChat` omitted);
-  // those commands are refused here with the composer kept. Returns true when
+  // picker, `/fork` opens its fork in the main chat, and a host may give it no
+  // Side Chat (`openSideChat` omitted); those commands are refused here with
+  // the composer kept. Returns true when
   // the composer text was a command (handled or refused), so the caller must
   // not send it.
   // Commands the pane refuses (see interceptPaneSlash), kept out of its menu
@@ -153,8 +156,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       setSlashError({ slot: sentSlot, message: i18nT('pages.chatPage.agent_locked_command', { agent: paneAgentName }) })
       return true
     }
-    if (knowledge || (isSideCommand(raw) && !openSideChat)) {
-      const command = raw.split(/\s/, 1)[0]
+    const command = raw.split(/\s/, 1)[0]
+    if (knowledge || PANE_REFUSED_COMMANDS.includes(command) || (isSideCommand(raw) && !openSideChat)) {
       setSlashError({ slot: sentSlot, message: i18nT('pages.chatPage.command_not_available_here', { command }), elsewhere: true })
       return true
     }
@@ -258,12 +261,12 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // the ORDERED non-image list on `meta.files` (the agent's image extraction
     // matches absolute paths in the PROMPT TEXT, and the bubble renders images
     // only from their markdown); folder tokens as `[attached_dir N]`
-    // markers with `meta.dirs` (the pane has no project context, so tokens are
-    // absolute and serialize as-is); the live paste tokens expanded on the wire
-    // while the bubble keeps them plus `meta.pastes`, and the side table
+    // markers with `meta.dirs`, a picked `@rel/` resolved against the slot's
+    // project the way the picker inserted it; the live paste tokens expanded
+    // on the wire while the bubble keeps them plus `meta.pastes`, and the side table
     // re-collapses the server's expanded echo to that chip on history load; the
     // quoted message opening both texts.
-    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote }, 'send')
+    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project }, 'send')
     const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
     storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
@@ -288,7 +291,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, ...(crewmate ? { responsiveSend: true } : {}) } },
       }))
       // Same record as ChatPage's send: ↑ can recall it if the bubble is lost.
-      dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId }))
+      dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId, pastes: bubblePastes }))
     }
     const sendEpoch = selectSlotRunEpoch(store.getState(), slotKey)
     // Sending is explicit intent to be at the end, so the pane force-pins the
@@ -409,7 +412,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the

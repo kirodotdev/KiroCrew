@@ -333,6 +333,34 @@ MCP_WORK_SCHEMAS: dict[str, ToolSchema] = {
     "work_ledger_read": WORK_LEDGER_READ_SCHEMA,
     "work_ledger_record": WORK_LEDGER_RECORD_SCHEMA,
     "work_ledger_rebuild": WORK_LEDGER_REBUILD_SCHEMA,
+    # The two conductor checks (``mcp_work.CHECK_TOOLS``), inline so the facade
+    # gains no name. ``accept_eval``: the ``accept_batch`` document; each item's
+    # fields are the evaluator's to judge (one bad item is a verdict, not a
+    # refusal), so only shape and count are checked; 256 is the store's
+    # ``item_cap`` ceiling. ``patrol_budget``: typed fields only; which fields a
+    # mode needs is ``mcp_work._patrol_budget``'s check.
+    "accept_eval": ToolSchema(
+        tool_name="accept_eval",
+        fields=[FieldSpec("items", list, required=True, max_items=256)],
+    ),
+    "patrol_budget": ToolSchema(
+        tool_name="patrol_budget",
+        fields=[
+            FieldSpec("mode", str, required=True, allowed=frozenset({"check", "renew"})),
+            *(
+                FieldSpec(name, int, min_val=-1_000_000_000, max_val=1_000_000_000)
+                for name in (
+                    "interval_secs",
+                    "max_cycles",
+                    "max_runtime_secs",
+                    "base_cycles",
+                    "base_runtime_secs",
+                    "open_items",
+                )
+            ),
+            FieldSpec("line", str, max_len=500),
+        ],
+    ),
 }
 
 

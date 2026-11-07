@@ -10,6 +10,22 @@ other servers ship PDF viewers, forms, and dashboards the same way. This is the
 
 If you just want it working: **Customize → Connections → MCP Servers → MCP Management → route the server → on**. Routing adds the server to `mcp_gateway.stub_servers`; the rest of this page explains what that changes and what to check when a render does not appear.
 
+## Adding a server
+
+Open **Customize > Connections > MCP Servers** and click **Add Server**.
+Search for a server, select it, and review its install plan before installing.
+Every official-registry install lands disabled: installation alone does not
+start it. In the MCP Servers list, review the installed server's spec, set any
+required environment variables, and explicitly enable it there.
+An installed-but-disabled server stays listed, but its tools are not available
+until it is enabled.
+
+To use a vault credential, save it under **Settings > Secrets** and use
+`secret://KEY` as the environment value. Route the server through **MCP
+Management**, approve the launch, and restart Crew before using it; only the
+MCP gateway resolves that reference. Routing works for command-based stdio
+servers, not URL-based HTTP/SSE servers.
+
 ## Enabling it
 
 Routing is the required gate: the gateway daemon intercepts a routed server's tool result and resolves its `ui://` resource. Backend sharing is a separate optional pool-wide setting; neither requires hand-editing config.

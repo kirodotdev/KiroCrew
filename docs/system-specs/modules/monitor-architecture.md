@@ -218,10 +218,11 @@ each stall token (`stall:<last_report_at>`) is kept in a seen set in the
 gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
-A token is marked seen when the probe emits it, not when the turn lands; the
-quiet floor above covers a lost delivery, because a worker report moves
-`ledger_revision` and only a landed turn catches `ledger_delivered_revision` up,
-so the loop stays on the shipped floor and a plain patrol turn reads the board.
+A token is marked seen when the probe emits it, not when the turn lands. A woken
+turn that fails, or a recovery it queued for itself that fails, is charged to the
+loop (see [learn-cron-dashboard](learn-cron-dashboard.md)), so
+`gate._spend_ledger_wake_retry` buys one plain patrol turn on the next tick that
+reads the board, not the wake's text again.
 
 A delivered work-ledger wake is a POINTER, not a copy of the board.
 `ledger_wake.wake_turn_text` prefixes the nudge with the kernel's structural briefs
@@ -275,10 +276,14 @@ frame, since open dashboards render queue cards from frames), and an MCP App's
 (`api_mcp_apps_message`) call it too, and so does a peer `session_send`
 (`send_to_target`) with a `peer` origin: a `user` row on both paths, a steer only
 when it asked for one and the slot is running. `send_to_target` keeps its audience
-fence, cancellation shield and post-RPC re-gate around those calls. The idle
-autonudge fire writes its nudge row through `session_deliver.write_origin_row` (the
-`automation` origin, plus its `monitor` record), the same mapping a steered wake
-uses, but still chooses idle vs running itself (#23064).
+fence, cancellation shield and post-RPC re-gate around those calls. The autonudge
+fire calls it too, with its own turn start as `start_turn`
+(`_start_dashboard_wake_turn`, which keeps the fire's admission gate, completion
+hook, background-turn budget and run kwargs): an idle slot runs that starter,
+which, once it admits the turn, writes the nudge row through
+`session_deliver.write_origin_row` (the `automation` origin, plus its `monitor`
+record), the same mapping a steered wake uses; a running slot declines it, and the
+fire then steers a work-ledger wake or leaves the cycle to the turn's end.
 
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus
@@ -414,7 +419,17 @@ stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
 fire (`release_approval_hold`); a Slack or Discord message alone does not
 release it. `monitor_inspect` reports the hold as
-`paused_for_approval` on the loop reading.
+`paused_for_approval` on the loop reading. A held gated loop is not blind: when
+it names one pull request, each held tick reads it (`subject_reads.hold_tick`,
+one `gh pr view`, no model turn) and re-arms one read interval out, so the
+reconciler rescues such a held loop whose timer died like any other. Any other
+held loop, ungated or naming none, reads nothing: its held tick re-arms
+nothing, a turn's end arms it toward its deadline, and the reconciler skips it.
+A pull request that merged or closed during a gated loop's hold settles the
+loop as `monitor_terminal`, records the outcome on its monitor and sends the
+expiry notice. An ungated loop is never settled by a held read, because
+`gate=False` promises a terminal reading never ends it. A channel loop settles
+there too, because a held loop delivers no turn to carry the news.
 
 A tool's “requested” response proves receipt only. The gateway's applied notice
 and a subsequent `monitor_inspect` prove activation. For crew/member sessions,
@@ -462,6 +477,18 @@ carry state with `gate=False`. So one class takes three shapes:
 present and `gate` is false, and it is the guard that keeps the populations
 apart everywhere they meet: the dashboard handlers, the session directive
 application path, and the Slack gateway all branch on it.
+
+The first shape still reads its subject between cycles, without becoming the
+other two. A plain prompt loop with `gate=False` that names one pull request
+sleeps in read-interval chunks (`subject_reads.sleep_until_cycle`) and reads
+the pull request's state between them. A head that newly conflicts with its
+base ends the sleep early, once per head, and the cycle runs through the normal
+ladder. `BEHIND` does not wake it: where protection requires an up-to-date head,
+every sync is behind again at the next base commit. That is the read's only effect: it never suppresses a cycle and never
+acts on a terminal reading, which remains the opt-out's promise. It keeps no
+`MonitorState`, because a monitor on an ungated row would make it the third
+shape; its one fingerprint lives in memory, so a restart wakes a standing
+conflict once more.
 
 What follows for this spec is that the substrate is not a new subsystem to build
 beside the loop. It is a change to what that one field holds and to which
@@ -933,7 +960,9 @@ session, and in-session injection is the only path that can act.
 The in-session timer counts its interval from the end of its own last cycle
 toward a fixed deadline, so a user message defers a due fire without restarting
 the countdown. The real cadence is therefore the interval plus each cycle's own
-duration, which callers must size for.
+duration, which callers must size for. An ungated loop naming one pull request
+can run sooner: a head that newly needs a re-sync ends its sleep early (see
+*A monitor is a field, not a system*).
 
 ### 7. Delivery and turn injection
 

@@ -8,6 +8,7 @@ export interface ParsedSourceProps {
   lastScan?: string
   recursive?: boolean
   wordCount?: number
+  ignorePatterns?: string[]
 }
 
 export function parseSourceProps(s: Source): ParsedSourceProps {
@@ -24,6 +25,7 @@ export function parseSourceProps(s: Source): ParsedSourceProps {
     lastScan: props.last_scan as string | undefined,
     recursive: props.recursive as boolean | undefined,
     wordCount: props.word_count as number | undefined,
+    ignorePatterns: Array.isArray(props.ignore_patterns) ? props.ignore_patterns.filter((p): p is string => typeof p === 'string') : undefined,
   }
 }
 
@@ -39,6 +41,14 @@ const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
   synced: 'pages.knowledge.sourcesList.status.synced',
   error: 'pages.knowledge.sourcesList.status.error',
   paused: 'pages.knowledge.sourcesList.status.paused',
+}
+
+/** The status a source row shows and polls on. A folder scan stamps 'synced'
+ *  when its first file lands, so a row that still reports `scanning` reads as
+ *  'syncing' until the scan ends. Paused, error and pending rows keep their own. */
+export function displaySyncStatus(s: Pick<Source, 'sync_status' | 'scanning'>): string {
+  if (s.scanning && (s.sync_status === 'synced' || s.sync_status === 'active')) return 'syncing'
+  return s.sync_status
 }
 
 /** Readable label for a source's sync_status; an unknown value shows as-is. */

@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_folders_icons import (
     _bump_icon_epoch,
     _is_single_emoji,
     _is_valid_folder_color,
+    _prune_icon_tasks_from_other_loops,
     _spawn_chat_folder_icon_task,
     generate_emoji_for_name,
     icon_preview_avoid,
@@ -48,6 +49,7 @@ from kiro_crew.dashboard.chat_folders_records import (
     _validate_folder_tags,
     agent_creator_key,
     caller_home_slot,
+    clean_folder_default_prompt,
     create_folder_record,
     refuse_channel_reachable_agent,
 )
@@ -252,6 +254,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             project_dir=project_dir,
             default_agent=str(body.get("default_agent") or "").strip(),
             default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
+            default_prompt=body.get("default_prompt"),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -425,6 +428,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         changes["default_agent"] = str(val).strip() if val is not None else ""
     if "default_destination_crew" in body:
         changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
+    if "default_prompt" in body:
+        try:
+            changes["default_prompt"] = clean_folder_default_prompt(body["default_prompt"])
+        except FolderCreateError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:
@@ -677,6 +685,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # default glyph" stays the single on-disk representation
             # (mirrors color above).
             target.pop("icon", None)
+        if not target.get("default_prompt"):
+            target.pop("default_prompt", None)
         if not target.get("steering_dirs"):
             # Empty list clears the key entirely, so "absent means none" stays
             # the single on-disk representation (mirrors color/tags). PATCH with
@@ -897,6 +907,7 @@ async def api_chat_folder_icon_preview(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     pending = _CHAT_FOLDER_PENDING_ICON_TASKS.get(fid)
     if fid in _CHAT_FOLDER_ICON_PREVIEWS or (pending is not None and not pending.done()):
         return web.json_response(
@@ -1323,6 +1334,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         if refused:
             return web.json_response({"error": refused, "code": "folder_not_empty"}, status=409)
         _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
+        _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
         pending_icon = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
         if pending_icon is not None and not pending_icon.done():
             pending_icon.cancel()
@@ -1444,6 +1456,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # is safe after a confirmed delete: a write already started finishes under
     # the shield, and its write-back re-finds the folder by id, which no
     # longer exists, so nothing lands.
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
     if pending is not None and not pending.done():
         pending.cancel()

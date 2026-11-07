@@ -235,6 +235,33 @@ class TestAnAgentOnlyCommandIsReDerived:
         )
         assert back["s"]["command"] == str(new)
 
+    def test_a_resolving_scope_command_does_not_take_over_an_agent_only_server(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A scope switching programs rewrites a scope-owned entry, never a recorded one.
+
+        A rewrite would leave the record naming a command the entry does not run, so
+        it could not rebind the server once the scope entry goes away.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        old, other = tmp_path / "old" / "srv", tmp_path / "other" / "tool"
+        for p in (old, other):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n")
+            p.chmod(0o755)
+        which = lambda c, **kw: str(old) if c == "srv" else None  # noqa: E731
+
+        _emitted(tmp_path, cfg_dir, {})
+        _make_agent_only(tmp_path, "s", "srv")
+        _emitted(tmp_path, cfg_dir, {}, which_side_effect=which)
+
+        with_scope = _emitted(
+            tmp_path, cfg_dir, {"s": {"command": str(other)}}, which_side_effect=which
+        )
+        assert with_scope["s"]["command"] == str(old)
+        assert with_scope["s"][DERIVED_KEY] == {"from": "srv", "emitted": str(old)}
+
     def test_a_recovered_source_rebinds_after_being_retained(
         self, tmp_path: Path, monkeypatch
     ) -> None:

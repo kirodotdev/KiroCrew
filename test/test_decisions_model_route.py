@@ -42,9 +42,7 @@ from kiro_crew.decisions import outcomes
 from kiro_crew.decisions.points import model_route as mr
 from kiro_crew.decisions.types import Answer
 
-# ---------------------------------------------------------------------------
 # Fixtures and doubles
-# ---------------------------------------------------------------------------
 
 
 #: A tier map for the tests. Nothing ships one (see
@@ -149,9 +147,7 @@ def snapshot(monkeypatch):
     return _set
 
 
-# ---------------------------------------------------------------------------
 # The tier question
-# ---------------------------------------------------------------------------
 
 
 class TestTheQuestion:
@@ -230,9 +226,7 @@ class TestTheQuestion:
         assert "history" in mr.build_state("hi", [{"role": "user", "text": "earlier"}])
 
 
-# ---------------------------------------------------------------------------
 # Reading the answer
-# ---------------------------------------------------------------------------
 
 
 class TestReadingTheAnswer:
@@ -260,9 +254,7 @@ class TestReadingTheAnswer:
         assert mr.read_tier(answers) == ""
 
 
-# ---------------------------------------------------------------------------
 # The tier-to-model map
-# ---------------------------------------------------------------------------
 
 
 #: Every tier unpinned -- the shipped map.
@@ -347,16 +339,11 @@ class TestResolvingTheModel:
         assert mr.resolve_model("complex", {"complex": "model-c.1"}, ["model-c.1"]) == "model-c.1"
 
     def test_two_registry_entries_that_differ_only_in_punctuation_stay_distinct(self):
-        """The canonical registry deliberately keeps a 1M entry and its 200K
-        sibling apart even though they differ by one character, so the comparison
-        must ask the registry rather than fold punctuation away: routing to the
-        200K model because the pin spelled the 1M one is a silently smaller
-        context window, not a near-miss.
+        """The registry keeps a 1M entry and its 200K sibling apart though they differ
+        by one character, so the comparison must ask the registry, not fold punctuation.
 
-        These two literals are REGISTRY FIXTURES -- the pair whose distinctness is
-        under test -- not a default or a pin, so they are the one place a real id
-        belongs. A fake id has no registry entry and would exercise the string fold
-        instead, leaving the registry half of the comparison untested."""
+        Real ids on purpose: a fake id has no registry entry and would test only the
+        string fold."""
         dotted, dashed = "claude-opus-4.8", "claude-opus-4-8"
         assert mr._same_model(dotted, dashed) is False
         assert mr.resolve_model("medium", {"medium": dotted}, [dashed]) == ""
@@ -368,9 +355,7 @@ class TestResolvingTheModel:
         assert mr.resolve_model("simple", {"simple": "model-e.1"}, ["model-e-1"]) != ""
 
 
-# ---------------------------------------------------------------------------
 # routed_model: the answer, and every refusal
-# ---------------------------------------------------------------------------
 
 
 def _route(**kwargs):
@@ -538,10 +523,36 @@ class TestPriorTurns:
         assert routed is not None, "prior turns make the question better, not answerable"
         assert "history" not in oracle.states[0]
 
+    def test_the_strip_reports_the_history_the_call_row_counted(
+        self, consent, install_oracle, snapshot, log_home
+    ):
+        """The outcome row is what the strip renders, so it must carry the call
+        row's history count and clip count rather than read them as 0."""
+        consent(True, history=500)
+        snapshot(
+            SimpleNamespace(
+                decisions=DecisionsConfig(history_budget_chars=500, model_route=dict(TIER_MAP))
+            )
+        )
+        install_oracle(_Oracle())
+        routed = _route(
+            session_key="chat-1",
+            advertised=["model-c"],
+            history_source=lambda: [
+                {"role": "user", "content": "a" * 300},
+                {"role": "assistant", "content": "b" * 400},
+            ],
+        )
+        assert routed is not None
+        assert mr.record_outcome("chat-1", routed) is True
+        call = next(r for r in log_home() if r.get("answers"))
+        outcome = next(r for r in log_home() if r.get("tier"))
+        assert (call["history_chars"], call["truncated"]) == (500, 1)
+        assert (outcome.get("history_chars"), outcome.get("truncated")) == (500, 1)
+        assert outcomes.consume("chat-1") == [outcome]
 
-# ---------------------------------------------------------------------------
+
 # The outcome row and the strip
-# ---------------------------------------------------------------------------
 
 
 class TestTheOutcome:
@@ -594,9 +605,7 @@ class TestTheOutcome:
             assert forbidden not in serialized
 
 
-# ---------------------------------------------------------------------------
 # The two window rules
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

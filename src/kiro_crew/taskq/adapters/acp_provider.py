@@ -10,9 +10,9 @@ exposes them as ``classify_provider_error``; this adapter maps that verdict
 onto the dependency vocabulary (the client module is imported lazily -- it is
 large and imports nothing from ``taskq``) so a third copy cannot drift.
 
-The scope is the provider/model pair when the error names one
-(``provider:<model>``), else the caller's hint, else ``provider:acp``: a
-throttle on one model must not park tasks that use another.
+The scope is the caller's hint when it gives one, else ``provider:<model>``
+for the model the error names (a throttle on one model must not park tasks
+that use another), else ``provider:acp``.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ def classify(exc: BaseException, scope: str = "") -> DependencySignal | None:
     if not is_acp_error(exc):
         return None
     effective_scope = scope_for(exc, scope)
-    if getattr(exc, "auth_required", False):
+    if getattr(exc, "auth_required", False) or getattr(exc, "sign_in_needed", False):
         return DependencySignal(
             kind=KIND_AUTH_FAILED,
             dependency_scope=effective_scope,

@@ -307,7 +307,7 @@ export function ArtifactDetailPageBody({
     iframeScrollTarget, previewRef, bodyRef, iframeBodyRef, detailQuery, eventsQuery, effectiveVersion,
     isCurrent, dirty, usesIframe, contentWidthStyle,
   } = documentRead
-  const { reprobing, reprobeError, reprobeNotice, flushLiveEdits } = editorRead
+  const { reprobing, reprobeError, reprobeNotice, flushLiveEdits, editorRef } = editorRead
   const {
     commentable, invalidateComments, commentActionError, setCommentActionError, addDocComment, replyComment,
     resolveComment, markReviewComment, reopenComment, removeComment, editComment,
@@ -549,6 +549,7 @@ export function ArtifactDetailPageBody({
                   editing={editing && (artifact.kind === 'svg' || !previewDuringEdit)}
                   onChange={setEditedContent}
                   previewRef={previewRef}
+                  editorRef={editorRef}
                   comments={overlayComments}
                   activeCommentId={activeCommentId}
                   scrollNonce={bodyScrollNonce}
@@ -619,8 +620,10 @@ export function ArtifactDetailPageBody({
             {/* IN THIS COLUMN, its only mount: the remedy names the composer below it, and a
                 page-top banner puts that instruction a column away from the control it means. */}
             {contextNotice}
+            {/* Not until the create returns: the gateway lists the new session before it
+                answers, and a chat mounted from that frame never reads the prompt staged after. */}
             <ArtifactChatPanel
-              slotKey={boundSlot?.key ?? null}
+              slotKey={chatCreating ? null : boundSlot?.key ?? null}
               creating={chatCreating}
               onNewChat={() => { void newCompanionChat() }}
               onOpenFull={openChatFull}

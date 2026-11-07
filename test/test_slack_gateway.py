@@ -1187,6 +1187,41 @@ class TestShutdown:
             service.stop()
 
     @pytest.mark.asyncio
+    async def test_a_cancel_during_the_teardown_still_names_the_wedged_write(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The graceful bound can land while the teardown is still running; the
+        write the drain cut left pending is named at WARNING all the same."""
+        orch, service, add_task, release, finished = await self._cut_drain_over_a_slow_write(
+            tmp_path, monkeypatch, graceful_secs=0
+        )
+        teardown_entered = asyncio.Event()
+
+        async def endless_teardown(**_kwargs):
+            teardown_entered.set()
+            await asyncio.Event().wait()
+
+        orch._stop_services_and_sessions = endless_teardown
+        caplog.set_level("WARNING", logger="kiro_crew.autonudge")
+        try:
+            shutdown = asyncio.create_task(orch._shutdown())
+            await _within_lost_run(teardown_entered.wait(), "the teardown after the drain cut")
+            shutdown.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await _within_lost_run(shutdown, "shutdown cancelled in its teardown")
+            assert not finished.is_set()
+            assert any(
+                "at the graceful shutdown deadline" in record.getMessage()
+                for record in caplog.records
+            ), "a cancelled teardown skipped naming the admitted write it left pending"
+        finally:
+            release.set()
+            await _within_lost_run(
+                asyncio.gather(add_task, return_exceptions=True), "the wedged add cleanup"
+            )
+            service.stop()
+
+    @pytest.mark.asyncio
     async def test_teardown_after_an_interrupted_autonudge_drain_stops_at_the_graceful_deadline(
         self, monkeypatch
     ):

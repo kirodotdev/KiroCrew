@@ -12,7 +12,8 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_compaction_failed_retries``, ``_empty_episode_productive``,
 ``_empty_response_retries``, ``_end_wait_by``, ``_end_wait_request``,
 ``_fallback_candidate_idx``, ``_fallback_client_pick_epoch``, ``_fallback_pick_gen``,
-``_fallback_primary_model``, ``_fallback_slot_model``, ``_fallback_walked``,
+``_fallback_primary_model``, ``_fallback_slot_model``, ``_fallback_walk_refused``,
+``_fallback_walked``,
 ``_infra_retries``, ``_last_turn_model_refused_loop_gen``,
 ``_last_turn_model_refused_loop_id``, ``_last_turn_structural_terminal``,
 ``_last_turn_structural_terminal_loop_gen``, ``_last_turn_structural_terminal_loop_id``,
@@ -148,6 +149,13 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # the primary (deliberately NOT reset on turn completion).
     self._fallback_candidate_idx = 0
     self._fallback_walked = []
+    # Whether the SELECTED model's own ladder, the one that started the current
+    # walk, ended on a capacity/rollout refusal (``AcpError.model_unavailable``).
+    # Written at the walk's first swap and read only while ``_fallback_walked``
+    # is non-empty, so the terminal card is judged by the model a Resume would
+    # go back to (the restore probe re-selects the primary), not by whichever
+    # candidate failed last.
+    self._fallback_walk_refused = False
     self._active_fallback_model = ""
     self._fallback_primary_model = ""
     # Snapshot of slot.model taken when the fallback activated; it heals
@@ -513,7 +521,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # steer has stamped its own row.
     self._steer_attachment_meta = {}
     # Pending steers the composer's own human sent, held with the lists above
-    # and released the same ways. Requeue stamps ``STEER_INTENT_META`` on the
+    # and released the same ways. Requeue stamps ``COMPOSER_SEND_META`` on the
     # entry, so the sub-agent hold lets it drain instead of parking it.
     self._steer_act_now = set()
     # Pending AUTOMATION steers (a work-ledger wake), each with the

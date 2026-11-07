@@ -29,15 +29,10 @@ class TestNamesCannotForgeListingLines:
 
 class TestReplaceSavesEveryTreeBeforeReplacingAny:
     def test_the_rollback_copy_is_taken_before_any_database_is_swapped(self):
-        """Backing up and replacing tree-by-tree meant a failure partway through left
-        some trees replaced and no rollback copy of the rest — with the databases already
-        swapped. Half old, half new, and no complete copy of either.
+        """The whole rollback set is saved before any database swap or tree replace.
 
-        The current design splits this into two phases across two functions: `_do_replace`
-        takes the WHOLE rollback set (every `_backup_tree_or_refuse`) before it calls
-        `_do_replace_mutations`, and only then does the mutation function swap databases
-        (`_backup_and_copy`) and replace trees (`rmtree` + `_copytree_safe(..., must_create=`).
-        So the ordering claim spans both, and both are read.
+        `_do_replace` runs every `_backup_tree_or_refuse` before `_do_replace_mutations`,
+        which swaps databases (`_backup_and_copy`) before replacing trees, so both are read.
         """
         import inspect
 
@@ -51,21 +46,12 @@ class TestReplaceSavesEveryTreeBeforeReplacingAny:
         # Phase two: the database swap precedes the tree replacement, so an rmtree failure
         # cannot strand the databases in the new generation with no rollback of the trees.
         #
-        # The locator is the function NAME, not a spelling of its argument list. Pinning the
-        # arguments made this assertion fail on any signature change -- which is noise, not a
-        # regression, since the claim being made here is purely about ORDER.
+        # Located by function NAME, not argument spelling: the claim is only about ORDER.
         swap_at = muts.index("_backup_and_copy(")
         replace_at = muts.index("_copytree_safe(")
         assert swap_at < replace_at, "the tree replace pass moved ahead of the database swap"
-        # And the recovery is wired to the whole saved set, not to one tree.
-        #
-        # Checked by reading that call's ARGUMENTS for the whole-set names, not by matching a
-        # spelling of the whole call. This assertion must not pin
-        # `_restore_everything_from_rollback(backup, mc, targets, installed)` verbatim, which
-        # is the exact mistake the comment above warns about -- threading the operator's
-        # unpinned opt-in into recovery reflowed the call across lines and broke it, with
-        # nothing about the claim having changed. What must hold is that recovery is handed
-        # the declared target list and the installed set, so that is what is read.
+        # And recovery is handed the whole saved set: the call's ARGUMENTS are read for the
+        # target list and the installed set, not the call's exact spelling.
         call_at = setup.index("_restore_everything_from_rollback(")
         args = setup[call_at : setup.index(")", call_at)]
         assert "targets" in args, f"recovery is not handed the declared target list: {args!r}"
@@ -77,12 +63,8 @@ class TestReplaceSavesEveryTreeBeforeReplacingAny:
         """The behavioural half: if the replace pass dies, the ORIGINAL tree must be
         recoverable even though the databases have already moved.
 
-        Built without `snapshot_main` (a manual `kirocrew-snapshot-` payload) so the
-        rollback property is exercised directly, and the tree-replace failure is injected
-        at `shutil.rmtree` -- the current mechanism `_do_replace_mutations` uses to clear a
-        live tree before refilling it (the old `_clear_tree_root` helper is gone). Because
-        phase one takes the whole rollback set before phase two mutates anything, the saved
-        copy holds the state that was live before the restore even when phase two dies.
+        Built from a manual `kirocrew-snapshot-` payload, with the failure injected at
+        `shutil.rmtree`, which `_do_replace_mutations` uses to clear a live tree.
         """
         home = tmp_path / "home"
         home.mkdir()

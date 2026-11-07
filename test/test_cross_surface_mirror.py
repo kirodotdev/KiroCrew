@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from telegram_wire_helpers import telegram_wire
 
 # Both legs gate on the SHIPPED capability objects, so the refusal cases below
 # read them instead of a matching fake. Same roster the mirror-link suite uses.
@@ -34,6 +35,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.telegram.transport import TelegramTransport
 
 #: A channel whose REAL capabilities permit a proactive send, so both legs must
 #: DELIVER to it. Named rather than derived: if Weixin's declaration is ever
@@ -307,17 +309,19 @@ class TestDeliverCrossSurfaceReply:
         state.sessions.get_mirror_link.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_applies_redaction_pipeline(self, tmp_path):
+    async def test_applies_redaction_pipeline(self, tmp_path, monkeypatch):
         state = _make_state(tmp_path)
-        tp = _fake_transport("telegram")
-        state.register_channel_transport(tp)
         state.sessions.get_mirror_link = MagicMock(
             return_value=ChannelLink("telegram", channel_id="123")
         )
         raw = "see https://evil.example/exfil?q=1 and AKIAIOSFODNN7EXAMPLE"
         expected = redact_credentials(redact_exfiltration_urls(raw)[0])[0]
-        await _deliver_cross_surface_reply(state, "k", raw)
-        assert tp.send_message.await_args.args[1] == expected
+        async with telegram_wire(monkeypatch) as wire:
+            state.register_channel_transport(TelegramTransport(wire.client, allowed_user_ids=[123]))
+            await _deliver_cross_surface_reply(state, "k", raw)
+        assert [(call.get("chat_id"), call.get("text")) for call in wire.messages()] == [
+            (123, expected)
+        ]
 
     @pytest.mark.asyncio
     async def test_a_markdown_split_credential_is_redacted_in_display_form(self, tmp_path):

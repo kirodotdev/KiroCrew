@@ -327,6 +327,7 @@ def _load_state() -> TipsState:
     # Outside the try: a migration bug must surface as an error, not silently
     # degrade to "discard all user state" via the except above.
     _migrate_relinked_curated_state(st)
+    _remove_retired_curated_state(st)
     return st
 
 
@@ -335,9 +336,42 @@ def _load_state() -> TipsState:
 # carry the catalog doc as these tips' identity, keeping the cross-suppression
 # the split fixes alive across the upgrade; _load_state migrates it.
 _RELINKED_CURATED_DOCS: dict[str, str] = {
-    "subagent-parallelism": "dynamic-subagent-sizing.md",
     "zero-token-cron": "cron-and-scheduling.md",
 }
+
+# Tips absent from the public pool. Retired ids name removed curated tips;
+# retired docs name docs dropped from the tip allowlist, so a generated tip
+# citing one (under whatever id it was given) is retired too.
+_RETIRED_CURATED_IDS = frozenset({"subagent-parallelism"})
+_RETIRED_TIP_DOCS = frozenset({"issue-radar-pipeline.md"})
+
+
+def _is_retired_tip(t: object) -> bool:
+    if not isinstance(t, dict):
+        return False
+    return t.get("id") in _RETIRED_CURATED_IDS or bool(
+        {t.get("doc"), t.get("doc_link")} & _RETIRED_TIP_DOCS
+    )
+
+
+def _remove_retired_curated_state(st: TipsState) -> None:
+    """Drop cached retired tips without transferring their feedback to new tips.
+
+    Run on every load, independently of the one-shot doc relink repair. Keep
+    dismissal, snooze and shown histories intact; they belong to the old IDs.
+    Only the public pool retired these tips: an edition pool may reuse an id or
+    doc for its own tip, so its state is left alone.
+    """
+    if st.pool_id != PUBLIC_POOL_ID:
+        return
+    st.tips = [t for t in st.tips if not _is_retired_tip(t)]
+    if _is_retired_tip(st.offered):
+        st.offered = None
+    st.shown_docs = {
+        tid: doc
+        for tid, doc in st.shown_docs.items()
+        if tid not in _RETIRED_CURATED_IDS and doc not in _RETIRED_TIP_DOCS
+    }
 
 
 def _migrate_relinked_curated_state(st: TipsState) -> None:
@@ -542,11 +576,10 @@ _CURATED_FILE = Path(__file__).resolve().parent / "data" / "tips_curated.json"
 def _load_curated_tips() -> list[dict]:  # type: ignore[type-arg]
     """Load the hand-authored, action-first tips shipped with the package.
 
-    These cover KiroCrew-native features (keyboard shortcuts, Settings toggles,
-    config keys) that have no docs/*.md entry and so can never surface through
-    the doc-scan catalog. Each entry is validated through the SAME field checks
-    as generated tips (the allowlisted fields as strings, with optional fields
-    defaulting to ""; id/title/body non-empty).
+    These cover approved Kiro Crew behaviors, including capabilities that also
+    appear in the docs scan. Each entry is validated through the SAME field
+    checks as generated tips (the allowlisted fields as strings, with optional
+    fields defaulting to ""; id/title/body non-empty).
     Returns [] if the file is missing or malformed — a bad file must never
     crash cache init or take down the tips endpoints.
     """
@@ -1300,9 +1333,9 @@ async def api_tips_next(request: web.Request) -> web.Response:
         if not cadence_open:
             return web.json_response({"tip": None, "glow": False})
 
-        # Gather eligible candidates. Curated actionable tips (hand-authored,
-        # action-first, for features with no docs entry) are the primary pool;
-        # LLM-generated tips augment them. Dedupe by id — curated wins.
+        # Gather eligible candidates. Curated actionable tips (hand-authored
+        # and action-first) are the primary pool; LLM-generated tips augment
+        # them. Dedupe by id — curated wins.
         curated_candidates = [t for t in cache.curated if _is_eligible(t, st, now, snooze_hours)]
         curated_ids = {t.get("id", "") for t in curated_candidates}
         generated_candidates = [

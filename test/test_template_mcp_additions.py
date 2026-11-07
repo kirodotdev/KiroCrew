@@ -503,6 +503,50 @@ def test_another_templates_addition_does_not_reach_a_conductor(tmp_path, monkeyp
     assert "fetch" not in data["mcpServers"]
 
 
+# -- waitForReady: a server the session holds its first prompt for -----------------
+
+_WAITED = {**_ENTRY, "waitForReady": True, "timeout": 10000}
+
+
+def test_wait_for_ready_round_trips_and_reaches_the_merge(home):
+    added = _add("my-agent", entry=dict(_WAITED))
+    assert added.entry["waitForReady"] is True
+    assert tma.read_additions("my-agent")["fetch"].entry == _WAITED
+    assert tma.merge_into("my-agent", {})["fetch"] == _WAITED
+
+
+@pytest.mark.parametrize("value", ["yes", 1, 0, None, ["true"]])
+def test_wait_for_ready_is_refused_unless_a_bool(home, value):
+    with pytest.raises(tma.AdditionError, match="wait_for_ready_invalid"):
+        _add("my-agent", entry={**_ENTRY, "waitForReady": value})
+    assert tma.read_additions("my-agent") == {}
+
+
+def test_a_server_the_session_waits_for_is_merged_first(home):
+    """The engine starts servers a few at a time in map order, so a server the first
+    prompt waits for is put at the front; one that does not ask keeps its place last."""
+    _add("my-agent", entry=dict(_WAITED))
+    _add("my-agent", server="plain", card="c2")
+    own = {"a": {"command": "a"}, "b": {"command": "b"}}
+    merged = tma.merge_into("my-agent", own)
+    assert list(merged) == ["fetch", "a", "b", "plain"]
+    assert list(own) == ["a", "b"]
+
+
+@pytest.mark.parametrize(("installer", "filename", "template"), _CONDUCTOR_INSTALLERS)
+def test_a_conductor_keeps_a_waited_for_addition_first_with_its_key(
+    tmp_path, monkeypatch, installer, filename, template
+):
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _pin_conductor_template(tmp_path, monkeypatch)
+    _add(template, entry=dict(_WAITED))
+    assert getattr(agent, installer)() is True
+    data = json.loads((tmp_path / filename).read_text(encoding="utf-8"))
+    assert next(iter(data["mcpServers"])) == "fetch"
+    assert data["mcpServers"]["fetch"]["waitForReady"] is True
+    assert data["mcpServers"]["fetch"]["timeout"] == 10000
+
+
 # -- the spawn merge (templates Crew does not own) ---------------------------------
 
 

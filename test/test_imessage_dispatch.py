@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -37,6 +38,7 @@ class FakeProvider:
         self.compacted = 0
         self.wait_timeouts: list[float] = []
         self.compact_result: dict[str, str] = {"type": "completed", "summary": ""}
+        self.cancels: list[float] = []
 
     def has_active_turn(self) -> bool:
         return self._active
@@ -51,6 +53,10 @@ class FakeProvider:
     async def wait_for_compaction(self, timeout: float = 300.0) -> dict[str, str]:
         self.wait_timeouts.append(timeout)
         return self.compact_result
+
+    async def cancel(self, *, wait_ack_timeout: float) -> str:
+        self.cancels.append(wait_ack_timeout)
+        return "acked"
 
 
 class FakeSessions:
@@ -151,7 +157,7 @@ def _inbound(text: str) -> IMessageInbound:
 def _permit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default the per-message governance gate to permit."""
 
-    async def _yes(_channel: str) -> bool:
+    async def _yes(_channel: str, **_kw: Any) -> bool:
         return True
 
     monkeypatch.setattr("kiro_crew.imessage.transport_dispatch.inbound_permitted", _yes)
@@ -195,13 +201,87 @@ class TestCommandIntercept:
     async def test_a_governance_deny_drops_the_message_silently(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def _no(_channel: str) -> bool:
+        async def _no(_channel: str, **_kw: Any) -> bool:
             return False
 
         monkeypatch.setattr("kiro_crew.imessage.transport_dispatch.inbound_permitted", _no)
         dispatcher, client, _ = _dispatcher()
         await dispatcher.handle_message(_inbound("/help"))
         assert client.sent == []
+
+
+class TestStop:
+    @pytest.mark.asyncio
+    async def test_stop_cancels_the_running_reply_instead_of_steering_it(self) -> None:
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        provider = FakeProvider()
+        sessions.busy.add(key)
+        sessions.providers[key] = provider
+        await dispatcher.handle_message(_inbound("/stop"))
+        assert provider.cancels == [0]
+        assert provider.steered == []
+        assert client.sent == ["⏹ Stopping the reply in progress…"]
+
+    @pytest.mark.asyncio
+    async def test_stop_with_nothing_running_says_so(self) -> None:
+        dispatcher, client, sessions = _dispatcher()
+        await dispatcher.handle_message(_inbound("/cancel"))
+        assert client.sent == ["ℹ️ No reply is running."]
+        assert sessions.acquired == []
+
+    def test_only_the_whole_message_is_a_stop(self) -> None:
+        # "/cancel my 3pm meeting" is an instruction for the agent, not a stop.
+        from kiro_crew.imessage.commands import parse_command
+
+        assert parse_command("  /STOP ") == "stop"
+        assert parse_command("/cancel my 3pm meeting") is None
+
+    @pytest.mark.asyncio
+    async def test_stop_during_automatic_compaction_is_declined_and_armed(self) -> None:
+        from kiro_crew.session_lifecycle import STOP_DECLINED_COMPACTING_TEXT, consume_stop_declined
+
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        provider = FakeProvider()
+        sessions.busy.add(key)
+        sessions.providers[key] = provider
+        sessions.is_compacting = lambda _key: True  # type: ignore[attr-defined]
+        try:
+            await dispatcher.handle_message(_inbound("/stop"))
+        finally:
+            # Spent in every outcome so the module-level marker never outlives the test.
+            armed = consume_stop_declined(key, HANDLE)
+        assert provider.cancels == []
+        assert client.sent == [STOP_DECLINED_COMPACTING_TEXT]
+        assert armed is True
+
+    @pytest.mark.asyncio
+    async def test_a_typed_stop_survives_a_channels_governance_deny(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """iMessage has no buttons: a typed /stop is its only off-switch."""
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(_channel: str) -> bool:
+            return False
+
+        monkeypatch.setattr(
+            "kiro_crew.imessage.transport_dispatch.inbound_permitted", dispatch.inbound_permitted
+        )
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        dispatcher, client, _ = _dispatcher()
+        stops: list[str] = []
+
+        async def _stop(handle: str) -> None:
+            stops.append(handle)
+
+        monkeypatch.setattr(dispatcher, "_handle_stop", _stop)
+        # A cancel word another channel spells is no stop here: it keeps the gate.
+        await dispatcher.handle_message(_inbound("!stop"))
+        assert stops == [] and client.sent == []
+        await dispatcher.handle_message(_inbound("/stop"))
+        assert stops == [HANDLE]
 
 
 class TestCompact:
@@ -440,3 +520,25 @@ class TestSessionIdentity:
         # spawn_run / cron tools.
         dispatcher, _, _ = _dispatcher()
         assert dispatcher._resolve_agent() == "kirocrew"
+
+
+class TestSenderRecheck:
+    @pytest.mark.asyncio
+    async def test_the_turn_rechecks_the_live_handle_roster(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.imessage.transport import IMessageTransport
+
+        turns: list[Any] = []
+
+        async def _capture(turn: Any, **_kw: Any) -> None:
+            turns.append(turn)
+
+        monkeypatch.setattr("kiro_crew.imessage.transport_dispatch.drive_turn", _capture)
+        dispatcher, client, _ = _dispatcher()
+        transport = IMessageTransport(client, allowed_handles=[HANDLE])  # type: ignore[arg-type]
+        dispatcher.transport = transport
+        await dispatcher.handle_message(_inbound("hi"))
+        assert turns[0].still_admitted() is True
+        transport.reconfigure(SimpleNamespace(allowed_handles=[]))
+        assert turns[0].still_admitted() is False

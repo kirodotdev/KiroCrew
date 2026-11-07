@@ -110,6 +110,10 @@ function isAllowedAttr(tag: string, key: string): boolean {
   // (a remote artifact, a doc) could otherwise mint one and hand its links to an
   // app. Reserved by normalized key, like the markers above.
   if (k.replace(/-/g, '').startsWith('datalinkpreviewscope')) return false
+  // `data-print-root` marks the preview being printed (markdownPanelPrint.ts);
+  // the print stylesheet keeps it and drops the rest of the page, so a chat
+  // reply that minted one would print inside another file's PDF.
+  if (k.replace(/-/g, '').startsWith('dataprintroot')) return false
   // The guide's own markers (`data-ui-location`, `data-guide-pick`, ...): a
   // message could otherwise draw a control a guide takes for the product's.
   if (isGuideMarkerAttr(k)) return false

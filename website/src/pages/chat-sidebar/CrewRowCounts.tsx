@@ -3,7 +3,9 @@
  *  (approvals and questions), "N stalled" (with the longest-stalled crew member
  *  on a second line), "N running". With none of them a finished crew reads
  *  "Done" and an unfinished one shows nothing extra. The full counts stay in
- *  the tooltip. Each glyph has its own shape, so it reads without colour. */
+ *  the tooltip. Each glyph has its own shape, so it reads without colour. Only
+ *  "needs you" takes the warm colour: a stall is the conductor's to pick up,
+ *  so it is muted. */
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { Check, Circle, Hand, Pause } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
@@ -113,7 +115,7 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
           </span>
         )}
         {stalled > 0 && (
-          <span className={`${PART_CLS} text-danger font-medium`} data-testid="crew-root-count" data-bucket="stalled">
+          <span className={`${PART_CLS} text-muted`} data-testid="crew-root-count" data-bucket="stalled">
             <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_stalled', { count: stalled })}
           </span>
         )}

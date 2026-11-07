@@ -47,6 +47,10 @@ function MyPage() {
 }
 ```
 
+For type checking, the dashboard serves the declarations of both
+`@kirocrew/app-sdk` and `@kirocrew/app-sdk/ui` at `/vendor/kirocrew-app-sdk.d.ts`
+(see [getting-started.md](getting-started.md#ui-page--react-component)).
+
 `useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
 `put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
 `permissions.api` paths your `app.json` declares. JSON methods parse a JSON
@@ -148,13 +152,14 @@ shown as text, only as the header's hover tooltip.
 | `placeholder` | `string` | localized "Message..." (`appSdk.chatEmbed.message`) | Composer placeholder while the session is idle. While a turn runs the composer shows its own "agent is working" text instead. |
 | `frameless` | `boolean` | `false` | Drops the outer border, rounding, background and title strip, and makes the input row transparent, so a host card can hold the chat flush. |
 | `startAtBottom` | `boolean` | `false` | Opens scrolled to the newest row and stays pinned there as rows arrive, until the user scrolls up; shows a jump-to-bottom button while unpinned. Without it the embed opens at the top and smooth-scrolls to each new message. |
-| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. Every send passes `meta` (`{ sendId?: string; files?: string[]; pastes?: PasteBlock[] }`): `sendId` always, `files` and `pastes` when the send has non-image attachments or a collapsed paste. Forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)); forwarding `meta.sendId` lets the embed prove a send landed even when `onSend` rejects. |
+| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. Every send passes `meta` (`{ sendId?: string; files?: string[]; pastes?: PasteBlock[] }`): `sendId` always, `files` and `pastes` when the send has non-image attachments or a collapsed paste. Forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)); forwarding `meta.sendId` lets the embed prove a send landed even when `onSend` rejects. While a turn runs, a send through `onSend` is labelled Queue, because the embed cannot know what your endpoint does with it. Without `onSend`, the embed's own send steers or queues as the person's busy-send choice says, so do not set `onSend` only to steer. |
 | `aboveComposer` | `ReactNode` | none | Content placed in normal flow directly above the composer, such as a docked quote bar. |
 | `composerMaxHeight` | `number` (px) | `240` | Cap for the composer's auto-grow (see below). |
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
 | `onArtifactOpen` | `(slug: string) => void` | none | Opens a saved artifact from a link in a reply; without it artifact links follow their href. |
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
 | `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
+| `proseFences` | `readonly string[]` | none | Fence tags the transcript draws wrapped, as it draws `markdown` and `text` fences. The tag is the first word of the info string, matched without regard to case. Use it for a fence your app defines for prose or a record, such as a proposed reply. Other fences keep their horizontal scroll. |
 
 ### Restyling rows
 
@@ -537,7 +542,7 @@ when the manifest declares its endpoint; nothing grants either by default:
 
 Accepting a command puts it in the composer; the send runs it, as in the main
 chat. Each file row shows the folder it sits in, cut from the start, so files
-with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/onboarding` and `/kb`: the main
+with the same name stay distinguishable in a narrow embed. The menu leaves out `/side`, `/btw`, `/fork`, `/onboarding` and `/kb`: the main
 chat runs those in the browser, and the embed has nothing to run them with.
 Accepting a file writes its `@path` token and stages the file like an
 attachment, so the send carries it in `meta.files`; removing the file's chip
@@ -582,7 +587,10 @@ on its own chat POST. No permission is involved: nothing is uploaded.
 `ChatPanel` mounts Kiro Crew's native chat experience for an existing session. The required
 `slotKey` selects the session. By default, the component keeps the standard embedded ChatPage
 behavior. A session the app has just created with `POST /api/chat/slots` can be passed straight
-away: the panel shows it before the dashboard's session list has caught up.
+away: the panel shows it before the dashboard's session list has caught up. The chat appears only
+once that session is open, so a session that cannot open never puts another conversation in its
+place: a session that no longer exists says so, and any other failure shows the error with
+**Try again**.
 
 ```tsx
 import { ChatPanel } from '@kirocrew/app-sdk'
@@ -592,7 +600,10 @@ import { ChatPanel } from '@kirocrew/app-sdk'
 
 Set `conversationOnly` when the host app already provides navigation and needs the conversation
 without ChatPage's sessions rail. This mode keeps the native transcript, composer, and composer
-controls, and it leaves the host page in charge of the browser URL.
+controls, and it leaves the host page in charge of the browser URL. The panel stays on the
+`slotKey` session (or the session a memory-mode pick replaces it with), switching back when
+another session becomes active, so mount one `conversationOnly` panel at a time. Without
+`conversationOnly`, a session the user picks in the rail is shown.
 
 ```tsx
 <ChatPanel slotKey="coder-abc123" conversationOnly />
@@ -660,6 +671,8 @@ not linger:
 ```tsx
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
 ```
+
+When nothing is on offer, every call returns the same shared empty array, so identity comparison works for that case; non-empty results are fresh arrays. Treat it as read-only and copy it before mutating.
 
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
@@ -1119,6 +1132,45 @@ the log directly, so treat `app:<name>` as "which app said this", not as proof.
 `"publish"`. No permission gates it: an app cannot obtain anything with it, only
 state what it did.
 
+### Background agents (`ctx.spawn`)
+
+Present when the manifest declares `permissions.spawn`, and `None` otherwise.
+Every call names one of the app's own agents (`<app>--*`), runs auto-approved,
+and is checked against the app's governance profile and its
+`capabilities.spawn` scopes.
+
+```python
+from kiro_crew.apps.spawn_sdk import CONVERSATION_BUSY, CONVERSATION_GONE, SpawnError
+
+run_id = await ctx.spawn.run("implement the plan", "coder", silent=True, keep=True)
+...
+try:
+    follow_up = await ctx.spawn.continue_(run_id, "fix these review findings: ...")
+except SpawnError as exc:
+    if exc.code not in (CONVERSATION_GONE, CONVERSATION_BUSY):
+        raise
+    follow_up = await ctx.spawn.run("fix these findings; earlier result: ...", "coder")
+```
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `run(task, agent, *, silent=False, model="", keep=False)` | run id | Start a background agent. With no `model`, the user's `apps.<name>.model` setting applies unless the agent pins one. `keep=True` gives the run its own process and keeps its conversation for hours instead of about one |
+| `continue_(spawn_id, task, *, model="", silent=False)` | new run id | Send a follow-up task to a finished run's conversation, so the agent keeps the context of the earlier run |
+| `is_done(run_id)` | bool | True once the run has finished, whatever the outcome |
+
+`continue_` takes the id `run` returned. That id stays the conversation's id, so
+pass it again for every later follow-up; the new id is only for `is_done`. The
+conversation must be one this app started with one of its own agents, and that
+agent must still exist. The follow-up keeps the run's model unless you name
+another. A conversation is kept about an hour after its run finishes; a
+`keep=True` run, or one you have continued, is kept for hours.
+
+Both calls raise `SpawnError` instead of returning an empty id. `declined` is
+`True` when the host had no room to start the run, so back off before you try
+again. `code` is `CONVERSATION_GONE` when the conversation can no longer be
+resumed, and `CONVERSATION_BUSY` when a run is still in flight on it. Answer
+either one with a fresh `run` that carries a summary of the earlier result.
+
 ### Durable Jobs (`ctx.job`)
 
 Present when the manifest declares `permissions.jobs`, and `None` otherwise.
@@ -1455,7 +1507,7 @@ Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
 - Owning the slot is not sufficient: an app is refused when the slot's session is linked elsewhere — a cron result or workflow injection holding that binding — because both writes land in the linked session, so slot ownership alone would otherwise reach a conversation the app has no claim on.
 - Every refusal returns the same body as a genuinely missing slot, so no response an unauthorized caller can reach distinguishes "not yours" from "does not exist". The specific reason is recorded in the security-event log instead.
 
-**Full queue (429 `context_not_queued`).** A slot holds at most 50 pending context entries (held notes' context halves count against that ceiling). When a `/context` POST would exceed the ceiling it is refused with `429` and body `{ error, code: "context_not_queued" }`; expired entries are reclaimed first, so a live entry the caller already holds a 200 for is never evicted to make room. The refusal is **not transient in the Retry-After sense**: only a user-initiated turn drains the queue, so a tight retry loop cannot clear it. The queue is drained on the next turn; retry the inject after a turn, or let a turn consume the backlog. (The per-source cap is separate: it answers `429 context_not_queued`'s sibling `capacity_reached` and only bounds one `source` bucket.) The shipped Python client surfaces this as the non-retried `CONTEXT_NOT_QUEUED` error code rather than `RATE_LIMITED`, and `flush_pending_context` drops a refused entry instead of blocking later sends — see the Python client section below.
+**Full queue (429 `context_not_queued`).** A slot holds at most 50 pending context entries (held notes' context halves and merge-card contexts a running turn has taken count against that ceiling). When a `/context` POST would exceed the ceiling it is refused with `429` and body `{ error, code: "context_not_queued" }`; expired entries are reclaimed first, so a live entry the caller already holds a 200 for is never evicted to make room. The refusal is **not transient in the Retry-After sense**: only a user-initiated turn drains the queue, so a tight retry loop cannot clear it. The queue is drained on the next turn; retry the inject after a turn, or let a turn consume the backlog. (The per-source cap is separate: it answers `429 context_not_queued`'s sibling `capacity_reached` and only bounds one `source` bucket.) The shipped Python client surfaces this as the non-retried `CONTEXT_NOT_QUEUED` error code rather than `RATE_LIMITED`, and `flush_pending_context` drops a refused entry instead of blocking later sends — see the Python client section below.
 
 ### Notes
 
@@ -1463,9 +1515,9 @@ Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
 
 Body: `{ content, source?, maxAge?, ephemeral? }`. A note always does both writes -- there is no visible-only or context-only mode. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, exfiltration URLs) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
 
-Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, **or** the content is credential-shaped. The request is **not** rejected in any of these cases, because the caps and the credential check protect the context queue rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
+Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, **or** the content is credential-shaped. The request is **not** rejected in any of these cases, because the caps and the credential check protect the context queue rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. Merge-card contexts being read by a running turn count toward both the per-source cap and the 50-entry ceiling until that turn ends. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
 
-**A 200 for a held note is a durable acknowledgement — for a slot that has a durable identity.** The hold is persisted verbatim (both halves, the silent context included) into the slot's own session metadata *before* the 200 is returned, replayed into the hold by both slot-restore paths after a gateway restart, and retired by the save that commits the delivered rows -- so a note accepted with `visibleDeferred: true` survives a restart and is delivered, unaltered, on the first turn after it. Two edges keep the original gateway-lifetime meaning instead: a memory-only deployment (no conversation log at all), and a slot that has never been persisted (no metadata line to attach the hold to -- such a tab does not itself survive a restart, so there is no restored slot the note could outlive). Do **not** re-post a held note after a restart; the restored hold delivers it, and a re-post would put the same line in the transcript twice. Three boundary refusals protect that promise: a note posted during a running turn is capped at 4,000 characters (`413`, code `deferred_note_too_large` -- shorten it or wait for the turn to end), a slot whose durable hold is full answers `429 deferred_notes_full` until its rows are saved, and a slot that is rebound to another session while the hold is persisting answers the endpoint's uniform `404` -- the note was neither delivered nor made durable (a note the turn-end flush drops at that same rebind seam takes this `404` too; the 200 stands only when the note observably exists in a delivered row or the durable hold). The one retry-the-same-request signal is a `503` with code `deferred_note_persist_failed`, which means the durable write itself failed and the note was **not** accepted. The queued context of an *immediate* (non-held) note still behaves exactly as `/context`'s queue always has -- in memory, for this gateway lifetime. Note the retention consequence of durability: a HELD note's context half -- the trusted-caller channel, which is deliberately not redacted -- lives on disk in the session metadata until delivery or retirement, while an immediate note's context lives only in memory.
+**A 200 for a held note is a durable acknowledgement — for a slot that has a durable identity.** The hold is persisted verbatim (both halves, the silent context included) into the slot's own session metadata *before* the 200 is returned and replayed by both slot-restore paths after a gateway restart. A plain note retires when the save commits its delivered row. A merge card's context is consumed once a turn has sent it in a prompt kiro-cli kept, whether or not that turn completes; a turn whose prompt never went out, was stopped before its reply finished, or was re-queued after an empty response puts that context back at the queue front. Consumption is not retirement: the card's hold is retired only by a later full save that proves its row, either because that save's window carries the row or because the entry carries the delivered mark described next. A consumed card whose row has left every live window and carries no delivered mark keeps its hold inert until a restart restores and re-flushes its row without replaying context; a later full save can then retire it. The card row and a delivered mark commit atomically, so a restart before the consumption stamp lands re-queues the context without writing a second card row even after the row rotates out of the live transcript. A note accepted with `visibleDeferred: true` therefore survives a restart and is delivered, unaltered, on the first turn after it. Two edges keep the original gateway-lifetime meaning instead: a memory-only deployment (no conversation log at all), and a slot that has never been persisted (no metadata line to attach the hold to -- such a tab does not itself survive a restart, so there is no restored slot the note could outlive). Do **not** re-post a held note after a restart; the restored hold delivers it, and a re-post would put the same line in the transcript twice. Three boundary refusals protect that promise: a note posted during a running turn is capped at 4,000 characters (`413`, code `deferred_note_too_large` -- shorten it or wait for the turn to end), a slot whose durable hold is full answers `429 deferred_notes_full` until its rows are saved, and a slot that is rebound to another session while the hold is persisting answers the endpoint's uniform `404` -- the note was neither delivered nor made durable (a note the turn-end flush drops at that same rebind seam takes this `404` too; the 200 stands only when the note observably exists in a delivered row or the durable hold). The one retry-the-same-request signal is a `503` with code `deferred_note_persist_failed`, which means the durable write itself failed and the note was **not** accepted. The queued context of an *immediate* (non-held) note still behaves exactly as `/context`'s queue always has -- in memory, for this gateway lifetime. Note the retention consequence of durability: a HELD note's context half -- the trusted-caller channel, which is deliberately not redacted -- lives on disk in the session metadata until delivery or retirement, while an immediate note's context lives only in memory.
 
 ### Proxy Authentication (Server-side)
 

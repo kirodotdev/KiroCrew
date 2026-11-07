@@ -12,6 +12,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../co
 import { ContextMenuStableTrigger, ContextMenuContent } from '../../components/ui/context-menu'
 import { offlineProps } from '../../utils/offline'
 import { sessionRefBlockReason } from '../../utils/sessionRefs'
+import { OfflineReasonRow } from '../../components/OfflineMenuReason'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -29,7 +30,7 @@ import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { DndDraggable, DndDroppable } from '../../components/dnd'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
-import type { ChatTag, CrewWorkFacts, SessionLink } from '../../types'
+import type { ChatTag, CrewWorkFacts } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
 import { crewNeedsYou, crewWorkCounts, longestStalledWork, stalledWorkKeys, useCrewWorkClock } from '../../lib/crewWork'
 import { isMemoryWait, queuedWaitText } from '../chat/subagentQueuedReason'
@@ -50,6 +51,7 @@ import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
+import { connectedChannelLinks } from './connectedChannelLinks'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { crewRootOf } from '../../lib/crewMode'
 import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
@@ -155,29 +157,7 @@ function slotStatusText(detail: ToolStatusDetail | undefined, simplifiedToolName
   return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
 }
 
-/** The channels a session row wears a brand mark for: one per channel that is
- * currently connected, in first-seen order.
- *
- * Connected means at least one delivery on that channel is not paused — the
- * same rule the session menu's Connect/Disconnect row uses to pick its verb, so
- * the mark on the row and the verb in the menu can never disagree. `direction`
- * plays no part: a channel the session was born in and a channel it was later
- * connected to are the same fact to the reader of the list, and the one thing a
- * disconnect changes on either is `paused`.
- *
- * One per channel, not one per link. A session born in Discord and mirrored to
- * Discord carries two links for it, and a reader should see one Discord mark,
- * not two.
- *
- * Exported for its own test; the row is the only production caller. */
-export function connectedChannelLinks(links: readonly SessionLink[] | undefined): SessionLink[] {
-  const byChannel = new Map<string, SessionLink>()
-  for (const link of links ?? []) {
-    if (link.paused || byChannel.has(link.channel)) continue
-    byChannel.set(link.channel, link)
-  }
-  return [...byChannel.values()]
-}
+export { connectedChannelLinks }
 
 /** How many levels of conductor nesting still step the row to the right.
  *
@@ -198,6 +178,13 @@ interface SessionRowActions {
   onRenameCommit: (key: string, value: string) => void
   slotRenameEnterRef: React.MutableRefObject<boolean>
   onRenameCancel: () => void
+  /** The slot whose rename was refused offline, so only that row shows the
+   *  neutral notice. Null when no refusal stands. */
+  renameOfflineSlot: string | null
+  /** The placement scope the refusal happened in, compared alongside the slot.
+   *  A multi-tag chat renders one row per board column, so the slot alone
+   *  matches every copy. Null when no refusal stands. */
+  renameOfflineScope: string | null
   /** The row menu's "Regenerate title": re-derives the title from the
    *  conversation without making the session active. */
   onAutoTitle: (key: string) => void
@@ -278,10 +265,12 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   const stall = useAppSelector(st => {
     const now = Date.now()
     const counts = crewWorkCounts(work, st.dashboard.slots, now)
+    // A running conductor turn is picking its stalls up: none are shown meanwhile.
+    const handling = !!st.dashboard.slots.find(x => x.key === root)?.running
     // The crew members whose live row waits on a tool approval, as one string so
     // the selector compares by value.
     const live = st.dashboard.slots.filter(x => x.pending_approval && crewRootOf(x) === root).map(x => x.key).join(' ')
-    return { person: counts?.person ?? 0, stalled: counts?.stalled ?? 0, keys: stalledWorkKeys(work, st.dashboard.slots, now), live }
+    return { person: counts?.person ?? 0, stalled: handling ? 0 : counts?.stalled ?? 0, keys: handling ? '' : stalledWorkKeys(work, st.dashboard.slots, now), live }
   }, shallowEqual)
   // A stalled line's duration reads the clock: step it once a minute while shown.
   const [, setMinute] = useState(0)
@@ -380,7 +369,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
-    slotRenameEnterRef,
+    slotRenameEnterRef, renameOfflineSlot, renameOfflineScope,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
     openElsewhere, toggleConductor, onDropSessionRef, canStageSessionRef,
   } = actions
@@ -755,6 +744,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // next check. Both read as their own state, never as "Waiting on you".
     const crewStalled = crewIdle && (crewWork?.stalled ?? 0) > 0
     const crewMoving = crewIdle && (crewWork?.moving ?? 0) > 0
+    const crewLooping = crewMoving && crewWork?.looping === crewWork?.moving
+    const crewRunningText = crewLooping ? i18nT('components.crewMode.ultra_row_count_running', { count: crewWork?.looping ?? 0 }) : ''
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;
@@ -918,16 +909,23 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       },
       {
         // Nothing runs and an open ledger item has gone quiet with its next step
-        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Static warn:
-        // no work is moving, and the conductor's patrol is what picks it up.
+        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Muted: it is
+        // the conductor's to pick up, not the person's; only "needs you" is warm.
         key: 'crew_stalled',
         when: crewStalled,
         build: () => (
-          <div className={ROW_STATUS_LINE_CLS} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
-            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
-            <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
+          <div className={`${ROW_STATUS_LINE_CLS} text-muted`} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
+            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" aria-hidden />
+            <span className="truncate">{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
           </div>
         ),
+      },
+      {
+        // Idle, but every open item's worker waits in its own loop (`crew_work` `looping`,
+        // e.g. on CI): the crew runs. A still radar, not a spinner: no turn is in flight.
+        key: 'crew_running',
+        when: crewLooping,
+        build: () => <div className={ROW_STATUS_LINE_CLS} title={crewRunningText} data-testid="crew-work-running"><MonitorRadar actionRunning={false} className="text-accent" /><span className="truncate">{crewRunningText}</span></div>,
       },
       {
         // Nothing runs, and the ledger's open work still moves: a worker parked
@@ -1146,6 +1144,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           : i18nT('pages.chatSidebar.loop_waiting_monitor')}`
         case 'interrupted': return i18nT('pages.chat.recoveryCard.turn_interrupted')
         case 'crew_stalled': return i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })
+        case 'crew_running': return crewRunningText
         case 'crew_waiting': return i18nT('pages.chatSidebar.crew_work_waiting_title', { count: crewWork?.moving ?? 0 })
         case 'goal_loop': return goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title')
           : [goalLoopLabel, goalLoopDetail].filter(Boolean).join(' · ')
@@ -1859,6 +1858,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <div
               data-session-title
               className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : cardLineClass(cardLines.title)}`}
+              {...(renamingHere ? {} : offlineProps(connected, i18nT('utils.offline.rename_sessions')))}
+              // AFTER the spread, deliberately: `offlineProps` would otherwise
+              // replace this with its own tooltip, and this one is the only
+              // place a truncated session name is shown in full. The row's own
+              // offline tooltip and the notice below already say why rename is
+              // refused, so only the aria-disabled affordance is taken here.
               title={tooltipTitle}
             >
               {/* No separate fork glyph: forked titles already carry the
@@ -1890,6 +1895,20 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 </>
               )}
             </div>
+            {/* An offline refusal is not a failure: nothing was sent, so this is
+                the shared neutral reason row, not the row's danger surface. It
+                sits under the title it refused, beside a draft the commit kept.
+                Keyed by slot AND scope, the pair `renamingHere` compares: a
+                multi-tag chat renders one row per board column, so slot alone
+                matches every copy and each would show its own notice under one
+                shared testid. */}
+            {renameOfflineSlot === s.key && renameOfflineScope === scope && (
+              <OfflineReasonRow
+                testId={`session-rename-offline-${s.key}`}
+                className="mt-1 leading-snug whitespace-normal [overflow-wrap:anywhere] group-hover:pr-20"
+                message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_sessions') })}
+              />
+            )}
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot

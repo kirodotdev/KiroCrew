@@ -21,7 +21,7 @@ Over N spawns, each switching every agent with ``session/set_mode`` through the
 real ``AcpRuntime`` bracket and the real projection, it asserts: zero set_mode
 failures and no fallback, the host always running the view Kiro Crew
 published (never a stale one), exactly one alias per agent throughout,
-bounded file counts in the agents directory and its hidden directories, and no
+bounded file counts in the agents directory and the side-file directories, and no
 alias-lock timeout. Each fix, mutated away, fails at least one of these.
 
 Linux only: the watcher is driven by inotify, which is what kiro-cli uses there.
@@ -350,28 +350,24 @@ async def _settle_projection_ends() -> None:
 
 def _census(agents: Path) -> dict[str, int]:
     prefix = projection.NATIVE_SKILL_ALIAS_PREFIX
-    # Side files are counted in BOTH places the projection reads them from: this
-    # home's own directories and the legacy ones an older build left in the
-    # agents directory (what _seed_backlog plants).
-    metas = projection._metadata_dirs(agents)
-    lease_dirs = (projection._projection_lease_dir(), projection._legacy_lease_dir(agents))
+    meta = projection._projection_metadata_dir()
+    lease_dir = projection._projection_lease_dir()
     return {
         "aliases": len(list(agents.glob(f"{prefix}*.json"))),
         "alias_locks": len(list(agents.glob(f"{prefix}*.lock"))),
         "entries": len(list(agents.iterdir())),
         # Sidecars only: the directory also holds the view ledger.
-        "sidecars": sum(len(list(m.glob(f"{prefix}*.json"))) for m in metas if m.is_dir()),
-        "leases": sum(len(list(d.iterdir())) for d in lease_dirs if d.is_dir()),
+        "sidecars": len(list(meta.glob(f"{prefix}*.json"))) if meta.is_dir() else 0,
+        "leases": len(list(lease_dir.iterdir())) if lease_dir.is_dir() else 0,
     }
 
 
 def _seed_backlog(agents: Path, count: int) -> None:
-    """What 0.8.0.2 left on the incident host before the fix: re-serialized
+    """The backlog the incident host carried before the fix: re-serialized
     aliases whose sidecars bind their old bytes, orphaned sidecars, and old
     ``<alias>.lock`` residue, all backdated."""
     home_id = projection.data_home().absolute().as_posix()
-    meta = projection._legacy_metadata_dir(agents)  # where that build wrote them
-    meta.mkdir(parents=True, exist_ok=True)
+    meta = projection._ensure_projection_metadata_directory()
     old = time.time() - 3 * 3600
     for n in range(count):
         stem = f"{projection.NATIVE_SKILL_ALIAS_PREFIX}{n:024x}"

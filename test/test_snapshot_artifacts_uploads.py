@@ -296,13 +296,9 @@ class TestAnAliasInEitherTreeIsRefused:
 class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
     """The cost of declaring two components most homes leave empty.
 
-    `restore_main` refuses a bundle that DECLARES a component and carries no payload for
-    it, because replace clears live state for it and then has nothing to put back. That
-    premise is true for `memory`, whose tree loop clears unconditionally, and false for
-    `artifacts` and `uploads`, which are legitimately empty on a home that never made one
-    and whose restore is entered only `if sd.is_dir()`. Before the scope was narrowed the
-    product's own snapshot of an ordinary home refused its own restore -- memory, config,
-    crons and all -- over two components that would have touched nothing.
+    A declared component with no payload is refused only where replace clears live state
+    anyway (`memory`). `artifacts` and `uploads` are restored only `if sd.is_dir()`, so an
+    ordinary home's own snapshot must still restore everything else.
     """
 
     def test_a_bundle_from_a_home_with_neither_still_restores_everything_else(
@@ -346,10 +342,8 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
     ):
         """The rollback half of the same promise, and why the save is conditional.
 
-        Phase one saved every wanted tree that existed live, including one the archive
-        does not carry -- and a mutation failing later put that saved copy back, deleting
-        whatever the live tree gained in between. The dashboard writes an artifact in
-        exactly that window, so the loss is of data no restore ever offered to replace.
+        Putting back a saved copy of a tree the archive does not carry would delete what
+        the dashboard wrote there while the restore ran.
         """
         home = _home(tmp_path, monkeypatch)
         import shutil
@@ -403,14 +397,10 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
         assert (home / "uploads" / "concurrent.bin").read_bytes() == b"arrived during restore"
 
     def test_rollback_restores_a_locked_document_this_run_replaced(self, tmp_path):
-        """A locked document the run reached is put back on rollback -- main's behavior.
+        """A locked document the run reached is put back verbatim on rollback.
 
-        Locked documents are OUT OF SCOPE for this PR's non-locked ownership guard: they
-        keep exactly main's rollback rule. A replace that reached the locked document
-        (`rel in installed`) and saved a copy of the prior roster must, on rollback, put
-        that saved copy back VERBATIM. Driven straight at `_restore_everything_from_rollback`
-        -- the recovery function the guard narrowing touched -- to prove the locked-doc
-        branch still restores regardless of that guard.
+        The non-locked ownership guard does not apply to locked documents; this drives
+        `_restore_everything_from_rollback` directly with `rel in installed`.
         """
         from kiro_crew import snapshot_restore
 
@@ -433,13 +423,9 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
         ).read_text() == "the roster before the restore", "the saved roster was not put back"
 
     def test_rollback_leaves_a_locked_document_this_run_never_reached(self, tmp_path):
-        """A locked document the run never reached is left alone -- main's behavior.
+        """A locked document the run never reached is left alone on rollback.
 
-        The narrowed guard leaves an unreached NON-LOCKED target alone; a locked document
-        the run never reached (`rel not in installed`, no saved copy) must also be left
-        exactly as it stands. This pins that the guard narrowing did not start deleting or
-        rewriting a locked document the restore never opened -- the live roster, including
-        any edit that landed independently, survives untouched.
+        With `rel not in installed` and no saved copy, the live roster survives untouched.
         """
         from kiro_crew import snapshot_restore
 
@@ -497,12 +483,10 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
     def test_a_component_left_off_the_set_really_does_clear_nothing(
         self, comp, tmp_path, monkeypatch
     ):
-        """The BEHAVIOUR the set claims, driven per component rather than asserted as
-        membership. A component absent from the set is one whose replace touches nothing
-        when the bundle carries no payload for it -- so each one is handed a bundle that
-        declares it and holds none of it, and its live tree has to survive. A future
-        component whose restore starts clearing unconditionally fails here rather than
-        passing a set-membership check that says nothing about what it does."""
+        """A replace of a declared but empty component leaves its live tree alone.
+
+        Driven per component rather than asserted as set membership, so a component whose
+        restore starts clearing unconditionally fails here."""
         home = _home(tmp_path, monkeypatch)
         payload = tmp_path / "kirocrew-snapshot-20260101T000000Z"
         payload.mkdir()
@@ -523,11 +507,10 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
         assert witness.read_text() == "the live copy", f"{comp} cleared live state"
 
     def test_every_component_is_reachable_by_a_restore_path(self):
-        """The two tuples are how restore finds a component at all. One added to
-        `COMPONENTS` and to neither tuple is staged, listed by `--list-components` and
-        declared in the manifest, and then restored by nothing -- a snapshot that carries
-        it and a restore that silently drops it, which is the failure this whole change
-        exists to remove."""
+        """The two tuples are how restore finds a component at all.
+
+        One in `COMPONENTS` and in neither tuple would be staged and declared, then
+        silently dropped by every restore."""
         routed = set(snap._CORE_FILE_COMPONENTS) | set(snap._WHOLE_TREE_COMPONENTS)
         assert routed == set(snap.COMPONENTS), (
             "every component must be restored by one of the two paths; unrouted: "
@@ -536,16 +519,11 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
 
 
 class TestMergeDoesNotRestoreTheseComponents:
-    """Both are `--mode replace` only. A merge copies file by file and never overwrites,
-    and that granularity does not fit a library: an artifact is a directory whose files
-    describe each other, and a slug comes from the artifact's name, so two machines can
-    hold the same slug for unrelated content. Replace swaps the tree whole with the
-    pre-restore backup taken first, which needs no reconciliation rule at all.
+    """Both are `--mode replace` only.
 
-    The promise here is not just "merge does not import them" — it is that merge SAYS so,
-    imports everything else, and refuses outright when they are all that was asked for. A
-    run that imports nothing and prints success is the failure this component exists to
-    remove."""
+    An artifact is a directory whose files describe each other, and two machines can hold
+    the same slug for unrelated content, so file-by-file merge does not fit. Merge says so,
+    imports everything else, and refuses when they are all that was asked for."""
 
     def test_a_merge_of_everything_skips_them_by_name_and_imports_the_rest(
         self, tmp_path, monkeypatch, capsys
@@ -571,8 +549,8 @@ class TestMergeDoesNotRestoreTheseComponents:
     def test_no_success_tick_is_printed_for_a_component_it_skipped(
         self, tmp_path, monkeypatch, capsys
     ):
-        """A tick for a component that imported nothing is the silent-success shape the
-        problem statement condemns, so the skip returns before the tick."""
+        """A tick for a component that imported nothing is a silent success, so the skip
+        returns before the tick."""
         _home(tmp_path, monkeypatch)
         bundle = _snapshot(tmp_path)
         assert (
@@ -630,11 +608,9 @@ class TestMergeDoesNotRestoreTheseComponents:
 
 
 class TestTheMergePreflightAnswersOnlyForWhatItWrites:
-    """`_refuse_unsafe_destination_roots` runs at the top of both modes. Handing it the whole
-    selection made a merge refuse over a root it was about to skip: a home that keeps
-    `uploads/` on another disk behind a link could not merge its memory at all. Two review
-    lanes found this from opposite ends, which is the signal that the basis was wrong rather
-    than that an edge case was missed."""
+    """`_refuse_unsafe_destination_roots` checks only the roots a merge writes.
+
+    A home that keeps `uploads/` on another disk behind a link must still merge its memory."""
 
     def _link_root_outside(self, tmp_path: Path, home: Path, name: str) -> Path:
         import shutil

@@ -1,8 +1,7 @@
 """Auto-compaction notice on channel-originated sessions (Slack + Discord).
 
-Before this, ``SessionManager``'s compact callback was dashboard-only: it
-returned early for any key that did not start with ``dashboard:``, so a Slack
-thread or Discord DM was compacted in silence. These tests pin the channel leg:
+``SessionManager``'s compact callback must notify channel keys too, not only
+``dashboard:`` ones. These tests pin the channel leg:
 
   * the notice text (copy, pct rounding, per-channel manual command);
   * Slack delivery into the session's persisted thread, gated on the
@@ -135,11 +134,9 @@ def _state(
 def _permit_governance():
     """Permit BOTH governance gates on the notice path.
 
-    There are two, resolved differently: this module's Slack gate holds
-    ``vet_and_audit`` as a module-scope name, while ``chat_runner``'s transport
-    ladder imports it inside the function (so it must be patched at its source).
-    A test that patched only one would leave the other reading the host's real
-    governance profile.
+    The Slack gate holds ``vet_and_audit`` at module scope, while ``chat_runner``
+    imports it inside the function, so it is patched at its source; patching only one
+    would leave the other reading the host's real governance profile.
     """
     permit = SimpleNamespace(permitted=True)
     with (

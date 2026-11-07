@@ -86,6 +86,9 @@ type TurnUsageRow = {
   duration_ms?: number
   context_used?: number
   context_window?: number
+  /** Whether the turn streamed any reply text. Absent on rows that do not
+   *  record it, which is unknown, not undelivered. */
+  delivered?: boolean
 }
 
 const DRILL_TH = 'text-left font-normal text-[10px] text-muted uppercase tracking-wide px-2 py-1'
@@ -154,7 +157,12 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
       <tbody>
         {turns.map((t, i) => (
           <tr key={`${t.ts}-${i}`} className="border-b border-border/40 last:border-b-0">
-            <td className={`${DRILL_TD} text-muted`}>{fmtNumber(i + 1)}</td>
+            <td className={`${DRILL_TD} text-muted`}>
+              {fmtNumber(i + 1)}
+              {t.delivered === false && (
+                <span className="ml-1.5 font-sans">{i18nT('pages.telemetryPanel.turn_no_reply')}</span>
+              )}
+            </td>
             <td className={`${DRILL_TD} ${DRILL_HIDE_TIME}`}>
               {fmtDateNumeric(t.ts)} {fmtTimeNumeric(t.ts)}
             </td>

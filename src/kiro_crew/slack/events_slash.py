@@ -137,13 +137,21 @@ async def _handle_agent(
     if args:
         name = args.strip().split()[0]
         if name.lower() in ("off", "default"):
-            await run_config_write(_set_default_agent, "")
+            try:
+                await run_config_write(_set_default_agent, "")
+            except ValueError as e:
+                await respond(f"❌ {e}")
+                return
             await respond("🔄 Reset to default agent.")
             return
         # Resolution reads a spec's content; off the loop, like the listing.
         resolved = await asyncio.to_thread(_resolve_agent_name, name)
         if resolved:
-            await run_config_write(_set_default_agent, resolved)
+            try:
+                await run_config_write(_set_default_agent, resolved)
+            except ValueError as e:
+                await respond(f"❌ {e}")
+                return
             await respond(f"🔄 Switched to agent: *{resolved}*")
             return
         await respond(f"❌ Unknown agent `{name}`. Pick one below:")
@@ -221,8 +229,10 @@ async def _handle_yolo(
     arg = args.strip().lower()
     so = safety_override()
 
+    # ``gateway --approval yolo``'s grant is the dashboard's only, so Slack reads it as off.
+    slack_yolo = so.is_active() and so.is_cli_launch is not True
     if arg == "on":
-        if so.is_active():
+        if slack_yolo:
             await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
         # Off-loop: activate() writes a SEL event and consults the
@@ -272,8 +282,10 @@ async def _handle_yolo(
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.
-        renew_result = await asyncio.to_thread(so.renew, "slack")
-        if renew_result.renewed:
+        renew_result = (
+            None if so.is_cli_launch is True else await asyncio.to_thread(so.renew, "slack")
+        )
+        if renew_result is not None and renew_result.renewed:
             sel().log_api_access(
                 caller=caller_id,
                 operation="slack.yolo_mode",
@@ -287,7 +299,7 @@ async def _handle_yolo(
         else:
             await respond("🔴 YOLO mode is not active. Use `on` to activate first.")
     else:
-        if so.is_active():
+        if slack_yolo:
             await respond(
                 f"YOLO mode is currently *ON 🟢* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
@@ -612,6 +624,10 @@ async def _handle_restart(
             )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
+    # A planned restart: the turns close_all() cuts resume on the next boot.
+    from kiro_crew.dashboard import restart_resume
+
+    await restart_resume.record_running_slots(orch.dashboard_state)
     try:
         if orch.sessions:
             # Bound the cleanup: a session close can hang waiting on a remote

@@ -122,6 +122,7 @@ export const UI_REVEAL_STATES = {
   crewmate_profile_closed: "the Bot's profile card is closed (pressing the Bot's name in the chat header opens it)",
   crewmate_profile_tab_closed: "the Bot's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
   crewmate_settings_closed: "the Bot's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
+  crewmate_panel_closed: "the Bot's side panel is closed (the Dashboard & files button in the chat header opens it)",
 } as const
 
 export type UiRevealState = keyof typeof UI_REVEAL_STATES
@@ -150,6 +151,7 @@ export const UI_REVEAL_SCOPES = {
   'members.profile': 'crewmate_profile_closed',
   'members.profile-tab': 'crewmate_profile_tab_closed',
   'members.settings': 'crewmate_settings_closed',
+  'members.panel': 'crewmate_panel_closed',
 } as const satisfies Record<string, UiRevealState>
 
 export type UiRevealScopeId = keyof typeof UI_REVEAL_SCOPES
@@ -171,6 +173,7 @@ export const UI_RUNTIME_PREDICATES = [
   'crewmate_danger_zone_open',
   'crewmate_place_pane_open',
   'crewmate_model_pane_open',
+  'crewmate_panel_not_docked',
   'no_response_running',
   'mouse_input',
   'phone_connect_available',

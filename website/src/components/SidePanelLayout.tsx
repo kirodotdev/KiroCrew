@@ -26,6 +26,8 @@ export interface SidePanelTab {
   description?: string
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
+  /** The dot's accessible name; defaults to "update available". */
+  dotLabel?: string
   /** Count pill after the label, for items waiting on the user inside this tab
    *  (e.g. Skills while generated skill candidates wait for review). Nothing
    *  renders at a count of 0. `label` names what is counted, count included,
@@ -54,6 +56,10 @@ export interface SidePanelTab {
    *  adding an unrelated ?section= param would silently lose its mobile
    *  chrome, and nothing on that page would flag it. */
   hostsSubNav?: boolean
+  /** Query params holding THIS tab's own drill-in (Settings > Overview's
+   *  `?view=memory`). Every rail selection drops them, like a SubNav
+   *  selection, so a picked tab opens at its root. */
+  drillInParams?: readonly string[]
 }
 
 interface SidePanelLayoutProps {
@@ -221,6 +227,12 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // row. `attachContent` watches the rows themselves, so a tab appearing or a
   // late font changing a row's height re-measures too.
   const [attachTabList, tabListEdges, , attachTabListContent] = useScrollEdgesY<HTMLDivElement>()
+  // The cue scrolls this list when clicked.
+  const tabListRef = React.useRef<HTMLDivElement | null>(null)
+  const attachTabListNode = React.useCallback((node: HTMLDivElement | null) => {
+    tabListRef.current = node
+    attachTabList(node)
+  }, [attachTabList])
   // Keyboard avoidance for the bottom-float dock. iOS Safari shrinks only the
   // VISUAL viewport when the keyboard opens (the layout viewport `fixed`
   // resolves against keeps its height — see CommandPalette.tsx), so a
@@ -340,14 +352,22 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     </SidePanelLeaveGuardContext.Provider>
   )
 
+  /** A rail selection lands on a tab's root: drop the SubNav selection and
+   *  every tab's declared drill-in. */
+  const dropTabSelections = (next: URLSearchParams) => {
+    deleteSubSelection(next)
+    for (const declared of tabs) for (const p of declared.drillInParams ?? []) next.delete(p)
+  }
   const setTab = (t: string) => {
     // Before anything else: switching tabs unmounts the pane, and the pane may
-    // hold work the user has not saved. Gated on the tab actually CHANGING —
-    // the desktop rail calls this for the tab already shown, which unmounts
-    // nothing, so an unqualified ask would pop a discard-confirm over a click
-    // that was never going to destroy anything. (PromptsTab's own row select
-    // carries the same caveat for re-clicking the selected row.)
-    if (t !== tab && !mayLeavePane()) return
+    // hold work the user has not saved. Gated on the click unmounting
+    // something — the desktop rail calls this for the tab already shown, which
+    // unmounts nothing unless it drops that tab's drill-in, so an unqualified
+    // ask would pop a discard-confirm over a click that was never going to
+    // destroy anything. (PromptsTab's own row select carries the same caveat
+    // for re-clicking the selected row.)
+    const leavesDrillIn = (tabs.find(x => x.key === tab)?.drillInParams ?? []).some(p => params.has(p))
+    if ((t !== tab || leavesDrillIn) && !mayLeavePane()) return
     // Synchronously, in the same batched update as the param write: picking the
     // FIRST tab deletes the param, so a fallback still holding the previous tab
     // would render it for a frame AND get re-written into the URL by the sync
@@ -362,7 +382,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       // path IS the root list there), and mobile drill-in is a PUSH carrying
       // the SUBNAV_PUSH_STATE marker so the back control can pop it.
       const next = new URLSearchParams(params)
-      deleteSubSelection(next)
+      dropTabSelections(next)
       const search = next.toString()
       const seg = toPathSegment(t)
       navigate(
@@ -379,7 +399,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       // A second-level selection is scoped to the tab that hosts it. One that
       // rides across a tab change strands a phone view whose new tab hosts no
       // SubNav: the chrome yields to a back bar that never renders.
-      deleteSubSelection(next)
+      dropTabSelections(next)
       // Mobile always writes the param explicitly — the param-less state IS the
       // root list there, so the desktop convention (first tab = no param) would
       // make the first tab unreachable.
@@ -521,7 +541,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                       ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4" style={{ background: t.tile }}>{t.icon}</span>
                       : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
-                    {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                    {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
                     <TabCountBadge badge={t.badge} />
                     <ChevronRight size={15} className="text-muted-strong shrink-0" />
                   </button>
@@ -589,7 +609,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           )}
           {/* Only the tab list scrolls — the title and navTop above and the
             * footer below stay fixed. */}
-          <div ref={attachTabList} data-testid="side-panel-tab-list" className="flex-1 min-h-0 overflow-y-auto">
+          <div ref={attachTabListNode} data-testid="side-panel-tab-list" className="flex-1 min-h-0 overflow-y-auto">
           <div ref={attachTabListContent} className="flex flex-col gap-0.5">
           {tabs.map((t, i) => (
             <React.Fragment key={t.key}>
@@ -616,7 +636,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                       {t.icon}
                     </span>}
                 {t.label}
-                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={t.dotLabel ?? i18nT('components.sidePanelLayout.update_available')} />}
                 {/* The dot, when present, already holds the row's right edge. */}
                 <TabCountBadge badge={t.badge} className={t.dot ? '' : 'ml-auto'} />
               </button>
@@ -628,7 +648,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             * rather than part of any row. The strip keeps its height for as
             * long as the list overflows at all. */}
           {(tabListEdges.top || tabListEdges.bottom) && (
-            <MoreBelowCue visible={tabListEdges.bottom} testId="side-panel-tab-list-more" />
+            <MoreBelowCue visible={tabListEdges.bottom} testId="side-panel-tab-list-more" scrollerRef={tabListRef} />
           )}
           {footer && <div className="shrink-0 pt-3 px-2.5">{footer}</div>}
         </nav>}

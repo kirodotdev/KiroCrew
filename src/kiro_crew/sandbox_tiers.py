@@ -1328,8 +1328,8 @@ def _clamp_sandbox_mode_to_floor(mode: str, floor: str | None) -> str:
     from kiro_crew.platform.governance import _ORDINAL_SCALES, OrdinalControl
 
     # Enterprise: ``off`` reads as the shipped default tier, so no caller-supplied
-    # mode goes below Crew's own sandbox (RFC enterprise edition, Red "Minimum
-    # sandbox level"). The governance floor below still clamps it further up.
+    # mode goes below Crew's own sandbox (RFC enterprise edition, "Minimum sandbox
+    # level", D7). The governance floor below still clamps it further up.
     mode = sandbox_mode_floor(mode, _SANDBOX_MODE_FALLBACK)
     if not floor:
         return mode

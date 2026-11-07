@@ -92,12 +92,9 @@ def test_append_if_absent_still_dedups_after_the_rewrite(tmp_path, png):
 def test_an_id_carrying_append_is_deduped_by_id_when_the_image_is_gone(tmp_path, png):
     """A queued append whose scratch image has vanished must not duplicate the row.
 
-    The slot save landed this message first, with the image rewritten to its stored
-    copy. By the time the fire-and-forget ``append_if_absent`` runs the agent's
-    scratch file is gone, so its own rewrite fails open to the original path and
-    the body differs from the row on disk. The id plus the text agreeing modulo
-    the preserved image is what recognises the row as this message; nothing is
-    appended.
+    The slot save stored the image first; with the scratch file gone,
+    ``append_if_absent``'s rewrite keeps the original path and the body differs. The id
+    plus the text matching modulo the image identifies the row.
     """
     log = ConversationLog(base_dir=tmp_path)
     text = f"![shot]({png})"

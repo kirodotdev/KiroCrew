@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { confirmAction } from './confirmAction'
+import { i18nT } from '../i18n/t'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
 
 /* ── Mocks: must run before importing the component ── */
 const mockApi = vi.hoisted(() => ({
@@ -12,6 +14,7 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsBudget: vi.fn(),
 }))
 // A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
 // the imports) can close over it: createSkill.onError branches on
@@ -73,6 +76,11 @@ function renderWithQuery() {
   }
 }
 
+function HistoryControls() {
+  const navigate = useNavigate()
+  return <><button onClick={() => navigate(1)}>Forward</button><button onClick={() => navigate(-1)}>Back history</button></>
+}
+
 beforeEach(() => {
   Object.values(mockApi).forEach(m => 'mockReset' in m && m.mockReset())
   mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody', hash: 'h-x' })
@@ -94,27 +102,49 @@ describe('SkillsTab', () => {
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
   })
 
-  it('names the disabled refresh for the read in flight, then restores it', async () => {
-    // A disabled "Refresh skills" reads as unavailable; while the refetch runs its
-    // name says it is busy instead.
+  it('names the inert refresh for the read in flight, keeps its focus, then restores it', async () => {
+    // An inert "Refresh skills" reads as unavailable; while the refetch runs its
+    // name says it is busy instead. It stays focusable, so a keyboard user's
+    // focus is not dropped to the page for the whole refresh.
     const rows = [{ key: 'foo', name: 'foo', description: 'a foo skill', source: 'kirocrew', loaded_by_agents: [] }]
     mockApi.skills.mockResolvedValue(rows)
     renderWithQuery()
     const idle = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
 
     let release: (v: typeof rows) => void = () => {}
     mockApi.skills.mockReturnValue(new Promise(resolve => { release = resolve }))
+    idle.focus()
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing skills…' })
-    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toBeEnabled()
+    expect(busy).toHaveFocus()
     expect(screen.queryByRole('button', { name: 'Refresh skills' })).toBeNull()
+    const calls = mockApi.skills.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.skills.mock.calls.length).toBe(calls)
 
     await act(async () => { release(rows) })
 
     const back = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+  })
+
+  it('says a failed refresh failed instead of keeping the last list silently', async () => {
+    const rows = [{ key: 'foo', name: 'foo', description: 'a foo skill', source: 'kirocrew', loaded_by_agents: [] }]
+    mockApi.skills.mockResolvedValue(rows)
+    renderWithQuery()
+    const idle = await screen.findByRole('button', { name: 'Refresh skills' })
+    expect(screen.queryByTestId('skill-list-failure')).toBeNull()
+
+    mockApi.skills.mockRejectedValue(new Error('skills list unavailable'))
+    fireEvent.click(idle)
+
+    const notice = await screen.findByTestId('skill-list-failure')
+    expect(notice).toHaveTextContent('skills list unavailable')
+    expect(screen.getByText('foo')).toBeInTheDocument()
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {
@@ -232,15 +262,83 @@ describe('SkillsTab', () => {
     ])
     mockApi.skill.mockResolvedValue({ name: 'doomed', content: '---\nname: doomed\n---\n', hash: 'h-doomed' })
     mockApi.deleteSkill.mockResolvedValue({ ok: true })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
 
     renderWithQuery()
     // Auto-selected → Delete appears in the detail header.
     const del = await screen.findByText('Delete')
     fireEvent.click(del)
-    expect(confirmSpy).toHaveBeenCalled()
+    await confirmAction('Delete')
+    expect(confirmSpy).not.toHaveBeenCalled()
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('doomed'))
     confirmSpy.mockRestore()
+  })
+
+  it('cancels a pending delete when history switches to the budget view', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsBudget.mockResolvedValue({ window_days: 30, total_chars: 0, rows: [] })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/', '/?view=budget']} initialIndex={0}>
+        <SkillsTab /><HistoryControls />
+      </MemoryRouter>
+    </QueryClientProvider>)
+
+    fireEvent.click(await screen.findByText('Delete'))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+    await screen.findByText('Context budget')
+    fireEvent.click(screen.getByRole('button', { name: 'Back history' }))
+    await screen.findByText('Skills (1)')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(mockApi.deleteSkill).not.toHaveBeenCalled()
+  })
+
+  it('renders the full delete question for a long skill key in a wrapping body', async () => {
+    const key = `auto/${'long-skill-'.repeat(35)}suffix`
+    mockApi.skills.mockResolvedValue([
+      { key, name: key, description: 'long target', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    renderWithQuery()
+    fireEvent.click(await screen.findByText('Delete'))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete' })
+    const body = within(dialog).getByText(i18nT('pages.overview.skillsTab.delete_confirm', { name: key }), { selector: 'p' })
+    expect(body).toHaveStyle({ overflowWrap: 'anywhere' })
+    await confirmAction('Cancel')
+    expect(mockApi.deleteSkill).not.toHaveBeenCalled()
+    expect(screen.getByTestId('dir-browser')).toHaveAttribute('data-skill', key)
+  })
+
+  it('deletes the skill named when confirmation opened after selection changes', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'other', name: 'other', description: 'keep', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.deleteSkill.mockResolvedValue({ ok: true })
+    renderWithQuery()
+    fireEvent.click(await screen.findByText('Delete'))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('doomed')
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'Skills' })).getByText('other'))
+    await waitFor(() => expect(screen.getByTestId('dir-browser')).toHaveAttribute('data-skill', 'other'))
+    await confirmAction('Delete')
+    await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('doomed'))
+  })
+
+  it('keeps a pending delete dialog rendered while the skills list reloads', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    const { qc } = renderWithQuery()
+    fireEvent.click(await screen.findByText('Delete'))
+    await screen.findByRole('dialog')
+    mockApi.skills.mockImplementation(() => new Promise(() => {}))
+    act(() => { void qc.resetQueries({ queryKey: ['skills'] }) })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create New Skill' })).toBeDisabled())
+    await confirmAction('Cancel')
+    expect(mockApi.deleteSkill).not.toHaveBeenCalled()
   })
 
   it('a refused delete puts back only its own row, not one another delete removed meanwhile', async () => {
@@ -252,17 +350,16 @@ describe('SkillsTab', () => {
     ]).mockImplementation(() => new Promise(() => {}))
     let refuse!: (e: Error) => void
     mockApi.deleteSkill.mockImplementation(() => new Promise((_, reject) => { refuse = reject }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     const { qc } = renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('doomed'))
     // A second delete lands while the first is in flight.
     act(() => { qc.setQueryData<{ key: string }[]>(['skills'], old => old?.filter(s => s.key !== 'gone')) })
     await act(async () => { refuse(new Error('permission denied')) })
     await screen.findByTestId('skill-delete-failure')
     expect(qc.getQueryData<{ key: string }[]>(['skills'])?.map(s => s.key)).toEqual(['doomed'])
-    confirmSpy.mockRestore()
   })
 
   it('a row picked while a delete is in flight stays open when the delete lands', async () => {
@@ -275,17 +372,16 @@ describe('SkillsTab', () => {
     ]).mockImplementation(() => new Promise(() => {}))
     let land!: (v: { ok: boolean }) => void
     mockApi.deleteSkill.mockImplementation(() => new Promise(resolve => { land = resolve }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('doomed'))
     fireEvent.click(screen.getByText('Third'))
     await waitFor(() => expect(screen.getByTestId('dir-browser')).toHaveAttribute('data-skill', 'third'))
 
     await act(async () => { land({ ok: true }) })
     expect(screen.getByTestId('dir-browser')).toHaveAttribute('data-skill', 'third')
-    confirmSpy.mockRestore()
   })
 
   it('Edit button enters edit mode for kirocrew-sourced skills', async () => {
@@ -677,10 +773,10 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockRejectedValue(new Error('permission denied'))
     mockApi.updateSkill.mockResolvedValue({ ok: true })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await screen.findByTestId('skill-delete-failure')
 
     const editBtn = await screen.findByText('Edit')
@@ -691,7 +787,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(screen.queryByText('Save')).not.toBeInTheDocument())
     expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument()
-    confirmSpy.mockRestore()
   })
 
   it('a delete failure arriving DURING the edit survives a successful save and displays', async () => {
@@ -707,11 +802,11 @@ describe('SkillsTab update/delete failure surfacing', () => {
     let rejectDelete: (e: Error) => void = () => {}
     mockApi.deleteSkill.mockImplementation(() => new Promise((_, rej) => { rejectDelete = rej }))
     mockApi.updateSkill.mockResolvedValue({ ok: true })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     // Delete A; it hangs; the survivor B is auto-selected. Open B's editor.
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
     const editBtn = await screen.findByText('Edit')
     await waitFor(() => expect(editBtn).not.toBeDisabled())
@@ -727,7 +822,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(screen.queryByText('Save')).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getByTestId('skill-delete-failure')).toBeInTheDocument())
-    confirmSpy.mockRestore()
   })
 
   it('a row tap on the latched mobile list reopens the editor and keeps the draft AND the failure', async () => {
@@ -745,12 +839,12 @@ describe('SkillsTab update/delete failure surfacing', () => {
       mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
       let rejectDelete: (e: Error) => void = () => {}
       mockApi.deleteSkill.mockImplementation(() => new Promise((_, rej) => { rejectDelete = rej }))
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
       renderWithQuery()
       // Delete A (hangs); the survivor is auto-selected; open its editor.
       fireEvent.click(await screen.findByText('fragile'))
       fireEvent.click(await screen.findByText('Delete'))
+      await confirmAction('Delete')
       await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
       const editBtn = await screen.findByText('Edit')
       await waitFor(() => expect(editBtn).not.toBeDisabled())
@@ -772,7 +866,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
       // Leaving through the editor's own exit surfaces the failure again.
       fireEvent.click(screen.getByText('Cancel'))
       await waitFor(() => expect(screen.getByTestId('skill-delete-failure')).toBeInTheDocument())
-      confirmSpy.mockRestore()
     } finally {
       isMobileMock.value = false
     }
@@ -1050,11 +1143,11 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // list again would mask a broken rollback.
     mockApi.skills.mockResolvedValueOnce(SKILL).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockRejectedValue(new Error('permission denied'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     const del = await screen.findByText('Delete')
     fireEvent.click(del)
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
 
     // Rollback first: the optimistically removed row must come back…
@@ -1064,7 +1157,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     expect(notice.textContent).toMatch(/permission denied/)
     // The banner names the skill the way the ROW does — its display name.
     expect(notice.textContent).toMatch(/Fragile/)
-    confirmSpy.mockRestore()
   })
 
   it('clears the delete failure once a retry succeeds', async () => {
@@ -1072,18 +1164,18 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.deleteSkill
       .mockRejectedValueOnce(new Error('permission denied'))
       .mockResolvedValue({ ok: true })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     const del = await screen.findByText('Delete')
     fireEvent.click(del)
+    await confirmAction('Delete')
     await screen.findByTestId('skill-delete-failure')
 
     // Retry from the restored row's detail header.
     const delAgain = await screen.findByText('Delete')
     fireEvent.click(delAgain)
+    await confirmAction('Delete')
     await waitFor(() => expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument())
-    confirmSpy.mockRestore()
   })
 
   it('retires the previous failure banner the moment a retry starts', async () => {
@@ -1093,16 +1185,16 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.deleteSkill
       .mockRejectedValueOnce(new Error('permission denied'))
       .mockImplementation(() => new Promise(() => {}))  // the retry hangs
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await screen.findByTestId('skill-delete-failure')
 
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledTimes(2))
     expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument()
-    confirmSpy.mockRestore()
   })
 
   it('hands the agent the ORIGINAL failure context, not the translated frame', async () => {
@@ -1121,17 +1213,16 @@ describe('SkillsTab update/delete failure surfacing', () => {
     })
     mockApi.skills.mockResolvedValueOnce(SKILL).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockRejectedValue(new Error('permission denied'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     const notice = await screen.findByTestId('skill-delete-failure')
 
     fireEvent.click(within(notice).getByText('Ask the agent'))
     const staged = sessionStorage.getItem(ERROR_HANDOFF_KEY) || ''
     expect(staged).toMatch(/\/api\/skills\/fragile/)
     expect(staged).toMatch(/HTTP 500/)
-    confirmSpy.mockRestore()
   })
 
   it('keeps the frame on a coded read-only delete refusal, so the banner names its referent', async () => {
@@ -1144,29 +1235,27 @@ describe('SkillsTab update/delete failure surfacing', () => {
       "skill 'fragile' is in a read-only territory",
       JSON.stringify({ error: "skill 'fragile' is in a read-only territory", code: 'readonly_skill_prefix' }),
     ))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     const notice = await screen.findByTestId('skill-delete-failure')
     expect(notice.textContent).toMatch(/Could not delete/)
     expect(notice.textContent).toMatch(/Fragile/)
     expect(notice.textContent).toMatch(/managed on disk/)
     expect(notice.textContent).not.toMatch(/read-only territory/)
-    confirmSpy.mockRestore()
   })
 
   it('offers a dismiss on the delete notice, and dismiss retires it', async () => {    mockApi.skills.mockResolvedValueOnce(SKILL).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockRejectedValue(new Error('permission denied'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     const notice = await screen.findByTestId('skill-delete-failure')
 
     fireEvent.click(within(notice).getByLabelText('Dismiss'))
     await waitFor(() => expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument())
-    confirmSpy.mockRestore()
   })
 
   it('retires the delete failure when the user moves to another skill', async () => {
@@ -1176,16 +1265,15 @@ describe('SkillsTab update/delete failure surfacing', () => {
     ]
     mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockRejectedValue(new Error('permission denied'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await screen.findByTestId('skill-delete-failure')
 
     // The failed attempt is finished; selecting another skill moves on.
     fireEvent.click(await screen.findByText('other'))
     await waitFor(() => expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument())
-    confirmSpy.mockRestore()
   })
 
   it('suppresses the delete banner while the editor is open, so its hand-off cannot outlive a draft', async () => {
@@ -1194,10 +1282,10 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // only copy of an unsaved edit — the render is gated on !detailEditing.
     mockApi.skills.mockResolvedValueOnce(SKILL).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockRejectedValue(new Error('permission denied'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await screen.findByTestId('skill-delete-failure')
 
     const editBtn = await screen.findByText('Edit')
@@ -1205,7 +1293,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     fireEvent.click(editBtn)
     await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
     expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument()
-    confirmSpy.mockRestore()
   })
 
   it('holds back a DELAYED delete failure while the editor is open, and shows it after', async () => {
@@ -1220,12 +1307,12 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
     let rejectDelete: (e: Error) => void = () => {}
     mockApi.deleteSkill.mockImplementation(() => new Promise((_, rej) => { rejectDelete = rej }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     // Delete the auto-selected first skill; the DELETE hangs, the optimistic
     // removal auto-selects the survivor.
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
 
     // Open the survivor's editor before the delete settles.
@@ -1242,7 +1329,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // Closing the editor reveals the retained failure.
     fireEvent.click(screen.getByText('Cancel'))
     await waitFor(() => expect(screen.getByTestId('skill-delete-failure')).toBeInTheDocument())
-    confirmSpy.mockRestore()
   })
 
   it('ignores the narrow-viewport back control while a save is in flight', async () => {
@@ -1290,12 +1376,12 @@ describe('SkillsTab update/delete failure surfacing', () => {
       mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
       let rejectDelete: (e: Error) => void = () => {}
       mockApi.deleteSkill.mockImplementation(() => new Promise((_, rej) => { rejectDelete = rej }))
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
       renderWithQuery()
       // Enter fragile's detail pane and start a delete that hangs.
       fireEvent.click(await screen.findByText('fragile'))
       fireEvent.click(await screen.findByText('Delete'))
+      await confirmAction('Delete')
       await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
 
       // The optimistic removal auto-selects the survivor; open its editor.
@@ -1311,7 +1397,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
       // Back to the list — the retained failure must now display.
       fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
       await waitFor(() => expect(screen.getByTestId('skill-delete-failure')).toBeInTheDocument())
-      confirmSpy.mockRestore()
     } finally {
       isMobileMock.value = false
     }
@@ -1326,10 +1411,10 @@ describe('SkillsTab update/delete failure surfacing', () => {
     ]
     mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
     mockApi.deleteSkill.mockImplementation(() => new Promise(() => {}))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledTimes(1))
 
     // The survivor is auto-selected; its Delete must refuse to overlap.
@@ -1337,7 +1422,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     expect(delAgain).toBeDisabled()
     fireEvent.click(delAgain)
     expect(mockApi.deleteSkill).toHaveBeenCalledTimes(1)
-    confirmSpy.mockRestore()
   })
 
   it('disables Save while the save is in flight, so it cannot double-fire', async () => {
@@ -1367,10 +1451,10 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
     let rejectDelete: (e: Error) => void = () => {}
     mockApi.deleteSkill.mockImplementation(() => new Promise((_, rej) => { rejectDelete = rej }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
 
     const editBtn = await screen.findByText('Edit')
@@ -1385,7 +1469,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // Leave the editor via a list row click; the failure must survive and show.
     fireEvent.click(screen.getByText('fragile'))
     await waitFor(() => expect(screen.getByTestId('skill-delete-failure')).toBeInTheDocument())
-    confirmSpy.mockRestore()
   })
 
   it('a delete succeeding mid-save leaves the editor mounted so the save outcome can report', async () => {
@@ -1402,11 +1485,11 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.deleteSkill.mockImplementation(() => new Promise(res => { resolveDelete = res }))
     let rejectUpdate: (e: Error) => void = () => {}
     mockApi.updateSkill.mockImplementation(() => new Promise((_, rej) => { rejectUpdate = rej }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     // Delete the auto-selected first skill; it hangs; the survivor is selected.
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
 
     // Open the survivor's editor and start a save that hangs.
@@ -1425,7 +1508,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     rejectUpdate(new Error('disk full'))
     const notice = await screen.findByTestId('skill-update-failure')
     expect(notice.textContent).toMatch(/disk full/)
-    confirmSpy.mockRestore()
   })
 
   it('a delete succeeding while another skill is merely being edited spares the editor', async () => {
@@ -1439,10 +1521,10 @@ describe('SkillsTab update/delete failure surfacing', () => {
     mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
     let resolveDelete: (v: unknown) => void = () => {}
     mockApi.deleteSkill.mockImplementation(() => new Promise(res => { resolveDelete = res }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     renderWithQuery()
     fireEvent.click(await screen.findByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
 
     // Open the survivor's editor; do NOT save.
@@ -1456,7 +1538,6 @@ describe('SkillsTab update/delete failure surfacing', () => {
     await waitFor(() => expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
     expect(screen.getByText('Cancel')).toBeInTheDocument()
-    confirmSpy.mockRestore()
   })
 
   it('list rows announce themselves disabled while a save is in flight', async () => {
@@ -1523,12 +1604,12 @@ describe('SkillsTab update/delete failure surfacing', () => {
       mockApi.skills.mockResolvedValueOnce(TWO).mockImplementation(() => new Promise(() => {}))
       let rejectDelete: (e: Error) => void = () => {}
       mockApi.deleteSkill.mockImplementation(() => new Promise((_, rej) => { rejectDelete = rej }))
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
       renderWithQuery()
       // Delete A (hangs); open the survivor's editor; the failure arrives.
       fireEvent.click(await screen.findByText('fragile'))
       fireEvent.click(await screen.findByText('Delete'))
+      await confirmAction('Delete')
       await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('fragile'))
       const editBtn = await screen.findByText('Edit')
       await waitFor(() => expect(editBtn).not.toBeDisabled())
@@ -1551,9 +1632,9 @@ describe('SkillsTab update/delete failure surfacing', () => {
       fireEvent.click(screen.getByText('Cancel'))                 // ends the session
       mockApi.deleteSkill.mockRejectedValue(new Error('still denied'))
       fireEvent.click(await screen.findByText('Delete'))
+      await confirmAction('Delete')
       const fresh = await screen.findByTestId('skill-delete-failure')
       expect(within(fresh).queryByText('Ask the agent')).toBeInTheDocument()
-      confirmSpy.mockRestore()
     } finally {
       isMobileMock.value = false
     }

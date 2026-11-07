@@ -18,9 +18,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from kiro_crew.dashboard.handlers import usage as usage_mod
 from kiro_crew.llm_helpers import background_turn, provider_last_turn_usage
 from kiro_crew.providers.base import LLMProvider
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 _USAGE_TARGET = "kiro_crew.dashboard.handlers.usage.persist_token_record_async"
 

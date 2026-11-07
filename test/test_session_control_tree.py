@@ -499,6 +499,139 @@ def test_a_release_the_writer_gave_up_on_is_refused_not_reported(tmp_path, monke
     assert [c["op"] for c in calls] == ["release"]
 
 
+def _notices(slot) -> list[str]:
+    return [m["content"] for m in slot.messages if m.get("role") == "notice"]
+
+
+@pytest.mark.parametrize(
+    "previous, expected",
+    [
+        (
+            "chat-old",
+            "This session was adopted: it hangs under chat-new now, in place of chat-old.",
+        ),
+        ("", "This session was adopted: it hangs under chat-new now."),
+        ("chat-new", "This session was adopted: it hangs under chat-new now."),
+    ],
+    ids=["takeover", "first-parent", "same-parent"],
+)
+def test_an_adoption_notes_the_new_and_previous_parent_in_the_targets_transcript(
+    tmp_path, monkeypatch, previous, expected
+):
+    """A reader of the adopted session sees who took it over; no other parent, no clause."""
+    _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-new"), "sid-new")
+    target = _live(state, _slot(state, "chat-worker"), "sid-worker")
+    if previous:
+        if previous != caller.key:
+            _live(state, _slot(state, previous), "sid-old")
+        _hold(state, target.key, previous, sid="sid-worker")
+    _run(sc.adopt_target(state, caller_session_key=_key(caller), target=target.key))
+    assert _notices(target) == [expected]
+    assert _notices(caller) == []
+
+
+def test_a_target_moved_mid_turn_gets_its_note_when_the_turn_ends(tmp_path, monkeypatch):
+    """A row under the turn's open tool or chunk rows would stop that turn's backward scans."""
+    _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-new"), "sid-new")
+    target = _live(state, _slot(state, "chat-worker"), "sid-worker")
+
+    async def _drive():
+        turn_ends = asyncio.Event()
+        target.task = asyncio.ensure_future(turn_ends.wait())
+        await sc.adopt_target(state, caller_session_key=_key(caller), target=target.key)
+        assert _notices(target) == []
+        turn_ends.set()
+        await async_wait_until(
+            lambda: _notices(target), describe=lambda: "the note never landed after the turn"
+        )
+
+    _run(_drive())
+    assert _notices(target) == ["This session was adopted: it hangs under chat-new now."]
+
+
+@pytest.mark.parametrize(
+    "by_itself, expected",
+    [(False, ["This session was released: it no longer hangs under chat-1."]), (True, [])],
+    ids=["by-parent", "by-itself"],
+)
+def test_a_release_notes_the_parent_it_left_in_the_targets_transcript(
+    tmp_path, monkeypatch, by_itself, expected
+):
+    """A session releasing itself is mid-turn on that call, and its own tool row says so."""
+    _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    parent = _live(state, _slot(state, "chat-1"), "sid-parent")
+    target = _live(state, _slot(state, "chat-2"), "sid-target")
+    _hold(state, target.key, parent.key, sid="sid-target")
+    caller = target if by_itself else parent
+    _run(sc.release_target(state, caller_session_key=_key(caller), target=target.key))
+    assert _notices(target) == expected
+
+
+@pytest.mark.parametrize(
+    "verb, expected",
+    [
+        ("adopted", "This session was adopted: it hangs under chat-a now."),
+        ("released", "This session was released: it no longer hangs under chat-a."),
+    ],
+    ids=["adopt", "release"],
+)
+def test_a_move_that_lands_after_the_verb_timed_out_still_gets_its_note(
+    tmp_path, monkeypatch, verb, expected
+):
+    """The caller was told ``tree_write_pending``, but the session did move in the end."""
+    settles: list = []
+    monkeypatch.setattr(
+        emit, f"on_session_{verb}", lambda _sid, *, on_settled, **_kw: settles.append(on_settled)
+    )
+    monkeypatch.setattr(sc, "_TREE_APPEND_TIMEOUT", 0)
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-a"), "sid-a")
+    target = _live(state, _slot(state, "chat-t"), "sid-target")
+    if verb == "released":
+        _hold(state, target.key, caller.key, sid="sid-target")
+    run = sc.adopt_target if verb == "adopted" else sc.release_target
+
+    async def _drive():
+        with pytest.raises(sc.SessionControlError) as excinfo:
+            await run(state, caller_session_key=_key(caller), target=target.key)
+        assert excinfo.value.code == "tree_write_pending"
+        assert _notices(target) == []
+        settles[0](True)
+        await async_wait_until(
+            lambda: _notices(target), describe=lambda: "the late append never wrote its note"
+        )
+
+    _run(_drive())
+    assert _notices(target) == [expected]
+
+
+@pytest.mark.parametrize("verb", ["adopted", "released"])
+def test_a_target_replaced_while_its_move_lands_gets_no_note(tmp_path, monkeypatch, verb):
+    """The move stands, but the row would land in a session that never moved."""
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-a"), "sid-a")
+    target = _live(state, _slot(state, "chat-t"), "sid-target")
+    if verb == "released":
+        _hold(state, target.key, caller.key, sid="sid-target")
+    replacement: list = []
+
+    def _replace_then_land(_sid, *, on_settled, **_kw):
+        state._slots.pop(target.key, None)
+        replacement.append(_live(state, _slot(state, "chat-t"), "sid-impostor"))
+        on_settled(True)
+
+    monkeypatch.setattr(emit, f"on_session_{verb}", _replace_then_land)
+    run = sc.adopt_target if verb == "adopted" else sc.release_target
+    _run(run(state, caller_session_key=_key(caller), target=target.key))
+    assert _notices(target) == []
+    assert _notices(replacement[0]) == []
+
+
 def test_two_takeovers_of_one_session_serialize(tmp_path, monkeypatch):
     """The second takeover decides from the tree the first one COMMITTED.
 

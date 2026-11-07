@@ -2,39 +2,21 @@
 crew LEDGER -- work items, progress lines and the repository-shared skip index --
 which is a fold of ``radar/recorded`` crew log entries rather than files of its own.
 
-The coverage here is deliberately weighted toward the invariants whose failure is
-SILENT, because those are the ones that corrupt the claim protocol rather than
-raising:
+Weighted toward invariants whose failure is SILENT:
 
-  * **Name reuse.** A retired crew's name still appears in the check-in comments
-    it left on the forge, so reusing it makes an old comment look like a live
-    claim. Uniqueness is checked in the store because the name field is free text.
-  * **``last_progress_at``.** The claim TTL is measured from this field, so a
-    read-back or a no-op write must not renew a claim. If it did, a dead crew
-    would hold an issue forever and nothing would report it.
-  * **One editing item.** Two worktrees with uncommitted changes is how a fix for
-    one issue gets committed onto another issue's branch. The store refuses the
-    second one; a warning would not.
-  * **Slot accounting.** Every unfinished item consumes a work slot, because a
-    crew never holds an issue waiting for a human: one it cannot progress alone is
-    recorded as a pass and its claim released.
-  * **One entry per update.** The item's delta, the line that explains it and the
-    skip row that indexes a pass ride on ONE appended entry, so no reader can see
-    one without the others and a crash cannot separate them.
-  * **The skip index is repo-wide and first-decision-wins.** It is a fold across
-    every crew of the repository, and the EARLIEST recorded decision on a number
-    stands whichever crew's log it sits in.
+  * **Name reuse.** An old forge comment under a reused name looks like a live claim.
+  * **``last_progress_at``.** The claim TTL runs from it; a read-back or no-op write
+    must not renew a claim.
+  * **One editing item.** Two dirty worktrees put one issue's fix on another's branch.
+  * **Slot accounting.** Every unfinished item consumes a slot; nothing waits on a human.
+  * **One entry per update.** Delta, line and skip row ride on ONE appended entry.
+  * **The skip index is repo-wide and first-decision-wins.**
 
-Every test runs against a ``tmp_path`` root -- the store threads ``root`` through
-every crew-record function -- and against its own crew log data home, so nothing
-here touches a real data home. A crew's ledger lives in the crew log of the
-session its slot runs on, so a test that records creates that unit first
-(:func:`_unit`) and passes its id as ``session_id``, exactly as the write route does.
+Tests use a ``tmp_path`` root and their own crew log data home. A recording test
+creates the slot's unit first (:func:`_unit`) and passes it as ``session_id``, as the
+write route does.
 
-This file pins the crew records, the per-repository settings, the work-item rules and
-the one entry an update appends: what it carries, the refusals that name why nothing
-was appended, the read-back that answers it, the fold across every unit a crew's slot
-ran under, a cleared field and a collapsed repeat. The fold's bounds live in
+The fold's bounds live in
 ``test_issue_radar_crew_store_fold_bounds.py``, progress lines and crew-level sweeps in
 ``test_issue_radar_crew_store_progress_lines.py``, the shared skip index (the
 repo-wide, first-decision-wins invariant above, and the skip row a pass's one entry
@@ -158,12 +140,8 @@ def test_a_minted_id_is_accepted_by_every_constructor(tmp_path):
 def test_a_rename_takes_the_repo_wide_record_lock(tmp_path):
     """A rename must serialise on the REPO-WIDE lock, not this crew's.
 
-    Asserted by watching which lock file the call opens, because the outcome alone
-    cannot show it: run two renames sequentially and the second sees the first's
-    write whatever lock is held, so a sequential test passes against the bug. The
-    race needs two renames of DIFFERENT crews to overlap, each reading a
-    ``taken_names()`` that predates the other — and the only thing preventing that
-    is both calls contending on one lock.
+    Asserted by which lock file is opened: sequential renames pass whatever lock is
+    held, and the race needs two DIFFERENT crews each reading a stale ``taken_names()``.
     """
     a = _crew(tmp_path, name="Andromeda")
     _crew(tmp_path, name="Bode")
@@ -518,11 +496,8 @@ def test_terminal_phase_frees_the_slot_and_stamps_finished(tmp_path):
 def test_reopening_clears_the_finish_stamp_so_the_next_one_counts(tmp_path):
     """A reopened issue's SECOND resolution is stamped at its own time.
 
-    REGRESSION (file store): `finished_at` was written only when it was empty, so it
-    recorded the FIRST time this item ever went terminal and nothing cleared it. An
-    issue that was resolved, reopened and handled again by the same crew reuses
-    this item, so it stayed stamped in the past -- putting the new resolution outside
-    the `resolved24h` window and under-reporting work the crew had just done.
+    A reopened issue reuses its item, so a `finished_at` kept from the first finish
+    would put the new resolution outside the `resolved24h` window.
     """
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]

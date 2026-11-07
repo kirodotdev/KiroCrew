@@ -18,18 +18,21 @@ import { usePersistedBool } from '../hooks/usePersistedBool'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 import { countLines } from './FileChangeChips'
 import { findBestOccurrence, findLooseSpan, indexPage, rangesForSpan, unselectableSpans, type PageIndex, type TextSpan } from '../hooks/useMarkdownCommentHighlights'
-import { detectFileType, BinaryFileCard } from './FileRenderers'
+import { detectFileType, BinaryFileCard, BYTE_BACKED_FILE_TYPES } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
 import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { anchorFromRange } from '../utils/selectionAnchor'
+import { isEditableTarget } from '../utils/editableTarget'
 import { codePassagePosition, codeQuoteRange, shadowSelectionRange, watchText } from '../utils/pierreShadow'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
+import { printPreview } from './markdownPanelPrint'
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
 import { useCommentHint } from './useCommentHint'
-import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar } from './MarkdownPanelBody'
+import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar, partialReason } from './MarkdownPanelBody'
+import type { PartialCause } from '../utils/fileReadQuery'
 import { findCoords, findUniqueCoords, resolveSourcePos } from './markdownPanelSourcePos'
 import { FindHighlightCtor, cssHighlights, FIND_HL_SUPPORTED, useMarkdownPanelFind } from './useMarkdownPanelFind'
 import { useMarkdownPanelDisk, useMarkdownPanelDiff } from './useMarkdownPanelDisk'
@@ -65,15 +68,17 @@ interface Props {
    *  (image, pdf, video, …) keep their own viewer — they are binary too, and
    *  they read the file through `/api/file-raw`, not through this buffer. */
   binary?: boolean
-  /** The read that filled the buffer did not hand over the whole file -- cut at
-   *  the gateway's cap (`X-Truncated`) or with credentials redacted
-   *  (`X-Redacted`). Host-owned like `binary`, for the same reason: the seed
-   *  read that fills a tab runs before any panel mounts, and the body cannot
-   *  tell about itself (a whole file may quote the redaction tag). Decides only
-   *  WORDS and a file name once the file is gone: the banner and the close
-   *  prompt say "only part of it", and a download of it carries a `.partial`
-   *  tag before the extension (`notes.partial.md`). */
-  partial?: boolean
+  /** Why the read that filled the buffer did not hand over the whole file
+   *  (`partialReadCause`). Host-owned like `binary`, for the same reason: the
+   *  seed read that fills a tab runs before any panel mounts, and the body
+   *  cannot tell about itself (a whole file may quote the redaction tag).
+   *  Decides only WORDS and a file name once the file is gone: the banner and
+   *  the close prompt say "only part of it" and name the cause, and a download
+   *  of it carries a `.partial` tag before the extension (`notes.partial.md`). */
+  partial?: PartialCause | false
+  /** The buffer is the host's "file not found" sentence (`PanelTab.placeholder`),
+   *  not a copy of the file: no banner and no close guard offer to keep it. */
+  placeholder?: boolean
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch, Refresh). Document tabs restamp
    *  their saved baseline here so a re-open still treats the tab as clean;
@@ -87,7 +92,7 @@ interface Props {
    *  cannot represent — where a save would overwrite them. `undefined` means
    *  the caller has no verdict to report and the stored one stands. `partial`
    *  travels the same way, for the same read. */
-  onDiskContent?: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent?: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onSave: (filePath: string, content: string) => Promise<void>
   onClose: () => void
   liveWatch?: boolean
@@ -182,25 +187,6 @@ import { overlayCaptionClearancePx } from '../lib/electron'
  */
 const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'video', 'audio', 'sheet', 'office']
 
-/**
- * The subset of {@link RICH_FILE_TYPES} whose viewer reads the FILE, not the
- * buffer -- each of these fetches from `filePath` (`/api/file-raw`,
- * `/api/file-stream`, `/api/file-sheet`, `/api/file-office-preview`) and never
- * looks at `content`.
- *
- * That distinction is what decides who gets the binary card. The rest of
- * `RICH_FILE_TYPES` -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` --
- * renders FROM the content string, so a file whose bytes could not be decoded
- * leaves those viewers with `''`: an empty table, an empty tree, a blank frame.
- * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
- * belongs on the card exactly as a `.zip` does.
- *
- * Named by mechanism rather than by "is rich", because the reason a viewer may
- * skip the card is that it can still show the real bytes -- not that it happens
- * to be a viewer.
- */
-const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
-
 /** The content-backed rich types a path can open as (`detectFileType` never
  *  returns `svg` for a path). They open in their viewer, and an explicit Edit
  *  toggle swaps the viewer for the text editor, as markdown's does. */
@@ -229,7 +215,7 @@ export interface MarkdownPanelHandle {
   requestNavigate: (nav: (stillClean: () => boolean) => void) => void
 }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, partial, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, readOnly = false, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey, onFolderOpen, onFileOpen }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, partial, placeholder, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, readOnly = false, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey, onFolderOpen, onFileOpen }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
   const qc = useQueryClient()
@@ -399,7 +385,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const showsEditor = editing && (!isRichType || canEditRich)
   // A capped, redacted or lossily decoded read is not the file: saving it would
   // replace the real bytes with the cut-short or placeholder text.
-  const partialSaveBlocked = !!partial && showsEditor
+  const partialSaveBlocked = showsEditor && partial
   // A rich type in source mode keeps wrap and line numbers in the ⋯ menu, so its
   // header gains only Preview and Save.
   const richSourceShown = canEditRich && editing
@@ -444,10 +430,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     diskReadAbortRef, readFromDisk, setMissingOnDisk, partialCopy, partialCopyRef, bufferIsLastCopy,
     lastCopy, downloadLastCopy, lastCopyCopied, copyLastCopy, evictFileRead, applyDiskRead, catchUpRef, adoptDisk,
     diskTickRef, diffStartTickRef, patchOwedTick,
-  } = useMarkdownPanelDisk({ filePath, content, binary, partial, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError })
+  } = useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError })
 
 
-  const { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText } =
+  const { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText, reportLiveDiffDegraded } =
     useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partial, editing, dirty, diffMode, content, initialDiffMode, onDiffModeChange, setDiffMode, diskTickRef, diffStartTickRef, patchOwedTick, qc })
   // Every failure the panel owns, rendered in ONE place (both layouts mount it
   // under the header). The three background reads used to fail silently: a
@@ -461,7 +447,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // edits that were NOT persisted.
   const panelNotices = (partialSaveBlocked || saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
     <div className="flex flex-col gap-1.5">
-      {partialSaveBlocked && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_cannot_save')}</div>}
+      {partialSaveBlocked && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partialSaveBlocked) })}</div>}
       {/* No hand-off: the editor buffer holds the unsaved edits this save failed to write. */}
       <ErrorNotice message={saveError} onDismiss={() => setSaveError(null)} testId="markdown-panel-save-error" />
       <ErrorNotice message={actionError} askAgent={!dirty} onDismiss={() => setActionError(null)} testId="markdown-panel-action-error" />
@@ -1054,7 +1040,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const editGenRef = useRef(0)
   const handleSave = useCallback(async () => {
     // Every path to a save (button, Cmd+S, Snapshot) lands here.
-    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save')); return }
+    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partial) })); return }
     setSaving(true); setSaveError(null)
     const editGen = editGenRef.current
     try {
@@ -1134,11 +1120,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     )
     if (gone) {
       const body = partialNow
-        ? (dirtyNow ? 'components.markdownPanel.close_partial_copy_dirty_body' : 'components.markdownPanel.close_partial_copy_body')
-        : (dirtyNow ? 'components.markdownPanel.close_last_copy_dirty_body' : 'components.markdownPanel.close_last_copy_body')
+        ? i18nT(dirtyNow ? 'components.markdownPanel.close_partial_copy_dirty_body' : 'components.markdownPanel.close_partial_copy_body', { name, reason: partialReason(partialNow) })
+        : i18nT(dirtyNow ? 'components.markdownPanel.close_last_copy_dirty_body' : 'components.markdownPanel.close_last_copy_body', { name })
       if (!(await ask({
         title: i18nT('components.markdownPanel.close_last_copy'),
-        body: rescue(i18nT(body, { name })),
+        body: rescue(body),
         confirmLabel: i18nT('components.markdownPanel.close_last_copy_button'),
       }))) return
     } else if (unverified) {
@@ -1242,7 +1228,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         if (e.repeat) return
         if (composerOpenRef.current) return
         if (findOpen) { closeFind(); return }
-        if (fullscreen) void guardDraft(() => setFullscreen(false)); else void guardedClose()
+        if (fullscreen) { void guardDraft(() => setFullscreen(false)); return }
+        // Only a field inside the panel (the code editor above all, the Files
+        // rail's filter) keeps its Escape: one outside it, the chat composer
+        // included, still closes the file.
+        if (isEditableTarget(e) && e.composedPath().includes(splitRowRef.current!)) return
+        void guardedClose()
       }
       // Own the save chord whenever the editor is active, not only when dirty:
       // the editor-local capture handler in PierreEditorImpl exists only after
@@ -1317,6 +1308,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // diff button for it), so while its diff is on, the header carries this chip
   // to show the mode and switch back to the viewer in one click.
   const canToggleRichDiff = isRichType && canTextDiff && !showBinaryCard && !readOnly
+  // Only one of the two preview roots is mounted: full screen unmounts the side panel's body.
+  const onPrint = isMarkdown && !editing && !diffMode && !showBinaryCard ? () => { const root = previewRef.current ?? fullscreenPreviewRef.current; if (root) void printPreview(root, filePath, !!partial) } : undefined
   const richDiffChip = canToggleRichDiff && diffMode ? (
     <button
       type="button"
@@ -1405,7 +1398,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 aria-pressed={!!railOpen}
               ><Folders size={14} /></button>
             )}
-            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined}
+            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined} onPrint={onPrint}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
               onFullscreen={() => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
               onSnapshot={artifactState.existing && !showBinaryCard ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
@@ -1462,10 +1455,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && diffNoBaselineText && !editing && <ZeroDiffNotice message={diffNoBaselineText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
             {/* A background refetch keeps the cached diff on screen; only a first fetch blanks it. */}
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && (
-              <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
+              <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} autoLineByLine={active} />
             )}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
-              diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
+              diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged} onLiveDiffDegraded={reportLiveDiffDegraded}
               previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={sidePanelScrollRef} />}
@@ -1540,7 +1533,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               return <KnowledgeToggleIconButton state={knowledge} />
             })()}
             {editorToolbarButtons}
-            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined}
+            <OverflowMenu filePath={filePath} content={content} onError={reportActionError} onDownload={lastCopy ? downloadLastCopy : undefined} onPrint={onPrint}
               diffView={diffMode} onToggleDiffView={canToggleRichDiff ? toggleDiffMode : undefined}
               {...(compactHeader ? { onRefresh: handleRefresh, refreshDisabled: refreshing || dirty, refreshTitle: dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk') } : {})}
               {...(richSourceShown ? { wordWrap, onToggleWordWrap: () => setWordWrap(!wordWrap), lineNums, onToggleLineNums: () => setLineNums(!lineNums) } : {})} />
@@ -1560,9 +1553,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               <div className="p-3"><ErrorNotice message={diffErrorText} askAgent={!dirty} testId="markdown-panel-diff-compute-error-fullscreen" /></div>
             )}
             {!showBinaryCard && diffNoBaselineText && !editing && <ZeroDiffNotice message={diffNoBaselineText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
-            {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
+            {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} autoLineByLine={active} />}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
-              diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
+              diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged} onLiveDiffDegraded={reportLiveDiffDegraded}
               previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}

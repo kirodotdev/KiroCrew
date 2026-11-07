@@ -1126,6 +1126,17 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if _replay is not None:
         return _sc_entry.chat_replay_response(_replay, slot_key=slot.key)
 
+    # The session's own human typing into the dashboard, recognised by the
+    # POSITIVE dashboard-user mark token_auth sets only for a validated
+    # dashboard token with no app claim. A loopback internal-secret caller (an
+    # MCP tool, a cron script) never carries it, nor does an app, and a hub
+    # conductor's agent-origin send is not the person either. Only such a
+    # send skips the sub-agent hold below; every other sender keeps waiting for
+    # the wave, including a future caller nobody taught this rule.
+    _from_composer = (
+        request.get("is_dashboard_user") is True and not _agent_origin and not cron_creator
+    )
+
     # Asked again after the replay await: a Pause all may have landed during it.
     _crew_paused = _crew_paused or crew_pause.holds_slot(slot)
     if slot.turn_running or slot._turn_admission_reserved or _crew_paused:
@@ -1312,14 +1323,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # the delivery ended -- a receipt withheld there would lose the only
             # record that a decision was made at all.
             decision_strip=_auto_strip,
-            # A steer that fell through here (unavailable, or refused as a
-            # duplicate) still means "act now": released past the sub-agent hold
-            # when this turn ends. An `auto` send Jev chose to queue is a real
-            # queue and waits like one.
-            steer_intent=bool(steer) and _person_send and not _auto_queues,
+            # The composer's own human, whichever way the send went (Queue, a
+            # steer that fell through, or `auto` choosing to queue): Queue means
+            # after THIS turn, so the sub-agent hold releases it when the turn
+            # ends instead of parking it behind background children.
+            composer_send=_from_composer,
             author=_author_meta(_queued_actor_of(request)) if _person_send else None,
+            queued_work=_queued_admission,
         )
-        _sc_entry.stamp_queued_work(slot, qid, _queued_admission)
         _send_race.commit_request(request, message_id=qid)
         # The admission await (a config refresh included, even when admission
         # turns out off) may have outlived the running turn's handoff: the
@@ -1330,36 +1341,46 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             headers=_sc_entry.admission_headers(_queued_admission),
         )
 
-    # Queue a message typed while background sub-agents are still running for
-    # this slot. The slot.running queue path above covers the mid-turn case;
-    # this covers the idle case (spawn_run is fire-and-forget, so the main slot
-    # goes idle while children run). Without the hold, this message would start a
-    # main turn immediately and interleave with the [Subagent completion event]
-    # injections. Queue it instead (reusing the slot queue) — the queue drain
-    # releases it after the last sub-agent finishes (see subagents_hold_user_messages).
-    # Opt-out: if the user explicitly chose steer mode, honour it — start a new
-    # turn immediately so the message is processed without waiting for children.
-    # An app on a session it does not own has no opt-out (`steer` is None there),
-    # and an agent-origin send has none either: it waits like any queued turn.
-    # The opt-out covers the SUB-AGENT hold only. It is a choice about waiting,
-    # not about which conversation answers, so it cannot waive a deferred
-    # discard: the composer's Steer action on an idle slot with children running
-    # is exactly the state that defers one, and answering there would use the
-    # conversation the person asked to drop. `_turn_admit` consumes without
-    # ``allow_discard``, so nothing later in the turn drops it either.
+    # Hold a message sent while background sub-agents are still running for this
+    # slot. The slot.running queue path above covers the mid-turn case; this
+    # covers the idle case (spawn_run is fire-and-forget, so the main slot goes
+    # idle while children run). Held, the message waits in the slot queue and the
+    # drain releases it after the last sub-agent finishes (see chat_runner
+    # _hold_users), so it cannot interleave with [Subagent completion event]
+    # injections. Only an automated send (an app, an MCP tool, a cron script) is
+    # held: the session's own human is never kept waiting on background work,
+    # whatever the composer's busy-send mode -- a completion that lands during
+    # their turn queues behind it as usual. An agent-origin send (a hub
+    # conductor's) is not the session's human: it waits like any queued turn.
+    # The steer opt-out and the composer exemption cover the SUB-AGENT hold only.
+    # They are choices about waiting, not about which conversation answers, so
+    # neither can waive a deferred discard: the composer on an idle slot with
+    # children running is exactly the state that defers one, and answering there
+    # would use the conversation the person asked to drop. `_turn_admit` consumes
+    # without ``allow_discard``, so nothing later in the turn drops it either.
     _teardown_hold = bool(not slot.running and teardown_hold_active(state, slot))
     _sub_key = effective_session_key(slot)
-    _held = subagents_hold_user_messages(state, _sub_key)
+    _children_hold = subagents_hold_user_messages(state, _sub_key)
+    _held = not _from_composer and _children_hold
     # Messages parked while a child was live stay parked once it is flagged
     # stalled (nothing starts a drain then). A send behind them joins the queue
     # and drains it, so it is answered after them rather than ahead of them.
     _behind_parked = bool(
-        not _held
+        not _children_hold
         and slot._queue
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if (not (steer and not _agent_origin) and (_held or _behind_parked)) or _teardown_hold:
+    # A queued card's open editor holds the queue: a send joins it behind the
+    # held entries, steer or not, rather than being answered first.
+    from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
+
+    _edit_held = edit_hold_blocks_user_turn(slot)
+    if (
+        (not (steer and not _agent_origin) and (_held or _behind_parked))
+        or _teardown_hold
+        or _edit_held
+    ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -1404,6 +1425,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             from kiro_crew.shared_crew.identity import actor_of as _hold_actor_of
 
             _hold_meta[MESSAGE_AUTHOR_META_KEY] = _hold_author_meta(_hold_actor_of(request))
+        if _from_composer:
+            # Every composer send carries the mark, whichever hold queued it: the
+            # mark answers the sub-agent hold only. Behind parked messages, the
+            # drain runs the parked message first and a stalled child that streams
+            # again (or a child that turn spawns) reinstates the hold at its end; an
+            # editor or deferred-discard hold ends while children may still run.
+            # Either way the mark is what releases the person's send then. Those
+            # two holds, and a crew pause, are enforced by the drain itself
+            # (system injections only, or no drain), so the mark cannot pass them.
+            from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
+
+            _hold_meta[COMPOSER_SEND_META] = True
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
@@ -1413,7 +1446,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _sc_entry.stamp_queued_work(slot, qid, _held_admission)
         _send_race.commit_request(request, message_id=qid)
         _redacted = queued_text_for_display(message, user_origin=_person_send)
-        warn_if_not_durable(slot._queue, qid, slot.key)
+        _hold_durable = warn_if_not_durable(slot._queue, qid, slot.key)
         # Start the durable write here too, not only in the busy-slot branch.
         # This branch holds an IDLE slot, so no drain is coming to write the
         # prompt's transcript row and no turn-end flush is scheduled: the queue
@@ -1438,12 +1471,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
         if banner:
             _hold_push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
+        if not _hold_durable:
+            # The card's "won't survive a restart" marker, as on the busy-slot frame.
+            _hold_push.setdefault("meta", {})["durable"] = False
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry
             # is what lands the discard and drains the queue this send joined.
             _arm_pending_reset_retry(state, slot)
-            _wake_pending_reset_retry(slot)
+            _wake_pending_reset_retry(state, slot)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
         elif not subagents_hold_user_messages(state, _sub_key):
@@ -1453,8 +1489,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             await _drain_parked_queues(state, [slot.key])
         # Same receipt contract as the busy-slot queue branch: `queue_id` binds
         # the sender's pre-send composer state to this exact entry. An entry the
-        # durable bounds refuse is reported in the log by the call above, not on
-        # the receipt: the on-screen marker belongs with its consumer.
+        # durable bounds refuse is reported in the log and on the frame above.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
     # WS mode: return JSON immediately, chunks delivered via WebSocket

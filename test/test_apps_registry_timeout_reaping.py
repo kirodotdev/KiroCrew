@@ -1,23 +1,8 @@
-"""Regression tests for subprocess-timeout remediation in apps/registry_pipeline/.
+"""Timed-out child subprocesses in apps/registry_pipeline/ are killed and reaped.
 
-These cover the audit findings that timed-out child subprocesses were left
-un-reaped (zombie/leak) or, for the install-script path, only sent a single
-SIGTERM with no reap and no SIGKILL escalation:
-
-  * git-clone manifest fetch  -> _communicate_with_timeout (tree-kill + reap)
-  * external registry index    -> _communicate_with_timeout (tree-kill + reap)
-  * list_registry detect probe -> _communicate_with_timeout (tree-kill + reap)
-  * install detect probe       -> _communicate_with_timeout (tree-kill + reap)
-  * install-script timeout      -> _kill_process_group (reap + SIGKILL)
-
-``_communicate_with_timeout`` now signals the child's whole process group
-(``platform_compat.kill_process_tree_async``) instead of ``proc.kill()``-ing
-only the immediate child, so a hung ``git clone``/``/bin/sh -c <probe>`` cannot
-leave re-parented grandchildren running. Each spawn feeding it is started with
-``start_new_session`` so the group signal targets the child's own group.
-
-This file lives in ``test/`` (not ``tests/``) so the ``setup.cfg``
-``testpaths = test transfer`` gate — and therefore CI — actually collects it.
+The clone, index and detect-probe paths use ``_communicate_with_timeout``, which
+signals the whole process group (each spawn uses ``start_new_session``) so no
+grandchild survives. The install script uses ``_kill_process_group`` (reap + SIGKILL).
 """
 
 from __future__ import annotations
@@ -49,19 +34,9 @@ _SLEEP_SCRIPT = "import time; time.sleep(60)"
 # SIGKILL to stop it. SIGTERM-ignore + SIGKILL escalation is POSIX signal
 # semantics, so tests using this are guarded with skipif(not IS_POSIX).
 #
-# The self-exit deadline is load-bearing, not decoration: this child is spawned
-# ``start_new_session``, so it leads its own group and a sweep of the pytest
-# worker's group never reaches it, and it is SIGTERM-immune by construction, so
-# the usual polite shutdown cannot end it either. Its ONLY reaper is the
-# escalation under test — so if that escalation regresses (precisely what these
-# tests exist to catch), or the worker is SIGKILLed by ``--timeout``/
-# ``--max-worker-restart`` before the reap, where no ``finally`` would run, an
-# unbounded ``while True`` loop would leave an immortal process pegged to the
-# host until a reboot or a manual hunt. Bounding it matches the three sibling
-# SIG_IGN children in this suite and does not soften any assertion: SIGTERM is
-# ``SIG_IGN``, so it is never delivered to Python and cannot cut the sleep short
-# via EINTR — the child is still alive and still immune across the grace period,
-# and SIGKILL still lands at the same instant.
+# The 60s self-exit is needed: the child leads its own group and ignores SIGTERM,
+# so if the escalation breaks or the worker is SIGKILLed, nothing else reaps it.
+# SIG_IGN means no EINTR, so the bound does not soften any assertion.
 _SIGTERM_IGNORE_SCRIPT = (
     "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)"
 )
@@ -119,9 +94,7 @@ def _record_tree_kill(monkeypatch) -> list[int]:
     return killed
 
 
-# --------------------------------------------------------------------------
 # Shared helper: _communicate_with_timeout (mechanism behind bugs 1, 2a, 2b)
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_communicate_with_timeout_kills_and_reaps_real_subprocess():
     """A hung child (its own session leader) must be group-killed AND reaped."""
@@ -187,9 +160,7 @@ async def test_communicate_with_timeout_falls_back_when_group_kill_fails(monkeyp
     assert proc.wait_calls == 0
 
 
-# --------------------------------------------------------------------------
 # Bug 1 — git-clone manifest fetch reaps the clone tree on timeout
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_fetch_app_manifest_reaps_clone_tree_on_timeout(monkeypatch):
     proc = _TimeoutProc()
@@ -218,9 +189,7 @@ async def test_fetch_app_manifest_reaps_clone_tree_on_timeout(monkeypatch):
     assert proc.wait_calls == 0
 
 
-# --------------------------------------------------------------------------
 # Bug 2a — list_registry detectInstalled probe reaps the tree on timeout
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_list_registry_reaps_detect_probe_tree_on_timeout(monkeypatch):
     entry = {"name": "probeapp", "repo": "x", "detectInstalled": "true"}
@@ -256,9 +225,7 @@ async def test_list_registry_reaps_detect_probe_tree_on_timeout(monkeypatch):
     assert proc.wait_calls == 0
 
 
-# --------------------------------------------------------------------------
 # The off-network switch also covers the listing's per-row manifest clone
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_resolve_manifest_does_not_clone_under_the_skip_switch(monkeypatch, tmp_path):
     """A seed row with no cached manifest renders its minimal info, no clone.
@@ -281,9 +248,7 @@ async def test_resolve_manifest_does_not_clone_under_the_skip_switch(monkeypatch
     assert await registry._resolve_manifest(dict(entry)) == entry
 
 
-# --------------------------------------------------------------------------
 # Bug 2b — install_from_registry detect probe reaps the tree on timeout
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_install_from_registry_reaps_detect_probe_tree_on_timeout(monkeypatch):
     entry = {
@@ -323,9 +288,7 @@ async def test_install_from_registry_reaps_detect_probe_tree_on_timeout(monkeypa
     assert proc.wait_calls == 0
 
 
-# --------------------------------------------------------------------------
 # Bug 3 — install-script timeout: reap + SIGKILL escalation
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     not platform_compat.IS_POSIX,
@@ -408,8 +371,10 @@ async def test_kill_process_group_escalation_reaps_via_communicate_not_wait(monk
 
 @pytest.mark.asyncio
 async def test_install_script_timeout_routes_through_kill_process_group(monkeypatch, tmp_path):
-    """On install-script timeout the code must call _kill_process_group (reap +
-    SIGKILL escalation), not the old fire-and-forget single SIGTERM."""
+    """On install-script timeout the code calls _kill_process_group (reap + SIGKILL).
+
+    A single SIGTERM with no reap would leave the child behind.
+    """
     entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
     monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
     monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
@@ -704,9 +669,7 @@ async def test_install_script_on_native_windows_fails_clearly_without_spawning(
     ]
 
 
-# --------------------------------------------------------------------------
 # A cancelled wait abandons the detached child just as a timeout does
-# --------------------------------------------------------------------------
 class _BlockingProc:
     """Fake subprocess whose first ``communicate()`` waits until cancelled.
 

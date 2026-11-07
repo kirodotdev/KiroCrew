@@ -267,7 +267,9 @@ describe('DesignTweakPage — Preview Pane', () => {
       await renderAndSettle()
       // The dimensions button contains "dimensions:" text.
       const dimsBtn = screen.getByRole('button', { name: /dimensions/i })
+      expect(dimsBtn).toHaveAttribute('aria-expanded', 'false')
       await act(async () => { fireEvent.click(dimsBtn) })
+      expect(dimsBtn).toHaveAttribute('aria-expanded', 'true')
 
       // "Desktop" appears both in the trigger and in the dropdown option list.
       const desktopMatches = screen.getAllByText('Desktop')

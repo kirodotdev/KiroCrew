@@ -4,8 +4,8 @@ The memory, skills, hooks, context, history and session stack; the task runner; 
 dashboard or API-only server; ``run`` itself, which brings everything up in order
 and blocks until shutdown; and the post-bind session-start sizing log.
 
-Orchestrator fields read: ``_background_tasks``, ``_bot_token``, ``_cfg``,
-``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
+Orchestrator fields read: ``_approval_mode``, ``_background_tasks``, ``_bot_token``,
+``_cfg``, ``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
 ``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
 ``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
@@ -13,7 +13,7 @@ Orchestrator fields written: ``_configured_host``, ``_dashboard_port``,
 ``_dashboard_runner``, ``_feature_video_task``, ``_local_only``, ``_marker_write_task``,
 ``_member_reconcile_task``, ``_memory_startup``, ``_persistence_watchdog_task``,
 ``_profile_watch_task``, ``_session_environments_ready``, ``_sign_in_refresher_task``,
-``_update_check_task``, ``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
+``_skills_sync_task``, ``_update_check_task``, ``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
 ``dashboard_state``, ``sessions``, ``slack``, ``task_runner``, ``vector_memory``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     import time
     import uuid
     import webbrowser
+    from pathlib import Path
 
     from kiro_crew.slack.gateway import (
         _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
@@ -304,15 +305,18 @@ async def _init_services(self: GatewayOrchestrator) -> None:
 
     register_pre_exec_stop("Skill-usage ledger", skill_usage.flush_all_before_exec)
 
-    async def _sync_builtin_skills() -> None:
+    async def _sync_builtin_skills() -> list[tuple[str, Path]]:
         try:
-            await asyncio.to_thread(skills.sync_builtins)
+            return await asyncio.to_thread(skills.sync_builtins)
         except Exception:
             logger.warning("builtin-skill sync failed", exc_info=True)
+            return []
 
     _skills_sync_task = asyncio.create_task(_sync_builtin_skills())
     self._background_tasks.add(_skills_sync_task)
     _skills_sync_task.add_done_callback(self._background_tasks.discard)
+    # The dashboard starts later and tells the user about any skill this set aside.
+    self._skills_sync_task = _skills_sync_task
     # Opt-out state comes from the keystone denied_commands.json (agent-
     # unwritable), not config.json's hooks section.
     hooks = HookManager(hooks_config_from_config_dict(self._cfg.hooks))
@@ -669,6 +673,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         kiro_prerequisite_service=self._boot_kiro_service,
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
+        approval_mode=self._approval_mode,
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line
@@ -688,6 +693,26 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         from kiro_crew import kiro_on_kas_notice
 
         kiro_on_kas_notice.schedule(self.dashboard_state, _KAS_CLI_FLOOR_TASK)
+    sync_task = getattr(self, "_skills_sync_task", None)
+    if self.dashboard_state and sync_task is not None:
+        state = self.dashboard_state
+
+        async def _notify_set_aside_skills(synced: asyncio.Task[list[tuple[str, Path]]]) -> None:
+            # The sync moves a user skill that shares a builtin's name to a hidden
+            # folder; the bell is the only place the user would learn of it.
+            for name, path in await synced:
+                state.notify(
+                    "skills",
+                    f'Your copy of the skill "{name}" was set aside',
+                    f'It did not match the built-in skill "{name}", so the built-in '
+                    f"version took that name. Your copy was moved to {path} and is no "
+                    "longer loaded. To use it again, rename that folder to a name no "
+                    "built-in skill uses, without the leading dot.",
+                )
+
+        task = asyncio.create_task(_notify_set_aside_skills(sync_task))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
 
 async def _init_api_server(self: GatewayOrchestrator) -> None:
@@ -748,40 +773,28 @@ async def run(self: GatewayOrchestrator) -> None:
     # No-op on Windows (no per-process descriptor rlimit).
     platform_compat.raise_nofile_soft_limit(10240)
 
-    # Refuse to boot when the data home cannot persist state. Every save
-    # path (chat history, cron history, session PIDs) needs file creation +
-    # advisory locking in the data home; when either is broken (e.g. a
-    # seccomp filter inherited from a sandboxed parent turns flock/mkstemp
-    # into ENOSYS) the gateway would still serve traffic while silently
-    # dropping every write — and the very next call below would crash with
-    # a raw traceback anyway. Failing here is loud, early, and actionable.
-    # Off-loop: the probe does real filesystem I/O (mkstemp + flock), which
-    # on a stalled filesystem would otherwise wedge the event loop.
-    def _probe_persistence() -> str | None:
-        return platform_compat.probe_file_persistence(data_home())
+    # ── Keystone content-provenance host probe ──
+    # Probe once, in a tracked background worker thread, whether this host can build the
+    # namespace sandbox, so later config reads (on the loop included) get the cached
+    # answer. Readiness never waits on it: until it returns the content check is ON, and
+    # a host without userns turns it OFF when it does. This is the shared gateway entry
+    # both the CLI (run_gateway) and the in-process test gateway reach.
+    from kiro_crew.config import loosening_provenance
 
-    try:
-        persistence_error = await asyncio.to_thread(_probe_persistence)
-    except RuntimeError as exc:
-        # asyncio.to_thread could not get a worker thread (executor
-        # exhaustion/shutdown). A process that cannot spawn one thread at
-        # boot cannot run session pools either — route through the clean
-        # preflight exit below instead of dying with a raw traceback.
-        persistence_error = f"cannot run the persistence preflight: {exc}"
-    if persistence_error is not None:
-        logger.critical(
-            "Persistence preflight failed — refusing to start: %s",
-            persistence_error,
-        )
-        print(
-            f"❌ Cannot persist state: {persistence_error}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+    async def _prime_keystone_probe() -> None:
+        try:
+            await asyncio.to_thread(loosening_provenance.prime_host_verdict)
+        except Exception:
+            logger.debug("keystone provenance host probe failed", exc_info=True)
+
+    _keystone_probe_task = asyncio.create_task(_prime_keystone_probe())
+    self._background_tasks.add(_keystone_probe_task)
+    _keystone_probe_task.add_done_callback(self._background_tasks.discard)
 
     # Refuse to boot on a truncated signing key (see signing_key_preflight).
-    # Off-loop for the same reason as the persistence probe, and bounded: a
-    # key leaf on a disconnected mount must refuse the boot, not stall it.
+    # Off-loop, since its file I/O would wedge the loop on a stalled data home,
+    # and bounded: a key leaf on a disconnected mount must refuse the boot, not
+    # stall it.
     try:
         await _run_signing_key_preflight_bounded()
     except (TimeoutError, asyncio.TimeoutError) as exc:
@@ -801,7 +814,7 @@ async def run(self: GatewayOrchestrator) -> None:
         # No worker thread at boot (executor exhaustion/shutdown). Running
         # the preflight inline would put its lstat and key load on the event
         # loop, so a stalled data home would wedge boot instead of refusing
-        # it. Exit loud, the way the persistence preflight above does.
+        # it. Exit loud, the way the persistence preflight in the CLI does.
         logger.critical(
             "Signing key preflight failed — refusing to start: cannot run it off the "
             "event loop: %s",
@@ -1033,8 +1046,12 @@ async def run(self: GatewayOrchestrator) -> None:
     # its ready=True boundary. No suspension has followed its return, so the
     # restore/open worker still cannot run before this process-ready marker.
     if self._json_ready:
+        from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+
         ready_token = generate_token(
-            self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
+            self._owner_id or "local-startup",
+            ttl_seconds=MAX_SESSION_TTL_SECS,
+            extra=owner_mint_extra(),
         )
         ready_payload = {
             "port": self._dashboard_port,
@@ -1066,14 +1083,26 @@ async def run(self: GatewayOrchestrator) -> None:
     self._install_shutdown_signal_handlers()
 
     # Warn when this gateway's code is a git work tree someone could rebase
-    # under it. Past KIROCREW_READY (no-new-work-on-gateway-boot-path),
-    # off-loop, fire-and-forget: it only logs.
+    # under it, and when it was started from inside an agent session. Past
+    # KIROCREW_READY (no-new-work-on-gateway-boot-path), off-loop,
+    # fire-and-forget: they only log.
     if not self._test_mode:
+        from kiro_crew.cloud.aws import warn_if_started_from_agent_session
         from kiro_crew.live_checkout import warn_if_running_from_git_checkout
 
-        _checkout_task = asyncio.create_task(asyncio.to_thread(warn_if_running_from_git_checkout))
-        self._background_tasks.add(_checkout_task)
-        _checkout_task.add_done_callback(self._background_tasks.discard)
+        for _warn in (warn_if_running_from_git_checkout, warn_if_started_from_agent_session):
+            _warn_task = asyncio.create_task(asyncio.to_thread(_warn))
+            self._background_tasks.add(_warn_task)
+            _warn_task.add_done_callback(self._background_tasks.discard)
+
+        # Same contract: name files another account owns, with the repair line.
+        from kiro_crew.data_home_owner import warn_if_data_home_not_owned
+
+        _owner_task = asyncio.create_task(
+            asyncio.to_thread(warn_if_data_home_not_owned, data_home())
+        )
+        self._background_tasks.add(_owner_task)
+        _owner_task.add_done_callback(self._background_tasks.discard)
 
     # Disable and mark pending any app whose sessionApproval grant was never
     # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
@@ -1223,6 +1252,7 @@ async def run(self: GatewayOrchestrator) -> None:
                 prime_ceiling_projection,
                 reproject_for_ceiling_change,
             )
+            from kiro_crew.dashboard.origin import withdraw_refused_origins
             from kiro_crew.dashboard.tailnet_serve import (
                 revoke_if_governance_now_pins_off,
             )
@@ -1233,14 +1263,25 @@ async def run(self: GatewayOrchestrator) -> None:
 
             # Hooks are registered BEFORE the poller starts, so the first installed
             # ceiling already re-derives what was materialised from the previous one.
-            # Most governed controls are live evaluations and need nothing here. These two
-            # are the exceptions: a published tailnet origin, whose gate fires when
-            # publish is CALLED and so does not retract what is already serving, and the
-            # agent config's ``allowedTools``, which kiro-cli reads from the FILE — so a
-            # list written under a looser ceiling keeps auto-approving what the fleet has
+            # Most governed controls are live evaluations and need nothing here. These
+            # three are the exceptions: a published tailnet origin, whose gate fires when
+            # publish is CALLED and so does not retract what is already serving; the
+            # server's origin set, whose extras are asked only when added; and the agent
+            # config's ``allowedTools``, which kiro-cli reads from the FILE — so a list
+            # written under a looser ceiling keeps auto-approving what the fleet has
             # since forbidden.
             _tailnet_port = self._dashboard_port
             register_post_install_hook(lambda: revoke_if_governance_now_pins_off(_tailnet_port))
+            if self._dashboard_runner is not None:
+                _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
+                register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))
+                # A policy that withdraws the redaction opt-in must purge open dashboards.
+                from kiro_crew.dashboard.handlers import credential_redaction as _redaction
+
+                await asyncio.to_thread(_redaction.seed_pushed_switch)
+                register_post_install_hook(
+                    lambda: _redaction.push_switch_moved_by_policy(_app, _loop)
+                )
             # Seeded BEFORE the poller starts: the first poll can itself install a new
             # ceiling, and a baseline taken on the hook's first call would record that
             # generation and skip the rebuild it needed.
@@ -1370,8 +1411,12 @@ async def run(self: GatewayOrchestrator) -> None:
                 base_url = _cfg_url.rstrip("/")
             else:
                 base_url = f"http://{host}:{self._dashboard_port}"
+            from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+
             startup_token = generate_token(
-                self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
+                self._owner_id or "local-startup",
+                ttl_seconds=MAX_SESSION_TTL_SECS,
+                extra=owner_mint_extra(),
             )
             dashboard_url = build_dashboard_url(
                 base_url, startup_token, local_only=self._local_only

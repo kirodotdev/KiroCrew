@@ -37,6 +37,7 @@ def _register_config_watch(
     from kiro_crew import model_registry
     from kiro_crew.config import live
     from kiro_crew.config.live import ConfigChange
+    from kiro_crew.dashboard.handlers.terminal import apply_terminal_enabled
     from kiro_crew.dashboard.handlers.updates import apply_log_level_from_config
 
     # Wiring only: optional producer import/construction belongs after bind.
@@ -144,8 +145,9 @@ def _register_config_watch(
             from kiro_crew.agent import rebuild_agent_config_reporting
 
             # ``rebuild_agent_config_reporting`` returns ``wrote=False`` — WITHOUT
-            # writing — exactly when the shared-home guard refuses to rewrite this
-            # instance's spec. That is a no-op, not a success: the installed
+            # writing — when the shared-home guard refuses to rewrite this
+            # instance's spec or the existing spec could not be read. That is a
+            # no-op, not a success: the installed
             # ``kirocrew.json`` keeps its old ``model`` pin, so treating it as
             # applied would clear the failure state, broadcast a refresh, and log
             # "rebuilt" while new sessions still run the previous model. Route a
@@ -154,8 +156,9 @@ def _register_config_watch(
             _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
             if not wrote:
                 raise RuntimeError(
-                    "agent spec rebuild was refused (shared agent home); "
-                    "config saved but kirocrew.json still pins the previous model"
+                    "agent spec rebuild did not write (shared agent home refused, "
+                    "or the existing spec could not be read); config saved but "
+                    "kirocrew.json still pins the previous model"
                 )
             # Close the ordering window against SessionManager's own applier.
             # It subscribes to ``agent.model`` FIRST (its subscription predates
@@ -191,6 +194,7 @@ def _register_config_watch(
                         "agent",
                         "Default model applied",
                         "The saved default model is now active. New sessions will use it.",
+                        i18n={"id": "default_model_applied"},
                     )
                 except Exception:
                     logger.debug("default-model recovery notification failed", exc_info=True)
@@ -213,6 +217,7 @@ def _register_config_watch(
                         "The setting was saved but new sessions will keep using the "
                         "previous model. Kiro Crew retries automatically; "
                         "check the gateway logs if this persists.",
+                        i18n={"id": "default_model_failed"},
                     )
                 except Exception:
                     logger.debug("default-model failure notification failed", exc_info=True)
@@ -228,12 +233,28 @@ def _register_config_watch(
         crew_mode_migration.schedule_on_config_change(state, getattr(change, "new", None))
         state.push_refresh("agents")
 
+    async def _apply_terminal_enabled(change: ConfigChange) -> None:
+        # Off the applier, like the provider switch: ending a shell can wait seconds
+        # for it to exit, and the watcher cancels an applier after 10 s.
+        task = asyncio.create_task(
+            apply_terminal_enabled(state._terminal_sessions, change.new.dashboard.terminal),
+            name="terminal-enabled-applier",
+        )
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
     def _push_feature_previews(change: ConfigChange) -> None:
         # The Feature previews switches are read from the shared config query,
         # which never goes stale on its own; a refresh frame is what makes every
         # other open dashboard re-read it, so a switch flipped on one surface
         # reaches the others without a reload.
         if change.touched("dashboard.feature_previews"):
+            state.push_refresh("config")
+
+    def _push_app_settings(change: ConfigChange) -> None:
+        # The app session mute and the per-app model picker read ``apps`` off the
+        # ``kirocrewConfig`` query, which only a refresh frame invalidates.
+        if change.touched("apps"):
             state.push_refresh("config")
 
     # The workflow-run ceiling and the channel caps are not registered here:
@@ -276,6 +297,12 @@ def _register_config_watch(
             "dashboard.feature_previews",
             callback=_push_feature_previews,
             name="dashboard.feature_previews",
+        ),
+        live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe(
+            "dashboard.terminal.enabled",
+            callback=_apply_terminal_enabled,
+            name="dashboard.terminal.enabled",
         ),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so

@@ -622,14 +622,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const countdownText = nextCycleText(loop, nowTs)
   /** The tooltip only carries a REAL deadline signal (counting or due) — the
    *  "not yet scheduled" placeholder is popover-only, so an armed-but-unscheduled
-   *  loop keeps the plain "Goal active (cycle N)" title. */
-  const titleCountdown = loop?.active && (loop.next_due_ts || 0) > 0 ? countdownText : ''
+   *  loop keeps the plain "Goal active (cycle N)" title, and so does a held one,
+   *  whose status line shows the hold instead of the countdown. */
+  const titleCountdown = runsNow && !waitingOnPerson && (loop?.next_due_ts || 0) > 0 ? countdownText : ''
   /** Cycle readout for the chip, tooltip and popover header ("3/24", or a
    *  bare "3" under an infinite cap). Interpolated as the {{cycle}} VALUE of
    *  the existing strings, so no catalogue text changes. Unlike the countdown
    *  this is safe in aria-label: it changes once per cycle, not once per
    *  second. */
   const cycleText = loopCycleText(loop)
+  /** The trigger's hover title for an active loop, or '' without one. */
+  const activeTitle = loop?.active
+    ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}`
+    : ''
   /** Which of the finishes, and whether it earns a check mark: a goal the agent
    *  declared reached, a merge and an accepted work ledger do; a pull request
    *  closed without merging ended on a question (reopen or abandon), as did a
@@ -706,7 +711,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      {trigger ? <PopoverTrigger asChild>{trigger}</PopoverTrigger> : (
+      {/* A supplied trigger takes the active title and the refresh too (the
+          slot merges them in); with no active loop it keeps its own tip. */}
+      {trigger ? <PopoverTrigger asChild title={activeTitle || undefined} onMouseEnter={refreshNow} onFocus={refreshNow}>{trigger}</PopoverTrigger> : (
       <PopoverTrigger asChild>
         <button
           className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
@@ -716,7 +723,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}` : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={activeTitle || i18nT('components.autoNudgePopover.set_a_goal')}
           // The countdown stays OUT of aria-label (review finding): a
           // per-second label change re-announces the button to screen readers.
           aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })) : i18nT('components.autoNudgePopover.set_a_goal')}

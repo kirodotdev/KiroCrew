@@ -302,7 +302,16 @@ class SecurityEventLog:
         # instances in this process share it -- see _ChainHold.)
         self._lock = threading.Lock()
         self._hmac_key = self._load_or_create_hmac_key()
-        self._last_hash = self._read_last_hash()
+        # A log that is present but unreadable right now (held open without
+        # sharing, EACCES) leaves the tip unknown, not genesis: construction
+        # still succeeds, and the first append reads the tip again.
+        self._tip_unknown: bool = False
+        try:
+            self._last_hash = self._read_last_hash()
+        except OSError:
+            logger.warning("SEL: failed to read chain tip from %s", self._path, exc_info=True)
+            self._last_hash = ""
+            self._tip_unknown = True
         # Identity of the live log as of our last observation, so a replacement
         # by another process (its rotation) is detected before we chain off a tip
         # that has moved into the closed segment. Seeded here because
@@ -527,7 +536,8 @@ class SecurityEventLog:
                     # rotation lock held across our own chain + append (see
                     # _rotation_window). Rotation is best-effort and never raises: a
                     # rotation that cannot happen must not stop the audit record it
-                    # precedes from being written.
+                    # precedes from being written. A tip read inside the window can
+                    # raise, and then this append fails like any other.
                     with self._rotation_window() if self._may_rotate() else _no_rotation():
                         # Remember the chain tip so we can roll back if the append
                         # fails: we advance _last_hash per event below, but nothing is

@@ -29,6 +29,7 @@ import {
   renderCacheProjection,
   writeCachedThemeData,
 } from './themeRenderCache'
+import { reportThemeSplash } from './themeSplash'
 // Every stylesheet TEXT this hook injects is built there, so the i18n gate does
 // not read CSS as user-visible copy. The DOM side (which <style> tag, when, and
 // when to revert it) stays here, as does every string this file SHOWS a user —
@@ -79,6 +80,8 @@ export interface ThemeBranding {
   wordmark?: string
   /** Welcome-screen hero mark (`branding/welcome.*`), shown in place of the logo there. */
   welcome?: string
+  /** Desktop boot-splash art (`branding/splash.*`), handed to the shell by `reportThemeSplash`. */
+  splash?: string
 }
 
 /** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
@@ -154,6 +157,8 @@ export interface ThemeAssets {
   /** Pack-supplied raster loader artwork (Level 1): relative asset paths
    *  (`loader/<file>.png`), cycled by the stock carousel as <img>s. */
   loaderImages?: string[]
+  /** Shiki scheme names for the code and diff views, per mode (`pierreThemesFor`). */
+  codeTheme?: { dark?: string; light?: string }
   // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
@@ -334,6 +339,7 @@ interface ResolvedThemeBranding {
   logo: string | null
   favicon: string | null
   welcome: string | null
+  splash: string | null
 }
 
 /** Apply/revert an installed theme's branding and return shell-safe asset URLs. */
@@ -343,7 +349,7 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   root.style.removeProperty('--theme-logo')
   const b = theme?.assets?.branding
   const slug = theme ? safeSlug(theme.slug) : ''
-  if (!b || !slug) return { logo: null, favicon: null, welcome: null }
+  if (!b || !slug) return { logo: null, favicon: null, welcome: null, splash: null }
 
   const fav = b.favicon ? safeAssetPath(b.favicon) : ''
   const favicon = fav ? `${assetBase(slug)}/${fav}` : null
@@ -362,7 +368,9 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   }
   const welcomePath = b.welcome ? safeAssetPath(b.welcome) : ''
   const welcome = welcomePath ? `${assetBase(slug)}/${welcomePath}` : null
-  return { logo, favicon, welcome }
+  const splashPath = b.splash ? safeAssetPath(b.splash) : ''
+  const splash = splashPath ? `${assetBase(slug)}/${splashPath}` : null
+  return { logo, favicon, welcome, splash }
 }
 
 /**
@@ -1414,6 +1422,8 @@ function useThemeState(): ThemeContextValue {
       setBrandLogo(appliedBranding.logo)
       setBrandFavicon(appliedBranding.favicon)
       setBrandWelcome(appliedBranding.welcome)
+      // A custom selection with no data yet keeps the shell's art, as it keeps the cache.
+      if (active || !colorTheme.startsWith('custom-')) reportThemeSplash(appliedBranding.splash, superseded)
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.

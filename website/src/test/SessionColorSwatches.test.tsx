@@ -5,7 +5,7 @@
  * (optimistic dispatch is exercised against the real store; persistence goes
  * through the mocked api; onPicked fires so a controlled menu can close).
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -35,6 +35,7 @@ import { sseConnected } from '../store/dashboardSlice'
 import SessionColorSwatches from '../components/SessionColorSwatches'
 
 const SLOT = 'chat-color-1'
+const RECENT_KEY = 'mc-session-colors-recent'
 // SessionColorSwatches writes via useMutation, so it needs a QueryClientProvider.
 const wrap = (ui: ReactNode) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
@@ -117,6 +118,62 @@ describe('SessionColorSwatches', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a committed custom colour comes back as a quick swatch that re-applies it', async () => {
+    const first = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const hexInput = screen.getByLabelText('Hex color code') as HTMLInputElement
+    fireEvent.change(hexInput, { target: { value: '#123456' } })
+    fireEvent.keyDown(hexInput, { key: 'Enter' })
+    await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledWith(SLOT, '#123456'))
+    // The open row never reflows: the colour joins the list when the menu closes.
+    expect(screen.queryByRole('button', { name: /#123456/ })).toBeNull()
+    first.unmount()
+
+    const onPicked = vi.fn()
+    wrap(<SessionColorSwatches slotKey="chat-color-2" colorIndex={null} onPicked={onPicked} />)
+    fireEvent.click(screen.getByRole('button', { name: /#123456/ }))
+    await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledWith('chat-color-2', '#123456'))
+    expect(onPicked).toHaveBeenCalled()
+  })
+
+  it('a wheel drag that commits at each pause adds only the colour it ends on', async () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['#abcdef']))
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const { unmount } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const wheel = document.querySelector('input[type="color"]') as HTMLInputElement
+    fireEvent.change(wheel, { target: { value: '#111111' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(350) })
+    fireEvent.change(wheel, { target: { value: '#222222' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(350) })
+    expect(mocks.setSlotColorHex).toHaveBeenCalledTimes(2)
+    unmount()
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')).toEqual(['#222222', '#abcdef'])
+  })
+
+  it('a wheel colour whose commit a palette pick cancels is not recorded', () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['#abcdef']))
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const { unmount } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const wheel = document.querySelector('input[type="color"]') as HTMLInputElement
+    fireEvent.change(wheel, { target: { value: '#333333' } })
+    fireEvent.click(screen.getByLabelText('No color'))
+    unmount()
+    expect(mocks.setSlotColorHex).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')).toEqual(['#abcdef'])
+  })
+
+  it('picking a recent colour moves it to the front once the menu closes', () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['#abcdef', '#123456']))
+    const { unmount } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByRole('button', { name: /#123456/ }))
+    unmount()
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')).toEqual(['#123456', '#abcdef'])
   })
 
   it('marks the wrapped swatch selected when the stored index exceeds the palette size', () => {

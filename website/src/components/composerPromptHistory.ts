@@ -17,10 +17,12 @@
  */
 
 import type { ChatMessage } from '../types'
+import type { PasteBlock } from '../utils/pasteTokens'
 import { rowSendIds } from '../utils/rowSendIds'
 
-/** One sent prompt; `id` is absent when the message carried no usable id. */
-export type PromptHistoryItem = { text: string; id?: string }
+/** One sent prompt; `id` is absent when the message carried no usable id.
+ *  `pastes` are the blocks behind its `[ Paste #N ]` tokens. */
+export type PromptHistoryItem = { text: string; id?: string; pastes?: PasteBlock[] }
 
 export interface PromptHistoryCursor {
   /** Id of the recalled entry, when the list carried one. */
@@ -40,6 +42,8 @@ export interface PromptHistoryCursor {
   fromEnd: number
   /** Composer text saved when browsing started, restored past the newest. */
   draft: string
+  /** The draft's paste blocks, restored with it. */
+  draftPastes?: PasteBlock[]
 }
 
 export interface PromptHistoryStep {
@@ -47,6 +51,8 @@ export interface PromptHistoryStep {
   cursor: PromptHistoryCursor | null
   /** Text to put in the composer. */
   text: string
+  /** The entry's paste blocks, installed with `text` so its tokens still expand. */
+  pastes?: PasteBlock[]
 }
 
 function promptHistoryText(item: PromptHistoryItem): string {
@@ -132,7 +138,7 @@ function resolvePromptHistoryCursor(
   return Math.min(items.length - 1, Math.max(0, items.length - 1 - cursor.fromEnd))
 }
 
-function cursorAt(items: readonly PromptHistoryItem[], index: number, draft: string): PromptHistoryCursor {
+function cursorAt(items: readonly PromptHistoryItem[], index: number, draft: string, draftPastes?: PasteBlock[]): PromptHistoryCursor {
   const text = promptHistoryText(items[index])
   const id = promptHistoryId(items[index])
   let newerSameText = 0
@@ -145,7 +151,12 @@ function cursorAt(items: readonly PromptHistoryItem[], index: number, draft: str
       if (promptHistoryId(items[i]) === id) olderSameId++
     }
   }
-  return { id, text, newerSameText, olderSameId, fromEnd: items.length - 1 - index, draft }
+  return { id, text, newerSameText, olderSameId, fromEnd: items.length - 1 - index, draft, draftPastes }
+}
+
+function stepTo(items: readonly PromptHistoryItem[], index: number, draft: string, draftPastes?: PasteBlock[]): PromptHistoryStep {
+  const cursor = cursorAt(items, index, draft, draftPastes)
+  return { cursor, text: cursor.text, pastes: items[index].pastes }
 }
 
 /**
@@ -153,29 +164,24 @@ function cursorAt(items: readonly PromptHistoryItem[], index: number, draft: str
  * passed through `livePromptHistoryCursor`. Returns `null` when the step is
  * not a history step (empty list, or ↓ while not browsing) and the key should
  * keep its native caret movement. ↑ on the oldest entry stays there.
+ * `composerPastes` are the composer's blocks, kept with the draft.
  */
 export function stepPromptHistory(
   items: readonly PromptHistoryItem[],
   cursor: PromptHistoryCursor | null,
   direction: 'older' | 'newer',
   composerText: string,
+  composerPastes?: PasteBlock[],
 ): PromptHistoryStep | null {
   if (!items.length) return null
   if (!cursor) {
     if (direction === 'newer') return null
-    const next = cursorAt(items, items.length - 1, composerText)
-    return { cursor: next, text: next.text }
+    return stepTo(items, items.length - 1, composerText, composerPastes)
   }
   const index = resolvePromptHistoryCursor(items, cursor)
-  if (direction === 'older') {
-    const next = cursorAt(items, Math.max(0, index - 1), cursor.draft)
-    return { cursor: next, text: next.text }
-  }
-  if (index < items.length - 1) {
-    const next = cursorAt(items, index + 1, cursor.draft)
-    return { cursor: next, text: next.text }
-  }
-  return { cursor: null, text: cursor.draft }
+  if (direction === 'older') return stepTo(items, Math.max(0, index - 1), cursor.draft, cursor.draftPastes)
+  if (index < items.length - 1) return stepTo(items, index + 1, cursor.draft, cursor.draftPastes)
+  return { cursor: null, text: cursor.draft, pastes: cursor.draftPastes }
 }
 
 function metaId(message: ChatMessage): string | undefined {
@@ -212,7 +218,9 @@ export function promptHistoryFromMessages(messages: readonly ChatMessage[]): Pro
     const text = m.rawText ?? m.content
     if (!text || text === out[out.length - 1]?.text) continue
     const id = metaId(m)
-    out.push(id ? { text, id } : { text })
+    const pastes = m.meta?.pastes
+    const blocks = Array.isArray(pastes) && pastes.length ? { pastes: pastes as PasteBlock[] } : {}
+    out.push({ text, ...(id ? { id } : {}), ...blocks })
   }
   return out
 }
@@ -228,7 +236,7 @@ export function promptHistoryFromMessages(messages: readonly ChatMessage[]): Pro
  */
 export function promptHistoryWithAttempts(
   messages: readonly ChatMessage[],
-  attempts: readonly { text: string; sendId: string }[],
+  attempts: readonly { text: string; sendId: string; pastes?: PasteBlock[] }[],
 ): PromptHistoryItem[] {
   const out = promptHistoryFromMessages(messages)
   if (!attempts.length) return out
@@ -246,12 +254,13 @@ export function promptHistoryWithAttempts(
   }
   for (const a of attempts.slice(start)) {
     if (!a.text || a.text === out[out.length - 1]?.text) continue
-    out.push({ text: a.text, id: a.sendId })
+    out.push({ text: a.text, id: a.sendId, ...(a.pastes ? { pastes: a.pastes } : {}) })
   }
   return out
 }
 
-/** Element-wise equality of two prompt-history lists (text and id). */
+/** Element-wise equality of two prompt-history lists (text and id). The paste
+ *  blocks need no comparison: a token's text carries its block's id. */
 export function samePromptHistory(
   a: readonly PromptHistoryItem[],
   b: readonly PromptHistoryItem[],

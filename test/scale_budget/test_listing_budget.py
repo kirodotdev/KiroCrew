@@ -152,11 +152,6 @@ def test_second_user_only_listing_reads_no_transcripts(seeded) -> None:
     _assert_sees_a_write(seeded.log, second)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F9: main stats every transcript on each listing; the index stats the directory",
-)
 def test_steady_listing_costs_one_stat(seeded) -> None:
     """A steady listing proves freshness with 1 ``os.stat`` and no directory scan."""
     first = _listing(seeded.log)
@@ -172,11 +167,6 @@ def test_steady_listing_costs_one_stat(seeded) -> None:
     _assert_sees_a_write(seeded.log, steady)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F9: the index runs its full stat reconcile inline on the request that trips it",
-)
 def test_reconcile_runs_off_the_request(seeded) -> None:
     """Past ``RECONCILE_SECS`` with nothing changed, the request still costs 1 stat, 0 scans."""
     from .conftest import optional_module
@@ -185,23 +175,33 @@ def test_reconcile_runs_off_the_request(seeded) -> None:
     reconcile_secs = float(getattr(index, "RECONCILE_SECS", 5.0))
     first = _listing(seeded.log)
     _listing(seeded.log)
+    # Hold the job the index hands its pool, so the counters see the request alone.
+    jobs: list[Any] = []
+    listing_index = getattr(seeded.log, "_listing_index", None)
+    if listing_index is not None:
+        if not hasattr(listing_index, "_submit"):
+            harness_fail(
+                "the listing index has no _submit seam; point the job capture at the new one"
+            )
+        seeded.monkeypatch.setattr(listing_index, "_submit", jobs.append)
     seeded.clock.advance(reconcile_secs + 1.0)
     seeded.io.reset()
     late = _listing(seeded.log)
-    assert seeded.io.stats <= 1 and seeded.io.scandirs == 0, (
+    request_cost = (seeded.io.stats, seeded.io.scandirs)
+    for job in jobs:
+        job()
+    assert request_cost[0] <= 1 and request_cost[1] == 0, (
         f"F9: the first listing {reconcile_secs + 1.0:.0f} s after the last cost "
-        f"{seeded.io.stats} stats and {seeded.io.scandirs} directory scans on the request "
+        f"{request_cost[0]} stats and {request_cost[1]} directory scans on the request "
         "(budget 1 stat, 0 scans: the reconcile belongs off the request path)"
     )
+    assert (
+        listing_index is None or jobs
+    ), f"F9: no reconcile was scheduled {reconcile_secs + 1.0:.0f} s after the last listing"
     assert late == first == LISTED, f"F9: listings answered {first} then {late} rows"
     _assert_sees_a_write(seeded.log, late)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F9: the listing index leaves has_messages unfilled, so the listing asks per row",
-)
 def test_index_build_fills_has_messages(seeded) -> None:
     """The first ``user_only`` listing makes 0 ``ConversationLog.has_messages`` calls.
 
@@ -266,11 +266,6 @@ def test_one_append_rereads_only_its_own_transcript(seeded) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F9: past _METADATA_CACHE_MAX the head memo evicts and every listing re-reads",
-)
 def test_listing_past_the_metadata_cache_reads_no_heads(
     tmp_path: Path, monkeypatch, fake_clock
 ) -> None:
@@ -293,23 +288,20 @@ def test_listing_past_the_metadata_cache_reads_no_heads(
     _assert_sees_a_write(log, second, query)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F2: concurrent identical /api/sessions requests each run their own scan",
-)
 def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fake_clock) -> None:
     """12 identical requests in flight together run one scan of the history directory.
 
     The count is ``os.scandir`` of the directory, not calls to a listing method.
-    A join placed in the handler, before ``ConversationLog.list_sessions``,
-    waits out :data:`LISTING_GATE_CEILING_S` and fails by name.
+    A join placed in the handler, before the listing method it calls
+    (``ConversationLog.list_sessions_indexed`` where it exists, else
+    ``ConversationLog.list_sessions``), waits out :data:`LISTING_GATE_CEILING_S`
+    and fails by name.
 
     The requests are held in flight together, so the verdict does not depend on
     thread scheduling. The first scan waits until all 12 requests have entered
-    ``ConversationLog.list_sessions``, and each request gets its own worker
-    thread. The whole-listing memo is taken out, because it answers a request
-    that starts after another one finished, which is not a shared scan.
+    that listing method, and each request gets its own worker thread. The
+    whole-listing memo is taken out, because it answers a request that starts
+    after another one finished, which is not a shared scan.
     """
     requests = 12
     history_dir = tmp_path / "history"
@@ -323,7 +315,13 @@ def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fa
     lock = threading.Lock()
     gate = {"entered": 0, "first_scan_held": False, "timed_out": False}
     all_entered = threading.Event()
-    real_list_sessions = ConversationLog.list_sessions
+    # The method the handler calls for a dashboard listing (no app scope).
+    join_point = (
+        "list_sessions_indexed"
+        if hasattr(ConversationLog, "list_sessions_indexed")
+        else "list_sessions"
+    )
+    real_list_sessions = getattr(ConversationLog, join_point)
 
     def entering_list_sessions(self: ConversationLog, *args: Any, **kwargs: Any) -> Any:
         if not args and kwargs.get("keys") is None:
@@ -344,7 +342,7 @@ def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fa
                 gate["timed_out"] = True
         return counting_scandir(path)
 
-    monkeypatch.setattr(ConversationLog, "list_sessions", entering_list_sessions)
+    monkeypatch.setattr(ConversationLog, join_point, entering_list_sessions)
     monkeypatch.setattr(os, "scandir", holding_scandir)
 
     from kiro_crew.dashboard.handlers.sessions_parts.history_reads import api_sessions
@@ -362,8 +360,8 @@ def test_concurrent_identical_listings_scan_once(tmp_path: Path, monkeypatch, fa
     if gate["timed_out"]:
         harness_fail(
             f"only {gate['entered']} of {requests} requests entered "
-            "ConversationLog.list_sessions while the first scan was held; if the join "
-            "moved out of list_sessions, hold the scan on the new join point"
+            f"ConversationLog.{join_point} while the first scan was held; if the join "
+            f"moved out of {join_point}, hold the scan on the new join point"
         )
     if io.scandirs == 0:
         harness_fail("12 listings scanned the history directory 0 times; the scandir spy missed")

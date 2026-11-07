@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Iterable
 
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile, upload_filename
 from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -261,6 +262,42 @@ class WebexTransport(MessagingTransport):
         # ledger exists to catch. Webex threads are flat, so the id is the root.
         mid = await self._client.send_message(conversation_id, content, parent_id=thread_id)
         return mid or ""
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets, for a 1:1 room only, as the renderer does.
+
+        Positive membership, like the dispatcher's ``room_type == ROOM_DIRECT``: an
+        email-shaped id is sent with ``toPersonEmail``, which is always the 1:1
+        room, and any other id must be a room Webex itself reports as direct. A
+        space is readable by members the allow-list excludes, so it gets None.
+        """
+        direct = "@" in conversation_id or (
+            await self._client._room_type_of(conversation_id) == ROOM_DIRECT
+        )
+        if not direct:
+            return None
+        from kiro_crew.webex.renderer import _UPLOAD_LIMITS
+
+        return _UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image through the renderer's own one-file message."""
+        from kiro_crew.webex.renderer import webex_display_safe
+
+        name = upload_filename(file, 0)
+        sent = await self._client.send_file(
+            conversation_id,
+            webex_display_safe(name),
+            data=file.data,
+            filename=name,
+            mimetype=file.mime or "application/octet-stream",
+            parent_id=thread_id,
+        )
+        return sent is not None
 
     async def resolve_conversation(self, user_id: str) -> str:
         # The user id IS the email; the client's send path maps an

@@ -101,6 +101,8 @@ def _section(kiro_agent: str) -> str:
     [
         ({"tools": ["fs_read", "fs_write"]}, True),
         ({"tools": ["write"]}, True),
+        ({"tools": ["@builtin/write"]}, True),
+        ({"tools": ["fsWrite"]}, True),
         ({"tools": ["code"]}, True),
         ({"tools": ["*"]}, True),
         ({"tools": "*"}, True),

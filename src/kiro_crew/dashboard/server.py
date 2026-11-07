@@ -24,6 +24,8 @@ from aiohttp import web
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.apps.backend import (  # noqa: F401
+    _RESTART_STEADY_INTERVAL,
+    revive_lost_app_backends,
     start_enabled_app_backends,
 )
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler  # noqa: F401
@@ -41,6 +43,7 @@ from kiro_crew.config import data_home
 from kiro_crew.config.loader import (  # noqa: F401
     STT_PROVIDER_LOCAL,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     consume_managed_service_launch_environment,
     degraded_config_files,
     load_loop_stall_exit_after,
@@ -61,6 +64,11 @@ from kiro_crew.dashboard import (  # noqa: F401
     slot_retention,
     tailnet,
     tailnet_serve,
+)
+from kiro_crew.dashboard.agent_ipc import (  # noqa: F401
+    AGENT_SOCKET_HOLDER_KEY,
+    register_agent_site_cleanup,
+    start_agent_site,
 )
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
@@ -168,6 +176,7 @@ from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
     FOREIGN_HOLDER,
     HEALTHY_PEER,
     NO_HOLDER,
+    RECLAIM_FAILED,
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
@@ -225,6 +234,7 @@ from kiro_crew.dashboard.server_runtime.api_entrypoint import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _apply_builtin_adoptions,
+    _kick_app_backend_backstop,
     _kick_builtin_adoption_staging,
     _kick_default_app_installs,
     _kick_interrupted_update_sweep,
@@ -264,6 +274,7 @@ from kiro_crew.dashboard.server_runtime.heartbeat import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.inherited_trust import (  # noqa: F401
     _clear_override_derived_trust,
+    _drop_policy_denied_trust,
     _suspend_override_derived_trust,
 )
 from kiro_crew.dashboard.server_runtime.instances_lifecycle import (  # noqa: F401
@@ -277,11 +288,14 @@ from kiro_crew.dashboard.server_runtime.listener import (  # noqa: F401
     _export_bound_port,
     _export_reserved_bind_evidence,
     _holds_every_loopback_family,
+    _log_port_still_in_use,
+    _port_wait_message,
     _register_unix_socket_cleanup,
     _remove_stale_unix_socket,
     _reserve_dashboard_port,
     _resolved_bound_host,
     _resolved_bound_port,
+    _start_dashboard_unix_site,
     _start_secondary_loopback_site,
     _start_site,
     _start_unix_site,
@@ -384,6 +398,7 @@ from kiro_crew.dashboard.server_runtime.session_restore import (  # noqa: F401
 from kiro_crew.dashboard.server_runtime.skill_learning import (  # noqa: F401
     _auto_create_consolidator,
     _pending_skill_notification,
+    _register_lesson_change_hook,
     _register_pending_skill_hooks,
 )
 from kiro_crew.dashboard.server_runtime.static_assets import (  # noqa: F401
@@ -435,6 +450,7 @@ from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401
 from kiro_crew.instances.registry import InstancesRegistry  # noqa: F401
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState  # noqa: F401
+from kiro_crew.lesson_events import set_lessons_changed_hook  # noqa: F401
 from kiro_crew.mate_config_migration import migrate_existing_crewmates
 from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600  # noqa: F401
 from kiro_crew.metrics.http_metrics import (  # noqa: F401
@@ -481,6 +497,7 @@ if TYPE_CHECKING:
         SubagentManager,
         TaskRunner,
     )
+    from kiro_crew.dashboard.ssm_gate import GateRef as SsmGateRef
     from kiro_crew.dashboard.tailnet_direct import DirectGate, GateRef  # noqa: F401
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
@@ -731,6 +748,7 @@ async def start_dashboard(
     kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    approval_mode: str | None = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
     # Channels retain this same runner on the gateway, independently of state.
@@ -768,6 +786,8 @@ async def start_dashboard(
 
     # --- Pending-skill approval notifications ---
     _register_pending_skill_hooks(state)
+    # --- Lesson-store change signal for apps that declare `lessons` ---
+    _register_lesson_change_hook(state)
 
     state._hook_store = ScriptHookStore()
     set_global_hook_store(state._hook_store)
@@ -1075,8 +1095,15 @@ async def start_dashboard(
         # empty holder for the direct tailnet listener's gate (off by default);
         # the daemon read that fills it runs after the bind.
         _direct: GateRef | None = None
+        _ssm_ref: SsmGateRef | None = None
         if _shared_crew_preview:
             from kiro_crew.dashboard import tailnet_direct_listener
+
+            if _cfg.dashboard.shared_crew.ssm:
+                # Only an SSM-enabled launch loads the SSM modules before the bind.
+                from kiro_crew.dashboard import ssm_gate
+
+                _ssm_ref = ssm_gate.GateRef()
 
             _direct = tailnet_direct_listener.prepare_at_start(
                 _cfg, host=_tailnet_host, trust=_tailnet_trust, local_only=local_only
@@ -1095,11 +1122,14 @@ async def start_dashboard(
         # with, for handlers the middleware bypasses (POST /api/auth/refresh must
         # re-bind a rotated access token to the same verified peer identity).
         app["tailnet_trust"] = _tailnet_trust
-        # The relay client's door into this app (dashboard/kiro_relay). Built off:
-        # the relay client, and the setting that turns this on, arrive together in a
-        # later change. Off, the ingress middleware hands every request on to the
-        # client-sent relay-header strip.
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=False)
+        # The relay client's door into this app (dashboard/kiro_relay). Built off
+        # unless tunnel.relay_enabled is set, and always off in an enterprise build,
+        # which ignores that local switch with the rest of the tunnel control. Either
+        # way the ingress middleware hands every request that is not a verified
+        # handover on to the client-sent relay-header strip.
+        from kiro_crew.edition_locks import relay_selected
+
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=relay_selected(_cfg))
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
@@ -1158,6 +1188,7 @@ async def start_dashboard(
             configured_host=configured_host,
             dashboard_url=dashboard_url,
             tailnet_direct=_direct,
+            ssm_gate=_ssm_ref,
         )
 
         # Register only after the final allowed-origin set is selected.  The startup
@@ -1273,6 +1304,7 @@ async def start_dashboard(
     _kick_default_app_installs(state)
     _kick_builtin_adoption_staging(state)
     _kick_interrupted_update_sweep(state)
+    _kick_app_backend_backstop(state)
     # Resolved ONCE, and used for the unix socket's name, the second bind and the
     # publication below. Under `--port auto` the requested port is 0 and stays 0:
     # a socket named for it is one no client dials (they name the real port), and
@@ -1293,6 +1325,13 @@ async def start_dashboard(
 
         await tailnet_direct_listener.start_after_bind(
             app, runner, _bound_port, _cfg, _direct, local_only=local_only
+        )
+    # The SSM site, on its own loopback port; nothing when it is off.
+    if _ssm_ref is not None:
+        from kiro_crew.dashboard import ssm_gate
+
+        await ssm_gate.start_after_bind(
+            app, runner, _cfg.dashboard.shared_crew, _bound_port, _ssm_ref
         )
 
     # Port bind succeeded — now safe to write the secret file. Offloaded:
@@ -1482,7 +1521,7 @@ async def start_dashboard(
     # ``stat`` walk of the profiles dir. We are inside ``async def start_dashboard``,
     # so running it inline stalls the gateway's loop, and on slow storage it stalls
     # the heartbeat with it.
-    await asyncio.to_thread(_apply_startup_yolo, state, cfg)
+    await asyncio.to_thread(_apply_startup_yolo, state, cfg, approval_mode)
 
     # Wire safety override expiry notifications
     def _on_override_expired(source: str) -> None:
@@ -1511,6 +1550,11 @@ async def start_dashboard(
     # The pre-publication half: suspend inherited slot trust while a new ceiling is
     # being resolved, and get it back if the ceiling still permits.
     safety_override().on_policy_suspend = functools.partial(_suspend_override_derived_trust, state)
+    # A ``permission_mode`` deny of ``trust`` / ``trust_reads`` drops the slot grants it
+    # forbids at the install that resolves it, the same moment a ``yolo`` deny revokes.
+    from kiro_crew.approval_mode_policy import register_deny_hook
+
+    register_deny_hook("dashboard", functools.partial(_drop_policy_denied_trust, state))
 
     await _notify_restart_dropped_grant(state)
 
@@ -1527,6 +1571,13 @@ async def start_dashboard(
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
         logger.warning("bot-owned-config migration failed", exc_info=True)
+    # A folder Default agent saved as a crewmate's label is pointed at that
+    # crewmate's key: once per data home, after the socket is up; never raises.
+    # Imported here, like the Crew Mode start pass below, so the server's own
+    # namespace, which its composition contract test freezes, gains no name.
+    from kiro_crew.dashboard.chat_folders_records import migrate_folder_member_labels
+
+    await migrate_folder_member_labels(state, cfg)
 
     await _restore_dashboard_sessions(state, cfg)
 
@@ -1609,6 +1660,10 @@ async def start_dashboard(
     # Tells the NEXT boot that this instance got the whole startup battery
     # away, so a stall from here on does not implicate the battery.
     _dispatch_healthy_boot_marker(state)
+    # Chats a planned in-app restart cut off resume once the loop is serving.
+    from kiro_crew.dashboard.restart_resume import schedule_resume_after_restart
+
+    schedule_resume_after_restart(state)
 
     return runner, state
 

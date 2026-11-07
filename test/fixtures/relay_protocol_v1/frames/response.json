@@ -1,0 +1,162 @@
+{
+  "fixture": "frames/response",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.2",
+  "status": "decided",
+  "summary": "The head of the Crew's response. Either complete with an inline body, or streaming with chunks and an end.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "response",
+  "leg": "host",
+  "direction": "host-to-relay",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"response\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The request's stream id."
+    },
+    "status": {
+      "type": "integer",
+      "required": true,
+      "notes": "100 to 599."
+    },
+    "headers": {
+      "type": "object",
+      "required": true,
+      "notes": "Response headers, lower-case names. Set-Cookie goes in setCookies, never here."
+    },
+    "setCookies": {
+      "type": "array of string",
+      "required": false,
+      "notes": "At most 32, each at most 4096 characters."
+    },
+    "body": {
+      "type": "string",
+      "required": false,
+      "notes": "The whole body, when streaming is not set."
+    },
+    "bodyBase64": {
+      "type": "boolean",
+      "required": false,
+      "notes": "True when body is base64."
+    },
+    "streaming": {
+      "type": "boolean",
+      "required": false,
+      "notes": "True when the body follows as response-chunk frames and a response-end."
+    }
+  },
+  "valid": [
+    {
+      "name": "complete JSON response",
+      "message": {
+        "type": "response",
+        "id": 7,
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "eyJvayI6dHJ1ZX0=",
+        "bodyBase64": true
+      }
+    },
+    {
+      "name": "server-sent event stream",
+      "message": {
+        "type": "response",
+        "id": 10,
+        "status": 200,
+        "headers": {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache"
+        },
+        "streaming": true
+      }
+    },
+    {
+      "name": "response that sets a Crew cookie",
+      "message": {
+        "type": "response",
+        "id": 11,
+        "status": 302,
+        "headers": {
+          "location": "/"
+        },
+        "setCookies": [
+          "kc_session=abc123; Path=/; HttpOnly; Secure; SameSite=Lax"
+        ],
+        "body": "",
+        "bodyBase64": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "33 Set-Cookie values",
+      "message": {
+        "type": "response",
+        "id": 12,
+        "status": 200,
+        "headers": {},
+        "setCookies": [
+          "c0=1",
+          "c1=1",
+          "c2=1",
+          "c3=1",
+          "c4=1",
+          "c5=1",
+          "c6=1",
+          "c7=1",
+          "c8=1",
+          "c9=1",
+          "c10=1",
+          "c11=1",
+          "c12=1",
+          "c13=1",
+          "c14=1",
+          "c15=1",
+          "c16=1",
+          "c17=1",
+          "c18=1",
+          "c19=1",
+          "c20=1",
+          "c21=1",
+          "c22=1",
+          "c23=1",
+          "c24=1",
+          "c25=1",
+          "c26=1",
+          "c27=1",
+          "c28=1",
+          "c29=1",
+          "c30=1",
+          "c31=1",
+          "c32=1"
+        ],
+        "body": ""
+      },
+      "expect": "error invalid_message with id 12, and the viewer gets 502 crew_error at once rather than waiting out a timeout"
+    },
+    {
+      "name": "status out of range",
+      "message": {
+        "type": "response",
+        "id": 12,
+        "status": 99,
+        "headers": {},
+        "body": ""
+      },
+      "expect": "error invalid_message with id 12, and 502 crew_error"
+    }
+  ],
+  "completion": "A response without streaming is complete. A response-end after it is allowed and ignored."
+}

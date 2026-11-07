@@ -56,7 +56,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
-from kiro_crew import executors, pinned_fs, platform_compat  # noqa: F401
+from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
@@ -79,6 +79,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
     LINK_PATTERNS_MAX,
+    PREFERRED_LANGUAGES,
     link_pattern_url_ok,
 )
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
@@ -120,7 +121,9 @@ from kiro_crew.dashboard.file_api.browse import (  # noqa: F401
     _browse_entry_is_dir,
     _browse_files_sync,
     _browse_parent,
+    _create_browse_dir_sync,
     _is_windows_drive_root,
+    api_browse_create_dir,
 )
 from kiro_crew.dashboard.file_api.channel_upload import (  # noqa: F401
     _gate_upload_file,
@@ -146,6 +149,10 @@ from kiro_crew.dashboard.file_api.editor import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _GIT_PANEL_STDOUT_CAP,
+    _branch_diff,
+    _branch_file_patch,
+    _cat_file_blobs,
+    _cat_file_lines,
     _git_repo_listing,
     _is_not_a_repo_verdict,
     _porcelain_unquote,
@@ -154,6 +161,7 @@ from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _repo_filter_refusal_cause,
     _run_git_bounded,
     _worktree_probe_failure_is_empty_scope,
+    api_project_git_branch_diff,
     api_project_git_log,
     api_project_git_repos,
     api_project_git_status,
@@ -363,6 +371,7 @@ from kiro_crew.hooks import (  # noqa: F401
     safe_read_file_bytes,
     safe_read_prefix,
 )
+from kiro_crew.image_refs import PATH_MARKS  # noqa: F401 - owner: uploads
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.outbound_files import OutboundFile  # noqa: F401
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime  # noqa: F401
@@ -420,8 +429,8 @@ from kiro_crew.zip_vet import (  # noqa: F401
 )
 
 # Register OOXML office MIME types explicitly. The system mimetypes
-# database on AL2/AL2023 build hosts does NOT include .docx, .xlsx, or
-# .pptx by default, so mimetypes.guess_type() returns (None, None) for
+# database on AL2/AL2023 build hosts does NOT include the OOXML types
+# by default, so mimetypes.guess_type() returns (None, None) for
 # those. Registering at module import time keeps api_file_download's
 # Content-Type header correct for the most common Word/Excel/PowerPoint
 # downloads.
@@ -433,6 +442,15 @@ mimetypes.add_type(
 )
 mimetypes.add_type(
     "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template", ".dotx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template", ".xltx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.presentationml.template", ".potx",
 )
 
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
@@ -720,10 +738,13 @@ _ALLOWED_DOC_EXT = {
     ".pdf",
     ".doc",
     ".docx",
+    ".dotx",
     ".xls",
     ".xlsx",
+    ".xltx",
     ".ppt",
     ".pptx",
+    ".potx",
     ".odt",
     ".ods",
     ".odp",
@@ -754,6 +775,14 @@ _VIDEO_HINT_EXT = frozenset(
 #: the conversion shipped, or a client other than the dashboard). The boundary
 #: still refuses it -- no model reads HEIC -- but says how to get past it.
 _HEIC_HINT_EXT = frozenset({".heic", ".heif"})
+#: Apple iWork names. Keynote, Pages and Numbers save a closed binary format
+#: no parser here reads, so the boundary refuses them, but names the export
+#: that does upload. ``.key`` is also a PEM private key's extension, hence the "if".
+_IWORK_HINT_EXT = frozenset({".key", ".pages", ".numbers"})
+_IWORK_HINT = (
+    "If it is an Apple Keynote, Pages or Numbers document, use File > Export To "
+    "in that app to save a PowerPoint, Word, Excel or PDF copy, and upload that."
+)
 #: Media type :func:`_sniff_media_type` must report for the claimed video
 #: extension. The MP4 family (mp4/m4v/mov) all carry a ``ftyp`` box at offset 4
 #: and sniff as ``video/mp4``; QuickTime's brand differs but the box does not.
@@ -798,7 +827,9 @@ _MEDIA_EXT_MIME: dict[str, str] = {**_VIDEO_EXT_MIME, **_AUDIO_EXT_MIME}
 # at offset 8, which a bare ``RIFF`` prefix would not check). Text formats (and
 # SVG, which is XML) have no reliable magic and remain gated by the extension
 # allowlist only.
-_ZIP_CONTAINER_EXTS = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
+_ZIP_CONTAINER_EXTS = {
+    ".docx", ".dotx", ".xlsx", ".xltx", ".pptx", ".potx", ".odt", ".ods", ".odp", ".zip"
+}
 #: Raster extensions and the mime :func:`sniff_raster_mime` must report for
 #: the claimed extension to be accepted.
 _RASTER_EXT_MIME: dict[str, str] = {
@@ -1253,6 +1284,20 @@ _SHEET_MAX_CDIR_ENTRY_BYTES = 512
 
 
 _GIT_PROBE_STDERR_CAP = 4096
+
+# The branch diff (``api_project_git_branch_diff``) compares HEAD with the first
+# of these that exists: the remote's default branch, then a local main, then the
+# older default branch name, which is a real ref name and cannot be renamed here.
+_BRANCH_DIFF_BASE_REFS = (
+    "refs/remotes/origin/HEAD",
+    "refs/heads/main",
+    "refs/heads/master",  # wokeignore:rule=master
+)
+# It reads both sides of every file it shows, so its work per request is bounded
+# by these two numbers, not by the size of the branch. A file past either one is
+# counted as omitted, never cut.
+_BRANCH_DIFF_MAX_FILES = 100
+_BRANCH_DIFF_MAX_BLOB_BYTES = 4 * 1024 * 1024
 
 
 # Repo-scoped config keys that hand git a program to run when it touches file

@@ -70,6 +70,7 @@ from kiro_crew.platform.guest_paths import (  # noqa: F401 - re-export
 )
 from kiro_crew.platform.tool_paths import (  # noqa: F401 - re-export
     TARGET_PATH_KEYS,
+    _is_anchored,
     edit_target_candidates,
     is_edit_call,
     target_paths,
@@ -679,7 +680,11 @@ def _config_files_state() -> tuple[bool, bool]:
     keeps every grant, Crew's own ``@kirocrew-*`` included.
     """
     try:
-        from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+        from kiro_crew.config.loader import (
+            config_local_path,
+            config_path,
+            read_endorsed_config_text,
+        )
 
         paths = (config_path(), config_local_path())
     except Exception:  # noqa: BLE001 — a config read must not break a writer
@@ -688,9 +693,11 @@ def _config_files_state() -> tuple[bool, bool]:
     torn = names_key = False
     for path in paths:
         try:
-            if not path.exists():
-                continue
-            text = read_config_text(path)
+            # As the load reads it: where the sandbox seals these files, a deleted or
+            # tampered one is its endorsed copy, so the owner's key still counts.
+            text = read_endorsed_config_text(path)
+        except FileNotFoundError:
+            continue
         except Exception:  # noqa: BLE001 — bytes that cannot be read cannot show the key unset
             logger.debug("config file unreadable: %s", path, exc_info=True)
             return True, True
@@ -1211,6 +1218,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         agentcore_workload_name,
         compose_profiles,
         deny_all_profile,
+        registry_local_control_plane_permitted,
     )
     from kiro_crew.platform.governance_parts.catalog import (  # noqa: F401
         _SCOPE_ALIASES,
@@ -1225,6 +1233,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASELINE_REASON,
         _DENY_UNLISTED,
         _PERMIT_NOT_GOVERNED,
+        _anchored_read_target,
+        _every_operation_names_a_path,
         _policy_level,
         _query_level,
         resolve,
@@ -1276,6 +1286,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ipv6_or_none,
         _parse_control,
         _parse_controls,
+        _parse_registry_local_control_plane,
         _parse_yolo_max_seconds,
         _read_json_file,
         _refuse_inexact_origin_entries,

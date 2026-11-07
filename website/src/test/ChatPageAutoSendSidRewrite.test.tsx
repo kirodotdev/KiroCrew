@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, screen, act, waitFor, fireEvent, cleanup } from '@testing-library/react'
 import type { RootState } from '../store'
 import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
@@ -24,6 +24,8 @@ import dashboardReducer, { sseConnected, sseSlots } from '../store/dashboardSlic
 import notificationsReducer from '../store/notificationsSlice'
 import { resetSendRaceForTests } from '../api/sendRace'
 import { resetSendRevisionSeedForTests } from '../hooks/sharedCrew/sendRevisionSeed'
+import { loadDrafts } from '../utils/chatDrafts'
+import { loadFileDrafts, saveFileDrafts } from '../utils/chatFileDrafts'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -31,6 +33,7 @@ vi.mock('react-virtuoso', () => ({
   ),
 }))
 const sendChat = vi.fn()
+const forkChatSlot = vi.fn()
 vi.mock('../api/client', async () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
@@ -48,6 +51,7 @@ vi.mock('../api/client', async () => ({
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     knowledgeSources: vi.fn().mockResolvedValue({ sources: [] }),
     createChatSlot: vi.fn(),
+    forkChatSlot: (...a: unknown[]) => forkChatSlot(...a),
   },
   SEARCH_MIN_CHARS: 2,
   ApiError: class ApiError extends Error {
@@ -190,6 +194,58 @@ describe('an in-window auto-send hand-off to a named session', { timeout: 20_000
     await expectOneSendInSlotB(store)
   })
 
+
+  it('sends a typed /fork prompt once, in the fork it opens', async () => {
+    forkChatSlot.mockResolvedValue({ ok: true, key: 'slot-fork', title: 'slot-fork', messages: 0 })
+    const store = makeStore()
+    await renderPage(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '/fork run the report' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(nav.search).toContain('sid=slot-fork'))
+    expect(forkChatSlot).toHaveBeenCalledWith('slot-a', undefined, undefined, undefined, undefined)
+    expect(sendChat).toHaveBeenCalledTimes(1)
+    expect(sendChat.mock.calls[0][0]).toBe('run the report')
+    expect(sendChat.mock.calls[0][1]).toBe('slot-fork')
+    expect(store.getState().chat.activeSlot).toBe('slot-fork')
+  })
+
+  it('sends nothing from a page left before its /fork lands and keeps the prompt for the fork', async () => {
+    let land!: () => void
+    forkChatSlot.mockReturnValue(new Promise(r => { land = () => r({ ok: true, key: 'slot-fork', title: 'slot-fork', messages: 0 }) }))
+    saveFileDrafts({ 'slot-a': ['/repo/report.csv'] })
+    const store = makeStore()
+    await renderPage(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '/fork run the report' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    cleanup()
+    await act(async () => { land() })
+    // The page's last write: the command leaves its stored draft.
+    await waitFor(() => expect(loadDrafts()['slot-a']).toBeUndefined())
+    expect(store.getState().chat.activeSlot).toBe('slot-fork')
+    expect(loadDrafts()['slot-fork']).toBe('run the report')
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(loadFileDrafts()['slot-a']).toEqual(['/repo/report.csv'])
+  })
+
+  it('keeps the prompt for a fork that lands after the page moved to another session and was left', async () => {
+    let land!: () => void
+    forkChatSlot.mockReturnValue(new Promise(r => { land = () => r({ ok: true, key: 'slot-fork', title: 'slot-fork', messages: 0 }) }))
+    const store = makeStore()
+    await renderPage(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '/fork run the report' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await act(async () => { await store.dispatch(switchSlot({ key: 'slot-b' })) })
+    cleanup()
+    await act(async () => { land() })
+    await waitFor(() => expect(loadDrafts()['slot-a']).toBeUndefined())
+    expect(store.getState().chat.activeSlot).toBe('slot-b')
+    expect(loadDrafts()['slot-fork']).toBe('run the report')
+    expect(sendChat).not.toHaveBeenCalled()
+  })
 
   it('seeds the staged text instead of holding a send while disconnected', async () => {
     const store = makeStore({ connected: false })

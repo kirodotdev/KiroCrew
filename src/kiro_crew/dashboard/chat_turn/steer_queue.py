@@ -16,9 +16,9 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    COMPOSER_SEND_META,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
-    STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     SUBAGENT_COMPLETION_KIND,
     _remove_queued_by_id,
@@ -237,6 +237,27 @@ def _settle_consumed_steers(
         steer_retract.on_settled(slot)
 
 
+def _mark_held_steers_possibly_delivered(slot: "_ChatSlot", client: object) -> None:
+    """Mark each pending steer whose held write *client* reports unanswered.
+
+    A steer the client held while a tool ran is written later, off the steer's
+    own RPC, so a stalled write never reaches ``steer_into_running_turn``'s
+    ambiguous-delivery branch. Read before the turn drops its client, so
+    :func:`_requeue_unconsumed_steers` stamps such an entry as possibly
+    delivered. The client knows the text it was handed, so each raw entry is
+    compared through its wire form; a client without the accessor marks nothing.
+    """
+    unanswered = getattr(client, "held_steers_possibly_delivered", None)
+    if not unanswered or not isinstance(unanswered, (set, frozenset)):
+        return
+    from kiro_crew.dashboard import responsive_chat
+
+    wires = responsive_chat.turn_state(slot).steers
+    for message in slot._pending_steers:
+        if (wires.get(message, message) or "").strip() in unanswered:
+            slot._steer_possibly_delivered.add(message)
+
+
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
     """Degrade unconsumed mid-turn steers into ordinary queue cards.
 
@@ -331,7 +352,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _act_now: set[str] = getattr(slot, "_steer_act_now", set())
         if steer_msg in _act_now:
             _act_now.discard(steer_msg)
-            _meta[STEER_INTENT_META] = True
+            _meta[COMPOSER_SEND_META] = True
         # An automation steer (a work-ledger wake) keeps its origin on the entry,
         # so the drain writes it as a nudge row, alone, and never merges it into
         # the person's own queued text.
@@ -442,7 +463,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # `_meta` above; the card drawn from this frame is what a cancel
             # restores, and a frame without the quote would show the raw
             # blockquote as text until a reload.
-            _push_meta = {
+            _push_meta: dict[str, object] = {
                 **attachment_meta(_meta),
                 # Same rule the entry's text follows (`queue_entry_is_user_origin`):
                 # the human's own words stay as typed, anyone else's are redacted.
@@ -453,8 +474,11 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             _push_send_id = normalize_send_id(_meta.get("sendId"))
             if _push_send_id:
                 _push_meta["sendId"] = _push_send_id
-            if _push_meta:
-                _push["meta"] = _push_meta
+            # Says this card is a requeued steer, so the client's drain of THIS
+            # card (matched by `queue_id`) can tie its row to the steer row. A
+            # card only: the entry and the row it drains into never carry it.
+            _push_meta["requeuedSteer"] = True
+            _push["meta"] = _push_meta
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the
@@ -615,6 +639,7 @@ def _drop_stale_admissions(
     if not slot._queue:
         return
     # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard import gateway_notice as gn
     from kiro_crew.dashboard import session_control as _sc
 
     now = _sc.containment_snapshot(state, slot, on_probe_failure=True)
@@ -654,12 +679,13 @@ def _drop_stale_admissions(
         # removal is the separate, best-effort half.
         _remove_queued_by_id(slot.messages, q["id"])
         state.broadcast_ws("queue_pop", {"slot": slot.key, "content": "", "queue_id": q["id"]})
+        _change = _sc.describe_containment_change(changed, mirror_unverified=_mirror_unverified)
         slot.append(
             "notice",
-            "⚠️ Queued message dropped: "
-            + _sc.describe_containment_change(changed, mirror_unverified=_mirror_unverified)
-            + " after it was queued, so the authorization that admitted it no longer holds.",
+            f"⚠️ Queued message dropped: {_change} after it was queued, so the "
+            "authorization that admitted it no longer holds.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_QUEUED_MESSAGE_DROPPED, change=_change),
         )
         # A cross-session delivery has a SENDER waiting on it, and the notice
         # above is on the target's transcript, which that sender does not read.

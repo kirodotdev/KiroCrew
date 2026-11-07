@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SelectionComposer } from '../components/SelectionToolbar'
-import { sliceCodePoints } from '../components/CommentOverlay'
+import { sliceCodePoints } from '../utils/codePoints'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { clearAnnotationHighlight } from '../utils/annotationHighlight'
 

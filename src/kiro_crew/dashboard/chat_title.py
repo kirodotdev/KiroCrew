@@ -153,8 +153,9 @@ def _title_refresh_every() -> int:
 # restate, so the name stays a URL/id echo until user-turn 8 — forever, for the
 # common one-message "investigate this ticket" session. Once the first turn's
 # transcript exists the real topic is visible, so the refresh becomes due at
-# ONE user message instead. Gated by ``slot._title_low_signal`` (set only at
-# auto-title lock time, by a deterministic text test — no extra LLM call), so
+# ONE user message instead. Gated by ``slot._title_low_signal`` (set when an
+# auto title or its fallback is written, by a deterministic text test — no
+# extra LLM call; the refresh reads it only once the title is locked), so
 # an ordinary session whose opening message named its topic never spends this:
 # at most ONE extra one-liner per session lifetime, attempt-counted exactly
 # like the ordinary milestones.
@@ -422,6 +423,7 @@ def _strip_attached_file_tokens(
     drop_trailing_partial: bool = False,
     labels: dict[str, str] | None = None,
     budget: list[int] | None = None,
+    label_prefix: str = "",
 ) -> str:
     """Replace dashboard-generated ``[attached_file N] path`` references.
 
@@ -437,7 +439,9 @@ def _strip_attached_file_tokens(
     ``None`` to keep the historical drop-to-space behaviour. ``budget`` is a
     single-element list carrying the remaining label allowance, so a message with
     many attachments substitutes the first few and collapses the rest rather than
-    crowding out the user's own words.
+    crowding out the user's own words. ``label_prefix`` is written before each
+    substituted name, so a reader elsewhere (the cross-surface echo) can tell an
+    attachment from a word the user typed.
 
     Current dashboard messages store paths in token-index order, making each
     lookup constant-time. The whitespace-delimited fallback preserves support
@@ -460,7 +464,8 @@ def _strip_attached_file_tokens(
 
         index = token_start + len(prefix)
         digits_start = index
-        while index < len(content) and content[index].isdigit():
+        # ASCII only: ``isdigit`` admits ``²`` and the like, which ``int`` rejects.
+        while index < len(content) and content[index] in "0123456789":
             index += 1
         digit_count = index - digits_start
         if not 1 <= digit_count <= 2 or not content.startswith("] ", index):
@@ -512,7 +517,7 @@ def _strip_attached_file_tokens(
                 label = ""
             else:
                 remaining[0] -= len(label)
-        chunks.append(f" {label} " if label else " ")
+        chunks.append(f" {label_prefix}{label} " if label else " ")
         cursor = path_end
 
     return "".join(chunks)
@@ -804,6 +809,7 @@ async def _generate_title_via_kiro(
     messages: list[dict[str, Any]],
     *,
     session_key: str = "",
+    memory_gate: bool = True,
 ) -> str:
     """Generate a title using the shared background kiro-cli session.
 
@@ -811,6 +817,7 @@ async def _generate_title_via_kiro(
     in that session's crew log as well as the usage store. It is optional because
     the title's own correctness does not depend on it: a caller that cannot name
     the owner still gets a title, and the crew log simply records nothing.
+    ``memory_gate`` is passed to :func:`run_bg_oneliner` unchanged.
     """
 
     # Off-loop: the config read behind _ui_language() is synchronous file IO
@@ -825,8 +832,7 @@ async def _generate_title_via_kiro(
 
     logger.debug("Title generation prompt (%d chars)", len(prompt))
     # Run titling on a fast/cheap model via the shared background one-liner
-    # helper. Best-effort: on any error it returns "" and we fall through to the
-    # heuristic fallback title.
+    # helper. Its errors propagate: each caller picks its own fallback title.
     text = await run_bg_oneliner(
         state.sessions,
         prompt,
@@ -834,6 +840,7 @@ async def _generate_title_via_kiro(
         timeout=_TITLE_TIMEOUT_SECS,
         crew_log_kind="title",
         crew_log_session_key=session_key,
+        memory_gate=memory_gate,
     )
     title = _validate_title_reply(text)
     if not title:
@@ -1236,7 +1243,8 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     "New Session…" via ``_ChatSlot.display_title`` until this lands. If the LLM
     returns SKIP/empty after the assistant has responded (a definitive
     failure), the title falls back to the truncated first message with an
-    ellipsis (see ``_fallback_title_from_messages``).
+    ellipsis (see ``_fallback_title_from_messages``). A failed call shows the
+    same fallback but leaves it unlocked, so a later attempt asks again.
 
     Runs for EVERY ``memory_mode``, temporary included. Titling reads only the
     slot's own messages and prompts the shared ``_bg`` session, so it neither
@@ -1295,9 +1303,14 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         # Read before generation, so every write below stays behind the race
         # guard that follows the generation await.
         key = await _ticket_key_if_enabled(_ticket_key_from_messages(messages))
-        title = await _generate_title_via_kiro(
-            state, messages, session_key=effective_session_key(slot)
-        )
+        failed = False
+        try:
+            title = await _generate_title_via_kiro(
+                state, messages, session_key=effective_session_key(slot)
+            )
+        except Exception:
+            logger.warning("Auto-title: generation failed for slot %s", slot.key, exc_info=True)
+            title, failed = "", True
         logger.info("Auto-title: kiro returned %r for slot %s", title, slot.key)
         # RACE GUARD: an explicit title (manual rename / manual generate) may
         # have landed while we awaited generation. Keep it and discard ours.
@@ -1337,25 +1350,20 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
                 return
             state.push_slot_title(slot.key, title)
         else:
-            # LLM returned SKIP/empty. Show the truncated fallback name right
-            # away rather than leaving "New Session…" until the full turn ends
-            # — otherwise the name lags the whole response for messages the LLM
-            # won't title from the user text alone. Lock it (_titled=True) only
-            # once the assistant has responded and the LLM still SKIP'd (a
-            # definitive failure); on the on-send attempt leave it unlocked so
-            # the end-of-turn retry can still upgrade the truncation to a real
-            # LLM title.
+            # SKIP/empty or a failed call: show the truncated fallback now instead
+            # of "New Session…". Lock it only on a SKIP after the assistant
+            # answered; an on-send SKIP or a failed call (a throttle is no
+            # verdict) stays unlocked for the next attempt.
             current = _titling_messages(slot)
             summary = _fallback_title_from_messages(current)
+            locked = attempt_has_assistant and not failed
             slot.title = _with_ticket_prefix(summary, key)
-            slot._titled = attempt_has_assistant
-            if attempt_has_assistant:
-                slot._title_origin = _TITLE_ORIGIN_AUTO
-                # A definitive fallback is an echo of the first message — flag
-                # it so the refresh prompt (which reads the conversational tail
-                # and frames the task as keep-or-rename rather than
-                # title-or-SKIP) gets one immediate shot at a real name.
-                slot._title_low_signal = _is_low_signal_title(summary, current)
+            slot._titled = locked
+            # Set even unlocked: a reload restores any saved title as titled, and
+            # without these this echo would come back as a final "user" title
+            # the refresh never revisits.
+            slot._title_origin = _TITLE_ORIGIN_AUTO
+            slot._title_low_signal = _is_low_signal_title(summary, current)
             await _persist_title(state, slot, still_current=still_current)
             if not still_current():
                 return
@@ -1363,7 +1371,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             logger.info(
                 "Auto-title: fell back to truncated message for slot %s (locked=%s)",
                 slot.key,
-                attempt_has_assistant,
+                locked,
             )
     except asyncio.CancelledError:
         cancelled = True
@@ -1742,8 +1750,13 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
         # Same label as the automatic paths: the key the title already leads
         # with, else the opening message's.
         key = await _ticket_key_if_enabled(_current_ticket_key(slot.title, convo))
+        # Ungated: a person is waiting, and a memory refusal would replace the
+        # current title with the heuristic fallback below.
         title = await _generate_title_via_kiro(
-            state, convo[-_TITLE_PROMPT_WINDOW:], session_key=effective_session_key(slot)
+            state,
+            convo[-_TITLE_PROMPT_WINDOW:],
+            session_key=effective_session_key(slot),
+            memory_gate=False,
         )
         return _with_ticket_prefix(title, key)
     except Exception:

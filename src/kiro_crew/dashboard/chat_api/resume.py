@@ -1,5 +1,5 @@
-"""Bringing a session back from History: the request-free core, materialisation,
-hydration and window reconciliation.
+"""Bringing a session back from History: the request-free core, materialisation
+and hydration.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _load_restore_cfg,
         _normalize_slot_key,
         _prepare_messages,
+        _reconcile_slot_window,
         _redact_meta_for_role,
         _restore_model_fields,
         _restored_agent_name,
@@ -56,7 +57,7 @@ if TYPE_CHECKING:
         logger,
         members_mod,
         note_crew_log_class,
-        queue_entry_view,
+        queue_view,
         read_bounded_json,
         record_deferred_dismissal,
         redact_credentials,
@@ -67,131 +68,8 @@ if TYPE_CHECKING:
         slot_history_key,
         slot_transcript_key,
         time,
+        transcripts_share_file,
     )
-
-
-async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> None:
-    """Detect and reconcile stale in-memory window from disk.
-
-    A live slot's window can fall behind disk when messages are written to the
-    session file by a path that does not (or cannot) also push into the
-    in-memory window — e.g. a concurrent subagent flush, a channel-origin
-    append, or a persistence race during heavy traffic.
-
-    This function compares the slot's believed disk coverage
-    (``_disk_older_count + len(messages)``) against the actual on-disk message
-    count. If disk has grown beyond what the slot accounts for, the missing
-    tail is read and appended to the in-memory window, making the next detail
-    or resume response self-healing on refresh.
-
-    Safety: skips reconciliation when the slot has unflushed in-memory rows
-    beyond what the last save persisted (``len(messages) > _disk_window_len``),
-    because a concurrent flush could persist those rows between the
-    ``represented`` snapshot and the disk read, leading to a duplicate
-    append. Re-validates after the await to guard against appends that landed
-    during the disk read.
-    """
-    if not state.conversation_log:
-        return
-    # Safety gate: do not reconcile a slot that has in-memory rows the last
-    # flush has not yet persisted, or that is mid-rewind, or that has unsaved
-    # in-place edits (dirty) — clearing dirty at the end would erase the edit.
-    if len(slot.messages) > getattr(slot, "_disk_window_len", 0):
-        return
-    if getattr(slot, "_pending_rewrite", False):
-        return
-    if getattr(slot, "_dirty_flag", False):
-        return
-    history_key = slot_history_key(slot)
-    # Deliberately ``_disk_older_count``, NOT ``_disk_older_durable_count``:
-    # this reconciliation reasons about the on-disk FILE LAYOUT (how many disk
-    # lines the slot represents), so the all-rows counter is the one whose
-    # units match. The durable counter exists for absolute message positions
-    # (session_control.read_messages), a different measurement.
-    represented = (getattr(slot, "_disk_older_count", 0) or 0) + len(slot.messages)
-    try:
-        disk_msgs = await asyncio.to_thread(
-            state.conversation_log.read_messages_chained, history_key
-        )
-    except Exception:
-        logger.warning("reconcile: read_messages_chained failed for %s", history_key, exc_info=True)
-        return
-    disk_total = len(disk_msgs)
-    if disk_total <= represented:
-        return
-    # Post-await safety: the slot may have received appends (and a flush) while
-    # we were reading disk. Re-check and recompute represented to avoid
-    # duplicating rows that arrived during the await.
-    if len(slot.messages) > getattr(slot, "_disk_window_len", 0):
-        return
-    if getattr(slot, "_pending_rewrite", False):
-        return
-    if getattr(slot, "_dirty_flag", False):
-        return
-    represented = (getattr(slot, "_disk_older_count", 0) or 0) + len(slot.messages)
-    if disk_total <= represented:
-        return
-    # Validate alignment: if transcript rotation shifted offsets, the disk
-    # prefix does not match memory — abort to avoid appending wrong rows.
-    # The slot's window starts at disk offset _disk_older_count, so we compare
-    # the last memory row against its expected position on disk.
-    disk_older = getattr(slot, "_disk_older_count", 0) or 0
-    if slot.messages and (disk_older + len(slot.messages)) <= len(disk_msgs):
-        last_mem = slot.messages[-1]
-        expected_pos = disk_older + len(slot.messages) - 1
-        disk_at = disk_msgs[expected_pos]
-        if last_mem.get("ts", "") != disk_at.get("ts", "") or last_mem.get("role") != disk_at.get(
-            "role"
-        ):
-            logger.info(
-                "reconcile: slot %s alignment mismatch at offset %d — skipping "
-                "(possible transcript rotation)",
-                slot.key,
-                expected_pos,
-            )
-            return
-    # Disk has rows the slot does not know about — append the tail.
-    fresh = disk_msgs[represented:]
-    logger.info(
-        "reconcile: slot %s has %d messages in memory + %d older on disk = %d represented, "
-        "but disk has %d; appending %d missing rows",
-        slot.key,
-        len(slot.messages),
-        getattr(slot, "_disk_older_count", 0) or 0,
-        represented,
-        disk_total,
-        len(fresh),
-    )
-    for msg in fresh:
-        role = msg.get("role", "assistant")
-        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
-        content = msg.get("content", "")
-        if role != "user":
-            content, _ = redact_exfiltration_urls(content)
-            content, _ = redact_credentials(content)
-        slot.append(
-            role,
-            content,
-            cls,
-            ts=msg.get("ts", ""),
-            broadcast=False,
-            meta=(
-                _redact_meta_for_role(role, msg["meta"])
-                if isinstance(msg.get("meta"), dict)
-                else None
-            ),
-            mint_mid=False,
-        )
-        carry_provenance(slot.messages[-1], msg)
-        remember_unknown_row_fields(slot, msg)
-        _attach_variants(slot, msg)
-    # The appended rows came from the file, so drain the replay frames and
-    # mark the window as persisted (not dirty) — the next save must not
-    # re-serialize them, and a fork/SSE drain must not treat them as new.
-    slot.drain()
-    slot._resumed_count = len(slot.messages)
-    slot._disk_window_len = len(slot.messages)
-    slot._dirty = False
 
 
 def _resume_session_identity(state: DashboardState, history_key: str) -> str:
@@ -230,7 +108,9 @@ async def _live_slot_for_resume(
     existing = state._slots.get(name)
     if not existing:
         for slot in state._slots.values():
-            if effective_session_key(slot) == canonical:
+            if effective_session_key(slot) == canonical or transcripts_share_file(
+                slot_history_key(slot), history_key
+            ):
                 existing = slot
                 break
     if existing:
@@ -282,7 +162,7 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         "key": existing.key,
         "history_key": slot_history_key(existing),
         "messages": prepared,
-        "queue": [queue_entry_view(q) for q in existing._queue],
+        "queue": queue_view(existing._queue),
         "total": total,
         "has_more": next_before > 0,
         "next_before": next_before,
@@ -484,12 +364,10 @@ def _materialise_slot_from_history(
     # synchronous — no ``await`` inside — so the process-global suspend counter is
     # never held across a yield (holding it across the hydrate loop's yields would
     # swallow every other slot mutation on the gateway for the duration).
-    # Rollback-protected region covers creation, the construction mark, AND the
-    # ``suspend_slots_push`` block exit: that exit flushes the deferred
-    # ``push_slots_update()``, which can raise on a pre-existing poisoned slot
-    # (a non-serializable field) BEFORE hydration begins. If any of it raises,
-    # the except path releases the construction count and drops the slot, so a
-    # failed materialisation never leaks a hidden-but-registered slot that
+    # Rollback-protected region covers creation, the construction mark, the
+    # ``suspend_slots_push`` block exit and the hydration below. If any of it
+    # raises, the except path releases the construction count and drops the
+    # slot, so a failed materialisation never leaks a hidden-but-registered slot that
     # consumes capacity for the process lifetime. ``slot`` may be unbound if
     # ``get_or_create_slot`` itself raised (e.g. the under-construction create
     # guard), so the rollback is conditional on it existing.
@@ -530,10 +408,10 @@ def _materialise_slot_from_history(
             # once when the session is genuinely ready (for import, after Layer B is
             # joined), and the first frame any client sees shows a hydrated session.
             state.begin_slot_construction(slot.key)
-        # The whole fallible body (the block above's exit flush, plus redaction
-        # over up to the transfer bounds of peer content and metadata application)
-        # runs under this try: a raise would otherwise leak the reservation
-        # permanently and inflate the live-slot cap for the process lifetime.
+        # The whole fallible body (redaction over up to the transfer bounds of
+        # peer content and metadata application) runs under this try: a raise
+        # would otherwise leak the reservation permanently and inflate the
+        # live-slot cap for the process lifetime.
         _hydrate_slot_from_history(
             state,
             slot,
@@ -619,6 +497,7 @@ def _hydrate_slot_from_history(
             folder_unhidden=folder_unhidden,
             folder_checked_id=folder_checked_id,
             disk_meta_observed=disk_meta_observed,
+            history_key=slot_history_key(slot),
         ),
     )
     disk_total = len(all_messages)
@@ -749,7 +628,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 live_child=_live_child_instance(state, slot),
                 workspace=slot.workspace,
             ),
-            "queue": [queue_entry_view(q) for q in slot._queue],
+            "queue": queue_view(slot._queue),
             "total": total,
             "has_more": total > len(recent),
             "memory_mode": slot.memory_mode,
@@ -889,7 +768,8 @@ async def _resume_slot_from_history_noted(
     under (any spelling ``_normalize_slot_key`` folds), ``history_key`` the
     transcript to load (``None`` means ``name``), ``request_app`` the app token's
     scope when the caller is an app (empty for the dashboard user and for
-    session control), and ``caller_label`` what SEL records as the caller.
+    session control), ``caller_label`` what SEL records as the caller, and
+    ``request_title`` the fallback title when the transcript stores none.
 
     ``containment`` is a caller's LAST gate before publish. It runs once the slot
     is hydrated -- so it reads the fields the slot actually carries, not a
@@ -966,8 +846,8 @@ async def _resume_slot_from_history_noted(
         return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
 
     # If slot already exists (active session), just return it — no duplicate.
-    # Check both by slot name AND by canonical session key to prevent two
-    # slots sharing the same kiro-cli process.
+    # Check by slot name, by canonical session key and by transcript file, so two
+    # slots never share one kiro-cli process or write one file.
     #
     # INVARIANT: both sides of this comparison derive identity through the same
     # rule. A slot answers with ``effective_session_key``, which for a
@@ -975,6 +855,11 @@ async def _resume_slot_from_history_noted(
     # the same way, via the session map. Two rules in play and a channel
     # transcript matches nothing here: it gets a second tab, so one conversation
     # shows as two sidebar rows backed by two kiro-cli processes.
+    #
+    # The file check covers what the session map cannot bind: an unbound channel
+    # tab's ``slack_<ts>`` stem and its ``slack:<ts>`` key name one file
+    # (``transcripts_share_file``). A second slot over it would write that file
+    # beside the first and restore its held notes and merge-card context again.
     resume_outcome = await _live_slot_for_resume(
         state, request_app, history_key, name, caller_label
     )
@@ -1007,7 +892,7 @@ async def _resume_slot_from_history_noted(
     # persisted origin stays empty (get_or_create_slot then derives APP for an
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
-    meta = state.conversation_log.get_metadata(history_key)
+    meta = await asyncio.to_thread(state.conversation_log.get_metadata, history_key)
     # The archived tab id, read before anything rebuilds the slot under a new one.
     archived_tab = str(meta.get("tab_id") or "")
 
@@ -1282,17 +1167,17 @@ async def _resume_slot_from_history_noted(
     # deletion would discard a LIVE session -- its docstring says to prefer this
     # wherever an empty result triggers something destructive.
     #
-    # Synchronous, like the ``get_metadata`` above it, so this adds no suspension
-    # point between the re-checks and the publish -- the property the comment on
-    # the awaits above depends on.
+    # The ``get_metadata`` above ran off the loop; this read stays ON the loop, so
+    # it adds no suspension point between the re-checks and the publish -- the
+    # property the comment on the awaits above depends on.
     post_read_meta, meta_readable = state.conversation_log.get_metadata_status(history_key)
     # Did this session exist when we looked? Both re-checks below need that, and
     # ``all_messages`` alone is the wrong witness: a METADATA-ONLY session -- a
     # metadata line with no messages, which ``update_metadata`` creates on upsert --
     # has an empty transcript, so gating on it silently disabled both guards for
     # exactly the sessions least able to survive it. The pre-read ``meta`` is the
-    # right witness, and it costs nothing: it is already read synchronously above,
-    # so consulting it adds no suspension point.
+    # right witness, and it costs nothing: it was already read off the loop above,
+    # so consulting it adds no suspension point here.
     #
     # A UNION rather than a swap, so the witness is never narrower than it was: a
     # transcript we managed to read is also evidence of prior existence, even where
@@ -1619,41 +1504,51 @@ async def _resume_slot_from_history_noted(
         # Restore the protected choice read before construction, not the
         # editable transcript's provisional agent name.
         slot.agent = restored_agent
-    # Same model + effort restore as the restart loaders. Without it the resumed
-    # slot runs on the default model, and its next save writes ``model: ""``
-    # over the user's pick. Resume only: import deliberately does not carry a
-    # model (see session_transfer). The marker was read for the pre-await
-    # snapshot, so it only vouches for an unchanged effort value.
-    _restore_model_fields(
-        slot,
-        meta,
-        cfg=restore_cfg,
-        effort_marker=effort_marker and meta.get("reasoning_effort") == _prefetched_effort,
-    )
-    if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
-        # The hook reads the slot's own fields; ``_app`` comes from the request
-        # (none here), so the line's app scope is restored onto the built slot
-        # the way the restart path restores it, and the hook's app check is a
-        # real read rather than a constant. From the fresh re-read, as below.
-        slot._app = str(post_read_meta["app"])
-    if containment is not None:
-        # Same for the channel link: the resume core does not hydrate
-        # ``linked_session_key`` (the restart path and the History surfacing do),
-        # so the hook's link check would read an empty field whatever the line
-        # says. Restored from the FRESH re-read (``post_read_meta``), not the
-        # pre-transcript snapshot, so a link written to the line inside the read
-        # window is what the hook sees; a channel-born key marks the origin the
-        # way the surfacing path does.
-        fresh_link = str(post_read_meta.get("linked_session_key") or "")
-        if fresh_link and not getattr(slot, "linked_session_key", ""):
-            slot.linked_session_key = fresh_link
-            # Beside the assignment, as every link-setting site records it
-            # (``test_crew_log_class_recorder``). The built slot has no open
-            # log yet, so this is the in-memory restriction mark; a hook that
-            # refuses the linked build discards the slot and the mark with it.
-            note_crew_log_class(state, slot)
-        if fresh_link or post_read_meta.get("channel_origin"):
-            slot.channel_origin = True
+    # The reads below run on a slot that is registered and under construction,
+    # after the materialiser's own rollback ended and before the reserved tail's
+    # ``_discard`` begins. A raise here undoes the build the way the materialiser
+    # does, or the construction mark leaks for the process lifetime.
+    try:
+        # Same model + effort restore as the restart loaders. Without it the resumed
+        # slot runs on the default model, and its next save writes ``model: ""``
+        # over the user's pick. Resume only: import deliberately does not carry a
+        # model (see session_transfer). The marker was read for the pre-await
+        # snapshot, so it only vouches for an unchanged effort value.
+        _restore_model_fields(
+            slot,
+            meta,
+            cfg=restore_cfg,
+            effort_marker=effort_marker and meta.get("reasoning_effort") == _prefetched_effort,
+        )
+        if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
+            # The hook reads the slot's own fields; ``_app`` comes from the request
+            # (none here), so the line's app scope is restored onto the built slot
+            # the way the restart path restores it, and the hook's app check is a
+            # real read rather than a constant. From the fresh re-read, as below.
+            slot._app = str(post_read_meta["app"])
+        if containment is not None:
+            # Same for the channel link: the resume core does not hydrate
+            # ``linked_session_key`` (the restart path and the History surfacing do),
+            # so the hook's link check would read an empty field whatever the line
+            # says. Restored from the FRESH re-read (``post_read_meta``), not the
+            # pre-transcript snapshot, so a link written to the line inside the read
+            # window is what the hook sees; a channel-born key marks the origin the
+            # way the surfacing path does.
+            fresh_link = str(post_read_meta.get("linked_session_key") or "")
+            if fresh_link and not getattr(slot, "linked_session_key", ""):
+                slot.linked_session_key = fresh_link
+                # Beside the assignment, as every link-setting site records it
+                # (``test_crew_log_class_recorder``). The built slot has no open
+                # log yet, so this is the in-memory restriction mark; a hook that
+                # refuses the linked build discards the slot and the mark with it.
+                note_crew_log_class(state, slot)
+            if fresh_link or post_read_meta.get("channel_origin"):
+                slot.channel_origin = True
+    except BaseException:
+        state.end_slot_construction(slot.key)
+        state._slots.pop(slot.key, None)
+        state._restricted_keys.discard(f"dashboard:{slot.key}")
+        raise
     # Hydrated length, not the raw disk count: materialisation may append one
     # unsaved interruption row, and the wrapper's paging cursor has to account
     # for it or the next older page repeats a row.
@@ -1985,7 +1880,9 @@ async def _resume_slot_from_history_noted(
     # the first frame any client sees, and it shows a fully hydrated session.
     state.end_slot_construction(slot.key)
     _sync_dashboard_slots(state)
-    state.push_slots_update()
+    # Committed: the block's exit logs a failing broadcast instead of 500ing it.
+    with state.suspend_slots_push():
+        state.push_slots_update()
     if rebind_manager:
         from kiro_crew.dashboard import session_managers
 

@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         _turn_retry_outcomes,
     )
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
+    from kiro_crew.dashboard.chat_turn.turn_context import _record_consumed_merge_contexts
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_stats import (
         _attach_turn_stats,
         _emit_recovery_outcome,
+        _merge_cards_reached_the_model,
         _turn_outcome,
     )
 
@@ -82,7 +84,6 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
     _stop_reason = turn._stop_reason
     _turn_emitted = turn._turn_emitted
     client = turn.client
-    message = turn.message
     needs_session_reset = turn.needs_session_reset
     slot = turn.slot
 
@@ -110,6 +111,12 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         # never writes. Keep it as the interrupted reply, with its footer,
         # above the recovery card.
         await _persist_partial_reply(turn, _stop_reason)
+        # Either kiro-cli acked the probe's cancel (a cancelled prompt it
+        # discards, as on a Stop) or it never did and the reset kills the
+        # wedged runtime mid-answer: the model did not answer this prompt,
+        # so the resumed native session lacks it and a drained merge card
+        # goes back to the queue (``_native_session_lacks_the_prompt``
+        # derives that from the reset and this terminal).
 
         if _requeues and slot._stale_recovery_retries < STOP_RECOVERY_MAX_RETRIES:
             slot._stale_recovery_retries += 1
@@ -138,9 +145,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _emit_recovery_outcome("stale_recover", "exhausted", slot._stale_recovery_retries)
                 slot._stale_recovery_exhausted_emitted = True
             _emit_stale(turn, gn.GATEWAY_SESSION_STUCK_TEXT, notice=gn.GATEWAY_NOTICE_SESSION_STUCK)
-            turn.died_notice = (
-                "The chat stalled and could not recover. Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_stalled"
         else:
             # depth>0 (nested turn) with budget remaining: reset the session
             # but don't re-queue (mirrors the pipe-death depth>0 handling);
@@ -167,6 +172,8 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
 
         _idle_m = re.search(r"idle_secs=(\d+)", _stall_evidence or "")
         _idle_secs = int(_idle_m.group(1)) if _idle_m else 0
+        _terminated_m = re.search(r"processes_terminated=(\d+)", _stall_evidence or "")
+        _terminated = int(_terminated_m.group(1)) if _terminated_m else 0
         # Typed first: an execution-layer / oracle ``waiting_input`` status
         # is the verdict; the evidence-text marker stays as the fallback for
         # a provider that forwards no status object.
@@ -180,6 +187,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _idle_secs,
                 command=_stall_command,
                 stuck_input=_stuck,
+                processes_terminated=_terminated,
             )
             _queue_recovery(
                 turn,
@@ -203,9 +211,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _emit_recovery_outcome("tool_stall", "exhausted", slot._tool_stall_retries)
                 slot._tool_stall_exhausted_emitted = True
             _emit_stall(turn, gn.GATEWAY_SESSION_STUCK_TEXT, notice=gn.GATEWAY_NOTICE_SESSION_STUCK)
-            turn.died_notice = (
-                "The chat stalled and could not recover. Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_stalled"
         else:
             _emit_stall(
                 turn,
@@ -236,6 +242,9 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
         turn.needs_session_reset = needs_session_reset
         await _persist_partial_reply(turn, _stop_reason)
+        # The reset under a synthetic completion also returns a drained
+        # merge card to the queue: the model never answered this prompt,
+        # so the resumed session lacks it (``_native_session_lacks_the_prompt``).
         if (
             # Attribute, not a stop-reason variant: the reason is the ACP
             # layer's to classify, and both client classes record it.
@@ -285,7 +294,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             _queue_recovery(
                 turn,
                 0,
-                message,
+                turn._message_without_merge_cards,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 # Verbatim replay, so ORIGINAL only when the incoming text
                 # was the user's own — on a recovery turn it is the
@@ -321,6 +330,10 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         _rc_suffix = f" (exit {_rc})" if _rc is not None else ""
         # The localized copy shows the exit code from the notice args.
         _rc_args: dict = {"exit_code": _rc} if _rc is not None else {}
+        # The process died mid-answer, so kiro-cli never wrote this prompt
+        # to its log and the respawned session is loaded without it: a
+        # drained merge card goes back to the queue, requeued or not
+        # (``_native_session_lacks_the_prompt`` reads this stop class).
 
         # Attribution, as in the AcpProcessDied handler: a process this slot
         # shared dying is not this slot's failure, so it advances the
@@ -339,7 +352,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             else:
                 runtime_death.note_shared_death(slot.key)
             _requeue_text, _requeue_payload = build_recovery_requeue(
-                message,
+                turn._message_without_merge_cards,
                 _turn_emitted,
                 cause=ResetCause.CONNECTION_LOST,
                 message_is_synthetic=_is_synthetic,
@@ -366,10 +379,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                     notice=gn.GATEWAY_NOTICE_SESSION_STUCK,
                     **_rc_args,
                 )
-                turn.died_notice = (
-                    "The connection to the agent kept dropping. "
-                    "Open the chat to start a new one."
-                )
+                turn.died_notice = "chat_stopped_connection_dropped"
             else:
                 _emit_error(
                     turn,
@@ -378,10 +388,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                     notice=gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING,
                     **_rc_args,
                 )
-                turn.died_notice = (
-                    "The agent process kept restarting and the turn did not finish. "
-                    "Open the chat to retry."
-                )
+                turn.died_notice = "chat_stopped_agent_restarting"
         else:
             _emit_error(
                 turn,
@@ -468,6 +475,18 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
         # shutdown check in _run_chat's finally must still see the marker to preserve it.
         if _stop_reason != STOP_REASON_CANCELLED:
             _retire_local_turn_marker(slot, _local_turn_marker_generation)
+        # Record consumption in the process guard and durable stamp before
+        # this save, so neither a restart nor a later drain replays context
+        # the native session already holds. The guard is registered first
+        # but proves nothing durable: only the stamp's own result completes
+        # the cards, and a stamp that did not land leaves the turn
+        # uncompleted for the tracked retry in _run_chat's finally. The hold
+        # itself goes only when a full save proves its row.
+        if _merge_cards_reached_the_model(turn):
+            turn._merge_contexts_completed = await _record_consumed_merge_contexts(
+                state, turn._drained_merge_contexts
+            )
+            slot._inflight_merge_contexts = []
         # Save to history and trigger memory consolidation
         await save_slot_off_loop(state, slot)
         # A crewmate's answer in its DM thread is one notification per

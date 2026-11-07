@@ -242,6 +242,7 @@ class CronJob:
     app_manifest_digest: str = ""
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
+    person_owner_key: str = ""  # session_key MCP cron_add saw as a live person's tab
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
@@ -264,6 +265,11 @@ class CronJob:
     hide_in_chat: bool = (
         False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
     )
+    # True → a STATELESS agent job's run opens its own tab, ``cron-<id>-<run>``,
+    # bound to that run's ``cron:<id>:<run>`` session, so the reader replies to
+    # one run alone. The store refuses it with ``persistent_session=True``, whose
+    # one tab already holds every run. ``hide_in_chat`` still wins.
+    new_chat_per_run: bool = False
     # Cron folder grouping; "" = unfiled. CONTRACT for all consumers
     # (Schedule UI, calendar, CLI, MCP): an id that does not match a folder
     # in cron_folders.json MUST be treated as ungrouped — folder deletion

@@ -195,6 +195,7 @@ class _PendingWindowsTreeCleanup:
         "manual_required",
         "raw_root_pin",
         "retire_app_tracking",
+        "job",
     )
 
     def __init__(
@@ -212,6 +213,9 @@ class _PendingWindowsTreeCleanup:
         # its transport. Keeps the original pin on duplicate/identity failure.
         self.raw_root_pin: int | None = None
         self.retire_app_tracking = False
+        # The root's Job object, kept by ``apply_job_limits``. Every descendant
+        # is in it, so ending it reaches members the parent-PID walk cannot.
+        self.job: int | None = None
 
 
 _PENDING_WINDOWS_TREE_CLEANUPS: dict[tuple[int, int], _PendingWindowsTreeCleanup] = {}
@@ -261,6 +265,42 @@ def release_windows_tree_reservation(state: _PendingWindowsTreeCleanup) -> None:
             return
         _WINDOWS_TREE_ADMISSIONS.discard(state)
         state.retired = True
+
+
+def adopt_windows_tree_job(pid: int, job: int) -> bool:
+    """Keep *job* with the live admitted tree whose root *pid* is pinned by handle.
+
+    The pin keeps the pid from being reused, so the number names this root.
+    Returns ``False`` when no such tree exists; the caller then closes *job*.
+    """
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        for state in _WINDOWS_TREE_ADMISSIONS:
+            if state.root_pid == pid and pid in state.handles and not state.retired:
+                if state.job is not None:
+                    return False
+                state.job = job
+                return True
+    return False
+
+
+setattr(  # noqa: B010 -- binds a name below this layer without adding one here
+    importlib.import_module("kiro_crew.platform_compat_winproc"),
+    "_adopt_job",
+    adopt_windows_tree_job,
+)
+
+
+def _terminate_windows_tree_job(job: int) -> None:
+    """End every process left in a drained tree's job; raise ``OSError`` if refused.
+
+    A member whose parent exited first is out of the parent-PID walk's reach
+    but still in the job. The caller keeps the handle until the tree retires.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    if not kernel32.TerminateJobObject(wintypes.HANDLE(job), 1):
+        raise OSError(_windows_last_error(), "TerminateJobObject failed")
 
 
 def _manual_windows_tree(state: _PendingWindowsTreeCleanup) -> None:
@@ -473,6 +513,10 @@ def _advance_owned_windows_tree(
         except _WindowsTreeOverflow:
             _manual_windows_tree(state)
             raise
+        if result and state.job is not None:
+            # Before retirement, so a refused terminate keeps the job and every
+            # pin for the sweep's next pass instead of dropping the survivors.
+            _terminate_windows_tree_job(state.job)
         if result:
             try:
                 # circular import: session_pid imports kiro_crew.platform_compat, and
@@ -495,7 +539,11 @@ def _advance_owned_windows_tree(
                     exc_info=True,
                 )
                 return False, False
-            state.retired = True
+            with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                state.retired = True
+                job, state.job = state.job, None
+            if job is not None:
+                close_process_handle(job)
             completed_here = True
             handles_to_close = tuple(state.handles.values())
             # The state remains locked and charged until all pins close.

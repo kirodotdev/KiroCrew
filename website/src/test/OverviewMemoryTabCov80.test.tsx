@@ -178,6 +178,26 @@ describe('MemoryTab — settings', () => {
     expect(await screen.findByText(/Saved/)).toBeInTheDocument()
   })
 
+  it('counts an edited retention box as unsaved work until a Save lands', async () => {
+    const held = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const inputs = await waitFor(() => {
+      const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
+      expect(found[0].value).toBe('4')
+      return found
+    })
+    expect(held()).toBe(false)
+    fireEvent.change(inputs[1], { target: { value: '45' } })
+    await waitFor(() => expect(held()).toBe(true))
+    await userEvent.click(saveIn(/Memory Settings/i))
+    expect(await screen.findByText(/Saved/)).toBeInTheDocument()
+    await waitFor(() => expect(held()).toBe(false))
+  })
+
   it('reports a refused settings save instead of showing Saved', async () => {
     api.saveMemorySettings.mockRejectedValue(new Error('zzq-owner-only'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)

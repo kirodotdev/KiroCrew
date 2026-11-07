@@ -14,6 +14,7 @@ import { useListDetailView } from '../../hooks/useListDetailView'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { bestFilterMatch } from '../../utils/filterSelection'
+import { useConfirm } from '../../components/ConfirmDialog'
 import type { SteeringFile, SteeringList } from '../../types'
 
 import { parseErrorCode } from '../../utils/errorReport'
@@ -368,6 +369,7 @@ const EDITOR_CLASS =
 const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 export default function SteeringTab() {
+  const { confirm, confirmDialog } = useConfirm()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -424,7 +426,7 @@ export default function SteeringTab() {
     return slot ? `dashboard:${slot}` : undefined
   })
 
-  const { data, isLoading, isFetching, refetch } = useQuery<SteeringList>({
+  const { data, isLoading, isFetching, refetch, error: listError } = useQuery<SteeringList>({
     queryKey: ['steering', slotKey ?? null],
     queryFn: () => api.steeringFiles(slotKey),
   })
@@ -541,15 +543,19 @@ export default function SteeringTab() {
   })
 
   const deleteFile = useMutation({
-    mutationFn: (key: string) => api.deleteSteering(key, slotKey, projectKey),
-    onSuccess: (_res, key) => {
+    mutationFn: ({ key, slotKey, projectKey }: { key: string; slotKey?: string; projectKey?: string }) =>
+      api.deleteSteering(key, slotKey, projectKey),
+    onSuccess: (_res, { key, projectKey }) => {
       if (selectedKeyRef.current === key) {
         setSelectedKey(null)
         setEditing(false)
       }
       // Remove, not invalidate: the file is gone, so its cached detail must
       // not survive to seed a later file created under the same key.
-      queryClient.removeQueries({ queryKey: ['steering-file', key] })
+      queryClient.removeQueries({
+        queryKey: ['steering-file', key],
+        predicate: query => key.startsWith('user/') || query.queryKey[3] === (projectKey ?? null),
+      })
       queryClient.invalidateQueries({ queryKey: ['steering'] })
     },
   })
@@ -689,6 +695,7 @@ export default function SteeringTab() {
   const rootHint = roots.map(r => r.path).join('  ·  ')
 
   return (<>
+    {confirmDialog}
     <Modal
       open={creating}
       onClose={() => setCreateDialog(false)}
@@ -815,13 +822,22 @@ export default function SteeringTab() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {/* Disabled while a refresh runs, so the name carries the reason: a
-              disabled "Refresh steering files" reads as unavailable, not busy. */}
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
+          {/* Inert while a refresh runs, so the name carries the reason: an inert
+              "Refresh steering files" reads as unavailable, not busy. `aria-disabled`
+              plus the guard, NOT `disabled`: `disabled` leaves the tab order and
+              drops a keyboard user's focus to the page for the whole refresh. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </Btn>
         </div>
       </div>
+
+      {/* A failed list read, first load or Refresh. The list below is the last good
+          read, so without this a failed refresh looks like one with no changes.
+          No hand-off: an open file's unsaved edits may still be in the editor. */}
+      {listError && (
+        <ErrorNotice className="mb-3" message={(listError as Error).message} testId="steering-list-failure" />
+      )}
 
       {/* No hand-off: a failed save leaves the open file's unsaved edits in the editor. */}
       {mutError && !fieldErrorShown && (
@@ -915,7 +931,17 @@ export default function SteeringTab() {
                         danger
                         disabled={selectedReadOnly}
                         title={selectedReadOnly ? linkedReason(selected) : undefined}
-                        onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
+                        onClick={async () => {
+                          if (selectedReadOnly || deleteFile.isPending) return
+                          const { key, rel } = selected
+                          const target = { key, slotKey, projectKey }
+                          const ok = await confirm({
+                            title: i18nT('pages.overview.steeringTab.delete'),
+                            body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.steeringTab.delete_confirm', { path: rel })}</p>,
+                            confirmLabel: i18nT('pages.overview.steeringTab.delete'),
+                          })
+                          if (ok) deleteFile.mutate(target)
+                        }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>

@@ -149,7 +149,9 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
     """The session-start notice for spec keys this backend never receives.
 
     A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
-    more sentence, because what it costs is sign-in, not a setting.
+    more sentence, because what it costs is sign-in, not a setting. So does a
+    refused ``permissions`` block, because it is what keeps the agent's granted
+    shell and file tools asking.
     """
     notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
@@ -161,6 +163,12 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
         notice += (
             f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
             "backend. The kiro-cli backend supports it."
+        )
+    if "permissions" in keys:
+        notice += (
+            " A permissions block is not sent at all when it names a policies bundle "
+            "or is malformed or too large. With a policies bundle, the agent's shell "
+            "and file tools also ask for approval even where allowedTools grants them."
         )
     return notice
 
@@ -337,7 +345,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     return bool(
         (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
         or _slot_is_trusted(slot)
-        or state.is_yolo_active()
+        or (state.is_yolo_active() and state.yolo_reaches(slot))
     )
 
 
@@ -1219,7 +1227,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # Trust-reads: auto-approve read-only bash commands
     # Detect bash tools by tool_input content (title is human-readable)
     cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-    yolo_active = state.is_yolo_active()
+    yolo_active = state.is_yolo_active() and state.yolo_reaches(
+        slot, channel_origin=turn._directive_channel_origin
+    )
     # Evaluated ONCE for both branches below. Two separate calls could
     # straddle a scoped grant's expiry and disagree with each other, and
     # a scope check is not a pure read — it retires a lapsed grant and

@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig, update_config_locked
+from kiro_crew.config.loader import KiroCrewConfig, PendingEditBlocksSave, update_config_locked
 from kiro_crew.dashboard.channel_folders import (
     channel_restart_required,
     clean_session_folder,
@@ -148,6 +148,10 @@ async def whatsapp_config_save(request: web.Request) -> web.Response:
     async with _get_config_lock():
         try:
             await asyncio.to_thread(lambda: update_config_locked(mutate=_apply))
+        except PendingEditBlocksSave:
+            # config.json has a change pending owner review: the dashboard chain
+            # answers 409 with the code the UI links to the pending card.
+            raise
         except Exception:
             # `on_corrupt="fail"` by default, so a corrupt file raises here rather
             # than being silently reset over the operator's other settings.

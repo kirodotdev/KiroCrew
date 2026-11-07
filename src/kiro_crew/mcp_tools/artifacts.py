@@ -16,8 +16,10 @@ every existing patch site.
 
 from __future__ import annotations
 
+import time
 import unicodedata
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
@@ -585,6 +587,8 @@ def schemas() -> list[dict[str, Any]]:
                 "Deploy page (/deploy) -> Pending confirmations; the Artifacts "
                 "page shows its Artifact Deploy button only when the Artifact "
                 "Deploy Feature Preview is on, and /deploy works either way. "
+                "A pending preview expires 1 hour after it is made; tell the "
+                "user the confirm-by time from the reply. "
                 "Restricted-session guard and SEL audit apply identically to the "
                 "HTTP endpoint. Load the artifact-deploy skill first. A preview "
                 "never proves a deployment."
@@ -1228,6 +1232,17 @@ def artifact_move(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def _confirm_by_line(created_at_epoch: float) -> str:
+    """The confirmation deadline, worded apart from the site TTL."""
+    from kiro_crew.deploy.pending import expires_at_epoch
+
+    deadline = datetime.fromtimestamp(expires_at_epoch(created_at_epoch), timezone.utc)
+    return (
+        f"Confirm within 1 hour, by {deadline:%H:%M} UTC: after that this preview expires "
+        f"and must be made again. Tell the user this deadline."
+    )
+
+
 def deploy_artifact(name: str, args: dict[str, Any]) -> str:
     has_slug = bool(args.get("artifact_slug"))
     has_dir = bool(args.get("local_dir"))
@@ -1283,7 +1298,9 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
         # dashboard can present the explicit "deploy anyway" action for
         # these previews.
         from kiro_crew.deploy.pending import add_pending
+        created = time.time()
         add_pending({
+            "created_at_epoch": created,
             "site_id": args["site_id"],
             "artifact_slug": args.get("artifact_slug", ""),
             "local_dir": args.get("local_dir", ""),
@@ -1303,6 +1320,7 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
             f"needs the Artifact Deploy Feature Preview), where the user can "
             f"review the findings and "
             f"explicitly deploy anyway (or dismiss).\n"
+            f"{_confirm_by_line(created)}\n"
             f"\nWARNING: Anyone with the published link can view this content. "
             f"It is served on the public internet with no authentication. Relay "
             f"this warning to the user before they confirm."
@@ -1310,7 +1328,9 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
     # Preview response (requires_confirm is always true for the tool path)
     # Persist as a pending confirmation so the dashboard UI can execute it.
     from kiro_crew.deploy.pending import add_pending
+    created = time.time()
     pending_params = {
+        "created_at_epoch": created,
         "site_id": args["site_id"],
         "artifact_slug": args.get("artifact_slug", ""),
         "local_dir": args.get("local_dir", ""),
@@ -1330,7 +1350,8 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
         f"  Public: {d.get('public', True)}\n"
         f"  Size: {d.get('bytes', '?')} bytes\n"
         f"  Scan: {_deploy_redact(str(d.get('scan', 'clean')))}\n"
-        f"  TTL: {args.get('ttl_hours', 72)} hours\n"
+        f"  Site lifetime after deploy (TTL): {args.get('ttl_hours', 72)} hours\n"
+        f"{_confirm_by_line(created)}\n"
         f"\nWARNING: Anyone with the published link can view this content. "
         f"It is served on the public internet with no authentication. Relay "
         f"this warning to the user before they confirm.\n"

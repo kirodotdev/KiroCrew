@@ -7,9 +7,9 @@
  * Paste atom (split view and member DMs). These scenes drive the REAL pane
  * through the lifetime cases that make a token safe: a rebind parks the
  * blocks with the text, a refused send hands them back with it (two in one
- * batch both come back), and a cancelled queued send restores the paste as
- * its lines. The first scene is the pane's wiring assertion for the outgoing
- * turn itself.
+ * batch both come back), a cancelled queued send restores the paste as its
+ * lines, and ↑/↓ history browsing keeps every paste's blocks with its text.
+ * The first scene is the pane's wiring assertion for the outgoing turn itself.
  */
 import { describe, it, expect, vi, afterAll, afterEach, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
@@ -281,6 +281,52 @@ describe('ChatPane paste sidecar', () => {
     const [retryText] = vi.mocked(api.sendChat).mock.calls[1]
     expect(retryText).toContain(PASTED)
     expect(retryText).not.toMatch(TOKEN)
+  })
+
+  it('↑ recalls a sent prompt with its paste blocks, so the resend carries the pasted lines', async () => {
+    renderPane('pane-recall')
+    const box = await composer()
+    await pasteInto(box, PASTED)
+    await waitFor(() => expect(box.value).toMatch(TOKEN))
+    fireEvent.change(box, { target: { value: `${box.value} and ` } })
+    await pasteInto(box, 'a\nb\nc')
+    await waitFor(() => expect(box.value).toMatch(/\[ Paste #2(?:\u2063[\u200b\u200c]+\u2063)? · 3 lines \]/))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(box.value).toBe(''))
+
+    fireEvent.keyDown(box, { key: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toMatch(TOKEN))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
+    const [sentText] = vi.mocked(api.sendChat).mock.calls[0]
+    const [resentText] = vi.mocked(api.sendChat).mock.calls[1]
+    expect(sentText).toContain(PASTED)
+    expect(sentText).toContain('a\nb\nc')
+    expect(resentText).toBe(sentText)
+  })
+
+  it('↓ back to the draft restores its paste blocks with it, so its chip still expands', async () => {
+    renderPane('pane-draft')
+    const box = await composer()
+    fireEvent.change(box, { target: { value: 'earlier' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(box.value).toBe(''))
+    await pasteInto(box, PASTED)
+    await waitFor(() => expect(box.value).toMatch(TOKEN))
+    const draft = box.value
+
+    box.setSelectionRange(0, 0)
+    fireEvent.keyDown(box, { key: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('earlier'))
+    box.setSelectionRange(box.value.length, box.value.length)
+    fireEvent.keyDown(box, { key: 'ArrowDown' })
+    await waitFor(() => expect(box.value).toBe(draft))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
+    const [wireText] = vi.mocked(api.sendChat).mock.calls[1]
+    expect(wireText).toBe(PASTED)
   })
 
   it('hands the blocks back with the text when the server refuses the send', async () => {

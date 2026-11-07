@@ -1,8 +1,8 @@
 """Checks the ``test_*_bindings.py`` files share, written once and run per file.
 
 Each bindings file pins one class whose members are bound from owner modules. Some of
-its checks read only that file's own helpers (``_fields``, ``_members`` ...) and
-constants (``_MEMBERS`` ...), so the body is the same in every file. A file opts in by
+its checks read only that file's own helpers (``_fields``, ``_members`` ...),
+constants (``_MEMBERS`` ...) or path, so the body is the same in every file. A file opts in by
 naming those checks in a module-level ``SHARED_BINDINGS_CHECKS`` tuple; discovery is
 :mod:`shared_checks_discovery`.
 """
@@ -10,10 +10,14 @@ naming those checks in a module-level ``SHARED_BINDINGS_CHECKS`` tuple; discover
 from __future__ import annotations
 
 import ast
+import functools
+import importlib
 import sys
 from pathlib import Path
 
+import pytest
 import shared_checks_discovery
+import source_corpus
 
 TEST_DIR = Path(__file__).resolve().parent
 
@@ -30,6 +34,10 @@ KNOWN_CHECKS = frozenset(
         "the_bound_function_scans_include_every_static_method",
         "the_kind_reader_tells_a_coroutine_from_a_function",
         "each_owner_imports_only_owners_listed_before_it",
+        "the_class_only_scan_sees_each_shape",
+        "each_class_an_owner_defines_carries_its_frozen_module",
+        "the_test_tree_walk_reaches_every_collected_tree",
+        "leaf_test_scope_derives_this_file_as_a_corpus_gate",
     }
 )
 
@@ -150,3 +158,57 @@ def test_each_owner_imports_only_owners_listed_before_it(contract: str) -> None:
         for i, owner in enumerate(owners)
     }
     assert later == {owner: [] for owner in owners}
+
+
+@_each("the_class_only_scan_sees_each_shape")
+@pytest.mark.parametrize(
+    ("source", "flagged"),
+    [
+        ("def f(self):\n    return super().g()\n", True),
+        ("def f(self):\n    return __class__\n", True),
+        ("def f(self):\n    return self.__secret\n", True),
+        ("def f(self):\n    return super(type(self), self).g()\n", False),
+        ("def f(self):\n    return self.__dict__, self._private\n", False),
+    ],
+)
+def test_the_class_only_scan_sees_each_shape(contract: str, source: str, flagged: bool) -> None:
+    subject = _load(contract)
+    (fn,) = subject._self_functions(ast.parse(source))
+    assert bool(subject._class_only_constructs(fn)) is flagged
+
+
+@_each("each_class_an_owner_defines_carries_its_frozen_module")
+def test_each_class_an_owner_defines_carries_its_frozen_module(contract: str) -> None:
+    subject = _load(contract)
+    found = {
+        node.name: vars(module)[node.name].__module__
+        for module in subject._owners()
+        for node in subject._tree(module).body
+        if isinstance(node, ast.ClassDef)
+    }
+    assert found == subject._CLASS_MODULES
+
+
+@_each("the_test_tree_walk_reaches_every_collected_tree")
+def test_the_test_tree_walk_reaches_every_collected_tree(contract: str) -> None:
+    files = _load(contract)._test_tree_files()
+    assert TEST_DIR / f"{contract}.py" in files
+    assert source_corpus.repo_root() / "conftest.py" in files
+    assert any("/apps/builtins/" in path.as_posix() for path in files)
+    assert len(files) > 1000
+
+
+@functools.lru_cache(maxsize=1)
+def _corpus_gates() -> frozenset[str]:
+    root = source_corpus.repo_root()
+    return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
+
+
+@_each("leaf_test_scope_derives_this_file_as_a_corpus_gate")
+def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
+    contract: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file reads the whole test tree, so a leaf-only diff must still run it."""
+    root = source_corpus.repo_root()
+    monkeypatch.syspath_prepend(str(root / "scripts"))
+    assert (TEST_DIR / f"{contract}.py").relative_to(root).as_posix() in _corpus_gates()

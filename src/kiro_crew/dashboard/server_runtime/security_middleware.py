@@ -527,7 +527,8 @@ def build_host_canonical_redirect(
     are redirected (see :func:`should_canonicalize_host`); APIs, WebSockets, and
     sub-resource fetches are untouched. Pass ``canonical_host=""`` (e.g. when not
     local_only) to make the middleware a no-op so reverse-proxy / remote-host
-    deployments are never redirected.
+    deployments are never redirected. Relay-delivered requests are never redirected
+    because their Host is the gateway's loopback address, not the browser's origin.
 
     *holds_every_family* answers, at REDIRECT time, whether this gateway holds
     every loopback family the destination name can resolve to. It gates the same
@@ -566,15 +567,30 @@ def build_host_canonical_redirect(
         request: web.Request,
         handler: object,
     ) -> web.StreamResponse:
-        if canonical_host and should_canonicalize_host(
-            request.host,
-            canonical_host,
-            method=request.method,
-            sec_fetch_dest=request.headers.get("Sec-Fetch-Dest"),
-            carries_credential=(
-                bool(request.query.get("token"))
-                or bears_session_cookie_for_host(request.headers.get("Host", ""), request.cookies)
-            ),
+        if published_relay_caller(request) is not None:
+            return await handler(request)  # type: ignore[operator]
+        # The SSM listener shares this chain, and this layer runs before its gate
+        # has checked anyone. A redirect keeps the query, and an SSM request's query
+        # carries the permanent ``ssm_invite``: onto an ambiguous name it would hand
+        # that credential to whoever holds the other loopback family's port. The
+        # SSM port is never canonicalized; it stays on the literal host dialled.
+        # Inline, not a helper: this module's globals are the server facade's.
+        ssm_gate = getattr(request.app.get("ssm_gate_ref"), "gate", None)
+        if (
+            canonical_host
+            and not (ssm_gate is not None and ssm_gate.owns(request))
+            and should_canonicalize_host(
+                request.host,
+                canonical_host,
+                method=request.method,
+                sec_fetch_dest=request.headers.get("Sec-Fetch-Dest"),
+                carries_credential=(
+                    bool(request.query.get("token"))
+                    or bears_session_cookie_for_host(
+                        request.headers.get("Host", ""), request.cookies
+                    )
+                ),
+            )
         ):
             if holds_every_family is not None and not holds_every_family():
                 logger.warning(

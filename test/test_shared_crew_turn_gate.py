@@ -56,6 +56,14 @@ class _Slot:
         return {}
 
 
+@pytest.fixture(autouse=True)
+def _clear_unadmitted_running():
+    # The registry is module-global and outlives each test's loop.
+    turn_gate._UNADMITTED_RUNNING.clear()
+    yield
+    turn_gate._UNADMITTED_RUNNING.clear()
+
+
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     clock = ManualClock(start=50_000.0)
@@ -422,6 +430,26 @@ async def test_native_slack_controls_do_not_wait_for_model_capacity(
         await await_until(
             asyncio.gather(holder, *([command] if command else []), return_exceptions=True)
         )
+
+
+@pytest.mark.asyncio
+async def test_native_slack_admits_an_options_answer_that_reads_like_a_command(
+    service, native_slack
+):
+    handler, _grant, slack, sessions = native_slack
+    observed = []
+
+    async def run(turn):
+        observed.append((turn.text, turn_gate.in_channel_turn()))
+        return False
+
+    handler._run_turn.side_effect = run
+    await handler.handle_message(
+        slack, sessions, "D1", "!yolo off", "1.2", "1.3", "UOWNER", interpret_commands=False
+    )
+    assert observed == [("!yolo off", True)]
+    [record] = await service.list_work(session_key="slack:1.2")
+    assert record.state is ag.S.COMPLETED
 
 
 @pytest.mark.asyncio

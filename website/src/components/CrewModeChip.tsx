@@ -56,9 +56,10 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
       title={hint}
       disabled={disabled || (pressed && !onTurnOff)}
       onClick={click}
-      className={`crew-chip inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-[12px] font-semibold transition-colors cursor-pointer ${state}`}
+      className={`crew-chip inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-[12px] font-semibold transition-colors cursor-pointer text-muted hover:text-text ${state}`}
     >
-      <Zap size={13} aria-hidden="true" fill={pressed ? 'currentColor' : 'none'} className="inline-block shrink-0 ultra-accent" />
+      {/* Off is grey like the composer's other chips; only on wears the accent. */}
+      <Zap size={13} aria-hidden="true" fill={pressed ? 'currentColor' : 'none'} className={`inline-block shrink-0 ${pressed ? 'ultra-accent' : ''}`} />
       <span className="crew-chip-text">{i18nT('components.crewMode.chip_off')}</span>
     </Glass>
   )

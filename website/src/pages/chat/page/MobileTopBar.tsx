@@ -57,6 +57,8 @@ interface MobileTopBarProps {
   enterSplit: (anchor: string | null, dir?: SplitDir) => void
   /** The session menu's "New chat here" item (ChatPage builds it from the current folder). */
   mobileNewSessionItem: ComponentProps<typeof ChatHeaderMenu>['newSessionHere']
+  onPromote: ComponentProps<typeof ChatHeaderMenu>['onPromote']
+  promoting: boolean
   dispatch: AppDispatch
 }
 
@@ -93,6 +95,8 @@ export default function MobileTopBar({
   activeIsSplitAnchor,
   enterSplit,
   mobileNewSessionItem,
+  onPromote,
+  promoting,
   dispatch,
 }: MobileTopBarProps) {
   const explore = useExplorePreview()
@@ -100,10 +104,10 @@ export default function MobileTopBar({
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
-        [sessions toggle][session title][session menu]. The title is first and
-        the menu chevron trails it, as on the approved mock — one control the
-        eye reads as "the session, and its menu". Rendered whenever the slot
-        exists, so the sessions toggle is in the bar even with no session open
+        [sessions toggle][session menu chevron + session title]. The chevron
+        leads the title, as in the desktop header — one control the eye reads
+        as "the session, and its menu". Rendered whenever the slot exists, so
+        the sessions toggle is in the bar even with no session open
         (ChatPaneChrome's fixed corner button stands down); the title half needs a
         session and is not drawn in split view, whose grid names each pane. */}
     {topbarSlot && createPortal(
@@ -112,8 +116,7 @@ export default function MobileTopBar({
         {activeSlot && !(splitMode && splitFeatureEnabled) && (
           <div className="group/header flex min-w-0 flex-1 items-center gap-0.5" data-testid="mobile-topbar-title">
             {/* ONE control for title + menu: the session menu's trigger carries
-                the title text with the chevron flush after its last character
-                (the approved mock), so the bar's centre holds two controls --
+                the title text, so the bar's centre holds two controls --
                 the sessions toggle and this -- and the title has one tap
                 target, not a rename tap beside a menu tap. Rename lives in the
                 menu (`onRename`) and swaps this trigger for the shared title
@@ -154,6 +157,9 @@ export default function MobileTopBar({
                 }}
                 mode={effectiveMode}
                 sidebarOnScreen={sidebarOnScreen}
+                memoryMode={currentSlot?.memory_mode}
+                onPromote={onPromote}
+                promoting={promoting}
                 // Pop out / focus the popped-out window live in the bar's
                 // trailing ⋯ menu (below), the phone's window menu; the same
                 // row in two adjacent menus read as two different actions.

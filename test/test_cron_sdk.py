@@ -19,6 +19,7 @@ from hypothesis import strategies as st
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.cron import CronService
 from kiro_crew.llm_helpers import ToolApprovalPolicy
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.usefixtures("command_crons_run_here")
 
@@ -669,7 +670,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         """The reason an app wants this field, measured rather than asserted.
 
         Feeds the persisted job to the real gateway cron callback. ``auto`` must yield
-        AUTO_APPROVE with no approval callback; both modes are checked, since the auto
+        AUTO_APPROVE with an approver that approves on its own; both modes are checked, since the auto
         arm alone would pass on a callback that never installs an approval hook.
         """
         svc = self._service(tmp_path)
@@ -748,7 +749,9 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
 
         auto = _dispatch(unattended)
         assert auto["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
-        assert auto["on_tool_approval"] is None
+        # The approver re-checks ``auto`` per request (RFC enterprise edition D9): it
+        # approves while the policy allows it, without asking anyone.
+        assert asyncio.run(auto["on_tool_approval"](MagicMock())) is True
 
         hook = _dispatch(attended)
         assert hook["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
@@ -1058,3 +1061,56 @@ class TestOwnedCronToggle:
     def test_toggle_requires_boolean(self, service, value):
         with pytest.raises(ValueError, match="boolean"):
             CronSDK("example", service).set_enabled("missing", value)
+
+
+class TestOwnedCronRunNow:
+    """``run_job_async`` against a real service; only the run's body is replaced."""
+
+    @pytest.fixture
+    def service(self, tmp_path):
+        svc = CronService(base_dir=tmp_path)
+        svc._dir.mkdir(parents=True, exist_ok=True)
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_an_owned_job_runs_once_and_keeps_its_schedule(self, service):
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        with patch.object(service, "_run_job_isolated") as run:
+            assert await sdk.run_job_async(job.id) is True
+            # The claim is taken before the first await, so the run is in flight.
+            dispatched = service._claims[job.id].task
+            assert await sdk.run_job_async(job.id) is False
+            assert await await_until(dispatched, what="the manual run") is True
+        assert [(c.args[0].id, c.args[1].trigger) for c in run.await_args_list] == [
+            (job.id, "manual")
+        ]
+        assert job.id not in service._claims
+        assert service.get_job(job.id).schedule.every_secs == 600
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_job_is_refused_and_audited(self, service, monkeypatch):
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        other = await CronSDK("other", service).add_job_async(
+            name="other/job", message="hello", every_secs=600
+        )
+        with pytest.raises(PermissionError):
+            await CronSDK("example", service).run_job_async(other.id)
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert not service.is_running(other.id)
+
+    @pytest.mark.asyncio
+    async def test_the_run_rechecks_the_owner_in_the_store(self, service):
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        state = json.loads(await asyncio.to_thread(service._path.read_text, encoding="utf-8"))
+        state["jobs"][0]["created_by"] = "app:other"
+        await asyncio.to_thread(service._path.write_text, json.dumps(state), encoding="utf-8")
+        with patch.object(service, "_run_job_isolated") as run:
+            # The SDK's own check reads the cache, which still names this app.
+            assert await sdk.run_job_async(job.id) is True
+            dispatched = service._claims[job.id].task
+            assert await await_until(dispatched, what="the manual run") is False
+        run.assert_not_awaited()
+        assert job.id not in service._claims

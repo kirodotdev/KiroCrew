@@ -30,32 +30,22 @@ _CONFIG_FIELDS = (
 
 _ACTIVITY_RING = 50
 
-# The furthest ahead of the fold's own wall clock a `member/message` timestamp
-# may push `last_active_ts`. The monotone rule (see `RosterProjection.apply`)
-# has no upper bound of its own: it latches the greatest `ts` it has ever seen
-# and, being an append-only fold, has nothing that can ever walk that value
-# back down. A `ts` from a jumped-forward clock -- a VM resume, an NTP step, a
-# hand-edited ISO string -- is therefore permanent, and pins its member above
-# every genuinely-active crewmate for the life of the store. A small tolerance
-# absorbs ordinary clock skew between the hosts that stamp and fold the event;
-# anything past it is clamped down to the ceiling so the member still reads as
-# active now (the event did happen) without ranking ahead of the present.
+# Seconds a `member/message` timestamp may sit ahead of the fold's wall clock.
+# The monotone `last_active_ts` (see `RosterProjection.apply`) can never walk
+# back down, so a `ts` from a jumped-forward clock (VM resume, NTP step) would
+# pin its member atop Recent for good. This absorbs ordinary skew; a later `ts`
+# is clamped to the ceiling, so the member still reads as active now.
 _FUTURE_TS_SKEW = 300.0
 
 
 def scope_activity_view(view: dict, owner: str) -> dict:
     """An activity view holding only *owner*'s records, with counts to match.
 
-    Slugification is lossy, so two distinct member NAMES can share one slug and
-    therefore one log. The fold cannot tell them apart: a projection's ``apply``
-    and ``view`` see events and nothing else, and the owning name lives in the
-    log HEADER, which is not an event. So the scoping belongs where the header
-    name is known -- the service, beside the ``name`` it already overlays onto
-    the roster view for exactly the same reason.
+    Slugification is lossy, so two member NAMES can share one slug and one log.
+    The fold sees only events and the owning name lives in the log HEADER, so
+    the scoping happens in the service, which knows the header name.
 
-    The counts are recomputed here rather than kept from ``view``: counts taken
-    over the unfiltered ring would describe a different set of records than the
-    list served next to them, which is a worse answer than either alone.
+    The counts are recomputed so they describe the same records as the list.
     """
     records = [r for r in view.get("recent", []) if isinstance(r, dict)]
     kept = [r for r in records if r.get("member") == owner]
@@ -108,26 +98,15 @@ def _recency_counts(timestamps: list[float | None], now: float) -> tuple[int, in
     return today, week
 
 
-# ---------------------------------------------------------------------------
-# roster
-# ---------------------------------------------------------------------------
+# Roster
 class RosterProjection:
     key = types.PROJ_ROSTER
-    #: 2 because `last_active_ts` is MONOTONE (see `apply`), which is bookkeeping
-    #: a savepoint written by a fold WITHOUT that rule can contradict. Such a
-    #: savepoint can hold a recency a preview correction walked backwards, and
-    #: resuming it applies only the events after it -- so the regressed value
-    #: would stand for the life of the store, or until the member next spoke,
-    #: and the Recent order would still be wrong after the upgrade. A bump is
-    #: what discards it (`projection/checkpoint.py`: a `state_version` mismatch
-    #: refuses the payload), after which the member's own log is re-folded from
-    #: the start under the monotone rule. Cheap, and the only lossless answer:
-    #: the events the bad savepoint consumed are the ones that hold the truth.
-    #: Still 2 with `reset_at` in the fold: a savepoint a resume can admit was
-    #: folded over a log whose vocabulary holds no `member/reset`, so it carries
-    #: no reset this fold would read differently, and any such event arrives
-    #: above its watermark where the resumed fold applies it. A bump would buy
-    #: one cold re-fold per member and reach the same state.
+    #: 2 because `last_active_ts` is MONOTONE (see `apply`): a savepoint folded
+    #: without that rule can hold a recency walked backwards, and a resume would
+    #: keep it. A `state_version` mismatch refuses the payload
+    #: (`projection/checkpoint.py`), so the log is re-folded from the start.
+    #: `reset_at` needs no bump: an admissible savepoint holds no `member/reset`,
+    #: and any such event lies above its watermark, where the resume applies it.
     state_version = 2
 
     def init(self) -> dict:
@@ -158,26 +137,15 @@ class RosterProjection:
             return state
         if etype == types.MEMBER_MESSAGE:
             new = dict(state)
-            # MONOTONE, unlike every other field here. "When was this member last
-            # active" is an answer time only ever moves forward, so a fold that
-            # took each event's `ts` last-wins could only ever be wrong when it
-            # moved down -- and one writer moves it down by design.
-            # `reconcile_member_preview` corrects a stale quote by appending a
-            # `member/message` carrying the TRANSCRIPT's epoch, which is the last
-            # thing SAID and is therefore older than any machinery turn since. A
-            # last-wins fold would let that correction reset recency to the last
-            # speech, on every roster read, in an append-only log with nothing to
-            # reopen it -- so a crewmate the user had just messaged would sink back
-            # to where the quote was from. Taking the greater keeps both writers
-            # honest: the correction still lands its quote, and no writer has to
-            # know what the recency was before it.
+            # MONOTONE, unlike every other field here. `reconcile_member_preview`
+            # corrects a stale quote with a `member/message` carrying the
+            # TRANSCRIPT's epoch, older than any machinery turn since; last-wins
+            # would let that sink a just-messaged crewmate down Recent for good.
+            # Taking the greater lets the correction land its quote without
+            # moving recency back.
             #
-            # CEILING. Monotone-greatest has no upper bound of its own, so a `ts`
-            # from a jumped-forward clock would latch permanently and pin the
-            # member atop Recent for good (see `_FUTURE_TS_SKEW`). Clamp the
-            # candidate to the fold's own wall clock plus a skew tolerance before
-            # the monotone compare: a future `ts` still advances a staler recency
-            # to now (the activity is real) but can never rank ahead of it.
+            # CEILING: clamp to wall clock plus `_FUTURE_TS_SKEW` before the
+            # compare, so a future `ts` advances recency to now but never past it.
             ts = _parse_ts(data.get("ts"))
             if ts is not None and ts > 0:
                 now = datetime.now(timezone.utc).timestamp()
@@ -197,9 +165,7 @@ class RosterProjection:
         return dict(state)
 
 
-# ---------------------------------------------------------------------------
-# activity
-# ---------------------------------------------------------------------------
+# Activity
 class ActivityProjection:
     key = types.PROJ_ACTIVITY
     state_version = 1
@@ -236,9 +202,7 @@ class ActivityProjection:
         return {"recent": served, "today": today, "week": week}
 
 
-# ---------------------------------------------------------------------------
-# wake
-# ---------------------------------------------------------------------------
+# Wake
 class WakeProjection:
     key = types.PROJ_WAKE
     state_version = 1
@@ -268,9 +232,7 @@ class WakeProjection:
         return dict(state)
 
 
-# ---------------------------------------------------------------------------
-# driving
-# ---------------------------------------------------------------------------
+# Driving
 class DrivingProjection:
     key = types.PROJ_DRIVING
     state_version = 1

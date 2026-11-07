@@ -580,6 +580,36 @@ class TestCostOnlyTurnPersistGate:
         assert rows() == []
 
 
+class TestTurnRowDelivery:
+    """A billed turn that streamed no reply text must read apart from one
+    that answered, on the per-turn rows the Spend drill-down reads."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("replied", [True, False], ids=["reply", "no_reply"])
+    async def test_the_turn_row_says_whether_a_reply_was_delivered(
+        self, tmp_path, monkeypatch, replied
+    ):
+        from kiro_crew.dashboard.handlers.usage import slot_turn_usage
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")] if replied else []
+        events.append(
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn", usage=TurnUsage(credits=0.45))
+        )
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = TestTokenPersistenceBackfill._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        _stored_token_rows(monkeypatch, tmp_path)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        (turn,) = slot_turn_usage("s1")
+        assert turn.get("delivered") is replied
+
+
 class TestKiroBackfillProfileGuard:
     """The kiro/acp backfill must NOT store a resolved Bedrock inference-profile id.
 

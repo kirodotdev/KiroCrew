@@ -4,10 +4,11 @@
  * notice is decided from the reconciled slot list after the recovery read, so
  * a close that worked is never reported as still open.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { deleteSlot, setActiveSlot, sseChatMessage } from '../store/chatSlice'
-import dashboardReducer, { fetchSlots, sseSlotPatch, sseSlots } from '../store/dashboardSlice'
+import chatReducer, { deleteSlot, resumeFromHistory, setActiveSlot, setCloseRefused, sseChatMessage } from '../store/chatSlice'
+import dashboardReducer, { addSlotOptimistic, fetchSlots, sseSlotPatch, sseSlots } from '../store/dashboardSlice'
+import { selectCloseNotice } from '../store/dashboard/closeWatch'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import type { ChatSlot } from '../types'
@@ -17,6 +18,7 @@ const apiMock = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
   chatSlots: vi.fn(),
   deleteChatSlot: vi.fn(),
+  resumeChatSlot: vi.fn(),
   sessions: vi.fn(),
 }))
 
@@ -171,6 +173,74 @@ describe('an uncoded close failure', () => {
     expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
   })
 
+  it('a late uncoded failure does not report a retry confirmed after the first hold expired', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => vi.useRealTimers())
+    let rejectFirst: (reason?: unknown) => void = () => {}
+    apiMock.chatSlots.mockRejectedValueOnce(new Error('offline'))
+    apiMock.deleteChatSlot
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    const first = store.dispatch(deleteSlot('doomed'))
+    vi.setSystemTime(Date.now() + 30_001)
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/fulfilled')
+    expect(root(store).dashboard.closeConfirmations.doomed).toBe(1)
+
+    rejectFirst(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    expect((await first).type).toBe('chat/deleteSlot/rejected')
+    await Promise.resolve()
+
+    expect(chat(store).closeRefused).toBeNull()
+  })
+
+  it('a rejected recovery read does not report a confirmed retry as refused after its list budget is spent', async () => {
+    let rejectRecovery: (reason?: unknown) => void = () => {}
+    apiMock.chatSlots.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectRecovery = reject }))
+    apiMock.deleteChatSlot
+      .mockRejectedValueOnce(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+      .mockResolvedValueOnce({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/rejected')
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/fulfilled')
+    for (let i = 0; i < 3; i++) store.dispatch(sseSlots([slotRow('peer')]))
+    expect(root(store).dashboard.closingSlots.doomed?.graceFrames).toBe(0)
+
+    rejectRecovery(new Error('offline'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(root(store).dashboard.closingSlots.doomed).toBeUndefined()
+    expect(chat(store).closeRefused).toBeNull()
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+  })
+
+  it('a pre-close recovery list does not report a confirmed retry as refused after its list budget is spent', async () => {
+    let answerRecovery: (v: unknown) => void = () => {}
+    apiMock.chatSlots.mockReturnValueOnce(new Promise(resolve => { answerRecovery = resolve }))
+    apiMock.deleteChatSlot
+      .mockRejectedValueOnce(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+      .mockResolvedValueOnce({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/rejected')
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/fulfilled')
+    for (let i = 0; i < 3; i++) store.dispatch(sseSlots([slotRow('peer')]))
+
+    answerRecovery([slotRow('doomed'), slotRow('peer')])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chat(store).closeRefused).toBeNull()
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+  })
+
   it('a removed frame that lands before the recovery list answers is not reported as still open', async () => {
     let answerRecovery: (v: unknown) => void = () => {}
     apiMock.chatSlots.mockReturnValueOnce(new Promise(resolve => { answerRecovery = resolve }))
@@ -201,6 +271,152 @@ describe('an uncoded close failure', () => {
 
     expect(root(store).dashboard.durablyRemoved.doomed).toBe(true)
     expect(chat(store).closeRefused).toBeNull()
+  })
+
+  it('a removed frame before a delayed 404 keeps a later listing quiet', async () => {
+    let rejectClose: (reason?: unknown) => void = () => {}
+    apiMock.deleteChatSlot.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectClose = reject }))
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    try {
+      const store = makeStore()
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+      const close = store.dispatch(deleteSlot('doomed'))
+      expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed')
+      store.dispatch(sseSlotPatch({ removed: ['doomed'] }))
+      expect(root(store).dashboard.durablyRemoved.doomed).toBe(true)
+
+      const confirmedUntil = root(store).dashboard.closingSlots.doomed?.confirmedUntil
+      expect(confirmedUntil).toEqual(expect.any(Number))
+      clock.mockReturnValue(confirmedUntil as number)
+      store.dispatch(sseSlots([slotRow('peer')]))
+      expect(root(store).dashboard.closingSlots.doomed).toBeUndefined()
+
+      rejectClose(Object.assign(new Error('not found'), { status: 404 }))
+      expect((await close).type).toBe('chat/deleteSlot/fulfilled')
+
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+      expect(selectCloseNotice(root(store))).toBeNull()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('a timed-out close the server later puts back raises the notice, and dismissing it clears it (#31168)', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed', { title: 'Doomed notes' }), slotRow('peer')]))
+    await store.dispatch(deleteSlot('doomed'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(selectCloseNotice(root(store))).toBeNull()
+
+    store.dispatch(sseSlots([slotRow('doomed', { title: 'Doomed notes' }), slotRow('peer')]))
+    expect(selectCloseNotice(root(store))).toEqual({ key: 'doomed', title: 'Doomed notes', reason: 'failed' })
+
+    store.dispatch(setCloseRefused(null))
+    expect(selectCloseNotice(root(store))).toBeNull()
+  })
+
+  it('a removed frame after a timed-out close keeps a later listing of that key quiet (#31168)', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    await store.dispatch(deleteSlot('doomed'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    store.dispatch(sseSlotPatch({ removed: ['doomed'] }))
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    expect(selectCloseNotice(root(store))).toBeNull()
+  })
+
+  it('this tab reopening the key after a timed-out close is not reported as the close undone (#31168)', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    await store.dispatch(deleteSlot('doomed'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    store.dispatch(addSlotOptimistic(slotRow('doomed')))
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    expect(selectCloseNotice(root(store))).toBeNull()
+  })
+
+  it('resuming the session from History after a timed-out close is not reported as the close undone (#31168)', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    await store.dispatch(deleteSlot('doomed'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    let noticeWhenListed: unknown = 'unset'
+    apiMock.resumeChatSlot.mockImplementation(async () => {
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+      noticeWhenListed = selectCloseNotice(root(store))
+      return { ok: true, key: 'doomed', mode: 'default', messages: [] }
+    })
+    await store.dispatch(resumeFromHistory({ key: 'dashboard_doomed', title: 'doomed' }))
+    expect(noticeWhenListed).toBeNull()
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+    expect(selectCloseNotice(root(store))).toBeNull()
+  })
+
+  it('the session reopened elsewhere after a timed-out close is not reported, the same session put back is (#31537)', async () => {
+    for (const [listed, expected] of [
+      ['inc-reopened', null],
+      ['inc-closed', { key: 'doomed', title: null, reason: 'failed' }],
+    ] as const) {
+      apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+      apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+      const store = makeStore()
+      store.dispatch(sseSlots([slotRow('doomed', { incarnation: 'inc-closed' }), slotRow('peer')]))
+      await store.dispatch(deleteSlot('doomed'))
+      await vi.waitFor(() => expect(root(store).dashboard.closeWatch?.doomed).toBeDefined())
+
+      store.dispatch(sseSlots([slotRow('doomed', { incarnation: listed }), slotRow('peer')]))
+      expect(selectCloseNotice(root(store))).toEqual(expected)
+      expect(root(store).dashboard.closeWatch?.doomed).toBeUndefined()
+    }
+  })
+
+  it('a listing after the watch window is not tied to the timed-out close (#31168)', async () => {
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    try {
+      const store = makeStore()
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+      await store.dispatch(deleteSlot('doomed'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      clock.mockReturnValue(1_700_000_000_000 + 10 * 60_000)
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+      expect(selectCloseNotice(root(store))).toBeNull()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('a list fetched before a timed-out close does not count as the server putting it back (#31168)', async () => {
+    let answerStale: (v: unknown) => void = () => {}
+    apiMock.chatSlots
+      .mockReturnValueOnce(new Promise(resolve => { answerStale = resolve }))
+      .mockResolvedValueOnce([slotRow('peer')])
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    const stale = store.dispatch(fetchSlots())
+    await store.dispatch(deleteSlot('doomed'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    answerStale([slotRow('doomed'), slotRow('peer')])
+    await stale
+
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+    expect(selectCloseNotice(root(store))).toBeNull()
   })
 
   it('a removed frame after the notice clears it', async () => {

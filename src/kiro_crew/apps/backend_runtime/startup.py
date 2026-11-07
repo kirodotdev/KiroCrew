@@ -5,7 +5,7 @@ entries of disabled apps, revokes the executable resources of apps no activation
 boundary admits any more, vets the rest fail-closed, and spawns the admitted set
 concurrently with their fixed ports reserved first. ``start_dashboard`` reserves
 the dashboard port and exports ``KIROCREW_BOUND_PORT`` before calling it, so a
-backend whose host grants ask for the bound port spawns in the same wave.
+backend's ``KIROCREW_GATEWAY_ORIGIN`` is set in the same wave.
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ def start_enabled_app_backends() -> list[str]:
     Called during gateway startup to restore app backends.
     Returns list of app names that were started.
 
-    One wave for every admitted app, including those whose host grants ask for the
-    gateway's ACTUALLY-bound port (``builtin_host_grants.bound_port_apps``, handed
-    over as ``KIROCREW_BOUND_PORT``): ``start_dashboard`` reserves the port and
-    exports that value before this runs. A callback such a backend makes while the
+    One wave for every admitted app, each handed the gateway's loopback origin
+    (``KIROCREW_GATEWAY_ORIGIN``, built from ``KIROCREW_BOUND_PORT``):
+    ``start_dashboard`` reserves the port and exports that value before this
+    runs. A callback a backend makes while the
     gateway is still booting queues in the reserved socket's backlog until the
     listener starts accepting.
     """

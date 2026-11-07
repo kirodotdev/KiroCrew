@@ -5,15 +5,10 @@ from pathlib import Path
 
 # Busy-check helpers, and the slot state each one reads on its caller's behalf.
 #
-# A handler that delegates its refusal to one of these is still a CONSUMER of
-# that state even though it does not name the attribute itself, so the
-# enumeration below credits the caller with what the helper reads. Without that,
-# extracting a guard into a helper silently drops every caller out of the table,
-# and a NEW handler wired to the same helper adds no entry at all -- the drift
-# this test exists to catch stops tripping it.
-#
-# Add a helper here when it becomes the only thing standing between a handler
-# and a live turn.
+# A handler that delegates its refusal to a helper still consumes that state, so the
+# enumeration credits the caller with what the helper reads; otherwise moving a guard
+# into a helper would drop callers out of the table. Add a helper here when it becomes
+# the only thing standing between a handler and a live turn.
 _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # Regenerate, variant switch and edit-resend: refuses on either state.
     "_destructive_history_busy": frozenset({"running", "turn_running"}),
@@ -165,7 +160,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
                 # The model route's transaction; the in-turn /model <id> on KAS shares it.
                 ("chat_api/slot_model.py", "switch_slot_model"),
-                ("chat_api/slot_note.py", "api_chat_slot_note"),
                 # The project route arms a deferred reset when a start carrying
                 # the old cwd is already in flight; slot.running (the
                 # reservation) catches a cold-starting turn no provider has
@@ -200,9 +194,15 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The held-queue drain Resume and a member's Continue share starts
                 # a turn only on an unreserved slot, under its lock.
                 ("handlers/crew_pause.py", "drain_held_queue"),
+                ("chat_api/slot_note.py", "deliver_note"),
+                # A held merge card is delivered at once only to a slot no turn owns.
+                ("chat_api/slot_note.py", "_flush_held_notes_if_idle"),
                 ("chat_api/turn_stop.py", "stop_slot_turn"),
                 # Stop settlement wakes retained priority only on an unreserved slot.
                 ("chat_api/turn_stop.py", "_make_stop_resolver"),
+                # Merge-back sends its card to the parent slot that is working,
+                # because that slot's turn owns the transcript's tail.
+                ("chat_merge_back.py", "_live_parent"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # A turn the agent started claims the slot only when no send
                 # has reserved it: a reserved slot's turn reads those frames.

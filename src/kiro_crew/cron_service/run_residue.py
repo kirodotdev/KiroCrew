@@ -5,7 +5,9 @@ A job with ``persistent_session=False`` runs each fire under a fresh key,
 ``cron_<job_id>_<run_id>.jsonl`` (plus a ``.lock`` sidecar and sometimes an
 ``.attachments`` directory) at the top of the sessions directory. Nothing reads
 them once the run ends: the job's chat tab shows only the stable ``cron:<job_id>``
-transcript and run results live in the cron history store. Archive retention only
+transcript and run results live in the cron history store. The exception is a
+``new_chat_per_run`` run that opened a tab of its own: its transcript is that
+tab's, so it is re-tagged ``tab`` and passed by. Archive retention only
 covers ``sessions/archive``, so without this prune the files accumulate without
 bound, and every full session listing pays one stat per file.
 

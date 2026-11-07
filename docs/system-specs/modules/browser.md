@@ -30,7 +30,7 @@ agent turn ──MCP browser(op, args)──▶ ops ──▶ supervisor.call(<h
 
 | Part | Where |
 |---|---|
-| Driver install, environment fence, browser discovery, relay, supervisor, helper worker, status and install routes | the `browser_harness` package: `env.py`, `install.py`, `chromium.py`, `discover.py`, `relay.py`, `supervisor.py`, `helper_worker.py`; `dashboard/handlers/browser_harness_status.py` |
+| Driver install, environment fence, browser discovery, relay, supervisor, helper worker, status and install routes | the `browser_harness` package: `env.py`, `install.py`, `build_deps.py`, `chromium.py`, `discover.py`, `relay.py`, `supervisor.py`, `helper_worker.py`; `dashboard/handlers/browser_harness_status.py` |
 | Screencast, adaptive ladder, takeover input, the live hub, the card's routes and the `browser_live` event | `screencast.py`, `takeover.py`, `live_hub.py` in that package; `dashboard/handlers/browser_live.py` |
 | The `browser` MCP tool's ops, the snapshot walker and the op route that also drives the card | `mcp_tools/browser.py`, `ops.py`, `snapshot_walker.js` in that package; `dashboard/handlers/browser_ops.py` |
 | The live card in the transcript | `BrowserLiveCard*.tsx` under the chat page, the `useBrowserLive*` hooks, and the binary-frame branch of `useWebSocket.ts` |
@@ -50,6 +50,19 @@ at `<data-home>/browser-harness/venv` (`python -m venv --clear` on that
 directory alone, so the Chromium beside it survives a re-install; then
 `pip install --require-hashes -r browser_harness/requirements.lock`: 12 pinned
 requirements, 176 sha256 hashes, compiled for Python 3.11+ on every platform).
+On Linux with a glibc older than 2.27 (Amazon Linux 2: 2.26) the locked
+`pillow==12.3.0`, which `browser-harness` itself pins, has no wheel and pip has to
+build its sdist. `build_deps.py` checks first, from the filesystem alone, for a C
+compiler (`$CC`, the interpreter's own `CC`, or `cc`/`gcc` on `PATH`), the gateway
+interpreter's `Python.h`, and `zlib.h` and `jpeglib.h` wherever pillow 12.3.0's
+`setup.py` looks: the system include directories, `C_INCLUDE_PATH`, `CPATH`,
+`INCLUDE`, a glued `-I<dir>` in `CFLAGS`/`CPPFLAGS`/`LDFLAGS`, and
+`ZLIB_ROOT`/`JPEG_ROOT`. Pillow also asks pkg-config, which the check does not run,
+so with `PKG_CONFIG_PATH` or `PKG_CONFIG_LIBDIR` set the headers are left to pip. A
+host missing any of them is refused at `preparing`, before the marker or the venv
+is touched, with what is missing and the `yum`/`apt-get` command that installs it.
+A venv that already holds the locked pillow and is not being rebuilt is not
+checked, since pip has nothing to build.
 Kiro's own Chromium (Chrome for Testing `154.0.8037.0`, the build Playwright's
 `chromium-1244` ships, fetched from Google's bucket and then Playwright's CDN,
 which alone hosts linux-arm64) is downloaded into the same prefix for hosts with
@@ -163,7 +176,8 @@ as `HelperError` with Harness's own one-line message; `HarnessNotInstalled` and
 brings browser, relay, daemon and worker up in `ensure()` (serialised: a second
 caller waits for the first), reports `status()` (`installed`, `version`,
 `wanted_version`, `browser {kind, headless}`, `connection`
-`connected|waiting_allow|disconnected|error`, `detail`, `agent_tabs`, `chromium`),
+`connected|waiting_allow|disconnected|error`, `detail`, `agent_tabs`, `chromium`
+`{version, platform, build, present, executable}`),
 and stops all of it in `stop()`. `waiting_allow` has no deadline because the
 connection is what keeps Chrome's Allow sheet on screen. The gateway stops the
 supervisor on shutdown and before an in-place restart's exec
@@ -181,6 +195,29 @@ auto-install (see the driver section).
 | Chrome's `RemoteDebuggingAllowed` policy is off | Kiro's Chromium | none |
 
 A snap-packaged Chromium is skipped: snap confinement breaks the debugging port.
+
+**Old libcups: the headless shell.** The full Chrome for Testing build links
+`libcups.so.2` and binds every symbol at load, so on a Linux host whose libcups
+lacks `ippValidateAttributes`, `cupsFindDestDefault`, `cupsFindDestSupported` or
+`cupsUserAgent` (Amazon Linux 2: cups-libs 1.6.3) it exits 127 before it opens
+the debugging pipe. There `chromium.wanted_build` picks the same version's
+`chrome-headless-shell` (the `{build}` in both download URLs), which links no
+libcups, and keeps it in `chromium/154.0.8037.0-headless-shell/` beside the full
+build's directory. Everything that reads or fetches Kiro's Chromium goes through
+that one answer: `chromium_state` (so on such a host a full build already on
+disk reads as not downloaded, and the startup auto-install fetches the shell),
+`download_chromium`, and therefore the executable the supervisor launches, with
+the same flags. The shell has no window, so on such a host Kiro's Chromium is
+always headless: `supervisor._choose` reports a `kiro_chromium` choice as
+headless even when a display and a windowed pin would otherwise give it one, so
+status, the live card and the startup warm never offer a window it cannot show. `libcups.py` decides from the filesystem alone: the first
+native 64-bit `libcups.so.2` in the linker's system directories (never
+`LD_LIBRARY_PATH`), its ELF dynamic symbol table parsed in Python. It launches
+nothing, so `install_state` and the status poll still launch nothing, and it
+needs no binutils. No libcups found, or none readable, is no evidence and keeps
+the full build; macOS and Windows always get the full build. A version bump
+re-reads `libcups.REQUIRED_SYMBOLS` from the new build's
+`nm -D --undefined-only`.
 On macOS and Linux Kiro's Chromium speaks CDP over `--remote-debugging-pipe`
 (fds 3 and 4, moved into place by `/bin/sh` before `exec`), so it opens no port
 at all; Python cannot hand a Windows child fds 3 and 4, so there it keeps an
@@ -954,7 +991,7 @@ and its gates). Three uses:
 
 | Use | Ops | Request | Used when | Otherwise |
 |---|---|---|---|---|
-| pick | `click`, `hover`, `type`, `select_option` with `target` (a description) and no `ref`/`x`/`y` | one Choice over the outline's refs, each option `role "name"` plus the nearest heading above it (at most 200, the ones sharing most words with `target`), with Nouls `present`, `error_shown`, `not_found`, `bot_check` | `present > 0.7`, the pick's p >= 0.6, no risk Noul > 0.7: the op runs on that ref and the result carries `picked` | refused `needs_ref` |
+| pick | `click`, `hover`, `type`, `select_option` with `target` (a description) and no `ref`/`x`/`y` | one Choice over the outline's refs, each option `role "name"` plus the nearest heading above it (at most 100, the ones sharing most words with `target`), with Nouls `present`, `error_shown`, `not_found`, `bot_check` | `present > 0.7`, the pick's p >= 0.6, no risk Noul > 0.7: the op runs on that ref and the result carries `picked` | refused `needs_ref` |
 | verify | `click`, `type`, `navigate` that succeeded | before/after outlines, or before/after screenshots with the image scope; Nouls `as_expected`, `changed`, `error_shown` | any valid answer: the result carries `verify` `{as_expected, changed, error_shown: yes/no/unsure, by: outline/screenshot}` | the result is today's, byte for byte |
 | box | `click`, `hover` whose pick found no control (`present < 0.3`) on a page with a visible `<canvas>` (`canvasRects`) | one screenshot, Noul `present` + Box `where` | `present > 0.7`, confidence >= 0.6 and the box centre inside a canvas: the op runs on that pixel | refused `needs_ref` |
 
@@ -1006,7 +1043,7 @@ for `type`, filled only with `values`.
 | Part | What the code does | What the model answers |
 |---|---|---|
 | Observation | ONE walker call, `observe(opts)`: the indexed element table (visible, enabled, in-viewport controls with role, name, current value, checked/selected/expanded state, select options, each with its ref and a guard -- a hash of the element and its row/form/dialog text), the visible text, declarative `read` probes (`name=css@text\|value\|checked\|box\|count\|attr:NAME`, at most 16, 4 KB, a password or secret-named field reads as null; no script), a mutation counter, an animation-frame counter and a fingerprint, all limited to `region` when given. `grid` (+ `grid_items`) adds the cells read by `cells(selector)`. `see: true` adds a masked frame under `browser_images` with the frame rules above | -- |
-| Request | one per decision, `extra.kind = "reflex"`: Choice `operation` over the moves offered (key presses, scrolls, drags, bound typing, WAIT, and one option per targeted operation); per targeted operation a speculative Choice `<op>_target` over the elements that operation fits (a select's options as `eN:i`); Choice `value` over `values` when there are several; Nouls `done`, `stuck`, `off_path`, the agent's `until_noul`, and `risk_i` for at most 8 moves not yet judged | the judgments |
+| Request | one per decision, `extra.kind = "reflex"`: Choice `operation` over the moves offered (key presses, scrolls, drags, bound typing, WAIT, and one option per targeted operation); per targeted operation a speculative Choice `<op>_target` over the elements that operation fits (a select's options as `eN:i`), at most 100 options in page order, a dropdown that does not fit skipped whole; Choice `value` over `values` (at most 20) when there are several, so with at most 40 moves a request carries at most 465 options, within Laya's 512; Nouls `done`, `stuck`, `off_path`, the agent's `until_noul`, and `risk_i` for at most 8 moves not yet judged | the judgments |
 | Use | only the target head matching the picked operation is read; the others are discarded unread, so a target never meets an operation it does not fit | -- |
 | Executor | before input the walker's `check(ref, kind, guard)` re-reads the target: the same guard, enabled, visible, inside the viewport, not covered at its centre (`elementFromPoint`), editable and not secret for typing, the option still offered for a select. A failed check drops that answer (`stale`) and nothing is input. Typing replaces the field's text (`selectText`, then the `type` op). The model's answer is never a selector, a coordinate or script | -- |
 | Settle | after an action, two animation frames (at most 50 ms), or after typing into a combobox until its suggestions show (at most 200 ms); `settle_ms` overrides | -- |

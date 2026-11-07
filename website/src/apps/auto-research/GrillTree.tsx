@@ -96,7 +96,7 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
            className={depth ? 'border-l border-dashed border-border pl-3 mt-1.5' : 'mt-1.5'}>
         <div className="flex items-start gap-1.5 text-sm">
           {kids.length > 0 ? (
-            <button onClick={() => toggleCollapse(node.id)} className="text-muted mt-0.5" aria-label={isCollapsed ? i18nT('apps.autoResearch.grillTree.expand_2') : i18nT('apps.autoResearch.grillTree.collapse')}>
+            <button onClick={() => toggleCollapse(node.id)} className="text-muted mt-0.5" aria-expanded={!isCollapsed} aria-label={isCollapsed ? i18nT('apps.autoResearch.grillTree.expand_2') : i18nT('apps.autoResearch.grillTree.collapse')}>
               {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
             </button>
           ) : <span className="w-[13px]" />}

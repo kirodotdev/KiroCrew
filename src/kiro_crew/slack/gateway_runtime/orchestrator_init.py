@@ -180,6 +180,7 @@ def __init__(
     self.channel_history = None
     self.dashboard_state = None
     self._background_tasks = set()  # prevent GC of fire-and-forget tasks
+    self._skills_sync_task = None
     # Approval-state persistence is scheduled while the MCP broker starts,
     # but its task waits for the dashboard/API readiness boundary.
     self._mcp_launch_approval_ready = asyncio.Event()

@@ -83,7 +83,7 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
     # managed-venv engine's build children are synchronous ``Popen`` children
     # and use ``platform_compat.kill_popen_tree`` instead.)
     from kiro_crew.platform.update_governance import unattended_apply_allowed
-    from kiro_crew.platform.update_provider import _kill_and_reap
+    from kiro_crew.platform.update_provider import _kill_and_reap, _start_installer
 
     # Loaded before the reinstall below for the same reason as the provider
     # path: `pip install -e .` rewrites the package this process imports
@@ -664,16 +664,19 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
 
         # Hard reset to remote. Reached only with a clean tracked tree and no
         # untracked collisions, so it overwrites nothing the developer owns.
-        reset = await asyncio.create_subprocess_exec(
-            _git,
-            "reset",
-            "--hard",
-            target,
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
+        reset = await _start_installer(
+            asyncio.create_subprocess_exec(
+                _git,
+                "reset",
+                "--hard",
+                target,
+                cwd=proj,
+                env=_git_env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+            ),
+            stop=_kill_and_reap,
         )
         # Only a reset that started can have moved the tree: a spawn that
         # raised wrote nothing.
@@ -725,14 +728,17 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         if kiro_cli_bin is not None:
             kiro_update: asyncio.subprocess.Process | None = None
             try:
-                kiro_update = await asyncio.create_subprocess_exec(
-                    kiro_cli_bin,
-                    "update",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    # Own process group (POSIX; no-op on Windows) so the
-                    # kill in the arms below reaches the whole tree.
-                    start_new_session=platform_compat.IS_POSIX,
+                kiro_update = await _start_installer(
+                    asyncio.create_subprocess_exec(
+                        kiro_cli_bin,
+                        "update",
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        # Own process group (POSIX; no-op on Windows) so the
+                        # kill in the arms below reaches the whole tree.
+                        start_new_session=platform_compat.IS_POSIX,
+                    ),
+                    stop=_kill_and_reap,
                 )
                 await asyncio.wait_for(kiro_update.wait(), timeout=120)
             except (TimeoutError, asyncio.TimeoutError):
@@ -863,20 +869,23 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
             # can, because these resolve from public PyPI with no
             # private-index dependency.
             core_deps = [pip for _mod, pip in self._REQUIRED_DEPS]
-            fallback = await asyncio.create_subprocess_exec(
-                *platform_compat.isolated_python_argv(
-                    "-m",
-                    "pip",
-                    "install",
-                    "--quiet",
-                    *core_deps,
+            fallback = await _start_installer(
+                asyncio.create_subprocess_exec(
+                    *platform_compat.isolated_python_argv(
+                        "-m",
+                        "pip",
+                        "install",
+                        "--quiet",
+                        *core_deps,
+                    ),
+                    cwd=proj,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    # Own process group (POSIX; no-op on Windows) so the kill
+                    # below reaches pip's build-backend grandchildren too.
+                    start_new_session=platform_compat.IS_POSIX,
                 ),
-                cwd=proj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                # Own process group (POSIX; no-op on Windows) so the kill
-                # below reaches pip's build-backend grandchildren too.
-                start_new_session=platform_compat.IS_POSIX,
+                stop=_kill_and_reap,
             )
             try:
                 _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)

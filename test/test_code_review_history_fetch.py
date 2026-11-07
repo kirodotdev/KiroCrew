@@ -1,16 +1,9 @@
 """Code Review's jobs read the same git data from a two-commit checkout as from a full clone.
 
-Every job in `code-review.yml` checks out the merge commit at `fetch-depth: 2`
-and then runs `.github/scripts/code-review-history.sh` as its "Resolve diff base
-(merge-base)" step. A full-history checkout downloads every branch with every
-blob, and on a slow runner that fetch outlasted the jobs' timeout.
-
-The invariant: once that step has run, every git read the jobs make (merge-base,
-commit range, the rule diffs, the base tip's scripts, Semgrep's baseline) gives
-the answer a full clone gives, with no further fetch. These cases build a local
-origin with GitHub-style `refs/pull/<n>/merge` refs, check out like
-`actions/checkout`, run the step's real `run:` body, then point `origin` at
-nothing and compare every read with a full clone.
+Jobs in `code-review.yml` and `pr-hygiene.yml` check out at `fetch-depth: 2` (a full
+fetch outlasts the timeout on a slow runner) and run `.github/scripts/code-review-history.sh`.
+After it, every git read must match a full clone with no further fetch. The cases build an
+origin with `refs/pull/<n>/merge` refs, run the step's real `run:` body, then cut `origin`.
 """
 
 from __future__ import annotations
@@ -29,9 +22,15 @@ from git_maintenance_helpers import git_global_config_text, git_maintenance_off_
 from test_ai_review_workflows_code_review_greps import _pcre_grep_path
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
+WORKFLOWS = ROOT / ".github" / "workflows"
 SCRIPT = ROOT / ".github" / "scripts" / "code-review-history.sh"
-JOBS = ("autosde-rules", "inclusive-language", "sast", "pr-hygiene")
+# Each job that runs the script, and the workflow file it lives in.
+JOBS = {
+    "autosde-rules": "code-review.yml",
+    "inclusive-language": "code-review.yml",
+    "sast": "code-review.yml",
+    "pr-hygiene": "pr-hygiene.yml",
+}
 DIFF_STEP = "Resolve diff base (merge-base)"
 
 pytestmark = pytest.mark.skipif(
@@ -40,8 +39,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _workflow(job: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / JOBS[job]).read_text(encoding="utf-8"))
+
+
 def _steps(job: str) -> list[dict]:
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"][job]["steps"]
+    return _workflow(job)["jobs"][job]["steps"]
 
 
 def _checkout(job: str) -> dict:
@@ -49,9 +52,10 @@ def _checkout(job: str) -> dict:
     return checkout.get("with") or {}
 
 
-def test_every_job_is_covered() -> None:
-    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
-    assert set(jobs) == set(JOBS), sorted(jobs)
+@pytest.mark.parametrize("name", sorted(set(JOBS.values())))
+def test_every_job_is_covered(name: str) -> None:
+    jobs = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))["jobs"]
+    assert set(jobs) == {job for job, file in JOBS.items() if file == name}, sorted(jobs)
 
 
 @pytest.mark.parametrize("job", JOBS)
@@ -83,7 +87,7 @@ def test_the_workflow_and_the_job_set_no_token(job: str) -> None:
     The workflow's own env and the whole job are read, the job's env and every
     step included, since a token set at any of those levels reaches the script.
     """
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    workflow = _workflow(job)
     for scope, value in (("workflow env", workflow.get("env") or {}), (job, workflow["jobs"][job])):
         text = yaml.safe_dump(value)
         for token in ("github.token", "secrets.", "GH_TOKEN", "GITHUB_TOKEN"):
@@ -491,12 +495,9 @@ def _trace_processes(trace_dir: Path) -> list[tuple[list[str], dict[str, list[st
 def test_no_fetch_has_a_credential_or_header_to_send_even_when_the_runner_has_them(world) -> None:
     """Every fetch the step starts, the on-demand ones during the diffs included, is anonymous.
 
-    The runner's git config hands out a credential and sets the
-    ``http.https://github.com/.extraheader`` that ``actions/checkout`` writes.
-    The script's own fetch is checked through a ``git`` shim. The on-demand
-    fetches start from git's exec-path, which no shim on PATH sees, so the git
-    trace records what each fetch read. The merge-base here is older than both
-    of the merge commit's parents, so its files are fetched on demand.
+    The runner sets a credential and ``http.https://github.com/.extraheader``. On-demand
+    fetches start from git's exec-path, which no PATH shim sees, so the git trace checks
+    them; the merge-base is older than both parents, forcing those fetches.
     """
     o, cases, _ = world
     real_git = shutil.which("git")

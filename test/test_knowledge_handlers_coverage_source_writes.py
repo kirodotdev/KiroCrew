@@ -22,11 +22,13 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 )
 
 from kiro_crew.dashboard.handlers import knowledge as kh
+from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.url_fetch import FetchedPage
 from kiro_crew.testing.wait import await_until
 
-# ------------------------------------------------------------ agent document
+# agent document
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +105,7 @@ class TestAddAgentDocumentRoute:
         assert fake_add.await_args.kwargs["source_uri"] == ""
 
 
-# ----------------------------------------------------------------- ingest_text
+# ingest_text
 
 
 class TestIngestText:
@@ -157,6 +159,49 @@ class TestIngestText:
                 "code": "invalid_field_type",
             }
         pipeline.ingest_file.assert_not_awaited()
+
+    @staticmethod
+    def _real_pipeline(store):
+        extractor = MagicMock(_pool=None)
+        extractor.extract_batch = AsyncMock(
+            side_effect=lambda contents: [
+                {"category": "document", "summary": "s", "entities": []} for _ in contents
+            ]
+        )
+        return IngestionPipeline(
+            store=store,
+            extractor=extractor,
+            chunker=HeadingAwareChunker(),
+            reader=FileReader(),
+            embedder=None,
+            dedup_enabled=False,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [5, True, [1], {"a": 1}], ids=["int", "bool", "list", "dict"])
+    async def test_a_non_string_name_falls_back_to_the_source_name(self, store, name):
+        # The real pipeline reads the name as a path (Path(original_name)).
+        sid = store.add_source("Saved page", "web", "https://example.com")
+        async with _client(_make_app(store, pipeline=self._real_pipeline(store))) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "hello", "name": name}
+            )
+            assert resp.status == 200
+        rows = store.db.execute("SELECT source_id FROM items").fetchall()
+        assert [r["source_id"] for r in rows] == [sid]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("namespace", [[1], {"a": 1}], ids=["list", "dict"])
+    async def test_a_list_or_object_namespace_falls_back_to_default(self, store, namespace):
+        sid = store.add_source("Saved page", "web", "https://example.com")
+        async with _client(_make_app(store, pipeline=self._real_pipeline(store))) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text",
+                json={"text": "hello", "namespace": namespace},
+            )
+            assert resp.status == 200
+        rows = store.db.execute("SELECT namespace FROM items").fetchall()
+        assert [r["namespace"] for r in rows] == ["default"]
 
     @pytest.mark.asyncio
     async def test_ingests_and_marks_source_synced(self, store):
@@ -220,7 +265,7 @@ class TestIngestText:
             assert quiescent is True, "the gate stayed held after the request answered"
 
 
-# --------------------------------------------------- source delete / agent sync
+# source delete / agent sync
 
 
 class TestDeleteSourceBranches:

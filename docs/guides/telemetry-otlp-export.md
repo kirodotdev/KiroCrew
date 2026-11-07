@@ -448,10 +448,19 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 
 | Metric | Attributes |
 |---|---|
-| `kirocrew.tips.feedback` | `action`, `source` (`curated` / `catalog` / `generated` / `other`), `feature` (a shipped feature doc name or `other`) |
-| `kirocrew.feature_video.status` | `status` (`seen` / `dismissed` / `other`), `feature` (a shipped feature key or `other`) |
-| `kirocrew.milestone.panel_opened`, `.starter_clicked`, `.skipped`, `.mark_all_done`, `.notice_shown`, `.features_completed` | catalog milestone ids and closed enums only |
-| `kirocrew.milestone.reached` | `group`, `milestone`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |
+| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped feature doc name or `other`), `source` (`curated` / `catalog` / `generated` / `other`) |
+| `kirocrew.feature_video.status` | `Feature` = `feature_video`, `Activity` (the status: `seen` / `dismissed` / `other`), `Entity` (a shipped feature key or `other`) |
+| `kirocrew.milestone.starter_clicked`, `.skipped` | `Feature` = `milestone`, `Activity` = the last name segment, `Entity` (a catalog milestone id, `all` or `other`), `surface`, and `send` on `starter_clicked` |
+| `kirocrew.milestone.reached` | `Feature` = `milestone`, `Activity` = `reached`, `Entity` (a catalog milestone id), `group`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |
+| `kirocrew.milestone.panel_opened`, `.mark_all_done`, `.notice_shown`, `.features_completed` | `Feature` = `milestone`, `Activity` = the last name segment, plus `group` on `notice_shown` and `via` on `features_completed` |
+
+These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
+`src/kiro_crew/metrics/behavioral_metrics.py`): each records one thing a person
+did. They are exported under the instrumentation scope `kiro.crew`, so a
+collector can admit user behavior by scope without taking the inventory gauges.
+Every other metric uses the scope `kiro_crew`. `Feature` and `Activity` are
+constants or values the emit site already closed; `Entity` carries the closed
+target id that earlier releases sent as `feature` or `milestone`.
 
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;

@@ -657,7 +657,18 @@ export function ensureTerminalConnection(
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).
   term.onData((data) => {
-    if (c.ws?.readyState === WebSocket.OPEN) c.ws.send(new TextEncoder().encode(data))
+    if (c.ws?.readyState === WebSocket.OPEN) {
+      c.ws.send(new TextEncoder().encode(data))
+      return
+    }
+    // A parked terminal has no socket, so its keystrokes go nowhere. A bare
+    // Enter typed into it is the keyboard form of "Use terminal here": the
+    // focused pane asks for the shell back. The Enter itself is not replayed
+    // into the reattached PTY, so it cannot run whatever the other window left
+    // on the prompt. Other keys stay dropped, so stray typing never steals it.
+    if (data === '\r' && c.displaced && c.status === 'disconnected') {
+      retryTerminalConnection(sessionId)
+    }
   })
   term.onResize(({ cols, rows }) => {
     if (c.ws?.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify({ type: 'resize', cols, rows }))

@@ -242,13 +242,20 @@ crew member, which calls it, lands with the Crew panel.
 A worker's `done` never closes an item. The conductor reads its whole ledger
 with `work_ledger_read` — every item, its own derived staleness flags, and a
 ready-to-evaluate batch — runs the acceptance evaluator against the item's own
-condition, and records the answer with `work_ledger_record` as a `verdict`:
+condition, and records the answer with `work_ledger_record` as a `verdict`.
+The evaluator is the `accept_eval` tool on `kirocrew-work`, and the loop's
+budget check is its sibling `patrol_budget`. Both run the goal-conductor skill's
+bundled scripts in-process with typed arguments, take no command or path to
+run, and are auto-approved for the conductor and the team lead, so an
+unattended verify cycle waits on no click. The scripts still run by shell for an
+older spec. The verdicts are:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting, for at most 24 hours on
-  end. Past that the item reads `pending_overdue`, and the conductor asks you, the
-  way it reports a `refused` one: keep waiting, which starts a fresh 24 hours, or
-  drop the item. A `human_approval` bar is never overdue: it waits for your answer.
+  end. Past that the item reads `pending_overdue`. The conductor does not ask:
+  the first time it keeps waiting, which starts a fresh 24 hours, and says so;
+  the second time it drops the item and reports it. A `human_approval` bar is
+  never overdue: it waits for your answer.
 - `refused` — the evaluator will not answer the condition as written, and no
   amount of waiting changes that. A **draft** pull request whose checks have not
   finished lands here, because a draft is the author's own "not ready" and a
@@ -268,15 +275,18 @@ A conductor stops patrolling only when every item is terminal (accepted,
 rejected or abandoned), or when the user says stop, in words or through a round
 or time budget they set. An item that fails acceptance three times is closed
 `rejected` and the rest keep going. A decision that needs a person parks only
-that item: the conductor asks about it and keeps patrolling the others.
+that item: the conductor asks about it and keeps patrolling the others. The
+conductor and the team lead carry one rule in their own agent prompts: act on a
+clear recommendation and report it; ask only for credentials or a permission,
+spend, an irreversible step or deleting someone's work, a costly preference
+they cannot infer, or a choice the person said they want to make.
 
 Parallel work is bounded in code, not only in the prompt. Each goal may hold at
 most `concurrency_cap` items open at once. The default is 6; a `goal` write sets
 it (`concurrency_cap`, 1 to 32). A `create` past it is refused
 `goal_concurrency_cap_reached`, and the board writes nothing. That is not a
-stop: the next item that lands frees a seat, and the conductor asks the user
-only when it wants more running at once, raising `concurrency_cap` if they
-agree. Closed items never count toward it.
+stop: the next item that lands frees a seat, and the conductor waits for it
+rather than asking to raise the cap. Closed items never count toward it.
 
 The total is advisory. Each goal is expected to create at most `item_cap` items,
 closed ones and every round's re-plans included; the default is 20 and a `goal`
@@ -287,8 +297,9 @@ tells the user once, the first report after `cap_exceeded` turns true, that the
 goal has spent past its line. Only a goal write with `new_goal=true` (a goal the user replaced)
 starts a new count; rewording the goal, moving the round or changing a cap
 keeps it. A board that never records a goal, such as a pipeline or security
-conductor's queue, has neither goal cap. Two rounds in a row with nothing
-accepted stop new dispatches until the user answers.
+conductor's queue, has neither goal cap. After two rounds in a row with
+nothing accepted the conductor tells the user and re-plans the failing items
+once; a third stops new dispatches until the user answers.
 
 ## Not the same as the session ledger, or subagents
 

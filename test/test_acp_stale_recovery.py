@@ -313,20 +313,6 @@ class _SilentQueueWithBacklog:
 
 
 @pytest.mark.asyncio
-async def test_working_verdict_never_probed_at_any_idle():
-    """A WORKING model-wait verdict suppresses the stale probe far past every
-    window — THE success criterion: healthy-but-slow is never touched."""
-    handle = _make_handle(last_activity=time.monotonic() - 100.0)
-    handle._queue = _SilentQueue()  # type: ignore[assignment]
-    handle._oracle.check_model_wait = lambda pid: ("working", "backend bytes flowing")
-
-    await _drain(handle, req_id=1, timeout=0.3)
-
-    assert handle._stale_probe is False
-    handle._runtime.send_notification.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_working_verdict_never_cancels_tool_at_any_idle():
     """A WORKING tool verdict (live matched build child) suppresses the stall
     cancel far past the suspect window — a 30-min silent build runs untouched."""

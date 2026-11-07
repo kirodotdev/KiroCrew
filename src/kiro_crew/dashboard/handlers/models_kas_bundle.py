@@ -143,6 +143,10 @@ async def api_models_kas_bundle(request: web.Request) -> web.Response:
     identity = await asyncio.to_thread(kas_model_catalog.vault_identity)
     rows = kas_model_catalog.recorded_catalog_snapshot(identity)
     if rows is None:
+        # Answer now, and let a background session record this account's list.
+        from kiro_crew.dashboard.handlers.models_cold_probe import start_cold_model_probe
+
+        start_cold_model_probe(request.app.get("state"), ACP_BACKEND_KAS)
         return _cold_response()
     # The same admission the kiro-cli catalog goes through, into the same ``acp``
     # bucket (kiro and KAS share it): ids for the pin verdicts, prices for the

@@ -26,11 +26,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew import _llama_lib_path, cli_doctor
+from kiro_crew import _llama_lib_path, cli_doctor, loopback_http
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.doctor_checks import access, install, services
 from kiro_crew.platform import PlatformCompositionError
+from kiro_crew.service import live_target
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the frozen report describes a Linux host"
@@ -49,6 +50,7 @@ _SECTIONS = (
     "render_doctor_section",
     "_doctor_managed_service_policy",
     "_doctor_data_home",
+    "_doctor_data_home_owner",
     "_doctor_cron_script_sources",
     "_doctor_skill_currency",
     "_doctor_deprecated_agent_specs",
@@ -178,6 +180,7 @@ class _Host:
         mp.setattr(cli_doctor, "data_home", lambda: self.home)
         mp.setattr(cli_doctor, "warm_backend", lambda timeout=None: None)
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
+        mp.setattr(live_target, "selected_version", lambda: ("9.9.9", None))
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
         mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
@@ -189,6 +192,7 @@ class _Host:
         )
         mp.setattr(cli_doctor.subprocess, "run", self._run)
         mp.setattr(cli_doctor.urllib.request, "urlopen", self._urlopen)
+        mp.setattr(loopback_http, "loopback_urlopen", self._urlopen)
         mp.setattr(cli_doctor, "current_context", lambda: self.ctx)
         mp.setattr(cli_doctor, "_agent_spec_model_problems", self._model_pins)
         mp.setattr(cli_doctor, "_doctor_gated_off_mcps", lambda: _GATED_OFF)
@@ -407,6 +411,7 @@ Configuration
   <<render_doctor_section>>
   <<_doctor_managed_service_policy>>
   <<_doctor_data_home>>
+  <<_doctor_data_home_owner>>
   <<_doctor_cron_script_sources>>
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>
@@ -618,6 +623,37 @@ def test_relay_kas_through_a_vault_named_sibling_keeps_the_launcher_optional(
     assert code is None
 
 
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "fatal"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        ("claude", ACP_BACKEND_KIRO, False, True),
+        # The main role on Crew's own engine does not cover a Bot role on Kiro CLI.
+        (ACP_BACKEND_KAS, ACP_BACKEND_KIRO, True, True),
+        # Relay KAS is not counted: with no kiro-cli its spawn takes Crew's own engine.
+        ("claude", ACP_BACKEND_KAS, False, False),
+    ],
+)
+def test_a_missing_kiro_cli_is_an_issue_only_when_a_selected_kiro_cli_role_runs_it(
+    host, capsys, backend, member_backend, kas_bundle, fatal
+) -> None:
+    _ready(host)
+    host.kiro = None
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+
+    out, code = host.run(capsys)
+
+    if fatal:
+        assert "  kiro-cli:    ❌ not found (a selected backend runs it)\n" in out
+        assert out.endswith("❌ Fix these issues: kiro-cli not found\n")
+        assert code == 1
+    else:
+        assert "  kiro-cli:    ⏭  not found (the default agent backend)\n" in out
+        assert code is None
+
+
 def test_a_start_up_record_of_an_inherited_lib_path_leaves_the_report_unchanged(
     host, capsys
 ) -> None:
@@ -670,6 +706,7 @@ Configuration
   <<render_doctor_section>>
   <<_doctor_managed_service_policy>>
   <<_doctor_data_home>>
+  <<_doctor_data_home_owner>>
   <<_doctor_cron_script_sources>>
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>

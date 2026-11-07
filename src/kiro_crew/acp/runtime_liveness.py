@@ -16,7 +16,8 @@ Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 
 Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
-``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_stderr_task``,
+``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_start_collectors``,
+``_stderr_task``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``recording_allowed``.
 """
 
@@ -272,6 +273,28 @@ async def _is_stale(self: AcpRuntime) -> str | None:
         return "rss"
 
     return None
+
+
+def session_tenancy(self: AcpRuntime, session_id: str) -> int | None:
+    """Registered-session count only when *session_id* is a proven tenant.
+
+    Process cleanup needs a positive exclusivity statement. A session whose
+    ``session/new`` or ``session/load`` is still running may already have
+    spawned children before its queue is registered. A timed-out start collector
+    represents the same window after its caller left. A native backend subagent
+    runs in the harness's own process tree with no queue here, so an announced
+    roster entry, or a roster longer than the cap, is a tenant the count cannot
+    see. A session unregistered before the host answered its teardown may still
+    own processes there too. Each makes the answer unreadable, as does a handle
+    whose session is absent from the registry.
+    """
+    if self._session_inits_in_flight or self._start_collectors or self._unconfirmed_teardowns:
+        return None
+    if self._subagent_sessions or self._subagent_roster_overflow:
+        return None
+    if session_id not in self._session_queues:
+        return None
+    return len(self._session_queues)
 
 
 def has_active_sessions(self: AcpRuntime) -> bool:
@@ -781,9 +804,11 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
     removes the session line only when its recorded start token is the one
     read at THIS spawn, and the bare root line only when the number is dead
     at the moment of a probe taken under the bare file's own lock -- a live
-    holder of the number keeps its line. The root's own lines only: a
+    holder of the number keeps its line. On POSIX, the root's own lines only: a
     descendant that outlived the root is reparented and still running, and
-    its own ``kiro_pids.txt`` line is what the sweep reaps it by.
+    its own ``kiro_pids.txt`` line is what the sweep reaps it by. On Windows a
+    descendant has no such line, so the confirmed exit drains the root's
+    exact-handle tree and its job instead, which also retires the root's lines.
 
     Offloaded to a thread because the untrack takes the file locks the sweep
     contends for, and this runs on the event loop.
@@ -820,6 +845,28 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
     # "killed" without naming who killed would defeat the attribution the
     # kill path's own docstring requires.
     self._note_reaped(process.returncode, after_kill=False)
+    if platform_compat.IS_WINDOWS:
+        # A Windows descendant gets no registry line of its own, so the sweep
+        # cannot reap what the root left running. Drain the tree the way
+        # ``_kill_inner`` does; the drain retires the root's tracking under its
+        # pin, and a drain it cannot confirm keeps the pins for the sweep.
+        try:
+            await platform_compat.terminate_windows_asyncio_tree(process)
+        except platform_compat.WindowsTreeDrainPending as exc:
+            logger.warning(
+                "AcpRuntime Windows tree for exited PID %s did not finish one bounded "
+                "drain pass (%d member(s) pending cleanup); the cleanup sweep keeps "
+                "reaping it",
+                pid,
+                exc.pending,
+            )
+        except (OSError, asyncio.TimeoutError):
+            logger.warning(
+                "AcpRuntime Windows tree cleanup incomplete for exited PID %s",
+                pid,
+                exc_info=True,
+            )
+        return
     if platform_compat.pid_exists(pid):
         return
     try:

@@ -48,7 +48,7 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume, and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -219,10 +219,20 @@ Slack thread text and folder paths are also screened by `contains_injection` and
 
 Dashboard sessions discover the artifacts skill through the existing system
 prompt's `WIDGET_BLOCK` in both density variants and through the on-demand skill
-catalog. `build_message` does not repeat that pointer every turn. Interactive
-sessions with a Dashboard surface receive milestone evidence, result and next-step
-guidance only when the current live `dashboard.dynamic_dashboard_cards` setting
-is on, including warm, resumed and re-injected turns.
+catalog. `build_message` does not repeat that pointer every turn. The default
+agent and a crewmate's conductor get the pointer from `prompt.md`'s own token;
+every shipped conductor (`crew_mode.CONDUCTOR_TEMPLATES`) gets it appended to its
+contract block by `_resolve_agent_prompt`, and maps the skills it leads to
+(`skill_resources.WIDGET_POINTER_SKILLS`). Neither worker agent
+(`kirocrew-worker`, `kirocrew-mate-worker`) gets it, so the crewmate's worker
+drops the token its default contract carries. On `more` the pointer says to draw
+an answer that reads better drawn as one widget without being asked; `less`
+prefers plain markdown.
+
+Interactive sessions with a Dashboard surface receive milestone evidence, result
+and next-step guidance only when the current live
+`dashboard.dynamic_dashboard_cards` setting is on, including warm, resumed and
+re-injected turns.
 Every turn reads the live snapshot (the current config loader when no watcher
 exists), so toggling affects the next turn without rebuilding the context builder.
 The guidance does not load the skill body, enable generation, start another producer,
@@ -291,13 +301,16 @@ The mechanism, when on:
   that wrap a request in Kiro Crew's own text pass the request alone: a
   task-runner step its own title and description (`task_executor.task_trigger_text`,
   not the role text, the plan's other steps, the spec or the instructions), a
-  task decomposition the spec, and a workflow authoring turn the intent (through
+  task decomposition the spec, a workflow authoring turn the intent (through
   `WorkflowScope.prompt`, not the authoring instructions or the reference
-  workflows). Other callers match the turn text.
-  A Discord or Webex DM auto-nudge reads the loop's message instead of the
-  `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
-  dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline
-  (`ChannelTurns.answer`, `ChannelTurn.skill_trigger_text`) passes it to the build.
+  workflows), and a heartbeat task its text without the `HEARTBEAT_KEEP`
+  reminder. Other callers match the turn text.
+  A Slack-thread auto-nudge, and a Discord or Webex DM one, read the loop's
+  message instead of the `[auto-nudge cycle N]` text (and ledger snapshot) they
+  deliver: `_fire_slack_inner_nudge` passes it to `build_message`, and
+  `_fire_dm_nudge` hands it to the dispatcher's `handle_message` as
+  `skill_trigger_text`, which the channel pipeline (`ChannelTurns.answer`,
+  `ChannelTurn.skill_trigger_text`) passes to the build.
   A single-agent cron turn reads the job's prompt, not the `[User has seen and
   acknowledged ALL of the following ...]` list it appends for a job with
   acknowledged items (`slack/gateway_runtime/cron_turn.py`).
@@ -360,7 +373,10 @@ on its next match, never drops the skill.
 
 kiro-cli compacts its own window and drops the session-start blocks with it.
 `SessionManager.mark_needs_reinjection` arms a one-shot flag on confirmed
-compaction; the next turn reads it through `consume_reinjection` (owned by
+compaction, and the Claude branch arms it when its compaction times out
+after taking the turn semaphore
+([session](../system-specs/modules/session.md), "Context compaction"); the
+next turn reads it through `consume_reinjection` (owned by
 `messaging/turn_bracket.py`, re-exported from `messaging/dispatch.py`) and passes
 `needs_reinjection=True`. Every turn loop that can compact (calls
 `check_context_usage` or `compact_if_needed`) must consume the flag, forward it and
@@ -684,6 +700,11 @@ child keeps layers 1 and 3 — losing the member would lose layer 3 with layer 1
 and loses the desk through the surface reason, while the spawn gate's
 `spawn_run(agent=…)` child of such a member is a plain template run on the
 parent's store with no member section.
+
+A **temporary** turn (`blocks_reads`) withholds layer 4 on every legacy delivery
+path: at the desk the section carries the `withheld by this turn's memory/privacy
+scope` placeholder instead of the briefing. An incognito turn blocks memory writes
+only and still reads it.
 
 Two failure behaviours are deliberate and opposite. A **missing** rules file reads
 as `""` (the normal unbounded-by-choice state). An **existing but unreadable** one

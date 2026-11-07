@@ -209,7 +209,8 @@ def describe_vault_identity() -> str | None:
 
     Names the identity kind and provider, whether the access token is inside the
     engine's refresh margin, and whether a refresh token is present -- the two
-    fields :func:`vault_holds_identity` decides on -- so a vault that will fail
+    fields :func:`vault_holds_identity` decides on -- plus the date a lapsed
+    SSO-OIDC client registration expired, so a vault that will fail
     its first callback is diagnosable before the first spawn. ``None`` when
     nothing is stored or the vault cannot be read.
     """
@@ -220,10 +221,17 @@ def describe_vault_identity() -> str | None:
         return None
     if token is None:
         return None
-    remaining = token.expires_at - datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    remaining = token.expires_at - now
     minutes = int(remaining.total_seconds() // 60)
     expiry = f"expires in {minutes}m" if minutes > 0 else "access token expired"
     renew = "refresh token present" if token.refresh_token else "no refresh token"
+    lapse = token.client_secret_expires_at
+    lapsed_on = ""
+    if isinstance(lapse, int) and lapse <= now.timestamp():
+        # SSO-OIDC refuses a refresh past this date with a bare invalid_client.
+        lapsed_on = datetime.fromtimestamp(lapse, timezone.utc).date().isoformat()
+        renew += f", client registration expired on {lapsed_on}"
     rejected = store.refresh_rejected(token.identity)
     if rejected is not None:
         # The issuer refused the refresh: the entry looks renewable but is not.
@@ -232,6 +240,8 @@ def describe_vault_identity() -> str | None:
         # user sees until they act.
         renew += f", refresh REJECTED by issuer at {rejected.isoformat(timespec='minutes')}"
         verdict = "sign-in expired -- sign in again from the dashboard or sign out"
+    elif lapsed_on:
+        verdict = "cannot renew -- sign in again from the dashboard or sign out"
     else:
         verdict = "usable" if _usable(token) else "NOT usable -- sign in again or sign out"
     return f"{token.identity}/{token.provider}, {expiry}, {renew} -> {verdict}"

@@ -1114,7 +1114,6 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     first_word = turn.first_word
     full_message = turn.full_message
     is_new = turn.is_new
-    message = turn.message
     resumed = turn.resumed
     slot = turn.slot
     state = turn.state
@@ -1229,6 +1228,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     )
                 slot.append(
                     "error",
+                    # Stays English: ``_refusal_card`` is the refusal formatter's
+                    # own output (the model's refusal), carried verbatim.
                     _refusal_card,
                     "msg msg-err",
                 )
@@ -1251,10 +1252,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                         "msg msg-info",
                         meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
                     )
-                turn.died_notice = (
-                    "The model declined to answer and the chat stopped. "
-                    "Open the chat to see why."
-                )
+                turn.died_notice = "chat_stopped_refused"
     elif _stop_reason == STOP_REASON_REFUSAL:
         # Model-side content refusal with no accompanying text: Anthropic's
         # bare `refusal` stop reason (passed through by every harness), or
@@ -1331,9 +1329,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     "msg msg-info",
                     meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
                 )
-            turn.died_notice = (
-                "The model declined to answer and the chat stopped. " "Open the chat to see why."
-            )
+            turn.died_notice = "chat_stopped_refused"
     elif turn._agent_started:
         # A turn the agent started answers no prompt, so neither recovery below
         # (the post-compaction continuation, the empty-response ladder) has a
@@ -1460,6 +1456,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             had_thinking=_turn_thought,
             billed=_turn_billed,
         )
+        turn._empty_verdict_left_prompt_unanswered = not _empty_activity.productive
         _empty_cause = classify_empty_turn(_empty_activity)
         # Snapshot BEFORE the rungs, each of which may increment the counter.
         # This is the ordinal of the turn just observed, which is what the
@@ -1488,10 +1485,13 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             # turn-complete report is still True would drop that callback
             # and strand a durable producer after the replay succeeds.
             await _report_consumed(turn, False)
+            # Without this turn's merge-card frames: _retrying_empty keeps
+            # the turn from landing, so _run_chat's finally puts those contexts
+            # back and the replay turn drains them itself.
             _queue_recovery(
                 turn,
                 0,
-                message,
+                turn._message_without_merge_cards,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 # Verbatim replay: ORIGINAL only if the incoming text was the
                 # user's. On a recovery turn it is the runner's continuation.

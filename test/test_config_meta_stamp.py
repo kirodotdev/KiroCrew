@@ -202,11 +202,9 @@ class TestConfigSaveKeepsMeta:
 class TestRefreshConfigMetaStamp:
     """Upgrade-staleness repair for the stamp.
 
-    The stamp is only written as a side effect of a config write, so an
-    upgrade that never touches ``config.json`` leaves ``lastTouchedVersion``
-    naming the previous build. ``refresh_config_meta_stamp`` (called once per
-    gateway start, off the boot path) re-stamps exactly when the stored
-    version differs — and must never rewrite, create, or clobber otherwise.
+    An upgrade that writes no config leaves ``lastTouchedVersion`` stale, so
+    ``refresh_config_meta_stamp`` re-stamps at gateway start only when the version
+    differs, and otherwise never rewrites or creates the file.
     """
 
     def _patch_home(self, config_dir: Path):
@@ -266,12 +264,8 @@ class TestRefreshConfigMetaStamp:
     def test_refresh_routes_through_the_locked_primitive(self) -> None:
         """The refresh must hold the sidecar advisory lock for its read-modify-write.
 
-        update_config_locked is 'the required path for new config.json
-        mutations' (its own docstring): it serializes the whole read→write
-        under the <config>.lock sidecar, so a boot-time refresh can never
-        revert a concurrent settings write with its own earlier snapshot.
-        A bare read_config_for_update + write_config_atomically pair
-        reintroduces exactly that lost-update race.
+        update_config_locked holds the <config>.lock sidecar across read and write, so
+        the refresh cannot revert a concurrent settings write with a stale snapshot.
         """
         import inspect
 
@@ -284,14 +278,9 @@ class TestRefreshConfigMetaStamp:
     def test_gateway_schedules_the_refresh_off_the_boot_path(self) -> None:
         """start_dashboard fires the refresh as a deferred, off-loop task.
 
-        Structural on purpose: booting a full gateway to observe one config
-        write is a heavyweight harness for a wiring fact. The refresh must be
-        (a) present in start_dashboard, (b) wrapped in to_thread inside a
-        created task, never awaited inline, and (c) scheduled AFTER the
-        socket binds — an inline `await asyncio.to_thread(...)` placed
-        before _start_site would satisfy (a) and (b) alone, so the ordering
-        assertion is what actually pins the boot-path rule
-        (AUTOSDE: no-new-work-on-gateway-boot-path).
+        Checked on the source: the refresh runs via to_thread in a created task, after
+        _start_site binds the socket. The ordering check is what pins the boot-path
+        rule (AUTOSDE: no-new-work-on-gateway-boot-path).
         """
         import inspect
 

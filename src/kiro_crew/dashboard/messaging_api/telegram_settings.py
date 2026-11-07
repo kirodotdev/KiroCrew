@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -34,7 +33,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -51,7 +49,7 @@ async def _validate_telegram_token(token: str) -> str | None:
     """
     import aiohttp  # noqa: F811
 
-    from kiro_crew.telegram.client import _api_base
+    from kiro_crew.telegram.client import _api_base, _resolve_proxy, _url_is_loopback
 
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
     # Built from the SAME TELEGRAM_API_BASE_URL resolver the client uses
@@ -60,11 +58,14 @@ async def _validate_telegram_token(token: str) -> str | None:
     # never target a different host than the live channel; unset falls back to
     # the public host.
     verify_url = _api_base().format(token=token, method="getMe")
+    # The client's forward-proxy rule (``_proxy_for``): the env proxy, except
+    # that a loopback base never leaves the machine.
+    proxy = None if _url_is_loopback(verify_url) else _resolve_proxy()
     async with aiohttp.ClientSession(timeout=timeout) as session:
         # verify_url carries the bot token; refuse a proxy redirect to a
         # plaintext http:// Location rather than follow it off-box, matching the
         # client's own method calls.
-        async with session.get(verify_url, allow_redirects=False) as resp:
+        async with session.get(verify_url, allow_redirects=False, proxy=proxy) as resp:
             data = await resp.json(content_type=None)
             if isinstance(data, dict) and data.get("ok"):
                 return None
@@ -220,7 +221,10 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     path = config_path()
 
     def _read_config() -> dict:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
+        # The read half of this read-modify-write starts from what the load reads.
+        from kiro_crew.config.loader import read_config_for_update
+
+        data = read_config_for_update(path)
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
         return data

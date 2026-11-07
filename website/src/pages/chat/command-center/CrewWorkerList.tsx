@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
+import { crewBoardQueryKey } from '../../../api/crewBoard'
 import type { ChatSlot, CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { SearchFilterBar } from '../../../components/SearchFilterBar'
@@ -82,9 +83,9 @@ export function crewWorkersPushKey(slots: readonly ChatSlot[], root: string): st
 
 const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
 
-/** Re-read *root*'s worker list whenever its crew moves in the slot store: the
- *  session tree's lineage push, a conductor's `crew_work` push, a worker's state. Every
- *  hook mounted for one root shares one coalesced re-read. */
+/** Re-read *root*'s worker list and work board whenever its crew moves in the slot
+ *  store: the session tree's lineage push, a conductor's `crew_work` push, a worker's
+ *  state. Every hook mounted for one root shares one coalesced re-read. */
 export function useCrewWorkersPush(root: string, enabled: boolean): void {
   const queryClient = useQueryClient()
   const key = useAppSelector(s => (enabled ? crewWorkersPushKey(s.dashboard.slots, root) : ''))
@@ -101,6 +102,9 @@ export function useCrewWorkersPush(root: string, enabled: boolean): void {
     pendingRefresh.set(root, setTimeout(() => {
       pendingRefresh.delete(root)
       void queryClient.invalidateQueries({ queryKey: crewWorkersQueryKey(root) })
+      // The Status view's milestones read the board's `alive`, the same slot facts:
+      // re-read it on the same push, so Status and the List move together.
+      void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) })
     }, CREW_WORKERS_PUSH_COALESCE_MS))
   }, [key, enabled, root, queryClient])
 }

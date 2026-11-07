@@ -1,24 +1,11 @@
 """A red pytest job must annotate the TESTS that failed.
 
-Annotations are what a check run shows: the PR page renders them, a fork
-contributor who cannot re-run a job has nothing else, and a triage report copies
-them. Nothing in this repository wrote one, so they came from the ``python``
-problem matcher ``actions/setup-python`` registers by default -- a two-line
-pattern (a traceback frame, then ``raise SomeError('msg')``) applied to the whole
-log, including the part where pytest prints its WARNINGS summary.
+Annotations are what a check run shows. The default ``python`` problem matcher from
+``actions/setup-python`` matches warning tracebacks in pytest's WARNINGS summary
+(such as ``Event loop is closed``) and never a real failure, so reds were misread.
 
-MEASURED on six Backend Tests jobs: that pattern matched a
-warning traceback every time and a pytest failure not once. All six reds carried
-only ``Event loop is closed`` at line 545 -- ``asyncio/base_events.py`` inside
-``_check_closed``, reached from a ``PytestUnraisableExceptionWarning`` about a
-garbage-collected coroutine -- while the tests that actually failed (a ``git
-add`` timeout, a missing diag.jsonl, sandbox-dependent project tests) were named
-nowhere. Four unrelated PRs were filed and triaged as an event-loop teardown
-flake on that evidence.
-
-So these tests pin the two halves of the answer: the rootdir conftest turns each
-failing report into an annotation that names the test, and every workflow job
-that runs pytest has the mismatching default matcher turned off.
+The rootdir conftest turns each failing report into an annotation that names the
+test, and every workflow job that runs pytest turns the default matcher off.
 """
 
 from __future__ import annotations
@@ -39,11 +26,8 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 def _load_root_conftest():
     """Import the rootdir conftest under its own module name.
 
-    ``from conftest import ...`` inside ``test/`` binds to ``test/conftest.py``
-    (prepend import mode puts this directory on ``sys.path`` first), so the
-    rootdir file has to be loaded by path. Same idiom as
-    ``host_isolation_floor_helpers.py``; the fixtures it defines are inert here
-    because nothing in this namespace collects them.
+    ``from conftest import ...`` inside ``test/`` binds to ``test/conftest.py``, so the
+    rootdir file is loaded by path. Its fixtures are inert here: nothing collects them.
     """
     spec = importlib.util.spec_from_file_location("_kirocrew_annotations_conftest", _ROOT_CONFTEST)
     assert spec is not None and spec.loader is not None
@@ -303,11 +287,8 @@ class TestNothingIsWrittenWhenThereIsNothingToSay:
 class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
     """The other half: nothing else may write a pytest job's annotations.
 
-    Asserted from the workflow SOURCE across EVERY workflow, keyed to whether the
-    job runs pytest, so a new pytest job cannot inherit the default matcher
-    unnoticed -- in ci.yml or anywhere else. Scoping this to ci.yml was the first
-    version and it left `release.yml` and `test-durations.yml` matched, which is
-    exactly the gap the guard exists to close (found in review).
+    Asserted across every workflow, keyed to whether the job runs pytest, so a new
+    pytest job outside ci.yml cannot inherit the default matcher unnoticed.
     """
 
     _DIRECTIVE = "::remove-matcher owner=python::"
@@ -353,9 +334,8 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
             "ci.yml:backend-test-windows",
             "ci.yml:backend-test-windows-fail-closed",
             "ci.yml:backend-test-sandbox",
-            # The macOS suite moved out of ci.yml (the runner queue sat on the
-            # required check); macos-on-demand.yml calls this same job on the PR
-            # path, so the one entry covers both.
+            # macos-on-demand.yml calls this same job on the PR path, so the one
+            # entry covers both.
             "platform-tests.yml:backend-test-macos",
             "release.yml:release-candidate-tests",
             "test-durations.yml:refresh",
@@ -389,13 +369,9 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
     def test_no_workflow_passes_the_input_that_does_not_exist(self) -> None:
         """``add-problem-matchers`` is not an input on this action pin.
 
-        It was the obvious first attempt and it is a trap: the action ignores it
-        and the runner answers with an ``Unexpected input(s)`` warning, which
-        becomes one more annotation saying nothing about the tests. MEASURED on
-        this PR's own first run, against ``actions/setup-python`` v7.0.0.
-
-        Checked against the PARSED step inputs, not the file text, so prose that
-        names the trap (this docstring's counterpart in ci.yml) does not trip it.
+        The action ignores it and the runner warns ``Unexpected input(s)``, one more
+        useless annotation. Checked on parsed step inputs, so prose naming it in ci.yml
+        does not trip it.
         """
         offenders = []
         for path in sorted(_WORKFLOWS.glob("*.yml")):

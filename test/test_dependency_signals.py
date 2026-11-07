@@ -348,6 +348,22 @@ class TestAcpProviderAdapter:
         assert sig is not None and sig.kind == KIND_RATE_LIMITED
         assert acp_provider.classify_raw_error("not a dict") is None
 
+    @pytest.mark.parametrize("backend", ["strands", "goose", "deepseek"])
+    @pytest.mark.parametrize("data", ["HTTP 401 unauthorized", "not logged in"])
+    def test_a_signed_out_frame_is_auth_failed_whatever_the_harness_wording(
+        self, backend: str, data: str
+    ) -> None:
+        """These harnesses' signed-out text names no 401 or expiry, so only the frame tag can."""
+        from kiro_crew.acp import client as acp_client
+
+        with pytest.raises(AcpError) as caught:
+            acp_client._raise_acp_error(
+                {"code": -32603, "message": "x", "data": data}, None, backend=backend
+            )
+        assert caught.value.auth_required is False
+        sig = classify_exception(caught.value)
+        assert sig is not None and sig.kind == KIND_AUTH_FAILED
+
     def test_non_acp_exception_is_ignored(self) -> None:
         assert acp_provider.classify(ValueError("ThrottlingException"), "") is None
 

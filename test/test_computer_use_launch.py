@@ -1119,14 +1119,14 @@ class TestMacOSCatalogAndResolution:
     def test_an_os_access_writable_dir_is_NOT_probed_and_mtime_is_untouched(self, tmp_path):
         """The common refused case must not mutate the directory.
 
-        A stock ``/Applications`` is ``drwxrwxr-x root:admin`` and every admin user is in
-        ``admin``, so ``os.access`` reports it writable. The non-mutating check answers
-        directly: ``True`` (so the caller still refuses) with no create, no unlink, and no
-        mtime change on the operator's directory.
+        A directory this user can write, such as a drag-installed bundle's own directory, is
+        one ``os.access`` reports writable. The non-mutating check answers directly:
+        ``True`` (so the caller still refuses) with no create, no unlink, and no mtime
+        change on the operator's directory.
         """
         from kiro_crew.computer_use import launch_macos
 
-        assert os.access(str(tmp_path), os.W_OK)  # the stock /Applications shape
+        assert os.access(str(tmp_path), os.W_OK)  # a directory this user can write
         # Pin the mtime to a fixed point in the past so a create-and-unlink would move it
         # to "now" — a deterministic marker, not a timing assumption.
         pinned_ns = 1_000_000_000_000_000_000
@@ -1206,6 +1206,16 @@ class TestMacOSBundleVerification:
     """
 
     _APP = "/Applications/Foo.app"
+
+    @pytest.fixture(autouse=True)
+    def _parent_is_not_stock(self, _floor_monkeypatch):
+        # The synthetic parent is a real stock ``/Applications`` on a Mac, which would skip
+        # the parent probe these tests assert. test_computer_use_launch_macos_stock.py owns it.
+        from kiro_crew.computer_use import launch_macos
+
+        _floor_monkeypatch.setattr(
+            launch_macos, "_is_stock_applications", lambda _d: False, raising=False
+        )
 
     @staticmethod
     def _app():

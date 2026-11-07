@@ -218,6 +218,34 @@ class TestSandboxEscapeSshSelfOwnHost:
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         assert _denied_by("ssh 198.51.100.9 id") is None
 
+    def test_address_gained_after_publish_is_self_before_the_refresh(self, monkeypatch):
+        # The cache is published and fresh, but the host has just gained
+        # 203.0.113.80, 2001:db8::80 and fe80::80 on scope 1 (a VPN came up).
+        # The kernel picks a destination as its own source only when it is an
+        # own address, so those are refused now and a far address stays admitted.
+        # Scope 1 is the interface ``VPN1``: the gate lowercases its name.
+        gained = {("203.0.113.80", None), ("2001:db8::80", 0), ("fe80::80", 1)}
+
+        class _GainedAddressSocket(_argv_floor.socket.socket):
+            def connect(self, address):  # type: ignore[override]
+                self._peer = address
+
+            def getsockname(self):  # type: ignore[override]
+                scope = self._peer[3] if len(self._peer) == 4 else None
+                own = (self._peer[0], scope) in gained
+                return (self._peer[0] if own else "192.0.2.1",) + self._peer[1:]
+
+        monkeypatch.setattr(_argv_floor.socket, "socket", _GainedAddressSocket)
+        monkeypatch.setattr(_argv_floor.socket, "if_nameindex", lambda: [(1, "VPN1"), (2, "eth2")])
+        assert _denied_by("ssh 203.0.113.80 id") == self._RULE
+        assert _denied_by("ssh 3405803856 id") == self._RULE  # 203.0.113.80, numeric
+        assert _denied_by("ssh 2001:db8::80 id") == self._RULE
+        assert _denied_by("ssh fe80::80%1 id") == self._RULE
+        assert _denied_by("ssh fe80::80%2 id") is None
+        assert _denied_by("ssh fe80::80%VPN1 id") == self._RULE
+        assert _denied_by("ssh fe80::80%eth2 id") is None
+        assert _denied_by("ssh 198.51.100.9 id") is None
+
     def test_enrichment_worker_merges_netlink_addresses(self, monkeypatch):
         # the worker pass carries the netlink layer -- its output
         # lands in the resolved set and a non-empty pass publishes the flag

@@ -38,14 +38,17 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import live
 from kiro_crew.config.loader import (
     CRED_WEIXIN_TOKEN,
+    ConfigReadError,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     _env_name_key,
     apply_env_credential_changes,
     config_path,
     env_bom_prefix,
     env_path,
-    read_config_text,
+    read_endorsed_config_text,
     read_env_text,
+    update_config_locked,
 )
 from kiro_crew.dashboard.channel_folders import (
     channel_restart_required,
@@ -293,7 +296,7 @@ def _restore_env_entry(key: str, prior_lines: list[str], written_line: str) -> N
     _atomic_write(ep, env_bom_prefix(ep) + "\n".join(out) + ("\n" if out else ""), secret=True)
 
 
-def _commit_credential_and_config(cp: Path, serialized: str, token: str) -> None:
+def _commit_credential_and_config(cp: Path, staged: Dict[str, Any], token: str) -> None:
     """Write the credential then the config, rolling the credential back on failure.
 
     These are two separate files, so the pair cannot be replaced atomically.
@@ -341,7 +344,10 @@ def _commit_credential_and_config(cp: Path, serialized: str, token: str) -> None
         prior_text, written_text = _write_env_secret(CRED_WEIXIN_TOKEN, token)
         prior_entry = _env_entry_lines(CRED_WEIXIN_TOKEN, prior_text)
         try:
-            _atomic_write(cp, serialized)
+            # Through the config writer, so the endorsed copy is updated with the file
+            # and the sign-in takes effect at once rather than being held as an
+            # outside edit. *staged* was read under the caller's config lock.
+            update_config_locked(cp, mutate=lambda _current: staged, stamp_meta=False)
         except BaseException:
             try:
                 if prior_text is not None and _env_file_text(ep) == written_text:
@@ -376,8 +382,8 @@ def _commit_credential_and_config(cp: Path, serialized: str, token: str) -> None
         os.close(lock_fd)
 
 
-def _stage_weixin_config(*, account_id: str, base_url: str) -> tuple[Path, str]:
-    """Parse config.json and return ``(path, serialized)`` with the weixin patch.
+def _stage_weixin_config(*, account_id: str, base_url: str) -> tuple[Path, Dict[str, Any]]:
+    """Parse config.json and return ``(path, document)`` with the weixin patch.
 
     Parsing/serializing is separated from writing so the caller can validate the
     config BEFORE overwriting the credential: a corrupt ``config.json`` must not
@@ -390,10 +396,13 @@ def _stage_weixin_config(*, account_id: str, base_url: str) -> tuple[Path, str]:
     """
     cp = config_path()
     data: Dict[str, Any] = {}
-    if cp.exists():
-        data = json.loads(read_config_text(cp))
-        if not isinstance(data, dict):
-            raise ValueError("config.json is not a JSON object")
+    try:
+        # Starts from what the load reads, so this write cannot endorse a held hand edit.
+        data = json.loads(read_endorsed_config_text(cp))
+    except FileNotFoundError:
+        pass
+    if not isinstance(data, dict):
+        raise ValueError("config.json is not a JSON object")
     weixin = data.get("weixin")
     if not isinstance(weixin, dict):
         weixin = {}
@@ -402,7 +411,7 @@ def _stage_weixin_config(*, account_id: str, base_url: str) -> tuple[Path, str]:
     if base_url:
         weixin["base_url"] = base_url
     data["weixin"] = weixin
-    return cp, json.dumps(data, ensure_ascii=False, indent=2)
+    return cp, data
 
 
 async def weixin_qr_start(request: web.Request) -> web.Response:
@@ -495,8 +504,8 @@ async def weixin_qr_status(request: web.Request) -> web.Response:
         # Parse + stage the config FIRST: if config.json is corrupt we must fail
         # before touching the credential, otherwise a re-login would replace a
         # working token and then abort, losing it.
-        cp, serialized = _stage_weixin_config(account_id=account_id, base_url=base_url)
-        _commit_credential_and_config(cp, serialized, token)
+        cp, staged = _stage_weixin_config(account_id=account_id, base_url=base_url)
+        _commit_credential_and_config(cp, staged, token)
 
     try:
         # Both writes touch shared stores (.env + config.json) that other config
@@ -523,6 +532,10 @@ async def weixin_qr_status(request: web.Request) -> web.Response:
         # message names the directory and its fix.
         logger.warning("weixin: QR sign-in not saved: %s", exc)
         return web.json_response({"error": str(exc), "code": "env_staging_refused"}, status=409)
+    except PendingEditBlocksSave:
+        # config.json has a change pending owner review: the credential was rolled
+        # back, and the dashboard chain answers 409 with the code the UI translates.
+        raise
     except Exception as exc:
         # A corrupt config.json or an un-restrictable credential file must NOT be
         # reported as a successful sign-in.
@@ -614,33 +627,33 @@ async def weixin_config_save(request: web.Request) -> web.Response:
     async with _get_config_lock():
         cp = config_path()
 
-        def _read_config() -> Dict[str, Any]:
-            return json.loads(read_config_text(cp)) if cp.exists() else {}
+        def _apply(data: Dict[str, Any]) -> Dict[str, Any]:
+            if not isinstance(data.get("weixin"), dict):
+                data["weixin"] = {}
+            wx = data["weixin"]
+            if "enabled" in body:
+                wx["enabled"] = bool(body["enabled"])
+            if "dm_policy" in body:
+                wx["dm_policy"] = str(body["dm_policy"])
+            if "allowed_user_ids" in body:
+                wx["allowed_user_ids"] = [
+                    str(u).strip() for u in body["allowed_user_ids"] if str(u).strip()
+                ]
+            if "session_folder" in body:
+                wx["session_folder"] = session_folder
+            return data
 
-        # Off-loop read: a large or slow config.json must not stall the gateway
-        # event loop. Reading under the lock keeps the snapshot current relative
-        # to every other config writer (mirrors the Telegram saver).
+        # Off-loop: a large or slow config.json must not stall the gateway event loop.
+        # Through the config writer, which reads what the load reads, refuses a
+        # corrupt or non-object file, and endorses what it publishes, so the save
+        # takes effect at once rather than being held as an outside edit.
         try:
-            data: Dict[str, Any] = await asyncio.to_thread(_read_config)
-        except Exception:
+            data = await asyncio.to_thread(
+                update_config_locked, cp, mutate=_apply, stamp_meta=False
+            )
+        except ConfigReadError:
             return web.json_response({"error": "config.json is corrupt"}, status=500)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "config.json is corrupt"}, status=500)
-        if not isinstance(data.get("weixin"), dict):
-            data["weixin"] = {}
         wx = data["weixin"]
-        if "enabled" in body:
-            wx["enabled"] = bool(body["enabled"])
-        if "dm_policy" in body:
-            wx["dm_policy"] = str(body["dm_policy"])
-        if "allowed_user_ids" in body:
-            wx["allowed_user_ids"] = [
-                str(u).strip() for u in body["allowed_user_ids"] if str(u).strip()
-            ]
-        if "session_folder" in body:
-            wx["session_folder"] = session_folder
-        serialized = json.dumps(data, ensure_ascii=False, indent=2)
-        await asyncio.to_thread(_atomic_write, cp, serialized)
 
         # Create the configured session folder now, on this user-initiated save,
         # so the reconcile path never has to write the folder store. Best-effort:

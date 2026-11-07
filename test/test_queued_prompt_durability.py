@@ -40,6 +40,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
     MAX_DURABLE_QUEUE_BYTES,
     MAX_DURABLE_QUEUE_ENTRIES,
     MAX_DURABLE_QUEUE_SCAN,
+    SOURCE_CHANNELS_KEY,
     count_durable_candidates,
     durable_queue_entries,
     durable_queue_view,
@@ -1366,13 +1367,11 @@ class TestHandoverDoesNotSilentlyDropAQueuedPrompt:
 class TestAnAcceptedButUnpersistedPromptIsReported:
     """An entry the ceilings refuse is still accepted, so the refusal has to be
     told somewhere. It is told at WARNING in the gateway log, naming the slot and
-    the counts. Reporting a bare "queued" and stopping there is the same silence
-    this change exists to end, moved from the prompt to its acknowledgment.
-
-    Pinned on the WARNING and on the observable durable effect rather than on a
-    receipt field: a caller-visible ``durable`` boolean on the acknowledgments
-    has no reader, so it is not shipped and the on-screen marker belongs with its
-    consumer.
+    the counts, and on the queue card: the entry's ``queue_push`` frame and the
+    slot-detail queue carry ``meta.durable: false``, which the card draws as its
+    "won't survive a restart" label. Reporting a bare "queued" and stopping there
+    is the same silence this change exists to end, moved from the prompt to its
+    acknowledgment.
     """
 
     def test_an_ordinary_prompt_is_carried_and_warns_nothing(self, caplog) -> None:
@@ -1427,9 +1426,9 @@ class TestAnAcceptedButUnpersistedPromptIsReported:
         assert len(caplog.records) == 1
 
     def test_neither_receipt_carries_a_durable_field(self) -> None:
-        # The field was removed for want of a reader. Pinned so it cannot come
-        # back without its consumer. Matched as a dict KEY (with the colon), so
-        # an unrelated mention of the word in prose does not fail this.
+        # The HTTP receipts have no reader for the verdict; the card reads it off
+        # the frame's meta. Matched as a dict-literal KEY (with the colon), so an
+        # unrelated mention of the word in prose does not fail this.
         import inspect
 
         from kiro_crew.dashboard import chat_delivery, chat_handlers
@@ -1461,7 +1460,7 @@ class TestAnAcceptedButUnpersistedPromptIsReported:
 
         pushes = [d for k, d in frames if k == "queue_push"]
         assert len(pushes) == 1
-        assert "durable" not in pushes[0]
+        assert "durable" not in pushes[0].get("meta", {})
         # The observable effect the receipt field only described.
         _save_slot_to_history(state, slot, closed=False)
         assert [e["content"] for e in _meta(state)["queued_prompts"]] == ["my follow-up"]
@@ -1475,7 +1474,8 @@ class TestAnAcceptedButUnpersistedPromptIsReported:
         slot = _busy_slot(state)
         for i in range(MAX_DURABLE_QUEUE_ENTRIES):
             slot.queue_append(f"earlier {i}")
-        monkeypatch.setattr(state, "broadcast_ws", lambda *_a: None)
+        frames: list[tuple[str, dict]] = []
+        monkeypatch.setattr(state, "broadcast_ws", lambda kind, data: frames.append((kind, data)))
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_delivery.start_queue_persist", lambda *_a: None
         )
@@ -1484,6 +1484,9 @@ class TestAnAcceptedButUnpersistedPromptIsReported:
             queue_for_next_turn(state, slot, "the 33rd", directive_user_origin=True)
 
         assert any("NOT persisted" in r.getMessage() for r in caplog.records)
+        # The card this frame draws says so too.
+        (push,) = [d for k, d in frames if k == "queue_push"]
+        assert push["meta"]["durable"] is False
         # Accepted all the same: refusing the send would take the words away at
         # the one moment they cannot be re-read from the transcript.
         assert slot._queue[-1]["content"] == "the 33rd"
@@ -1493,6 +1496,84 @@ class TestAnAcceptedButUnpersistedPromptIsReported:
         persisted = [e["content"] for e in _meta(state)["queued_prompts"]]
         assert "the 33rd" not in persisted
         assert len(persisted) == MAX_DURABLE_QUEUE_ENTRIES
+
+    def test_the_admitted_work_id_is_weighed_before_the_frame(self, tmp_path, monkeypatch) -> None:
+        # The fair-admission work id rides the entry the write keeps, so the
+        # frame's verdict must be taken after it is stamped: here the prompt
+        # fits only without it. An empty containment snapshot fixes its size.
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
+        from kiro_crew.shared_crew.admission_entry import QUEUED_WORK_META_KEY
+
+        state = _make_state(tmp_path)
+        slot = _busy_slot(state)
+        slot.queue_append("x" * (MAX_DURABLE_QUEUE_BYTES - 120))
+        frames: list[tuple[str, dict]] = []
+        monkeypatch.setattr(state, "broadcast_ws", lambda kind, data: frames.append((kind, data)))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_delivery.start_queue_persist", lambda *_a: None
+        )
+        work = SimpleNamespace(
+            passthrough=False, service=None, work=SimpleNamespace(work_id="w" * 100)
+        )
+        qid = queue_for_next_turn(
+            state, slot, "m", directive_user_origin=True, admission={}, queued_work=work
+        )
+
+        entry = next(item for item in slot._queue if item["id"] == qid)
+        assert entry["meta"][QUEUED_WORK_META_KEY] == "w" * 100
+        assert qid not in {e["id"] for e in durable_queue_entries(slot._queue)}
+        (push,) = [d for k, d in frames if k == "queue_push"]
+        assert push["meta"]["durable"] is False
+
+    def test_the_slot_detail_queue_marks_only_the_refused_prompt(self) -> None:
+        # A refresh rebuilds every queue card from this listing, so the verdict
+        # has to be on it, and judged on this read: once the queue ahead drains
+        # enough for the write to keep the entry, the mark is gone.
+        from kiro_crew.dashboard.chat_delivery import queue_view
+
+        queue = [
+            {"id": f"q{i}", "content": f"prompt {i}"} for i in range(MAX_DURABLE_QUEUE_ENTRIES + 1)
+        ]
+        queue.append({"id": "cron", "content": "cron fired", "kind": "cron"})
+
+        marked = [
+            v["id"] for v in queue_view(queue) if (v.get("meta") or {}).get("durable") is False
+        ]
+        # The system entry is never a durable candidate, so it is not marked.
+        assert marked == [f"q{MAX_DURABLE_QUEUE_ENTRIES}"]
+
+        queue.pop(0)
+        assert all("durable" not in (v.get("meta") or {}) for v in queue_view(queue))
+
+    @pytest.mark.asyncio
+    async def test_the_slot_detail_read_judges_the_live_entries(self, tmp_path) -> None:
+        # The read renders a trimmed copy of each entry, and the writer also weighs
+        # the source channels the copy drops: near the byte budget, the copy alone
+        # would call the seventh prompt kept while the write refuses it.
+        from aiohttp.test_utils import TestClient, TestServer
+        from chat_test_helpers import _make_app
+        from chat_test_helpers import _make_state as _route_state
+
+        state = _route_state(tmp_path)
+        state.push_slots_update = lambda: None
+        slot = state.get_or_create_slot("s1")
+        slot.messages = [{"role": "user", "content": "hi"}]
+        # Sized so seven fit the budget without the channels (as the copy is
+        # weighed) and only six fit with them (as the write weighs them).
+        ids = [slot.queue_append("x" * (MAX_DURABLE_QUEUE_BYTES // 7 - 50)) for _ in range(7)]
+        for item in slot._queue:
+            item[SOURCE_CHANNELS_KEY] = ("C" * 200,)
+        assert [e["id"] for e in durable_queue_entries(slot._queue)] == ids[:6]
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/s1")
+            assert resp.status == 200
+            body = await resp.json()
+
+        marked = [q["id"] for q in body["queue"] if (q.get("meta") or {}).get("durable") is False]
+        assert marked == [ids[6]]
 
 
 class TestRestoredEntriesCarryNoHumanAuthority:
@@ -1589,10 +1670,9 @@ class TestTheHoldBranchStartsTheWrite:
     """A prompt held for running sub-agents is written, not merely acknowledged.
 
     That branch holds an IDLE slot, so no drain is coming to write the prompt's
-    row and no turn-end flush is scheduled. Its receipt already says whether the
-    entry is durable, so the write has to start from the same place; otherwise
-    the only record is memory until the last sub-agent finishes, which is
-    unbounded.
+    row and no turn-end flush is scheduled. The write has to start from the same
+    place the entry is accepted; otherwise the only record is memory until the
+    last sub-agent finishes, which is unbounded.
     """
 
     def test_the_hold_branch_imports_the_shared_persist_seam(self) -> None:

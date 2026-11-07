@@ -56,7 +56,7 @@ With ``--check-body`` it also reads the PR body the skill writes --
 
 * **Pattern harvest.** On a ``fix``/``revert`` title the body needs a
   ``## Pattern harvest`` heading and a ``Rule candidate:`` or ``Not generalizable:``
-  line, the rule CI's PR Hygiene step enforces inline in ``code-review.yml`` (so there is
+  line, the rule CI's PR Hygiene step enforces inline in ``pr-hygiene.yml`` (so there is
   no script to run from the base). A miss prints CI's message and is exit 26. The
   three ``HARVEST_*`` patterns are that step's; a test fails if the workflow's change.
 
@@ -81,6 +81,7 @@ Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too l
 import argparse
 import importlib.machinery
 import importlib.util
+import ntpath
 import os
 import re
 import shutil
@@ -129,6 +130,8 @@ BODY_FILENAME = "prepare-pr-body.md"
 
 # CI's template check, read from origin/<base> by --check-body.
 TEMPLATE_CHECK = ".github/scripts/pr-description-check.sh"
+# Windows, where the ``bash`` on PATH may be the WSL launcher instead of a shell.
+IS_WINDOWS = os.name == "nt"
 
 # CI's Sibling sweep check, read from origin/<base> by --check-body.
 SIBLING_CHECK = ".github/scripts/sibling_list_check.py"
@@ -138,7 +141,7 @@ SIBLING_CHECK = ".github/scripts/sibling_list_check.py"
 PROOF_CHECK = ".github/scripts/proof_line_check.py"
 PROVE_RECORD = "prepare-pr-prove.json"
 
-# CI's Pattern harvest rule, copied from PR Hygiene in .github/workflows/code-review.yml
+# CI's Pattern harvest rule, copied from PR Hygiene in .github/workflows/pr-hygiene.yml
 # (grep -qiE there, re.IGNORECASE | re.MULTILINE here). A test pins each to the workflow.
 HARVEST_TITLE_RE = r"^(fix|revert)([(!:]|$)"
 HARVEST_HEADING_RE = r"^##+ *Pattern harvest"
@@ -491,6 +494,27 @@ def template_check(body, base):
     if rc != 0:
         return 0
     bash = shutil.which("bash")
+    if bash and IS_WINDOWS:
+        # System32 and WindowsApps hold the WSL launcher, which is not a shell.
+        launcher_dirs = {
+            ntpath.normcase(ntpath.normpath(d))
+            for d in (
+                ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"),
+                ntpath.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WindowsApps"),
+            )
+        }
+        dirs = os.environ.get("PATH", "").split(";")
+        bash = shutil.which(
+            "bash",
+            path=";".join(
+                d for d in dirs if d and ntpath.normcase(ntpath.normpath(d)) not in launcher_dirs
+            ),
+        )
+        if not bash:
+            print(
+                "WARN: only the WSL bash launcher is on PATH - template check skipped; CI still runs it"
+            )
+            return 0
     if not bash:
         print("WARN: bash not found - template check skipped; CI still runs it")
         return 0

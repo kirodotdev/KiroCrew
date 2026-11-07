@@ -62,41 +62,19 @@ TERMINAL_BOOT_EXIT_CODES: tuple[int, ...] = (
 def _canonical_override(raw: str) -> Path:
     """An operator-supplied path override, anchored so every reader agrees.
 
-    ``expanduser`` then ``abspath``. The second half is the load-bearing one: a
-    RELATIVE override resolves against the reading process's working directory,
-    and the two processes that must agree on a pod plane do not share one. The CLI
-    runs from wherever the operator invoked it; the service-manager-booted gateway
-    runs from whatever the unit specifies, and the pod unit deliberately sets no
-    ``WorkingDirectory`` (see ``pod/unit.py``), so systemd hands it ``/``. With the
-    value carried through verbatim, ``KIROCREW_POD_ROOT=tmp/pods`` therefore named
-    ``$PWD/tmp/pods`` to the CLI and ``/tmp/pods`` to the gateway -- two different
-    directories under one name.
+    ``expanduser`` then ``abspath``. A RELATIVE override resolves against the
+    reader's working directory, and the CLI and the service-booted gateway (the
+    unit sets no ``WorkingDirectory``, so systemd hands it ``/``) do not share one:
+    ``KIROCREW_POD_ROOT=tmp/pods`` would name two directories. That is a credential
+    leak, because ``pod down`` reclaims the CLI's tree while the pod mints MCP OAuth
+    grants under the gateway's (``KIROCREW_OS_HOME``), so grants would outlive it.
 
-    That split is a CREDENTIAL leak, not merely a confusing path. ``pod down``
-    reclaims the tree the CLI resolves, while the pod's kiro-cli child mints its
-    MCP OAuth grants under the tree the GATEWAY resolved (``KIROCREW_OS_HOME``,
-    derived from ``pod_root``), so teardown swept a directory the grants were never
-    in and they outlived the pod on the real machine -- the exact durable
-    machine-level grant writer the pod-scoping work exists to prevent.
-
-    Anchored HERE, at the producer, because this is the one place both sides come
-    from: :meth:`PodConfig.load` reads it and :func:`environment_vars` serialises
-    what ``load`` resolved, so pinning it once makes the unit carry an absolute
-    path and every consumer inherit the agreement. Fixing it in a consumer instead
-    would leave each new reader to re-derive the rule.
-
-    ``abspath`` rather than ``Path.resolve()``, deliberately. Both would close the
-    relative case; ``resolve()`` additionally rewrites the operator's symlink
-    spelling, which is not the defect (two spellings of one directory still name
-    one inode, so teardown scope is unaffected) and which would silently change
-    the value pinned into a unit -- on macOS every ``/tmp/...`` plane becomes
-    ``/private/tmp/...``. ``abspath`` normalises ``.``/``..`` and anchors to the
-    CWD without touching links, and is the same primitive
-    ``security._resolved_env_root`` falls back to.
-
-    Only an OVERRIDE is anchored; a built-in default is already ``$HOME``-rooted
-    and is left exactly as it was, which is what keeps :func:`environment_vars`
-    emitting ``{}`` for an all-defaults plane on a host whose ``$HOME`` is a link.
+    Anchored at the producer: :meth:`PodConfig.load` reads it and
+    :func:`environment_vars` serialises what ``load`` resolved, so the unit carries
+    an absolute path. ``abspath`` rather than ``Path.resolve()`` so the operator's
+    symlink spelling is kept (on macOS ``/tmp`` would become ``/private/tmp``).
+    Only an OVERRIDE is anchored, which keeps :func:`environment_vars` emitting
+    ``{}`` for an all-defaults plane on a host whose ``$HOME`` is a link.
     """
     return Path(os.path.abspath(os.path.expanduser(raw)))
 
@@ -294,7 +272,7 @@ class PodConfig:
             kiro_bin=_env_path_opt("KIROCREW_POD_KIRO_BIN"),
         )
 
-    # ---- derived locations -------------------------------------------------
+    # derived locations
     def home_dir(self, name: str) -> Path:
         """Isolated ``KIROCREW_HOME`` for pod *name* (nuked on stop)."""
         return self.pod_root / name

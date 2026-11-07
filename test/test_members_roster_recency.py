@@ -1,19 +1,10 @@
 """The Crewmates roster's Recent sort is ordered by the CREW LOG, and the user's
 own send is one of the events it folds.
 
-Sorted by Recent, typing into a crewmate's DM left its row in the middle of the
-list. Three things had to be true at once for that, and each is pinned here:
-
-1. ``Slot.append`` emitted ``member/message`` through the SSE broadcast hook,
-   which it deliberately skips for a ``user`` row (the composer already drew its
-   own bubble) and for any row on a slot with an HTTP stream reader. So the one
-   action the user most expects to reorder the roster recorded nothing.
-2. ``GET /api/members`` took ``last_active_ts`` from the DM transcript's last
-   SPEECH row rather than from the folded ``roster`` projection, so a machinery
-   turn and an unflushed send were both invisible to the ordering.
-3. ``MembersPage`` merged the pushed projection's ``last_active_ts`` only when
-   the row carried none, so a live frame could never move a row. That half is
-   pinned in ``website/src/pages/members/MembersPage.landing.test.tsx``.
+``member/message`` must be emitted for a ``user`` row even though the SSE hook skips
+it, and ``GET /api/members`` reads ``last_active_ts`` from the ``roster`` projection,
+not the last speech row. The page's merge is pinned in
+``website/src/pages/members/MembersPage.landing.test.tsx``.
 """
 
 from __future__ import annotations
@@ -70,11 +61,9 @@ class TestRecencyForRow:
     def test_a_non_epoch_fold_is_not_an_ordering_key(self, bad) -> None:
         """A projection field is whatever the event carried.
 
-        ``member/message`` takes ``ts`` as is, so the fold can hold ``None`` (an
-        event with no ``ts``), a string, or a bool. None of those may rank a
-        member, and ``True`` in particular must not read as one second after the
-        epoch -- ``bool`` is an ``int`` subclass, so a bare numeric check admits
-        it. The transcript's answer stands instead.
+        ``None``, a string or a bool must not rank a member; ``bool`` is an ``int``
+        subclass, so a bare numeric check would admit ``True``. The transcript's answer
+        stands instead.
         """
         assert _recency_for_row(_block(bad), 300.0) == 300.0
 
@@ -87,11 +76,8 @@ class TestRecencyForRow:
 class TestTheFoldNeverWalksRecencyBackwards:
     """``RosterProjection`` is monotone in ``last_active_ts``.
 
-    ``reconcile_member_preview`` corrects a stale quote by appending a
-    ``member/message`` carrying the TRANSCRIPT's epoch -- the last thing SAID,
-    and therefore older than any machinery turn since. Under a last-wins fold
-    that correction reset recency to the last speech on EVERY roster read, which
-    is what made reading the fold in the handler insufficient on its own.
+    ``reconcile_member_preview`` appends a ``member/message`` with the transcript's
+    older epoch; a last-wins fold would reset recency to the last speech on every read.
     """
 
     def _apply(self, state: dict, data: dict) -> dict:
@@ -125,13 +111,9 @@ class TestTheFoldNeverWalksRecencyBackwards:
     def test_a_future_ts_is_clamped_to_the_present(self) -> None:
         """A jumped-forward clock must not latch a recency into the future.
 
-        The fold is monotone-greatest with no upper bound, and append-only, so a
-        ``ts`` far ahead of the wall clock -- a VM resume, an NTP step, a
-        hand-edited ISO string -- would be latched permanently and pin its
-        member atop Recent for the life of the store. The candidate is clamped
-        to now plus a skew tolerance before the monotone compare: the member
-        still reads as active now (the event is real) but its recency cannot
-        rank ahead of the present, so it never wedges above a live crewmate.
+        The fold is monotone with no upper bound, so a far-future ``ts`` (VM resume, NTP
+        step) would pin its member atop Recent forever. It is clamped to now plus a skew
+        tolerance before the compare.
         """
         far_future = time.time() + 86_400.0  # a day ahead of the fold's clock
         out = self._apply({"last_active_ts": 100.0}, {"ts": far_future})
@@ -159,22 +141,16 @@ class TestTheFoldNeverWalksRecencyBackwards:
     def test_the_state_version_retires_a_pre_monotone_savepoint(self) -> None:
         """A savepoint from a fold without the monotone rule must be DISCARDED.
 
-        ``projection/checkpoint.py`` refuses a payload whose ``state_version``
-        does not match the definition's, and that is the only thing standing
-        between an upgraded gateway and a recency some earlier preview
-        correction walked backwards: a resumed savepoint applies only the events
-        AFTER it, so the regressed value would stand until the member next
-        spoke. The fold's own rule is pinned above; this pins the retirement,
-        without which those pins hold only for a store that has never saved.
+        ``projection/checkpoint.py`` refuses a mismatched ``state_version``. A resumed
+        savepoint replays only later events, so without the bump a regressed recency
+        would stand until the member next spoke.
         """
         from kiro_crew.eventlog.members_projections import RosterProjection
 
         assert RosterProjection.state_version >= 2
 
 
-# ---------------------------------------------------------------------------
 # GET /api/members ships the folded recency
-# ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _fresh_eventlog(tmp_path, monkeypatch):
     monkeypatch.setattr(members, "data_home", lambda: tmp_path)
@@ -266,9 +242,7 @@ class TestRosterReadTakesTheFoldedRecency:
         assert row["last_active_ts"] > 0
 
 
-# ---------------------------------------------------------------------------
 # Slot.append records every live row, including the user's own
-# ---------------------------------------------------------------------------
 class TestAppendRecordsTheRow:
     """``Slot._on_row`` fires for the rows ``_on_message`` is skipped for.
 

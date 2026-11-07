@@ -37,9 +37,9 @@ Kinds:
     edition_check   an installed edition answers a named check (below).
 
 ``edition_check`` asks an installed edition. It runs
-``kirocrew acceptance-check --json <check> <ref>``, a command the public build
-does not ship, so here it answers ``error`` ("no edition provides the
-acceptance check"). An edition that provides the check prints one JSON object
+``kirocrew acceptance-check --json <check> <ref>``, which the public build
+answers with exit 2 for every check, so here it answers ``error`` ("no edition
+provides the acceptance check"). An edition that provides the check prints one JSON object
 naming the same ``check``, ``ref`` and ``verdict`` as its exit code: 0 pass,
 8 pending, 1 fail, 3 needs a person (read as ``refused``), 4 could not answer
 (read as ``error``). Exit 2 means only that no edition provides that check.
@@ -149,11 +149,11 @@ _CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: edition's summary as the evidence.
 _EDITION_EXIT_VERDICTS = {0: "pass", 1: "fail", 3: "needs_person", 4: "error", 8: "pending"}
 
-#: argparse's usage exit, and it has one meaning: no installed edition provides
-#: the check. The evaluator validated both fields and always passes both, so
-#: argparse can only be refusing the command (the public ``kirocrew`` has no
-#: ``acceptance-check``) or a check name the edition does not know. A check
-#: that exists but rejects a ref answers exit 4 instead.
+#: Exit 2 has one meaning: no installed edition provides the check. The
+#: evaluator validated both fields and always passes both, so it is a check name
+#: no installed edition knows (the public ``kirocrew`` knows none), or a
+#: ``kirocrew`` too old to have ``acceptance-check``, whose argparse exits 2. A
+#: check that exists but rejects a ref answers exit 4 instead.
 _EDITION_USAGE_EXIT = 2
 
 
@@ -465,11 +465,24 @@ def main() -> int:
         return 2
     try:
         payload = json.load(sys.stdin)
+    except Exception:
+        payload = None
+    document, code = evaluate_document(payload)
+    print(json.dumps(document, indent=2) if code == 0 else json.dumps(document))
+    return code
+
+
+def evaluate_document(payload) -> tuple:
+    """Evaluate one parsed ``{"items": [...]}`` document; return ``(document, exit code)``.
+
+    The whole contract behind stdin, so the ``kirocrew-work`` ``accept_eval`` tool
+    imports this rather than a copy of it: same kinds, same refusals, same output.
+    """
+    try:
         items = payload["items"]
         assert isinstance(items, list)
     except Exception:
-        print(json.dumps({"error": 'stdin must be JSON: {"items": [...]}'}))
-        return 2
+        return {"error": 'stdin must be JSON: {"items": [...]}'}, 2
     results = []
     for position, item in enumerate(items):
         # ID extraction happens INSIDE the guard. A non-object entry
@@ -487,8 +500,7 @@ def main() -> int:
         except Exception as exc:  # one bad spec must not hide the rest
             verdict, evidence = "error", f"evaluator bug on this item: {exc}"
         results.append({"id": item_id, "verdict": verdict, "evidence": evidence})
-    print(json.dumps({"results": results}, indent=2))
-    return 0
+    return {"results": results}, 0
 
 
 if __name__ == "__main__":

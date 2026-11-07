@@ -321,7 +321,7 @@ def _hermes_roots(scan: _Scan) -> list[Path]:
         try:
             children = list(islice(profiles.iterdir(), 51))
         except OSError:
-            scan.diagnostic("profiles", "read_failed")
+            scan.diagnostic("profiles", "read_failed", failed=True)
             return roots
         if len(children) > 50:
             scan.diagnostic("profiles", "profile_count_limit", count=1)

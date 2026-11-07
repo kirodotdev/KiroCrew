@@ -15,7 +15,8 @@ def trust_reaches_subagents(slot: Any) -> bool:
     and each subagent read) goes through this; the Slack/background parent-trust
     gate counts the card trust through ``_slot_is_trusted`` like any slot trust. A
     revoke clears ``_trust`` and writes ``""``, so a child spawned after it asks
-    again; one already running keeps the policy it was given at spawn.
+    again, and one already running loses its ``parent_policy=auto`` grant on its next
+    tool request (``subagent_manager.turn_session.parent_trust_revoked``).
     """
     return bool(getattr(slot, "_trust", False))
 

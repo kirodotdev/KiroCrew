@@ -2,10 +2,10 @@
 ``Extend it`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: chat, run, cron,
-spawn, computer, memory, knowledge, learn, consolidate, artifact, app, agent and workspace.
-``kiro_crew.cli.main`` builds the top-level parser and calls every registrar in the command
-line's registration order, so a new command of these sections gets a registrar here and a
-call there.
+spawn, computer, memory, knowledge, learn, consolidate, artifact, app, agent, workspace and
+acceptance-check. ``kiro_crew.cli.main`` builds the top-level parser and calls every
+registrar in the command line's registration order, so a new command of these sections gets
+a registrar here and a call there.
 
 Parser construction only: the handlers live where ``main`` dispatches them, and nothing
 here reads a name a test patches through ``kiro_crew.cli``
@@ -87,7 +87,13 @@ Examples:
         formatter_class=_fmt,
     )
     cron_sub = cron_parser.add_subparsers(dest="cron_action")
-    cron_sub.add_parser("list", help="List cron jobs")
+    cron_list = cron_sub.add_parser("list", help="List cron jobs")
+    cron_list.add_argument(
+        "--folder",
+        default=None,
+        help='Only list jobs in this existing Schedule-page folder, by name or id; "-" '
+        'or "" lists jobs in no folder.',
+    )
     cron_add = cron_sub.add_parser(
         "add",
         help="Add a cron job",
@@ -237,8 +243,9 @@ Examples:
     cron_add.add_argument(
         "--folder",
         default="",
-        help="Schedule-page folder to file the job in (existing folder name or id). "
-        "The CLI does not create folders — create them in the dashboard's Schedule page.",
+        help="Schedule-page folder to file the job in, by name or id. A missing "
+        "name is created through the running gateway (start it first); an unknown id "
+        "is refused.",
     )
     cron_add.add_argument(
         "--project-path",
@@ -315,6 +322,12 @@ Examples:
         choices=["auto", "default"],
         default=None,
         help='Tool approval mode ("auto" to auto-approve, "default" to reset)',
+    )
+    cron_update.add_argument(
+        "--folder",
+        default=None,
+        help='Move the job to this Schedule-page folder, by name or id; "" moves it '
+        "out of its folder. A missing name is created through the running gateway.",
     )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)
@@ -1000,3 +1013,12 @@ Examples:
     app_init.add_argument("--backend", action="store_true", help="Include backend stub")
     app_init.add_argument("--ui", action="store_true", help="Include UI frontend (ESM + Vite)")
     app_init.add_argument("--cron", action="store_true", help="Include sample cron job")
+
+
+def register_acceptance_check_parser(sub: _Commands) -> None:
+    check_parser = cli_help.add_command(sub, "acceptance-check")
+    check_parser.add_argument(
+        "--json", action="store_true", required=True, help="Print the report as one JSON object"
+    )
+    check_parser.add_argument("check", help="Name of the edition's check")
+    check_parser.add_argument("ref", help="The item the check is about")

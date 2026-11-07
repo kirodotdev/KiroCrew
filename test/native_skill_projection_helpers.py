@@ -126,12 +126,18 @@ def _end_projections_started_since(before: dict[int, weakref.ref]) -> None:
     # A projection the test dropped has already left the weak registry above, so
     # its end is queued on the reaper rather than released here, and that end's
     # prune can still recreate the agents directory after tmp_path is removed.
-    # Collect what is left, then wait for the reaper to pass a marker queued
-    # behind every such end: it runs them in order.
-    # A test that swaps in its own queue (or stubs ``_reaper_alive``) queued its
-    # ends where no reaper reads, so there is nothing to wait for; the real
-    # thread and queue are read directly for that reason. The thread is read
-    # from the module that starts it: the facade keeps the value it had at import.
+    _wait_for_dropped_projection_ends()
+
+
+def _wait_for_dropped_projection_ends() -> None:
+    """Collect what is left, then wait for the reaper to pass a marker queued
+    behind every end a dropped projection queued: it runs them in order.
+
+    A test that swaps in its own queue (or stubs ``_reaper_alive``) queued its
+    ends where no reaper reads, so there is nothing to wait for; the real
+    thread and queue are read directly for that reason. The thread is read
+    from the module that starts it: the facade keeps the value it had at import.
+    """
     gc.collect()
     reaper = _reaper_owner._REAPER
     if projection._COLLECTED_ENDS is _REAPER_QUEUE and reaper is not None and reaper.is_alive():

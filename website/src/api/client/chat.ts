@@ -216,6 +216,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     stopChatSlotForce: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop?force=true').then(j),
     cancelQueuedMessage: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId)).then(j),
     editQueuedMessage: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId), { content }).then(j),
+    /** Hold a queued message while its card's editor is open (`editing: true`), or
+     *  release it unsaved (`false`), so the drain never sends the words being edited. */
+    holdQueuedMessageEdit: (slot: string, queueId: string, editing: boolean) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId) + '/editing', { editing }).then(j),
     reorderQueuedMessages: (slot: string, order: string[]) => put('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/order', { order }).then(j),
     /** Take back a steer the running turn has not read yet (the row's `meta.mid`).
      *  Resolves once the take-back is armed; what became of the steer lands on its
@@ -232,6 +235,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
     sideTools: () => fetch('/api/chat/side/tools').then(j) as Promise<{ read_only_tools: boolean; claude_adapter_outdated: boolean; claude_adapter_min_version: string; claude_adapter_update_command: string; config_unavailable: boolean }>,
     sideState: (slot: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/side').then(j) as Promise<SideSnapshot>,
+    // No body: promotion always copies the WHOLE transcript with no prompt/mode
+    // override (see chat_fork.api_chat_slot_promote), so there is nothing to narrow.
+    promoteChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/promote', {}).then(j),
     sideOpen: async (slot: string) => {
       await waitForSideClose(slot)
       return post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>

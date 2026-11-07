@@ -37,6 +37,7 @@ from kiro_crew.acp._dispatch import (
     parse_session_modes,
 )
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
+from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -334,6 +335,7 @@ async def create_session(
         # the mount and the grant together so the two cannot disagree.
         crew_panel=panel_mounted,
         session_key=session_key,
+        session_cwd=session_work_dir,
         **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
     )
     kas_agents = kas_extras.custom_agents
@@ -356,6 +358,7 @@ async def create_session(
     launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
     # A worker stub whose server the payload's later read of the spec muted.
     mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+    mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
     kas_agents, mcp_servers = hoist_servers_for_session(
         kas_agents,
         active_agent,
@@ -955,9 +958,14 @@ async def _finish_create_session(
         )
     handle.native_context_documents.update(projected_sources)
     # Inline prompt bytes and file resources come from the same activated
-    # wire definition. Conditional and indexed resources remain native.
+    # wire definition. Conditional and indexed resources remain native. Only a
+    # KAS known to apply a custom agent's prompt holds it; an old one drops it.
     for definition in kas_agents or ():
-        if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
+        if (
+            definition.get("id") == active_agent
+            and isinstance(definition.get("prompt"), str)
+            and handle.kas_agent_prompt_applied
+        ):
             handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
                 "prompt"
             ]

@@ -81,8 +81,8 @@ is defined in an owner module beside it. Import and patch every one as
 
 The Cross-Platform Portability gate excludes `platform_compat.py` and the
 `platform_compat_*.py` owners by name: they hold the POSIX primitives this layer exists
-to name, so the gate's rules do not apply to them. (Its `src/kiro_crew/**/*.py` pathspec
-also matches no module directly under `src/kiro_crew/`; see #21019.)
+to name, so the gate's rules do not apply to them. Every other module directly under
+`src/kiro_crew/` is scanned.
 
 This is the contract. The Windows install and runtime story a user follows is
 [windows-install.md](../../guides/windows-install.md).
@@ -107,6 +107,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
 | Process-group liveness | `pgroup_exists(pgid)`; an out-of-native-range positive identity is unknown and therefore conservatively reads as alive, so persisted-state cleanup refuses it without aborting the rest of the sweep | `os.killpg(pgid, 0)` directly, or treating an oversized integer as a dead group |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
+| Terminate a captured PID set without crossing PID reuse | `terminate_pids_pinned([(pid, start_id), ...], protected_pids=..., grace_secs=...)`; the caller supplies leaf-first identities, Linux opens a pidfd before each identity check and signals through it (the raw syscalls via `_process_group_supervisor` when the interpreter lacks the wrappers), every other host signals nothing, the filter drops protected and current PIDs, a call that delivered no SIGTERM returns 0 without the grace wait or SIGKILL, and the return value counts only confirmed exits or accepted SIGKILLs | a bare PID list; checking an identity before opening its process handle; a numeric-PID fallback when pinning is unavailable; a raw Linux syscall number on any other kernel; waiting out the grace when no SIGTERM was delivered; counting SIGTERM delivery as confirmed termination; signalling a protected runtime |
 | Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
 | Stop a child whose TERM trap must run (an installer that restores what it moved aside) | `terminate_and_reap(proc, grace=…, reap_timeout=…)` — SIGTERM to the child's own group (read while its leader is alive), pipes drained for up to *grace*, then SIGKILL to whatever is left and `kill_and_reap`'s bounded reap; shielded against the caller's cancellation. Windows, or a child that does not lead its own group: exactly `kill_and_reap`. `terminate_and_reap_sync(popen, grace=…)` is the blocking sibling for a `Popen` child writing to the caller's terminal (`kirocrew update`'s installer) | `kill_and_reap` (SIGKILL first, so the trap never runs) |
 | Kill a group the caller CAPTURED | `kill_process_group(pgid, sig)` — group-addressed; the id must have been read while the group's leader was alive and identity-checked (`process_identity.isolated_group_of`), the broadcast/self guard refuses with `ValueError` instead of degrading to a pid, POSIX only | `os.getpgid(pid)` at signal time (a recycled pid names a stranger's group) |
@@ -134,6 +135,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Walk a tree without leaving it | skip entries where `lstat_is_name_surrogate(info)` is true (Windows junctions and other name-surrogate reparse points); remove a tree in a sweep with `rmtree_force(path)` | `S_ISDIR` alone on an `lstat` result (it reports a junction as a plain directory and walks into the target) |
 | Tell two mounts of one directory apart (a bind mount shares its source's device and inode) | `mount_identity(path, dir_fd=)` -> `(mount id, device major, device minor, inode)` through `statx(STATX_MNT_ID)`, following symlinks and `/proc` magic links; with `dir_fd` and an empty path it names the descriptor. `None` off Linux, before Linux 5.8, or on any failure. Reached through `syscall()` where glibc has no `statx` wrapper, as `rename_noreplace` is | `os.stat` alone, which reports a bind and its source as one directory |
 | Remove a tree git produced (a clone, a `--local` clone, a directory with a `.git`) | `rmtree_force(path)` from a thread, or `_rmtree_force_settled(path)` where a cancelled caller must not leave the delete running (`registry_pipeline`). It clears the read-only bit on a file Windows refuses to unlink and retries once, never raises, and returns whether the path is gone, so a caller that restores something into the same path checks the answer. A tree that survives (a file another process holds open) is set aside, not collided with: `_restore_moved_aside` renames it to a `.partial-*` sibling before the restore | `shutil.rmtree(path, ignore_errors=True)` (git writes `.git/objects/pack/*` read-only; Windows refuses the unlink, `ignore_errors` swallows it, and the tree stays on disk while the caller reports success). Keep `ignore_errors=True` only where the tree holds nothing git wrote: a copy that drops `.git` (`manager._COPY_IGNORE`), a scratch or staging directory, or a linked worktree whose `.git` is a file. `test/test_git_tree_removal_windows.py` pins every site that removes a git tree |
+| Delete a file or tree a user's other program may hold open (an app uninstall, a meeting delete) | `remove_with_retry(path, retry_hint=...)` from a thread. A Windows sharing or lock violation (`winerror` 32/33) is retried for about three seconds; a hold that outlasts it raises `PermissionError` naming the held file, followed by the caller's hint. Any other error, and every error on POSIX, raises at once. On the event loop it does not sleep. A delete that a retry must be able to finish removes its existence marker last (`meetings` `delete_meeting` keeps `session.json` until the rest is gone) | `shutil.rmtree(path)` (the first held file fails the delete partway) |
 | Resolve a path for a containment check | `resolve(strict=True)`, handling `FileNotFoundError` on its own and failing closed on any other error | non-strict `Path.resolve()` (on Windows it collapses a self-pointing reparse point lexically without raising, so the loop passes as contained) |
 | Wait on a subprocess PIPE with a deadline | a daemon reader thread feeding a `queue.Queue`, consumed with a bounded `get` (`testing/harness.py`'s `_StdoutPump`) | `selectors.DefaultSelector()` on the pipe (select()-based on Windows, which accepts SOCKETS only, so registering a pipe RAISES there) |
 | Re-enter an edition's stable gateway launcher | `reexec_launcher(launcher, args)` after `gateway_restart.resolve_restart_launcher()` validates it; keeps the dispatch pathname, original arguments and UTF-8 environment, cancels a managed-venv apply in flight (`cancel_wheel_applies_in_flight`), and puts every variable registered with `keep_for_reexec` back into `os.environ` right before `os.execv` | resolving the symlink basename away, passing Python `-m` flags to a launcher, or evaluating a shell command |
@@ -163,7 +165,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Compare a resolved path against an unresolved one | `strip_extended_length_prefix(path)` on BOTH sides before comparing | comparing the two spellings as `Path.resolve` returns them (on Windows `ntpath.realpath` keeps the extended-length prefix when its prefix-strip re-check races a concurrent swap of the same file, so a prefixed child against an unprefixed parent reads as a path escape; the fold is LEXICAL and must not re-resolve, which would bless the redirect the caller is testing for) |
 | Read, write or store a path after folding its extended-length prefix | refuse it first when `names_a_verbatim_only_file(path)` is True | using the folded path as-is (a component ending in a dot or a space, or a DOS device stem such as `CON`, is reachable only through the `\\?\` spelling; ordinary Win32 lookup trims or remaps it, so the folded path names a sibling or a device instead of the file that passed the checks) |
 | Hold a directory in place while a child writes into it by path | `pin_directory(path)` (then `os.close`) | `os.open(dir, O_RDONLY)` (EACCES on Windows, and even where it opens it follows a link planted at the name) |
-| Act on the ENTRIES of a directory you inspected (screen-then-remove, screen-then-descend) | `pinned_directory(path)` yielding `PinnedDirectory` (`names` / `is_link` / `is_dir` / `unlink` / `rmdir` / `child` / `child_if_real_dir` / `read_text`); a parent stays pinned while its child is in use, so a chain of them pins the whole path, and `child` refuses past `PINNED_TREE_MAX_DEPTH` (64) levels with `ENAMETOOLONG` so a planted chain cannot spend another frame or descriptor. **Descend with `child_if_real_dir`**, which answers None when what is at the name is no longer a real directory and RE-RAISES for one that is: it holds the errno-agnostic dispatch (a refused `O_DIRECTORY \| O_NOFOLLOW` open is ENOTDIR on some kernels, ELOOP on others, `NotADirectoryError` on Windows) in one place, and its callers supply the differing action — two remove the entry, one deliberately leaves it. Its re-raise is also how the depth refusal reaches a caller, so an over-deep tree fails the operation instead of being unlinked as though it were a link | screening a NAME and then operating on that name -- every stdlib walker re-resolves it in between, and `os.walk`'s own descent re-check is `os.path.islink`, which is False for a junction, while `rglob` descends one unconditionally. The two platforms need OPPOSITE routes, which is why this is a helper rather than an `IS_POSIX` branch per call site: `dir_fd`-relative calls on POSIX, where the pin does NOT block a rename, and by-path calls on Windows, where there are no `dir_fd` operations at all and the pin is what holds the path still. Also: hand-spelling the refused-open fallback at a call site, where a fourth copy gets the errno dispatch subtly wrong |
+| Act on the ENTRIES of a directory you inspected (screen-then-remove, screen-then-descend) | `pinned_directory(path)` yielding `PinnedDirectory` (`names` / `is_link` / `is_dir` / `unlink` / `rmdir` / `child` / `child_if_real_dir` / `read_text`); `pinned_directory(path, links_only=True)` carries `pin_directory`'s `links_only` down the whole chain, so a cloud-files or dedup directory is pinned as the directory it is while a link or junction is still refused. On Windows `unlink` opens the entry itself, compares the kernel's final path of that handle with the pinned directory's, and deletes through the same handle: a same-user process holding `FILE_WRITE_ATTRIBUTES` can turn an EMPTY pinned directory into a junction in place, and no share mode refuses that access; a parent stays pinned while its child is in use, so a chain of them pins the whole path, and `child` refuses past `PINNED_TREE_MAX_DEPTH` (64) levels with `ENAMETOOLONG` so a planted chain cannot spend another frame or descriptor. **Descend with `child_if_real_dir`**, which answers None when what is at the name is no longer a real directory and RE-RAISES for one that is: it holds the errno-agnostic dispatch (a refused `O_DIRECTORY \| O_NOFOLLOW` open is ENOTDIR on some kernels, ELOOP on others, `NotADirectoryError` on Windows) in one place, and its callers supply the differing action — two remove the entry, one deliberately leaves it. Its re-raise is also how the depth refusal reaches a caller, so an over-deep tree fails the operation instead of being unlinked as though it were a link | screening a NAME and then operating on that name -- every stdlib walker re-resolves it in between, and `os.walk`'s own descent re-check is `os.path.islink`, which is False for a junction, while `rglob` descends one unconditionally. The two platforms need OPPOSITE routes, which is why this is a helper rather than an `IS_POSIX` branch per call site: `dir_fd`-relative calls on POSIX, where the pin does NOT block a rename, and by-path calls on Windows, where there are no `dir_fd` operations at all and the pin is what holds the path still. Also: hand-spelling the refused-open fallback at a call site, where a fourth copy gets the errno dispatch subtly wrong |
 | READ a file you judged in the same traversal (screen-then-read) | `PinnedDirectory.read_text(name, max_bytes=…)` -- the open itself refuses a link at the name, the descriptor's own `fstat` rejects a non-regular entry, a hardlink and anything over `max_bytes`, and the open is non-blocking so a FIFO cannot stall the read. The size is asked of the OPEN DESCRIPTOR, not of a stat taken before it, and the read itself is bounded too, so a file that grows between the two stops at the cap. The layers under it are private on purpose: reaching for a raw descriptor would be operating outside the pin | screening a name and then reading that name -- the entry is re-resolved in between, and the screen only refuses a link that was PRESENT at check time, so a flip-flop serves a file of the adversary's choosing. Also: a pre-open `stat` for the size, which measures a different file than the one the read then opens |
 | ENUMERATE a directory whose contents an agent writes | `PinnedDirectory.names_bounded(limit)`, which answers None when the directory holds more than *limit* entries | `names()` (or `sorted(os.listdir(...))`) on such a tree: the eager list IS the exhaustion, allocated in full before any budget the caller applies afterwards could refuse it. Returning the first *limit* names instead of None would be worse than either -- the caller acts on a partial directory while believing it saw all of it |
 | Retain an opened file/directory identity across a rename | `opened_file_identity(fd)`; POSIX returns device/inode, Windows returns native volume plus 128-bit file ID with the established legacy fallback. `None` is unverifiable. | persisting CRT `st_dev`/`st_ino` on Windows, or reopening the old pathname after the rename |
@@ -706,9 +708,10 @@ whose only edge to the root ran through an intermediary that exited before the
 first scan is a different case and must not be read as covered by that refusal:
 Toolhelp reports its parent as a vanished PID, so no walk from the root reaches
 it, the drain confirms the exits it can see and reports success, and that
-residue falls to the PID-file orphan sweep. Pinning at spawn closes the window
-for the ROOT; it does not pin an intermediary nobody has seen yet. POSIX teardown and Windows resource Job limits are
-unchanged. Native small-process regressions live in
+residue is ended by the tree's Job (below) when the resource ceiling installed
+one. Pinning at spawn closes the window for the ROOT; it does not pin an
+intermediary nobody has seen yet. POSIX teardown and Windows resource Job limits
+are unchanged. Native small-process regressions live in
 `test/test_runtime_cleanup_windows.py`; deterministic timing/error contracts
 live in `test/test_windows_tree_reap.py`.
 
@@ -744,17 +747,31 @@ and `test/test_runtime_cleanup_windows.py::test_a_member_refused_before_its_obje
 branch on a virtual clock. `pod._windows_job.retire_identity` meets the same refusal
 when it ends a pod publisher, and judges it by its own bounded retirement wait.
 
-Teardown deliberately does not keep a Job handle and call `TerminateJobObject`
-instead of draining exact handles. The Job that `apply_job_limits` creates is
-anonymous and is closed before that function returns, so there is no handle to
-retain and no name to reopen; `KILL_ON_JOB_CLOSE` is left unset on purpose,
-because setting it would tie an agent tree's LIFETIME to a resource ceiling's
-handle. That ceiling is also fail-soft by published contract — a missing Job must
-not fail a spawn, and four Win32 call sites log and continue — so making
-reclamation depend on it would either turn every ceiling failure into a refused
-start or leave exactly the degraded host with no reclamation at all. A Job also
-enforces by REFUSING new members rather than killing existing ones, so a
-saturated Job is a state the gateway must survive, not a teardown primitive.
+The tree's Job finishes what the drain cannot reach. When `apply_job_limits`
+installs the ceiling on the pinned root of an admitted tree, it hands the
+anonymous Job handle to that tree's cleanup state (`adopt_windows_tree_job`)
+instead of closing it. Once an exact-handle drain completes, the state calls
+`TerminateJobObject` before it retires the tree's tracking, and closes the handle
+at retirement. A refused terminate raises like an unconfirmed drain, so the tree
+keeps its Job and pins for the sweep's next pass.
+That ends every member the parent-PID walk could not reach, such as an MCP server
+whose `cmd.exe` wrapper exited first: the Windows counterpart of the POSIX group
+kill. The Job adds to the drain and does not replace it. Completion is still
+certified from exact handles, a pending tree keeps its Job with its pins until it
+retires, and a spawn whose fail-soft ceiling failed has no Job and tears down by
+the drain alone, so reclamation never depends on the ceiling. `KILL_ON_JOB_CLOSE`
+stays unset, so a gateway that exits only closes the handle and running agents
+live on. A Job that no admitted tree pins (the PDF extractor's) is closed before
+`apply_job_limits` returns. Regressions:
+`test/test_runtime_cleanup_windows.py::test_runtime_kill_ends_a_member_whose_parent_already_exited`.
+
+An exit `AcpRuntime` observes rather than causes (the reader's EOF branch or
+`_exit_watch_loop`) runs the same drain on Windows once
+`_retire_tracking_after_exit` has confirmed it, because a Windows descendant has no
+`kiro_pids.txt` line the sweep could reap it by. The drain retires the root's
+tracking under its pin; `WindowsTreeDrainPending` is one WARNING line, and a drain
+that cannot confirm keeps its pins for the sweep. Regression:
+`test/test_runtime_cleanup_windows.py::test_observed_root_exit_ends_the_tree_it_left_behind`.
 
 ## Pod lifetime Job primitives
 

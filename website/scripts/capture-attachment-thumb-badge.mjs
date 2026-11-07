@@ -138,8 +138,6 @@ async function main() {
   const PORTRAIT = await mockShot(browser, 1170, 2532) // phone screenshot, aspect 0.46
   const LANDSCAPE = await mockShot(browser, 1920, 1080) // desktop screenshot, aspect 1.78
 
-  await page.addInitScript(l => localStorage.setItem('mc-lang', l), lang)
-
   const stubExtra = async (path, route) => {
     if (path === '/api/upload/file') { await json(route, { paths: uploadPaths }); return true }
     if (path === '/api/file-raw') {
@@ -151,7 +149,7 @@ async function main() {
     if (path.startsWith('/api/chat/slot/')) { await json(route, detail); return true }
     return false
   }
-  await stubDashboardApi(page, { slots, extra: stubExtra })
+  await stubDashboardApi(page, { slots, extra: stubExtra, localStorageEntries: { 'mc-lang': lang } })
 
   await page.goto(`${base}/chat/${SLOT}`)
   await page.waitForSelector('textarea[data-composer-typo]')
@@ -194,8 +192,7 @@ async function main() {
   const mixCtx = await browser.newContext({ viewport: { width: 390, height: 900 }, deviceScaleFactor: 2, locale: lang })
   const mixPage = await mixCtx.newPage()
   logPageProblems(mixPage)
-  await mixPage.addInitScript(l => localStorage.setItem('mc-lang', l), lang)
-  await stubDashboardApi(mixPage, { slots, extra: stubExtra })
+  await stubDashboardApi(mixPage, { slots, extra: stubExtra, localStorageEntries: { 'mc-lang': lang } })
   await mixPage.goto(`${base}/chat/${SLOT}`)
   await mixPage.waitForSelector('textarea[data-composer-typo]')
   await mixPage.waitForTimeout(500)

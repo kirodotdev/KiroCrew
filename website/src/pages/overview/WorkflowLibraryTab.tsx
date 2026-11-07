@@ -352,6 +352,7 @@ export default function WorkflowLibraryTab() {
                 <Btn
                   key={definition.id}
                   onClick={() => choose(definition)}
+                  aria-pressed={selectedId === definition.id}
                   className={`w-full mb-1 px-2.5 py-2 justify-start text-left block ${
                     selectedId === definition.id
                       ? 'bg-accent-subtle border-accent/40'

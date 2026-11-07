@@ -757,6 +757,26 @@ class CronSDK:
         )
         logger.info("App %s updated cron job: %s", self._app_name, job_id)
 
+    # ── Run now ──
+
+    async def run_job_async(self, job_id: str) -> bool:
+        """Run a job this app owns now, off schedule, leaving its schedule as it is.
+
+        ``True`` means the run was dispatched, as by the dashboard's Run button (a
+        paused job runs too); ``False`` means a run of it is already in flight.
+        Raises ``PermissionError`` (SEL-audited) for a job this app does not own.
+        Async only: the run starts as a task on the running loop.
+        """
+        self._assert_owned(job_id, "cron_run_job")
+        started = self._cron.trigger_run(job_id, expected_owner=self._owner_prefix)
+        sel().log_api_access(
+            caller=f"app:{self._app_name}",
+            operation="cron_run_job",
+            outcome="ok" if started else "rejected",
+            resources=job_id,
+        )
+        return started
+
     # ── Remove all (atomic) ──
 
     def remove_all(self) -> int:

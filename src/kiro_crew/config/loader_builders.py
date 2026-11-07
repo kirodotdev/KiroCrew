@@ -688,6 +688,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         acp_failover=_sections.normalize_acp_failover(section.get("acp_failover")),
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
+        kas_refuse_plain_http_mcp_headers=section.read(
+            "kas_refuse_plain_http_mcp_headers", _safe_bool
+        ),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
@@ -786,6 +789,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         session_control=section.read("session_control", _safe_bool),
         # Default false: a missing key and a malformed one both leave it off.
         session_manager_chain=section.read("session_manager_chain", _safe_bool),
+        peer_steer_loss_recovery=section.read("peer_steer_loss_recovery", _safe_bool),
         # Default true preserves the zero-configuration member-dispatch
         # grant (today's behaviour) for a MISSING key. A present-but-
         # malformed value was already coerced to False upstream, BEFORE
@@ -1260,11 +1264,13 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
+        new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
         widget_density=section.get("widget_density"),
         browser_local_origins=_sections.coerce_browser_local_origins(
             section.get("browser_local_origins")
         ),
         verbosity=_sections.normalize_verbosity(section.get("verbosity")),
+        preferred_language=section.get("preferred_language"),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
         terminal=section.get("terminal"),

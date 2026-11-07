@@ -97,10 +97,12 @@ class TestBootAdmissionRevet:
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
 
-    def test_bound_port_backends_spawn_in_the_one_boot_wave(self, tmp_path, app_env, monkeypatch):
-        """Dev Fleet asks for the gateway's bound port, and start_dashboard exports
-        that port before the boot wave, so it spawns with every other app.
-        Its spawn reads ``KIROCREW_BOUND_PORT`` at that moment and finds it set."""
+    def test_backends_spawn_in_one_wave_with_the_bound_port_set(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """With the gateway's bound port exported, Dev Fleet spawns with every other
+        app and its spawn finds ``KIROCREW_BOUND_PORT`` set, the source of its
+        ``KIROCREW_GATEWAY_ORIGIN``."""
         bmod, started = self._boot_env(monkeypatch)
         seen_port: dict[str, str | None] = {}
 
@@ -155,7 +157,7 @@ class TestBootAdmissionRevet:
         bmod.start_enabled_app_backends()
         assert started == ["md-notebook"]
 
-    def test_a_disabled_bound_port_app_is_not_spawned(self, tmp_path, app_env, monkeypatch):
+    def test_a_disabled_builtin_app_is_not_spawned(self, tmp_path, app_env, monkeypatch):
         bmod, started = self._boot_env(monkeypatch)
         apps = [
             {
@@ -168,11 +170,6 @@ class TestBootAdmissionRevet:
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
         assert started == []
-
-    def test_dev_fleet_is_the_bound_port_backend(self):
-        from kiro_crew.apps import builtin_host_grants
-
-        assert builtin_host_grants.bound_port_apps() == frozenset({"dev-fleet"})
 
     def test_spawn_exception_isolated_and_boot_continues(self, tmp_path, app_env, monkeypatch):
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26
@@ -362,6 +359,18 @@ class TestGatewayOriginInjection:
         assert bmod._MIN_PORT <= int(env["PORT"]) <= bmod._MAX_PORT
         # The proxy secret is still injected when a secret exists.
         assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
+
+    def test_dev_fleet_gets_the_origin_and_no_bound_port(self, tmp_path, app_env, monkeypatch):
+        """Dev Fleet aims its pointer broker at ``KIROCREW_GATEWAY_ORIGIN``; the raw
+        bound port is not passed through to any backend."""
+        name = self._install_backend_app(tmp_path, name="dev-fleet")
+        self._write_secret(name)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None, "the spawn never reached the Popen boundary"
+        assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
+        assert "KIROCREW_BOUND_PORT" not in env
 
     def test_specific_interface_bind_omits_the_origin(self, tmp_path, app_env, monkeypatch):
         """A specific-interface KIROCREW_BOUND_HOST omits the origin (fail closed).

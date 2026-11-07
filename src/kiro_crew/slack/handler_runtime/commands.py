@@ -226,8 +226,10 @@ async def _bang_yolo(
     elif len(parts) >= 2 and parts[1].lower() == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep
         # that filesystem I/O off the event loop.
-        result = await asyncio.to_thread(safety_override().renew, "slack")
-        if result.renewed:
+        # ``gateway --approval yolo``'s grant is the dashboard's only: not Slack's to renew.
+        so = safety_override()
+        result = None if so.is_cli_launch is True else await asyncio.to_thread(so.renew, "slack")
+        if result is not None and result.renewed:
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.yolo_mode",
@@ -1084,7 +1086,11 @@ async def _bang_channel(
                 )
                 return ""
             agent_name = resolved
-        await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        try:
+            await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        except ValueError as e:
+            await slack.post_message(channel, f"❌ {e}", reply_ts)
+            return ""
         _reload_orch_cfg()
         sel().log_api_access(
             caller=user_id,
@@ -1106,7 +1112,11 @@ async def _bang_channel(
         )
         return ""
 
-    await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    try:
+        await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    except ValueError as e:
+        await slack.post_message(channel, f"❌ {e}", reply_ts)
+        return ""
     _reload_orch_cfg()
     sel().log_api_access(
         caller=user_id,

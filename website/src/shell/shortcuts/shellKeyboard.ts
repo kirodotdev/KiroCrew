@@ -7,7 +7,7 @@ import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSli
 import { isStaleProjectDirError } from '../../utils/folderAgent'
 import type { ChatFolder } from '../../types'
 import { newChatShortcutArgs } from './newChatArgs'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
@@ -15,6 +15,7 @@ import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/co
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../../utils/agentSwitchFeedback'
 import { api } from '../../api/client'
 import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
+import { TERMINAL_TAB_COMMAND_EVENT, TOGGLE_SIDE_TERMINAL_EVENT, type TerminalTabCommand } from '../../lib/panelToggleShortcuts'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
 import { focusPopout as focusChatPopout, getSnapshot as getChatPopouts, openPopout as openChatPopout } from '../../utils/chatPopout'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
@@ -77,9 +78,12 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onError: (err, args) => {
       // The one failure a folder create adds: the folder's project directory
       // is gone. The folder "+" says so under the folder header; the shortcut
-      // has no header, so it uses the shell's transient notice.
+      // has no header, so it uses the shell's transient notice, as an error
+      // like the folder's own. Any other failure goes there too.
       if ('project' in args && args.project && isStaleProjectDirError(err)) {
-        dispatch(setAgentSwitchNotice(i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project })))
+        dispatch(setAgentSwitchNotice({ message: i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project }), error: true }))
+      } else {
+        reportCreateFailure(dispatch, err)
       }
     },
     onSuccess: (view) => {
@@ -122,9 +126,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   }, [agentSwitchNotice, dispatch])
   // A new chat that could not get its own session folder opened on the default
   // project; the API client announces it for every create path (see
-  // lib/sessionFolderNotice), and it shares this transient notice.
+  // lib/sessionFolderNotice), and it shares this transient notice. The folder
+  // create failed on the gateway, so it is an error, not status.
   useEffect(() => {
-    const onFolderUnavailable = () => dispatch(setAgentSwitchNotice(i18nT('store.chatSlice.session_folder_unavailable')))
+    const onFolderUnavailable = () => dispatch(setAgentSwitchNotice({ message: i18nT('store.chatSlice.session_folder_unavailable'), error: true }))
     window.addEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
     return () => window.removeEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
   }, [dispatch])
@@ -142,6 +147,15 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agent)))
     }
   }, [dispatch, queryClient])
+  // Close / previous / next terminal tab: the docked panel's tab strip answers
+  // while it is showing. Same gating as new-terminal below, and a popped-out
+  // panel is focused instead.
+  const terminalTabChord = (command: TerminalTabCommand) => terminalEnabled && !isPopout && !isEmbed
+    ? () => {
+      if (terminalPoppedOut) focusTerminalPopout()
+      else window.dispatchEvent(new CustomEvent<TerminalTabCommand>(TERMINAL_TAB_COMMAND_EVENT, { detail: command }))
+    }
+    : undefined
   useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => {
     const s = appStore.getState()
     newChatMutation.mutate(newChatShortcutArgs(s.dashboard.slots, s.chat.activeSlot, queryClient.getQueryData<ChatFolder[]>(['chat-folders'])))
@@ -341,6 +355,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onNewTerminal: terminalEnabled && !isPopout && !isEmbed
       ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(activeSlotProject) }
       : undefined,
+    onCloseTerminalTab: terminalTabChord('close'),
+    onPrevTerminalTab: terminalTabChord('prev'),
+    onNextTerminalTab: terminalTabChord('next'),
     // Same command as the chat header's pop-out button: focus the session's
     // window when it is already out, otherwise open one. A popout or embedded
     // pane shows no such button, so the chord is unbound there.
@@ -352,6 +369,11 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
         if (getChatPopouts().has(slot)) focusChatPopout(slot)
         else openChatPopout(slot, s.dashboard.slots.find(x => x.key === slot)?.title)
       }
+      : undefined,
+    // The side panel's terminal for this session: the chat page answers. Same
+    // gating as the dock toggle: a popout or embed hosts no side panel.
+    onToggleSideTerminal: terminalEnabled && !isPopout && !isEmbed
+      ? () => window.dispatchEvent(new Event(TOGGLE_SIDE_TERMINAL_EVENT))
       : undefined,
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,

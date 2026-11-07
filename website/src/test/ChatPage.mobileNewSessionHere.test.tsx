@@ -19,8 +19,20 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { sseSlots, sseConnected } from '../store/dashboardSlice'
 import { setActiveSlot } from '../store/chatSlice'
 import { api } from '../api/client'
+import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 
+// Every argument the page hands `createSlot`, read by the Ultra Mode default
+// case; the real thunk still runs.
+const createSlotArgs = vi.hoisted(() => [] as unknown[])
+vi.mock('../store/chatSlice', async importOriginal => {
+  const actual = await importOriginal<typeof import('../store/chatSlice')>()
+  const createSlot = Object.assign((arg: Parameters<typeof actual.createSlot>[0]) => {
+    createSlotArgs.push(arg)
+    return actual.createSlot(arg)
+  }, actual.createSlot)
+  return { ...actual, createSlot }
+})
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 vi.mock('../components/ChatInput', () => ({ default: () => null }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
@@ -167,6 +179,33 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('slot-new', '/work/repo'))
   })
 
+  it("stages the folder's own default first prompt, unsent, for the new chat", async () => {
+    const folders = api.chatFolders as unknown as ReturnType<typeof vi.fn>
+    const shipped = folders.getMockImplementation()
+    folders.mockResolvedValue([
+      { id: 'f-parent', name: 'Parent', parent_id: null, default_agent: 'folder-agent', project_dir: '/work/repo' },
+      { id: 'f-child', name: 'Child', parent_id: 'f-parent', default_agent: '', project_dir: '', default_prompt: 'Triage the queue' },
+    ])
+    // A fresh slot: createSlot writes onto the object the create resolves with.
+    ;(api.createChatSlot as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ key: 'slot-new', title: '' })
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      renderChat({ key: 'slot-0', title: 'Session 0', folder_id: 'f-child' })
+      await waitFor(() => expect(api.chatFolders).toHaveBeenCalled())
+      await act(async () => {})
+      const item = await newSessionItem()
+      await waitFor(() => expect(item.textContent).toContain('New chat in Child'))
+      fireEvent.click(item)
+      await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(1))
+      // createSlot stages the prefill once the create and its project step resolve.
+      const staged = () => setItem.mock.calls.filter(([k]) => k === PREFILL_STORAGE_KEY).map(([, v]) => JSON.parse(v))
+      await waitFor(() => expect(staged()).toEqual([expect.objectContaining({ slotKey: 'slot-new', prompt: 'Triage the queue' })]))
+    } finally {
+      setItem.mockRestore()
+      if (shipped) folders.mockImplementation(shipped)
+    }
+  })
+
   it('opens the folder path of the new chat, which the drawer may have collapsed', async () => {
     // createSlot opens the path only for a default-folder create, and the
     // session on screen can sit in a collapsed folder after a search or a link.
@@ -178,6 +217,18 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     fireEvent.click(await newSessionItem())
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-new'))
     await waitFor(() => expect(store.getState().chat.revealRequest).toMatchObject({ target: 'slot-new', openFoldersOnly: true, folderId: 'f-child' }))
+  })
+
+  it("asks for the person's Ultra Mode default (crewModeDefault), keeping the folder's agent and project", async () => {
+    renderChat({ key: 'slot-0', title: 'Session 0', folder_id: 'f-child' })
+    await waitFor(() => expect(api.chatFolders).toHaveBeenCalled())
+    await act(async () => {})
+    const item = await newSessionItem()
+    await waitFor(() => expect(item.textContent).toContain('New chat in Child'))
+    createSlotArgs.length = 0
+    fireEvent.click(item)
+    await waitFor(() => expect(createSlotArgs).toHaveLength(1))
+    expect(createSlotArgs[0]).toMatchObject({ crewModeDefault: true, agent: 'folder-agent', folder_id: 'f-child', project: '/work/repo' })
   })
 
   it('an unfiled session creates an unfiled, agent-less sibling (the server stamps the default custom agent)', async () => {

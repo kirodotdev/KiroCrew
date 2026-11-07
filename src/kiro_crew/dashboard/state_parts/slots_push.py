@@ -128,12 +128,13 @@ def suspend_slots_push(self: DashboardState) -> "Iterator[Callable[[str], None]]
 
     Depth-counted so nested use is safe (an inner block must not flush early),
     and ``@contextmanager``'s try/finally unwinds the depth even if the body
-    raises. Only flushes if something actually asked to push. A flush that
-    itself fails while the body's own exception is unwinding annotates its
-    exception (`PEP 678`) so the buried original stays visible — the flush's
-    exception otherwise replaces the body's in the caller's view. A deferred
-    flush is honored only after a clean body exit; every exception keeps the
-    old synchronous failure propagation.
+    raises. Only flushes if something actually asked to push. The exit flush
+    logs an ``Exception`` instead of raising it: the block's change is already
+    made, so its caller is answered as when the trailing timer carries the
+    failure, and the body's own exception is not replaced by the flush's. A
+    direct ``push_slots_update()`` on a leading edge still raises. A deferred
+    flush is honored only after a clean body exit; after an exception the flush
+    runs at once.
     """
     deferred_operation: str | None = None
 
@@ -153,8 +154,6 @@ def suspend_slots_push(self: DashboardState) -> "Iterator[Callable[[str], None]]
             self._slots_push_overlapped = False
         if self._slots_push_suspend == 0 and self._slots_push_pending:
             self._slots_push_pending = False
-            # Captured BEFORE the flush call: inside the `except` block below,
-            # sys.exc_info() would already name the flush's own exception.
             unwinding_over = sys.exc_info()[1]
             if deferred_operation is not None and unwinding_over is None and not overlapped:
                 loop = self.serving_loop
@@ -175,19 +174,13 @@ def suspend_slots_push(self: DashboardState) -> "Iterator[Callable[[str], None]]
                         return
                     except RuntimeError:
                         # A loop closing between lookup and scheduling cannot
-                        # drop the announcement. Fall back to the old immediate
-                        # flush and let its failure retain caller visibility.
+                        # drop the announcement. Fall back to the immediate
+                        # flush below.
                         pass
             try:
                 self.push_slots_update()
-            except BaseException as flush_exc:
-                if unwinding_over is not None and unwinding_over is not flush_exc:
-                    flush_exc.add_note(
-                        "[slots-flush] the owed slots flush raised while unwinding "
-                        f"over an in-flight {type(unwinding_over).__name__}; that "
-                        "original exception is chained below as __context__"
-                    )
-                raise
+            except Exception:
+                logger.error("Slots broadcast failed at the suspend block's exit", exc_info=True)
 
 
 def _deferred_slots_flush(self: DashboardState, operation: str, retries_remaining: int) -> None:
@@ -1213,9 +1206,13 @@ def _on_ws_send_done(self: DashboardState, task: asyncio.Task) -> None:
 
 
 def _ws_client_allowed(
-    self: DashboardState, ws: web.WebSocketResponse, msg_type: str, data: object
+    self: DashboardState,
+    ws: web.WebSocketResponse,
+    msg_type: str,
+    data: object,
+    audit_type: str | None = None,
 ) -> bool:
-    return _websocket_for(self)._ws_client_allowed(ws, msg_type, data)
+    return _websocket_for(self)._ws_client_allowed(ws, msg_type, data, audit_type)
 
 
 def _serialize_for_client(
@@ -1306,6 +1303,22 @@ def set_fold_watch(
     self: DashboardState, ws: web.WebSocketResponse, slots: object
 ) -> frozenset[str]:
     return _websocket_for(self).set_fold_watch(ws, slots)
+
+
+def set_chunk_scope_capable(self: DashboardState, ws: web.WebSocketResponse, capable: bool) -> bool:
+    return _websocket_for(self).set_chunk_scope_capable(ws, capable)
+
+
+def set_chunk_watch(self: DashboardState, ws: web.WebSocketResponse, slots: object) -> dict | None:
+    def running(key: str) -> bool:
+        # A linked channel turn streams with ``running`` false, so it counts too
+        # (the same effective-running rule as the slot-detail endpoint).
+        slot = self.get_slot(key)
+        if slot is None:
+            return False
+        return bool(getattr(slot, "running", False) or getattr(slot, "linked_turn_running", False))
+
+    return _websocket_for(self).set_chunk_watch(ws, slots, running)
 
 
 def fold_watch_routing(self: DashboardState) -> tuple[bool, bool, frozenset[str]]:

@@ -5,7 +5,7 @@ import type { FileWatchFrame } from '../hooks/useFileWatch'
 import { api } from '../api/client'
 import { downloadFileName, partialDownloadName } from '../utils/fileReadUrl'
 import { saveBlob } from '../utils/download'
-import { fetchFileRead, fileReadQueryKey, isPartialRead } from '../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, partialReadCause, type PartialCause } from '../utils/fileReadQuery'
 import { documentBodyEpochNow } from '../hooks/usePanelTabs'
 import { copyToClipboard } from '../utils/clipboard'
 import { i18nT } from '../i18n/t'
@@ -28,7 +28,7 @@ import type { ReportError } from './useMarkdownPanelFileState'
  *  `superseded` means a newer read of this panel started before this one
  *  answered, or the panel moved to another path: apply nothing, say nothing. */
 type DiskRead =
-  | { kind: 'ok'; text: string; binary: boolean; partial: boolean }
+  | { kind: 'ok'; text: string; binary: boolean; partial: PartialCause | false }
   /** The file is not on disk (404): a real answer, rendered as the same
    *  placeholder the chip click and the cold-tab hydration show for it. */
   | { kind: 'missing' }
@@ -44,10 +44,10 @@ export const MISSING_FILE_RETRY_MS = 1_000
  *  30 s, not every second, until the tab is hidden or the file is back. */
 export const MISSING_FILE_RETRY_MAX_MS = 30_000
 
-export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError }: {
-  filePath: string; content: string; binary?: boolean; partial?: boolean; liveWatch?: boolean
+export function useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError }: {
+  filePath: string; content: string; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean; liveWatch?: boolean
   editing: boolean; dirty: boolean; dirtyRef: MutableRefObject<boolean>; active: boolean; qc: QueryClient
-  onDiskContent?: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent?: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onContentChange: (c: string) => void
   reportActionError: ReportError
 }) {
@@ -57,6 +57,8 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
   contentRef.current = content
   const binaryRef = useRef(!!binary)
   binaryRef.current = !!binary
+  const placeholderRef = useRef(!!placeholder)
+  placeholderRef.current = !!placeholder
   /** Read the file as it is now, with the verdict the read produced.
    *
    * ALWAYS a fresh fetch of the disk. That is the one rule every read of this
@@ -106,7 +108,7 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
       const r = await fetchFileRead(filePath, ac.signal)
       if (ac.signal.aborted || documentBodyEpochNow() !== epoch) return { kind: 'superseded' }
       if (r.ok) {
-        const partial = isPartialRead(r)
+        const partial = partialReadCause(r)
         // A partial buffer's diff is git's patch of the file, and the file can
         // change past the cut while the cut body stays equal. So the patch
         // is owed from this read on; useMarkdownPanelDiff fetches it (see
@@ -137,38 +139,37 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
    *  by any read that finds the file, and by a re-target of the tab. */
   const [missingOnDisk, setMissingOnDisk] = useState(false)
   useEffect(() => { setMissingOnDisk(false) }, [filePath])
-  /** Whether the buffer holds only PART of the file: the read that filled it
-   *  was cut at the gateway's cap or had credentials redacted. The verdict is
-   *  the host's (`partial`), stamped from the read's headers by whichever read
-   *  filled the buffer -- the opening read before this panel mounted as much as
-   *  the panel's own -- and never guessed from the body: a whole file may quote
-   *  the redaction tag, and a guess about it could only be wrong. Such a buffer
-   *  is not the whole file: the banner and the close prompt say so instead of
-   *  calling it the file's remaining contents, and a download of it carries a
+  /** Whether the buffer holds only PART of the file, and why: the read that
+   *  filled it was cut at the gateway's cap, had credentials redacted, or was
+   *  not valid UTF-8. The verdict is the host's (`partial`), stamped from the
+   *  read's headers by whichever read filled the buffer -- the opening read
+   *  before this panel mounted as much as the panel's own -- and never guessed
+   *  from the body: a whole file may quote the redaction tag, and a guess about
+   *  it could only be wrong. Such a buffer is not the whole file: the banner and
+   *  the close prompt say so, naming the cause, instead of calling it the
+   *  file's remaining contents, and a download of it carries a
    *  `.partial` tag before the extension (`notes.partial.md`). That is ALL the
    *  verdict changes -- words and a file name. The guard, the banner and the
    *  exits stand for a partial buffer exactly as for a whole one: it is the
    *  most of the file that survives. */
-  const partialCopy = !!partial
+  const partialCopy: PartialCause | false = partial || false
   const partialCopyRef = useRef(partialCopy)
   partialCopyRef.current = partialCopy
   /** Whether the buffer IS a copy worth keeping once the file is gone: text the
    *  disk once vouched for. Not the "file not found" sentence the host seeds
-   *  into a tab opened on a path already missing (`openFile`, the cold-tab
-   *  hydration), not a binary tab's empty text buffer, not an empty file --
+   *  into a tab opened on a path already missing (the tab's `placeholder`
+   *  flag), not a binary tab's empty text buffer, not an empty file --
    *  a banner over those would offer to download the placeholder prose, or
    *  nothing, under the file's name. Judged by the buffer, not by whether THIS
    *  panel instance has seen a successful read: a panel remounted after the
    *  side panel was collapsed carries the tab store's copy of a file deleted
    *  meanwhile -- a real last copy with no successful read behind it here. */
   const bufferIsLastCopy = useCallback(() =>
-    !binaryRef.current && contentRef.current !== '' &&
-    contentRef.current !== i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), [])
+    !binaryRef.current && !placeholderRef.current && contentRef.current !== '', [])
   /** The banner and the close guard: the file is gone AND the buffer is a copy
    *  worth keeping. Rendered as a banner OVER the document, never in the
    *  buffer: `content` and its saved baseline keep the last text on screen. */
-  const lastCopy = missingOnDisk && !binary && content !== '' &&
-    content !== i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+  const lastCopy = missingOnDisk && !binary && !placeholder && content !== ''
   /** The banner's two exits, on the BUFFER: a gone file has no path to fetch,
    *  so the browser is handed the text on screen, under the file's name. The
    *  copy answers: "Copied" on the button for a moment, or the panel's action
@@ -203,7 +204,7 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
 
   /** Apply a disk read to the tab: buffer, saved baseline and verdict together,
    *  with the cache entry dropped. A body landed, so the file is there. */
-  const applyDiskRead = useCallback((disk: { text: string; binary: boolean; partial: boolean }) => {
+  const applyDiskRead = useCallback((disk: { text: string; binary: boolean; partial: PartialCause | false }) => {
     evictFileRead()
     setMissingOnDisk(false)
     if (onDiskContent) onDiskContent(disk.text, disk.binary, disk.partial)
@@ -436,7 +437,7 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
 }
 
 export function useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partial, editing, dirty, diffMode, content, initialDiffMode, onDiffModeChange, setDiffMode, diskTickRef, diffStartTickRef, patchOwedTick, qc }: {
-  filePath: string; isRichType: boolean; canTextDiff: boolean; partial?: boolean; editing: boolean; dirty: boolean; diffMode: boolean; content: string
+  filePath: string; isRichType: boolean; canTextDiff: boolean; partial?: PartialCause | false; editing: boolean; dirty: boolean; diffMode: boolean; content: string
   initialDiffMode?: boolean; onDiffModeChange?: (diffMode: boolean) => void; setDiffMode: Dispatch<SetStateAction<boolean>>
   /** The disk hook's read/fetch ordering (see readFromDisk): each diff fetch
    *  records the read tick it started at. */
@@ -496,10 +497,37 @@ export function useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partia
   // exact all-added rendering this branch exists to suppress.
   const diffUnavailable = diffMode && (diffData?.status === 'not_git' || diffData?.status === 'error')
     ? diffData.status as 'not_git' | 'error' : null
+  // The editor's verdict (`onLiveDiffDegraded`), for the file and baseline it
+  // was given; any other file or baseline counts as none.
+  const [liveDiff, setLiveDiff] = useState<{ filePath: string; base: string; swap: boolean } | null>(null)
+  const filePathRef = useRef(filePath)
+  filePathRef.current = filePath
+  const originalContentRef = useRef(originalContent)
+  originalContentRef.current = originalContent
+  const reportLiveDiffDegraded = useCallback((degraded: boolean) => {
+    const path = filePathRef.current
+    const base = originalContentRef.current
+    setLiveDiff(prev => (prev?.filePath === path && prev.base === base && prev.swap === degraded ? prev : { filePath: path, base, swap: degraded }))
+  }, [])
+  // Diff view or editing off ends the session; the next one asks again.
+  const liveDiffSession = diffMode && editing
+  useEffect(() => {
+    if (!liveDiffSession) setLiveDiff(null)
+  }, [liveDiffSession])
+  // Unsaved edits in this session: the reader is typing here, so a later
+  // save never swaps this editor away.
+  useEffect(() => {
+    if (dirty && liveDiff?.swap) setLiveDiff({ ...liveDiff, swap: false })
+  }, [dirty, liveDiff])
+  // An editor that dropped its over-budget live diff shows no change, so a
+  // clean buffer gets the diff view, once the real baseline has arrived.
+  const editorDiffSwap = diffMode && editing && gitPatch == null && !diffUnavailable
+    && diffData != null && !dirty
+    && liveDiff?.filePath === filePath && liveDiff.base === originalContent && liveDiff.swap
   // Diff mode draws the diff view, not the editor: always in the viewer, and
   // in the editor when the diff is git's patch, once it has arrived (and git
-  // could produce one).
-  const diffViewShown = diffMode && (!editing || (gitPatch != null && !diffUnavailable))
+  // could produce one), or when the editor dropped its over-budget live diff.
+  const diffViewShown = diffMode && (!editing || (gitPatch != null && !diffUnavailable) || editorDiffSwap)
   // Diff mode on a file identical to its baseline renders an empty canvas in
   // BOTH view and edit modes — show a notice instead. Editing past the
   // baseline (content diverges) flips this off automatically.
@@ -552,5 +580,5 @@ export function useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partia
     }
   }, [canTextDiff, isRichType, diffData, filePath, initialDiffMode, onDiffModeChange, setDiffMode])
 
-  return { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText }
+  return { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText, reportLiveDiffDegraded }
 }

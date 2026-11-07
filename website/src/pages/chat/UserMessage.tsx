@@ -39,6 +39,11 @@ import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../hooks/
 // back; without this guard the entrance would replay every time. Module-level set
 // persists for the app session — each steered message animates exactly once.
 const animatedSteers = new Set<string>()
+// The same guard for the flash a requeued steer's own row plays when it lands
+// (`meta.landedFromSteer`): each such row flashes at most once per app session.
+const landedSteerFlashes = new Set<string>()
+// The flash's length, `--animate-steer-landed` in `tailwind-theme.css`.
+const LANDED_FLASH_MS = 1200
 
 /* Each take-back notice names the action that was picked. The keys stay full
  * literals so the dead-key and dynamic-key checks can see every one of them. */
@@ -272,6 +277,18 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // steer/queue vocabulary the steer-only surface exists to hide.
   const pendingSteer = !hideSteerBadge && steerMeta && !!slotRunning && (steerState === 'written' || (steerOptimistic && !steerState))
   const requeuedSteer = !hideSteerBadge && steerMeta && steerState === 'requeued'
+  // These rows run as their own message, not as a steer into a running turn: a
+  // steer the turn ended before confirming (`requeued`, then `superseded` once
+  // its new row lands), or a row with no `meta.steer` that carries the receipt
+  // (the row the drain writes for a requeued steer, or the queued row of a steer
+  // that was unavailable). Where the requeued line already says the text runs as
+  // its own message, the receipt only says who chose (`short`), so the row does
+  // not say the same thing twice.
+  const steerOwnMessage: 'short' | 'full' | undefined = !steerMeta
+    ? 'full'
+    : steerState === 'requeued' || steerState === 'superseded'
+      ? (requeuedSteer ? 'short' : 'full')
+      : undefined
   // Taken back before the turn read it: the row keeps its place in the transcript
   // and says what became of the text, but draws no bubble -- the agent never saw it.
   const retractedAction = steerMeta && steerState === 'retracted'
@@ -470,6 +487,41 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // Only a row that was mounted pending plays it; a row read back already
   // retracted (history, reload) is drawn as the note from the start.
   const reducedMotion = useReducedMotion()
+  // A requeued steer's text that now runs as its own row: the queue_pop reducer
+  // stamps the client-only `meta.landedFromSteer`, and the bubble flashes the
+  // accent ring once so the row reads as the steer above it moving rather than
+  // as a new send. One-shot by the module guard above, keyed on the identity
+  // the steer entrance uses, so a virtualized remount finds the key and draws
+  // nothing. The class drops on its own `animationend`, so a re-render that
+  // rebuilds the bubble does not run it again. Under reduced motion the row
+  // still claims its key and draws nothing. A surface that hides the steer
+  // mechanics (`hideSteerBadge`) draws nothing either.
+  // The mark is the drained card's `queue_id` (or `true` when the pop had none),
+  // and that id is the one-shot key: two steers requeued in the same clock tick
+  // get cards with one shared `ts`.
+  const landedMark = hideSteerBadge ? undefined : (meta as { landedFromSteer?: unknown } | undefined)?.landedFromSteer
+  const landedFromSteer = landedMark === true || (typeof landedMark === 'string' && landedMark !== '')
+  const [playLanded, setPlayLanded] = useState(false)
+  useEffect(() => {
+    if (!landedFromSteer) return
+    const key = typeof landedMark === 'string' ? `queue:${landedMark}` : ((meta as { clientTs?: string })?.clientTs) || messageTs || content
+    if (landedSteerFlashes.has(key)) return
+    landedSteerFlashes.add(key)
+    if (!reducedMotion) setPlayLanded(true)
+  }, [landedFromSteer, landedMark, meta, messageTs, content, reducedMotion])
+  const landedFlash = playLanded && !reducedMotion
+  const endLandedFlash = useCallback((e: React.AnimationEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) setPlayLanded(false)
+  }, [])
+  // A cancelled animation fires no `animationend`: hiding the pane
+  // (`display: none` when another instance is selected) cancels it, and the
+  // flag would then replay the flash when the pane shows again. A timer the
+  // length of the flash clears it whether or not the pane is drawn.
+  useEffect(() => {
+    if (!playLanded) return
+    const timer = setTimeout(() => setPlayLanded(false), LANDED_FLASH_MS)
+    return () => clearTimeout(timer)
+  }, [playLanded])
   const [mountedRetracted] = useState(() => !!retractedAction)
   const [collapseDone, setCollapseDone] = useState(false)
   const lastBubbleBodyRef = useRef(carriedQuote ? stripQuoteBlock(content, carriedQuote) : content)
@@ -682,7 +734,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // Disable is safe: the keyboard-accessible edit path is the aria-labelled
     // pencil button in the action row below, not this bubble.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${isSteer ? 'bg-accent-subtle text-text' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
+    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} onAnimationEnd={landedFlash ? endLandedFlash : undefined} data-landed-from-steer={landedFlash ? '' : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${landedFlash ? 'animate-steer-landed' : ''} ${isSteer ? 'bg-accent-subtle text-text' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
           correct for the audio key above, which wants the optimistic bubble's own
           identity, but this value is COMPARED against server-clock slot mint
@@ -769,7 +821,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
               decision behind it. */}
-          {steerDecision && <SteerDecisionLine record={steerDecision} />}
+          {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
           <motion.div
             /* Same width cap as the bubble (the column, `max-w-full`): this
                wrapper sits between the content column and the bubble, and a
@@ -851,7 +903,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                      races the agent, so the most used one is the one-click one. The
                      divider makes these actions a separate region from status/help. */
                   <span className="inline-flex items-center gap-0.5 border-l border-border pl-1 ml-0.5" data-testid="steer-take-back">
-                    <Btn type="button" onClick={() => onSteerAction?.(steerMid, 'queue')} className="px-1 py-0 border-none bg-transparent text-[12px] font-medium text-muted hover:text-text hover:bg-bg-hover rounded transition-colors" data-testid="steer-queue-instead">
+                    <Btn type="button" onClick={() => onSteerAction?.(steerMid, 'queue')} className="px-1 py-0 border-none bg-transparent text-[12px] font-medium text-muted hover:text-text hover:bg-bg-hover rounded transition-colors" title={i18nT('pages.chat.userMessage.steer_queue_instead_hint')} data-testid="steer-queue-instead">
                       {i18nT('pages.chat.userMessage.steer_queue_instead')}
                     </Btn>
                     <DropdownMenu>
@@ -911,7 +963,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               chosen. Drawn in both arms rather than above them: the confirmed-steer
               arm wraps its bubble in an animated box, and a line inside that box
               would slide in with it as though it were part of the message. */}
-          {steerDecision && <SteerDecisionLine record={steerDecision} />}
+          {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
           {bubbleWithMenu}
         </>
       )}

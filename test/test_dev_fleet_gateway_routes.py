@@ -533,7 +533,7 @@ class TestTheBackendClient:
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="s3cret"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="s3cret"
             )
             first = await broker(False)
             second = await broker(False)
@@ -553,7 +553,7 @@ class TestTheBackendClient:
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="s3cret"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="s3cret"
             )
             state = await broker(False)
             assert state.live == "/wt/live"
@@ -568,7 +568,7 @@ class TestTheBackendClient:
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="wrong"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="wrong"
             )
             with pytest.raises(live.PointerUnavailable):
                 await broker(False)
@@ -578,14 +578,16 @@ class TestTheBackendClient:
 
     @pytest.mark.asyncio
     async def test_unreachable_gateway_is_an_outage(self) -> None:
-        broker = pointer_broker.GatewayPointerBroker(port=1, app_secret="s3cret")
+        broker = pointer_broker.GatewayPointerBroker(
+            origin="http://127.0.0.1:1", app_secret="s3cret"
+        )
         with pytest.raises(live.PointerUnavailable):
             await broker(True)
         await broker.aclose()
 
-    def test_no_port_gives_an_unconfigured_provider(self) -> None:
+    def test_no_origin_is_refused(self) -> None:
         with pytest.raises(ValueError):
-            pointer_broker.GatewayPointerBroker(port=0, app_secret="s")
+            pointer_broker.GatewayPointerBroker(origin="", app_secret="s")
 
     @pytest.mark.asyncio
     async def test_unconfigured_provider_reports_the_reason(self) -> None:
@@ -1026,7 +1028,7 @@ class TestRemovalLeasesFromTheBackend:
         client = await _client(app)
         try:
             broker = pointer_broker.GatewayPointerBroker(
-                port=client.server.port, app_secret="s3cret"
+                origin=f"http://127.0.0.1:{client.server.port}", app_secret="s3cret"
             )
             assert await broker.acquire_removal_lease("/wt/a") == "cap-9"
             assert await broker.acquire_removal_lease("/wt/busy") is None

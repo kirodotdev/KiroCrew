@@ -15,7 +15,7 @@ platform could support it.
 | Streams the reply as it is written | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Sends a file back to you | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -23,7 +23,7 @@ platform could support it.
 | Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
 | Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
 | Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
-| Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
 | Parses `@everyone`-style mentions | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -37,9 +37,11 @@ An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
 **Sends a file back to you** is what you receive from `file_send`. On WeCom the
-file arrives as a document (`send_document`), but an inline image reference in a
-reply is not uploaded: it keeps printing its path, so WeCom's `files_outbound`
-declaration stays off.
+file arrives as native media (`send_document`), and an inline image reference in a
+reply follows the reply's text the same way: a JPG or PNG up to 2 MB as a picture,
+any other image as a file. On Feishu an inline image reference in a direct-message
+reply arrives as an image message (a group reply keeps the path), but `file_send`
+has no Feishu leg.
 
 **Tappable choices** is the total number of interactive options one prompt may
 present. Above the cap, the remainder degrades to a numbered list in the message
@@ -128,15 +130,12 @@ other messaging channel.
 
 The **owner-DM route** (`session=<channel>`) infers a recipient: it needs exactly
 one allow-listed destination configured on that channel, and it needs the channel
-to be able to send unprompted. Three channels cannot use it:
+to be able to send unprompted. **WeCom** and **Weixin** cannot use it: both fold
+identities learned from inbound traffic into their send roster, so "the owner"
+could resolve to any peer who once messaged the bot, and guessing is worse than
+refusing.
 
-- **WeCom** and **Weixin** are excluded outright. Both fold identities learned
-  from inbound traffic into their send roster, so "the owner" could resolve to any
-  peer who once messaged the bot, and guessing is worse than refusing.
-- **Feishu** is accepted but cannot deliver, because it only ever replies to an
-  inbound message and has nowhere to put an unprompted one.
-
-In all three cases the call falls back to a dashboard notification and says so
+In both cases the call falls back to a dashboard notification and says so
 rather than reporting success. An ambiguous allow-list or a channel that is not
 connected falls back the same way.
 

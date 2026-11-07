@@ -1396,6 +1396,22 @@ def test_current_format_mismatch_still_detects_a_recycled_cron_marker(
     assert alive is False
 
 
+def test_current_format_mismatch_on_own_pid_sweeps_the_dump(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A restarted gateway can be handed the crashed one's PID. Its own PID with a
+    # different start id is not this process's dump: swept, as pid_identity_alive
+    # answers. The matching start id stays this process's live dump.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    reused = _write_dump_with_start(dumps_dir, "20260717T213000Z", os.getpid(), "1788000000.000001")
+    own = _write_dump_with_start(dumps_dir, "20260717T214000Z", os.getpid(), _LIBPROC_TOKEN)
+    assert crash_dump_store._owner_alive(reused, _live_pid) is False
+    assert crash_dump_store._owner_alive(own, _dead_pid) is True
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
+    assert not reused.exists()
+    assert own.exists()
+
+
 def test_legacy_token_does_not_resurrect_a_dead_owner(
     dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

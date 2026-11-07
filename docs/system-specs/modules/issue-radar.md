@@ -1604,8 +1604,8 @@ the list, the filters, the selected item — is untouched.
   it opens a preview card — number, title, author, when, lifecycle — after a short
   delay, fetched from `/ref` only on demand. The card is portalled to `<body>` with
   fixed coordinates so no `overflow: hidden` ancestor clips it, flips above the
-  link near the viewport bottom, and is dismissed by scroll/resize (its position is
-  captured at open time).
+  link near the viewport bottom, and is dismissed by a resize or by a scroll that
+  moved the link (its position is captured at open time).
 - **Kind resolution.** `#123` and `/issues/123` are both ambiguous, so the pane is
   chosen by `/ref`'s `is_pr`, not by the link's shape. An explicit `/pull/` link
   renders immediately; a failed lookup degrades to the issue pane rather than

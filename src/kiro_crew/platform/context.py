@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
     from kiro_crew.platform.interfaces import (
+        AcceptanceCheckProvider,
         AgentCatalogProvider,
         AgentExecutableResolver,
         AgentIdentityProvider,
@@ -364,6 +365,9 @@ class PlatformContext:
     # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
     # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).
     speech: "SpeechProviderRegistry"
+    # The edition's checks behind ``kirocrew acceptance-check``. v1 addition (no
+    # CONTRACT_VERSION bump).
+    acceptance_checks: "AcceptanceCheckProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS
@@ -683,6 +687,12 @@ PEEK_CALLERS: "dict[str, str]" = {
         "no-context answer is to fall through to current_context(), and its error "
         "answers 'governed', which refuses the item; the peek only skips that "
         "resolution on a host that already installed a context."
+    ),
+    "approval_mode_policy.py::_ceiling_control": (
+        "no-context answer is 'no approval_modes rule', so trust and trust_reads stay "
+        "permitted. Only the installed ceiling can narrow them, and with no installed "
+        "context no ceiling exists that could, which is main's answer. The peek runs "
+        "on the event loop, where current_context() would load config."
     ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "

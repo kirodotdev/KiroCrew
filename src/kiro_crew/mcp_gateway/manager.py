@@ -216,6 +216,8 @@ class GatewaySpec:
     max_backends: int = 64  # keep in sync w/ McpGatewayConfig.max_backends (cover N agents x S servers)
     mcp_target_env: dict[str, str] = None  # type: ignore[assignment]
     prewarm_count: int = 0  # keep in sync w/ McpGatewayConfig.prewarm_count; 0 = disabled
+    # McpGatewayConfig.keep_alive_servers; empty = every backend idles out.
+    keep_alive_servers: tuple[str, ...] = ()
     # Admission (keep in sync w/ McpGatewayConfig.spawn_concurrency_* etc.).
     spawn_concurrency_initial: int = 4
     spawn_concurrency_min: int = 1
@@ -711,8 +713,9 @@ class GatewayManager:
         env = {**base_env, **self._spec.mcp_target_env}
         # Repair the Kerberos ccache pointer for pooled MCP backends so a
         # long-lived background daemon's forked children inherit a usable
-        # ticket for any credential-gated MCP server.
-        resolve_krb5_ccname(env)
+        # ticket for any credential-gated MCP server. Off the loop: it stats
+        # the ccache candidates and may read the krb5 config files.
+        await asyncio.to_thread(resolve_krb5_ccname, env)
         # A background daemon can inherit a minimal PATH (e.g. launched from
         # Electron or under systemd-user), so extend it with the well-known MCP
         # launcher dirs. This MUST be ``mcp_runtime_path``: operator-contributed
@@ -747,6 +750,9 @@ class GatewayManager:
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Same rule: nothing on the command line unless the operator named one.
+        for name in self._spec.keep_alive_servers:
+            argv += ["--keep-alive-server", name]
         # Admission: the spawn gate's fixed capacity and bounds, the queue wait
         # and initialize budgets, and the host-budget ceilings. Ceilings left at
         # 0 are derived in the daemon from ``--host-available-mb``, which is
@@ -1647,16 +1653,22 @@ class GatewayManager:
             # SIGKILL skips gatewayd's pool.shutdown_all(), so its pooled MCP
             # backends (each a session leader via start_new_session) reparent to
             # init and leak. Reap the pgids gatewayd persisted out-of-band.
-            await self._reap_orphaned_backends()
+            await self._reap_orphaned_backends("supervisor SIGKILLed a wedged gatewayd")
+            return
+        if platform_compat.IS_WINDOWS:
+            # SIGTERM on Windows is TerminateProcess: gatewayd never ran its
+            # drain, so its backends are as orphaned as after a SIGKILL.
+            logger.info("mcp-gateway: reaping pooled backends of terminated pid=%s", proc.pid)
+            await self._reap_orphaned_backends("TerminateProcess skips gatewayd's drain on Windows")
 
-    async def _reap_orphaned_backends(self) -> None:
-        """Best-effort tree-kill of pooled backends left orphaned by a SIGKILLed
-        gatewayd, read from the ``<socket>.backends`` record the daemon
-        maintains. Only entries whose start id still matches the live process
-        are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
+    async def _reap_orphaned_backends(self, reason: str) -> None:
+        """Best-effort tree-kill of pooled backends left orphaned by a gatewayd
+        that died without draining, read from the ``<socket>.backends`` record
+        the daemon maintains. Only entries whose start id still matches the live
+        process are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
         await backend_record.reap(
             backend_record.record_path(self._spec.socket_path),
-            reason="supervisor SIGKILLed a wedged gatewayd",
+            reason=reason,
         )
 
     async def _clear_stale_socket(self) -> None:

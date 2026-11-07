@@ -6,6 +6,7 @@ import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
 import { Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import InfoTip from '../../components/InfoTip'
 import { api } from '../../api/client'
 import type { NotificationChannel } from '../../types'
 import {
@@ -16,7 +17,8 @@ import {
 import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
-import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
+import { AppSessionMuteSection } from './AppSessionMuteSection'
+import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
@@ -178,6 +180,30 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   'system.turn': () => i18nT('pages.settings.notificationsPanel.channel_turn'),
 }
 
+/** Catalog KEY for each system channel's "when does this fire?" tip, one entry
+ *  per id in the backend's `SYSTEM_CHANNELS` (notifications/bus.py), pinned by
+ *  test/test_notification_channel_tips.py. A channel with no entry (an app's,
+ *  or a system channel this build does not know) shows no tip: a missing tip
+ *  is better than a wrong one. Keys, not strings, for the same module-load
+ *  reason as `PRESET_LABEL_KEY`. */
+const CHANNEL_TIP_KEY: Record<string, string> = {
+  'system.agent': 'pages.settings.notificationsPanel.channel_tip_agent',
+  'system.approval': 'pages.settings.notificationsPanel.channel_tip_approval',
+  'system.cron': 'pages.settings.notificationsPanel.channel_tip_cron',
+  'system.heartbeat': 'pages.settings.notificationsPanel.channel_tip_heartbeat',
+  'system.hook': 'pages.settings.notificationsPanel.channel_tip_hook',
+  'system.monitor': 'pages.settings.notificationsPanel.channel_tip_monitor',
+  'system.resources': 'pages.settings.notificationsPanel.channel_tip_resources',
+  'system.safety_override': 'pages.settings.notificationsPanel.channel_tip_safety_override',
+  'system.skills': 'pages.settings.notificationsPanel.channel_tip_skills',
+  'system.subagent': 'pages.settings.notificationsPanel.channel_tip_subagent',
+  'system.taskrunner': 'pages.settings.notificationsPanel.channel_tip_taskrunner',
+  'system.terminal': 'pages.settings.notificationsPanel.channel_tip_terminal',
+  'system.member': 'pages.settings.notificationsPanel.channel_tip_member',
+  'system.apps': 'pages.settings.notificationsPanel.channel_tip_apps',
+  'system.turn': 'pages.settings.notificationsPanel.channel_tip_turn',
+}
+
 /** Human label for a channel within its group (drop the source prefix apps
  *  and system channels share with their group header). */
 function channelLabel(c: NotificationChannel): string {
@@ -240,8 +266,8 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
     .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
 
   return (
-    <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
-      <div className="text-[12px] text-muted -mt-1 mb-2" data-setting-label={i18nT('pages.settings.notificationsPanel.sources')}>{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}</div>
+    <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')} hint={i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}>
+      <div className="text-[12px] text-muted -mt-1 mb-2" data-setting-label={i18nT('pages.settings.notificationsPanel.sources')}>{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio_summary')}</div>
       {sources.map((source, i) => (
         <SettingsCard key={source} index={i}>
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
@@ -258,6 +284,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                   <div className="text-[13px] text-text flex items-center gap-1.5">
                     {channelLabel(c)}
                     {c.protected && <Lock className="lucide-inline text-muted" aria-label={i18nT('pages.settings.notificationsPanel.protected_channel')} />}
+                    {c.source === 'system' && Object.hasOwn(CHANNEL_TIP_KEY, c.channel) && <InfoTip text={i18nT(CHANNEL_TIP_KEY[c.channel])} placement="top" />}
                   </div>
                   <div className="text-[11px] text-muted">
                     {!c.registered
@@ -345,7 +372,7 @@ function SystemNotificationsRow() {
 
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
-  const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
+  const notifyChatComplete = useChatCompleteNotify()
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
 
@@ -705,7 +732,12 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
         switch (active) {
 
         case 'sources':
-          return <ChannelsSection patch={patchChannel} />
+          return (
+            <>
+              <ChannelsSection patch={patchChannel} />
+              <AppSessionMuteSection />
+            </>
+          )
 
         case 'alerts':
           return (
@@ -729,7 +761,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes')}
             hint={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
-            onChange={v => { setNotifyChatComplete(v); saveChatCompleteNotify(v) }}
+            onChange={saveChatCompleteNotify}
           />
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}

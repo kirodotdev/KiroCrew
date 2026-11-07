@@ -65,6 +65,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("persistent_session", bool),
         FieldSpec("minimal_context", bool),
         FieldSpec("hide_in_chat", bool),
+        FieldSpec("new_chat_per_run", bool),
         FieldSpec("strict_schedule", bool),
         # SECURITY NOTE: the patterns below are input-SHAPE checks, NOT security
         # sanitizers. The "command" regex only rejects control bytes and the
@@ -194,6 +195,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),
+            FieldSpec("new_chat_per_run", bool),
             FieldSpec("timeout", int, min_val=0, max_val=3600),
             FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
             FieldSpec("auto_pause_after_failures", int, min_val=0, max_val=_AUTO_PAUSE_MAX),

@@ -315,10 +315,16 @@ class TestChannelTransportStartGate:
         self._install_policy(None)
         orch = _make_orchestrator()
         self._enable_all_transports(orch)
+        names = ("wecom", "telegram", "discord", "webex")
+        clients = {name: MagicMock(name=f"{name}_client") for name in names}
         with contextlib.ExitStack() as stack:
             mocks = self._patch_starts(stack)
+            for name, client in clients.items():
+                mocks[name].return_value = client
             await orch._start_channel_transports(descriptors=self._descriptors)
 
+        # Every started transport's client is held as a live handle.
+        assert orch._channel_handles == clients
         mocks["wecom"].assert_awaited_once()
         mocks["telegram"].assert_awaited_once()
         mocks["discord"].assert_awaited_once()

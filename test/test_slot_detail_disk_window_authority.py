@@ -3,7 +3,8 @@
 Builds a disk-vs-window disagreement and asserts the bounded branch returns the
 WINDOW's answer. Both disk readers (``read_messages_chained_full`` for the bounded
 branch, ``read_messages_chained`` for the unbounded one) are stubbed with ONE
-corpus, so a pass cannot come from either silently reading an empty history.
+corpus, so a pass cannot come from either silently reading an empty history; the
+indexed-page test reads a real saved transcript instead.
 """
 
 from __future__ import annotations
@@ -20,11 +21,12 @@ SETTLED = 12
 OLDER = 4  # rows above the live window -> _disk_older_count
 LIMIT = 4
 
-#: Known-red until the bounded branch's authority contract is decided. ``strict``
-#: so the fix fails here and the marker gets removed instead of rotting.
+#: Known-red: disk rows the window does not hold read the same whether they are a
+#: deleted tail or another writer's append, which the bounded page keeps. ``strict``
+#: so a fix fails here and the marker gets removed instead of rotting.
 DISAGREEMENT = pytest.mark.xfail(
     strict=True,
-    reason="#7526: the bounded branch is disk-authoritative for the window region",
+    reason="#7526: a deleted tail and another writer's append look the same on disk",
 )
 
 
@@ -90,28 +92,61 @@ def _variant_switch(state: Any) -> None:
 
 
 def _regenerate_truncation(state: Any) -> None:
-    """A regenerate whose inline save failed: disk still holds the deleted tail."""
+    """A window two rows shorter than disk: disk still holds a tail the window dropped."""
     on_disk = [_row(i, f"m{i}") for i in range(SETTLED)]
-    # `del slot.messages[u_idx + 1:]` dropped the last two turns.
     window = [dict(r) for r in on_disk[OLDER : SETTLED - 2]]
     _slot(state, window, on_disk)
 
 
 class TestContentDisagreement:
-    @DISAGREEMENT
     @pytest.mark.asyncio
     async def test_bounded_read_returns_the_selected_variant(self, state: Any) -> None:
         _variant_switch(state)
         data = await _get(state, f"?limit={LIMIT}")
         assert data["messages"][-1]["content"] == "SELECTED VARIANT"
 
-    @DISAGREEMENT
     @pytest.mark.asyncio
     async def test_both_branches_agree_on_content(self, state: Any) -> None:
         _variant_switch(state)
         bounded = await _get(state, f"?limit={LIMIT}")
         unbounded = await _get(state, "")
         assert bounded["messages"][-1]["content"] == unbounded["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_indexed_page_serves_the_selected_variant(
+        self, state: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The same switch on a real transcript, read through the indexed page."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        slot = state.get_or_create_slot("indexed")
+        slot.append("user", "q1")
+        slot.append("assistant", "first reply")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+        slot.messages[-1]["content"] = "SELECTED VARIANT"
+        slot.messages[-1]["ts"] = "2026-09-01T00:09:59Z"
+
+        def _no_full_reader(_key: str) -> list[dict]:
+            raise AssertionError("the indexed page must serve this read")
+
+        state.conversation_log.read_messages_chained_full = _no_full_reader  # type: ignore[method-assign]
+        data = await _get(state, f"?limit={LIMIT}", name="indexed")
+        assert [m["content"] for m in data["messages"]] == ["q1", "SELECTED VARIANT"]
+
+
+class TestARepeatedIdKeepsTheDiskCopies:
+    @pytest.mark.asyncio
+    async def test_a_foreign_row_sharing_the_id_is_still_served(self, state: Any) -> None:
+        """Disk holds the window row's id twice: pairing is a guess, so disk wins."""
+        older = [_row(i, f"m{i}") for i in range(OLDER)]
+        foreign = {**_row(OLDER, "foreign"), "meta": {"mid": "dup"}}
+        own = {**_row(OLDER + 1, "own on disk"), "meta": {"mid": "dup"}}
+        window = [{**own, "content": "own in window"}]
+        _slot(state, window, older + [foreign, own])
+        data = await _get(state, f"?limit={SETTLED}")
+        assert [m["content"] for m in data["messages"]][OLDER:] == ["foreign", "own on disk"]
 
 
 class TestLengthDisagreement:

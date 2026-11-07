@@ -752,6 +752,11 @@ def get_approval_policy(self: SessionManager, key: str) -> str:
     return self._allocation_boundary().get_approval_policy(key)
 
 
+def approval_revocation(self: SessionManager, key: str) -> int:
+    """Return the stamp of a session key's outstanding approval revocation, else 0."""
+    return self._allocation_boundary().approval_revocation(key)
+
+
 def get_agent(self: SessionManager, key: str) -> str:
     """Return a folded session agent name."""
     return self._allocation_boundary().get_agent(key)

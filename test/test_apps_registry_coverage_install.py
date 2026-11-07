@@ -82,9 +82,7 @@ class TestRefusalLineVerb:
         assert f"refusing to {verb} an app under an identity" in result["error"]
 
 
-# ---------------------------------------------------------------------------
 # Post-rejection un-poison
-# ---------------------------------------------------------------------------
 
 
 class TestUnpoisonRejectedCheckout:
@@ -228,9 +226,7 @@ class TestUnpoisonRejectedCheckout:
         assert (pkg / "sub" / "app.json").read_bytes() == b"{}"
 
 
-# ---------------------------------------------------------------------------
 # Pre-clone checkout probe
-# ---------------------------------------------------------------------------
 
 
 class TestPreexistingCheckoutProbe:
@@ -279,9 +275,7 @@ class TestPreexistingCheckoutProbe:
         assert commit_probes == ([pkg] if preexisting else [])
 
 
-# ---------------------------------------------------------------------------
 # install_from_registry — pre-clone refusals
-# ---------------------------------------------------------------------------
 
 
 class TestInstallFromRegistryRefusals:

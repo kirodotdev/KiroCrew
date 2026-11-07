@@ -124,14 +124,8 @@ class TestPauseNeverOutlivesItsBinding:
     def test_a_same_coordinate_write_keeps_the_pause(self, tmp_path, monkeypatch):
         """A same-coordinate write is the SAME binding, so the mute survives it.
 
-        This is not a rare path: the Slack inbound handler re-writes the same ts
-        and channel on every turn as its thread registry, so clearing the mute on
-        identical coordinates let ONE inbound message — or a cold start's
-        ``set_channel`` — silently un-disconnect a thread, after which dashboard
-        turns resumed delivering to it. Connecting does not depend on this: the
-        row lifts a mute through ``set_slack_paused``.
-
-        A REBIND still drops it, which the next test pins.
+        The Slack inbound handler re-writes the same ts and channel on every turn,
+        so clearing the mute here would let one inbound message un-disconnect a thread.
         """
         sm = _real_map(tmp_path, monkeypatch)
         sm.set_slack_link("dashboard:s1", "ts-1", "C-1")
@@ -188,11 +182,8 @@ class TestPauseNeverOutlivesItsBinding:
     ):
         """The origin flag is the SESSION's, so a mirror binding must not relocate it.
 
-        ``_mirror_key`` resolves to the legacy ``dashboard:`` spelling while that
-        row holds the only binding, and to the canonical row once one is written
-        there. Keying the ORIGIN flag through it therefore stranded the pause: the
-        lookup moved rows, the flag stayed behind on the old one, and a
-        conversation the user had muted silently resumed delivering.
+        ``_mirror_key`` moves from the legacy ``dashboard:`` row to the canonical one
+        once a binding lands there; an origin flag keyed through it would be left behind.
         """
         sm = _real_map(tmp_path, monkeypatch)
         sm.set("discord:chan-9", "sid-9")
@@ -322,13 +313,9 @@ class TestTheWireReportsIt:
     def test_every_row_carries_the_binding_the_unlink_compares(self, tmp_path, monkeypatch):
         """The row's `binding` IS the identity the map's compare-and-clear recomputes.
 
-        The redacted `target` drops the thread and the id's head, so it cannot
-        tell a Slack thread from its same-channel replacement; the token is a
-        digest of the whole binding -- its persisted nonce included -- and can,
-        and neither the raw id nor the nonce is in it. The nonce is what tells a
-        binding from its byte-identical recreation: an identical rewrite (the
-        inbound paths re-write the same coordinates every turn) keeps the token,
-        an unlink followed by a reconnect to the same target changes it.
+        The redacted `target` cannot tell a thread from its replacement; the token
+        digests the whole binding plus its nonce, so an identical rewrite keeps it
+        and an unlink plus reconnect to the same target changes it.
         """
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -379,14 +366,9 @@ class TestTheWireReportsIt:
     def test_every_row_says_whether_it_drives_this_session(self, tmp_path, monkeypatch):
         """`drives_session` is the server's statement of inbound routing, per row.
 
-        The menu's paused and Unlink sub-lines name what a sever destroys, and
-        that differs between a binding whose conversation drives this session and
-        one that only receives replies. Inferred client-side -- `both` on the
-        wire, or the channel being Slack -- it is wrong for a paused Slack row.
-        The projection owns the fact: a one-way mirror does not
-        drive, a resume binding does, and a Slack thread does although its
-        direction reads `out` (Slack routes inbound through its own thread
-        index, not the mirror's marker).
+        A one-way mirror does not drive and a resume binding does. A Slack thread
+        drives although its direction reads `out`, because Slack routes inbound
+        through its own thread index, so the client cannot infer this.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -539,13 +521,9 @@ class TestEndpoints:
     async def test_an_origin_disconnect_never_notifies_the_mirror(self, tmp_path, monkeypatch):
         """Two deliveries, two conversations — so one's courtesy note is the other's lie.
 
-        A Discord-born session that ALSO mirrors to Telegram holds both at once.
-        ``_resolve_mirror_target`` only ever resolves the EXPLICIT mirror, so
-        sending the note on an origin disconnect told Telegram it had been
-        disconnected while it was still connected and still receiving turns.
-
-        The second half is what stops this passing vacuously: deleting the note
-        block outright would satisfy the first assertion and fail the second.
+        ``_resolve_mirror_target`` resolves only the explicit mirror, so a note on an
+        origin disconnect would tell a still-connected Telegram mirror it was cut off.
+        The second half stops this passing vacuously when the note block is deleted.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -576,14 +554,9 @@ class TestEndpoints:
     async def test_one_unlink_clears_the_superseded_legacy_row_too(self, tmp_path, monkeypatch):
         """One request, both rows: the binding an Unlink superseded must not resurface.
 
-        A channel session that rebound from the dashboard can hold TWO mirror
-        rows -- the canonical binding every read prefers and the pre-unification
-        ``dashboard:`` row it superseded. Clearing the winner alone hands
-        ``_mirror_key`` back to the older row: the request answers
-        ``was_linked: true``, the menu drops the row, and the next slots frame
-        redraws it pointing at the OLD target -- a mirror the user just removed,
-        reported as removed, still delivering. The endpoint issues one clear and
-        the map takes both rows in it, so the projection that follows is empty.
+        A rebound channel session can hold the canonical row and the legacy
+        ``dashboard:`` row. Clearing only the winner hands ``_mirror_key`` back to the
+        older row, which then redraws pointing at the old target.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -617,17 +590,9 @@ class TestEndpoints:
     async def test_a_slack_row_unlinked_here_gets_the_slack_teardown(self, tmp_path, monkeypatch):
         """The menu posts EVERY row's Unlink to this endpoint; the server routes it.
 
-        Which store a binding lives in is the server's fact -- ``mirror-link``
-        refuses Slack on channel type, so a ``slack`` row can only be the slot's
-        thread -- and a client restating it as ``channel === 'slack'`` carries a
-        transport assumption the server never asks it to make (the same
-        inference reads a paused Slack row as one-way when ``driven`` makes it).
-        Here a
-        body naming the Slack thread is handed to ``slack-unlink``'s handler: both
-        key spellings and the slot's own fields go, the thread's reverse index is
-        dropped, the projection stops reporting the thread, and the Discord
-        mirror standing beside it is untouched -- so the request did not fall
-        through to the mirror clear.
+        ``mirror-link`` refuses Slack, so a ``slack`` row can only be the slot's thread.
+        Its body goes to ``slack-unlink``'s handler; the Discord mirror beside it
+        survives, showing the request did not fall through to the mirror clear.
         """
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -676,25 +641,13 @@ def _release_a_rebinder_mid_compare(
 ):
     """Wrap the nonce read the compare depends on so a rebinding thread is released INSIDE it.
 
-    The wrapper returns what the real accessor returns, then lets *rebind* run
-    on another thread and waits up to half a second for it to LAND. Under the
-    map lock the rebind cannot land while the compare-and-clear holds it, so
-    ``landed_inside`` stays False and the rebind completes only after the clear;
-    with a route-level read followed by a separate clear the rebind lands inside
-    the window and the stale unlink then clears the binding it never named.
+    The wrapper releases *rebind* and waits up to 0.5s for it to land. Under the map
+    lock it cannot, so ``landed_inside`` stays False; a separate read-then-clear
+    would let it land and the stale unlink would clear a binding it never named.
 
-    A context manager so the thread cannot outlive the test: leaving the block
-    cancels and joins it. The rebinder writes to the map ONLY when the compare
-    released it -- a wait that times out, or the release that cleanup sends,
-    means the compare never ran, and the thread exits without a write, so no
-    ``session_map.json`` flush can land after the test's ``tmp_path`` is gone.
-
-    When the rebind lands after the clear is up to the scheduler: once the
-    compare-and-clear releases the lock, the route and the rebinder race for
-    it. ``seen["landed"]`` is the event a test waits on when it asserts what
-    the route observes after the rebind; ``stall_after_release`` holds the
-    rebinder off for that long after its release (a descheduled thread on a
-    loaded runner) so a test can pin that it does not lean on scheduling order.
+    The rebinder writes only when the compare released it, so no flush lands after
+    ``tmp_path`` is gone. ``seen["landed"]`` is the event to wait on afterwards, and
+    ``stall_after_release`` delays the rebinder to pin that no test leans on scheduling.
     """
     original = getattr(sm, accessor)
     release = threading.Event()
@@ -732,15 +685,9 @@ def _release_a_rebinder_mid_compare(
 class TestPersistBeforePublish:
     """A link, pause or unlink lands on disk before anything reports it done.
 
-    The map's writer is debounced. Without a durability point in the route, the
-    slots push and the ``{ok, ...}`` answer publish a state that a gateway exit
-    before the deferred write undoes: an unlinked binding reloads on restart, a
-    muted channel starts delivering again, a linked thread carries a transcript
-    no session owns. Every route that publishes a state the user just acted on
-    -- mirror and Slack, link, pause and unlink -- awaits ``aflush`` between
-    the map write and the first publish. Proven with the debounce held off for a
-    minute, so the only way the file can carry the new state when the route
-    publishes is the route's own flush.
+    The map's writer is debounced, so a gateway exit could undo a published state.
+    Every route awaits ``aflush`` between the map write and the first publish; the
+    debounce is held off for a minute so only that flush can put the state on disk.
     """
 
     @staticmethod
@@ -993,14 +940,9 @@ class TestPersistBeforePublish:
 class TestCompareAndClearIsOneStep:
     """An unlink that names a binding compares and clears it in ONE guarded step.
 
-    Every way a stale row can clear the wrong binding shares one shape: a route
-    that reads the binding, compares it, then clears it as separate steps -- a
-    thread id missing from the compare, a client completion keyed on the
-    channel, a token that is a pure function of the coordinates, a rebind
-    landing between the compare and the clear. The shape is closed
-    structurally: both steps live in ``SessionMap.clear_mirror_link_if`` /
-    ``clear_slack_link_if`` under the map's own lock, and the routes call
-    nothing else (enumerated below).
+    A stale row clears the wrong binding whenever read, compare and clear are separate
+    steps. Both steps live in ``SessionMap.clear_mirror_link_if`` /
+    ``clear_slack_link_if`` under the map's lock, and the routes call nothing else.
     """
 
     @pytest.mark.asyncio
@@ -1062,12 +1004,9 @@ class TestCompareAndClearIsOneStep:
     def test_an_early_failure_inside_the_block_still_joins_the_rebinder_without_a_write(
         self, tmp_path, monkeypatch
     ):
-        """The shape GPT named: a test that fails before its compare runs.
+        """A test that fails before its compare runs still joins the thread, with no rebind.
 
-        The failure propagates, the block's cleanup releases and joins the
-        thread on the way out, and the rebind never happens -- so nothing can
-        recreate ``tmp_path`` after the fixture has removed it. Also holds when
-        the map is REAL storage: the path is untouched afterwards.
+        So nothing can recreate ``tmp_path`` after the fixture has removed it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -1092,16 +1031,9 @@ class TestCompareAndClearIsOneStep:
     ):
         """The Slack twin: a re-link released mid-compare lands after the clear and stands.
 
-        And the unlink SAYS so: the map holds the newer thread by the time the
-        durability wait returns, so the answer carries ``relinked: true`` and the
-        route leaves the slot's in-process fields to the newer link rather than
-        tearing them down after it.
-
-        Once the clear releases the lock, the route and the rebinder race for
-        it, so the durability wait is held until the re-link has landed: the
-        route's post-clear read then sees the newer thread by construction. The
-        ``descheduled`` case holds the rebinder off past the route's own path,
-        which is the ordering a loaded runner produces.
+        The answer carries ``relinked: true`` and the slot's fields are left to the newer
+        link. The durability wait is held until the re-link lands, so the post-clear read
+        sees it; ``descheduled`` delays the rebinder as a loaded runner would.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -1160,20 +1092,9 @@ class TestCompareAndClearIsOneStep:
     def test_every_unlink_route_clears_only_through_the_primitive(self):
         """Enumerate the unlink routes; each compares-and-clears through the map alone.
 
-        The routes registered under an ``-unlink`` path are exactly the two
-        handlers below (a third would have to be added here). Neither reads the
-        binding for a compare of its own -- no ``get_mirror_link`` /
-        ``get_slack_link``, no nonce accessor, no token function ahead of the
-        clear -- and each clears a NAMED binding only through its
-        compare-and-clear primitive; the plain clear survives only for the
-        bodiless caller with no row to name. The one read a route may make is
-        AFTER its clear: what the map holds once the durability wait returns
-        decides whether the in-process teardown is the old binding's (the map is
-        empty) or must be skipped (a relink landed inside the wait and the map
-        holds it). A read after the clear cannot be a compare-then-clear, so the
-        rule is positional: forbidden before the primitive call, allowed after.
-        The client has one caller (``api.unlinkMirror`` in
-        ``LinkedSurfacesSection``), pinned in its own tests.
+        No ``get_mirror_link`` / ``get_slack_link``, nonce accessor or token function may
+        run before the primitive; a read after it is allowed, since it only decides
+        whether a relink landed. The plain clear stays for the bodiless caller.
         """
         from kiro_crew.dashboard import chat_mirror, chat_slack, routes
 

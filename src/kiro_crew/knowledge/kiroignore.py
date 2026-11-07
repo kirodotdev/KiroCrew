@@ -3,7 +3,7 @@
 A folder source otherwise has no way to honour the project's own notion of what
 is generated: registering a directory holding several projects pulls whole
 ``cdk.out`` / coverage / lockfile trees into the Library at LLM cost, and the
-only remedy is hand-editing that source's ``ignore_patterns`` JSON. A
+only other remedy is that source's own ``ignore_patterns``. A
 ``.kiroignore`` file at the SOURCE ROOT moves that decision into the project,
 where it can be committed and reviewed.
 

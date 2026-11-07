@@ -45,6 +45,39 @@ are dropped with one log line; the rest of the manifest still loads. There is
 no host allowlist: each button shows the URL's host under its label, so the
 reader sees where it goes, and it opens in a new tab.
 
+### Writing `useCases`
+
+`highlights` lists what the app can do. `useCases` says when an operator should
+reach for it. Write each entry as a situation, in the shape "when X, do Y to get
+Z", not a restated feature list.
+
+- **Write 3-5 entries.**
+- **Ground every entry in what the app ships.** Each entry must follow from the
+  app's own `highlights` and from what it declares, such as its `agents`,
+  `skills` and `crons`, so a reviewer can check it against the manifest. Do not
+  describe a feature or an integration the app does not have.
+- **Name what the app declares.** If the app declares an agent, skill or cron,
+  at least one entry should show the operator using it, by name.
+
+Bad, because it restates the features and names no situation:
+
+```json
+"useCases": [
+  "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history."
+]
+```
+
+Good, for the same app (it declares no agent, skill or cron, so each entry rests
+on a highlight):
+
+```json
+"useCases": [
+  "When the morning queue fills up, read each new issue's AI summary and suggested labels, and apply the ones you agree with",
+  "When a pull request is ready, approve, merge or re-run CI from the app; the merge cannot land until the host's required reviews and checks pass",
+  "When a report looks familiar, open its investigation notes instead of investigating it again"
+]
+```
+
 ## Admission metadata
 
 | Field | Type | Description |
@@ -75,7 +108,7 @@ enable and at gateway start until you re-sign it and the operator re-installs it
 | Field | Type | Description |
 |-------|------|-------------|
 | `agents` | string[] | Paths to agent JSON files (relative to app root) |
-| `skills` | string[] | Paths to skill directories |
+| `skills` | string[] | Paths to skill directories. Each is linked into `~/.kiro/crew/skills/`, and `.app-skill-links.json` there names this app as the link's owner. A built-in app's skill shipped under `builtin_skills/` carries an `app:` frontmatter line instead |
 | `sops` | string[] | Paths to SOP (Standard Operating Procedure) files |
 | `mcpServers` | object | MCP server definitions (same format as `mcp.json`) |
 | `config_keys` | string[] | Top-level `config.json` object keys owned by this app. At most 200 keys may be declared, and each key may contain at most 200 characters. Declarations apply only while the app is installed |
@@ -232,7 +265,7 @@ with without the label.
 | `every` | number | Interval in seconds (mutually exclusive with `cron_expr`) |
 | `cron_expr` | string | Cron expression (mutually exclusive with `every`) |
 | `message` | string | Prompt sent to the agent on each run |
-| `agent` | string | Agent to run (optional, uses default if omitted) |
+| `agent` | string | Agent template to run (optional, uses default if omitted). Name a template, never a Bot: an app cron is never bound to a Bot, so naming one runs that Bot's agent and workspace on the default memory store, not the Bot's own. Only the owner can give a Bot a schedule: `kirocrew cron add NAME MESSAGE --every SECONDS --agent <bot-key>`, or **New schedule** on the Bot's **Schedules** tab |
 | `agent_sequence` | string[] | Ordered agents to run |
 | `command` | string | Shell command executed without a model call; mutually exclusive with `script`. A present non-string value is rejected rather than treated as absent |
 | `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent. The path resolves against the app's own bundle, must stay inside it, must name a `.py` file, and is stored as an absolute path; re-enable the app after its bundle moves |
@@ -1755,7 +1788,8 @@ Cost is the app's to bound: an app that spawns on a timer needs its own budget
 the platform does not rate-limit spawns per app today.
 
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
-`SpawnError`.
+`build_continue_impl`, `SpawnError`. The calls are described in
+[api-reference](api-reference.md#background-agents-ctxspawn).
 
 > **Not an in-process sandbox.** Most fields remain advisory for app code loaded
 > inside the gateway. The validator functions in `apps/permissions.py`
@@ -1765,7 +1799,9 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > page and in the install or enable consent dialog, and only the dashboard grants it.
 > `kirocrew app enable` has no consent flag or prompt: for an app whose consent is
 > pending it prints what the app asks for and the app's dashboard link, exits 1 and
-> leaves the app off. It is enforced for app-token
+> leaves the app off. A companion program on the same machine can send the user to
+> that page in the desktop app with `kirocrew://apps/detail/<name>`; the link opens
+> the page and nothing more, so the consent click stays the user's. It is enforced for app-token
 > user-session calls, in addition to `permissions.api`. The app must be enabled.
 > The grant reaches existing local user-owned sessions only; cron, system, remote,
 > member-mode, and other apps' sessions are denied. Apps retain their pre-existing
@@ -2052,11 +2088,16 @@ For apps that run outside the dashboard (e.g. Electron apps), the top-level
 
 `POST /api/apps/{name}/open` runs this command in the background. On a
 cloud/remote environment with no display, the endpoint returns the command for
-the user to run locally instead of executing it on the server. On native
-Windows, which has no `/bin/sh`, the command is not run: the endpoint answers
-409 with `code: "app_open_unsupported_platform"` and an error naming the
-platform. The same refusal covers a registry entry's `detectInstalled` probe,
-which reads not-installed there and logs one warning.
+the user to run locally instead of executing it on the server. A Linux gateway
+whose own environment names no display, such as the installed service, first
+asks the user's systemd manager for the desktop login's session, the same
+lookup the dashboard's file manager uses, and launches when that session is
+live. That is a fact about the gateway host, not the caller: the window opens
+on that host's screen, as it does on macOS. On native Windows, which has no
+`/bin/sh`, the command is not run: the endpoint answers 409 with
+`code: "app_open_unsupported_platform"` and an error naming the platform. The
+same refusal covers a registry entry's `detectInstalled` probe, which reads
+not-installed there and logs one warning.
 
 #### `openCommand` — Environment
 
@@ -2082,9 +2123,13 @@ hints a desktop launch needs:
   scrub's other targets (`AWS_SECRET*` / `AWS_SESSION*`, `GNUPGHOME`,
   `GIT_ASKPASS`, the gateway's channel credentials) are not in the allowlist to
   begin with.
-- **Desktop hints copied on top**, each only when the gateway itself has it:
+- **Desktop hints copied on top**, each only when the gateway or its desktop
+  session has it:
   `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`,
-  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`.
+  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`. When the gateway names no display
+  and the desktop session above answered, each display, X cookie or desktop
+  name that session names replaces the gateway's own, each value checked
+  first; the session never supplies a bus address.
 
 The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
@@ -2173,7 +2218,13 @@ before it runs your command, which is the same silent failure:
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
   "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
-  "useCases": ["Keep a shared view of firing alerts and active investigations"],
+  "highlights": ["One board for firing alerts and active investigations"],
+  "useCases": [
+    "When you take over the on-call rotation, open the board to see every firing alert and active investigation in one place",
+    "When you would otherwise watch the queue, let the ticket-refresh cron check for new high-severity tickets every five minutes",
+    "When a new ticket needs a first read, ask the ticket-analyst agent to go through it before you do",
+    "When an alert matches a known failure, ask an agent to follow the oncall-runbook skill instead of rediscovering the fix"
+  ],
   "configuration": ["Connect an alert provider in Settings, then start in read-only mode"],
   "screenshots": ["ui/screenshots/board.png"],
   "agents": ["agents/ticket-analyst.json"],

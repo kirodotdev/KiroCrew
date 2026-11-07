@@ -224,10 +224,14 @@ def build_app_context(
     # no host implementation -> None, and the app's own guard reports it.
     spawn_sdk = None
     if perms.get("spawn") is True and spawn_impl is not None:
-        # The completion probe rides on the impl callable (see build_spawn_impl)
-        # so the spawn wiring stays a single parameter end to end.
+        # The completion probe and the continuation ride on the impl callable
+        # (see build_spawn_impl) so the spawn wiring stays a single parameter
+        # end to end.
         spawn_sdk = SpawnSDK(
-            app_name, spawn_impl, done_probe=getattr(spawn_impl, "done_probe", None)
+            app_name,
+            spawn_impl,
+            done_probe=getattr(spawn_impl, "done_probe", None),
+            continue_impl=getattr(spawn_impl, "continue_impl", None),
         )
 
     # Build AppStorage if permitted

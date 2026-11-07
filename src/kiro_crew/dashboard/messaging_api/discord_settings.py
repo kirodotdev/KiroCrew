@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -34,7 +33,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -51,11 +49,17 @@ async def _validate_discord_token(token: str) -> str | None:
     """
     import aiohttp  # noqa: F811
 
+    # The bot's own proxy rule, so a host that reaches Discord only through a
+    # proxy verifies the token the way the running bot will use it. Imported
+    # here: the client module is heavy and only this call needs it.
+    from kiro_crew.discord.client import _resolve_proxy
+
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(
             "https://discord.com/api/v10/users/@me",
             headers={"Authorization": f"Bot {token}"},
+            proxy=_resolve_proxy(),
         ) as resp:
             if 200 <= resp.status < 300:
                 return None
@@ -210,7 +214,10 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         # The existence check, the read and the parse share one worker-thread hop
         # (as in feishu_settings.py): a stalled mount must not block the loop on
         # any of them.
-        return json.loads(read_config_text(path)) if path.exists() else {}
+        # The read half of this read-modify-write starts from what the load reads.
+        from kiro_crew.config.loader import read_config_for_update
+
+        return read_config_for_update(path)
 
     try:
         data = await asyncio.to_thread(_read_config)

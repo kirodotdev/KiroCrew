@@ -15,6 +15,7 @@ adapter; the submit and settle path every append takes (:func:`_write`, :func:`_
 from __future__ import annotations
 
 import atexit
+import functools
 import sys
 import time
 import traceback
@@ -55,7 +56,13 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay g
     # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
     from kiro_crew.crew_log.store import CrewLog
     from kiro_crew.crew_log.turn_tracker import TurnTracker
-    from kiro_crew.crew_log.writer import CrewLogWriter, WarningBudget, WriteJob, WriterLimits
+    from kiro_crew.crew_log.writer import (
+        CrewLogWriter,
+        GroupPart,
+        WarningBudget,
+        WriteJob,
+        WriterLimits,
+    )
 
 
 #: How many child origins were dropped while their child was still running, so
@@ -122,9 +129,10 @@ def _writer() -> "CrewLogWriter":
     """The installed durable writer, built on first use.
 
     Its adapters are this module's: :func:`_late_handle` opens a unit for the writer's
-    own loss markers, :func:`_writer_pool` hands it the one-worker crew-log pool (and
+    own loss markers, :func:`_writer_pool` hands it the crew-log pool, one worker per lane (and
     registers the exit drain on first use), :func:`_notify_growth` tells the registered
-    listeners a log grew, and :func:`_late_retry_delay` is the retry schedule. The two
+    listeners a log grew, :func:`_late_retry_delay` is the retry schedule, and
+    ``writer_groups.hold_key`` keeps one slot's units on one lane at a time. The two
     ``_late_*`` adapters read their target by name at call time, because tests patch
     :func:`_handle` and :func:`_retry_delay` here, and a writer built while a patch was
     in force must not keep it after the patch is undone. Logging stays on this module's
@@ -136,6 +144,8 @@ def _writer() -> "CrewLogWriter":
         warnings = _warnings()
         with _install_lock:
             if _writer_instance is None:
+                # Imported here: the writer modules stay off the gateway boot path.
+                from kiro_crew.crew_log import writer_groups
                 from kiro_crew.crew_log.writer import DEFAULT_LIMITS, CrewLogWriter
 
                 _writer_instance = CrewLogWriter(
@@ -146,6 +156,7 @@ def _writer() -> "CrewLogWriter":
                     on_grew=_notify_growth,
                     warnings=warnings,
                     logger=logger,
+                    hold_key=writer_groups.hold_key,
                 )
             writer = _writer_instance
     return writer
@@ -341,6 +352,10 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
         _last_class.clear()
         _child_origin.clear()
         _creation_failed.clear()
+        # Imported here: the writer modules stay off the gateway boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.clear()
         _repair_walked.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
@@ -399,6 +414,7 @@ def _submit(
     *,
     after: Callable[[], None] | None = None,
     on_permanent_drop: Callable[[], None] | None = None,
+    group: "GroupPart | None" = None,
 ) -> None:
     """Hand one ordinary append to the writer.
 
@@ -412,7 +428,9 @@ def _submit(
 
     _hand_over(
         session_id,
-        WriteJob.append(job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop),
+        WriteJob.append(
+            job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop, group=group
+        ),
     )
 
 
@@ -737,11 +755,25 @@ def _write(
         # names, which is nearly all of them.
         _note_eager(entry, entry_type, session_id, data)
 
+    def _landed(entry: Any) -> None:
+        # The grouped twin of the job's tail above: the same steps, run once the whole
+        # group commit is durable. None is a session with no log, as in the job.
+        if entry is None:
+            if settle is not None:
+                settle.fail()
+            return
+        if settle is not None:
+            settle.wrote()
+        _note_eager(entry, entry_type, session_id, data)
+
     def _after() -> None:
         if settle is not None:
             settle.after()
         if after is not None:
             after()
+
+    # Imported here: the writer module stays off the gateway boot path.
+    from kiro_crew.crew_log.writer import GroupPart
 
     _submit(
         _job,
@@ -749,7 +781,28 @@ def _write(
         session_id,
         after=_after if (settle is not None or after is not None) else None,
         on_permanent_drop=settle.fail if settle is not None else on_permanent_drop,
+        group=GroupPart(
+            key=("append", src),
+            item={"type": entry_type, "data": data, "ignorable": ignorable},
+            commit=functools.partial(_commit_appends, session_id, src),
+            landed=_landed,
+        ),
     )
+
+
+def _commit_appends(session_id: str, src: str, items: "list[dict[str, Any]]") -> "list[Any]":
+    """Write a run of :func:`_write` entries for *session_id* as ONE durable append.
+
+    One lock, one tail read, one ``write()`` and one ``fsync`` for the run
+    (``CrewLog.append_many``), which is the point: on a loaded host every one of those
+    syscalls re-takes the GIL, and the writer thread pays that per append otherwise.
+    Each entry keeps its own seq, in order; they share one ``time``. Returns one Entry
+    per item, or ``None`` for each when the session has no log (the job's own no-op).
+    """
+    log = _handle(session_id)
+    if log is None:
+        return [None] * len(items)
+    return list(log.append_many(items, src=src))
 
 
 def _queue_tail_repair(previous_sid: str, slot: str, *, walked: "tuple[str, ...]" = ()) -> None:
@@ -1466,6 +1519,11 @@ def on_session_closed(
         writer = _writer_instance
         if writer is not None:
             writer.forget(session_id)
+        # Its hold key too: a closed session writes nothing more that needs one, and the
+        # map is bounded. Imported here, like the writer, to keep it off the boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.forget(session_id)
         # The attempt counts go with the session (a resume reseeds them from the file),
         # and so do the open calls and settled markers of turns already gone. A live
         # turn's are its own: dropping its open calls here would leave them open for the

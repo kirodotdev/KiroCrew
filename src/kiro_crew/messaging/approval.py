@@ -318,6 +318,12 @@ def deliver_verdict(session_key: str, verdict: str, conversation_id: str = "") -
     entry = pending_for(session_key, conversation_id)
     if entry is None:
         return RECEIPT_EXPIRED
+    if verdict == TRUST:
+        from kiro_crew.messaging.session_trust import trust_permitted
+
+        if not trust_permitted():
+            # A ``permission_mode`` deny of ``trust``: approve this one tool, and say so.
+            verdict = APPROVE
     if not entry.future.done():
         entry.future.set_result(verdict)
     _forget(entry.session_key, entry.request_id)
@@ -452,8 +458,12 @@ class TextReplyApprovalDecider:
         """
         if self._sessions is None:
             return
+        from kiro_crew.messaging.session_trust import add_trusted_session
+
         try:
-            self._sessions.set_approval_policy(self.session_key, "auto")
+            # Through the shared grant, so a ``permission_mode`` deny of ``trust``
+            # refuses it here and its deny hook revokes it later (both halves).
+            add_trusted_session(self.session_key, self._sessions)
         except Exception:  # noqa: BLE001: the tool is already approved
             logger.warning("approval: could not persist session trust", exc_info=True)
 

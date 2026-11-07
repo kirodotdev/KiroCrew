@@ -65,13 +65,61 @@ interface NotificationsState {
    *  notice, its Approve/Reject are withdrawn, and its close X (always
    *  shown) tries again. */
   dismissFailed?: Record<string, 'decided'>
+  /** Monotonic counter of publisher-driven membership changes: a keyed note
+   *  arriving (it replaces any note held under its key) and `notification_dismiss`.
+   *  A fetch snapshots it at request start, as it does `ackSeq`. Optional for the
+   *  same rehydration reason. */
+  membershipSeq?: number
+  /** ts → the `membershipSeq` at which a keyed note arrived. The fetch merge keeps
+   *  a note that arrived after its request began: the response predates it. */
+  keyedAtByTs?: Record<string, number>
+  /** ts → the `membershipSeq` at which a note was replaced or dismissed. The fetch
+   *  merge drops a row withdrawn after its request began, so a stale snapshot
+   *  cannot bring it back. Bounded to the newest `NOTIFICATIONS_RING_CAP` entries. */
+  withdrawnAtByTs?: Record<string, number>
+  /** True once a fetch has landed in this tab. Until then `items` holds only
+   *  live arrivals, not the notes the server already has, so it cannot say
+   *  which of a chat's cron notes are unread (`useAckCronNotesInView`, #24080).
+   *  A failed fetch leaves it as it was. */
+  loaded?: boolean
 }
 
 /** Why a listed approval row can no longer be decided (`retiredApprovals`). */
 export type RetiredApproval = true | { failed: string }
 
+/** Where a listed row stands in its approval decision. Every reader of
+ *  `retiredApprovals` and `dismissFailed` goes through `rowPhase`, so no
+ *  reader can consult one mark and miss the other. */
+export interface ApprovalRowPhase {
+  /** `live`: nothing settled it, so it can still be decided (a decision may
+   *  be in flight). `retired`: it can no longer be decided. `decided`: a
+   *  decision on it landed and only its DELETE failed. */
+  phase: 'live' | 'retired' | 'decided'
+  /** On a retired row whose press failed after its request ended, the reason
+   *  to quote (`''` if none); otherwise `null`. */
+  endedFailure: string | null
+  /** A DELETE after a landed decision failed, so the row is still listed. */
+  dismissFailed: boolean
+}
+
+type ApprovalMarks = Pick<NotificationsState, 'retiredApprovals' | 'dismissFailed'>
+
+/** The marks `rowPhase` reads, for a view that subscribes to them alone
+ *  (select it with `shallowEqual`). */
+export const approvalMarks = (notifications: NotificationsState): ApprovalMarks =>
+  ({ retiredApprovals: notifications.retiredApprovals, dismissFailed: notifications.dismissFailed })
+
+export const rowPhase = (notifications: ApprovalMarks, ts: string): ApprovalRowPhase => {
+  const retired = notifications.retiredApprovals ?? {}
+  const dismissFailed = Object.hasOwn(notifications.dismissFailed ?? {}, ts)
+  if (!Object.hasOwn(retired, ts)) return { phase: dismissFailed ? 'decided' : 'live', endedFailure: null, dismissFailed }
+  const mark = retired[ts]
+  return { phase: 'retired', endedFailure: typeof mark === 'object' ? mark.failed : null, dismissFailed }
+}
+
 const initialState: NotificationsState = {
   items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {}, retiredApprovals: {}, approvalDecisions: {}, dismissFailed: {},
+  membershipSeq: 0, keyedAtByTs: {}, withdrawnAtByTs: {},
 }
 
 /** Ring-buffer cap on the notifications list. Without it, `items` grows
@@ -115,11 +163,6 @@ const markAck = (state: NotificationsState, ts: string) => {
   state.ackSeq = (state.ackSeq ?? 0) + 1
   ;(state.ackSeqByTs ??= {})[ts] = state.ackSeq
 }
-
-/** Whether the row at *ts* is a settled approval: retired, or decided with a
- *  failed DELETE. Such a row's read state is this tab's own. */
-const isSettledApprovalRow = (state: NotificationsState, ts: string): boolean =>
-  Object.hasOwn(state.retiredApprovals ?? {}, ts) || state.dismissFailed?.[ts] === 'decided'
 
 /** Drop stamps for items `items` no longer holds. The one chokepoint for it,
  *  called from every path that shrinks the list — delete, WS remove, clear, a
@@ -190,6 +233,53 @@ const replaceRows = (state: NotificationsState, incoming: Notification[], { endD
   pruneAckStamps(state)
 }
 
+/** The same bound for keyed-arrival stamps: one per held item at most. */
+const pruneKeyedStamps = (state: NotificationsState) => {
+  const stamps = state.keyedAtByTs
+  if (!stamps) return
+  const live = new Set(state.items.map(n => n.ts))
+  for (const ts of Object.keys(stamps)) {
+    if (!live.has(ts)) delete stamps[ts]
+  }
+}
+
+const nextMembershipSeq = (state: NotificationsState): number => {
+  state.membershipSeq = (state.membershipSeq ?? 0) + 1
+  return state.membershipSeq
+}
+
+const markWithdrawn = (state: NotificationsState, ts: string, seq: number) => {
+  const withdrawn = (state.withdrawnAtByTs ??= {})
+  withdrawn[ts] = seq
+  const entries = Object.entries(withdrawn)
+  if (entries.length > NOTIFICATIONS_RING_CAP) {
+    entries.sort((a, b) => a[1] - b[1])
+    for (const [old] of entries.slice(0, entries.length - NOTIFICATIONS_RING_CAP)) delete withdrawn[old]
+  }
+}
+
+/** A fetch response's membership with the publisher-driven changes this view saw
+ *  after the request began laid over it: rows replaced or dismissed since are
+ *  dropped, and keyed notes that arrived since are kept, each replacing whatever
+ *  the response holds under its key. `since` is undefined only for a response
+ *  built without the stamp, which is applied as the server sent it. */
+function withMembershipSince(
+  state: NotificationsState,
+  items: Notification[],
+  since: number | undefined,
+): Notification[] {
+  if (since === undefined) return items
+  const withdrawn = state.withdrawnAtByTs ?? {}
+  const keyedAt = state.keyedAtByTs ?? {}
+  let merged = items.filter(item => !((withdrawn[item.ts] ?? -1) > since))
+  for (const local of state.items) {
+    if (!((keyedAt[local.ts] ?? -1) > since) || merged.some(item => item.ts === local.ts)) continue
+    merged = merged.filter(item => !(item.key === local.key && item.source === local.source))
+    merged.push(local)
+  }
+  return merged
+}
+
 /**
  * Boot-time notifications dedupe (#765). App's mount effect and the
  * WebSocket's FIRST-connect handler used to each dispatch `fetchNotifications`
@@ -253,8 +343,9 @@ export const fetchNotifications = createAsyncThunk(
     const notif = (getState() as { notifications: NotificationsState }).notifications
     const seq = notif.clearSeq
     const ackSeq = notif.ackSeq ?? 0
+    const membershipSeq = notif.membershipSeq ?? 0
     const d = await api.notifications()
-    return { items: (d.notifications || []) as Notification[], seq, ackSeq }
+    return { items: (d.notifications || []) as Notification[], seq, ackSeq, membershipSeq }
   },
 )
 
@@ -344,10 +435,26 @@ const notificationsSlice = createSlice({
   initialState,
   reducers: {
     addNotification(state, action: PayloadAction<Notification>) {
-      if (!state.items.some(n => n.ts === action.payload.ts)) {
-        state.items.push(action.payload)
-        state.items = capRows(state, state.items)
+      const note = action.payload
+      // Read the rows as plain objects, not through the draft: touching each
+      // row through the draft makes a proxy per row on every pass, which made a
+      // burst that fills the ring cost the cap squared in proxies.
+      const prior = (isDraft(state.items) ? original(state.items) : undefined) ?? state.items
+      if (!prior.some(n => n.ts === note.ts)) {
+        let rows = prior
+        // The bell holds one note per (source, key), as the backend does: a
+        // keyed note replaces the one this view already shows for that key.
+        if (note.key) {
+          const seq = nextMembershipSeq(state)
+          for (const n of prior) {
+            if (n.key === note.key && n.source === note.source) markWithdrawn(state, n.ts, seq)
+          }
+          rows = prior.filter(n => !(n.key === note.key && n.source === note.source))
+          ;(state.keyedAtByTs ??= {})[note.ts] = seq
+        }
+        state.items = capRows(state, [...rows, note])
         pruneAckStamps(state)
+        pruneKeyedStamps(state)
       }
     },
     ackNotificationByTs(state, action: PayloadAction<string>) {
@@ -373,9 +480,7 @@ const notificationsSlice = createSlice({
       // A settled approval row is read in this tab and asks for nothing, so an
       // unread broadcast from another view leaves it read; the fetch merge
       // keeps that local state as well.
-      // Settled: retired, or decided with a failed DELETE.
-      if (Object.hasOwn(state.retiredApprovals ?? {}, action.payload)
-        || state.dismissFailed?.[action.payload] === 'decided') return
+      if (rowPhase(state, action.payload).phase !== 'live') return
       const n = state.items.find(i => i.ts === action.payload)
       if (n) {
         n.acked = false
@@ -441,17 +546,23 @@ const notificationsSlice = createSlice({
         ;(state.dismissFailed ??= {})[ts] = 'decided'
         row.acked = true
         markAck(state, ts)
-      } else if (d?.ended && !Object.hasOwn(map, ts)
-        && !Object.hasOwn(state.retiredApprovals ?? {}, ts) && !Object.hasOwn(state.dismissFailed ?? {}, ts)) {
+      } else if (d?.ended && !Object.hasOwn(map, ts) && rowPhase(state, ts).phase === 'live') {
         ;(state.retiredApprovals ??= {})[ts] = { failed: action.payload.reason ?? '' }
         row.acked = true
         markAck(state, ts)
       }
-      const claimed = Object.hasOwn(state.retiredApprovals ?? {}, ts) || Object.hasOwn(state.dismissFailed ?? {}, ts)
+      const claimed = rowPhase(state, ts).phase !== 'live'
       if (d?.ended && !Object.hasOwn(map, ts) && !claimed) removeRow(state, ts)
       // Closed or cleared by this tab's user, and no frame ended the request:
       // a retryable failure leaves it pending, so the row goes, as asked.
       else if (d?.dismissed && !Object.hasOwn(map, ts) && !claimed) removeRow(state, ts)
+    },
+    /** WS `notification_dismiss`: the publisher withdrew the note, so every view
+     *  drops it, and a fetch already in flight must not bring it back. */
+    dismissNotificationByTs(state, action: PayloadAction<string>) {
+      markWithdrawn(state, action.payload, nextMembershipSeq(state))
+      removeRow(state, action.payload)
+      pruneKeyedStamps(state)
     },
     /** WS `notifications_clear` sync: another view cleared the inbox, so this
      *  view drops its copy too (the bell badge derives from `items`).
@@ -459,11 +570,14 @@ const notificationsSlice = createSlice({
     clearAllNotifications(state) {
       state.clearSeq += 1
       replaceRows(state, [], { endDeciding: true })
+      state.keyedAtByTs = {}
     },
   },
   extraReducers: (builder) => {
     builder
       .addCase(fetchNotifications.fulfilled, (state, action) => {
+        // Also when stale: the clear that made it stale emptied the server's list too.
+        state.loaded = true
         // Stale response: a clear landed while this fetch was in flight, so
         // its payload predates the clear. Applying it would restore the rows
         // and the badge with them.
@@ -473,27 +587,31 @@ const notificationsSlice = createSlice({
         // the payload's copy of that item and must survive — otherwise an item
         // the user already acked reappears as unread, and two overlapping
         // fetches resolving out of order make it flip back and forth.
-        // Membership, ordering, and every other field still come from the
-        // server, so this narrows to ack state only.
+        // Membership, ordering, and every other field come from the server,
+        // except for the publisher-driven changes this view saw after the
+        // request began (`withMembershipSince`): a keyed replacement or a
+        // dismissal the response predates.
         const requestAckSeq = action.payload.ackSeq ?? 0
         const stamps = state.ackSeqByTs ?? {}
         const prev = original(state.items) ?? []
         const prevByTs = new Map<string, Notification>()
         for (const n of prev) if (!prevByTs.has(n.ts)) prevByTs.set(n.ts, n)
-        replaceRows(state, action.payload.items.map(item => {
+        const membership = withMembershipSince(state, action.payload.items, action.payload.membershipSeq)
+        replaceRows(state, membership.map(item => {
           const stamped = stamps[item.ts]
           const local = prevByTs.get(item.ts)
           // A settled approval row (retired, or decided with a failed DELETE)
           // was marked read in this tab only (`approvalDecisionSettled`); the
           // server still holds it unread, so its copy must not relight the badge.
           const keepLocalAck = !!local
-            && (isSettledApprovalRow(state, item.ts) || (stamped !== undefined && stamped > requestAckSeq))
+            && (rowPhase(state, item.ts).phase !== 'live' || (stamped !== undefined && stamped > requestAckSeq))
           const merged = keepLocalAck ? { ...item, acked: local.acked } : item
           // A reconnect refetch mostly repeats what the socket already
           // delivered. Keeping the held object for an equal item keeps every
           // row keyed on it, and every memo over the list, from re-rendering.
           return local && jsonEqual(local, merged) ? local : merged
         }), { endDeciding: false })
+        pruneKeyedStamps(state)
       })
       .addCase(clearNotifications.fulfilled, (state, action) => {
         // The generation moved while the request was in flight, so the
@@ -505,6 +623,7 @@ const notificationsSlice = createSlice({
         if (action.payload.seq !== state.clearSeq) return
         state.clearSeq += 1
         replaceRows(state, [], { endDeciding: true })
+        state.keyedAtByTs = {}
       })
       .addCase(deleteNotification.fulfilled, (state, action) => {
         removeRow(state, action.payload)
@@ -583,7 +702,7 @@ const notificationsSlice = createSlice({
   },
 })
 
-export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, endApprovalRow, dismissApprovalRow, clearAllNotifications, approvalDecisionBegan, approvalDecisionSettled } = notificationsSlice.actions
+export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, dismissNotificationByTs, endApprovalRow, dismissApprovalRow, clearAllNotifications, approvalDecisionBegan, approvalDecisionSettled } = notificationsSlice.actions
 export default notificationsSlice.reducer
 
 /** True for an approval row this tab raised itself, from an `approval` frame
@@ -630,12 +749,8 @@ const coordinatorDecideTarget = (
  *  retired. The id recurs, so a retired row for an earlier request can share it
  *  with the live one; a retirement or a resolution must land on the live row,
  *  never on that earlier one. */
-export const liveApprovalRows = (notifications: NotificationsState, id: string): Notification[] => {
-  const retired = notifications.retiredApprovals ?? {}
-  const decided = notifications.dismissFailed ?? {}
-  return notifications.items.filter(n =>
-    n.approval_id === id && !Object.hasOwn(retired, n.ts) && !Object.hasOwn(decided, n.ts))
-}
+export const liveApprovalRows = (notifications: NotificationsState, id: string): Notification[] =>
+  notifications.items.filter(n => n.approval_id === id && rowPhase(notifications, n.ts).phase === 'live')
 
 /** What one Approve/Reject press on a feed row or the detail panel came to. */
 export type ApprovalDecisionOutcome =
@@ -683,11 +798,11 @@ export const decideApprovalRow = createAsyncThunk<
       console.error(`Approval ${action} failed`, e)
       const reason = plainDecisionReason(e)
       dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'failed', reason }))
-      const { retiredApprovals } = (getState() as { notifications: NotificationsState }).notifications
+      const { notifications } = getState() as { notifications: NotificationsState }
       // Callers must not record a retryable failure for a row that has none
       // left. Focus is not this value's job: the feed's rescue effect already
       // ran on the render that retired the row.
-      if (typeof retiredApprovals?.[n.ts] === 'object') return { kind: 'ended_failed' }
+      if (rowPhase(notifications, n.ts).endedFailure !== null) return { kind: 'ended_failed' }
       return { kind: 'failed', reason }
     }
     const result = await dispatch(dropNotificationRow(n))

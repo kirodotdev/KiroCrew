@@ -176,6 +176,10 @@ _SENTINEL = object()
 #: How long a declared-governed start waits before it may start without Crew's
 #: managed servers: the same bound the init drain gives a first report.
 GOVERNED_SETTLE_SECS = 6.0
+#: Shared cap on the best-effort wait for mounted servers outside the required
+#: barrier (:func:`wait_mounted_mcp`). Measured: the GitHub Connection bridge
+#: reports 1.4-1.9 s after the first prompt would otherwise go out.
+MOUNTED_MCP_WAIT_SECS = 5.0
 #: Failure text on the MCP report for a managed server a governed start skipped.
 GOVERNED_DROP_REASON = (
     "not started by the host: registry mode is on and a governed MCP profile drops "
@@ -474,28 +478,56 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
     seconds pass. Returns the declared servers that are not ready, in spec
     order; empty when all are.
     """
-    report = self._mcp_report
+    await _drain_until_reported(self, self._mcp_report.declared, timeout)
+    return self._mcp_report.declared_not_ready()
+
+
+async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeout: float) -> None:
+    """Best effort: hold the first prompt until each of *names* has reported, or *timeout*.
+
+    For the servers outside the required barrier (Connections, user servers), so
+    turn 1's catalog has their tools. Never fails the start: a server still
+    unreported at *timeout* is logged and the session starts without it. Runtime
+    death still raises.
+    """
+    if await _drain_until_reported(self, names, timeout):
+        raise AcpRuntimeDead("Runtime exited while waiting for mounted MCP servers")
+    late = self._mcp_report.unreported(names)
+    if late:
+        logger.info(
+            "Session %s starts before MCP servers reported (%gs cap): %s",
+            self._session_id,
+            timeout,
+            ", ".join(late),
+        )
+
+
+async def _drain_until_reported(
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+) -> bool:
+    """Drain init frames until every one of *names* has reported; True if the runtime died."""
+    report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
-    while report.declared_unreported():
+    while report.unreported(names):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
-            msg = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+            msg = await asyncio.wait_for(handle._queue.get(), timeout=remaining)
         except asyncio.TimeoutError:
             break
         if msg is None:
             # Runtime died: re-poison so the turn that follows sees it.
-            await self._queue.put(None)
-            break
-        if consume_stale_compaction_status(self, msg):
+            await handle._queue.put(None)
+            return True
+        if consume_stale_compaction_status(handle, msg):
             continue
         try:
-            report.record_frame(msg, owned=self._owns_mcp_frame(msg))
-            self._apply_init_notification(msg, classify_notification(msg))
+            report.record_frame(msg, owned=handle._owns_mcp_frame(msg))
+            handle._apply_init_notification(msg, classify_notification(msg))
         except Exception:
             logger.debug("declared MCP wait: error processing init frame", exc_info=True)
-    return report.declared_not_ready()
+    return False
 
 
 def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, offer: bool) -> None:
@@ -652,11 +684,15 @@ def text_names_mcp_server(text: str, name: str) -> bool:
 
     Each alias from :func:`mcp_server_aliases` matches with any run of
     separators between its words, and only between word boundaries, so
-    ``notion`` matches "sign in to Notion" and not "notional". Pure.
+    ``notion`` matches "sign in to Notion" and not "notional". A registry
+    provider whose slug is *name* adds its ``sign_in_words`` (``atlassian``:
+    "jira", "confluence"), matched the same way. Pure.
     """
+    from kiro_crew.connections.registry import sign_in_words
+
     if not text or not name:
         return False
-    for alias in mcp_server_aliases(name):
+    for alias in (*mcp_server_aliases(name), *sign_in_words(name)):
         pattern = r"[\s_.:/@-]+".join(re.escape(word) for word in alias.split(" "))
         if re.search(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", text, re.IGNORECASE):
             return True

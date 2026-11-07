@@ -221,6 +221,106 @@ def _fresh_recorder(monkeypatch):
     _frame_record._reset_for_tests()
 
 
+# ── 0. OUTBOUND: what the transports write lands beside what they read ──────
+
+
+def _sent(tmp_path, backend: str) -> list[dict]:
+    out = tmp_path / f"{_frame_record.fixture_dir_name(backend)}.out.jsonl"
+    return [json.loads(ln) for ln in out.read_text(encoding="utf-8").splitlines()]
+
+
+def _client_with_stdin(backend: str) -> AcpClient:
+    client = AcpClient(acp_backend=backend)
+    process = MagicMock()
+    process.stdin.write = MagicMock()
+    process.stdin.drain = AsyncMock()
+    process.returncode = None
+    client._process = process
+    client._session_id = "s-1"
+    return client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
+async def test_runtime_records_what_it_writes_but_not_answers_or_restricted(
+    monkeypatch, tmp_path, backend
+):
+    """``send_request`` carries every ``session/prompt``. An answer to the agent's
+    own request is not recorded (it can carry a stored MCP sign-in grant), and a
+    runtime carrying a restricted session records nothing."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    async with _LiveRuntime(backend) as live:
+        prompt = [{"type": "text", "text": "hi"}]
+        await live.rt.send_request(
+            "session/prompt", {"sessionId": live.session_id, "prompt": prompt}
+        )
+        await live.rt.send_notification("session/cancel", {"sessionId": live.session_id})
+        await live.rt.send_response("r-1", {"value": "a stored grant"})
+        live.rt.recording_allowed = False  # what a non-persistent create_session latches
+        await live.rt.send_request("session/prompt", {"sessionId": live.session_id, "prompt": []})
+        await _frame_record.flush_for_tests()
+    sent = _sent(tmp_path, backend)
+    assert [f["method"] for f in sent] == ["session/prompt", "session/cancel"]
+    assert sent[0]["params"]["prompt"] == prompt
+    assert live.rt._process.stdin.write.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_a_recorder_fault_on_the_write_side_never_reaches_the_writer(monkeypatch, tmp_path):
+    """The write-side twin of the reader tests below: a failing enqueue stands
+    recording down, and the frame is still written and drained."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("enqueue broke")
+
+    monkeypatch.setattr(_frame_record, "_enqueue", boom)
+    async with _LiveRuntime("kas") as live:
+        await live.rt.send_request("session/prompt", {"sessionId": live.session_id, "prompt": []})
+        assert live.rt._process.stdin.drain.await_count == 1
+        assert not live.rt._dead
+    assert _frame_record._stood_down
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
+async def test_client_records_what_it_writes_unless_restricted(monkeypatch, tmp_path, backend):
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    client = _client_with_stdin(backend)
+    await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    await client.cancel_session()
+    client.memory_mode = "incognito"
+    await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    await _frame_record.flush_for_tests()
+    assert [f["method"] for f in _sent(tmp_path, backend)] == ["session/prompt", "session/cancel"]
+    assert client._process.stdin.write.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_a_request_is_recorded_when_written_not_when_drained(monkeypatch, tmp_path):
+    """The line lands while the drain is still parked, so a cancel appended
+    unlocked behind a stalled prompt can never be recorded ahead of it."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    client = _client_with_stdin("")
+    release = asyncio.Event()
+    client._process.stdin.drain = AsyncMock(side_effect=release.wait)
+    write = asyncio.ensure_future(
+        client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    )
+    await async_wait_until(lambda: client._process.stdin.write.called)
+    await _frame_record.flush_for_tests()
+    try:
+        assert [f["method"] for f in _sent(tmp_path, "")] == ["session/prompt"]
+        assert not write.done(), "the drain returned before the line was checked"
+    finally:
+        release.set()
+        await await_until(write, what="the parked prompt write to finish")
+
+
 # ── 1. OFF: the default state of every real deployment ──────────────────────
 
 

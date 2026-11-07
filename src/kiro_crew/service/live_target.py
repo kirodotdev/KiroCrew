@@ -40,6 +40,7 @@ a code-execution input:
 
 from __future__ import annotations
 
+import ast
 import errno
 import json
 import os
@@ -48,6 +49,7 @@ import sys
 import uuid
 from pathlib import Path
 
+import kiro_crew
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config import loader
 
@@ -229,6 +231,48 @@ def read_previous_target() -> Path | None:
         return validate(previous)
     except InvalidTarget:
         return None
+
+
+def selected_version() -> tuple[str | None, float | None]:
+    """``(version, changed_at)`` of the package the next gateway start runs.
+
+    That is the pinned checkout, else the installed package this process imported,
+    read from disk: an in-place upgrade rewrites those files under a gateway that
+    keeps serving the version it imported. The version is the ``__version__``
+    literal plus any ``BUILD_VERSION`` stamp, as ``kirocrew --version`` prints it.
+    ``changed_at`` is the newest change time of the pointer and those files: a
+    mismatch aged from it, or from the gateway's start when later, is never
+    overstated. ``(None, None)`` when the version cannot be read.
+    """
+    try:
+        target = read_target()
+        package = (
+            Path(kiro_crew.__file__).parent if target is None else target / "src" / "kiro_crew"
+        )
+        body = ast.parse((package / "__init__.py").read_text(encoding="utf-8")).body
+    except (OSError, ValueError, SyntaxError):
+        return None, None
+    literals = [
+        node.value.value
+        for node in body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and [getattr(name, "id", None) for name in node.targets] == ["__version__"]
+    ]
+    if not literals:
+        return None, None
+    changed_at = None
+    for source in (
+        pointer_path(),
+        package / "__init__.py",
+        package / kiro_crew._BUILD_VERSION_FILENAME,
+    ):
+        try:
+            st = source.stat()
+        except OSError:
+            continue  # no pointer and no stamp are the ordinary case
+        changed_at = max(changed_at or 0.0, st.st_mtime, st.st_ctime)
+    return kiro_crew._apply_build_version_file(literals[0], str(package)), changed_at
 
 
 def write_target(

@@ -28,7 +28,7 @@ const CJK = /[\u3000-\u9fff\uff00-\uffef]/
  * template that says it another way puts two words for one thing on one screen.
  */
 const OFF_CATALOG: Record<string, string> = {
-  '\u6210\u5458': 'crewmate', '\u540c\u4e8b': 'crewmate', '\u7ec4\u5458': 'crewmate',
+  '\u6210\u5458': 'crewmate', '\u540c\u4e8b': 'crewmate', '\u7ec4\u5458': 'crewmate', Jam: 'crewmate',
   '\u70b9\u6570': 'credits', '\u79ef\u5206': 'credits', '\u4fe1\u7528': 'credits',
 }
 
@@ -64,7 +64,7 @@ const PROBES: Record<string, { en: string; zh: string }> = {
   },
   'pr-watch': {
     en: 'No lane reading yet. The Bot has not written one.',
-    zh: '\u8fd8\u6ca1\u6709\u68c0\u67e5\u8bfb\u6570\u3002Jam \u5c1a\u672a\u5199\u5165\u3002',
+    zh: '\u8fd8\u6ca1\u6709\u68c0\u67e5\u8bfb\u6570\u3002Bot \u5c1a\u672a\u5199\u5165\u3002',
   },
   flow: { en: 'No item on this board yet.', zh: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002' },
   standup: { en: 'no headline written', zh: '\u672a\u5199\u5165\u8981\u70b9' },

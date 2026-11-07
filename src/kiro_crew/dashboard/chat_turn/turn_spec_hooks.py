@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
+from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
@@ -36,6 +37,7 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
+from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -46,7 +48,13 @@ from kiro_crew.dashboard.state import (
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_STOP, pre_tool_match_names
+from kiro_crew.hooks import (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_STOP,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
+    pre_tool_match_names,
+)
 from kiro_crew.slack.outbound import PostedOptions
 
 if TYPE_CHECKING:
@@ -68,8 +76,10 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
     from kiro_crew.dashboard.chat_turn.recipient import (
+        _cross_surface_images,
         _cross_surface_reply_text,
         _deliver_cross_surface_reply,
+        _local_file_name,
         _retire_mirror_thinking,
         cross_surface_withheld,
         slack_publication_withheld,
@@ -208,8 +218,9 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=on_kas,
-                # Only KAS drops a remote MCP server's `oauth` block.
-                discards_mcp_oauth=on_kas,
+                # Only KAS drops a remote MCP server's `oauth` block, and only an
+                # engine that does not announce `mcpServerOAuth`.
+                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(client),
                 **by_session,
             )
         )
@@ -770,6 +781,11 @@ async def _fire(
         # at fire time: a reset gives the session a new one. Empty before
         # session/new, and then the spec hooks get none.
         _acp_sid = getattr(turn.client, "session_id", "") if turn._spec_hooks else ""
+        # Read at fire time too: a model pick or a fallback swap changes it.
+        _model = hook_session_model(
+            turn.client,
+            in_prompt=event not in (HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT),
+        )
         results = await state._hook_store.fire(
             event,
             context,
@@ -787,6 +803,7 @@ async def _fire(
             extra_hooks_tool_names=_spec_tool_names,
             tool_match_names=_match_names,
             acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
+            session_model=_model,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the
@@ -1178,8 +1195,29 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
             turn._mirror_thinking_ts = await _retire_mirror_thinking(
                 state.slack_client, _mirror_chan, turn._mirror_thinking_ts
             )
-            for _part in render_for_slack(_mirror_body):
-                await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
+            # Local images, before any split, through the gates every mirror leg
+            # shares (``_cross_surface_images``) and Slack's own renderer budgets
+            # and upload step. A picture that is not sent is named, never pathed.
+            from kiro_crew.slack.files import UPLOAD_LIMITS as _slack_upload_limits
+            from kiro_crew.slack.files import upload_outbound_files as _slack_upload
+
+            _mirror_body, _mirror_files, _mirror_notes = await _cross_surface_images(
+                state, session_key, "slack", _mirror_body, _slack_upload_limits
+            )
+
+            async def _post_rendered(text: str) -> None:
+                for _part in render_for_slack(text):
+                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
+
+            if _mirror_body or not _mirror_files:
+                await _post_rendered(_mirror_body)
+            if _mirror_files:
+                for _failed in await _slack_upload(
+                    state.slack_client, _mirror_chan, _mirror_post_ts or "", _mirror_files
+                ):
+                    _mirror_notes.append(f"⚠ Couldn't upload: {_local_file_name(_failed.dest)}")
+            if _mirror_notes:
+                await _post_rendered("\n".join(_mirror_notes))
             if _mirror_options:
                 # Keep the ts this posts: the control has to be spendable
                 # later, and discarding the ts is what leaves a superseded
@@ -1259,6 +1297,24 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)
 
 
+async def _fallback_turn_project(turn_project: str, session_cwd: Any) -> str:
+    """The folder a turn runs in when its start fell back from a hidden scratch folder.
+
+    The chat keeps storing the earlier run's scratch folder, so the turn's own project
+    still names it while the session runs in the default folder. Returns that folder,
+    or ``""`` when the turn's project is the one the session runs in.
+    """
+    if not turn_project or not isinstance(session_cwd, str) or not session_cwd:
+        return ""
+    if session_cwd == turn_project:
+        return ""
+    from kiro_crew.session_allocation_parts.get_or_create import _stored_cwd_is_hidden_scratch
+
+    if await asyncio.to_thread(_stored_cwd_is_hidden_scratch, turn_project, None):
+        return session_cwd
+    return ""
+
+
 def _surface_startup_notice(state: DashboardState, slot: _ChatSlot, provider: Any) -> None:
     """Show a start problem the provider recorded, once, as a transcript error row.
 
@@ -1271,5 +1327,13 @@ def _surface_startup_notice(state: DashboardState, slot: _ChatSlot, provider: An
     if not isinstance(notice, tuple) or len(notice) != 2:
         return
     token, text = notice
-    append_and_surface(state, slot, "error", text, "msg msg-err", meta={"kind": token})
     provider.startup_notice = None
+    from kiro_crew.session_allocation_parts.get_or_create import HIDDEN_SCRATCH_CWD_NOTICE
+
+    if token == HIDDEN_SCRATCH_CWD_NOTICE:
+        # The chat's stored folder is left as it is, so every fresh start of this
+        # chat falls back again: say so once per chat per gateway run, in memory.
+        if slot._hidden_scratch_notice_shown:
+            return
+        slot._hidden_scratch_notice_shown = True
+    append_and_surface(state, slot, "error", text, "msg msg-err", meta={"kind": token})

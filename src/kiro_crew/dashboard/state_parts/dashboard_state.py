@@ -42,6 +42,7 @@ from kiro_crew.dashboard.state_parts.slots_frame import _SLOTS_BROADCAST_INTERVA
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
+from kiro_crew.notifications.bridge import BridgeDispatcher, composite_sink
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
     from kiro_crew.dashboard.state_parts.refresh_coalesce import RefreshCoalescer
+    from kiro_crew.dashboard.state_parts.slot_turns import _ConsumedMergeCard
     from kiro_crew.messaging.transport import MessagingTransport
     from kiro_crew.power import SleepInhibitor
     from kiro_crew.slack.outbound import PostedOptions
@@ -109,6 +111,7 @@ class DashboardState:
 
     # Typed here for the owner functions that read them through ``self``.
     notification_bus: NotificationBus
+    notification_bridge: BridgeDispatcher
     notification_channel_settings: ChannelSettings
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
@@ -199,7 +202,7 @@ class DashboardState:
     # The person's pinned-session order (``pinned_session_order``). A class
     # default for the same reason as the push fields above: serialize_slot
     # reads it on the slots-push hot path, which also runs on a
-    # ``__new__``-built state. The empty tuple means "never reordered".
+    # ``__new__``-built state. The empty tuple means "no order stored".
     _pinned_session_order: "list[str] | tuple[str, ...]" = ()
 
     #: Whether the stored order has been read. The read runs after the
@@ -207,8 +210,8 @@ class DashboardState:
     #: every writer reads it first when it has not landed yet.
     _pinned_session_order_loaded: bool = False
 
-    #: Whether an order was ever stored, even an empty one. The browser's
-    #: one-time hand-off of its old local order lands only while this is False.
+    #: Whether an order was ever stored, even an empty one. The sidebar's
+    #: first-load seed (``only_if_unset``) lands only while this is False.
     _pinned_session_order_stored: bool = False
 
     #: Revision of the in-memory order, raised on every change. Each slot row
@@ -523,7 +526,14 @@ class DashboardState:
         self.push_subscription_store = PushSubscriptionStore()
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
-        self.notification_bus = NotificationBus(sink=self._deliver_note)
+        # The bridge runs after it, so a chat transport never delays the
+        # dashboard (notifications/bridge.py).
+        self.notification_bridge = BridgeDispatcher(
+            settings=lambda: self.notification_channel_settings
+        )
+        self.notification_bus = NotificationBus(
+            sink=composite_sink(self._deliver_note, self._bridge_note)
+        )
         # Future of the most recent delivery-sink persist job (None when the
         # last persist ran inline). The app push handler awaits it to give a
         # durability guarantee; legacy producers ignore it (best-effort).
@@ -554,10 +564,20 @@ class DashboardState:
                 f"A {surface} conversation reached its turn ceiling and is paused. "
                 "Reset it from the dashboard to continue.",
                 meta={"session_key": session_key, "surface": surface},
+                i18n={"id": "turn_limit", "params": {"surface": surface}},
             )
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
+        # Slot key -> (owning slot, its armed deferred-reset retry task); see
+        # ``chat_turn.session_reset._arm_pending_reset_retry``.
+        self._pending_reset_retries: dict[str, tuple[_ChatSlot, asyncio.Task[None]]] = {}
+        # Process-local guard for copies queued before a durable consumption
+        # stamp lands, and for a hydration that read the hold before it. An
+        # entry is kept once its stamp is proven, marked stamped so eviction
+        # takes it before any still-unstamped guard; the registry is
+        # count-bounded by _MAX_CONSUMED_MERGE_CARDS.
+        self._consumed_merge_cards: dict[str, _ConsumedMergeCard] = {}
         # Sandbox kind -> monotonic time of the last notification for it. Keyed on
         # the sandbox layer's own closed kind set (three values), NEVER on request
         # data: auto-speak synthesises one request per sentence, so a key carrying
@@ -1096,6 +1116,7 @@ class DashboardState:
     source_link_urls_for_slot = _source_links.source_link_urls_for_slot
     push_source_status = _source_links.push_source_status
     refresh_slot_source_status = _source_links.refresh_slot_source_status
+    refresh_source_status_now = _source_links.refresh_source_status_now
 
     # state_parts/dashboard_services.py
     approval_timeout_for = _dashboard_services.approval_timeout_for
@@ -1106,6 +1127,7 @@ class DashboardState:
     enable_yolo = _dashboard_services.enable_yolo
     disable_yolo = _dashboard_services.disable_yolo
     is_yolo_active = _dashboard_services.is_yolo_active
+    yolo_reaches = _dashboard_services.yolo_reaches
     request_approval = _dashboard_services.request_approval
     pending_coordinator_approvals = _dashboard_services.pending_coordinator_approvals
     linked_session_busy = _dashboard_services.linked_session_busy
@@ -1136,10 +1158,12 @@ class DashboardState:
     _fan_out_web_push = _dashboard_services._fan_out_web_push
     _send_web_push_all = _dashboard_services._send_web_push_all
     _deliver_note = _dashboard_services._deliver_note
+    _bridge_note = _dashboard_services._bridge_note
     register_sse = _dashboard_services.register_sse
     unregister_sse = _dashboard_services.unregister_sse
     _rewrite_notifications_async = _dashboard_services._rewrite_notifications_async
     delete_notification = _dashboard_services.delete_notification
+    dismiss_notification = _dashboard_services.dismiss_notification
     ack_notification = _dashboard_services.ack_notification
     unack_notification = _dashboard_services.unack_notification
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications
@@ -1286,6 +1310,8 @@ class DashboardState:
     dashboard_user_ws_count = _slots_push.dashboard_user_ws_count
     set_fold_delta_capable = _slots_push.set_fold_delta_capable
     set_fold_watch = _slots_push.set_fold_watch
+    set_chunk_scope_capable = _slots_push.set_chunk_scope_capable
+    set_chunk_watch = _slots_push.set_chunk_watch
     set_fold_apply_capable = _slots_push.set_fold_apply_capable
     broadcast_slot_fold = _slots_push.broadcast_slot_fold
     fold_watch_routing = _slots_push.fold_watch_routing

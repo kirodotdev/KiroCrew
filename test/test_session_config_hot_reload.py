@@ -1,13 +1,7 @@
 """SessionManager live config: the session/agent/watchdog fields follow config.json.
 
-``SessionManager`` subscribes itself on the process config watcher. These tests
-pin each applier: the manager adopts the reloaded config, a factory-bound
-default goes through ``refresh_defaults`` (which now re-derives the warm-pool
-shape without a second load), the cleanup loop re-reads its idle timeout and
-RSS ceiling every tick, a ``watchdog.*`` change re-clamps live handles through
-``_load_watchdog_settings``, the runtime's session-start budget and the
-context builder's ``{bot_name}`` read the live snapshot, and a file write
-dispatched through ``ConfigWatch`` reaches the manager end to end.
+Pins each applier ``SessionManager`` registers on the config watcher, plus a file
+write through ``ConfigWatch`` reaching the manager end to end.
 """
 
 from __future__ import annotations
@@ -402,13 +396,9 @@ class TestCleanupLoopRereadsPolicy:
     def test_a_long_session_timeout_does_not_slow_the_housekeeping_sweeps(self) -> None:
         """The tick is capped, so long-lived sessions keep the ~5 min cadence.
 
-        One tick drives the idle-expiry hook AND ``_run_cleanup_ticks``'s
-        housekeeping: orphaned session roots, tracked PIDs, untracked MCP
-        servers, sandbox artifacts. Deriving it from ``timeout_secs`` alone puts
-        those sweeps 4 hours apart at ``timeout_secs=86400`` -- while DISABLING
-        idle expiry yields 300 s, so asking for long sessions would buy worse
-        orphan cleanup than switching the sweep off. The floor case is the
-        invariant: the interval must never exceed what ``timeout_secs=0`` gives.
+        The tick also drives ``_run_cleanup_ticks``'s orphan sweeps, so at
+        ``timeout_secs=86400`` it must not stretch to 4 hours. It never exceeds what
+        ``timeout_secs=0`` gives.
         """
         mgr, _ = _make_manager(timeout_secs=0)
         cleanup = mgr._cleanup_boundary()
@@ -493,16 +483,9 @@ class TestCleanupLoopRereadsPolicy:
     async def test_the_tick_prunes_session_pid_mappings_off_the_loop(self) -> None:
         """The mapping prune must run on the tick, and must not run on the loop.
 
-        Both halves are asserted because the alternative design satisfies only
-        the first. Until the tick called it, the prune was reached solely from
-        ``cleanup_orphaned_sessions`` -- startup and shutdown -- so a gateway that
-        kept running held every mapping it published, one per released session,
-        and a recycled pid number went on carrying a dashboard slot's key; the
-        300s cap above is what makes this cadence bounded. Hooking the same work
-        onto a provider teardown would also retract the mapping, but
-        ``AcpClient._reset_state`` is synchronous and on the event loop, so it
-        would be a directory glob and unlinks over agent-plantable paths in the
-        one place ``no-blocking-call-on-event-loop`` forbids.
+        Without the tick a running gateway keeps every mapping, and a recycled pid
+        carries a slot's key. Pruning from ``AcpClient._reset_state`` would put a glob
+        and unlinks on the event loop.
         """
         mgr, _ = _make_manager()
         cleanup = mgr._cleanup_boundary()

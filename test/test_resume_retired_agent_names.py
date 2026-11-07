@@ -105,10 +105,7 @@ def view_sidecar(tmp_path, monkeypatch):
     from kiro_crew.acp import skill_projection as projection
 
     agents = tmp_path / "agents"
-    # The legacy records directory (a build before the side files moved): the
-    # resolver still reads it after this home's own.
-    metadata = projection._legacy_metadata_dir(agents)
-    metadata.mkdir(parents=True)
+    metadata = projection._ensure_projection_metadata_directory()
     monkeypatch.setattr(projection, "_VIEW_SOURCES", {})
     monkeypatch.setattr(projection, "kiro_agents_dir", lambda: agents)
     sidecar = metadata / f"{VIEW}.json"
@@ -185,7 +182,6 @@ def test_the_sdk_facade_answers_both_callers_without_the_projection_type(monkeyp
 @pytest.fixture
 def published_view(tmp_path, monkeypatch):
     """``(agents, view)``: a released view of AGENT whose pre-ledger tree has no ledger."""
-    import gc
     from types import SimpleNamespace
 
     from kiro_crew.acp import skill_projection as projection
@@ -238,7 +234,9 @@ def published_view(tmp_path, monkeypatch):
     prepared = projection.prepare_native_skill_projection(project)
     view = prepared.agent(AGENT)
     del prepared
-    gc.collect()  # the lease goes and no projection in this process holds the view
+    # The dropped projection's end releases the view's lease on the reaper thread,
+    # which may still be busy with an earlier test's end; the drain skips a leased view.
+    native_skill_projection_helpers._wait_for_dropped_projection_ends()
     metadata = projection._projection_metadata_dir()
     # A build that predates the ledger never wrote it; the sidecar is the
     # only record of which agent the view was built from.

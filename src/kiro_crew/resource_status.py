@@ -15,8 +15,8 @@ The advisory surfaces carry no enforcement, no lease, no cross-session
 coordination. Two sessions can both read "ample" and both launch heavy work —
 the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
 on top: :func:`admission_check` gates *background* work admission (scheduled
-cron firings, task-runner steps) while posture is CRITICAL, so the scheduler
-stops piling work onto a host that is about to freeze. Subagent spawns are not
+cron firings, task-runner steps, background helper turns) while posture is CRITICAL,
+so the scheduler stops piling work onto a host about to freeze. Subagent spawns are not
 gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``),
 which the pull tool reports on the gate's own figure (:func:`spawn_floor_reading`)
 because the posture can read AMPLE while that floor holds every start. Direct user chat turns
@@ -96,6 +96,46 @@ def _read_available_gb() -> float:
     except Exception:  # pragma: no cover - defensive; probe must never raise
         logger.debug("available-memory probe failed", exc_info=True)
         return -1.0
+
+
+def _read_measured_available_gb() -> float:
+    """The tightest memory reading that was measured (GB), or ``-1.0``.
+
+    Like :func:`_read_available_gb`, but a cgroup level whose usage cannot be
+    read is left out instead of counted as zero headroom, so the host,
+    readable ancestor and agents-slice figures remain.
+    """
+    try:
+        from kiro_crew.subagent import _available_memory_gb
+
+        return _available_memory_gb(measured_only=True)
+    except Exception:  # pragma: no cover - defensive; probe must never raise
+        logger.debug("measured available-memory probe failed", exc_info=True)
+        return -1.0
+
+
+def _read_posture_available_gb(pressure_gb: float, critical_gb: float) -> float:
+    """:func:`_read_available_gb` for the posture, ``-1.0`` when a cgroup usage is unreadable.
+
+    The probe charges a cgroup whose limit is set but whose usage cannot be
+    read as zero headroom, so the spawn gate admits nothing it cannot measure.
+    The gate words that reading as "unknown"; a posture built from the same
+    0.0 GB would instead say memory is critically low. So the posture keeps
+    only what was measured: when those readings already classify as tight or
+    critical under *pressure_gb* and *critical_gb* that figure stands,
+    otherwise the posture is ``unknown``.
+    """
+    from kiro_crew.subagent import MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE, pop_memory_check_cause
+
+    pop_memory_check_cause()  # drop a cause left by any earlier reading
+    available_gb = _read_available_gb()
+    if pop_memory_check_cause() != MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE:
+        return available_gb
+    measured_gb = _read_measured_available_gb()
+    pop_memory_check_cause()  # the second read records the same cause again
+    if _classify(measured_gb, pressure_gb, critical_gb) in (POSTURE_TIGHT, POSTURE_CRITICAL):
+        return measured_gb
+    return -1.0
 
 
 #: What a kernel memory-pressure reading means for the user, said the same way
@@ -1238,7 +1278,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     if cfg is None:
         cfg = _load_config()
     pressure_gb, critical_gb = _resolve_thresholds(cfg)
-    available_gb = _read_available_gb()
+    available_gb = _read_posture_available_gb(pressure_gb, critical_gb)
     cpu_count = os.cpu_count() or 1
     load_per_cpu = _read_load_per_cpu(cpu_count)
     posture = _classify(available_gb, pressure_gb, critical_gb)
@@ -1399,7 +1439,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
     The single enforcement point layered on the advisory posture tier: a
     CRITICAL posture refuses; every other posture — ample, tight, and unknown —
     admits. Callers on the gated paths (scheduled cron firings, task-runner
-    steps) consult this once per admission decision; it reuses the
+    steps, background helper turns) consult this once per admission decision; it reuses the
     same cheap :func:`probe` the advisory surfaces use (fingerprint-cached
     config, one memory read, and a handful of single-value cgroup reads for the
     slice's task figure) and never scans processes. The task figure is reported,

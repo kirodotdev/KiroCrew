@@ -33,6 +33,8 @@ sign_submit_throttled() {
 }
 
 # submit_sign_task <request-json>
+# The body goes to awscurl on stdin: the universal app's manifest is over the
+# 128 KiB a single argv string can hold (the kernel refuses it at exec).
 # Prints the signTaskId on stdout. On failure prints the reason and the last
 # response on stderr and returns 1.
 submit_sign_task() {
@@ -43,8 +45,8 @@ submit_sign_task() {
 
   while :; do
     if ! response=$(awscurl --service signer-builder-tools --region us-west-2 \
-        -X POST -H "Content-Type: application/json" -d "$request" \
-        "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1); then
+        -X POST -H "Content-Type: application/json" -d @- \
+        "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1 < <(printf '%s' "$request")); then
       if ! sign_submit_throttled "$response"; then
         echo "ERROR: sign-task submission failed" >&2
         echo "$response" >&2

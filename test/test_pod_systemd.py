@@ -73,30 +73,29 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
         assert rt.unit_mod.unit_is_current(cfg) is True
         assert "installed pod template unit" in msg
 
+    @pytest.mark.parametrize("directive", ["RestartPreventExitStatus=", "LimitCORE="])
     def test_a_unit_missing_a_required_directive_is_stale(
-        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directive: str
     ) -> None:
         """The upgrade path for a directive that was ADDED rather than removed.
 
         `RestartPreventExitStatus` makes a boot refusal terminal instead of a 5s loop,
-        and an installed unit lacking it must be refreshed: systemd runs the installed
-        unit, not the template."""
+        `LimitCORE` keeps a crashed pod from waiting on its core, and an installed unit
+        lacking either must be refreshed: systemd runs the installed unit, not the
+        template."""
         unit_file = self._plane(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
         rt.install_backend(cfg)
         assert rt.unit_mod.unit_is_current(cfg) is True
 
         stripped = "\n".join(
-            line
-            for line in unit_file.read_text().splitlines()
-            if not line.startswith("RestartPreventExitStatus=")
+            line for line in unit_file.read_text().splitlines() if not line.startswith(directive)
         )
         unit_file.write_text(stripped + "\n")
 
-        assert rt.unit_mod.unit_is_current(cfg) is False, (
-            "a unit predating the restart-prevention directive must be refreshed, "
-            "not accepted as current"
-        )
+        assert (
+            rt.unit_mod.unit_is_current(cfg) is False
+        ), f"a unit predating {directive} must be refreshed, not accepted as current"
 
     def test_the_rendered_template_satisfies_its_own_required_directives(
         self, cfg: PodConfig
@@ -946,6 +945,8 @@ class TestSessionBus:
         etc = tmp_path / "etc"
         vendor.mkdir()
         etc.mkdir()
+        # The unit-path walk under test is the fallback for an unanswerable system manager.
+        monkeypatch.setattr(rt, "_system_load_state", lambda _unit: None)
         monkeypatch.setattr(rt, "_SYSTEMD_SYSTEM_UNIT_DIRS", (str(etc), str(vendor)))
         assert rt.user_manager_unit(4242) is None
 
@@ -983,25 +984,81 @@ class TestSessionBus:
         assert "Fix: loginctl enable-linger" in msg
         assert "cannot help" not in msg
 
-    def test_missing_bus_is_reported_without_spawning(
+    def test_missing_bus_spawns_only_the_system_unit_query(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr(rt, "IS_MACOS", False)
         monkeypatch.setattr(rt, "IS_WINDOWS", False)
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            rt.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/systemctl"
+        )
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+        monkeypatch.setattr(rt, "_SYSTEMD_SYSTEM_UNIT_DIRS", (str(tmp_path / "units"),))
         self._bus(monkeypatch, tmp_path / "run", exists=False)
         spawned: list[list[str]] = []
-        monkeypatch.setattr(rt, "_run", lambda cmd, **_kwargs: spawned.append(cmd))
+
+        def _failing_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            spawned.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus")
+
+        monkeypatch.setattr(rt, "_run", _failing_run)
 
         result = rt.probe_user_bus()
         assert result.status == rt.USER_BUS_NO_SESSION
         assert result.detail == ""
+        assert spawned == []
+        # Each gate asks the SYSTEM manager which remedy applies, once, and even a
+        # failed answer leaves the refusal PodBackendAbsent.
         with pytest.raises(rt.PodBackendAbsent):
             rt.require_systemd()
         with pytest.raises(rt.PodBackendAbsent):
             rt.require_backend()
-        assert spawned == []
+        show = ["/usr/bin/systemctl", "show", "--property=LoadState", "user@4242.service"]
+        assert spawned == [show, show]
+
+    def test_user_manager_unit_takes_the_system_managers_answer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """systemd decides presence: a masked unit is absent though its file is on disk."""
+        (tmp_path / "user@.service").touch()
+        monkeypatch.setattr(rt, "_SYSTEMD_SYSTEM_UNIT_DIRS", (str(tmp_path),))
+        monkeypatch.setattr(
+            rt.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/systemctl"
+        )
+        spawned: list[list[str]] = []
+
+        def _run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            spawned.append(cmd)
+            return answer
+
+        monkeypatch.setattr(rt, "_run", _run)
+
+        answer = _cp(stdout="LoadState=masked\n")
+        assert rt.user_manager_unit(4242) is None
+        assert spawned == [
+            ["/usr/bin/systemctl", "show", "--property=LoadState", "user@4242.service"]
+        ]
+        answer = _cp(stdout="LoadState=not-found\n")
+        assert rt.user_manager_unit(4242) is None
+        answer = _cp(stdout="LoadState=loaded\n")
+        assert rt.user_manager_unit(4242) == "user@4242.service"
+        # A manager that cannot answer falls back to the unit-path walk.
+        walked = f"{tmp_path}/user@.service"
+        answer = _cp(returncode=1, stderr="Failed to connect to bus: No such file or directory")
+        assert rt.user_manager_unit(4242) == walked
+        answer = _cp(returncode=1, stdout="LoadState=not-found\n")
+        assert rt.user_manager_unit(4242) == walked
+        for stdout in ("", "LoadState=\n", "loaded\n"):
+            answer = _cp(stdout=stdout)
+            assert rt.user_manager_unit(4242) == walked
+
+        def _hung(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            raise subprocess.TimeoutExpired(cmd, 0)
+
+        monkeypatch.setattr(rt, "_run", _hung)
+        assert rt.user_manager_unit(4242) == walked
 
     def test_systemctl_env_is_the_only_env_source_for_systemd_calls(self) -> None:
         """Anti-regression: a future direct ``subprocess.run(["systemctl", ...])``

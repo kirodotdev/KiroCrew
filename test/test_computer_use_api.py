@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -187,11 +188,9 @@ class TestPermissionProbe:
     async def test_a_successful_probe_is_parsed(self, monkeypatch):
         payload = json.dumps(
             {
-                "permissions": {
-                    "accessibility": "missing",
-                    "screen_recording": PERMISSION_GRANTED,
-                    "responsible_hint": "Grant them to Terminal",
-                }
+                "accessibility": "missing",
+                "screen_recording": PERMISSION_GRANTED,
+                "responsible_hint": "Grant them to Terminal",
             }
         ).encode()
         proc = MagicMock()
@@ -203,9 +202,11 @@ class TestPermissionProbe:
         proc.communicate = _communicate
 
         async def _spawn(*argv, **_kw):
-            # Fixed argv, no shell, nothing request-derived.
-            expected = (cu_api.DOCTOR_SUBCOMMAND, *cu_api.DOCTOR_ARGS)
-            assert argv[-len(expected) :] == expected
+            # Fixed argv, no shell, nothing request-derived: this interpreter running
+            # the probe module, never the ``kirocrew`` CLI, whose start-up alone can
+            # outlast the probe timeout.
+            assert argv[0] == sys.executable
+            assert argv[-2:] == ("-m", cu_api.PERMISSION_PROBE_MODULE)
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", _spawn)
@@ -873,8 +874,11 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously."""
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 21, f"scanner reached {len(coded)} coded sites, expected 21"
-        assert all(f.code_value for f in coded)
+        assert len(coded) == 20, f"scanner reached {len(coded)} coded sites, expected 20"
+        # The PUT's keystone-field refusal answers with the code ``keystone_patch``
+        # raised (``KeystoneFieldRefused.code``), and its pending-file refusal with
+        # ``PendingEditBlocksSave.code``, so those two sites have no literal.
+        assert sum(1 for f in coded if not f.code_value) == 2
 
     # -- PUT /api/computer-use/config --
 

@@ -36,7 +36,7 @@ function typeWithCaret(marked: string) {
   const caret = marked.indexOf('|')
   const value = marked.replace('|', '')
   const ta = input()
-  ta.focus()
+  act(() => { ta.focus() })
   fireEvent.change(ta, { target: { value } })
   ta.setSelectionRange(caret, caret)
   return ta
@@ -114,6 +114,23 @@ describe('ChatInput: Tab indents list lines', () => {
     const hint = screen.getByTestId('list-indent-hint')
     expect(hint.className).not.toContain('sr-only')
     expect(hint.textContent).toMatch(/Escape, then Tab/)
+  })
+
+  // A small manual height must not squeeze the text column under the textarea's
+  // 44px floor, or the textarea paints over the hint. jsdom has no layout, so
+  // this pins the two floors that keep the hint below the text.
+  it('a manually sized composer floors the box at min-content and the text column at 44px', () => {
+    localStorage.setItem('mc-input-height', '93')
+    renderWithProviders(<Host />)
+    const ta = typeWithCaret('- item|')
+    expect(screen.getByTestId('list-indent-hint').className).not.toContain('sr-only')
+    const wrapper = screen.getByTestId('input-wrapper')
+    expect(wrapper.style.height).toBe('93px')
+    expect(wrapper.classList.contains('min-h-min')).toBe(true)
+    expect(wrapper.classList.contains('min-h-0')).toBe(false)
+    const column = ta.parentElement!
+    expect(column.classList.contains('min-h-[44px]')).toBe(true)
+    expect(column.classList.contains('min-h-0')).toBe(false)
   })
 
   it('Dismiss hides the visible hint, keeps it for screen readers, and persists', () => {
@@ -213,6 +230,16 @@ describe('ChatInput: Tab indents list lines', () => {
     ta.setSelectionRange(2, 6)
     expect(tab(ta)).toBe(true)
     expect(ta.value).toBe('- item')
+  })
+
+  it('Tab over several lines indents each list line and keeps them selected', async () => {
+    renderWithProviders(<Host />)
+    const ta = typeWithCaret('- one\n- two|')
+    ta.setSelectionRange(2, '- one\n- two'.length, 'backward')
+    expect(tab(ta)).toBe(false)
+    expect(ta.value).toBe('  - one\n  - two')
+    await flushFrame()
+    expect([ta.selectionStart, ta.selectionEnd, ta.selectionDirection]).toEqual([4, '  - one\n  - two'.length, 'backward'])
   })
 
   it('Tab during IME composition is left alone', () => {

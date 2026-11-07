@@ -311,6 +311,15 @@ the session's ACP id, as `KIRO_SESSION_ID` in the environment and as
 them are left out. A subagent's Stop hooks get it too. Hooks-page hooks and
 other subagent events do not.
 
+When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
+Kiro Crew runs in the harness's place (as on KAS) also get
+`KIROCREW_SESSION_MODEL`: the model that session runs on, read when the hook
+fires, so a model switch shows from the next hook on. It is left out while the
+session has not reported a model, as on Auto, where the server picks one per
+turn. When the engine falls back to another model inside a turn, the turn's
+tool and Stop hooks name the model it fell back to, even on Auto. Spec hooks kiro-cli runs itself, channel turns and subagent runs do not
+get it.
+
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead
 — `PATH`, the home and temp directories, locale, TLS trust, and `KIROCREW_HOME`.
@@ -448,6 +457,13 @@ now, while the rows above them are the spec as last written, so an edit you have
 not refreshed yet shows on this list first. A hook that fails validation is not
 listed; the log and the security event log name it.
 
+Both the hooks directory and `agent.kiro_hooks` are read when Kiro Crew writes
+the agent config: at start, and after a dashboard change that rewrites it, such as
+installing a skill or an MCP server. To pick up a script you just added, or an
+edit to `agent.kiro_hooks`, without a restart, press **Rescan hooks folder** on
+that card. New chats use the list it then shows; a script that is not on it was
+rejected, and the Logs page says why. Only the dashboard owner can rescan.
+
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.
 
@@ -489,6 +505,29 @@ To use one, type `@` in the composer and pick it by name — the same mention
 syntax skills use. From the Prompts tab, **Send to** picks the destination
 instead: a new chat, or one of your open sessions. Either way the prompt's name
 lands in the composer as `@<name>` and sends.
+
+A global prompt can also be a slash command. Add `slash_command: true` to its
+frontmatter and `~/.kiro/prompts/review-cr.md` answers to `/review-cr`, with a row
+in the composer's `/` menu (its `description:`, or else its first line). It works
+wherever the message reaches Kiro Crew as text, such as the dashboard, Telegram, a
+cron job or a subagent. Slack and Discord keep a leading `/` for their own
+commands, so it does not reach Kiro Crew from there. Webex answers a name made
+only of letters (`/standup`) as an unknown command, but passes one with a hyphen
+(`/review-cr`). Text typed after the command replaces `{arg}` in the prompt, or
+is added at the end when the prompt has no `{arg}`:
+
+```markdown
+---
+description: Review a code change
+slash_command: true
+---
+Review the change at {arg}. List blocking issues first.
+```
+
+The file name starts with a letter and holds only lowercase letters, digits and
+hyphens. A name some surface already uses as a command (`/help`, `/new`,
+`/review`, a channel's own commands) is not turned into one, so the command
+means the same thing everywhere.
 
 The difference from a steering file is when it applies. A steering document is
 loaded without you asking for it, as far as its mode and backend allow; a

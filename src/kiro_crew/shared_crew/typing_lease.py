@@ -85,11 +85,24 @@ def clamp_idle_seconds(raw: object) -> int:
     return max(lo, min(hi, int(raw)))
 
 
+def _lease_ids(principal: Principal, owner_id: str) -> frozenset[str]:
+    """The ids that name *principal* for the lease.
+
+    The relayed owner is read as the owner at the machine, as People reads them, so
+    their relay tab and every local tab (``local-app``, ``local-startup``, the
+    configured owner) are one holder. ``crew_mode.operator_ids`` itself is unchanged,
+    so no request-time gate widens.
+    """
+    from kiro_crew.shared_crew.identity import _people_principal
+
+    return operator_ids(_people_principal(principal), owner_id)
+
+
 def same_person(a: Principal, b: Principal, *, owner_id: str = "") -> bool:
     """Whether *a* and *b* are one person for the lease."""
     if a.id == b.id:
         return True
-    return b.id in operator_ids(a, owner_id) or a.id in operator_ids(b, owner_id)
+    return b.id in _lease_ids(a, owner_id) or a.id in _lease_ids(b, owner_id)
 
 
 def can_hold(principal: Principal) -> bool:
@@ -290,7 +303,7 @@ class TypingLeaseRegistry:
     # -- internals -------------------------------------------------------------
 
     def _person_ids(self, principal: Principal) -> list[str]:
-        return sorted(operator_ids(principal, self._owner_id) | {principal.id})
+        return sorted(_lease_ids(principal, self._owner_id) | {principal.id})
 
     def _drop_conn(self, conn_id: str, reason: str, *, only: str = "") -> LeaseChange:
         now = self._clock()

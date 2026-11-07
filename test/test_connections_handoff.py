@@ -58,6 +58,8 @@ def _provider(slug: str = "notion") -> Provider:
         "slug": slug,
         "mcp_url": f"https://mcp.{slug}.test/mcp",
         "l0_expectations": {"dcr": True},
+        "launch_gate_passed": True,
+        "vendor_approval_pending": False,
     }
 
 

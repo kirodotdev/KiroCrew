@@ -181,7 +181,8 @@ async def api_crons(request: web.Request) -> web.Response:
                 "agent_sequence": [_r(a or "") for a in (j.agent_sequence or [])],
                 "model": _r(j.model or "") or None,
                 "channel": _r(j.channel or "") or None,
-                "approval_mode": _r(j.approval_mode or "") or None,
+                # "" not null: the stored default, and a value PATCH accepts.
+                "approval_mode": _r(j.approval_mode or ""),
                 # The chat session that owns this job. Ownership decides chat-side
                 # reachability: cron_list only shows a session its own jobs, so a job
                 # whose key is empty (None here) is invisible to every chat session
@@ -203,6 +204,7 @@ async def api_crons(request: web.Request) -> web.Response:
                 # to the store's True and a save would silently re-enable the
                 # persistent session on a job the user set to ephemeral.
                 "persistent_session": j.persistent_session,
+                "new_chat_per_run": j.new_chat_per_run,
                 # The edit form's auto-pause field reads it so a save shows the
                 # job's real limit; 0 means the job never auto-pauses.
                 "auto_pause_after_failures": j.auto_pause_after_failures,
@@ -262,6 +264,9 @@ async def api_crons(request: web.Request) -> web.Response:
                 ),
                 "secret_env_pending_ts": (j.secret_env_pending_ts or None) if _owner_view else None,
                 "last_result": _r(j.last_result or "") or None,
+                # When `last_result` was produced (epoch), so a notification can
+                # tell whether the job's result is still the one it carries.
+                "last_result_ts": j.last_result_ts or None,
                 "last_error": _r(j.last_error or "") or None,
                 "is_running": live[j.id][1],
                 "running_since": live[j.id][2],

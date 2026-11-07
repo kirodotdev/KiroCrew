@@ -154,6 +154,13 @@ card-initiated mint (`idle|minting|waiting|granted|failed|expired`, with
 `oauth_url` only while `waiting`), and the frontend keeps polling it at its own
 cadence. Approval-URL ownership stays with the mint engine.
 
+The POST, like `POST /api/connections/test`, refuses a registry provider the
+gallery hides (`registry.is_visible`, the predicate behind `get_visible_providers`)
+with the same 400 `unknown_provider` as an unknown slug, so a stale tab or a
+hand-built request cannot start a sign-in or a Test session for it. Cancel and
+Disconnect still reach every registry provider, so a grant stored before its
+provider was hidden stays revocable.
+
 A cold mint whose URL is rejected by `oauth_url_contains_credential` disposes
 that dedicated process, protected PID, and ephemeral spec, then creates one
 fresh dedicated attempt with a new provider OAuth state. The retry keeps the
@@ -1214,6 +1221,19 @@ for chats that support it and some chats cannot use it yet. A Kiro CLI pick can 
 v3 relay), so naming a switch would point at a route that does not help.
 An unreadable config makes no
 claim.
+
+While `agent.acp_backend` is KAS (`chat_backend_is_kas`), every other connected row
+carries `signInInChat`: the card's grant is real for Kiro CLI chats, and a KAS chat
+signs in on its own once the user's message names the server (`acp-client.md`). The
+card shows it in the same "In chats" line, or inside the shared-grant tip: "Chats
+sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
+copy it names no harness: the line shows only while chats run on KAS, so the
+reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
+
+A row whose sign-in Crew holds (`connections.crew_oauth` on KAS) carries
+`crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
+CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
+it with 409 `crew_oauth_test_unsupported`.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

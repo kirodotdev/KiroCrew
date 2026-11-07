@@ -142,6 +142,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelRedaction.tsx': 'security',
   'SecurityPanelLayers.tsx': 'security',
   'SecurityPanelGovernance.tsx': 'security',
+  // The review cards for settings files edited outside the dashboard, which
+  // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
+  // the hand-written `security.config-pending` entry stays anchored to its source.
+  'SecurityPanelConfigPending.tsx': 'security',
   'ConnectionsPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
@@ -239,6 +243,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
   // `work_ledger.remote_dispatch` switch is a Developer-tab row.
   'RemoteDispatchCard.tsx': DEVELOPER_PREVIEWS,
+  // The edition rows FeaturePreviewsSection mounts. It only places
+  // edition-registered components, so it has no extractable primitive.
+  'EditionPreviewRows.tsx': DEVELOPER_PREVIEWS,
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the
@@ -250,6 +257,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
   // The default-folder picker ChatPanel's Sessions page mounts.
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The per-app session mutes NotificationsPanel's Sources page mounts. Each row
+  // is labelled with the app's own name, a dynamic label the extractor skips;
+  // mapped so a static control added to it lands on the Sources deep link.
+  'AppSessionMuteSection.tsx': { tab: 'notifications', params: { sub: 'sources' } },
   // The Web Push toggle NotificationsPanel's Desktop alerts page mounts.
   'NotificationsPushSection.tsx': { tab: 'notifications', params: { sub: 'alerts' } },
 }

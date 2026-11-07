@@ -566,7 +566,7 @@ class TestADismissalHoldsOnBothReaders:
         """The gate that keeps one dismissal record authoritative at a time.
 
         Pinned on the source because the branch needs a real aiohttp WebSocket. It pins
-        which reader each branch reaches: a reader handed to :func:`asyncio.to_thread` is
+        which reader each branch reaches: a reader handed to ``run_in_executor`` is
         named, not called.
         """
         import ast
@@ -647,7 +647,7 @@ class TestADismissalHoldsOnBothReaders:
             f"corrected ({bound[0]}), so a corrected card is drawn once"
         )
 
-        # Every blocking read sits INSIDE the worker handed to asyncio.to_thread.
+        # Every blocking read sits INSIDE the worker handed to run_in_executor.
         # Each of these lists the crew-log root, stats it, and on a cold cache
         # opens a header file per unit, so one left in the branch body is a
         # filesystem walk per slot on the loop that carries chat and heartbeats.
@@ -669,10 +669,10 @@ class TestADismissalHoldsOnBothReaders:
             for node in ast.walk(ast.Module(body=gate.body, type_ignores=[]))
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "to_thread"
+            and node.func.attr == "run_in_executor"
             and workers[0].name in _names([ast.Expr(value=arg) for arg in node.args])
         ]
-        assert len(handed) == 1, "the worker is no longer the one thing handed to to_thread"
+        assert len(handed) == 1, "the worker is no longer the one thing handed to run_in_executor"
         # And none of them is ALSO reached from the branch body outside it, which
         # is how the walk creeps back onto the loop while the worker still exists.
         on_loop = _names([stmt for stmt in gate.body if not isinstance(stmt, ast.FunctionDef)])

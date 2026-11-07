@@ -268,6 +268,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _permissions,
         derive_members,
         get_current_login,
+        get_current_login_uncached,
         get_repo_permissions,
         list_closed_issues,
         list_contributed_repos,

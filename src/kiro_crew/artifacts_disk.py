@@ -58,31 +58,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.artifacts")
 
 
-# ── Constants ────────────────────────────────────────────────────────────────
-
-#: Maximum number of versions retained per artifact (older versions are pruned
-#: when the cap is exceeded).
+#: Maximum number of versions retained per artifact; older ones are pruned.
 MAX_VERSIONS = 50
 
-#: Maximum size of an artifact's content blob, in bytes. Locally-authored
-#: widget HTML rarely tops a few KB, but cloned/pulled remote artifacts (rich
-#: HTML reports, CSVs) routinely exceed 1 MiB — at 1 MiB clone/pull would
-#: silently fail on exactly the shared-HTML artifacts bidirectional sync
-#: targets. 25 MiB is large enough to bring those down locally while still
-#: refusing truly unbounded content. Owned by
-#: ``constants.ARTIFACT_MAX_CONTENT_BYTES`` (a leaf) so
-#: ``validation.ARTIFACT_CONTENT_MAX`` -- the MCP tool-arg cap -- reads the same
-#: name without importing this module; re-exported here for the store's callers.
+#: Maximum size of an artifact's content blob, in bytes. Cloned or pulled remote
+#: artifacts (rich HTML reports, CSVs) often exceed 1 MiB, so the cap is large
+#: enough for them while still refusing unbounded content. Defined in the leaf
+#: ``constants.ARTIFACT_MAX_CONTENT_BYTES`` so ``validation.ARTIFACT_CONTENT_MAX``
+#: (the MCP tool-arg cap) reads the same value without importing this module.
 MAX_CONTENT_BYTES = ARTIFACT_MAX_CONTENT_BYTES
 
 #: Retention cap for auto-registered widget artifacts (see
-#: :mod:`kiro_crew.widget_artifacts`). Every chat-emitted ``<mcwidget>`` becomes
-#: an artifact automatically, so without a cap a chat-heavy user accumulates one
-#: three-file directory per throwaway widget forever and every library listing
-#: is an O(N) scan over them. Past this many, the oldest STILL-UNPINNED
-#: auto-registered widgets are deleted; pinning one exempts it permanently. Sized
-#: so a long working session's widgets all remain addressable for later
-#: iteration while the tail is reclaimed.
+#: :mod:`kiro_crew.widget_artifacts`). Every chat-emitted ``<mcwidget>`` becomes an
+#: artifact, so without a cap they pile up and every listing scans them all. Past
+#: this many, the oldest still-unpinned ones are deleted; pinning exempts one.
 MAX_AUTO_WIDGET_ARTIFACTS = 200
 
 #: Maximum number of comments retained per artifact (FIFO, like versions/events).
@@ -92,16 +81,11 @@ MAX_AUTO_WIDGET_ARTIFACTS = 200
 #: are dropped (a thread root + its replies together), never a reply orphaned.
 MAX_COMMENTS_PER_ARTIFACT = 500
 
-#: Max lifecycle events retained per artifact. FIFO eviction keeps meta.json
-#: bounded — at ~150 bytes per event entry, this caps each meta file at
-#: roughly 75KB on top of the static metadata, which is well within the
-#: tolerable read cost.
+#: Max lifecycle events retained per artifact (FIFO). At ~150 bytes per event this
+#: keeps the events in meta.json to about 75KB.
 MAX_EVENTS_PER_ARTIFACT = 500
 
 _VERSION_FILE_RE = re.compile(r"^v(\d+)\.html$")
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
 
 
 def _now_iso() -> str:
@@ -128,18 +112,10 @@ def _validate_content(content: str) -> str:
     try:
         encoded = content.encode("utf-8")
     except UnicodeEncodeError as exc:
-        # The MEASUREMENT is an encode, and content holding an unpaired surrogate
-        # cannot be encoded at all. So the one line that asks how big the content
-        # is also decides whether it can exist, and this function's whole job is
-        # to answer "can this be stored" with an ``ArtifactValidationError`` when
-        # the answer is no. Letting ``UnicodeEncodeError`` escape instead turns an
-        # artifact a caller can fix into a 500 at every caller that answers a bad
-        # artifact with a 400, and a file write meets the same wall: nothing
-        # storable comes out of such content.
-        #
-        # Answered HERE rather than per kind or per route, because the promise is
-        # this function's and every path through the store makes it -- ``create``,
-        # ``update`` and ``settle_blank`` all open with this call.
+        # An unpaired surrogate cannot be encoded, so it can never be stored.
+        # Raise ``ArtifactValidationError`` (a 400) rather than let
+        # ``UnicodeEncodeError`` escape as a 500. Answered here because
+        # ``create``, ``update`` and ``settle_blank`` all open with this call.
         raise ArtifactValidationError(
             "content holds an unpaired surrogate code point "
             f"({content[exc.start:exc.start + 1]!r} at index {exc.start}) that UTF-8 "
@@ -221,15 +197,11 @@ def _owner_only_tmp_opener(path: str, flags: int) -> int:
 
 
 # The errnos that mean "this descriptor or filesystem has no fsync", as opposed
-# to "the writeback failed". Only the first class may be ignored: a descriptor
-# that cannot be synced on a given platform must not make the store unusable
-# there. Built with ``getattr`` because the errno module only defines the name
-# the host's C library has, and the set collapses duplicates on the platforms
-# where ENOTSUP and EOPNOTSUPP share a value.
+# to "the writeback failed"; only these may be ignored. Built with ``getattr``
+# because the errno module only defines the names the host's C library has.
 #
-# The import is aliased private (``_errno``) as in :mod:`kiro_crew.artifacts`:
-# the facade's ``__all__`` is derived from what it binds, so a bare ``import
-# errno`` would publish the errno module as part of the store's facade.
+# ``errno`` is imported as ``_errno`` because the facade's ``__all__`` is derived
+# from what it binds, and a bare ``import errno`` would publish the module.
 _SYNC_UNSUPPORTED_ERRNOS = frozenset(
     code
     for code in (
@@ -242,24 +214,13 @@ _SYNC_UNSUPPORTED_ERRNOS = frozenset(
 def _sync_before_publish(fh: Any) -> None:
     """Flush *fh* to the device before its temp file is renamed into place.
 
-    A temp file plus a rename makes the SWAP atomic; it does not make the bytes
-    durable. The rename can land while the content is still only in the page
-    cache, so a crash leaves the artifact's name pointing at a file the kernel
-    never finished writing -- a torn read that the atomic rename was supposed to
-    rule out. Flushing the Python buffer and then ``fsync`` is what makes "the
-    rename published real bytes" true rather than likely.
+    A rename makes the swap atomic but not durable: without ``fsync`` a crash can
+    leave the name pointing at bytes still only in the page cache.
 
-    The failure this raises on is the one that matters. A filesystem with delayed
-    allocation reports a full disk or a failing device at ``fsync``, not at
-    ``write``; treating that as advisory would let the caller's rename replace
-    the last good file with a partial one and report success, which is the exact
-    data loss the sync is here to prevent. So a writeback error propagates, the
-    caller never reaches its rename, and the previous version stays published.
-
-    An errno in :data:`_SYNC_UNSUPPORTED_ERRNOS` says the platform has no sync
-    for this descriptor rather than that the write failed, and that is logged and
-    ignored: the atomicity the rename gives still holds where the durability
-    cannot be had.
+    A writeback error propagates, because delayed-allocation filesystems report a
+    full disk at ``fsync``, not ``write``; the caller then skips its rename and the
+    previous version stays published. An errno in :data:`_SYNC_UNSUPPORTED_ERRNOS`
+    means the platform has no sync for this descriptor, and is logged and ignored.
     """
     fh.flush()
     try:
@@ -279,14 +240,9 @@ def _write_tmp_then_publish(
 ) -> None:
     """Write *tmp*, sync it to the device, then rename it onto *resolved*.
 
-    The temp file is the write's alone; nothing publishes it until the rename, so
-    a failure before the rename must not leave it behind. A writeback error
-    reported at ``fsync`` (:func:`_sync_before_publish`) is exactly such a
-    failure: on a full disk the sync raises, the rename is skipped, and the
-    half-written ``meta.json.tmp`` would otherwise sit on a disk that is already
-    out of room. Unlink it on any error before the rename, best-effort -- the
-    original error is what the caller must see, so a failure to clean up is
-    swallowed.
+    On any error before the rename (such as a full disk reported at ``fsync``) the
+    half-written temp file is unlinked, best-effort: a cleanup failure is
+    swallowed so the caller sees the original error.
     """
     try:
         with open(tmp, mode, opener=open_kwargs.pop("opener", None), **open_kwargs) as fh:
@@ -408,12 +364,9 @@ def _write_artifact(self: ArtifactStore, art: Artifact, content: str) -> None:
 def _write_image_artifact(self: ArtifactStore, art: Artifact, data: bytes) -> None:
     """Write an image artifact: empty text body + the raster asset sidecar.
 
-    Mirrors :meth:`_write_artifact` so image records share the exact same
-    directory shape (``current.html`` + ``versions/`` + ``meta.json``) and
-    every text-store helper — ``get``, version snapshotting, ``_rmtree``
-    delete — works on them unchanged. ``current.html`` is written empty per
-    the image-kind contract; the bytes go to ``asset.<ext>`` through the
-    gated byte writer.
+    Mirrors :meth:`_write_artifact` so image records share the same directory
+    shape and every text-store helper works on them unchanged. The bytes go to
+    ``asset.<ext>`` through the gated byte writer.
     """
     adir = self._artifact_dir(art.slug)
     self._mkdirs(adir / "versions")  # creates adir too

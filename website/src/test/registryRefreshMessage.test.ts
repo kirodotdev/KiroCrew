@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../i18n/t', async importOriginal => {
   const orig = await importOriginal<typeof import('../i18n/t')>()
@@ -9,6 +9,7 @@ vi.mock('../i18n/t', async importOriginal => {
   }
 })
 
+import { i18next } from '../i18n/all'
 import { registryRefreshFailureMessage } from '../components/appstore/registryRefreshMessage'
 
 describe('registryRefreshFailureMessage', () => {
@@ -45,5 +46,16 @@ describe('registryRefreshFailureMessage', () => {
       'refresh_sign_in_refused_no_host {"names":"a"}',
       'could_not_refresh_still_showing_last_synced {"names":"a"}',
     ].join(' '))
+  })
+})
+
+describe('registryRefreshFailureMessage in Japanese', () => {
+  afterEach(async () => { await i18next.changeLanguage('en') })
+
+  it('joins registry names with the Japanese list mark, not an English comma', async () => {
+    await i18next.changeLanguage('ja')
+    expect(registryRefreshFailureMessage({
+      ok: false, failed: ['a', 'b', 'c'], results: [],
+    })).toBe('could_not_refresh_still_showing_last_synced {"names":"a、b、c"}')
   })
 })

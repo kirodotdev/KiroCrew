@@ -322,7 +322,12 @@ def _disabled_provider_slugs() -> set[str]:
 
 def warm_spec_providers() -> list[Provider]:
     """The spec UNIVERSE: every provider the shared process ENUMERATES at spawn."""
+    from kiro_crew.connections import crew_oauth
+
     disabled = _disabled_provider_slugs()
+    # A Crew-owned sign-in (``connections.crew_oauth``) binds the provider's
+    # registered callback port itself, so the shared process must not hold it.
+    disabled |= {s for s in crew_oauth.SUPPORTED_SLUGS if crew_oauth.manages(s)}
     return [
         provider
         for provider in get_visible_providers()

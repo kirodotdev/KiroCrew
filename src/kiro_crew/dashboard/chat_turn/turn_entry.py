@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _session_stop_generation_for,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import _reset_segment_copy
+    from kiro_crew.dashboard.chat_turn.steer_queue import _mark_held_steers_possibly_delivered
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_stats import _turn_clock
 
@@ -733,8 +734,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # at turn end — it never fails the turn and never re-arms recovery.
     _activity_after_terminal = 0
     turn._activity_after_terminal = _activity_after_terminal
-    # A person's steer entered this turn (admitted into the live stream by
-    # ``chat_delivery.steer_into_running_turn``, which registers it in
+    # The backend echoed consumption of a person's steer (admitted into the live
+    # stream by ``chat_delivery.steer_into_running_turn``, which registers it in
     # ``slot._pending_steers``). Any text after that may be the model's answer
     # to that person — including text after a quiet end the model reached once
     # it had read the steer — so the post-terminal text drop in _on_text_chunk (stream_chunks)
@@ -743,6 +744,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
     turn._person_steered_turn = _person_steered_turn
+    # Post-terminal text chunks that arrived while a steer was pending: streamed by
+    # _release_held_text (stream_chunks), dropped if the turn ends and requeues the steer.
+    _held_after_terminal: list[Any] = []
+    turn._held_after_terminal = _held_after_terminal
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn
@@ -791,6 +796,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # by the poisoned-conversation canary in _on_acp_error_card, the typed
     # unsupported-history-image recovery or the thinking-binding rebuild in acp_recovery.py;
     # their cross-cycle streak and one-shot live in ``_escalation``.
+    # A discarded conversation cannot hold this turn's prompt, so drained merge
+    # cards return for the fresh one (_run_chat's ``_native_session_lacks_the_prompt``).
     needs_conversation_discard = False
     turn.needs_conversation_discard = needs_conversation_discard
     _escalation = PoisonedConversationEscalation(slot)
@@ -1040,6 +1047,12 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         or getattr(getattr(_lc, "_handle", None), "_awaiting_permission", False)
     )
     slot._last_turn_children_announced = _children_unfinished_final
+    # A held steer whose write stalled is known only to the client, so it is
+    # read before the ref is dropped and the teardown requeues it marked.
+    try:
+        _mark_held_steers_possibly_delivered(slot, _lc)
+    except Exception:
+        logger.debug("held steer delivery check at release failed", exc_info=True)
     # Steer handle: turn is over, drop the live client ref so a late steer
     # can't target a dead session (the route also re-checks running state).
     slot._acp_client = None

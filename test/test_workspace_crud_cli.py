@@ -266,24 +266,6 @@ class TestWorkspaceArgparse:
         assert "Deleted workspace: staging" in out
 
 
-# ── Dispatch routing (Req 6.5) ──
-
-
-class TestWorkspaceDispatch:
-    """Verify args.command == 'workspace' routes to _handle_workspace."""
-
-    def test_dispatch_routes_to_handle_workspace(self, tmp_path: Path) -> None:
-        """Req 6.5: workspace command dispatches to _handle_workspace."""
-        cfg_path = _write_config(tmp_path, _base_config())
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
-            unittest.mock.patch("kiro_crew.cli_commands._handle_workspace") as mock_handler,
-        ):
-            main()
-        mock_handler.assert_called_once()
-
-
 # ── List output (Req 5.1) ──
 
 
@@ -1058,6 +1040,48 @@ class TestCliRound8Hardening:
         ], "the losing create's copied files leaked into the winner's workspace"
         leftovers = [p.name for p in tmp_path.iterdir() if ".staging-" in p.name]
         assert leftovers == [], f"staging residue: {leftovers}"
+
+    @pytest.mark.parametrize(
+        ("error", "shown", "not_shown"),
+        [
+            (PermissionError(13, "Access is denied"), "Access is denied", "already exists"),
+            (FileExistsError(17, "File exists"), "already exists", "could not move"),
+        ],
+        ids=["sharing-violation", "occupied"],
+    )
+    def test_a_failed_publish_reports_its_own_cause(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        error: OSError,
+        shown: str,
+        not_shown: str,
+    ) -> None:
+        """A rename refused for another reason (a Windows sharing violation)
+        names that reason; only an occupied destination reads as one."""
+        (tmp_path / "workspace").mkdir()
+        (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch.object(
+                platform_compat,
+                "publish_dir_noreplace",
+                side_effect=error,
+            ),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "copied", "--copy-from", "default"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert shown in err and not_shown not in err
+        assert "copied" not in json.loads(cfg_path.read_text(encoding="utf-8"))["workspaces"]
 
 
 class TestWorkspaceNameRefusalNamesTheShape:

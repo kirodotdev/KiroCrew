@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew.acp.kas_hook_mcp import (
     McpToolNames,
+    _bare_mcp_resources,
     _hook_mcp_resources,
     _names_mcp_tools,
     auto_approved_mcp_servers,
@@ -80,7 +81,10 @@ def hook_gated_capabilities(
       wildcard, which can meet a tool the cache does not list yet, a tool that is
       not cached) covers that server's tools, ``<server>/*``.
     * Any other literal covers everything: it names no tool this table knows, so
-      it may be a harness's own name for a built-in one.
+      it may be a harness's own name for a built-in one. Unless it is a bare name
+      a cached tool of an auto-approved server answers to
+      (:func:`_bare_mcp_resources`): then it names that MCP tool, and only the
+      resources that function lists are covered.
     * A glob covers each built-in capability it matches by tool or capability
       name, and MCP, whose tool names at the gate this table does not spell.
       A glob that matches no name this module spells (``Fetch*``) covers
@@ -108,7 +112,13 @@ def hook_gated_capabilities(
             continue
         builtins = _builtins_matched(matcher)
         if builtins is None:
-            return set(HOOK_GATEABLE_CAPABILITIES)
+            bare = None
+            if not _GLOB_METACHARACTERS.intersection(matcher):
+                bare = _bare_mcp_resources(matcher, mcp_servers, mcp_tool_names)
+            if bare is None:
+                return set(HOOK_GATEABLE_CAPABILITIES)
+            covered.update(HOOK_GATED_MCP_PREFIX + r for r in bare)
+            continue
         covered.update(builtins)
         if _GLOB_METACHARACTERS.intersection(matcher):
             covered.add(_MCP_CAPABILITY)

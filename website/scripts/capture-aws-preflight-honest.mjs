@@ -142,7 +142,7 @@ const openRow = async (theme, title) => {
   await stubDashboardApi(page, { extra, theme })
   logPageProblems(page)
   await page.goto(`${base}/settings?tab=instances`, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('button', { name: /Set up a new one/i }).click()
+  await page.getByRole('radio', { name: /Set up a new one/i }).click()
   const row = page.locator('li').filter({ has: page.getByText(title, { exact: true }) })
   await row.first().waitFor({ timeout: 20000 })
   await page.waitForTimeout(400)

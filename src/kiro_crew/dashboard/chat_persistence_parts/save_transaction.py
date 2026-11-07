@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         queue_persist_signature,
         register_guarded_history_write,
         slot_history_key,
+        transcript_lock_stems,
     )
 
 
@@ -162,6 +163,8 @@ def _save_slot_to_history(
     after_commit_under_lock: Callable[[], None] | None = None,
     refuse_stale_empty_merge: bool = False,
     turn_timeout_override: tuple[int | None] | None = None,
+    autocompact_override: tuple[float | None] | None = None,
+    after_commit_on_transcript: Callable[[], None] | None = None,
     retired_rows: list[dict] | None = None,
     takeover_basis: TakeoverBasis | None = None,
 ) -> bool:
@@ -299,7 +302,7 @@ def _save_slot_to_history(
     if snapshot is None:
         return False
     window, queue_snapshot, queue_candidates, disk_older = snapshot
-    note_auth_key, history_key = _write_guards.routing_snapshot(slot)
+    note_auth_key, history_key, routed_binding = _write_guards.routing_snapshot(slot)
     if expected_history_key is not None and history_key != expected_history_key:
         # The caller authorized a write against a specific transcript and the
         # slot's routing moved before this snapshot (a rebind on the event
@@ -377,6 +380,9 @@ def _save_slot_to_history(
                 muted_override=muted_override,
                 after_commit_under_lock=after_commit_under_lock,
                 turn_timeout_override=turn_timeout_override,
+                autocompact_override=autocompact_override,
+                after_commit_on_transcript=after_commit_on_transcript,
+                routed_binding=routed_binding,
             )
             if refusal is not None:
                 logger.warning("Slot %s empty-window save refused: %s", slot.key, refusal)
@@ -402,6 +408,24 @@ def _save_slot_to_history(
         and not rewrite
     ):
         return True
+    observed_history_key = str(getattr(slot, "_disk_meta_key", "") or "")
+    if observed_history_key and not _write_guards._same_transcript(
+        observed_history_key, history_key
+    ):
+        # A drifted save verifies the observed source A before committing target B.
+        # Hold both physical lock sets across that whole check-then-write span so
+        # delete_session(A) cannot unlink A after verification and let its rows be
+        # published into B. locked_stems deduplicates and sorts the union, matching
+        # every transcript writer's order and avoiding cross-key deadlock.
+        save_lock = state.conversation_log.locked_stems(
+            (
+                *transcript_lock_stems(observed_history_key),
+                *transcript_lock_stems(history_key),
+            )
+        )
+    else:
+        # Keep the ordinary one-transcript path on its existing lock.
+        save_lock = state.conversation_log._locked(history_key)
     try:
         # Hold the SAME per-session cross-process lock that ``append`` /
         # ``append_off_loop`` / rotate / rewrite / metadata mutations take, across
@@ -411,11 +435,11 @@ def _save_slot_to_history(
         # result appended to the originating dashboard session) can land between
         # this save's snapshot of the file and its ``atomic_write`` — the save
         # then replaces the file with meta+frozen+window and silently deletes the
-        # acknowledged append. ``_locked`` serializes the two so neither is lost.
-        # On the event loop ``_locked`` makes ONE non-blocking acquire and raises
-        # ``HistoryLockTimeout`` under contention (never blocking the loop); the
-        # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
-        # so they take the patient acquire path instead of dropping the save.
+        # acknowledged append. The selected lock serializes the writers so neither
+        # is lost. On the event loop it makes ONE non-blocking acquire per stem and
+        # raises ``HistoryLockTimeout`` under contention (never blocking the loop);
+        # ``save_slot_off_loop`` routes on-loop callers to a worker thread so they
+        # take the patient acquire path instead of dropping the save.
         #
         # The claim scope opens BEFORE the lock and closes after it: the lock
         # serializes writers on the transcript, while the claim orders this
@@ -433,7 +457,7 @@ def _save_slot_to_history(
                 expected_slot_name=expected_slot_name,
                 takeover_basis=takeover_basis,
             ) as _claim,
-            state.conversation_log._locked(history_key),
+            save_lock,
         ):
             # ── Swap-won guard ──────────────────────────────────────────────
             # A save copies the window before it waits for this lock, and a
@@ -484,6 +508,7 @@ def _save_slot_to_history(
                 meta_readable=_meta_readable,
                 line_corrupt=_line_corrupt,
                 history_key=history_key,
+                conv_log=state.conversation_log,
             ):
                 return False
             # ── Recreate-won guard ──────────────────────────────────────────
@@ -532,6 +557,9 @@ def _save_slot_to_history(
                     mutes_opened_override=mutes_opened_override,
                     muted_override=muted_override,
                     turn_timeout_override=turn_timeout_override,
+                    autocompact_override=_metadata_line.autocompact_fold(
+                        slot, autocompact_override, routed_binding, history_key
+                    ),
                 )
             )
             meta_str = json.dumps(meta_line) + "\n"
@@ -640,9 +668,13 @@ def _save_slot_to_history(
             # flush -- which needs this same lock to serialize the slot -- cannot
             # observe the still-prior flag and overwrite the committed value.
             # This is the full-save twin of the empty-window merge's
-            # ``after_commit_under_lock`` hook; one or the other runs, never both.
+            # ``after_commit_under_lock`` hook; one save path or the other runs,
+            # never both. Both hooks run on every commit here; only the merge
+            # skips the first for a rebound slot (see ``merge_empty_window``).
             if after_commit_under_lock is not None:
                 after_commit_under_lock()
+            if after_commit_on_transcript is not None:
+                after_commit_on_transcript()
             _record_pending_memory_mode(pending_mode_target, _mode)
             # The write committed: the deferred-note drop records it retired
             # are now safe to consume (see ``build_full_line``). Discard is
@@ -704,6 +736,12 @@ def _save_slot_to_history(
                 # writes — even when the carried-forward metadata is legacy and
                 # has no ``created_at`` for the identity string above.
                 slot._disk_meta_observed = True
+                # The key this identity was observed under is the target just
+                # written — this block is already gated on
+                # ``slot_history_key(slot) == history_key``. The delete
+                # witnesses compare it against the live target to tell a routing
+                # drift apart from a delete-recreate.
+                slot._disk_meta_key = history_key
                 slot._frozen_prefix_cache = _post_write_cache
                 if queue_line_is_ours:
                     # The queued prompts are now on disk, so the flush's drift
@@ -744,6 +782,8 @@ async def save_slot_off_loop(
     muted_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
+    autocompact_override: tuple[float | None] | None = None,
+    after_commit_on_transcript: Callable[[], None] | None = None,
     retired_rows: list[dict] | None = None,
     takeover_basis: TakeoverBasis | None = None,
     verdict_source: str | None = None,
@@ -918,6 +958,8 @@ async def save_slot_off_loop(
             muted_override=muted_override,
             after_commit_under_lock=after_commit_under_lock,
             turn_timeout_override=turn_timeout_override,
+            autocompact_override=autocompact_override,
+            after_commit_on_transcript=after_commit_on_transcript,
             retired_rows=retired_rows,
             takeover_basis=_basis,
         )

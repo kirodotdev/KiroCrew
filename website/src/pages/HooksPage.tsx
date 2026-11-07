@@ -353,6 +353,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     queryFn: () => provider.fetchUnsentProviderHooks?.() ?? Promise.resolve([]),
     enabled: provider.capabilities.hooks && !!provider.fetchUnsentProviderHooks,
   })
+  // The refetch is awaited so the "rescanned" line appears with the list it describes.
+  // Claimed synchronously on press: `isPending` only flips on the next render,
+  // so two quick presses could both read it as false.
+  const rescanClaim = useRef(false)
+  const rescanMut = useMutation({
+    mutationFn: () => provider.rescanProviderHooks!(),
+    onSuccess: async () => { await Promise.all([refetchProviderHooks(), refetchUnsentHooks()]) },
+    onSettled: () => { rescanClaim.current = false },
+  })
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   // A HookForm holds unsaved name/command/matcher text while open, and the
@@ -810,7 +819,19 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         </Card>
         {provider.capabilities.hooks && (
         <Card>
-          <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
+          <CardTitle>
+            {provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} />
+            {provider.rescanProviderHooks && (
+              // `aria-disabled` while rescanning, not `disabled`: the click that
+              // started it holds focus here, and a disabled button would drop
+              // that focus to <body>. The claim keeps a second press inert.
+              <span className="ml-auto"><Btn onClick={() => { if (rescanClaim.current) return; rescanClaim.current = true; rescanMut.mutate() }} aria-disabled={rescanMut.isPending} aria-busy={rescanMut.isPending}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100">{i18nT('pages.hooksPage.rescan')}</Btn></span>
+            )}
+          </CardTitle>
+          {rescanMut.data === true && <p role="status" className="text-[12px] text-muted mb-3">{i18nT('pages.hooksPage.rescan_done')}</p>}
+          {rescanMut.data === false && <ErrorNotice variant="inline" message={i18nT('pages.hooksPage.rescan_not_applied')} askAgent={handoffSafe} className="mb-3" testId="rescan-not-applied" />}
+          {rescanMut.error && <ErrorNotice title={i18nT('pages.hooksPage.rescan_failed')} message={rescanMut.error.message} askAgent={handoffSafe} className="mb-3" />}
           {/* The unsent-hooks read is its own request. When only it fails, the
               sent hooks below still render, so its notice sits above them rather
               than replacing the table; an empty list would read as "everything

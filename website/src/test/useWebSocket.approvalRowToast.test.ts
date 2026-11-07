@@ -184,7 +184,7 @@ describe('interactive approval OS toast from the permission row', () => {
   ])('a session muted by %s still toasts its prompt', async (_who, slots) => {
     const ws = await connect()
     act(() => { testStore.dispatch(sseSlots(slots)) })
-    expect(isSlotMuted(testStore.getState().dashboard.slots, SLOT)).toBe(true)
+    expect(isSlotMuted(testStore.getState().dashboard.slots, SLOT, new Set())).toBe(true)
     ws.frame('chat_message', permissionRow(SLOT, 'req-1', 'mid-1'))
     expect(postNativeNotification).toHaveBeenCalledTimes(1)
   })

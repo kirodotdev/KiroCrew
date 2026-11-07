@@ -2,18 +2,13 @@
 
 A provider answers typed questions about a state: ``ask(state, questions)``
 returns every answer or raises, never a partial mapping, never a retry. The gate
-(``decisions.gate``) owns everything around that call -- consent, scopes, the
-fleet ceiling, the scrub, the budget, the domain re-check and the log -- so a
-provider is only the transport and the wire mapping. That split is what lets one
-gate serve several providers without any of them restating a refusal.
+(``decisions.gate``) owns consent, scopes, the fleet ceiling, the scrub, the
+budget, the domain re-check and the log, so a provider is only the transport and
+the wire mapping.
 
-Each provider is described by a :class:`ProviderSpec`: its ``kind`` (hosted,
-local, session LLM), which LANE it answers on (the value the log, the dashboard
-and ``decisions.nudge_wake.provider`` carry), where its request goes, what
-authorizes it, which capability row governs it, which question types it
-answers, and the window its budget is clamped into. The spec is DATA and grants
-nothing: authorization stays in the gate, which today reads only the budget
-window from it.
+Each provider is described by a :class:`ProviderSpec`: kind, lane, egress,
+authority, capability row, supported question types and budget window. The spec
+is DATA and grants nothing: authorization stays in the gate.
 
 The registry is a closed table, not a plug-in hook. Adding a provider is an edit
 to :data:`_REGISTRY` that a reviewer reads beside the gate, because each entry
@@ -32,10 +27,9 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from kiro_crew.decisions.types import Answers, Question
 
-#: The lane a keystone-authorized endpoint answers on. The VALUE is ``"jev"``
-#: because that is the word already persisted in ``decisions.nudge_wake.provider``,
-#: in judge rows on the dashboard and in the decision log; it now names the
-#: configured System One endpoint, hosted or local, not one vendor.
+#: The lane a keystone-authorized endpoint answers on: the configured System One
+#: endpoint, hosted or local. The value stays ``"jev"`` because that word is
+#: persisted in ``decisions.nudge_wake.provider``, dashboard rows and the log.
 LANE_ENDPOINT = "jev"
 
 #: The lane answered by one tool-less model call on the session's own provider.
@@ -272,16 +266,12 @@ def get(provider_id: str) -> ProviderSpec:
 def select(lane: str, *, endpoint: object = "", model: object = "") -> ProviderSpec:
     """The provider that answers *lane* for the configured *endpoint* / *model*.
 
-    The session-LLM lane has one provider. The endpoint lane has two that share
-    one client and differ only in what governs them: an address with the shape
-    the provider route builds for a catalog preset selects the local spec,
-    anything else -- including a hand-written loopback address, which may be a
-    tunnel to a hosted provider -- the hosted one. The shape alone is enough HERE
-    because the gate has already refused a preset-shaped address whose server the
-    runtime does not attest (``gate._consented_for``), so by the time a provider
-    is selected the shape and the attestation agree. Any lane other than the
-    session LLM reads as the endpoint lane, which is the gate's long-standing
-    default.
+    On the endpoint lane, an address shaped like a catalog preset selects the
+    local spec; anything else, including a hand-written loopback address (maybe a
+    tunnel to a hosted provider), selects the hosted one. The shape suffices
+    because the gate already refused a preset-shaped address the runtime does not
+    attest (``gate._consented_for``). Any lane other than the session LLM reads as
+    the endpoint lane.
     """
     if lane == LANE_SESSION_LLM:
         return _REGISTRY[PROVIDER_SESSION_LLM]

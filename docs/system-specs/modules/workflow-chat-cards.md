@@ -12,6 +12,8 @@ The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWe
 
 The card sanitizes display text, switches to its own slot before opening the Workflows panel when rendered from a background pane, and dispatches `openActivityToTab('workflows')`. A finished run exposes the save-workflow flow; `WorkflowRunCard` requires a snapshot source before the library-promotion action is enabled.
 
+That link does not go through the side panel's `+` menu or its empty-state launcher, which offer the Workflows row only once the chat has a run: one that `GET /api/workflows/runs` lists for the slot, or a live row in `chat.workflowRuns` (`hasWorkflowRuns` in `SidePanel.tsx`, applied by `newMenuSections`). The gate fails open while that list is unread or unreadable, and a Workflows tab already on the strip stays.
+
 ### Completion card
 
 `src/kiro_crew/dashboard/workflow_inject.py::_summarize` creates the completion header, and `inject_workflow_result` appends it as an `assistant` message to the originating slot, broadcasts it to the live chat, and persists the same message for replay. The broadcast includes a workflow-result kind, while the durable message is an assistant row; the renderer therefore detects the persisted content rather than relying on an event kind.
@@ -29,6 +31,7 @@ The card sanitizes display text, switches to its own slot before opening the Wor
 ## Tests
 
 - `website/src/test/WorkflowRunCard.test.tsx` covers launch detection, live-state and intent fallback rendering, panel opening, slot retargeting, and saving a finished workflow.
+- `website/src/test/sidePanelAddMenu.test.tsx` covers the `+` menu's Workflows gate: a run listed for another slot leaves the row out; one listed or live for this slot brings it back.
 - `website/src/test/WorkflowCompletionCard.test.tsx` covers parsing, parse-gated fallback, rendering disclosure, panel opening, and completion-body containment.
 - `website/src/test/transcriptRenderersRenderCov80.test.tsx` verifies that the shared transcript registry selects both cards and wraps their rows.
 - `website/src/test/useWebSocket.workflowRunSync.test.ts` covers the reconcile against the workflow-runs API: first connect, reconnect, the heal tick and a failed read.

@@ -110,6 +110,22 @@ _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
 _MIN_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
 
 
+def _update_policy_file() -> str:
+    """The home policy file when its update commands manage this install, else ``""``.
+
+    Only the home tier is named. The commands are the top tier's alone, so under a
+    central, env-pointed or bundled policy, editing the home file changes nothing.
+    """
+    if _update_info.get("managed_by") != MANAGED_BY_COMMAND:
+        return ""
+    from kiro_crew.platform.context import current_context
+    from kiro_crew.platform.governance import TIER_HOME, _policy_home_path
+
+    if getattr(current_context().governance, "tier", "") != TIER_HOME:
+        return ""
+    return str(_policy_home_path())
+
+
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -164,6 +180,9 @@ def status_update_fields() -> dict[str, object]:
         # command-managed host must not render the self-managed installer
         # instructions its policy exists to bypass.
         "update_managed_by": str(_update_info.get("managed_by") or ""),
+        # The file the policy notice tells the user to edit, so it can say where
+        # it is. Empty unless that file is the one owning updates.
+        "update_policy_file": _update_policy_file(),
         # Commit distance for a git checkout, both directions, so the About
         # panel's badge can tell DIVERGED (ahead and behind at once — reported
         # as ``update_available: False`` because the apply path must never be

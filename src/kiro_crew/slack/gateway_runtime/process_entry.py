@@ -442,6 +442,13 @@ async def run_gateway(
     # to this gateway.  Must run BEFORE any to_thread offload.
     configure_default_executor()
 
+    # ── Inherited agent scratch temp ──
+    # Started from inside an agent session, the gateway inherits that session's
+    # scratch exports: a directory another pid owns, which the hourly sweep
+    # reclaims while this gateway still names it as its temp. Off the loop: it
+    # resolves paths and probes the temp directory.
+    await asyncio.to_thread(agent_scratch.drop_own_inherited_scratch_env)
+
     # ── Publish surface, pinned for the process ──
     # Recorded BEFORE any service spins up, because both doors out are opened by
     # services started below: the dashboard's boot-time ``setup_tunnel`` and the

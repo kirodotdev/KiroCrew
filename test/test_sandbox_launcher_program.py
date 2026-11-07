@@ -66,6 +66,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "private_dirs": [],
         "private_dir_ids": {},
         "readonly_dirs": [],
+        "parent_pins": [],
         "writable_dirs": [],
         "sensitive_files": [],
         "fail_closed_file_masks": [],
@@ -780,7 +781,9 @@ _CHILD_STAGES = (
     "pick_stand_in_root",
     "check_crew_home_aliases",
     "preread_exposed_files",
+    "stage_stand_ins_privately",
     "stage_private_windows",
+    "pin_seal_parents",
     "seal_readonly",
     "mask_sensitive",
     "apply_carveouts",
@@ -788,6 +791,7 @@ _CHILD_STAGES = (
     "verify_fail_closed_aliases",
     "mask_sensitive_files",
     "mask_ssh_keys",
+    "retire_stand_in_stage",
     "confirm_crew_home_aliases",
     "scrub_env",
     "drop_privileges",
@@ -806,6 +810,40 @@ def test_a_child_run_takes_every_stage_once_in_order(
         monkeypatch.setattr(program, name, lambda *_args, name=name: taken.append(name))
     program.run_child(launch(tmp_path), ["/bin/agent"])
     assert taken == list(_CHILD_STAGES)
+
+
+_MS_REC = 16384
+
+
+def test_a_seal_parent_is_bound_over_itself_recursively_and_an_absent_one_is_skipped(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "home" / ".kiro"
+    parent.mkdir(parents=True)
+    libc = RecordingLibc()
+    run = launch(tmp_path, payload(parent_pins=[str(parent), str(tmp_path / "absent")]), libc=libc)
+    program.pin_seal_parents(run)
+    ((call,),) = [libc.calls]
+    assert (call.target_path, call.flags) == (str(parent), _MS_BIND | _MS_REC)
+    assert call.source_id == call.target_id
+
+
+class _SwappingLibc(RecordingLibc):
+    """A libc whose pin lands while another process puts a new directory at the name."""
+
+    def bound(self, source, target, fstype, flags):  # noqa: ANN001, ANN201
+        path = _resolved(target)
+        os.rename(path, path + ".aside")
+        os.mkdir(path)
+        return 0
+
+
+def test_a_seal_parent_that_changes_while_it_is_pinned_refuses_the_spawn(tmp_path: Path) -> None:
+    parent = tmp_path / "home" / ".kiro"
+    parent.mkdir(parents=True)
+    run = launch(tmp_path, payload(parent_pins=[str(parent)]), libc=_SwappingLibc())
+    message = refusal(program.pin_seal_parents, run)
+    assert message is not None and "could not be held in place" in message
 
 
 def _scan_only_the_workspace(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> str:
@@ -872,6 +910,10 @@ def test_every_stand_in_carries_the_pid_prefix_the_janitor_reclaims(tmp_path: Pa
 #: (``seal_windowless_masks``), so none of them is sealed and the count is unchanged.
 _MOUNTS_PER_RUN = 16
 
+#: The one mount ``run_child`` makes itself, ahead of ``place_masks``: the private
+#: stand-in stage's tmpfs, which :class:`CoveringLibc` refuses.
+_STAGE_MOUNTS = 1
+
 
 @pytest.mark.parametrize("fail_at", range(1, _MOUNTS_PER_RUN + 1), ids=lambda n: f"mount-{n}")
 def test_a_failed_hiding_mount_refuses_and_a_failed_carve_out_degrades(
@@ -896,7 +938,8 @@ def test_a_failed_hiding_mount_refuses_and_a_failed_carve_out_degrades(
 def test_the_mount_count_covers_every_site(tmp_path: Path) -> None:
     """The refusal sweep above stops at the last mount a run makes."""
     _, _, libc = _ran(tmp_path)
-    assert len(libc.calls) == _MOUNTS_PER_RUN
+    assert len(libc.calls) == _STAGE_MOUNTS + _MOUNTS_PER_RUN
+    assert libc.calls[0].fstype == b"tmpfs"
 
 
 # --------------------------------------------------------------------------- #
@@ -1039,10 +1082,11 @@ def _replaced_root_run(
     return run, home, libc, replaced, str(first), str(second)
 
 
-#: Every stand-in a child run over :class:`_Home` creates: the window stage, the four
-#: per-directory masks, the nested mask re-applied inside the window, the plain file
-#: mask, the unreadable leaf's empty fallback, and the ``~/.ssh`` stand-in.
-_STAND_INS_PER_RUN = 9
+#: Every stand-in a child run over :class:`_Home` creates: the private stand-in stage
+#: (made, then removed again when :class:`CoveringLibc` refuses its tmpfs), the window
+#: stage, the four per-directory masks, the nested mask re-applied inside the window, the
+#: plain file mask, the unreadable leaf's empty fallback, and the ``~/.ssh`` stand-in.
+_STAND_INS_PER_RUN = 10
 
 
 def test_the_stand_in_count_covers_every_create(
@@ -1073,7 +1117,7 @@ def test_a_replaced_stand_in_root_moves_the_stand_ins_and_keeps_every_mask(
     before = from_create - 1
     assert replaced.made_in == [first] * before + [second] * (_STAND_INS_PER_RUN - before)
     # Every mask is placed, exactly as on an undisturbed run.
-    assert len(libc.calls) == _MOUNTS_PER_RUN
+    assert len(libc.calls) == _STAGE_MOUNTS + _MOUNTS_PER_RUN
     assert _listing(home.aws) == ["config"]
     assert _listing(home.cache) == []
     assert _listing(home.apps) == ["alpha"]

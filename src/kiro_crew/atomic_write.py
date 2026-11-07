@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import macos_acl, platform_compat, windows_acl
 from kiro_crew.owner_only_files import (
     OWNER_ONLY_FILE_MODE,
     is_owner_only_target,
@@ -96,12 +97,13 @@ _CARRIED_INFORMATIONAL_XATTR_PREFIXES = ("user.",)
 #: Whether this platform exposes the xattr syscalls an ACL carry needs at all.
 #:
 #: CPython exposes all three on Linux only. Windows has none of them, macOS has
-#: ``openat`` but none of them either (its ACLs live behind ``acl_get_file``,
-#: not the Linux xattr API), and typeshed guards all three behind
-#: ``sys.platform == "linux"``, so every use is a ``hasattr`` probe rather than a
-#: direct call. This flag gates only what an ACL carry can READ — a pinned
-#: caller still gets a descriptor from :func:`open_access_control_source`
-#: regardless, because the MODE carry needs one (see that function's contract).
+#: ``openat`` but none of them either (its ACLs live behind ``acl_get_fd_np``,
+#: which :mod:`kiro_crew.macos_acl` carries instead), and typeshed guards all
+#: three behind ``sys.platform == "linux"``, so every use is a ``hasattr`` probe
+#: rather than a direct call. This flag gates only what the xattr carry can READ:
+#: a pinned caller still gets a descriptor from :func:`open_access_control_source`
+#: regardless, because the MODE carry and the macOS ACL carry need one (see that
+#: function's contract).
 ACCESS_CONTROL_XATTRS_SUPPORTED = all(
     hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr")
 )
@@ -147,13 +149,14 @@ def open_access_control_source(path: Path | str, *, dir_fd: int | None = None) -
     absent, and the Windows caveat below does not apply there: pinning needs
     ``O_DIRECTORY``, which Windows does not have, so a pinned caller is on POSIX
     and publishes with ``renameat`` rather than ``os.replace``. That case is not
-    hypothetical — macOS has ``openat`` and no ``listxattr`` — and the MODE carry
-    needs a descriptor even when the ACL carry has nothing to read, or a by-name
+    hypothetical (macOS has ``openat`` and no ``listxattr``), and both the MODE
+    carry and the macOS extended-ACL carry read this descriptor, or a by-name
     ``stat`` would reintroduce exactly the mismatch above on that platform.
 
     Without *dir_fd*, returns ``None`` — meaning "pass no descriptor" — on a
-    platform without the xattr syscalls. That is not merely an optimisation:
-    there is nothing to carry there, AND holding a read handle open across the
+    platform without the xattr syscalls, so an unpinned macOS caller gets no ACL
+    carry. On Windows that is not merely an optimisation: there is nothing to
+    carry there, AND holding a read handle open across the
     write is not free on Windows, where ``os.replace`` fails with
     ``PermissionError`` while ANY other handle is open on either path. A
     descriptor kept for a carry that cannot happen would therefore fail every
@@ -284,6 +287,17 @@ def _encode(content: str | bytes, *, newline: str | None) -> bytes:
     encoder.flush()
     encoder.detach()  # unhook the wrapper only; the BytesIO stays open
     return buffer.getvalue()
+
+
+def text_bytes(content: str) -> bytes:
+    """The exact bytes :func:`atomic_write` puts on disk for text *content* on this platform.
+
+    For a writer that must also keep a copy of what it published (the keystone endorsed
+    copies, ``config.loosening_provenance``): encode once with this and hand
+    :func:`atomic_write` the same ``bytes``, so the copy equals the file on Windows too,
+    where text mode writes ``\\r\\n``.
+    """
+    return _encode(content, newline=None)
 
 
 def _write_all(fd: int, data: bytes, path: Path) -> None:
@@ -1179,8 +1193,8 @@ def _read_source_xattrs(source_fd: int, path: Path) -> list[tuple[str, bytes]]:
     not "there are none".
 
     On platforms without ``os.listxattr``/``getxattr`` (Windows, and macOS
-    typeshed under ``mypy --platform linux``) there is nothing to carry, so this
-    returns an empty list.
+    typeshed under ``mypy --platform linux``) there are no xattrs to read, so this
+    returns an empty list; macOS's extended ACL is carried by :func:`_stage_temp`.
     """
     if not ACCESS_CONTROL_XATTRS_SUPPORTED:
         return []
@@ -1246,6 +1260,7 @@ def atomic_write(
     parent_dir_fd: int | None = None,
     replace_budget_s: float | None = None,
     on_staged: Callable[[int], None] | None = None,
+    preserve_windows_dacl: bool = False,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1320,7 +1335,11 @@ def atomic_write(
     OTHER read failure is a refusal, because a failed lookup is not proof that
     there are none. Reading from the descriptor rather than by name keeps the
     read pinned to the inode the caller validated. The carry is ADDITIVE to
-    ``mode=``, not a replacement.
+    ``mode=``, not a replacement. On macOS, whose ACLs are not xattrs, the
+    descriptor's extended ACL is copied onto the staged file before any content
+    is written (:func:`kiro_crew.macos_acl.copy_extended_acl`), under the same
+    rules: none, or a volume without ACLs, is nothing to carry, and any other
+    failure to read or set it REFUSES the write.
 
     *parent_dir_fd* is an OPEN descriptor for the destination's directory,
     already pinned component-by-component by the caller (``pinned_fs`` supplies
@@ -1361,6 +1380,13 @@ def atomic_write(
     will appear at *path*, which a stat of *path* after the rename cannot: another
     writer may have replaced it by then. An exception it raises aborts the write
     like any other staging failure.
+
+    *preserve_windows_dacl* is the Windows half of the carry above, which covers
+    POSIX xattrs and the macOS extended ACL only. On Windows the existing file's
+    own DACL is read by name before staging and copied exactly onto the temp
+    before any content, so the replacement never takes its folder's wider grants.
+    A read or apply failure refuses the write and leaves the original untouched.
+    Elsewhere the flag does nothing.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1429,6 +1455,9 @@ def atomic_write(
     src_xattrs: list[tuple[str, bytes]] = []
     if preserve_access_control_from is not None:
         src_xattrs = _read_source_xattrs(preserve_access_control_from, path)
+    src_dacl: bytes | None = None
+    if preserve_windows_dacl and sys.platform == "win32":
+        src_dacl = windows_acl.read_carried_dacl(path)
     if restrict_to_owner:
         # Before the mkdir: mkdir(parents=True) walks THROUGH a planted link and
         # would create the missing directories under its target, so checking
@@ -1448,8 +1477,10 @@ def atomic_write(
         restrict_to_owner=restrict_to_owner,
         restrict_on_error=restrict_on_error,
         src_xattrs=src_xattrs,
+        acl_source=preserve_access_control_from,
         pin=pin,
         on_staged=on_staged,
+        src_dacl=src_dacl,
     )
     if pin is None:
         # Inside a try of its own, so an interrupt that lands after staging
@@ -1459,7 +1490,7 @@ def atomic_write(
         try:
             publish_replacement(tmp, path, budget_s=replace_budget_s)
         except BaseException:
-            _unlink_temp(tmp, None)
+            _unlink_temp(tmp, None, acl_carried=preserve_access_control_from is not None)
             raise
         return
     try:
@@ -1477,11 +1508,11 @@ def atomic_write(
             dst_dir_fd=pin,
         )
     except BaseException:
-        _unlink_temp(tmp, pin)
+        _unlink_temp(tmp, pin, acl_carried=preserve_access_control_from is not None)
         raise
 
 
-def _unlink_temp(tmp: str, pin: int | None) -> None:
+def _unlink_temp(tmp: str, pin: int | None, *, acl_carried: bool = False) -> None:
     """Remove a staged temp file, ignoring one that is already gone."""
     try:
         if pin is None:
@@ -1491,6 +1522,17 @@ def _unlink_temp(tmp: str, pin: int | None) -> None:
             # created under, so cleanup cannot reach a different file even if
             # the parent name has since been swapped.
             os.unlink(os.path.basename(tmp), dir_fd=pin)
+    except PermissionError:
+        # A deny-delete entry the macOS carry copied onto the temp refuses its
+        # removal too, so make the temp owner-only, empty its ACL and remove it;
+        # the ACL is set back if the removal is still refused.
+        if acl_carried and platform_compat.IS_MACOS:
+            try:
+                macos_acl.unlink_clearing_acl(
+                    tmp if pin is None else os.path.basename(tmp), dir_fd=pin
+                )
+            except OSError:
+                pass
     except OSError:
         pass
 
@@ -1506,14 +1548,17 @@ def _stage_temp(
     restrict_to_owner: bool,
     restrict_on_error: RestrictErrorPolicy,
     src_xattrs: list[tuple[str, bytes]],
+    acl_source: int | None,
     pin: int | None,
     on_staged: Callable[[int], None] | None = None,
+    src_dacl: bytes | None = None,
 ) -> str:
     """Write *content* to a new temp file beside *path*, closed; return its name.
 
     The one staging sequence behind :func:`atomic_write` and
-    :func:`stage_replacement`. Every step that can fail (the lockdown, ``fchmod``,
-    the write, the xattr carry, the ``fsync`` and the ``close``) runs inside one
+    :func:`stage_replacement`. Every step that can fail (the macOS ACL carry from
+    *acl_source*, the lockdown, ``fchmod``, the write, the xattr carry, the
+    ``fsync`` and the ``close``) runs inside one
     protected region, so whichever of them raises, the descriptor is released and
     the temp file removed before the error propagates. The caller only ever
     receives the name of a complete, closed file.
@@ -1529,6 +1574,10 @@ def _stage_temp(
     else:
         fd, tmp = _mkstemp_at(pin)
     try:
+        if acl_source is not None and platform_compat.IS_MACOS:
+            # Before any content, so the bytes never sit under only the entries
+            # the folder hands down.
+            macos_acl.copy_extended_acl(acl_source, fd)
         if restrict_to_owner:
             # Before fdopen, matching the shipping order in webhooks.py and
             # mcp_gateway/rewriter.py: the DACL lands while the file is still
@@ -1550,6 +1599,10 @@ def _stage_temp(
                     path,
                     exc_info=True,
                 )
+        if src_dacl is not None:
+            # Same spot as the lockdown above, so the content never sits under
+            # the folder's wider DACL. Windows only, where pin is always None.
+            windows_acl.apply_carried_dacl(tmp, src_dacl)
         # No-op on Windows (no POSIX permission bits / os.fchmod).
         platform_compat.fchmod_safe(fd, mode)
         _write_all(fd, _encode(content, newline=newline), path)
@@ -1586,7 +1639,7 @@ def _stage_temp(
                 os.close(fd)
             except OSError:
                 pass
-        _unlink_temp(tmp, pin)
+        _unlink_temp(tmp, pin, acl_carried=acl_source is not None)
         raise
     return tmp
 
@@ -1617,6 +1670,7 @@ def stage_replacement(path: Path | str, content: str | bytes, *, mode: int | Non
         restrict_to_owner=False,
         restrict_on_error="raise",
         src_xattrs=[],
+        acl_source=None,
         pin=None,
     )
 

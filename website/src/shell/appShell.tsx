@@ -14,6 +14,7 @@ import type { NavIntent } from '../utils/popoutController'
 import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
+  isAppDetailPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -37,6 +38,7 @@ import { useNativeNotification } from '../hooks/useNativeNotification'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
+import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
 import { safeSetItem } from '../utils/safeStorage'
 import { gcOrphanedStorage } from '../utils/storageGc'
@@ -71,6 +73,8 @@ import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useGuideGate, useGuidePredicate } from '../guide/guidePredicates'
 import { appNavTarget } from '../appNav'
 import { useGlobalApprovalCount, useRailBadges } from './nav/railBadges'
+import { settingsNavDotLabel } from './nav/settingsNavDot'
+import { useConfigPendingCount } from '../pages/settings/configPendingQuery'
 import { resolveSlotOverlays, type SlotOwners } from '../apps/overlaySlots'
 import { isChatRoute, useRouteActiveModel } from './nav/routeActive'
 import { appPathname } from '../lib/basePath'
@@ -168,6 +172,11 @@ export function useAppShell() {
   const updateAvailable = useAppSelector(
     s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
   )
+  // The same Settings nav dot while a settings file edited outside the dashboard
+  // waits for the owner's review (Settings > Security); `settingsNavDotLabel`
+  // names whichever cause lit it.
+  const configPending = useConfigPendingCount() > 0
+  const settingsDotLabel = settingsNavDotLabel(updateAvailable, configPending)
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
   // the red top-banner tells the user what to do (paste a fresh
@@ -693,8 +702,13 @@ export function useAppShell() {
         // extra request, and the shell never names a specific app.
         setSlotOwners(resolveSlotOverlays(apps))
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         if (gen !== appNavGenRef.current) return
+        // A permission refusal (the relay's `relay_apps_teammate` for a teammate, an
+        // `owner_only` 403) is the answer, not a blip: asking again on a backoff
+        // only fills the console with the same refusal (#32031). The rail stays
+        // without apps, which is what that caller has.
+        if (isPermissionRefusal(e)) return
         // A transient failure (e.g. the gateway mid-restart right after a
         // `kirocrew update`, or the cold apps-dir scan) used to be swallowed
         // here, leaving the Apps rail empty until a manual reload or an app
@@ -840,13 +854,20 @@ export function useAppShell() {
         )
         return
       }
+      // An app detail link names an app installed in the local Crew. Over a
+      // Remote Crew pane a bare navigate would route the hidden local pane, so
+      // bring the local Crew forward first, as a session link does: the leave
+      // prompt then sits over the draft it is asking about.
+      if (isAppDetailPath(path) && appStore.getState().instances?.activeId != null) {
+        dispatch(setActiveId(null))
+      }
       // Same leave check as every other in-app exit: a native menu entry
       // replaces the page on screen just like a sidebar click does.
       if (!mayLeaveForNavigation()) return
       navigate(path)
     })
   }, [navigate, dispatch, mayLeaveForNavigation, appStore])
-  // A mouse's Back/Forward buttons on macOS, relayed by the shell as a swipe.
+  // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
 
   useEffect(() => {
@@ -992,7 +1013,7 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,

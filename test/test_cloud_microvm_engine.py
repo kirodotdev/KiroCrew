@@ -1,14 +1,7 @@
 """The launch engine: the record it writes first, and the cleanup order it owes.
 
-This module pins preflight, the provision order and the cleanup a failed provision owes,
-the crew name a launch records, the replay armed around the create alone, sign-in,
-registration as an SSM peer, teardown, a terminate that answers not found, and the
-activation argv with its role-name reduction. The image a launch runs is pinned in
-``test_cloud_microvm_engine_image.py``; the control secret, the client token's
-derivation, the registration's run-as user and rollback, the recheck after each wait, the
-coordinates a teardown uses and the wall sweep in
-``test_cloud_microvm_engine_lifecycle.py``. The launch spec, the scripted launcher, the
-secret stub and the ``engine`` fixture these files share live in
+The image is pinned in ``test_cloud_microvm_engine_image.py``, secrets, tokens, rereads
+and the wall sweep in ``test_cloud_microvm_engine_lifecycle.py``. Shared fixtures live in
 ``cloud_microvm_engine_helpers.py``.
 """
 
@@ -194,14 +187,10 @@ class TestTheLaunchRecordsTheCrewNameTheGuestWillServe:
 
 class TestProvisionCleanup:
     def test_a_failed_run_reconciles_the_token_then_releases_both(self, engine):
-        """A ``run`` that fails is a failure of the ANSWER, not necessarily of the
-        call: the service may be holding a VM this process never saw an id for.
+        """A failed ``run`` may still have made a VM, so the same token is replayed.
 
-        So the failure path replays the identical request with the identical
-        idempotency token, and whatever that returns -- the VM the first call made,
-        or a fresh one -- is terminated before the activation is deleted. The
-        activation goes last for the reason it always does: it is the only id for
-        the node a terminate is about to orphan.
+        Whatever that returns is terminated, then the activation is deleted last: it is
+        the only id for the node a terminate orphans.
         """
         built, store, launcher = engine
         launcher.fail_at = "run"
@@ -357,11 +346,8 @@ class SplitLauncher(VmLauncher):
 class TestTheReplayIsArmedAroundTheCreateAlone:
     """``RunMicrovm`` is replayable under its token; resolving an image is not.
 
-    Resolving can BUILD a multi-minute image, and the version it answers is the
-    newest at the time it answers. So a replay that resolves again is a second
-    build on the failure path, and if it answers a different version the same
-    idempotency token goes out with different parameters -- while the VM the
-    first attempt may have created is still unrecorded.
+    Resolving can build an image and answers the newest version, so a replay that
+    resolves again could send the same token with different parameters.
     """
 
     @pytest.fixture()
@@ -552,12 +538,8 @@ class TestTeardown:
 class TestATerminateThatAnswersNotFoundIsACrewAlreadyGone:
     """The wall takes the VM and tells the control plane nothing.
 
-    That is the case the wall sweep exists for, and a ``ResourceNotFoundException``
-    from the terminate is what it meets. Read as a failed teardown it released
-    nothing: the activation kept counting against the account's limits, the
-    managed node stayed listed with nothing behind it, the control secret stayed
-    readable, and the row stayed ``running`` -- so the next launch swept the same
-    row and failed the same way.
+    So the sweep meets ``ResourceNotFoundException`` from the terminate. Read as a
+    failure, it would release nothing and leave the row ``running`` for every sweep.
     """
 
     @pytest.fixture()

@@ -379,7 +379,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "check_memory_available",
             "function",
-            "(min_gb: 'float' = 2.0, *, path: 'str' = '/proc/meminfo') -> 'tuple[bool, float]'",
+            "(min_gb: 'float' = 2.0, *, path: 'str' = '/proc/meminfo', measured_only: 'bool' = False)"
+            " -> 'tuple[bool, float]'",
         ),
         (
             "_proc_subtree_sample",
@@ -397,7 +398,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(total: 'Optional[int]', sharers: 'int', previous: 'Optional[int]') -> 'Optional[int]'",
         ),
         ("_LEGACY_DEFAULT_MAX", "value", "int"),
-        ("_available_memory_gb", "function", "() -> 'float'"),
+        ("_available_memory_gb", "function", "(*, measured_only: 'bool' = False) -> 'float'"),
         ("_host_available_gb", "function", "() -> 'float'"),
         ("_macos_vm_reclaimable_pages", "function", "() -> 'Optional[int]'"),
         ("_macos_available_memory_gb", "function", "() -> 'float'"),
@@ -419,8 +420,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "() -> 'list[tuple[PurePosixPath, PurePosixPath, bool]]'",
         ),
-        ("_cgroup_available_gb", "function", "() -> 'float'"),
-        ("_container_cgroup_available_gb", "function", "() -> 'float'"),
+        ("_cgroup_available_gb", "function", "(*, measured_only: 'bool' = False) -> 'float'"),
+        (
+            "_container_cgroup_available_gb",
+            "function",
+            "(*, measured_only: 'bool' = False) -> 'float'",
+        ),
         ("_agents_slice_available_gb", "function", "() -> 'float'"),
         ("_auto_ceiling", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
         ("_configured_max_subagents", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
@@ -708,7 +713,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_release_slot": ("method", "(self, info: 'SubagentInfo') -> 'bool'"),
     "_report_queued_stop": (
         "method",
-        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False) -> \"'asyncio.Task[bool] | None'\"",
+        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False, gate: \"'asyncio.Future[bool] | None'\" = None) -> \"'asyncio.Task[bool] | None'\"",
     ),
     "_report_terminal": (
         "async method",
@@ -862,7 +867,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "continue_conversation_async": (
         "async method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, *, approval_mode: 'str | None' = None, silent: 'bool' = False) -> 'SubagentInfo | None'",
     ),
     "count": ("property", ""),
     "dependency_coordinator": ("method", "(self) -> 'Any'"),
@@ -903,6 +908,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, task: 'str', **kwargs: 'Any') -> \"'SubagentInfo | PreparedSpawn | MemoryReadPoint | None'\"",
     ),
     "published_queued_depths": ("method", "(self) -> 'dict[str, int]'"),
+    "published_queued_labels": ("method", "(self) -> 'dict[str, dict[str, object]]'"),
     "queued_count": ("property", ""),
     "queued_count_for": ("method", "(self, parent_session_key: 'str') -> 'int'"),
     "queued_count_for_async": ("async method", "(self, parent_session_key: 'str') -> 'int'"),
@@ -960,7 +966,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "spawn": (
         "method",
-        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, failover_from: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None) -> 'SubagentInfo | None'",
+        "(self, task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', max_turns: 'int' = 0, model: 'str | None' = None, reasoning_effort: 'str' = '', allowed_tools: 'list[str] | None' = None, bare: 'bool' = False, cwd: 'str' = '', approval_mode: 'str | None' = None, silent: 'bool' = False, batch_id: 'str' = '', batch_total: 'int' = 0, keep: 'bool' = False, conversation_key: 'str' = '', app: 'str' = '', include_memory: 'bool' = True, include_lessons: 'bool' = True, include_project: 'bool' = True, memory_store: 'str' = '', _agent_prevalidated: 'bool' = False, _from_queue: 'bool' = False, _preassigned_id: 'str' = '', _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, _memory_mode: 'str | None' = None, _store_accepted: 'bool' = False, _stop_before_claim: 'bool' = False, _claimed: \"'tuple[int, bool, str] | None'\" = None, _window_hint: \"'bool | None'\" = None, _child_registration: 'bool' = True, *, crew: 'str' = '', target_member: 'str | None' = None, delegation: 'dict[str, str] | None' = None, backend: 'str | None' = None, failover_from: 'str | None' = None, label: 'str' = '', _execution_context: 'dict | None' = None, _parent_spawn_policy: \"'ParentSpawnPolicy | None'\" = None, _parent_project_dirs: \"'list[str] | None'\" = None, _agent_check: \"'AgentCheck | None'\" = None, _recovering_row: 'bool' = False, _stop_before_memory_read: 'bool' = False, _memory_reading: \"'tuple[float, str] | None'\" = None, _depth: 'int | None' = None, _root_session_key: 'str | None' = None) -> 'SubagentInfo | None'",
     ),
     "spawn_async": (
         "async method",
@@ -977,6 +983,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "user_max_concurrent": ("property", ""),
     "wait_taskq_ready": ("async method", "(self) -> 'None'"),
     "wave_has_live_nested_spawns": ("method", "(self, batch_id: 'str') -> 'bool'"),
+    "wave_has_live_nested_spawns_async": ("async method", "(self, batch_id: 'str') -> 'bool'"),
 }
 
 

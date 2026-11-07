@@ -93,6 +93,15 @@ like the Latin one the rule allows, and the rule beside it is one clause
 the characters and a word joiner after the hyphen so it never wraps mid-list. Pinned by `test/test_papyrus_store.py::TestProjectNameStaysAscii`
 and the `test_create_explains_*` tests in `test/test_papyrus_routes.py`.
 
+Create and clone also refuse (`store.is_unportable_project_name`), on every platform,
+a slug Windows would not keep as a folder name: one ending in `.` (Windows stores
+`draft.` as `draft`) or whose part before the first `.` is a Windows device stem
+(`nul`, `con.paper`; the set is `kiro_crew.constants.WINDOWS_DEVICE_STEMS`). They
+answer a JSON 400 `{"code": "unportable_project_name"}` before the "already exists"
+check, because `nul` exists in every Windows folder; the dashboard shows the server's
+`error`. Opening an existing project of such a name is unchanged. Pinned by
+`test_create_and_clone_refuse_a_name_windows_cannot_keep`.
+
 ### Naming a paper
 
 That slug is the app's **identifier** — the `?name=` of every route, the PDF URL,

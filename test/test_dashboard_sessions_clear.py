@@ -74,7 +74,7 @@ def _make_request(
     raising_keys = raising_keys or set()
 
     conv_log = MagicMock()
-    conv_log.list_sessions.return_value = sessions
+    conv_log.list_sessions_indexed.return_value = sessions
     conv_log.list_sessions_with_status.return_value = (sessions, True)
     conv_log.get_metadata.side_effect = lambda k: metadata.get(k, {})
 
@@ -172,7 +172,8 @@ async def test_bulk_cleanup_uses_only_preunlink_claims() -> None:
 
     assert resp.status == 200
     assert deleted == keys
-    assert state.conversation_log.list_sessions.call_count == 1
+    assert state.conversation_log.list_sessions_indexed.call_count == 1
+    state.conversation_log.list_sessions.assert_not_called()
     state.conversation_log.list_sessions_with_status.assert_not_called()
     assert cleanup.await_count == 3
     assert all("delete_claim" in call.kwargs for call in cleanup.await_args_list)

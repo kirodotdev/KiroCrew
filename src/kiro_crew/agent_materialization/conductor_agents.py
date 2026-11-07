@@ -198,6 +198,10 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
         "@kirocrew-work/work_brief",
     }
 )
+#: The goal conductor's two fixed checks (``mcp_work.CHECK_TOOLS``).
+_HISTORY_CHECK_VERBS: frozenset[str] = frozenset(
+    {"@kirocrew-work/accept_eval", "@kirocrew-work/patrol_budget"}
+)
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
 #: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
 #: tuple the table holds exactly that entry (pinned by test), so an entry can join
@@ -213,6 +217,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
+        | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-ledger-conductor": (
         frozenset({"session", "report", "tool_search"})
@@ -222,6 +227,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
+        | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-pipeline-conductor": (
         frozenset({"session", "report", "tool_search"})
@@ -704,16 +710,13 @@ def _conductor_spec(
     config["prompt"] = agent_mod._CONDUCTOR_SYSTEM_PROMPT
     # The skills this prompt names: ``goal-conductor`` carries the operating
     # procedure it says to read first, ``dashboard`` is how it changes the page
-    # it reports on, and ``widgets`` / ``living-ui`` / ``artifacts`` are how it
-    # draws the introduction and the board in the dashboard chat: the widget
-    # pointer its contract block carries on that surface
-    # (``context_assembly.agent_spec.WIDGET_BLOCK_AGENTS``) names ``widgets`` and
-    # ``artifacts``, and ``widgets`` sends a moving picture on to ``living-ui``.
+    # it reports on, and ``WIDGET_POINTER_SKILLS`` are how it draws the
+    # introduction and the board in the dashboard chat.
     # Mapped rather than assumed reachable: this spec is a custom template, so with
     # no mapping its search scope is empty and no document can be found. The alias
     # installer emits this same body, so the alias carries the mapping too.
     skill_resources.map_prompt_skills(
-        config, "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"
+        config, "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
     )
     config["tools"] = [
         "execute_bash",
@@ -918,7 +921,9 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
     # ``dashboard`` for the page. Note ``pipeline-conductor/SKILL.md`` is larger
     # than one read's capacity, so reaching it is paged -- a separate limit the
     # mapping does not change.
-    skill_resources.map_prompt_skills(config, "pipeline-conductor", "dashboard")
+    skill_resources.map_prompt_skills(
+        config, "pipeline-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
+    )
     config["tools"] = [
         "execute_bash",
         "fs_read",
@@ -1005,11 +1010,13 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         "any fix behind a human yes. Never touches the target itself."
     )
     config["prompt"] = _conductor_prompt(agent_mod._SECURITY_CONDUCTOR_SYSTEM_PROMPT)
-    # The one skill this prompt names. Its fixer dispatch hands a worker the
-    # ``kirocrew-prepare-pr`` skill, but that worker is a separate session on its
-    # own spec, so mapping it here would widen this agent's search scope past what
-    # its own charter reads.
-    skill_resources.map_prompt_skills(config, "security-conductor")
+    # The one skill this prompt names, plus the widget pointer's. Its fixer
+    # dispatch hands a worker the ``kirocrew-prepare-pr`` skill, but that worker is
+    # a separate session on its own spec, so mapping it here would widen this
+    # agent's search scope past what its own charter reads.
+    skill_resources.map_prompt_skills(
+        config, "security-conductor", *skill_resources.WIDGET_POINTER_SKILLS
+    )
     config["tools"] = [
         "execute_bash",
         "fs_read",

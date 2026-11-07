@@ -16,6 +16,7 @@ const {
   getCloseAction,
   setCloseAction,
 } = require("./close-action");
+const { getTrayIcon, setTrayIcon } = require("./tray-icon");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
@@ -301,15 +302,22 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
+    // isGatewayLocalForWindow reads this, and the preload argument below needs
+    // it. The argument is fixed for the view's life.
+    win._mcBackendUrl = windowBackendUrl;
+    const remoteGateway = !isGatewayLocalForWindow(win);
 
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Frameless Linux is a launch-time decision, not a platform constant.
-        // The preload reads this argument to reserve caption-control space.
-        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // Launch-time decisions the preload reads: frameless Linux reserves
+        // caption-control space; a remote gateway withholds local-only bridges.
+        additionalArguments: [
+          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
+          ...(remoteGateway ? ["--kc-remote-gateway"] : []),
+        ],
       },
     });
     view.setBackgroundColor("#00000000");
@@ -397,9 +405,9 @@ function createWindowLifecycle(options) {
       scheduleFullscreenSettle();
     });
 
-    // DOM fullscreen is separate from native window fullscreen. Bridge it so a
-    // video can grow the BaseWindow, and retain provenance so persistence never
-    // mistakes a video-raised transition for the user's launch preference.
+    // Electron raises the BaseWindow when a page element goes DOM-fullscreen.
+    // Retain who raised it, so persistence never mistakes a video-raised
+    // transition for the user's launch preference.
     win._mcHtmlFullScreen = attachHtmlFullScreen({
       win,
       webContents: view.webContents,
@@ -471,7 +479,6 @@ function createWindowLifecycle(options) {
       applyTitle();
     };
     win._mcGetCustomName = () => customName;
-    win._mcBackendUrl = windowBackendUrl;
     // The dashboard SPA is a capture surface (the chat composer's snip and the
     // web-preview crop). Registered against the gateway origin THIS window was
     // opened on, so a secondary window pointed at a remote gateway is bound to
@@ -730,7 +737,11 @@ function createWindowLifecycle(options) {
     };
     mainWindow.on("resize", persistDebounced);
     mainWindow.on("move", persistDebounced);
-    mainWindow.on("enter-full-screen", persist);
+    // Entering fullscreen is persisted after the debounce, not inside the emit:
+    // whether a page or the user raised the window is only known once both of
+    // Electron's events for the raise have landed, and their order differs by
+    // platform.
+    mainWindow.on("enter-full-screen", persistDebounced);
     mainWindow.on("leave-full-screen", persist);
 
     // Journal the terminal events so a stalled transition is legible in
@@ -945,6 +956,10 @@ function createWindowLifecycle(options) {
         // app-level one: AppKit may have left a full-display overlay on screen
         // that only `app.hide()` can reach (see hide-to-tray.js).
         glog(`close: hiding to tray (fullScreen=${mainWindow.isFullScreen()})`);
+        // A hand-edited config can switch the close button to hide while the
+        // icon is off; bring the icon back before the window goes, so it is
+        // never hidden with no way back.
+        syncTray();
         hideToTray(mainWindow, {
           log: glog,
           // isFullScreen() already reports the target while AppKit is still
@@ -986,13 +1001,31 @@ function createWindowLifecycle(options) {
     }
   }
 
+  // A focused show answers an explicit user gesture (a relaunch, the tray's
+  // Show item, a notification click) that usually reaches the app while another
+  // app is frontmost. On macOS 14+ `win.focus()` alone orders the window in
+  // without activating the app, so the other app keeps the keyboard and stays
+  // in front; steal activation the way the summon hotkey and the gateway-error
+  // reveal do. A show without `focus` never activates the app.
+  function activateApp() {
+    if (!IS_MAC || typeof app.focus !== "function") return;
+    try {
+      app.focus({ steal: true });
+    } catch {
+      /* best effort — the window is already shown and focused */
+    }
+  }
+
   function showMainWindow({ focus = false } = {}) {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     cancelPendingTrayHide(mainWindow);
     unhideApp();
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
-    if (focus) mainWindow.focus();
+    if (focus) {
+      mainWindow.focus();
+      activateApp();
+    }
     return true;
   }
 
@@ -1044,11 +1077,31 @@ function createWindowLifecycle(options) {
     return tray;
   }
 
-  // Returns the stored value, which the Settings switch renders.
+  // Create or remove the tray icon to match the stored choice (tray-icon.js).
+  function syncTray() {
+    const { show } = getTrayIcon(store, { isMac: IS_MAC });
+    if (show && !tray) {
+      createTray();
+    } else if (!show && tray) {
+      tray.destroy();
+      tray = null;
+    }
+  }
+
+  // Returns the stored value, which the Settings switch renders. The close
+  // button decides whether the tray icon may be hidden, so the icon follows.
   function setCloseActionAndLog(value) {
     const written = setCloseAction(store, value);
     glog(`closeAction set to ${written}`);
+    syncTray();
     return written;
+  }
+
+  function setTrayIconAndLog(show) {
+    const state = setTrayIcon(store, show, { isMac: IS_MAC });
+    glog(`showTrayIcon set to ${state.show}`);
+    syncTray();
+    return state;
   }
 
   async function promptRemoteHost() {
@@ -1694,7 +1747,6 @@ function createWindowLifecycle(options) {
   return {
     createMainWindow: createWindow,
     createConnectionWindow,
-    createTray,
     openNewSessionWindow,
     openNewConnectionWindow,
     promptRemoteHost,
@@ -1706,6 +1758,11 @@ function createWindowLifecycle(options) {
     closeAction: {
       get: () => getCloseAction(store),
       set: setCloseActionAndLog,
+    },
+    syncTray,
+    trayIcon: {
+      get: () => getTrayIcon(store, { isMac: IS_MAC }),
+      set: setTrayIconAndLog,
     },
     getSummonWindow,
     focusedDashboardWindow,

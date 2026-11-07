@@ -9,7 +9,7 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_history``, ``_timeout_alerts``.
+Instance fields written: ``_fired_schedules``, ``_history``, ``_timeout_alerts``.
 
 Instance fields read: ``_dir``, ``_on_job``, ``_push_refresh``, ``_running``, ``_runs``,
 ``_timeout_alert``.
@@ -98,6 +98,9 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         # when a result is produced; comparing strings cannot, because a run
         # may reproduce the previous text.
         job.result_produced = False
+        # Likewise the failure marker: a run stopped in its jitter wait counted
+        # no failure, so the merge must not judge the last run's against the limit.
+        job.failure_recorded = False
         # Inside the try: a cancel() during a jitter sleep of up to 59 min
         # must still reach the finally.
         if jitter > 0:
@@ -199,6 +202,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     and terminal.last_status != "error"
                     and not (terminal.fire_time_denied or terminal.run_never_started)
                 ):
+                    self._fired_schedules[terminal.id] = terminal.schedule
                     self.defer_removal(terminal.id)
             except Exception:
                 logger.exception("Failed to merge result for job '%s'", job.name)

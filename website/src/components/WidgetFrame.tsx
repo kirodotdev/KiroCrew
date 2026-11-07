@@ -14,7 +14,7 @@ import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../hooks/useNearViewport'
-import { sliceCodePoints } from './CommentOverlay'
+import { sliceCodePoints } from '../utils/codePoints'
 
 // Upper bound on the text a single widget action may pre-fill into the
 // composer. A malicious LLM-emitted <script> can postMessage

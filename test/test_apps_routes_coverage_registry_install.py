@@ -1,11 +1,7 @@
 """Coverage tests for registry installs, their SSE stream and the registries config.
 
-Pins ``_client_install_manifest``, ``POST /api/apps/registry/install``, the
-``POST /api/apps/registry/install-stream`` event stream and the config-file failure
-modes of ``PUT /api/apps/registries``.
-``test_apps_routes_coverage.py`` holds install, registration and the app views, and
-names the other route modules; the shared helpers live in
-``apps_routes_coverage_helpers.py``.
+Also ``_client_install_manifest`` and the config-file failure modes of
+``PUT /api/apps/registries``. Shared helpers live in ``apps_routes_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -22,6 +18,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import TestClient, TestServer
 from apps_routes_coverage_helpers import (
     APP,
+    _deregister_into,
     _install,
     _make_app,
     _setup_env,
@@ -49,9 +46,7 @@ def _sse_events(text: str) -> list[tuple[str, str]]:
     return events
 
 
-# ---------------------------------------------------------------------------
 # _client_install_manifest
-# ---------------------------------------------------------------------------
 
 
 class TestClientInstallManifest:
@@ -75,9 +70,7 @@ class TestClientInstallManifest:
         assert not cfg.supports_platform("linux")
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/registry/install
-# ---------------------------------------------------------------------------
 
 
 class TestRegistryInstall:
@@ -185,10 +178,54 @@ class TestRegistryInstall:
         assert body["registration"]["agents"] == []
         assert calls == ["stop", "deregister"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path", ["/api/apps/registry/install", "/api/apps/registry/install-stream"]
+    )
+    @pytest.mark.parametrize("ok", [True, False])
+    async def test_reinstall_over_an_installed_app_takes_it_down_to_replace_its_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, ok: bool
+    ) -> None:
+        # Replacing an installed app's files fails on Windows while its backend
+        # holds one open, so both routes stop the backend and scrub its resources
+        # at the replacement boundary, and a failed replacement brings it back.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
 
-# ---------------------------------------------------------------------------
+        async def _reinstall(name: str, **kwargs: Any) -> dict[str, Any]:
+            await kwargs["before_replace"]()
+            calls.append("replace")
+            return {"ok": ok, "name": name, "error": "" if ok else "copy failed"}
+
+        def _register(name: str) -> SimpleNamespace:
+            calls.append("register")
+            return SimpleNamespace(to_dict=dict)
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _reinstall)
+        monkeypatch.setattr(routes_mod, "register_app", _register)
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(path, json={"name": APP})
+            text = await resp.text()
+        if path.endswith("-stream"):
+            assert json.loads(_sse_events(text)[-1][1])["ok"] is ok
+        else:
+            assert resp.status == (201 if ok else 400), text
+        assert calls == [
+            "stop",
+            "deregister (agents kept)",
+            "replace",
+            "register",
+            "start",
+        ], calls
+
+
 # POST /api/apps/registry/install-stream (SSE)
-# ---------------------------------------------------------------------------
 
 
 class TestRegistryInstallStream:
@@ -298,12 +335,8 @@ class TestRegistryInstallStream:
     ) -> None:
         """The reason a refused install failed must travel ON the payload.
 
-        The desktop build-step refusal is logged to ``security_events.jsonl``
-        either way, but the dashboard's consent modal can only show a cause the
-        ``done`` event carries. Pinned as the sentence, not a truthy ``error``
-        key, because the UI renders this string — a generic placeholder
-        substituted here would leave the user with a refusal and no stated
-        reason, the dead end this test exists to prevent.
+        The consent modal can only show a cause the ``done`` event carries. Pinned as
+        the sentence, not a truthy ``error`` key, because the UI renders this string.
         """
         _setup_env(tmp_path, monkeypatch)
         refusal = (
@@ -409,9 +442,7 @@ class TestRegistryInstallStream:
         assert any(b"event: done" in w for w in writes)
 
 
-# ---------------------------------------------------------------------------
 # PUT /api/apps/registries — config-file failure modes
-# ---------------------------------------------------------------------------
 
 
 class TestRegistriesConfigFailures:

@@ -1,15 +1,18 @@
 /**
  * Text the dashboard did not write is displayed exactly as stored.
  *
- * Tool-step titles, question-card options, reminders and command-bar queries
- * reach `i18nT()` as interpolation values. These tests pin that such a value is
- * shown verbatim and is never handed to i18next at all, so i18next cannot
- * resolve a nesting reference in it, fill a placeholder in it, or scan it.
+ * Tool-step titles, question-card options, reminders, names and command-bar
+ * queries reach `i18nT()` or the `t` from `useTranslation()` as interpolation
+ * values. These tests pin that such a value is shown verbatim and never reaches
+ * i18next's interpolator, so i18next cannot resolve a nesting reference in it,
+ * fill a placeholder in it, or scan it.
  *
  * The nesting marker is built from char codes so this file never contains it
  * literally.
  */
 
+import { renderHook } from '@testing-library/react'
+import { useTranslation } from 'react-i18next'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { i18next } from './index'
@@ -28,15 +31,17 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks() })
 
-/** Every string i18next.t receives during `fn`, in its options or as its key. */
+/** Every string i18next's interpolator receives during `fn`: the string it
+ * fills (the catalog value, or the key when it is missing) and each value. */
 function seenByI18next(fn: () => void): string[] {
   const seen: string[] = []
-  const real = i18next.t.bind(i18next)
-  vi.spyOn(i18next, 't').mockImplementation(((k: unknown, opts?: Record<string, unknown>) => {
-    seen.push(String(k))
-    for (const v of Object.values(opts ?? {})) if (typeof v === 'string') seen.push(v)
-    return real(k as string, opts as never)
-  }) as never)
+  const interpolator = i18next.services.interpolator
+  const real = interpolator.interpolate.bind(interpolator)
+  vi.spyOn(interpolator, 'interpolate').mockImplementation((str, data, lng, options) => {
+    seen.push(str)
+    for (const v of Object.values(data)) if (typeof v === 'string') seen.push(v)
+    return real(str, data, lng, options)
+  })
   fn()
   return seen
 }
@@ -86,5 +91,15 @@ describe('interpolation values are displayed literally', () => {
     expect(title).toContain(query)
     expect(title).not.toContain('RESOLVED')
     expect(seen.some(s => s.includes(query))).toBe(false)
+  })
+})
+
+describe('the useTranslation() t displays values literally too', () => {
+  it('fills only the string\'s own placeholders', () => {
+    i18next.addResource('en', 'translation', KEY, '{{a}} then {{b}}')
+    const { result } = renderHook(() => useTranslation())
+    // i18next fills the first copy of a placeholder it finds; here that is the
+    // copy inside `a`, which left the real one raw.
+    expect(result.current.t(KEY, { a: '{{b}}', b: 'X' })).toBe('{{b}} then X')
   })
 })

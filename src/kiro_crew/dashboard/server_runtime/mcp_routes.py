@@ -196,6 +196,11 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/mediated-secret-request",
         _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
+    # Crew-owned Connection proxy (``connections.crew_oauth``): the in-session
+    # stdio bridge's only peer. Strict internal, Unix-socket only, off by default.
+    _connection_proxy = _deferred("connection_proxy", "api_connection_proxy")
+    app.router.add_post("/api/connection-proxy", _connection_proxy)
+    app.router.add_delete("/api/connection-proxy", _connection_proxy)
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
     # caller, so it stays on cookie auth — the same split the agent-panel surface
@@ -512,6 +517,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
     app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
+    # dismiss_notification MCP tool; the strict-internal "/api/notifications/agent"
+    # prefix covers it.
+    app.router.add_post("/api/notifications/agent/dismiss", handlers.api_notification_agent_dismiss)
     # Session control. Registered here so the headless --slack-only server
     # serves the same MCP surface as the dashboard; all three are on
     # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
@@ -644,6 +652,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
+    app.router.add_post("/api/slack-history", handlers.api_slack_history)
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
     app.router.add_post("/api/notifications/clear", handlers.api_notifications_clear)

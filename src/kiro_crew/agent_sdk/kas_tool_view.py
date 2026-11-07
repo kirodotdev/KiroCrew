@@ -165,12 +165,16 @@ def permission_allow_derivable(rule: dict[str, Any]) -> bool:
 
 
 def tools_settings_family(tool: Any) -> str:
-    """The tool family a ``toolsSettings`` key belongs to (``execute_bash`` and
-    ``shell`` are one), else the key itself."""
-    from kiro_crew.acp import kas_permissions
+    """The tool family a ``toolsSettings`` key belongs to (every kiro-cli spelling
+    of one tool is one: ``execute_bash``, ``shell``, ``executeBash``), else the
+    key itself."""
+    from kiro_crew.platform import tools_settings_aliases as aliases
 
-    family = kas_permissions._TOOLS_SETTINGS_FAMILY.get(tool) if isinstance(tool, str) else None
-    return family or str(tool)
+    if not isinstance(tool, str):
+        return str(tool)
+    name = aliases._TOOLS_SETTINGS_CANONICAL.get(tool, tool)
+    family = aliases._TOOLS_SETTINGS_FAMILY.get(name)
+    return family or name
 
 
 def tools_settings_unenforced(raw: Any) -> list[str]:
@@ -178,9 +182,11 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
 
     Read from KAS's own translation (``tools_settings_to_permissions``): a deny it
     cannot turn into a rule (a regex with no glob form, a URL pattern naming a
-    path) and an ``allowedCommands`` entry Crew's gate cannot answer are named.
+    path) and an ``allowedCommands`` entry Crew's gate cannot answer are named,
+    and so is a duplicate alias key kiro-cli drops (``canonical_tools_settings``).
     """
     from kiro_crew.acp import kas_permissions
 
-    _block, not_carried = kas_permissions.tools_settings_to_permissions(raw)
-    return sorted(not_carried)
+    settings, dropped = kas_permissions.canonical_tools_settings(raw)
+    _block, not_carried = kas_permissions.tools_settings_to_permissions(settings)
+    return sorted(set(not_carried) | set(dropped))

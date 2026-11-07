@@ -39,9 +39,10 @@ if TYPE_CHECKING:
         history_corpus_unreadable,
         logger,
         parse_cls_meta,
-        queue_entry_view,
+        queue_view,
         redact_credentials,
         redact_exfiltration_urls,
+        refused_durable_ids,
         remember_unknown_row_fields,
         slot_history_key,
         slot_not_found,
@@ -404,7 +405,9 @@ def _append_unflushed_tail_from_offset(
     the window rows whose id is not on disk, matched as a MULTISET (a caller can
     post one id twice) and selected by membership, not a prefix boundary, so an
     out-of-order flush never drops a row. ``_UNOWED_WINDOW_ROLES`` are skipped; a
-    pending ``permission`` row is still owed.
+    pending ``permission`` row is still owed. A matched row whose id disk holds
+    once in that region is served as the window's copy; a disk row no window row
+    matches (another writer's append) stays.
 
     Otherwise (a mixed or id-less region) walk window and disk forward together as
     an ordered SUBSEQUENCE: the save merges foreign rows back in time order
@@ -444,6 +447,9 @@ def _append_unflushed_tail_from_offset(
         # and none is dropped; each owed row is only INSERTED before the disk row of
         # the next window row that reached disk, so this is additive.
         owed_before: dict[int, list[dict]] = {}
+        # A repeated id would make the pairing a guess, so only a once-held id
+        # serves the window's copy (an unflushed variant switch must not repaint).
+        once_on_disk = {mid for mid, at in disk_mid_positions.items() if len(at) == 1}
         pending: list[dict] = []
         for m in window:
             if m.get("role", "assistant") in _UNOWED_WINDOW_ROLES:
@@ -455,13 +461,13 @@ def _append_unflushed_tail_from_offset(
             positions = disk_mid_positions.get(mid) if isinstance(mid, str) else None
             if positions:
                 at = positions.pop(0)
+                if mid in once_on_disk:
+                    window_disk[at] = m
                 if pending:
                     owed_before.setdefault(at, []).extend(pending)
                     pending = []
                 continue
             pending.append(m)
-        if not owed_before and not pending:
-            return all_msgs
         merged: list[dict] = list(all_msgs[:local_older_count])
         for i, m in enumerate(window_disk):
             merged.extend(owed_before.get(i, ()))
@@ -1205,6 +1211,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         }
         for q in slot._queue
     ]
+    # Judged on the live entries, in the same tick as the copy: the copy drops
+    # fields the durable writer weighs, so its verdict would differ from the write's.
+    queue_refused = refused_durable_ids(slot._queue)
     context_fields = await _context_snapshot_fields(state, slot)
     # Imported here, not at module scope: this function runs on the handlers
     # module's globals (``_facade_compose.compose``).
@@ -1295,7 +1304,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         )
         tail = json.dumps(
             {
-                "queue": [queue_entry_view(q) for q in queue_snapshot],
+                "queue": queue_view(queue_snapshot, queue_refused),
                 "total": total,
                 **page_fields,
                 # Seeds the context meter on open. Turn-scoped WS frames alone

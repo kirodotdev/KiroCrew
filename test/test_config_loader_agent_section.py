@@ -66,13 +66,9 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
 def test_ssh_auth_sock_forward_is_not_an_agent_config_field() -> None:
     """The SSH_AUTH_SOCK forward enable is NOT read from config.json.
 
-    Keeping the socket grants USE of the operator's ssh-agent keys for the
-    session -- an authorization, not a preference -- so its consent lives on the
-    keystone (``ssh_auth_sock_consent.json``, agent-nonwritable, sealed read-only
-    in the sandbox), the same placement as ``computer_use.json``. An
-    agent-writable enable in config.json would let a prompt-injected shell flip
-    its own forwarding on. This asserts the field is absent so it cannot silently
-    return: an agent-readable enable is the exact hole this design closes.
+    The forward grants use of the operator's ssh-agent keys, so consent lives in the
+    agent-nonwritable ``ssh_auth_sock_consent.json``. An enable in config.json would
+    let a prompt-injected shell turn its own forwarding on.
     """
     import dataclasses
 
@@ -106,21 +102,9 @@ def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
 def test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform(monkeypatch) -> None:
     """An UNDECLARED key resolves per platform, INTO the dataclass value.
 
-    The resolution lives here, at the one place that sees the raw document, and the
-    result is carried by the VALUE rather than by whether the key was present. That
-    is a safety property, not a style choice: :meth:`KiroCrewConfig.save` builds
-    the whole in-memory snapshot through ``to_dict()`` -> ``asdict(self.agent)``,
-    which holds the resolved value, and strips this key before writing unless the
-    operator declared it. If the key were written, every full-document write (the boot
-    default-config write, CLI one-shots) would turn "never decided" into a
-    declaration that outranks the platform default — see the save tests below and
-    ``test_windows_default_survives_a_full_document_round_trip``.
-
-    A declared value still wins in both directions, on every platform.
-    ``config.loader.unsandboxed_exec_declared`` remains for diagnostics only (audit
-    labelling and message wording); the effective verdict is
-    ``sandbox.unsandboxed_exec_permitted_by()``. The direction ``kirocrew setup``
-    asks in is covered by ``test_sandbox_unsandboxed_exec_consent.py``.
+    :meth:`KiroCrewConfig.save` strips this key unless the operator declared it;
+    writing it would turn "never decided" into a declaration that outranks the
+    platform default. A declared value wins in both directions on every platform.
     """
     monkeypatch.setattr("sys.platform", "win32")
     assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is True
@@ -159,16 +143,9 @@ def _saved_agent_section(tmp_path, monkeypatch, cfg) -> dict:
 def test_save_omits_the_exec_permission_when_it_was_never_declared(tmp_path, monkeypatch) -> None:
     """Absence is load-bearing, so a whole-document write must not materialize it.
 
-    ``sandbox_allow_unsandboxed_exec`` is resolved from its ABSENCE: an absent key
-    means "no decision recorded", which is what selects the platform default, what
-    tells ``kirocrew setup`` a decision is still worth surfacing, and what makes the
-    audit event say the PLATFORM permitted a spawn rather than an operator.
-
-    ``save()`` publishes every field, so without the strip it would freeze the
-    resolved value in as a declaration - writing ``false`` refuses every agent
-    subprocess nobody asked to refuse, and writing ``true`` fakes a consent that was
-    never given and skips the prompt that makes the posture explicit. Both directions are pinned
-    here.
+    An absent ``sandbox_allow_unsandboxed_exec`` means "no decision": it selects the
+    platform default and keeps the ``kirocrew setup`` prompt. Writing ``false`` or
+    ``true`` would fake a decision; both directions are pinned.
     """
     monkeypatch.setattr("sys.platform", "win32")
     written = _saved_agent_section(tmp_path, monkeypatch, KiroCrewConfig())
@@ -233,11 +210,8 @@ def test_agent_spawn_min_memory_gb_parsed_and_round_trips():
 class TestSessionControlLoad:
     """agent.session_control load-time coercion.
 
-    The operator's single withdrawal of cross-session control. A MISSING key
-    defaults to true (today's behaviour), but a PRESENT-but-malformed value --
-    the routine quoted `"false"` config mistake -- must coerce to FALSE, so a
-    botched opt-out withdraws the capability rather than silently leaving every
-    agent able to drive peer sessions.
+    A missing key defaults to true; a malformed value (such as a quoted `"false"`)
+    coerces to FALSE so a botched opt-out still withdraws cross-session control.
     """
 
     def test_missing_key_defaults_true(self) -> None:
@@ -295,11 +269,8 @@ class TestSessionControlLoad:
 class TestMemberDispatchLoad:
     """agent.member_dispatch load-time coercion.
 
-    The operator ceiling on the member session-control bypass. A MISSING key
-    defaults to true (today's behaviour), but a PRESENT-but-malformed value —
-    the routine quoted `"false"` config mistake — must coerce to FALSE, so a
-    botched opt-out withdraws the bypass rather than silently leaving it on
-    (a governance ceiling that fails open otherwise).
+    A missing key defaults to true; a malformed value (such as a quoted `"false"`)
+    coerces to FALSE so this governance ceiling fails closed.
     """
 
     def test_missing_key_defaults_true(self) -> None:
@@ -339,11 +310,8 @@ class TestMemberDispatchLoad:
 class TestCrewPanelLoad:
     """agent.crew_panel load-time coercion.
 
-    The operator ceiling on the crew member's own webview, and the third key on
-    the shared fail-closed loop. A MISSING key defaults to true (the capability's
-    zero-configuration contract), but a PRESENT-but-malformed value -- the routine
-    quoted `"false"` config mistake -- must coerce to FALSE, so a botched opt-out
-    withdraws the grant rather than silently leaving every member able to publish.
+    A missing key defaults to true; a malformed value (such as a quoted `"false"`)
+    coerces to FALSE so a botched opt-out still withdraws the webview grant.
     """
 
     def test_missing_key_defaults_true(self) -> None:
@@ -462,9 +430,7 @@ class TestPersistentLogLevel:
         assert d["agent"]["log_level"] == "ERROR"
 
 
-# ---------------------------------------------------------------------------
 # Phase 3: Soft-Stop Config Field Tests
-# ---------------------------------------------------------------------------
 
 
 class TestSoftStopBudget:
@@ -506,9 +472,7 @@ class TestSoftStopBudget:
         assert entry.default_value == 10.0
 
 
-# ---------------------------------------------------------------------------
 # Dynamic sub-agent sizing config fields (dynamic-subagent-sizing.md §6)
-# ---------------------------------------------------------------------------
 
 
 class TestDynamicSubagentSizingFields:
@@ -743,16 +707,10 @@ class TestAppsUiStreamTimeout:
 
 
 class TestAgentDefaultsRoundTrip:
-    """``agent.model`` / ``agent.reasoning_effort`` are the persisted defaults the
-    Settings UI writes. They must survive a real load() from disk.
+    """``agent.model`` / ``agent.reasoning_effort`` survive a real load() from disk.
 
-    Regression: ``reasoning_effort`` was declared on the dataclass but omitted
-    from load()'s explicit kwarg list, so it always fell back to ``""``. That
-    made the whole default-effort feature inert AND erased the user's stored
-    value on the next save(), because to_dict() serialises the (empty) in-memory
-    field back over config.json. Tests that set the attribute on a directly
-    constructed config passed right through the bug — only a load() from disk
-    catches it.
+    A field missing from load()'s kwarg list falls back to ``""`` and the next save()
+    erases the stored value; only a load from disk catches that.
     """
 
     def test_reasoning_effort_is_hydrated_from_disk(self) -> None:

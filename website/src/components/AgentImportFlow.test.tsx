@@ -7,6 +7,7 @@ import type {
 } from '../api/client'
 import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
+import { namedCeiling } from '../test/namedCeiling'
 import AgentImportFlow, { skipReasonText } from './AgentImportFlow'
 import { i18next } from '../i18n/all'
 import { LocalOverlayRoot } from './overlayRoot'
@@ -467,11 +468,13 @@ describe('AgentImportFlow', () => {
     const onComplete = vi.fn()
     renderWithProviders(<AgentImportFlow initialOpen onComplete={onComplete} />)
 
+    // The scan resolves, an effect sends the completed write, and its onSuccess
+    // calls onComplete before the close re-renders: the unmount is part of the wait.
     await waitFor(() => {
       expect(api.onboardingImportState).toHaveBeenCalledWith({ completed: true })
       expect(onComplete).toHaveBeenCalledOnce()
-    })
-    expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    }, namedCeiling('AUTO_COMPLETE_CLOSED', 5000))
   })
   // The scan runs because the user asked for it (Settings, Import from another
   // agent), not because first run reached the chapter. First run ends the chapter
@@ -819,11 +822,29 @@ describe('AgentImportFlow', () => {
     expect(screen.getByText('Skipped')).toHaveAttribute('data-reason', 'a_code_no_one_knows_yet')
     expect(screen.getByText('Secrets are never imported')).toBeInTheDocument()
     expect(screen.queryByText('row_count_limit')).toBeNull()
-    // Pinned until the scan sends a failed flag (#29216): a caught failure
-    // reads in words but is still a note, like every other skip.
+    // A failure-sounding code alone keeps the row a note: only the scan's
+    // `failed` flag makes it an error.
     expect(screen.getByText('Files could not be read')).toHaveAttribute('data-reason', 'read_failed')
     expect(screen.getByText('Could not be read as valid settings')).toHaveAttribute('data-reason', 'invalid_config')
     expect(screen.queryByTestId('agent-import-skip-read-error')).toBeNull()
+  })
+
+  it('shows a skip the scan flags as failed as an error, and a deliberate skip as a note', async () => {
+    mockSuccessfulRequests({
+      ...SCAN_RESPONSE,
+      skipped: [
+        { source: 'Claude Code', category: 'Memories', reason: 'invalid_memory_record', failed: true },
+        { source: 'Claude Code', category: 'MCP servers', reason: 'credential_bearing_server' },
+      ],
+    })
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await goToReview()
+
+    const failures = screen.getAllByTestId('agent-import-skip-read-error')
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toHaveAttribute('role', 'alert')
+    expect(failures[0]).toHaveTextContent('Could not be read as valid settings')
+    expect(screen.getByText('Holds credentials, so it stays with its source').closest('[role="alert"]')).toBeNull()
   })
 
   it('reads a skip code by its kind, not by a suffix another kind shares', () => {

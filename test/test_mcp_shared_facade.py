@@ -114,6 +114,7 @@ _REBOUND_HOMES = {
     "_stdout_fd": "kiro_crew.mcp_shared_wire",
     "_framing": "kiro_crew.mcp_shared_wire",
     "_last_failure_time": "kiro_crew.mcp_shared_policy",
+    "_last_probe_time": "kiro_crew.mcp_shared_policy",
     "_last_startup_race_time": "kiro_crew.mcp_shared_policy",
     "_last_startup_race_key": "kiro_crew.mcp_shared_policy",
     "_failure_count": "kiro_crew.mcp_shared_policy",

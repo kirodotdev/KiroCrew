@@ -42,7 +42,10 @@ from kiro_crew.session_parts.state_views import StateProperty
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_bindings")
 
-SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_class_only_scan_can_fail",
+)
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
@@ -145,6 +148,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_recycling": ("property", False, "5c9a1a8aab23", "state_views"),
     "_registry_state": ("function", False, "21fce5dd2c88", "state_views"),
     "_released_sessions_hook": ("function", True, "b60c5fea256e", "sweeps"),
+    "_remove_pooled_providers_by_pid": ("function", False, "21d703fae534", "runtimes"),
     "_reset_still_critical": ("function", True, "14f70d097513", "turn_context"),
     "_resolve_agent_model": ("staticmethod", False, "f2204edfe0d1", "session"),
     "_retire_kiro_bg_runtime": ("function", True, "b3a488b20d12", "teardown"),
@@ -158,8 +162,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_send_abort_for_session": ("function", True, "a6707a152144", "teardown"),
     "_sessions": ("property", False, "5c9a1a8aab23", "state_views"),
     "_settle_compact_cooldown": ("function", False, "782a54a66452", "turn_context"),
+    "_spare_pid_providers": ("function", False, "c8959ffb01ed", "runtimes"),
     "_spawn_in_flight": ("function", False, "4b576121a346", "claims"),
-    "_start_cleanup_for_waiting_deletes": ("function", True, "b60c5fea256e", "runtimes"),
     "_start_sem": ("property", False, "1f1197566c49", "state_views"),
     "_starting_pids": ("property", False, "d657ba783a38", "state_views"),
     "_stuck_reported": ("property", False, "b00f42b34605", "state_views"),
@@ -182,6 +186,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "allocation_predecessor": ("function", False, "f1d40e624ae4", "claims"),
     "allocation_requested_model": ("function", False, "f1d40e624ae4", "claims"),
     "any_active_turn": ("function", False, "a6632a57e602", "claims"),
+    "approval_revocation": ("function", False, "028659ce42ac", "claims"),
     "await_replay_gap": ("function", True, "958babeb61c8", "teardown"),
     "aws_profile_differs_from_parent": ("function", False, "76593e568eac", "claims"),
     "aws_profile_split_possible": ("function", False, "3780bd272b7a", "claims"),
@@ -647,11 +652,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", session_mod._SESSION_OWNERS)

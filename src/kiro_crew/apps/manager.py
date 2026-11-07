@@ -220,11 +220,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         preserved_data_awaits,
     )
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
-        _RMTREE_BACKOFF_SECONDS,
-        _RMTREE_MAX_ATTEMPTS,
-        _SHARING_VIOLATION_WINERRORS,
         _drop_trust_grant,
         _has_trust_grant,
+        _holds_base_grant,
         _restore_trust_grant,
         _rmtree_app_dir,
         _trust_grant_local,
@@ -294,6 +292,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         repository_bound_grant_denied,
         shipped_builtin_app_root,
     )
+    from kiro_crew.apps.host_exec_grants import (  # noqa: F401
+        grant_host_exec,
+        host_exec_granted,
+        revoke_host_exec,
+    )
     from kiro_crew.apps.link_open_grants import (  # noqa: F401
         link_open_grant_row,
     )
@@ -318,16 +321,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.selection_action_grants import (  # noqa: F401
         selection_action_grant_row,
     )
-    from kiro_crew.atomic_write import (  # noqa: F401
-        atomic_write,
-        on_event_loop,
-    )
+    from kiro_crew.atomic_write import atomic_write  # noqa: F401
     from kiro_crew.config.loader import (  # noqa: F401
         ConfigReadError,
         config_dir,
         config_local_path,
         config_path,
         read_config_text,
+        read_endorsed_config_text,
         update_config_locked,
     )
     from kiro_crew.loop_lock import (  # noqa: F401

@@ -185,6 +185,7 @@ function harness(overrides = {}) {
       child.killed = false;
       child.kill = () => { child.killed = true; };
       child.unref = () => { child.unrefed = true; };
+      child.stderr = new EventEmitter();
       const call = [...args];
       call.child = child;
       spawnCalls.push(call);
@@ -241,6 +242,7 @@ const FOREIGN_COMMAND = "ssh -L 5476:localhost:5476 build-host";
 
 const INSTALLING_PROBE_MS = 5000;
 const INSTALLING_COMPLETE_LINGER_MS = 700;
+const INSTALLING_STALL_MS = 5 * 60_000;
 
 // The error dialog is an ordinary BrowserWindow. This stand-in records what
 // the supervisor paints into it and lets a test act as the user (click) or as
@@ -317,5 +319,6 @@ module.exports = {
   FOREIGN_COMMAND,
   INSTALLING_PROBE_MS,
   INSTALLING_COMPLETE_LINGER_MS,
+  INSTALLING_STALL_MS,
   fakeDialogWindows,
 };

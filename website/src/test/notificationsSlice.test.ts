@@ -84,6 +84,21 @@ describe('notificationsSlice', () => {
       expect(state.items[1].ts).toBe('2')
     })
 
+    it('a repeated arrival is ignored, also in a full ring', () => {
+      let state = reducer(undefined, addNotification(n1))
+      const once = state
+      state = reducer(state, addNotification({ ...n1, title: 'again' }))
+      expect(state).toBe(once)
+      for (let i = 0; i < NOTIFICATIONS_RING_CAP; i++) {
+        state = reducer(state, addNotification({ kind: 'cron', title: `n${i}`, body: '', ts: `x${i}` }))
+      }
+      const full = state
+      state = reducer(state, addNotification({ kind: 'cron', title: 'again', body: '', ts: 'x5' }))
+      expect(state).toBe(full)
+      expect(state.items).toHaveLength(NOTIFICATIONS_RING_CAP)
+      expect(state.items[0].ts).toBe('x0')
+    })
+
     it('ackNotificationByTs marks as acked', () => {
       const state = reducer({ items: [n1, n2] }, ackNotificationByTs('1'))
       expect(state.items[0].acked).toBe(true)
@@ -646,8 +661,12 @@ describe('notificationsSlice: approval decision lifecycle', () => {
     expect(store.getState().notifications.retiredApprovals?.r).toEqual({ failed: 'gateway busy' })
   })
 
-  it('holds across 500 seeded interleavings of presses, end frames, snapshots, clears, ring fills and settles', () => {
-    for (let seed = 1; seed <= 500; seed++) {
+  // 500 seeds split into 10 chunks of 50 so no single test carries all 500
+  // under vitest's default 15 s per-test wall limit on loaded CI runners.
+  it.each(
+    Array.from({ length: 10 }, (_, i) => [i * 50 + 1, i * 50 + 50] as [number, number]),
+  )('holds across seeds %i–%i of 500 seeded interleavings of presses, end frames, snapshots, clears, ring fills and settles', (seedFrom, seedTo) => {
+    for (let seed = seedFrom; seed <= seedTo; seed++) {
       const rand = rng(seed)
       let state = seeded()
       let pending = 0

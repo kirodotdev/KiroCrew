@@ -16,6 +16,7 @@ export default function FilterRow({
   return (
     <button
       onClick={onToggle}
+      aria-pressed={active}
       disabled={disabled}
       title={disabled ? (disabledHint ?? i18nT('apps.issueRadar.components.filterRow.sign_in_with_the_gh_cli_to_use_this_filter')) : label}
       className={`w-full flex items-center px-2 py-1.5 rounded-md text-[13px] text-left cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-default ${active ? 'bg-accent-subtle text-text font-medium' : 'text-muted hover:bg-bg-hover'}`}

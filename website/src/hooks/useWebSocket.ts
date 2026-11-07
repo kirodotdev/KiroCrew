@@ -3,10 +3,10 @@ import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, dismissNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose,
 } from '../store/chatSlice'
@@ -19,6 +19,7 @@ import { handleGuideObserveFrame } from '../guide/liveObservation'
 import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
+import { CONFIG_PENDING_QUERY_KEY } from '../pages/settings/configPendingQuery'
 import { teamRoots } from '../pages/chat/command-center/model'
 import {
   applySessionProjection,
@@ -39,7 +40,8 @@ import {
 import { useSocketConnection } from './websocket/connection'
 import { createFoldWatch, FOLD_HELLO_FRAME, type FoldWatch } from './websocket/foldWatch'
 import { applySlotFoldFrame, readSlotFoldFrame, resetWorkDeltaBases, SLOT_DELTA_FRAME, type SlotFoldFrame, type SlotFoldOutcome } from './websocket/workDelta'
-import { noteAppSlotFrame } from '../utils/appSlotPush'
+import { appWatchedSlots, noteAppSlotChanged, noteAppSlotFrame, onAppWatchedSlotsChange } from '../utils/appSlotPush'
+import { catchupSlots, createChunkWatch, type ChunkWatch } from './websocket/chunkWatch'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
@@ -60,6 +62,7 @@ import {
   handleSlotFoldMoved,
   handleSourceStatus,
   handleThreadReply,
+  invalidateChatPins,
   invalidateRefreshQueries,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
@@ -160,14 +163,17 @@ export function useWebSocket() {
   const approvals = useApprovalRegistry(dispatch, queryClient)
   const cards = useComposerCards(dispatch)
   const syncWorkflowRuns = useWorkflowRunReconcile(dispatch, queryClient)
-  const buffers = useStreamBuffers({ dispatch, socket, onActiveSlotFlushed: voice.speakStreamedDelta })
+  const buffers = useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed: voice.speakStreamedDelta })
   const slotList = useSlotListSync(dispatch, queryClient, buffers)
   const bundle = useBundleReload(dispatch, getDashboardState)
-  const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })
+  const chatStream = useChatStream({ dispatch, queryClient, buffers, voice, reconnectingRef })
   const turnCompletion = useTurnCompletion({ dispatch, queryClient, reconnectingRef })
   // Which work boards this tab shows, sent as `fold_watch` once a gateway that
   // routes by watch set says `fold_hello`. Created with the hook's lifetime.
   const foldWatchRef = useRef<FoldWatch | null>(null)
+  // Which slots this tab renders a stream for, sent as `chunk_watch` on every
+  // open and change. Created with the hook's lifetime.
+  const chunkWatchRef = useRef<ChunkWatch | null>(null)
 
   /** Reconcile coordinator approvals against the authority on every open.
    *  The registry decides what to retire and adopt; the permission row an
@@ -202,6 +208,8 @@ export function useWebSocket() {
       slotList.resetForConnection()
       // A new socket starts unwatched; the gateway's hello re-sends the set.
       foldWatchRef.current?.reset()
+      // The gateway scopes stream frames per socket, so a new one starts empty.
+      chunkWatchRef.current?.onOpen()
       // A fold revision is minted by the gateway process that folded, so numbers
       // from the previous socket are not comparable with this one's: carried over,
       // a restarted gateway's frames would all read as stale.
@@ -212,6 +220,9 @@ export function useWebSocket() {
       // which a restarted gateway's frames would all fall below. One re-read per
       // connection re-bases it on the process now serving.
       void queryClient.invalidateQueries({ queryKey: ['crew-log-projections'] }, { cancelRefetch: false })
+      // `config_pending_changed` is one-shot: a change while the socket was down
+      // is only seen by re-reading.
+      void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY }, { cancelRefetch: false })
       // The Context tab's usage revisions belong to the previous process too.
       resetContextTraceRefresh()
       // Cache auto-speak preference
@@ -299,6 +310,12 @@ export function useWebSocket() {
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
             break
+          case 'config_pending_changed':
+            // Owner-only frame: a settings file edited outside the dashboard went
+            // pending or was resolved. The Settings nav dot and the Security cards
+            // read this one query (pages/settings/configPendingQuery.ts).
+            void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY })
+            break
           case 'skills.pending_changed': {
             // A skill candidate (new or an update proposal) was just staged for
             // review. Refresh the pending queue so an already-open Skills tab
@@ -377,9 +394,7 @@ export function useWebSocket() {
             // slot_key only — no pin content — so nothing sensitive crosses the
             // WebSocket to any listener.
             const slotKey = (data as { slot_key?: string }).slot_key
-            if (slotKey) {
-              queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
-            }
+            if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
           case 'artifact_update':
@@ -397,8 +412,9 @@ export function useWebSocket() {
             // configured sound — the Redux action alone only drives the
             // toast/badge, not the sound.
             // RFC Phase 3: muted-channel (silenced) and passive notes are
-            // feed-only — no sound.
-            if (!n.silenced && n.priority !== 'passive') {
+            // feed-only — no sound. So is a quiet replacement: a keyed note
+            // moving along its lifecycle at no higher priority.
+            if (!n.silenced && n.priority !== 'passive' && !n.quiet) {
               dispatchMcNotification(n.kind)
             }
             // The in-app banner hears LIVE arrivals only. A reconnect catch-up
@@ -409,7 +425,7 @@ export function useWebSocket() {
             // The boot snapshot never reaches here at all (it arrives through
             // `fetchNotifications`, not this frame), so mount replay is
             // excluded by construction.
-            if (!reconnectingRef.current) dispatchLiveNotification(n)
+            if (!reconnectingRef.current && !n.quiet) dispatchLiveNotification(n)
             break
           }
           case 'panel_published':
@@ -444,6 +460,10 @@ export function useWebSocket() {
             break
           case 'notification_unack':
             dispatch(unackNotificationByTs(data.ts))
+            break
+          case 'notification_dismiss':
+            // The note's publisher withdrew it; every view drops it.
+            dispatch(dismissNotificationByTs(data.ts))
             break
           case 'notifications_clear':
             // Another view cleared the inbox; drop this view's copy so the
@@ -604,7 +624,7 @@ export function useWebSocket() {
             chatStream.onToolCall(data)
             break
           case 'tool_result':
-            dispatch(batchedUnlessOpen(data.slot, sseToolResult(data as { slot: string; output: string; tool_call_id?: string; final?: boolean })))
+            dispatch(batchedUnlessOpen(data.slot, sseToolResult(data as { slot: string; output: string; tool_call_id?: string; final?: boolean; slim?: boolean })))
             break
           case 'mcp_app_render':
             // MCP App (SEP-1865) render payload from the gateway. Stored by
@@ -659,6 +679,11 @@ export function useWebSocket() {
             dispatch(sseActivityEvent(ev))
             break
           }
+          case 'models_changed':
+            // A cold model list was filled by a background session the server
+            // started for it (no chat spawned, so no `spawned` frame came).
+            queryClient.invalidateQueries({ queryKey: ['available-models'] })
+            break
           case 'subagent_spawn':
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string }))
             break
@@ -765,6 +790,17 @@ export function useWebSocket() {
             onUsageFrame(queryClient, frame)
             break
           }
+          case 'chunk_watch_ack':
+            // Slots that joined this tab's watch set mid-turn: their earlier
+            // chunks were held back, so re-read them now that every later one
+            // reaches this socket. The same pair the reconnect catch-up uses,
+            // plus any app embed showing the slot, which reads its own query.
+            for (const slot of catchupSlots(data)) {
+              if (slot === store.getState().chat.activeSlot) dispatch(refreshSlot(slot))
+              else dispatch(warmSlotCache(slot))
+              noteAppSlotChanged(slot)
+            }
+            break
           case FOLD_HELLO_FRAME:
             // This gateway sends a board's slot-fold frames only to tabs that
             // watch it: tell it which boards this tab shows.
@@ -1005,6 +1041,12 @@ export function useWebSocket() {
           case 'chat_thinking':
             chatStream.onChatThinking(data)
             break
+          case 'chat_phase':
+            chatStream.onChatPhase(data)
+            break
+          case 'tool_status':
+            chatStream.onToolStatus(data)
+            break
           case 'chat_segment': {
             buffers.flushChunks()
             voice.speakSegmentTail(data.slot as string)
@@ -1015,7 +1057,18 @@ export function useWebSocket() {
             // Buffered with the slot's chunks: the label and the text around
             // it land in the frame's one flush, in arrival order.
             if (data.slot && data.status) {
-              buffers.bufferStatusLabel(data.slot, { kind: 'thinking', label: data.status })
+              // The generic thinking status is the one label the server sends
+              // in a fixed English phrase; store it as the bare `thinking`
+              // phase so `toolStatusLabel` resolves the catalog key in the
+              // current UI language instead of painting the English text
+              // verbatim. Any other (genuinely distinct) server label still
+              // passes through unchanged.
+              const isGenericThinking =
+                data.status === i18nT('pages.chatSidebar.thinking', { lng: 'en' })
+              buffers.bufferStatusLabel(
+                data.slot,
+                isGenericThinking ? { kind: 'thinking' } : { kind: 'thinking', label: data.status },
+              )
             }
             break
           case 'chat_variant_switch':
@@ -1179,6 +1232,22 @@ export function useWebSocket() {
     socket.resume()
     const foldWatch = createFoldWatch(queryClient, (payload) => socket.sendIfOpen(payload))
     foldWatchRef.current = foldWatch
+    const chunkWatch = createChunkWatch({
+      queryClient,
+      activeSlot: () => store.getState().chat.activeSlot,
+      appSlots: appWatchedSlots,
+      hidden: () => document.hidden,
+    }, (payload) => socket.sendIfOpen(payload))
+    chunkWatchRef.current = chunkWatch
+    let watchedActive = store.getState().chat.activeSlot
+    const detachActiveWatch = store.subscribe(() => {
+      const active = store.getState().chat.activeSlot
+      if (active === watchedActive) return
+      watchedActive = active
+      chunkWatch.sync()
+    })
+    const detachAppWatch = onAppWatchedSlotsChange(chunkWatch.sync)
+    document.addEventListener('visibilitychange', chunkWatch.sync)
     connect()
     const detachQuestionRetirements = store.subscribe(cards.onQuestionStateChange)
     const detachVoice = voice.attachWindowEvents()
@@ -1197,6 +1266,11 @@ export function useWebSocket() {
       detachFocus()
       foldWatch.dispose()
       if (foldWatchRef.current === foldWatch) foldWatchRef.current = null
+      detachActiveWatch()
+      detachAppWatch()
+      document.removeEventListener('visibilitychange', chunkWatch.sync)
+      chunkWatch.dispose()
+      if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
   }, [socket, connect, voice, buffers, cards, queryClient])
 

@@ -22,7 +22,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 
 Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
 ``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
-``_session_id``, ``_steer_turn``, ``_turn_lock``.
+``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -542,9 +542,10 @@ async def _prompt_loop(
                             )
                         else:
                             logger.warning(
-                                "Stale turn detected for req %d — no data for %.0fs after text was streamed "
-                                "(liveness=%s: %s). Treating as complete.",
+                                "Stale turn detected for req %d on session %s — no data for %.0fs "
+                                "after text was streamed (liveness=%s: %s). Treating as complete.",
                                 req_id,
+                                self._session_key,
                                 _idle_secs,
                                 verdict,
                                 evidence,
@@ -959,9 +960,11 @@ async def _dispatch_events(
     got_complete = False
     saw_agent_switch = False
     # A prompt turn takes ``_session/steering`` steers; a command turn and a
-    # turn the agent started do not. Steers accepted into an earlier turn were
-    # settled or dropped there.
+    # turn the agent started do not. Steers accepted into or held for an
+    # earlier turn were settled or dropped there.
     self._steers_accepted = []
+    self._steers_held = []
+    self._held_steers_unanswered = set()
     self._steering_turn_req = (
         None if extract_agent_from_result or req_id == _AGENT_STARTED_REQUEST_ID else req_id
     )
@@ -1226,6 +1229,8 @@ async def _dispatch_events(
                     self._active_tool_calls.discard(tool_result_event.tool_call_id or "")
                     self._tool_dispatched = self._active_tool_calls.possibly_open
                     self._stale_eligible = not self._active_tool_calls.possibly_open
+                    # A steer held while a call ran goes out once none is open.
+                    self._release_held_steers()
                 # Fire the PostToolUse HOOK ENGINE now that the tool RESULT
                 # (and its output) exists — the Pre-vs-Post split is required
                 # because fire_tool_hooks above is PreToolUse-only. No-op

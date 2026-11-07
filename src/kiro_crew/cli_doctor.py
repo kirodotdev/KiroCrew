@@ -55,6 +55,7 @@ from kiro_crew import (  # noqa: F401
     agent_state,
     dep_sync,
     diagnostics,
+    env,
     gateway_lock,
     host_task_sizing,
     kiro_sandbox_conflict,
@@ -309,6 +310,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _LEGACY_VENV_DIR_NAMES,
         _doctor_cron_script_sources,
         _doctor_data_home,
+        _doctor_data_home_owner,
         _doctor_import_path,
         _doctor_path_launcher,
         _doctor_skill_currency,
@@ -668,9 +670,16 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # Decided once here and threaded to the Connectivity row below, so the two
     # kiro-cli rows of one report cannot read the config at different moments.
     bundle_route = kas_bundle.kas_bundle_route()
+    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     if kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
         services._doctor_headless_auth(issues)
+    elif kiro_role:
+        # Every session on a selected Kiro CLI role fails to spawn. Relay KAS is not
+        # counted: with no kiro-cli its spawn takes Crew's own engine (``kas_route``).
+        print("  kiro-cli:    ❌ not found (a selected backend runs it)")
+        print("               Install kiro-cli per its docs, then: kiro-cli login")
+        issues.append("kiro-cli not found")
     elif bundle_route:
         # Not a gap: the selected backend runs Crew's own installed engine (the
         # KAS backend section reports it), so an install hint here would send the
@@ -778,6 +787,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover legacy home) ──
     install._doctor_data_home()
+    install._doctor_data_home_owner(issues)
     install._doctor_cron_script_sources(issues)
     install._doctor_skill_currency(issues)
     agents._doctor_deprecated_agent_specs(cfg, issues)
@@ -968,7 +978,6 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Connectivity ──
     print("\nConnectivity")
-    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     relay_entry = services.kas_relay_entry(kiro) if relay_kas_role else None
     if bundle_route:
         # The engine this host runs, where the kiro-cli version row goes on the
@@ -1104,6 +1113,7 @@ _EXPORTS: dict[str, str] = {
             "_LEGACY_VENV_DIR_NAMES",
             "_doctor_cron_script_sources",
             "_doctor_data_home",
+            "_doctor_data_home_owner",
             "_doctor_import_path",
             "_doctor_path_launcher",
             "_doctor_skill_currency",

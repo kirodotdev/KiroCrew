@@ -690,6 +690,13 @@
       "hint": "Expand history sidebar by default"
     },
     {
+      "id": "chat.include-subfolder-contents-in-folder-counts",
+      "label": "Include Subfolder Contents in Folder Counts",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.include-subfolder-contents-in-folder-counts",
+      "hint": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds"
+    },
+    {
       "id": "chat.jump-to-the-bottom-when-you-send",
       "label": "Jump to the bottom when you send",
       "tab": "chat",
@@ -757,6 +764,12 @@
       "hint": "A click opens the session in its own session tab instead of replacing the active tab's session."
     },
     {
+      "id": "chat.optimize-before-sending",
+      "label": "Optimize Before Sending",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-before-sending"
+    },
+    {
       "id": "chat.pin-summary-in-side-panel",
       "label": "Pin Summary in Side Panel",
       "tab": "chat",
@@ -786,6 +799,13 @@
       "hint": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date."
     },
     {
+      "id": "chat.preferred-reply-language",
+      "label": "Preferred Reply Language",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.preferred-reply-language",
+      "hint": "Code, commit messages and PR text keep the project's own language."
+    },
+    {
       "id": "chat.prevent-sleep-while-running",
       "label": "Prevent sleep while running",
       "tab": "chat",
@@ -805,6 +825,20 @@
       "label": "Quick Send",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.quick-send"
+    },
+    {
+      "id": "chat.recall-sent-messages-with-arrow-keys",
+      "label": "Recall Sent Messages with Arrow Keys",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.recall-sent-messages-with-arrow-keys",
+      "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
+    },
+    {
+      "id": "chat.require-a-second-escape-to-stop-the-turn",
+      "label": "Require a second Escape to stop the turn",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.require-a-second-escape-to-stop-the-turn",
+      "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn."
     },
     {
       "id": "chat.response-verbosity",
@@ -925,6 +959,15 @@
       "label": "Split View (Session Grid)",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.split-view-session-grid"
+    },
+    {
+      "id": "chat.start-new-chats-in-ultra-mode",
+      "label": "Start New Chats in Ultra Mode",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.new_chat_crew_mode",
+      "description": "Ultra Mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
+      "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
+      "configKey": "dashboard.new_chat_crew_mode"
     },
     {
       "id": "chat.style-markdown-while-typing",
@@ -1326,6 +1369,13 @@
       "configKey": "dashboard.terminal.completion.enabled"
     },
     {
+      "id": "display.copy-on-select",
+      "label": "Copy on select",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=display.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens."
+    },
+    {
       "id": "display.cursor-style",
       "label": "Cursor style",
       "tab": "display",
@@ -1474,6 +1524,13 @@
       "description": "Copies the command for you to paste. It is never run for you.",
       "hint": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
       "configKey": "dashboard.terminal.reuse_current"
+    },
+    {
+      "id": "display.show-tray-icon",
+      "label": "Show tray icon",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-tray-icon",
+      "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there."
     },
     {
       "id": "display.show-unread-dot-on-session-cards",
@@ -1706,6 +1763,13 @@
       "tab": "security",
       "route": "/settings/security/redaction?highlight=security.redact-credentials-in-files-the-dashboard-opens-for-you",
       "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+    },
+    {
+      "id": "security.config-pending",
+      "label": "Settings files changed outside {{productName}}",
+      "tab": "security",
+      "route": "/settings/security/posture?highlight=security.config-pending",
+      "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
     },
     {
       "id": "security.trust-every-third-party-app",

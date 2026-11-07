@@ -35,14 +35,10 @@ _TRANSIENT_DELAY = 2.0  # base seconds; exponential backoff + jitter
 # 2 s gap rarely outlasts the throttle window; one KAS attempt's length does.
 THROTTLE_RETRY_BASE_DELAY = 6.0
 
-# Per-process RNG for retry jitter, auto-seeded from os.urandom at import. The
-# entropy seed spreads jitter uniformly *across* processes/machines — so a
-# fleet-wide transient (e.g. several gateways hitting the same backend 5xx at the
-# same minute) doesn't retry in lockstep and re-thunder the recovering backend.
-# Auto-seeding (rather than os.getpid()) is container-safe: under Docker/ECS/K8s
-# the gateway is commonly PID 1, so a PID seed would be identical fleet-wide and
-# collapse the spread. Tests that need determinism patch asyncio.sleep (so the
-# jitter value is never observed) or reseed _JITTER_RNG in a fixture.
+# Per-process RNG for retry jitter, seeded from os.urandom so gateways hit by the
+# same backend 5xx do not retry in lockstep. Not seeded from os.getpid(): in a
+# container the gateway is often PID 1, so every host would draw the same jitter.
+# Tests patch asyncio.sleep or reseed _JITTER_RNG for determinism.
 _JITTER_RNG = random.Random()
 
 # Substrings (lowercased) that mark a RETRYABLE transient backend failure.
@@ -66,23 +62,16 @@ _TRANSIENT_MARKERS = (
     "connectionreset",
     "dispatch failure",  # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
     "dispatchfailure",  # Rust DispatchFailure variant (unspaced)
-    # Model-unavailable capacity/rollout, matched against _format_acp_error's
-    # wording. Two phrasings are listed: the current "on the backend" text
-    # and the pre-2026-08 "on Bedrock" one, so a transcript or log line
-    # written by an older gateway still classifies. Any future rewording of
-    # that branch must add its marker here.
-    #
-    # Deliberately does NOT cover the sibling unentitled-model branch: that one
-    # is terminal by design (_model_is_unentitled), so a marker matching it
-    # would retry a model the account cannot use, which never succeeds.
+    # Model-unavailable capacity/rollout, in _format_acp_error's wording. The
+    # "on bedrock" spelling keeps transcripts from older gateways classifying;
+    # a rewording of that branch must add its marker here. The unentitled-model
+    # branch is terminal (_model_is_unentitled) and must not match: retrying a
+    # model the account cannot use never succeeds.
     "is unavailable on the backend",
     "is unavailable on bedrock",
-    # kiro-cli >= 2.16 nameless capacity wording ("The model you've selected
-    # is temporarily unavailable..."). The formatter now rewrites it into the
-    # "on the backend" prose above, but a transcript or history line written
-    # by a pre-rewrite gateway carries the raw passthrough — this marker keeps
-    # those classifying. Deliberately skips the "you've" apostrophe so
-    # straight and typographic quotes both match the substring.
+    # kiro-cli >= 2.16 raw capacity wording ("The model you've selected is
+    # temporarily unavailable..."), as stored transcripts may still carry it.
+    # Starts after "you've" so straight and typographic apostrophes both match.
     "selected is temporarily unavailable",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
     # kiro-cli's post-stream wrapper ("The service failed to process the
@@ -154,14 +143,11 @@ def _is_transient_acp_error(msg: str) -> bool:
 
 # ── Public reuse surface for callers with their own stream loop ──
 #
-# stream_and_collect owns the transient retry for unattended callers, but the
-# interactive dashboard/Slack path (dashboard.chat_runner) consumes the ACP
-# stream directly and cannot funnel through stream_and_collect. These thin
-# wrappers let it reuse the SAME classifier, retry budget, and backoff curve —
-# one source of truth, no duplicated heuristics.
+# The interactive path (dashboard.chat_runner) reads the ACP stream directly
+# instead of through stream_and_collect, so it imports these to share the same
+# classifier, retry budget and backoff curve.
 
-# Public name for the transient retry budget (number of retries after the
-# initial attempt). Re-exported so external callers don't import the private.
+# Retries after the initial attempt.
 TRANSIENT_RETRIES = _TRANSIENT_RETRIES
 
 
@@ -175,18 +161,13 @@ def is_transient_backend_error(msg: str) -> bool:
 def is_prompt_busy(exc: BaseException) -> bool:
     """True when *exc* says the backend already holds an in-flight prompt.
 
-    Structural first, with the substring as a fallback: ``_format_acp_error``
-    rewrites the backend's "prompt already in progress" into friendly prose that
-    drops the marker, so a string-only check silently loses the recovery for
-    every producer that formats before raising — which the shared-runtime
-    ``AcpSessionHandle`` does. The fallback still covers unformatted /
-    history-restored messages, and stays scoped to ``AcpError`` so an unrelated
-    exception that happens to mention progress is never mistaken for a wedge.
+    Structural first: ``_format_acp_error`` rewrites "prompt already in progress"
+    into prose without the marker, and ``AcpSessionHandle`` formats before
+    raising. The substring fallback covers unformatted and history-restored
+    messages, scoped to ``AcpError`` so an unrelated exception is never a wedge.
 
-    Shared with ``channel.run_channel_agent``, whose recovery is the same
-    contract (replace the session, replay once) reached from a different surface.
-    One predicate, so the two cannot come to disagree about what a wedge IS —
-    and so a consumer outside this module never needs the ACP layer to ask.
+    ``channel.run_channel_agent`` shares this predicate for the same recovery
+    (replace the session, replay once), so the two surfaces agree on a wedge.
     """
     return isinstance(exc, AcpPromptBusy) or (
         isinstance(exc, AcpError) and "already in progress" in str(exc)
@@ -245,30 +226,40 @@ def acp_error_is_transient(exc: BaseException) -> bool:
     return is_transient_backend_error(str(exc))
 
 
+def acp_error_is_pipe_death(exc: BaseException) -> bool:
+    """True when an ACP error says the agent process itself has gone away.
+
+    Matched on the client's own wording ("ACP process exited (code=N)",
+    "ACP process not running"). A JSON-RPC error frame never counts, whatever
+    its text: a process that answered a request is alive. The claude adapter
+    answers a failed Claude Code start with ``-32603`` and "Claude Code process
+    exited with code 1", which a fresh process reproduces, so treating it as a
+    death retried the turn behind "Connection lost — retrying…" until "Session
+    stuck" and never showed the adapter's own words.
+    """
+    if not isinstance(exc, AcpError) or getattr(exc, "code", None) is not None:
+        return False
+    msg = str(exc)
+    return "process exited" in msg or "not running" in msg
+
+
 def acp_error_is_session_not_found(exc: BaseException) -> bool:
     """True when the live backend cannot serve this chat and only a fresh process can.
 
-    Two raw answers share that remedy, so both read True here:
+    Two raw answers share that remedy:
 
-    - A live backend holds no session under the id it was sent (the phrase is
-      the adapter's own answer to a prompt). The process answered, so nothing
-      marks it dead and the dead-provider eviction never fires; the binding
-      keeps naming a session the backend has dropped, and every later prompt
-      draws the same answer. The backend session's transcript is usually
-      intact, so the remedy is a fresh process that re-loads the SAME id --
-      not a retry on this one.
-    - The frame names ``cloud_credential_error`` (``AcpError.credential_reload``,
-      set from the structured ``data.errorKind`` in
-      ``acp.transport_errors._raise_acp_error``): the process cached
-      credentials it cannot re-load, so a retry on THIS process
-      re-draws the answer while a chat started fresh in the same window works.
-      The remedy is the same fresh process, so the tag rides this same
-      reset-and-reload-once path with its one-retry budget and the
-      no-replay-after-tool-activity rule intact.
+    - "session not found": the live backend dropped the session. The process
+      still answers, so dead-provider eviction never fires and every later
+      prompt draws the same answer. The transcript is usually intact, so the
+      remedy is a fresh process that re-loads the SAME id, not a retry here.
+    - ``cloud_credential_error`` (``AcpError.credential_reload``, from
+      ``data.errorKind`` in ``acp.transport_errors._raise_acp_error``): the
+      process cached credentials it cannot re-load, so only a fresh process
+      helps. It takes the same reset-and-reload-once path, with its one-retry
+      budget and no replay after tool activity.
 
-    Scoped to ``AcpError``: the phrase is the adapter's own answer to a prompt,
-    and an unrelated exception that mentions a missing session elsewhere (an
-    HTTP 404 body, a dashboard lookup) must never reset a chat.
+    Scoped to ``AcpError`` so an unrelated exception that mentions a missing
+    session (an HTTP 404 body, a dashboard lookup) never resets a chat.
     """
     if not isinstance(exc, AcpError):
         return False
@@ -371,14 +362,12 @@ def throttle_retry_delay(attempt: int) -> float:
 
 # ── Network-drop recovery window (interactive turns) ──
 #
-# A dropped network path (Wi-Fi off and on, a VPN reconnect, a laptop waking up)
-# usually lasts tens of seconds to a couple of minutes, longer than the ~14s the
-# fixed TRANSIENT_RETRIES ladder backs off for. A connection failure therefore
-# keeps re-prompting past that count until CONNECTION_RECOVERY_WINDOW_SECS have
-# passed since the ladder's first retry, with the backoff capped at
-# CONNECTION_RETRY_MAX_DELAY so the turn resumes soon after the network does.
-# Provider answers (5xx, throttle, capacity) keep the fixed count unchanged: a
-# provider that is answering with errors is not helped by waiting longer.
+# A dropped network path (Wi-Fi, VPN reconnect, laptop wake) usually lasts longer
+# than the ~14s the TRANSIENT_RETRIES ladder covers. A connection failure keeps
+# retrying until CONNECTION_RECOVERY_WINDOW_SECS after the first retry, backoff
+# capped at CONNECTION_RETRY_MAX_DELAY so the turn resumes soon after the network.
+# Provider answers (5xx, throttle, capacity) keep the fixed count: waiting longer
+# does not help a provider that is answering with errors.
 CONNECTION_RECOVERY_WINDOW_SECS = 300.0
 CONNECTION_RETRY_MAX_DELAY = 30.0
 

@@ -1024,18 +1024,33 @@ class TestSessionCleanupOnCancellation:
     @pytest.mark.asyncio
     async def test_cleanup_ignores_other_runs(self):
         """Sessions from other runs are not touched."""
-        run = MagicMock()
-        run.task_id = "abc123"
-        keys = ["taskrunner:abc123:task0", "taskrunner:other:task0"]
-        tr = self._make_mock_taskrunner(keys)
+        from session_helpers import _mock_provider_factory
 
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.session import SessionManager
         from kiro_crew.taskrunner import TaskRunner
 
-        await TaskRunner._cleanup_run_sessions(tr, run)
+        run = MagicMock()
+        run.task_id = "abc123"
+        run.error = None
+        cfg = KiroCrewConfig()
+        cfg.session.timeout_secs = 2
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        keys = ["taskrunner:abc123:task0", "taskrunner:other:task0"]
+        for key in keys:
+            await mgr.get_or_create(key)
+            mgr.release(key)
+        tr = MagicMock()
+        tr._sessions = mgr
+        tr._release_run_runtime = AsyncMock()
+        try:
+            await TaskRunner._cleanup_run_sessions(tr, run)
 
-        # Only 1 key matches prefix "taskrunner:abc123:"
-        assert tr._sessions.cancel_current.call_count == 1
-        assert tr._sessions.reset.call_count == 1
+            # Only the key under the "taskrunner:abc123:" prefix is gone.
+            assert [mgr.has_session(k) for k in keys] == [False, True]
+            assert run.error is None
+        finally:
+            await mgr.close_all()
 
     @pytest.mark.asyncio
     async def test_cleanup_handles_cancel_failure(self):

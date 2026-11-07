@@ -18,7 +18,9 @@ from ai_review_workflows_helpers import (
     ROOT,
     _bash,
     _child_env,
+    _exec_transcript,
     _fork_scope_comment,
+    _github_outputs,
     _step_script,
     _workflow,
 )
@@ -36,22 +38,13 @@ def _missed_slot_rc(lane: dict) -> int:
 class TestReviewLaneVerdictVisibility:
     """No review lane may bury a posted verdict under an incomplete body.
 
-    Covers every lane that upserts a marker-keyed summary comment through the
-    shared guard, the same-repo GPT lane included. Each lane defines
-    the guarded upsert as a byte-identical ``guarded_comment_upsert`` bash
-    function; the identity test pins every copy to one canonical body so the
-    invariant cannot drift lane by lane, and the behavioral tests run each
-    lane's REAL step bash with a stubbed ``gh`` for the contract cases. The
-    one per-lane difference is the exit status after a completed verdict
-    missed the slot (``_missed_slot_rc``): the fail-closed GPT lane exits 1
-    where the advisory lanes stay green.
+    Every lane's ``guarded_comment_upsert`` is pinned byte-identical and run through
+    the lane's REAL step bash with a stubbed ``gh``. Only ``_missed_slot_rc`` differs:
+    the fail-closed GPT lane exits 1, advisory lanes stay green.
 
-    The guarded transition is a NO-TOUCH, not a merge: a run whose body
-    carries no ``"<stamp> <head>"`` proof marker leaves an existing comment
-    entirely alone. Reading the body and PATCHing a merge of it back would
-    reopen the same class of loss from the other side, because runs for
-    different heads are not cancelled — a verdict published between the read
-    and the write is restored away.
+    A body without a ``"<stamp> <head>"`` marker leaves the comment untouched rather
+    than merging: runs for different heads are not cancelled, so a read-then-PATCH
+    merge could undo a verdict published in between.
     """
 
     HEAD = "1234567890abcdef1234567890abcdef12345678"
@@ -430,17 +423,9 @@ class TestReviewLaneVerdictVisibility:
     def test_completed_verdict_creates_once_a_duplicate_is_ruled_out(
         self, lane: dict, tmp_path: Path
     ) -> None:
-        # A completed verdict must not be dropped merely because the caller's own
-        # id lookup failed. That lookup is not the last word: the write re-reads,
-        # and a clean re-read finding the slot empty has PROVED there is nothing
-        # to duplicate, so the verdict publishes exactly as it would have.
-        #
-        # An UNKNOWN and an OCCUPIED slot are different answers from an empty
-        # one, and only emptiness licenses the write. The sibling contract above
-        # refuses to create when the lookup errored, because a marker planted is
-        # not undone by a later run; the same unknown cannot mean "must not
-        # create" for a notice and "must create" for a verdict.
-        # `test_an_unreadable_duplicate_check_refuses_the_write` covers the unknown one.
+        # The caller's failed id lookup is not the last word: the write re-reads, and
+        # a clean empty slot licenses the create. Only emptiness does; unknown is
+        # covered by `test_an_unreadable_duplicate_check_refuses_the_write`.
         calls, result = self._run_step(
             lane,
             tmp_path,
@@ -986,18 +971,10 @@ class TestReviewLaneVerdictVisibility:
     def test_an_existing_current_head_comment_is_never_duplicated(
         self, lane: dict, tmp_path: Path
     ) -> None:
-        # The case that makes the FIRST write the dangerous one. A comment for
-        # the current head is already on the PR, from a re-run of this lane or a
-        # cancelled run whose if:always() step still executed. The caller's own
-        # id lookup then errors on all six attempts, so it cannot see that
-        # comment and takes the create path. Nothing here fails the write: the
-        # POST would succeed and put a SECOND comment for this head in a slot
-        # that holds one.
-        #
-        # That is unrecoverable without a person. Every id lookup in these lanes
-        # selects one comment, so a later `/ai-review override` patches whichever
-        # it picks while the other keeps its own [BLOCK-MERGE] line, and no run
-        # undoes it. So the write re-reads first and declines.
+        # A current-head comment exists (a re-run, or a cancelled run's if:always()
+        # step) and the caller's lookup errors six times, so it takes the create path.
+        # A second comment would keep its own [BLOCK-MERGE] after any override, so the
+        # write re-reads first and declines.
         calls, result = self._run_step(
             lane,
             tmp_path,
@@ -1168,11 +1145,8 @@ class TestReviewLaneVerdictVisibility:
 class TestTheGuardedUpsertRecordsWhatReachedTheSlot:
     """``guarded_comment_upsert`` returns 0 on every arm, so it records the outcome.
 
-    The record is the step output ``publication``, and the fork Opus and GPT
-    finalize steps pass a verdict only when it says the verdict is in the slot.
-    Every arm is driven through each lane's REAL step bash, because the function
-    is pinned byte-identical and a record missing from any arm reads as a pass
-    lost, not a pass gained.
+    The record is the step output ``publication``; the fork Opus and GPT finalize steps
+    pass a verdict only when it says the verdict is in the slot.
     """
 
     HEAD = TestReviewLaneVerdictVisibility.HEAD
@@ -1361,3 +1335,62 @@ class TestForkLanePublishesTheOverrideNote:
             script = _step_script(_workflow(workflow), step)
             arm = script.index('if [ "${HUMAN_OVERRIDE:-}" = "true" ]; then')
             assert arm < script.index(first), workflow
+
+
+#: Each whole-design lane's stamp and the verdict header it parses.
+_WHOLE_DESIGN_HEADERS = {
+    "[DESIGN-REVIEWED]": "Design-Verdict",
+    "[UX-REVIEWED]": "UX-Verdict",
+    "[FIRST-PRINCIPLES-REVIEWED]": "First-Principles-Verdict",
+}
+
+
+class TestAnUnverifiedBlockIsNotHonoured:
+    """A whole-design BLOCK counts only beside the current head's proof marker.
+
+    A marker cut off by truncation and one copied from an earlier run look the same
+    to the guard, so keeping an unverified BLOCK would also honour a BLOCK earned on
+    other code. Each case runs the lane's real step that holds the guard: the
+    posting step, or the capture step on the two fork lanes that parse there.
+    """
+
+    HEAD = TestReviewLaneVerdictVisibility.HEAD
+    OLD = TestReviewLaneVerdictVisibility.OLD
+    CAPTURE_STEPS = {
+        "fork-design": ("Capture design verdict", {}),
+        # This step's env names the head HEAD_SHA, never HEAD, so HEAD is blanked.
+        "fork-first-principles": (
+            "Capture first-principles verdict",
+            {"SURFACE": "true", "CONTRACT": "true", "HEAD_SHA": HEAD, "HEAD": ""},
+        ),
+    }
+    LANES = [
+        pytest.param(lane, id=lane["id"])
+        for lane in _GUARDED_LANES
+        if lane["stamp"] in _WHOLE_DESIGN_HEADERS
+    ]
+
+    @pytest.mark.parametrize("marker_sha", [HEAD, OLD, None], ids=["current", "other", "missing"])
+    @pytest.mark.parametrize("lane", LANES)
+    def test_only_the_current_head_marker_keeps_a_block(
+        self, lane: dict, marker_sha: str | None, tmp_path: Path
+    ) -> None:
+        step, extra_env = self.CAPTURE_STEPS.get(lane["id"], (lane["step"], {}))
+        review = (
+            f"{_WHOLE_DESIGN_HEADERS[lane['stamp']]}: BLOCK\n\n**The change loses data.**\n\n"
+            "Trigger: a user saves a draft.\nOutcome: the draft is gone.\n"
+        )
+        if marker_sha is not None:
+            review += f"\n{lane['stamp']} {marker_sha}\n"
+        _, result = TestReviewLaneVerdictVisibility()._run_step(
+            {**lane, "step": step},
+            tmp_path,
+            existing_body=None,
+            kind="none",
+            extra_env=extra_env,
+            prepare=lambda cwd, rt, head: _exec_transcript(rt, review),
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        want = "BLOCK" if marker_sha == self.HEAD else "UNKNOWN"
+        verdict = _github_outputs(tmp_path / "github-output.txt").get("verdict")
+        assert verdict == want, result.stdout.decode()

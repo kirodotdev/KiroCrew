@@ -318,20 +318,27 @@ def test_the_seatbelt_adapter_guards_every_ancestor_of_the_install_root(
 ) -> None:
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [INSTALL])
     host = sandbox._live_plan_host(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT))
-    assert host.install_root_ancestor_guards == _INSTALL_ANCESTORS
+    # The other seals' parents (under this host's ``$HOME``) are guarded too.
+    assert set(_INSTALL_ANCESTORS) <= set(host.readonly_ancestor_guards)
 
 
 @_POSIX_ONLY
-def test_the_namespace_adapter_needs_no_ancestor_guards(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The read-only bind is on the directory itself and moves with a renamed parent.
+def test_the_namespace_adapter_pins_only_the_parents_this_uid_could_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The read-only bind moves with a renamed parent, so the launcher pins each one the
+    # agent could rename, and re-binds nothing it could not.
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [INSTALL])
+    monkeypatch.setattr(
+        sandbox, "_caller_can_rename", lambda path, uid: os.path.dirname(path).startswith("/opt")
+    )
     host = sandbox._live_plan_host(SandboxRequest(tier="standard"))
-    assert host.install_root_ancestor_guards == ()
+    assert set(host.readonly_ancestor_guards) == set(_INSTALL_ANCESTORS) - {"/opt"}
 
 
 @_POSIX_ONLY
 def test_the_seatbelt_profile_denies_renaming_a_parent_of_the_install_root() -> None:
-    host = _host(install_root_ancestor_guards=_INSTALL_ANCESTORS)
+    host = _host(readonly_ancestor_guards=_INSTALL_ANCESTORS)
     plan = plan_confinement(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT), host)
     profile = sandbox_seatbelt.render_seatbelt_profile(plan)
     for parent in _INSTALL_ANCESTORS:

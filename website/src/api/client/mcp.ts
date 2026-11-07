@@ -94,6 +94,9 @@ export type McpManagedServer = {
   // Live to an earlier worktree), and a row with no verdict must read as "not
   // measured" rather than crash the table.
   recommendation?: McpShareRecommendation
+  // Whether the Measure button counts this row, decided by the gateway. An older
+  // gateway does not send it; the page then counts the rows that read unmeasured.
+  measure_due?: boolean
 }
 
 export type McpGatewayFootprint = {

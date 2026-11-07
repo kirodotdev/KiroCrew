@@ -381,7 +381,20 @@ async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
             getattr(slot, "key", "?"),
         )
         try:
-            slot.append("error", NO_PERMIT_CARD, "msg msg-err")
+            # Lazy import: this module is a crew_runtime facade owner, so a
+            # module-level import becomes a mirror export the facade must
+            # re-declare. Keeping it local avoids that contract.
+            from kiro_crew.dashboard.gateway_notice import (
+                GATEWAY_NOTICE_CREW_TURN_NO_PERMIT,
+                gateway_notice_meta,
+            )
+
+            slot.append(
+                "error",
+                NO_PERMIT_CARD,
+                "msg msg-err",
+                meta=gateway_notice_meta(GATEWAY_NOTICE_CREW_TURN_NO_PERMIT),
+            )
         except Exception:  # pragma: no cover - the card is never load-bearing
             logger.debug("issue-radar: could not render the no-permit card", exc_info=True)
         _call_if_present(state, "push_slots_update")

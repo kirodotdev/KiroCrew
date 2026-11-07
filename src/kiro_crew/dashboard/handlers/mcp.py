@@ -74,7 +74,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _extra_mcp_scopes,
     _is_valid_mcp_name,
     _kirocrew_mcp_json,
-    _load_config_for_update,
+    _load_config_or_refusal,
     _mcp_config_corrupt,
     _mcp_server_not_found,
     _mcp_spec_invalid,
@@ -118,7 +118,7 @@ from kiro_crew.mcp_gateway.launch_approval import (
     target_stem,
 )
 from kiro_crew.mcp_gateway.rewriter import records_dir
-from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
+from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, Strength, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.mcp_hot_reload import (  # noqa: F401 - live_sessions_hot_reload is a public name of this facade
     live_sessions_apply_mcp_live,
@@ -326,8 +326,9 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if not_owned is not None:
         return not_owned
     # Refuse before ANY write: the global file is rewritten below as plain JSON.
-    if await asyncio.to_thread(_load_config_for_update, _GLOBAL_MCP_JSON) is None:
-        return _mcp_config_corrupt()
+    loaded = await asyncio.to_thread(_load_config_or_refusal, _GLOBAL_MCP_JSON)
+    if isinstance(loaded, web.Response):
+        return loaded
     await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
 
     # One serialized discover→write pass (agent config + CC sidecar), off the
@@ -339,9 +340,9 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if to_sync:
         # Also add to global mcp.json (what ACP actually reads)
         async with _get_mcp_lock():
-            gdata = _load_config_for_update(_GLOBAL_MCP_JSON)
-            if gdata is None:
-                return _mcp_config_corrupt()
+            gdata = _load_config_or_refusal(_GLOBAL_MCP_JSON)
+            if isinstance(gdata, web.Response):
+                return gdata
             gservers = gdata.setdefault("mcpServers", {})
             # The kiro-global mcp.json is NOT ours, and a name cannot say who
             # wrote an entry in it: the minimal ``{"url": ...}`` this emitter
@@ -1039,9 +1040,9 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
     async with _get_mcp_lock():
-        data = _load_config_for_update(_GLOBAL_MCP_JSON)
-        if data is None:
-            return _mcp_config_corrupt()
+        data = _load_config_or_refusal(_GLOBAL_MCP_JSON)
+        if isinstance(data, web.Response):
+            return data
         data.setdefault("mcpServers", {})[name] = entry
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _write_mcp_json(data)
@@ -1066,6 +1067,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.config.loader import read_endorsed_config_text  # noqa: F401
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
         _mark_agent_entries_disabled,
         _shared_agent_home_declined,
@@ -1087,7 +1089,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _config_entry_for,
         _get_mcp_lock_sync,
         _has_json_comments_on_disk,
+        _load_config_for_update,
         _load_json_or_empty,
+        _mcp_config_unreadable,
         _McpFileLockSync,
         _resolve_key_from_read,
         api_mcp_global_scopes,
@@ -1108,6 +1112,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _launch_specs_for,
         _load_shareability_state,
         _local_overlay_section,
+        _measure_due,
         _overlay_shadowed_keys,
         api_mcp_gateway_enable,
         api_mcp_gateway_metrics,
@@ -1126,6 +1131,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.mcp_probe import (  # noqa: F401
         _MCP_PROBE_CACHE_SECS,
         _agent_mcp_server_names,
+        _annotate_agent_drops,
         _annotate_owner_sign_in,
         _annotate_quarantine,
         _arm_reprobe,
@@ -1142,6 +1148,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _mcp_reprobe_armed_for,
         _measure_progress,
         _probe_currency,
+        _probe_view,
         _quarantine_verdicts,
         _read_global_mcps,
         _recheck_routed,
@@ -1302,8 +1309,9 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         # A broken provider global would be replaced, and a JSONC one would lose
         # its comments, so the batch is refused before its first write.
         for path in (_GLOBAL_MCP_JSON, *(scope.global_json for scope in _extra_mcp_scopes())):
-            if await asyncio.to_thread(_load_config_for_update, path) is None:
-                return _mcp_config_corrupt()
+            loaded = await asyncio.to_thread(_load_config_or_refusal, path)
+            if isinstance(loaded, web.Response):
+                return loaded
         await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
         change_keys, ambiguous = await asyncio.to_thread(_preflight_change_keys, change_names)
         if ambiguous:

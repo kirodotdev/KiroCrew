@@ -29,6 +29,7 @@ import threading
 from collections.abc import Iterable
 from pathlib import Path
 
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -177,6 +178,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         False,
         "(self, fingerprint: 'str', *, observations_before: 'int | None' = None) -> 'None'",
     ),
+    "probe_timed_out": ("property", False, "(self) -> 'bool'"),
     "read_spawn_identity": ("function", True, "(self) -> 'str'"),
     "record_independent_backend_setup": ("function", True, "(self, backend: 'str') -> 'bool'"),
     "repair_agent_specs": ("function", True, "(self, caller: 'str' = '') -> 'dict[str, Any]'"),
@@ -411,29 +413,11 @@ def test_the_class_body_check_finds_each_shape() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(_OWNER_PREFIX) for name in _imported_modules(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(_OWNER_PREFIX)
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:

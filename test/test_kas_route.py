@@ -13,7 +13,8 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,9 +32,16 @@ from kiro_crew.testing.links import make_dir_link
 _REAL_SWITCH_ALLOWED = kas_route.automatic_switch_allowed
 
 
-def _ctx(tmp_path: Path, environ: dict[str, str] | None = None) -> SpawnContext:
+def _ctx(
+    tmp_path: Path, environ: dict[str, str] | None = None, *, harness_pin: str = ""
+) -> SpawnContext:
     return SpawnContext(
-        agent="kirocrew", work_dir=tmp_path, model=None, environ=environ or {}, home=tmp_path
+        agent="kirocrew",
+        work_dir=tmp_path,
+        model=None,
+        environ=environ or {},
+        home=tmp_path,
+        harness_pin=harness_pin,
     )
 
 
@@ -50,7 +58,7 @@ def _installed(tmp_path: Path) -> kas_bundle.InstalledKasBundle:
 @pytest.fixture
 def switch_open(monkeypatch):
     """Open the automatic switch the conftest floor keeps closed."""
-    monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda: True)
+    monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": True)
 
 
 # ── the rule ───────────────────────────────────────────────────────────────────
@@ -217,23 +225,46 @@ class TestKiroCliSignedOut:
         assert kas_route.kiro_cli_signed_out(environ={}, home=tmp_path) is False
 
 
-class TestRuleTwoIsGlobalOnly:
-    """Rule 2 reads the installation's ``agent.acp_backend`` alone, never a mate's
-    own pin. The per-pin route is tracked at :attr:`TRACKED_BY`; this pins today's
-    behaviour so a change to it is a deliberate one."""
+class TestRuleTwoReadsTheSessionsPin:
+    """Rule 2 reads the session's own Bot pin when it has one, else the
+    installation's ``agent.acp_backend``."""
 
-    TRACKED_BY = "https://github.com/kirodotdev/KiroCrew/issues/26629"
-
-    def test_the_switch_follows_the_stored_global_pick(self, monkeypatch):
+    def test_no_pin_follows_the_stored_global_pick(self, monkeypatch):
         monkeypatch.setattr(kas_route, "_stored_as_kiro_pick", lambda: True)
         assert _REAL_SWITCH_ALLOWED() is False
         monkeypatch.setattr(kas_route, "_stored_as_kiro_pick", lambda: False)
         assert _REAL_SWITCH_ALLOWED() is True
 
-    def test_it_takes_no_pin(self):
-        import inspect
+    @pytest.mark.asyncio
+    async def test_a_kiro_cli_pin_stays_on_kiro_cli_under_a_global_kas(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kas_route, "automatic_switch_allowed", _REAL_SWITCH_ALLOWED)
+        monkeypatch.setattr(kas_route, "_stored_as_kiro_pick", lambda: False)
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=False),
+            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", _no_bin),
+            patch.object(
+                kas_bundle,
+                "installed_bundle",
+                side_effect=AssertionError("a Kiro CLI pin never takes the bundle"),
+            ),
+        ):
+            with pytest.raises(AcpKiroCliMissing):
+                await KasHarness().resolve_spawn(_ctx(tmp_path, harness_pin="kiro"))
 
-        assert list(inspect.signature(_REAL_SWITCH_ALLOWED).parameters) == []
+    @pytest.mark.asyncio
+    async def test_a_kas_pin_takes_crews_engine_under_a_global_kiro_cli_pick(
+        self, tmp_path, monkeypatch
+    ):
+        installed = _installed(tmp_path)
+        monkeypatch.setattr(kas_route, "automatic_switch_allowed", _REAL_SWITCH_ALLOWED)
+        monkeypatch.setattr(kas_route, "_stored_as_kiro_pick", lambda: True)
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=False),
+            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", _no_bin),
+            patch.object(kas_bundle, "installed_bundle", return_value=installed),
+        ):
+            plan = await KasHarness().resolve_spawn(_ctx(tmp_path, harness_pin="kas"))
+        assert plan.argv[0] == str(installed.node_bin)
 
 
 class TestCrewEntrySkipsLauncher:
@@ -356,9 +387,7 @@ class TestHarnessRoute:
         """Rule 2: a Kiro CLI pick runs on KAS only because kiro-cli offers v3, so a
         missing kiro-cli stays kiro-cli's own error, not a download."""
         monkeypatch.setattr(kas_route, "_stored_as_kiro_pick", lambda: True)
-        monkeypatch.setattr(
-            kas_route, "automatic_switch_allowed", lambda: not kas_route._stored_as_kiro_pick()
-        )
+        monkeypatch.setattr(kas_route, "automatic_switch_allowed", _REAL_SWITCH_ALLOWED)
         with (
             patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=False),
             patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", _no_bin),
@@ -438,6 +467,88 @@ class TestHarnessRoute:
         assert "`kirocrew kas install`" in text
         assert "kiro-cli login" not in text
         assert kas_engine_install.install_snapshot()["error"]
+
+
+# ── the pin reaches the spawn ──────────────────────────────────────────────────
+
+
+class _Stop(Exception):
+    pass
+
+
+class TestThePinReachesTheSpawn:
+    """The pin rule 2 reads is the one the factory's selection used, carried by the
+    provider into its runtimes (and a companion's, from the parent provider) to
+    ``SpawnContext``."""
+
+    def test_the_factory_carries_the_pin_its_selection_used(self, monkeypatch):
+        """A Bot pinned ``"kiro"`` carries its pin to the runtime; ``spawn_run(backend="kas")``
+        for it does not: the override chose the harness, so rule 2 reads the
+        installation's pick, not the pin."""
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        member_id = "atlas-0123456789ab"
+        key = f"dashboard:member-{member_id}"
+        cfg = KiroCrewConfig()
+        cfg.agents["atlas"] = KiroCrewAgentConfig(
+            member_id=member_id, kiro_agent="atlas", acp_backend="kiro"
+        )
+        monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas"}))
+        monkeypatch.setattr("kiro_crew.providers.acp.AcpProvider", lambda **kwargs: kwargs)
+        factory = cfg.create_provider_factory()
+        assert factory(session_key=key, agent="atlas")["harness_pin"] == "kiro"
+        assert factory(session_key=key, agent="atlas", backend_override="kas")["harness_pin"] == ""
+
+    @pytest.mark.asyncio
+    async def test_the_provider_builds_its_runtime_with_the_sessions_pin(self, monkeypatch):
+        from kiro_crew.providers.acp import AcpProvider
+
+        captured: dict = {}
+
+        def runtime(**kwargs):
+            captured.update(kwargs)
+            raise _Stop
+
+        monkeypatch.setattr("kiro_crew.providers.acp.AcpRuntime", runtime)
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(acp_backend="kas", harness_pin="kas")
+        provider._client = MagicMock(backend="kas", _session_key="k", _resume_session_id="")
+        assert provider.harness_pin == "kas"
+        with pytest.raises(_Stop):
+            await provider._start_kiro_runtime_impl({}, {})
+        assert captured["harness_pin"] == "kas"
+
+    @pytest.mark.asyncio
+    async def test_the_runtime_hands_its_pin_to_the_harness(self, monkeypatch):
+        from kiro_crew.acp.runtime import AcpRuntime
+
+        seen: list[SpawnContext] = []
+
+        async def resolve_spawn(self, ctx):
+            seen.append(ctx)
+            raise _Stop
+
+        monkeypatch.setattr(KasHarness, "resolve_spawn", resolve_spawn)
+        with pytest.raises(_Stop):
+            await AcpRuntime(acp_backend="kas", harness_pin="kiro")._resolve_spawn_plan()
+        assert seen[0].harness_pin == "kiro"
+
+    def test_a_companion_runtime_takes_its_parents_pin(self):
+        from kiro_crew.session_allocation_parts import companions
+
+        providers = {
+            key: SimpleNamespace(
+                client=SimpleNamespace(backend="kas"),
+                tool_search_settings=None,
+                work_scratch_dir=None,
+                harness_pin=pin,
+            )
+            for key, pin in (("p", "kiro"), ("q", ""))
+        }
+        owner = SimpleNamespace(get_provider=providers.get)
+        assert companions._collect_parent_runtime_kwargs(owner, "p")["harness_pin"] == "kiro"
+        assert "harness_pin" not in companions._collect_parent_runtime_kwargs(owner, "q")
 
 
 # ── the installer ──────────────────────────────────────────────────────────────
@@ -522,8 +633,6 @@ class TestSharedPredicate:
     ):
         """doctor, diagnostics and the install probe read one predicate, so they all
         see the switch."""
-        from types import SimpleNamespace
-
         from kiro_crew.agent_sdk import kas_bundle as facade
 
         agent = SimpleNamespace(acp_backend="kas", kas_bundle=False)

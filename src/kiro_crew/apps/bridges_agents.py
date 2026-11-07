@@ -537,21 +537,13 @@ def _managed_mcp_spec(name: str) -> dict[str, Any] | None:
     """Launch spec for a HOST-MANAGED MCP server, or None.
 
     Managed servers live in the host agent's config rather than the global MCP
-    config, so a grant naming one finds nothing in the ambient map.
+    config, so a grant naming one finds nothing in the ambient map. A grant is an
+    explicit assignment, so an ``opt_in`` server resolves; a closed ``spec_gate``
+    still answers ``None``, as it does for the host spec writers.
     """
-    from kiro_crew.agent import _MANAGED_MCP_SERVERS
+    from kiro_crew import agent as agent_mod
 
-    managed = _MANAGED_MCP_SERVERS.get(name)
-    if managed is None:
-        return None
-    invocation_fn = managed.get("invocation_fn")
-    if invocation_fn is None:
-        return None
-    try:
-        command, args = invocation_fn()
-    except Exception:  # noqa: BLE001 -- a broken invocation must not block the agent
-        return None
-    return {"command": command, "args": list(args)}
+    return agent_mod.managed_mcp_spec_entry(name, include_opt_in=True)
 
 
 def _materialize_managed_refs(agent_data: dict[str, Any]) -> None:
@@ -562,6 +554,10 @@ def _materialize_managed_refs(agent_data: dict[str, Any]) -> None:
     (cron/core) are written into the HOST agent config only, so an app agent
     that lists them in ``tools`` holds a dangling reference unless the spec is
     copied in here.
+
+    A server whose ``spec_gate`` is closed (``kirocrew-computer`` while computer
+    use is off) is not copied, as on the host agent: its backend would advertise
+    no tools and hold the KAS readiness barrier for its whole timeout.
     """
     from kiro_crew.agent import _MANAGED_MCP_SERVERS
 
@@ -571,18 +567,12 @@ def _materialize_managed_refs(agent_data: dict[str, Any]) -> None:
         if isinstance(t, str) and t.startswith("@")
     }
     servers = agent_data.get("mcpServers") or {}
-    for name, managed in _MANAGED_MCP_SERVERS.items():
+    for name in _MANAGED_MCP_SERVERS:
         if name not in refs or name in servers:
             continue
-        invocation_fn = managed.get("invocation_fn")
-        if invocation_fn is None:
-            continue
-        try:
-            command, args = invocation_fn()
-        except Exception:  # noqa: BLE001 -- a broken invocation must not block the agent
-            logger.warning("Could not resolve managed MCP server %r for an app agent", name)
-            continue
-        servers[name] = {"command": command, "args": list(args)}
+        entry = _managed_mcp_spec(name)
+        if entry is not None:
+            servers[name] = entry
     agent_data["mcpServers"] = servers
 
 
@@ -603,6 +593,8 @@ def _unresolvable_tool_refs(agent_data: dict[str, Any]) -> list[str]:
     become fatal. The global config is read only when a candidate survives the
     merged map (the common all-resolved case costs no I/O).
     """
+    from kiro_crew.agent import _spec_gate_answers_closed
+
     servers = agent_data.get("mcpServers")
     known = set(servers) if isinstance(servers, dict) else set()
     candidates: list[tuple[str, str]] = []
@@ -610,7 +602,8 @@ def _unresolvable_tool_refs(agent_data: dict[str, Any]) -> list[str]:
         if not isinstance(entry, str) or not entry.startswith("@"):
             continue
         server = entry[1:].split("/", 1)[0]
-        if server not in known:
+        # A gate-closed managed server is left out on purpose, not a finding.
+        if server not in known and not _spec_gate_answers_closed(server):
             candidates.append((entry, server))
     if not candidates:
         return []

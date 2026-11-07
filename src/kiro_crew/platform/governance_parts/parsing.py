@@ -203,13 +203,13 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
                 )
         if is_policy and scope in ALLOW_ONLY_IN_ENTERPRISE:
             _refuse_inexact_origin_entries(scope, ruleset)
-        for floor in spec.always_permitted:
-            # An ``always_permitted`` identifier is one this scope may not forbid.
-            # Two reasons qualify, and the catalog entry says which applies: the
-            # scope cannot FUNCTION without it (``approval_modes``' ``normal``, the
-            # interactive floor -- denying it would brick tool approval), or its
-            # enforcement is NOT IMPLEMENTED yet, so accepting a deny would
-            # advertise a control that does not hold. Either way, refuse at parse
+        floors = spec.always_permitted + (() if is_policy else spec.profile_always_permitted)
+        for floor in floors:
+            # An ``always_permitted`` identifier is one this scope may not forbid:
+            # the scope cannot FUNCTION without it (``approval_modes``' ``normal``,
+            # the interactive floor -- denying it would brick tool approval), or its
+            # enforcement is not implemented, so accepting a deny would advertise
+            # a control that does not hold. Either way, refuse at parse
             # time rather than boot into a state the policy misdescribes -- and
             # refuse HERE because the trust-root ``security_policy.json`` is the one
             # file the dashboard may not rewrite to repair itself.
@@ -258,6 +258,7 @@ _STRUCTURAL_KEYS = frozenset(
         "distribution",
         "fallback",
         "yolo_max_seconds",
+        "mcp_registry_local_control_plane",
     }
 )
 
@@ -573,6 +574,9 @@ def parse_policy(
     if raw_updates is not None and not isinstance(raw_updates, dict):
         raise PlatformCompositionError("security policy 'updates' must be an object")
     yolo_max_seconds = _parse_yolo_max_seconds(data.get("yolo_max_seconds"))
+    registry_local_control_plane = _parse_registry_local_control_plane(
+        data.get("mcp_registry_local_control_plane")
+    )
     raw_distribution = data.get("distribution")
     if raw_distribution is not None and not isinstance(raw_distribution, dict):
         raise PlatformCompositionError("security policy 'distribution' must be an object")
@@ -618,7 +622,25 @@ def parse_policy(
         agentcore_gateway_url=composed_gateway_url,
         agentcore_workload_name=composed_workload_name,
         yolo_max_seconds=yolo_max_seconds,
+        mcp_registry_local_control_plane=registry_local_control_plane,
     )
+
+
+def _parse_registry_local_control_plane(raw: object) -> bool:
+    """The policy's ``mcp_registry_local_control_plane``: a JSON boolean, or absent (off).
+
+    Fails closed on any other value: a string ``"true"`` or a ``1`` is not an
+    admin's unambiguous opt-in to widening a registry-governed host, and a load
+    that guessed either way would decide the ceiling for them.
+    """
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise PlatformCompositionError(
+            "security policy 'mcp_registry_local_control_plane' must be true or false, "
+            f"got {raw!r}"
+        )
+    return raw
 
 
 def _parse_yolo_max_seconds(raw: object) -> int:
@@ -685,6 +707,13 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     if "yolo_max_seconds" in data:
         raise PlatformCompositionError(
             "profiles may not set 'yolo_max_seconds' — the auto-approve cap is policy-only"
+        )
+    # ``mcp_registry_local_control_plane`` is POLICY-ONLY for the same mechanical
+    # reason, and because it widens the host: a profile is narrow-only.
+    if "mcp_registry_local_control_plane" in data:
+        raise PlatformCompositionError(
+            "profiles may not set 'mcp_registry_local_control_plane' — the registry "
+            "opt-in is policy-only (a profile can only narrow the ceiling)"
         )
     if "fallback" in data:
         raise PlatformCompositionError(

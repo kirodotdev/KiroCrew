@@ -13,7 +13,9 @@ envelope ``[Worker report]``).
   crewmate's changed cron result reports the same way (:func:`note_cron_result`).
 * **One wake per turn end, deferred while busy**: one pending entry per worker,
   delivered when the thread's own turn task ends, never on a timer, never twice.
-  Pending reports live in memory.
+  Pending reports live in memory. A worker turn that ends quietly
+  (``nothing_to_do``, and no text written in the turn) reports nothing and
+  wakes nobody.
 
 The same flush delivers a moved crewmate's one upgrade notice first
 (:mod:`kiro_crew.mate_upgrade_notice`). Per-gateway state lives on the dashboard
@@ -517,16 +519,22 @@ async def note_cron_result(state: Any, job: Any, session_key: str, reply_text: s
         return False
 
 
-def note_turn_end(state: Any, slot: Any, reply_text: str | None) -> None:
+def note_turn_end(
+    state: Any, slot: Any, reply_text: str | None, *, quiet_end: bool = False
+) -> None:
     """Called once at the end of every top-level turn. Never raises.
 
     A worker's turn end records its report for its crewmate and schedules the
     wake; *reply_text* is ``None`` for a turn that ended before it reached the
-    model, which reports nothing. A crewmate thread's own turn end schedules the
-    delivery of anything still pending for it.
+    model, which reports nothing. *quiet_end* is an applied ``nothing_to_do``
+    ending a turn that wrote no reply text: a quiet cycle, which reports nothing
+    either and leaves a report already pending as it was. A
+    crewmate thread's own turn end schedules the delivery of anything still
+    pending for it.
     """
     try:
-        creator = reporting_creator(state, slot) if reply_text is not None else None
+        quiet = quiet_end and not (reply_text or "").strip()
+        creator = reporting_creator(state, slot) if reply_text is not None and not quiet else None
         if creator is not None:
             _record_report(
                 state,

@@ -39,6 +39,8 @@ declare global {
 
   interface ElectronGlobalHotkeyInfo {
     accelerator: string
+    /** Optional: absent on an older shell. */
+    requested?: string
     default: string
   }
 
@@ -47,6 +49,9 @@ declare global {
     onBootReady: (cb: () => void) => () => void
     bootComplete: () => void
     setThemeAccent: (hex: string) => void
+    /** Hand the shell the active theme pack's boot-splash art, or null when it
+     *  ships none. Optional: absent on a shell older than the feature. */
+    setThemeSplash?: (image: { type: string; bytes: Uint8Array } | null) => void
     setThemeMode: (pref: string) => void
     setTitleBarOverlayTheme: (mode: string) => void
     setFocusModeChrome: (visible: boolean) => void
@@ -93,6 +98,18 @@ declare global {
   interface CloseActionAPI {
     get: () => Promise<CloseAction>
     set: (action: CloseAction) => Promise<CloseAction>
+  }
+
+  /** Whether the tray icon shows, and whether it may be hidden right now
+   *  (on Windows and Linux, only while the close button quits). */
+  interface TrayIconState {
+    show: boolean
+    canHide: boolean
+  }
+
+  interface TrayIconAPI {
+    get: () => Promise<TrayIconState>
+    set: (show: boolean) => Promise<TrayIconState>
   }
 
   /** First-run setup's "connect to a crew on another machine" exit. `start`
@@ -306,6 +323,7 @@ declare global {
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
+    trayIconAPI?: TrayIconAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI

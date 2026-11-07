@@ -322,7 +322,9 @@ class TestRegistryInstallStream:
     ) -> None:
         """Mock install_from_registry to verify SSE log + done events."""
 
-        async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
+        async def _fake_install(
+            name: str, log_lines: list[str] | None = None, **_: Any
+        ) -> dict[str, Any]:
             if log_lines is not None:
                 log_lines.append("step 1: cloning")
                 log_lines.append("step 2: building")
@@ -540,7 +542,9 @@ class TestRegistryInstallStreamSecurity:
         a new SSE event.
         """
 
-        async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
+        async def _fake_install(
+            name: str, log_lines: list[str] | None = None, **_: Any
+        ) -> dict[str, Any]:
             if log_lines is not None:
                 # Simulate a log line with embedded newlines that could
                 # inject a fake "done" event if not properly escaped
@@ -585,7 +589,9 @@ class TestRegistryInstallStreamSecurity:
         Uses an AWS access key pattern which redact_credentials catches.
         """
 
-        async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
+        async def _fake_install(
+            name: str, log_lines: list[str] | None = None, **_: Any
+        ) -> dict[str, Any]:
             if log_lines is not None:
                 # AWS access key ID pattern — caught by redact_credentials
                 log_lines.append("Found key AKIAIOSFODNN7EXAMPLE in config")

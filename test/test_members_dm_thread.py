@@ -1,24 +1,14 @@
 """Crew Members DM threads: binding persistence, routes, and pin enforcement.
 
-Covers spec task 2 of the Crew Members page:
+Covers ``dm.json`` under ``$KIROCREW_HOME/members/<slug>/``, ``GET /api/members``, the
+idempotent ``POST /api/members/{slug}/thread``, and the agent pin at every writer (send
+path, agent switch, ``EVENT_AGENT_SWITCHED`` veto). Each denial also checks the slot did
+not move.
 
-* ``dm.json`` binding read/write in the existing per-member space
-  (``$KIROCREW_HOME/members/<slug>/``, isolated per test by the autouse
-  ``_isolate_kirocrew_home`` fixture).
-* Route contract for ``GET /api/members`` and the idempotent
-  ``POST /api/members/{slug}/thread``.
-* Agent-pin enforcement at every reachable writer: the send-path slot config,
-  the agent-switch endpoint, and the mid-turn ``EVENT_AGENT_SWITCHED`` veto.
-  Each denial test also asserts the slot state did NOT move (the mutation
-  check: removing the guard makes these fail by letting the write land).
-
-The pin and the member-key reservation past the thread route (the mode writer, resume,
-restart restore, the OpenAI-compatible completions path, binding drift) live in
-``test_members_dm_thread_resume_and_reservation.py``; the activity and briefing routes,
-the event-log service lifetime and the denial audits in
-``test_members_dm_thread_activity_and_briefing.py``; and opening and reopening a thread
-on a private store in ``test_members_dm_thread_private_store_reopen.py``. Shared
-constants and fakes live in ``members_dm_thread_helpers.py``.
+Related: ``test_members_dm_thread_resume_and_reservation.py``,
+``test_members_dm_thread_activity_and_briefing.py``,
+``test_members_dm_thread_private_store_reopen.py``; shared fakes in
+``members_dm_thread_helpers.py``.
 """
 
 from __future__ import annotations
@@ -145,21 +135,11 @@ class TestDmBinding:
 
 
 class TestRestrictedRestartMemberIdentity:
-    """A restricted chat must not read a member's private store it cannot prove
-    it ran as, after an alias change across a restart.
+    """A restricted chat must not read a private store it cannot prove it ran as.
 
-    A restricted (incognito/temporary) session persists no durable execution
-    carrier, so on restart it re-selects the member from the alias its slot
-    carries. Binding that member's PRIVATE store is sound only when a durable
-    identity the session itself carries -- the slot KEY, never the agent-writable
-    metadata line -- confirms the alias still names the same member. A DM slot
-    key encodes the ``member_id``; an ordinary ``chat-N`` slot encodes none.
-    Resolve the hazard by refusing (open a new conversation) rather than
-    failing open: a DM slot whose encoded id DIFFERS from the resolved member
-    (the thread belongs to a specific member), and a restricted ordinary slot
-    whose alias resolves to a V2 member (reading its private store is a
-    cross-member read, and substituting the default store reads Global memory
-    the chat did not run as -- so neither is bound).
+    Only the slot KEY confirms the alias after a restart (a DM key encodes ``member_id``,
+    ``chat-N`` none), never agent-writable metadata. A mismatched DM key or a ``chat-N``
+    alias naming a V2 member is refused; the default store would read Global memory.
     """
 
     @staticmethod
@@ -475,14 +455,8 @@ class TestMemberRoutes:
     async def test_roster_flags_a_thread_whose_newest_event_is_a_stop(self, tmp_path):
         """A just-stopped thread carries last_message_stopped=True on the wire.
 
-        The preview is the last CONVERSATIONAL line (the stop card's JSON is
-        skipped), but that line reads as ongoing work on a thread the user has
-        stopped. So the row also carries a locale-independent boolean the
-        locale-aware client turns into a "Stopped" chip — never the word
-        "Stopped" from here, where the client's locale is unknown. The flag is
-        OMITTED (not False) when the newest event is not a stop, so the common
-        row stays byte-for-byte what it is without it; a later real message
-        leaves it absent.
+        The client renders the chip in its own locale, so the server sends a boolean, not
+        a word. The flag is omitted (not False) unless the newest event is a stop.
         """
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
@@ -554,11 +528,8 @@ class TestMemberRoutes:
     async def test_roster_orders_by_message_ts_not_file_mtime(self, tmp_path, monkeypatch):
         """last_active_ts is the newest MESSAGE's own timestamp.
 
-        Non-message writes (metadata, rehydration) bump the transcript file's
-        mtime without any new message; ordering on mtime made rows reorder
-        with no visible cause. Bumping the older thread's file mtime to the
-        newest time must NOT promote it above the thread whose message is
-        actually newer.
+        Metadata and rehydration writes bump the file mtime with no new message, so a
+        bumped mtime must not promote the older thread.
         """
         import datetime as _dt
         import os
@@ -815,11 +786,8 @@ class TestMemberRoutes:
     ):
         """A crewmate's project is its crew's workspace, derived from config on every open.
 
-        Not a per-thread choice read back from the transcript: a thread restored
-        with an empty project (written before member slots inherited one -- the
-        pinned Files tab read "no project directory" for it) and a thread left on
-        another directory by an in-session ``set_project`` both converge on the
-        binding. Resolved through the member's workspace name, not a bare default.
+        A thread restored with an empty project and one moved by ``set_project`` both
+        converge on the binding, resolved through the member's workspace name.
         """
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot(
@@ -1568,6 +1536,94 @@ class TestPinEnforcement:
             "vetoed turn triggered the empty-response requeue — completed "
             "tool side effects would replay"
         )
+
+    @pytest.mark.asyncio
+    async def test_a_vetoed_switch_returns_the_turns_merge_card(self, tmp_path, monkeypatch):
+        """A reset before a real ``end_turn`` wins over landing for the card.
+
+        The veto breaks the stream with no terminal, so the turn LANDS, yet the
+        finally's reset kills a runtime that may still be mid-answer and the
+        reloaded session may lack the prompt that carried the card's frame. The
+        card goes back on the queue with its durable hold, delivered again
+        rather than lost.
+        """
+        from kiro_crew.dashboard.chat_handlers import deliver_note
+        from kiro_crew.dashboard.chat_merge_back import MERGE_NOTE_SOURCE
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+        from kiro_crew.dashboard.slot_buffers import sanitize_merged_from
+        from kiro_crew.providers.base import (
+            EVENT_AGENT_SWITCHED,
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            LLMEvent,
+        )
+
+        state, slot, _run_chat = self._runner_harness(tmp_path, monkeypatch, mode=DM_SLOT_MODE)
+        merged_from = sanitize_merged_from(
+            {
+                "session": "dashboard:fork",
+                "slot": "fork",
+                "title": "fork",
+                "after": "",
+                "through": "m1",
+                "digest": "0" * 64,
+                "messages": 1,
+            }
+        )
+        assert merged_from is not None
+        # The slot's transcript must exist for the card's durable hold to land.
+        state.flush_slot_now(slot)
+        delivery = await deliver_note(
+            state,
+            slot,
+            content="vetoed-switch summary",
+            source=MERGE_NOTE_SOURCE,
+            max_age=None,
+            merged_from=merged_from,
+            durable=True,
+        )
+        assert not isinstance(delivery, web.Response), await delivery.text()
+        [card] = slot._pending_context
+        note_id = card["noteId"]
+        assert note_id not in state._consumed_merge_cards
+        key = slot_history_key(slot)
+
+        def _held_ids() -> list[str]:
+            held = state.conversation_log.get_metadata(key).get("deferred_notes") or []
+            return [entry.get("id") for entry in held]
+
+        # Positive control: the hold is on disk before the turn takes the card.
+        assert _held_ids() == [note_id]
+
+        sent: list[str] = []
+
+        async def _stream(msg):
+            sent.append(msg)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=OTHER)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="foreign agent output after switch")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = state.sessions.get_or_create.return_value[0]
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        await await_until(
+            asyncio.gather(*state._background_tasks),
+            what="the switched-agent background task cleanup",
+        )
+
+        # The frame went out once, inside this turn's prompt, and the veto held.
+        assert len(sent) == 1 and sent[0].count("vetoed-switch summary") == 1
+        assert slot.agent == CREW
+        state.sessions.reset.assert_awaited()
+        # The reset before any terminal returns the card for the next turn.
+        assert [entry["noteId"] for entry in slot._pending_context] == [note_id]
+        assert note_id not in state._consumed_merge_cards
+        assert slot._inflight_merge_contexts == []
+        state.flush_slot_now(slot)
+        assert _held_ids() == [note_id]
 
     @pytest.mark.asyncio
     async def test_mid_turn_agent_switch_still_lands_on_ordinary_slots(self, tmp_path, monkeypatch):

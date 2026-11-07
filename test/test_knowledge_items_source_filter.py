@@ -61,9 +61,7 @@ async def _call(store, query: dict) -> dict:
     return json.loads(resp.body.decode())
 
 
-# ---------------------------------------------------------------------------
 # _matches_source
-# ---------------------------------------------------------------------------
 
 
 def test_matches_source_exact():
@@ -78,9 +76,7 @@ def test_matches_source_none_sentinel_matches_missing_and_empty():
     assert _matches_source({"source_id": "s1"}, "__none__") is False
 
 
-# ---------------------------------------------------------------------------
 # list_items?source_id=
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -171,9 +167,7 @@ async def test_list_items_source_id_filters_search_results(seeded):
     assert {i["source_id"] for i in data["items"]} == {beta}
 
 
-# ---------------------------------------------------------------------------
 # source_counts
-# ---------------------------------------------------------------------------
 
 
 async def _counts(store, query: dict) -> dict:
@@ -364,7 +358,7 @@ async def test_type_filtered_search_finds_a_match_ranked_past_the_window(store):
 
 @pytest.mark.asyncio
 async def test_unscoped_search_keeps_the_narrow_pool(seeded):
-    """Without a source scope the existing limit * 3 window is unchanged."""
+    """Without a source scope the search uses one limit * 3 window."""
     store, _alpha, _beta = seeded
     retriever = MagicMock()
     retriever.search.return_value = []

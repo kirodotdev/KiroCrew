@@ -352,7 +352,7 @@ export function TokenStackedAreaChart() {
             // value text reads that day out, so the tooltip needs no live region.
             role="slider"
             tabIndex={0}
-            aria-label={`${i18nT('pages.overview.usageSeriesChart.aria_label')}. ${i18nT('pages.overview.usageSeriesChart.keyboard_hint')}`}
+            aria-label={i18nT('pages.overview.usageSeriesChart.aria_label_keyboard_hint')}
             aria-orientation="horizontal"
             aria-valuemin={0}
             aria-valuemax={days - 1}

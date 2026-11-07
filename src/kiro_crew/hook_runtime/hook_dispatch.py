@@ -68,10 +68,8 @@ def persisted_hook_store() -> ScriptHookStore:
     store = ScriptHookStore(load=False)
     if not store._path.exists():
         return store
-    from kiro_crew.user_json import loads_user_json
-
     with webhooks.locked(store._path):
-        data = loads_user_json(read_bytes_with_retry(store._path).decode("utf-8"))
+        data = json.loads(read_bytes_with_retry(store._path))
     hooks_data = data.get("hooks", []) if isinstance(data, dict) else None
     if not isinstance(hooks_data, list):
         raise ValueError(f"{store._path} does not hold a hooks list")
@@ -88,6 +86,7 @@ async def fire_tool_hooks(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    session_model: str | None = None,
 ) -> None:
     """Fire PreToolUse hooks for an EVENT_TOOL_CALL event.
 
@@ -104,6 +103,7 @@ async def fire_tool_hooks(
     tool calls to the specific agent/session that fired them. Callers in
     parent contexts (dashboard chat, generic LLM helpers) leave them as
     ``None``; subagent and taskrunner callers pass real values.
+    ``session_model`` is forwarded the same way (``ScriptHookStore.fire``).
     """
     if hook_store is None:
         return
@@ -124,6 +124,7 @@ async def fire_tool_hooks(
             subagent_id=subagent_id,
             parent_session_key=parent_session_key,
             agent_role=agent_role,
+            session_model=session_model,
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)

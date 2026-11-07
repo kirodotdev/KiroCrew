@@ -109,7 +109,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # 11: credential vendors joined ``UNPOOLABLE_SERVERS`` (not a fingerprint input).
 # 12: a reserved ``crewmate:`` agent gets no overlay; a keep that skips this
 # check is refused by name after the loop.
-_FINGERPRINT_SCHEMA = 12
+# 13: a server a config scope mutes is not wrapped (``scope_muted``).
+_FINGERPRINT_SCHEMA = 13
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.
@@ -140,6 +141,7 @@ def _rewrite_inputs_fingerprint(
     identity_keys: Collection[str],
     read_buffer_limit: int,
     mate_sources: dict[str, Any] | None = None,
+    scope_muted: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Return a JSON-serializable snapshot of every input that can change
     :func:`rewrite_agents`'s output.
@@ -147,6 +149,9 @@ def _rewrite_inputs_fingerprint(
     Enumerated against the code, not guessed:
 
     * ``sources`` / ``settings`` — the parsed spec files (size+mtime+digest).
+    * ``scope_muted`` — the servers a config scope mutes, which are never
+      wrapped. The crew store is not otherwise signed, so without this a mute
+      saved there kept serving the stub an earlier pass wrote.
     * ``socket_path`` / ``work_dir`` — baked into stub argv and the PoolKey.
     * ``sandbox_mode`` / ``approval_mode`` / ``stub_servers`` /
       ``pooling_enabled`` — decide stub flags and which entries are shareable.
@@ -215,6 +220,7 @@ def _rewrite_inputs_fingerprint(
         "managed_control_plane": _managed_control_plane_signature(stub_set),
         "sources": sources,
         "settings": _stat_sig(settings_path),
+        "scope_muted": sorted(scope_muted),
     }
 
 
@@ -689,6 +695,12 @@ def rewrite_agents(
         if mate_source_dir is None
         else establish_mate_sources(mate_source_dir)
     )
+    # ONE reading of the config scopes' mutes per pass, recorded in the
+    # fingerprint and handed to every wrap decision in it. Imported here so the
+    # facade's public names stay those of the unsplit module.
+    from kiro_crew.mcp_cleanup import mcp_scope_muted_aliases
+
+    scope_muted = mcp_scope_muted_aliases()
     current_inputs = _rewrite_inputs_fingerprint(
         source_dir=source_dir,
         settings_path=kiro_settings_json,
@@ -703,6 +715,7 @@ def rewrite_agents(
         identity_keys=identity_keys,
         read_buffer_limit=read_buffer_limit,
         mate_sources=mate_fingerprint,
+        scope_muted=scope_muted,
     )
     if approvals is not None:
         current_inputs["launch_approvals"] = approvals.digest()
@@ -784,6 +797,7 @@ def rewrite_agents(
                     forward_env=forward_env,
                     identity_keys=identity_keys,
                     notes=notes,
+                    scope_muted=scope_muted,
                 )
             # Valid JSON but not a dict: deterministic bad content, cacheable
             # (fixing it changes the stat signature); nothing to inject.
@@ -1002,6 +1016,7 @@ def rewrite_agents(
                 sidecars_written=written_sidecars,
                 notes=notes,
                 approvals=approvals,
+                scope_muted=scope_muted,
             )
             _collect_target_env(new_spec.get("mcpServers", {}), target_env)
             target = overlay_dir / overlay_name
@@ -1100,6 +1115,7 @@ def rewrite_agents(
                     sidecars_written=written_sidecars,
                     notes=notes,
                     approvals=approvals,
+                    scope_muted=scope_muted,
                 )
                 try:
                     atomic_write(

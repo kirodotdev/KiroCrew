@@ -492,7 +492,7 @@ export function AboutPanel() {
   const agentRequestPanelError = agentRequest.failureCount >= ARM_POLL_FAILURE_THRESHOLD
     ? i18nT('pages.settings.aboutPanel.arm_status_poll_failing')
     : agentDownloadFailed
-      ? `${i18nT('pages.settings.aboutPanel.download_failed')}: ${updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown)}`
+      ? i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) })
       : ''
   // While a request is live, its card owns the one Install control. Rendering
   // the ordinary card's "Download & Install" beneath it shows two buttons for
@@ -613,6 +613,9 @@ export function AboutPanel() {
   // True when the policy provider governs this bundled install.
   // Read from the main-process-confirmed update-state (useIsPolicyGoverned).
   const isGatewayPolicyManaged = useIsPolicyGoverned(infoQuery.data)
+  // Where the policy file the notice says to edit lives; '' when it is not one
+  // the user can edit to change updates.
+  const policyFile = useAppSelector(s => s.dashboard.status?.update_policy_file) || ''
   // In-app arm+approve applies only where the backend probed the managed-venv
   // shape; managed_by alone also covers bare source installs whose arm would 409.
   const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm) === true
@@ -649,7 +652,7 @@ export function AboutPanel() {
     status = (
       <ErrorNotice
         variant="inline"
-        message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}: ${updateErrorText(updateState)}`}
+        message={i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_reason', { reason: updateErrorText(updateState) })}
         askAgent
       />
     )
@@ -659,7 +662,7 @@ export function AboutPanel() {
     status = (
       <ErrorNotice
         variant="inline"
-        message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}: ${i18nT(UPDATE_ERROR_KEYS.unknown)}`}
+        message={i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_reason', { reason: i18nT(UPDATE_ERROR_KEYS.unknown) })}
         askAgent
         testId="check-request-failed"
       />
@@ -747,7 +750,7 @@ export function AboutPanel() {
       {cardFailed && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT(cardInstallFailed ? 'pages.settings.aboutPanel.install_failed' : 'pages.settings.aboutPanel.download_failed')}: ${updateErrorText(updateState)}`}
+          message={i18nT(cardInstallFailed ? 'pages.settings.aboutPanel.install_failed_reason' : 'pages.settings.aboutPanel.download_failed_reason', { reason: updateErrorText(updateState) })}
           askAgent
           testId="update-download-error"
         />
@@ -762,7 +765,7 @@ export function AboutPanel() {
       {!cardFailed && downloadMutation.isError && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT('pages.settings.aboutPanel.download_failed')}: ${i18nT(UPDATE_ERROR_KEYS.unknown)}`}
+          message={i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: i18nT(UPDATE_ERROR_KEYS.unknown) })}
           askAgent
           testId="update-download-request-error"
         />
@@ -770,7 +773,7 @@ export function AboutPanel() {
       {!cardFailed && installMutation.isError && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT('pages.settings.aboutPanel.install_failed')}: ${i18nT(UPDATE_ERROR_KEYS.installUnknown)}`}
+          message={i18nT('pages.settings.aboutPanel.install_failed_reason', { reason: i18nT(UPDATE_ERROR_KEYS.installUnknown) })}
           askAgent
           testId="update-install-request-error"
         />
@@ -1427,6 +1430,11 @@ export function AboutPanel() {
               <p className="text-sm text-text" data-testid="gateway-policy-managed-note">
                 {i18nT('pages.settings.aboutPanel.updates_managed_by_policy_desktop')}
               </p>
+              {policyFile && (
+                <p className="text-sm text-muted break-all" data-testid="gateway-policy-file">
+                  {i18nT('pages.settings.aboutPanel.updates_policy_file', { path: policyFile })}
+                </p>
+              )}
               {/* When the provider has a pending update, render the gateway's
                   check/apply controls so the user can act on it. Shown ONLY
                   when showUpdate is true to avoid displaying a "Check for

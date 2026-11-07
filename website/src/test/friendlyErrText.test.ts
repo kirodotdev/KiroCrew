@@ -56,6 +56,19 @@ describe('friendlyErrText', () => {
     }
   })
 
+  it('names what keeps the slot attached under a sub-agent refusal', () => {
+    const refusal = (detail: object) => JSON.stringify({ error: 'sub-agents are running', code: 'slot_subagents_running', ...detail })
+    expect(friendlyErrText(409, refusal({
+      runs: [{ id: 'r1', state: 'stalled' }], queued: [{ id: 'q1', state: 'retry_wait' }], queued_partial: false,
+    }))).toBe('sub-agents are running\nStill running or queued: r1 (stalled) and q1 (retry_wait).')
+    expect(friendlyErrText(409, refusal({ runs: null, queued: [], queued_partial: false })))
+      .toBe('sub-agents are running\nSome sub-agents could not be checked.')
+    expect(friendlyErrText(409, refusal({ runs: [], queued: [{ id: 'q1', state: 'queued' }], queued_partial: true })))
+      .toBe('sub-agents are running\nStill running or queued: q1 (queued).\nSome sub-agents could not be checked.')
+    // A body that names nothing (an older gateway) keeps its reason alone.
+    expect(friendlyErrText(409, refusal({}))).toBe('sub-agents are running')
+  })
+
   it('leaves an unrelated 409 its own reason', () => {
     const out = friendlyErrText(409, JSON.stringify({ error: 'resume in progress', code: 'resume_in_progress' }))
     expect(out).toBe('resume in progress')

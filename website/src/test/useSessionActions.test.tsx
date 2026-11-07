@@ -22,7 +22,7 @@ import type { ReactNode } from 'react'
 import type { ChatSlot } from '../types'
 import enManual from '../i18n/locales/en.manual.json'
 
-const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn() }))
+const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn(), chatSlotReload: vi.fn() }))
 // The client mock re-exports the real ApiError, so the hook's instanceof check
 // and apiErrorCode's both see the refusals these tests build.
 vi.mock('../api/client', async () => {
@@ -42,7 +42,7 @@ const cfgMock = vi.hoisted(() => ({ loadChatConfig: vi.fn(() => ({ confirmCloseS
 vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 
 import { store } from '../store'
-import { ApiError } from '../api/apiError'
+import { ApiError, statusErrText } from '../api/apiError'
 import { sseSlots, sseSlotPatch, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
 import { useSessionActions, pinMutationKeysInFlight } from '../hooks/useSessionActions'
 import { recordError, __resetErrorJournalForTests } from '../utils/errorReport'
@@ -344,6 +344,24 @@ describe('useSessionActions', () => {
     expect(mocks.chatSlots).not.toHaveBeenCalled()
   })
 
+  it('a reload refused for attached sub-agents names each one in its alert', async () => {
+    const body = JSON.stringify({
+      error: 'sub-agents are running', code: 'slot_subagents_running',
+      runs: [{ id: 'r1', state: 'stalled' }], queued: [{ id: 'q1', state: 'retry_wait' }], queued_partial: true,
+    })
+    mocks.chatSlotReload.mockRejectedValueOnce(refusal(409, body, 'sub-agents are running'))
+    const alertSpy = vi.fn()
+    vi.stubGlobal('alert', alertSpy)
+    seed()
+    const a = renderActions()
+    act(() => a.current.reload(SLOT))
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+    expect(alertSpy.mock.calls[0][0]).toBe([
+      enManual.hooks.useSessionActions.reload_failed_subagents,
+      'Still running or queued: r1 (stalled) and q1 (retry_wait).', 'Some sub-agents could not be checked.',
+    ].join('\n'))
+  })
+
   it.each([409, 429])('duplicate alerts the keyed slot-cap copy on a %i refusal instead of failing silently', async (status) => {
     // The slot-cap refusal is matched on its body code; the shared slot-cap guidance
     // that friendlyErrText puts on err.message follows the Duplicate subject, so
@@ -445,6 +463,22 @@ describe('useSessionActions', () => {
     act(() => a.current.duplicate(SLOT))
     await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
     expect(alertSpy.mock.calls[0][0]).toBe("Couldn't duplicate this session. Reason: Rate limited. Try again in a moment.")
+  })
+
+  it('duplicate says "Try again" once when the reason is a proxy 502 page', async () => {
+    // The transport names a proxy's HTML 502 page as a temporary outage; the
+    // subject template already adds the retry advice, so the reason must not.
+    const page = '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>'
+    mocks.forkChatSlot.mockRejectedValueOnce(refusal(502, page, statusErrText(502, page)))
+    const alertSpy = vi.fn()
+    vi.stubGlobal('alert', alertSpy)
+    seed()
+    const a = renderActions()
+    act(() => a.current.duplicate(SLOT))
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+    expect(alertSpy.mock.calls[0][0]).toBe(
+      "Couldn't duplicate this session. Reason: The server is temporarily unavailable (HTTP 502). Try again in a moment.",
+    )
   })
 
   it('duplicate wraps the server reason in the subject template on a non-429 ApiError', async () => {

@@ -76,6 +76,12 @@ async def set_status(channel_id: str, status: str) -> bool:
     return await driver.set_status(channel_id, None, status)
 
 
+def owes_clear(channel_id: str) -> bool:
+    """Whether the channel still shows a busy status this process set and has not cleared."""
+    driver = _driver()
+    return driver is not None and driver.owes_clear(channel_id, None)
+
+
 async def settle_after_stop(channel_id: str) -> None:
     """Move a stopped channel to ``active`` (Slack never clears it after Stop)."""
     driver = _driver()

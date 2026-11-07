@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
 from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.mate_worker_kit import WorkerKitError
@@ -22,7 +23,9 @@ async def api_member_worker_kit(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, operation)
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     try:
         if request.method == "GET":
             return web.json_response(await drained_to_thread(mate_worker_kit.view, name))

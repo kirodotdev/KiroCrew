@@ -1,18 +1,8 @@
 """Pins what ConversationLog does inside a per-session ``_locked`` hold and on release.
 
-Scenario 6 of the audit list in ``test_history_locking_remediation.py``: a one-line
-metadata rewrite (``update_metadata``, ``mark_consolidated``, the sub-offset write)
-is synced before the lock is taken, so no file ``fsync`` runs while it is held, and
-a write that lands in between is kept. Off the event loop the hold closes its descriptors
-inline on the caller's thread; entered on the loop thread, its cleanup
-(``release_lock`` and ``os.close``) runs on a worker thread and the append still
-lands. ``append_if_absent`` writes only when no message with the same role and
-content exists, runs that check and the write in one hold so two racing calls write
-one copy, and ``append_if_absent_off_loop`` dispatches it off the loop thread. How
-the lock is acquired (cross-fd exclusivity, the bounded and on-loop acquires,
-reentrancy) is pinned in ``test_history_locking_remediation.py``; the dashboard
-save that relies on this lock is pinned in
-``test_history_locking_remediation_dashboard_save.py``.
+Covers the pre-lock ``fsync`` of one-line metadata rewrites, descriptor cleanup on and
+off the loop, and ``append_if_absent``. Lock acquisition is pinned in
+``test_history_locking_remediation.py``.
 """
 
 from __future__ import annotations
@@ -80,11 +70,8 @@ def _record_lock_depth(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 class TestReducedLockHold:
     """The flush for a one-line metadata edit happens before the session lock is taken.
 
-    The replacement carries every row, so it is synced (an unsynced file renamed
-    over the old one can come back empty after a power loss). But the flush grows
-    with the transcript and every other writer of the session waits on that lock,
-    so it is staged and synced first, and the lock covers only the check that the
-    file is unchanged and the rename.
+    An unsynced rename can come back empty after a power loss, but the flush grows
+    with the transcript, so the lock covers only the unchanged-check and the rename.
     """
 
     @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)

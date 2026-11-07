@@ -52,13 +52,14 @@ from kiro_crew.mcp_shared_calls import (
     _StepPool,
 )
 from kiro_crew.mcp_shared_policy import (
-    _NEGATIVE_CACHE_TTL,
+    _NEGATIVE_CACHE_PROBE_INTERVAL,
     _POLICY_DETAIL_MAX_CHARS,
     _UNRESOLVED_REFUSES_CALL,
     ToolPolicy,
     _ambient_audit_session,
     _resolve_tool_policy,
     external_client_identity_note,
+    registry_identity_note,
     serves_managed_tools,
     spawned_without_gateway_identity,
 )
@@ -761,10 +762,15 @@ def _run_stdio_dispatch_loop(
                 # one would be unrecoverable. A tool that is listed but refuses
                 # is not a hole; a tool that is unlisted but runs is.
                 logger.warning(
-                    "Refusing tool call %r: session %s tool policy unresolved (%s)",
+                    "Refusing tool call %r: session %s tool policy unresolved (%s)%s",
                     tool_name,
                     _policy_session,
                     _policy.unresolved,
+                    (
+                        registry_identity_note(server_name)
+                        if _policy.unresolved == "identity_unattestable"
+                        else ""
+                    ),
                 )
                 sel().log_tool_invocation(
                     session_key=_policy_session,
@@ -836,6 +842,7 @@ def _run_stdio_dispatch_loop(
                         f"list; it succeeds once this server is started by a Kiro "
                         f"Crew session that gives it a signed session token."
                     )
+                    _refusal += registry_identity_note(server_name)
                     if _caller_ctx is None and spawned_without_gateway_identity():
                         _refusal += external_client_identity_note(server_name)
                 elif _policy.unresolved == "gateway_locked":
@@ -864,7 +871,7 @@ def _run_stdio_dispatch_loop(
                         f"broken{_cause}. No agent spec is implicated and nothing needs "
                         f"editing. Refusing the call rather than ignoring an "
                         f"operator's exclusion list; the call succeeds on retry "
-                        f"within {_NEGATIVE_CACHE_TTL:.0f}s of the gateway "
+                        f"within {_NEGATIVE_CACHE_PROBE_INTERVAL:.0f}s of the gateway "
                         f"answering again."
                     )
                 else:

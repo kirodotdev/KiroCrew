@@ -16,30 +16,41 @@ describe('crewWorkCounts — the ledger read against the live rows', () => {
   })
 
   it('an item before its stale moment is moving', () => {
-    expect(crewWorkCounts(facts([item()]), idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(crewWorkCounts(facts([item()]), idle, NOW)).toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
   })
 
   it('an item past its stale moment is stalled', () => {
     expect(crewWorkCounts(facts([item({ stale_at_ms: NOW - 1 })]), idle, NOW))
-      .toEqual({ person: 0, moving: 0, stalled: 1 })
+      .toEqual({ person: 0, moving: 0, looping: 0, stalled: 1 })
   })
 
   it('an item the ledger never flags is moving', () => {
-    expect(crewWorkCounts(facts([item({ stale_at_ms: 0 })]), idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(crewWorkCounts(facts([item({ stale_at_ms: 0 })]), idle, NOW)).toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
   })
 
   it('a running worker is never stalled, however long it is quiet', () => {
     expect(crewWorkCounts(facts([item({ stale_at_ms: 1 })]), [{ key: 'w', running: true }], NOW))
-      .toEqual({ person: 0, moving: 1, stalled: 0 })
+      .toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
+  })
+
+  it('a stall the conductor\'s own live loop will pick up is not counted stalled', () => {
+    const handled = { ...facts([item({ stale_at_ms: NOW - 1 })]), conductor_looping: true }
+    expect(crewWorkCounts(handled, idle, NOW)).toEqual({ person: 0, moving: 1, looping: 0, stalled: 0 })
+    expect(stalledWorkKeys(handled, idle, NOW)).toBe('')
   })
 
   it('a remote worker (no key) follows its stale moment alone', () => {
     expect(crewWorkCounts(facts([item({ worker: '', stale_at_ms: NOW - 1 })]), idle, NOW))
-      .toEqual({ person: 0, moving: 0, stalled: 1 })
+      .toEqual({ person: 0, moving: 0, looping: 0, stalled: 1 })
+  })
+
+  it('a moving item whose worker loops (waiting on CI) is counted looping too', () => {
+    const f = facts([item({ looping: true }), item({ worker: 'x' })])
+    expect(crewWorkCounts(f, idle, NOW)).toEqual({ person: 0, moving: 2, looping: 1, stalled: 0 })
   })
 
   it('items on a person are counted apart', () => {
-    expect(crewWorkCounts(facts([], 2), idle, NOW)).toEqual({ person: 2, moving: 0, stalled: 0 })
+    expect(crewWorkCounts(facts([], 2), idle, NOW)).toEqual({ person: 2, moving: 0, looping: 0, stalled: 0 })
   })
 })
 
@@ -64,7 +75,7 @@ describe('stalledWorkKeys / longestStalledWork — who has been quiet longest', 
   })
 
   it('crewNeedsYou counts a worker in both sources once and distinct ones apart', () => {
-    const listed = [{ key: 'a', group: 'approval' }, { key: 'b', group: 'working' }]
+    const listed = [{ key: 'a', group: 'approval' }, { key: 'b', group: 'waiting' }]
     expect(crewNeedsYou(listed, ['a'], 1, ['a'])).toBe(1)
     expect(crewNeedsYou(listed, ['a'], 1, ['b'])).toBe(2)
     // No keys from the gateway (or an unbound worker): the item adds its own count.
@@ -73,6 +84,8 @@ describe('stalledWorkKeys / longestStalledWork — who has been quiet longest', 
     // Before the list answers, the live rows' approval keys stand, deduped against the ledger.
     expect(crewNeedsYou(undefined, ['b', 'c'], 0, [])).toBe(2)
     expect(crewNeedsYou(undefined, ['b'], 1, ['b'])).toBe(1)
+    // A worker whose turn runs again moved on: its ledger ask is not counted.
+    expect(crewNeedsYou([{ key: 'a', group: 'working' }], [], 1, ['a'])).toBe(0)
     // A list that still shows the worker as waiting while its live row asks: one.
     expect(crewNeedsYou([{ key: 'b', group: 'waiting' }], ['b'], 1, ['b'])).toBe(1)
   })

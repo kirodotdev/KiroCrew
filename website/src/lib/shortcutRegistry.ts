@@ -157,9 +157,11 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // ---- Actions --------------------------------------------------------------
   { id: 'focus-input', group: 'actions', dispatch: 'registry', defaults: both({ key: 'Enter', alt: true }) },
   // The shifted variant of focus-input. It MOVES FOCUS ONLY: see
-  // queryPendingApprovalAction for why answering a prompt is not something a
+  // queryPendingApprovalAction for why approving a prompt is not something a
   // chord should be able to do.
   { id: 'focus-approval', group: 'actions', dispatch: 'registry', defaults: both({ key: 'Enter', alt: true, shift: true }) },
+  // Rejects the pending tool call once; see rejectPendingApproval.
+  { id: 'reject-approval', group: 'actions', dispatch: 'registry', defaults: both({ key: 'r', alt: true, shift: true }) },
   // ⌘N / Ctrl+N — new session, the chord every editor and chat client uses.
   // Was ⌥⇧N; kept as an alias. Browser-reserved: a browser tab opens a new
   // window on it, so there the alias is the working chord.
@@ -238,6 +240,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // fallback), not the global handler; listed for the reference so the
   // shortcuts modal advertises it alongside the other composer bindings.
   { id: 'edit-last-message', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp', mod: true }) },
+  // Bare Tab / Shift+Tab on a list line, handled by the composer's own key
+  // handler (chat-input/keyboard.ts); listed for the reference.
+  { id: 'list-indent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab' }) },
+  { id: 'list-outdent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab', shift: true }) },
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention (`ctrl`, not `mod`, on both).
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },

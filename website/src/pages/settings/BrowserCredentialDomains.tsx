@@ -9,7 +9,7 @@
  * provider's own default.
  */
 import { Plus, X } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 import { SettingsField } from '../../components/settings'
 import { Btn, Input } from '../../components/ui'
@@ -28,6 +28,12 @@ export function BrowserCredentialDomains({ domains, provider, disabled, onChange
   const [draft, setDraft] = useState('')
   const [invalid, setInvalid] = useState(false)
   const inputId = useId()
+  // The removed chip takes its focused remove button with it, so focus moves
+  // to the add field, the one control in this editor that always stays. The
+  // save a remove starts disables that field (as does the list cap), and a
+  // disabled field cannot hold focus, so it is focused once it is enabled.
+  const inputRef = useRef<HTMLInputElement>(null)
+  const focusAddAfterRemove = useRef(false)
   const invalidId = useId()
   const full = domains.length >= CREDENTIAL_DOMAINS_MAX
 
@@ -39,7 +45,19 @@ export function BrowserCredentialDomains({ domains, provider, disabled, onChange
     if (domains.includes(domain)) return
     onChange([...domains, domain])
   }
-  const remove = (domain: string) => onChange(domains.filter(d => d !== domain))
+  const remove = (domain: string) => {
+    onChange(domains.filter(d => d !== domain))
+    focusAddAfterRemove.current = true
+  }
+  useEffect(() => {
+    if (disabled || full || !focusAddAfterRemove.current) return
+    focusAddAfterRemove.current = false
+    // Only take back focus the remove lost: a user who moved to another
+    // control while the save ran keeps it.
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    inputRef.current?.focus()
+  }, [domains, disabled, full])
 
   return (
     <div>
@@ -74,6 +92,7 @@ export function BrowserCredentialDomains({ domains, provider, disabled, onChange
           onSubmit={e => { e.preventDefault(); add() }}
         >
           <Input
+            ref={inputRef}
             id={inputId}
             value={draft}
             onChange={e => { setDraft(e.target.value); if (invalid) setInvalid(false) }}

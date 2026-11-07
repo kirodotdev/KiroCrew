@@ -1,19 +1,8 @@
 """Fresh start on a crewmate's pinned DM: one press, a clean context, same slot.
 
-``POST /api/members/{slug}/fresh-start`` runs three existing mechanisms in a
-fixed order and adds none of its own:
-
-1. stop the running turn (``stop_slot_turn``; a second call while the first is
-   still pending is that function's own hard-kill escalation, which is what
-   frees a stuck process);
-2. clear the conversation through the typed ``/clear`` path, so the next
-   turn cold-starts with no history and the transcript records the reset;
-3. nothing else: the discard tears the agent process down, so the next turn
-   starts a fresh one under the SAME slot key.
-
-The slot key never changes: monitor loops, the work ledger and the crew log are
-bound to it. The route is the owner's only, gated exactly like the other
-member routes.
+``POST /api/members/{slug}/fresh-start`` stops the turn (``stop_slot_turn``; a second
+press hard-kills) and clears through the typed ``/clear`` path. The slot key never
+changes, because monitor loops, the work ledger and the crew log are bound to it.
 """
 
 from __future__ import annotations
@@ -39,14 +28,10 @@ MEMBER = "code-reviewer"
 
 @pytest.fixture(autouse=True)
 def _fresh_eventlog(tmp_path, _floor_monkeypatch):
-    """Re-root the member event log at tmp_path, same fixture as
-    test_members_eventlog_wiring.py: ``get_service()`` is a singleton, so a
-    test observing it must drop any instance a prior test built elsewhere.
+    """Re-root the member event log at tmp_path; ``get_service()`` is a singleton.
 
-    Patches through ``_floor_monkeypatch``, not the shared ``monkeypatch``: this
-    fixture is autouse, so every test in the file depends on the re-root
-    staying in place, and a test that calls ``monkeypatch.undo()`` mid-way
-    would otherwise lift it early.
+    Uses ``_floor_monkeypatch`` so a test calling ``monkeypatch.undo()`` cannot lift
+    this autouse re-root early.
     """
     _floor_monkeypatch.setattr(members, "data_home", lambda: tmp_path)
     set_service(None)

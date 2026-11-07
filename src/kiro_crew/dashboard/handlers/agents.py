@@ -217,6 +217,7 @@ from kiro_crew.dashboard.agent_admin.capabilities import (  # noqa: F401
 )
 from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
+    _created_response,
     _crew_effort_rejected,
     _crew_memory_store_rejected,
     _eager_copy_mate_config,
@@ -287,7 +288,8 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
     _UnverifiableLineage,
     _write_spec_file,
 )
-from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
+from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _DASHBOARD_SERVED_SLASH_COMMANDS,
@@ -299,6 +301,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     run_config_write,
 )
 from kiro_crew.dashboard.conditional_get import conditional_response, strong_content_etag
+from kiro_crew.dashboard.handlers import models_cold_probe
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     MAX_AGENT_SKILLS,
     SkillCatalogSnapshot,
@@ -321,6 +324,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     validate_definition_patch,
 )
 from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
+from kiro_crew.dashboard.handlers.agents_effort_levels import api_effort_levels  # noqa: F401
 from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
@@ -356,6 +360,7 @@ from kiro_crew.memory_stores import (  # noqa: F401
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction, kill_and_reap  # noqa: F401
+from kiro_crew.quick_prompts import user_quick_prompt_menu
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -876,6 +881,7 @@ def _advertised_backend_models(
     """
     namespace = model_registry_namespace(backend)
     advertised = _advertised_cc_models(request, namespace)
+    models_cold_probe.probe_if_cold(request, backend, advertised)  # answers now regardless
 
     rows: list[dict] = [
         {"model_name": "auto", "display_name": "Auto", "description": "Backend default"}
@@ -1537,30 +1543,6 @@ async def api_models(request: web.Request) -> web.Response:
         )
 
 
-async def api_effort_levels(request: web.Request) -> web.Response:
-    """GET /api/effort-levels — list available reasoning effort levels.
-
-    Per-slot: when a ``?slot=`` query param resolves to a live ACP provider,
-    return the levels that slot's CURRENT model reported (ACP escalation order),
-    so concurrent slots on different models/backends each see their own set and
-    a model switch is reflected immediately. Falls back to the process-global
-    ordered list (cold start / no live provider / provider without the getter).
-    """
-    slot = request.query.get("slot")
-    if slot:
-        try:
-            state: DashboardState = request.app["state"]
-            provider = state.sessions.get_provider(_history_key_for(slot))
-            getter = getattr(provider, "get_valid_effort_levels", None) if provider else None
-            if callable(getter):
-                levels = getter()
-                if levels:
-                    return web.json_response(levels)
-        except (KeyError, AttributeError):
-            pass
-    return web.json_response(get_reasoning_effort_ordered())
-
-
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
@@ -1595,7 +1577,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
                 result.append(
                     {"name": command, "description": SLASH_COMMAND_DESCRIPTIONS.get(command, "")}
                 )
-        return web.json_response(result)
+        return web.json_response(result + await asyncio.to_thread(user_quick_prompt_menu))
 
     # Blocked commands stay in _SLASH_COMMANDS (typing one still gets the
     # explicit "not available in the dashboard" rejection in chat_runner), but
@@ -1609,6 +1591,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
         offered = offered & local_harness_menu(cfg.agent.acp_backend)
     return web.json_response(
         [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
+        + await asyncio.to_thread(user_quick_prompt_menu)  # expanded on every harness
     )
 
 
@@ -1920,9 +1903,7 @@ _AVATAR_CONTENT_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image
 _AVATAR_MAX_BYTES = 1024 * 1024
 
 
-# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation --
-# moved to chat_utils so the files handler's staging copy can share the one
-# implementation; the local name is kept for its callers.
+# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation (``chat_utils``).
 _drained_to_thread = drained_to_thread
 
 
@@ -1936,7 +1917,8 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
     denied = await _require_owner(request, "agent.avatar_get")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    if (name := agent_route_name(request)) is None:
+        return invalid_agent_name_response()
     # The file is served only while the crew's config actually selects it —
     # a leftover file after an out-of-band config edit or a failed cleanup
     # must not remain silently retrievable. The file pin narrows that further:

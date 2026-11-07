@@ -132,7 +132,7 @@ for (const s of SCENES) {
       base: [page.locator('[role="menuitem"]', { hasText: /commands/ }),
         /Trusted — ls commands are auto-approved for @dev until Kiro Crew restarts/, '-confirmed'],
       command: [page.locator('[role="menuitem"]').first(),
-        /Trusted — “ls -la \/home\/dev\/project” is auto-approved for @dev until Kiro Crew restarts/, '-confirmed-command'],
+        /Trusted — ls -la \/home\/dev\/project is auto-approved for @dev until Kiro Crew restarts/, '-confirmed-command'],
       all: [page.locator('[data-capture-root] button', { hasText: /^Trust all tools in this channel/ }),
         /Trusted — all tools in this channel are auto-approved, persists across restarts/, '-confirmed-all'],
     }[s.confirm]

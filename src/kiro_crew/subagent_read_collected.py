@@ -7,10 +7,9 @@ result. :class:`StatusReadAnswer` answers the call with the text it was given an
 once the frame carrying that text was written to the parent's pipe
 (:meth:`DeferredTool.on_answered` with ``written`` True), sends the same
 ``POST /api/spawn/mark-collected`` the blocking tool sends. The gateway applies
-its own rules to that mark (only the caller's own children, and for a parent that
-settles at release only under the attempt that spawned and read the run), so a
-mark it does not take leaves the completion to be delivered: a duplicate at
-worst, never a loss.
+its own rules to that mark (only the caller's own children, and only under the
+attempt that spawned and read the run), so a mark it does not take leaves the
+completion to be delivered: a duplicate at worst, never a loss.
 """
 
 from __future__ import annotations

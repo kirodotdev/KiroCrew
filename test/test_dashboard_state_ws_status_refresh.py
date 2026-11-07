@@ -8,15 +8,18 @@ pushes slots when the allowlist generation moves. An app token or a non-owner
 dashboard user never starts it. The turn-boundary refresh reads only the slot
 whose turn ended and runs only while an owner window is open, and its status delta
 reaches owner sockets alone through the sink the dashboard wires and removes on
-shutdown. Which audience each status frame reaches, and that only an owner's
-connection refreshes it at connect, live in ``test_dashboard_state_ws.py``, and the
-shared fixtures in ``dashboard_state_ws_helpers.py``.
+shutdown. The owner's on-demand refresh route forces that same read over every
+slot's chips and refuses anyone else. Which audience each status frame reaches,
+and that only an owner's connection refreshes it at connect, live in
+``test_dashboard_state_ws.py``, and the shared fixtures in
+``dashboard_state_ws_helpers.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -840,3 +843,65 @@ class TestTurnBoundarySourceStatus:
         for cleanup in app.on_cleanup:
             await cleanup(app)
         assert state.push_source_status not in source_providers._status_delta_sinks
+
+
+class TestOnDemandSourceStatus:
+    """The owner's "refresh link status" request: every slot's chips, read now."""
+
+    @pytest.mark.asyncio
+    async def test_owner_refresh_forces_every_chip_and_a_non_owner_is_refused(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers import source_providers
+
+        route = "/api/source/pull-request/status/refresh"
+        every_chip = ["https://github.com/acme/repo/pull/7", "https://github.com/acme/other/pull/9"]
+        state.get_or_create_slot("chat-a").append("assistant", every_chip[0], broadcast=False)
+        state.get_or_create_slot("chat-b").append("assistant", every_chip[1], broadcast=False)
+        state.owner_id = "U_OWNER"
+        # chat-a's chip was just read and chat-b's never was: the stalest goes first,
+        # so a click capped at CHECK_STATUS_PENDING_MAX reads leaves the next one the rest.
+        monkeypatch.setitem(
+            source_providers._check_cache, every_chip[0], (time.monotonic(), {"state": "open"})
+        )
+        stalest_first = [every_chip[1], every_chip[0]]
+        forced: list[list[str]] = []
+        visibility: list[tuple[list[str], bool]] = []
+        monkeypatch.setattr(source_providers, "_sel", MagicMock)
+        monkeypatch.setattr(
+            source_providers,
+            "request_check_refresh_now",
+            lambda urls, on_update=None: forced.append(list(urls)) or list(urls),
+        )
+        monkeypatch.setattr(
+            source_providers,
+            "schedule_visibility_refresh",
+            lambda urls, on_update=None, *, force=False: visibility.append((list(urls), force)),
+        )
+        caller = {"user": "U_OWNER"}
+
+        @web.middleware
+        async def fake_auth(request, handler):
+            request["user"] = caller["user"]
+            request["app"] = ""
+            return await handler(request)
+
+        app = web.Application(middlewares=[fake_auth])
+        app["state"] = state
+        app.router.add_post(route, source_providers.api_pull_request_status_refresh)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(route)
+            assert response.status == 200
+            assert await response.json() == {"refreshing": stalest_first}
+            # The forced read and its lockstep visibility revalidation, over
+            # every slot's chips -- not one slot's, as at a turn boundary.
+            assert forced == [stalest_first]
+            assert visibility == [(stalest_first, True)]
+
+            caller["user"] = "U_SOMEONE_ELSE"
+            refused = await client.post(route)
+            assert refused.status == 403
+        assert forced == [stalest_first]

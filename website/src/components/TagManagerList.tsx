@@ -6,6 +6,7 @@ import type { AgentTagPolicy, ChatTag } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { api } from '../api/client'
 import ErrorNotice from './ErrorNotice'
+import { useConfirm } from './ConfirmDialog'
 import SegmentedControl from './SegmentedControl'
 import { Btn } from './ui'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
@@ -98,6 +99,7 @@ export interface TagManagerListProps {
  * tag-delete-<id>) match the board's selectors.
  */
 export default function TagManagerList({ mode, selectedIds = [], onToggleTag, createTestId = 'tag-create' }: TagManagerListProps) {
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const descriptionIdPrefix = useId()
@@ -231,6 +233,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
     },
   })
   const deleteTagMutation = useMutation({
+    mutationKey: ['chat-tag-delete'],
     mutationFn: (id: string) => api.deleteChatTag(id),
     onMutate: id => beginMutation(`delete:${id}`),
     onSuccess: () => {
@@ -254,6 +257,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
 
   return (
     <>
+      {confirmDialog}
       {storeDegraded && (
         <ErrorNotice
           id={policyUnavailableId}
@@ -389,9 +393,22 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 aria-describedby={tagStoreDegraded ? policyUnavailableId : undefined}
                 disabled={deleteDisabled}
                 aria-label={i18nT('components.tagManagerList.delete_tag_2', { name: t.name })}
-                onClick={() => {
-                  if (deleteDisabled) return
-                  if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id)
+                onClick={async () => {
+                  if (deleteDisabled || confirmOpen) return
+                  const { id, name } = t
+                  if (await confirm({
+                    title: i18nT('components.tagManagerList.delete_tag_button'),
+                    body: i18nT('components.tagManagerList.delete_tag_confirm', { name }),
+                    confirmLabel: i18nT('components.tagManagerList.delete_tag_button'),
+                    layer: mode === 'column-filter' ? 'top' : 'dialog',
+                  }) !== true) return
+                  // Another list or a store refetch can change this row during the question.
+                  const current = queryClient.getQueryData<ChatTag[]>(['chat-tags'])?.find(tag => tag.id === id)
+                  const inFlight = queryClient.getMutationCache()
+                    .findAll({ mutationKey: ['chat-tag-delete'], status: 'pending' })
+                    .some(mutation => mutation.state.variables === id)
+                  if (!current || current.agent_store_degraded || inFlight) return
+                  deleteTagMutation.mutate(id)
                 }}>
                 <X size={11} />
               </button>

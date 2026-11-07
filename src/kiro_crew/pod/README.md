@@ -287,6 +287,17 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
+On Linux nothing per pod says a name is installed (the unit is a machine-wide
+template), and a gateway started outside the unit serves with no unit at all. So
+for a name systemd is not running, `pod ls` and `pod prune` list its HOME as an
+orphan, and `pod down` (the delete `pod prune` uses too) removes it, only when the
+pod's own evidence (`home_liveness`) shows nothing using it: no gateway holds its
+`gateway.lock`, and no readable process has its working directory or an open
+file under it. A lock that cannot be probed counts as in use. A `systemctl stop`
+that fails on a unit systemd was not running (it answers `Unit … not loaded` when
+there is no template to load the instance from) then just means there is nothing
+to stop. A HOME still in use is not listed, and `pod down` refuses and names why.
+
 ### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a
@@ -390,6 +401,7 @@ pod resolves the host's real `kiro-cli` exactly as before.
   the shared `~/.kiro/crew` data and refuses the live port.
 - Every pod's `config.json` forces `enabled=false` on the tunnel and on every
   channel that carries a config-level enable (`runtime.SEED_DISABLED_SECTIONS`),
+  and `relay_enabled=false` on the tunnel, so a pod never dials the Kiro relay,
   and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*`, `FEISHU_*` and non-AWS
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.
@@ -722,7 +734,12 @@ unit installed — the template `user@.service`, or a hand-installed
 manager unit anywhere on systemd's load path, that remedy cannot work: there is
 no unit for linger to start, which is the case on Enterprise Linux 7 derivatives
 (RHEL 7, CentOS 7, Amazon Linux 2). `require_systemd()` then names the platform
-limit and points at `./dev-backend.sh` instead. `kirocrew doctor` checks for the
+limit and points at `./dev-backend.sh` instead. Which case applies is the SYSTEM
+manager's answer (`systemctl show --property=LoadState user@<uid>.service`, no
+user bus needed), so a masked unit counts as absent and systemd's own unit path is
+honoured; only when that call cannot answer does a walk of the documented load
+path decide. Either way the refusal is `PodBackendAbsent`, decided by the missing
+socket alone. `kirocrew doctor` checks for the
 manager unit BEFORE probing bus reachability, because a stray session
 `dbus-daemon` can create a socket on a host that has no manager behind it. With a
 manager unit present, doctor retains the shared probe's reachable / no-session /

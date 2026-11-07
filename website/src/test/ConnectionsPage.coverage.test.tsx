@@ -368,6 +368,53 @@ describe('the provider gallery', () => {
     expect(within(github).getByText("Saved for chats that support it. Some chats can't use this kind of sign-in yet.")).toBeInTheDocument()
   })
 
+  // While chats run on KAS, a connected row says which word signs a KAS chat in.
+  it('tells a connected row on KAS to type the server name once in chat', async () => {
+    mcpServers.mockResolvedValue([server()])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true, signInInChat: true }],
+    })
+    mount()
+
+    const notion = await waitFor(() => card('notion'))
+    await waitFor(() => expect(notion).toHaveAttribute('data-state', 'connected'))
+    expect(within(notion).getByText('In chats')).toBeInTheDocument()
+    expect(within(notion).getByText('Chats sign in separately: type notion in a chat once.')).toBeInTheDocument()
+  })
+
+  it('shows no chat sign-in line on a connected row when chats run on Kiro CLI', async () => {
+    mcpServers.mockResolvedValue([server()])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    mount()
+
+    const notion = await waitFor(() => card('notion'))
+    await waitFor(() => expect(notion).toHaveAttribute('data-state', 'connected'))
+    expect(within(notion).queryByText('In chats')).not.toBeInTheDocument()
+  })
+
+  // Test runs on Kiro CLI's grant; the gateway refuses it (409
+  // crew_oauth_test_unsupported) for a Crew-held sign-in, so the card drops it.
+  it.each([
+    ['Crew-held', true, false],
+    ['native', undefined, true],
+  ])('offers Test on a connected %s row only when Crew does not hold it', async (_label, crewHeld, hasTest) => {
+    mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'connected', grantPresent: true, crewHeld }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'connected'))
+    expect(within(github).queryByRole('button', { name: 'Test' }) !== null).toBe(hasTest)
+    expect(within(github).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
+  })
+
   it('merges the backend caveat into the shared-grant tip beside Disconnect', async () => {
     mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
     connectionsStatus.mockResolvedValue({

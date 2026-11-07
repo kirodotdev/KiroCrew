@@ -12,7 +12,7 @@ and a patch of the method on the class or on an instance reaches every caller. M
 names this code reads are patched through ``kiro_crew.sel``, which reaches every member
 of the family that binds them (``kiro_crew._facade_mirror``).
 
-Instance fields written: ``_last_hash``, ``_live_seen``.
+Instance fields written: ``_last_hash``, ``_live_seen``, ``_tip_unknown``.
 
 Instance fields read: ``_path``.
 """
@@ -27,6 +27,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew import platform_compat
 from kiro_crew.sel_chain_lock import _on_event_loop
 
 if TYPE_CHECKING:
@@ -40,9 +41,7 @@ class _ChainTipBeyondBound(OSError):
     """The chain tip lies past a bounded tail read.
 
     An OSError subclass so the append path's existing fail-closed handling
-    covers it, but a distinct type so _read_last_hash's fail-soft ``except
-    OSError`` (which exists for genuine read errors and returns "") cannot
-    swallow it and hand back a genesis tip.
+    covers it, like any other tip read that fails.
     """
 
 
@@ -159,6 +158,8 @@ def _append_chained_locked(self: SecurityEventLog, events: list[SecurityEvent]) 
     to audit, and the background writer treats it exactly as it already treats
     a full disk.
     """
+    if self._tip_unknown:
+        self._reanchor_now()  # construction could not read the tip; raises if it still cannot
     for attempt in range(_APPEND_RETRIES + 1):
         prev_last_hash = self._last_hash
         lines = self._chain_locked(events)
@@ -233,6 +234,27 @@ def _append_lines_locked(
         os.O_CREAT | os.O_APPEND | os.O_WRONLY,
         0o600,
     )
+    # Owner-only before any byte is written, re-asserted on every append so a log
+    # that pre-existed with a wider mode or DACL is repaired too. Calling-thread
+    # rule of ``write_config_atomically``: on the event loop on Windows a
+    # non-local volume skips the DACL, as the write would stall on SMB.
+    lock_down = True
+    if not platform_compat.IS_POSIX and _on_event_loop():
+        try:
+            lock_down = platform_compat.windows_acl.volume_is_local(self._path)
+        except Exception:  # noqa: BLE001 - an unknown volume is not a local one
+            lock_down = False
+        if not lock_down:
+            logger.warning(
+                "SEL audit log %s is on a non-local volume and this append ran on "
+                "the event loop, so the owner-only DACL was skipped",
+                self._path,
+            )
+    if lock_down:
+        try:
+            platform_compat.restrict_to_owner(self._path)
+        except OSError:
+            logger.warning("Failed to make SEL audit log %s owner-only", self._path, exc_info=True)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         actual = os.fstat(f.fileno())
         if expect is not None and _identity_changed(expect, actual):
@@ -258,25 +280,6 @@ def _append_lines_locked(
         # appended to is the one we must remember, so the NEXT append's guard
         # can see that it has moved on.
         written = os.fstat(f.fileno())
-    # Ensure permissions are correct even if file pre-existed with
-    # wrong mode (e.g. created by an older version). POSIX repair only,
-    # deliberately still NOT ``platform_compat.restrict_to_owner``: on POSIX
-    # that helper IS this exact call, so a swap would add only the Windows
-    # owner-only DACL — and this append path can run inline on a caller's
-    # thread that may be the asyncio event loop (the ``critical=True``
-    # audit-or-deny write, and the fallback taken when the writer thread
-    # cannot start, see ``_may_rotate``), where a DACL write to a UNC or
-    # mapped-drive path costs an unbounded SMB round-trip. Adopting the
-    # helper here therefore means first deciding what a non-local volume
-    # gets, the way ``write_config_atomically`` gates its own lockdown on
-    # ``windows_acl.volume_is_local``; until that is settled the log keeps
-    # whatever DACL it inherits on Windows.
-    try:
-        os.chmod(self._path, 0o600)  # lockdown-ok: unbounded SMB round-trip on the loop
-    except OSError:
-        logger.warning(
-            "Failed to enforce 0o600 permissions on SEL audit log %s", self._path, exc_info=True
-        )
     self._live_seen = (written.st_dev, written.st_ino, written.st_size)
 
 
@@ -335,7 +338,6 @@ def _reanchor_if_replaced(self: SecurityEventLog) -> int:
     """
     identity = self._live_identity()
     previous = self._live_seen
-    self._live_seen = identity
     if previous is not None and _live_log_moved_on(previous, identity):
         logger.info(
             "SEL live log moved on since our last write (another process "
@@ -348,11 +350,14 @@ def _reanchor_if_replaced(self: SecurityEventLog) -> int:
         # Exhausting the bound raises (an OSError), failing the audit
         # closed instead of chaining from a guessed tip.
         self._last_hash = self._read_last_hash(max_chunks=1 if _on_event_loop() else None)
+    # Only after the read: one that raised keeps the old identity, so the next
+    # append still sees the move and reads the tip again.
+    self._live_seen = identity
     return identity[2]
 
 
 def _reanchor_now(self: SecurityEventLog) -> None:
-    """Re-read the chain tip and the live log's identity, unconditionally.
+    """Re-read the chain tip and the live log's identity unconditionally; clear ``_tip_unknown``.
 
     For the collision path, where the append guard has ALREADY proved the file
     moved on. There is nothing left to decide there, so this must not route
@@ -362,7 +367,7 @@ def _reanchor_now(self: SecurityEventLog) -> None:
     retry re-chained from the same tip the collision had just invalidated and
     wrote it. Both now share one predicate, and this path skips it entirely.
     """
-    self._live_seen = self._live_identity()
+    identity = self._live_identity()
     # Bounded on the event-loop thread: a normal log yields the tip from a
     # single tail read, so only an already-corrupt multi-kilobyte tail could
     # walk further, and an unbounded backward scan there would stall chat and
@@ -371,6 +376,10 @@ def _reanchor_now(self: SecurityEventLog) -> None:
     # closed instead of chaining from a guessed tip; callers off the loop
     # recover as far back as needed.
     self._last_hash = self._read_last_hash(max_chunks=1 if _on_event_loop() else None)
+    # Only after the read: one that raised keeps the old identity, so the next
+    # append's guard still sees the move and re-anchors again.
+    self._live_seen = identity
+    self._tip_unknown = False
 
 
 def _ends_without_newline(self: SecurityEventLog) -> bool:
@@ -412,6 +421,10 @@ def _read_last_hash(
     we only return "" when the log is genuinely empty/absent or contains no
     parseable record at all (nothing to chain from). Skipped corrupt tail
     lines are logged so the integrity concern is surfaced, not hidden.
+
+    A log that is present but cannot be read raises ``OSError``: its tip is
+    unknown, not genesis, and chaining from "" would put a genesis link in the
+    middle of the file.
     """
     target = path or self._path
     if not target.exists():
@@ -497,10 +510,5 @@ def _read_last_hash(
                     return data.get("entry_hash", "")
         # No parseable record anywhere in the file — nothing to chain from.
         return ""
-    except _ChainTipBeyondBound:
-        # Not a read failure: the bound was deliberately hit. Propagate so
-        # the caller fails closed rather than chaining from genesis.
-        raise
-    except OSError:
-        logger.warning("SEL: failed to read chain tip from %s", target, exc_info=True)
-        return ""
+    except FileNotFoundError:
+        return ""  # removed after the exists() check: an absent log is genesis

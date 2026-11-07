@@ -120,7 +120,8 @@ def _doctor_discord(
     dc = cfg.discord
     if not dc.enabled:
         print("  status:      ⏭  not enabled (optional)")
-        print("  setup:       enable it in the dashboard → Settings → Discord, or set")
+        print("  setup:       enable it in the dashboard under")
+        print(f"{render._INDENT}Settings → Messaging Channels → Discord, or set")
         print(f"{render._INDENT}discord.enabled in config.json and DISCORD_BOT_TOKEN in")
         print(f"{render._INDENT}{cli_doctor.env_path()}, then `kirocrew restart`")
         return
@@ -134,7 +135,8 @@ def _doctor_discord(
         print("  token:       ✅ present")
     else:
         print("  token:       ❌ missing, so the channel never starts")
-        print(f"{render._INDENT}Fix: paste the bot token in Settings → Discord, or add")
+        print(f"{render._INDENT}Fix: paste the bot token in")
+        print(f"{render._INDENT}Settings → Messaging Channels → Discord, or add")
         print(
             f"{render._INDENT}DISCORD_BOT_TOKEN=<token> to {cli_doctor.env_path()}, then `kirocrew restart`"
         )
@@ -147,7 +149,8 @@ def _doctor_discord(
         print(f"  users:       ✅ {len(users)} allow-listed")
     else:
         print("  users:       ❌ allow-list empty, so EVERY message is denied")
-        print(f"{render._INDENT}Fix: add your numeric user ID under Settings → Discord")
+        print(f"{render._INDENT}Fix: add your numeric user ID under")
+        print(f"{render._INDENT}Settings → Messaging Channels → Discord")
         print(f"{render._INDENT}(Discord → Settings → Advanced → Developer Mode, then")
         print(f"{render._INDENT}right-click your name → Copy User ID), then `kirocrew restart`")
         issues.append("discord: empty user allow-list denies every message")

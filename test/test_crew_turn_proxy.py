@@ -67,32 +67,6 @@ def test_the_far_ends_own_turn_url_wins_over_a_composed_one():
     assert mod._turn_target(status, "microvm") == "http://127.0.0.1:19999/v1/chat/completions"
 
 
-def test_the_secret_path_is_the_one_the_deploy_wrote():
-    """Derived from the crew's launch tag, never supplied by the caller.
-
-    A caller-supplied secret path would let any request name a secret for the
-    gateway to read with the owner's credentials and send to an endpoint of the
-    caller's choosing -- which is a read-any-secret primitive wearing a chat
-    route's clothes.
-    """
-    assert (
-        mod._SECRET_PATH.format(prefix="kirocrew/crew", crew="l2crew")
-        == "kirocrew/crew/l2crew/CONTROL_SECRET"
-    )
-    from kiro_crew.cloud.microvm.engine import MicroVmLaunchSpec
-
-    spec = MicroVmLaunchSpec(
-        image_identifier="arn:aws:lambda:us-east-1:1:microvm-image:x",
-        image_version="1.0",
-        kms_key_id="",
-    )
-    # The lane's launcher and this route must name the SAME secret, or the hub
-    # authenticates with a value the guest never read.
-    assert spec.control_secret_name("l2crew") == mod._SECRET_PATH.format(
-        prefix="kirocrew/crew", crew="l2crew"
-    )
-
-
 def test_the_control_header_matches_the_containers_own_constant():
     """One definition, asserted rather than copied by eye.
 
@@ -332,8 +306,7 @@ class TestTheRowTheLaneWritesResolvesItsOwnRecord:
 class TestTheSecretIsNamedByTheLaneNotTheDisplayName:
     """A crew's display name is a label, and labels are not secret names.
 
-    ``Kiro Crew Cloud (<tag>)`` is not a valid Secrets Manager name, and a hardcoded
-    path would ignore a moved ``microvm.secret_path_prefix``.
+    ``Kiro Crew Cloud (<tag>)`` is not a valid Secrets Manager name.
     """
 
     def test_a_recorded_reference_is_preferred(self, tmp_path, monkeypatch):
@@ -393,13 +366,6 @@ class TestTheSecretIsNamedByTheLaneNotTheDisplayName:
             name = ""
 
         assert control_secret_id(Inst()) == ""
-
-    def test_the_path_shape_takes_the_configured_prefix(self):
-        """A hardcoded prefix ignores an operator who moved theirs."""
-        from kiro_crew.dashboard.handlers_crew_turn import _SECRET_PATH
-
-        assert "{prefix}" in _SECRET_PATH
-        assert _SECRET_PATH.startswith("{prefix}")
 
 
 class TestTheCrewIsAddressedByItsOwnNameNotTheLaunchTag:
@@ -914,8 +880,7 @@ class TestOnlyTheMicrovmLaneIsServed:
 
 
 class TestControlSecretIdLanePrecedence:
-    """``control_secret_id`` prefers this crew's recorded reference, then a derive
-    FROM THAT RECORD'S OWN TAG -- never from a label the row supplied.
+    """``control_secret_id`` answers with this crew's recorded reference or nothing.
 
     A row with no record resolves to nothing: ``instances.json`` is not write-protected,
     so deriving from the row's label would let a relabelled row name any crew's secret.
@@ -950,11 +915,9 @@ class TestControlSecretIdLanePrecedence:
         assert "someone-else" not in got, "another instance's reference was borrowed"
         assert got == "", "a secret path was derived from the row's own label"
 
-    def test_the_derive_still_runs_for_a_matched_record_without_a_reference(
-        self, tmp_path, monkeypatch
-    ):
-        """The surviving half of the precedence: identity matched, no reference
-        stored, so the path is derived -- from the RECORD's tag."""
+    def test_a_matched_record_without_a_reference_resolves_nothing(self, tmp_path, monkeypatch):
+        """Identity matched, no reference stored: no name is guessed for the
+        secret, so the route answers ``crew_secret_unavailable``."""
         from types import SimpleNamespace
 
         from kiro_crew.cloud.microvm.record import CrewRecord, CrewStore
@@ -964,17 +927,15 @@ class TestControlSecretIdLanePrecedence:
         monkeypatch.setattr("kiro_crew.cloud.microvm.record.CrewStore", lambda *a, **k: store)
 
         inst = SimpleNamespace(
-            name="Kiro Crew Cloud (anything-else)",
+            name="Kiro Crew Cloud (l2crew)",
             provisioner_id="microvm",
-            id="anything-else",
+            id="l2crew",
             connection_method="ssm",
             ssm_target=_REAL_NODE,
             aws_profile="",
             aws_region="",
         )
-        got = mod.control_secret_id(inst)
-        assert got.endswith("/l2crew/CONTROL_SECRET"), "the record's own tag was not used"
-        assert "anything-else" not in got, "the row's label reached the secret name"
+        assert mod.control_secret_id(inst) == ""
 
 
 class _ExplodingStream(_CapturingStream):

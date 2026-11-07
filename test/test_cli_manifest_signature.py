@@ -66,14 +66,8 @@ def _openssl_bin() -> str:
 def _openssl_on_path(_openssl_bin: str, monkeypatch):
     """Expose Git for Windows' OpenSSL to Python helpers and installer shells.
 
-    Function-scoped (not module-scoped): a module-scoped mutation is applied
-    once at the first test's setup and reverted once at the last test's
-    teardown, so every test in between runs correctly but the first/last
-    test's own per-test env snapshot shows PATH changing across the test
-    boundary. monkeypatch.setenv is function-scoped and reverts after EACH
-    test, so no single test's boundary ever sees the mutation persist. The
-    binary lookup itself stays module-scoped (``_openssl_bin``) since it does
-    no PATH mutation and is safe to cache.
+    Function-scoped so the per-test env snapshot never sees PATH change across a test
+    boundary; the binary lookup (``_openssl_bin``) mutates nothing and stays cached.
     """
     openssl_dir = str(Path(_openssl_bin).parent)
     monkeypatch.setenv("PATH", openssl_dir + os.pathsep + os.environ.get("PATH", ""))
@@ -268,14 +262,8 @@ def test_helper_builds_a_canonical_independently_verifiable_manifest(
 def test_helper_accepts_paths_relative_to_its_own_cwd(tmp_path: Path, test_key: SigningKey) -> None:
     """The publish workflow hands the helper RELATIVE paths, from the checkout.
 
-    ``publish-cli.yml`` runs ``--public-key packaging/signing/cli-manifest-public.pem``
-    with the repository as cwd.  The helper pins openssl's own cwd to the temp
-    dir (so openssl's stray output files never land in the checkout), which
-    means every path must be anchored BEFORE it reaches openssl -- a path still
-    relative at that point is looked up under the temp dir instead, and the
-    publish fails with "openssl rejected the public key" while the key is fine.
-    Drive the two subcommands the workflow uses, plus ``verify`` and
-    ``key-info``, exactly the way the workflow does.
+    The helper runs openssl in a temp dir, so a path still relative there resolves under
+    the temp dir and the publish fails with "openssl rejected the public key".
     """
     checkout = tmp_path / "checkout"
     (checkout / "packaging" / "signing").mkdir(parents=True)
@@ -567,17 +555,9 @@ esac
     curl.chmod(0o755)
     pipx.chmod(0o755)
 
-    # cli.sh resolves an interpreter off PATH, and a bare host PATH hands it
-    # whatever version-manager shim is installed. Those shims resolve their tool
-    # installs under HOME, which this harness repoints at an empty temp dir, so
-    # a shim wedges instead of answering and the probe ladder stalls. Shadow
-    # EVERY candidate in cli.sh's ladder, not just the running version: the
-    # ladder tries python3.12 first, so on a 3.10 or 3.11 host that entry still
-    # reaches a host shim -- and a stock macOS has no `timeout` to bound it. The
-    # names are aliases rather than version claims; the probe only asserts
-    # >=3.10, which the interpreter running these tests satisfies. It must stay
-    # a REAL interpreter: cli.sh uses $PY for the signature and digest
-    # verification under test, so a stub would make those assertions vacuous.
+    # Version-manager shims wedge under the empty temp HOME, so shadow EVERY name in
+    # cli.sh's interpreter ladder with this interpreter (the probe only asserts >=3.10).
+    # It must be a REAL interpreter: cli.sh's $PY runs the verification under test.
     for _name in ("python3.13", "python3.12", "python3.11", "python3.10", "python3"):
         (tools / _name).symlink_to(sys.executable)
 
@@ -752,14 +732,8 @@ def test_only_a_pinned_manifest_the_host_denied_is_attributed_to_the_cutoff(
 ) -> None:
     """A pinned miss must name the cutoff, and nothing else may.
 
-    Failing closed on a missing manifest is correct, but a bare URL reads as a
-    broken CDN, so an operator whose rollback runbook names a pre-signing release
-    files an infrastructure bug instead of migrating off it. The guidance has to
-    stay off the other two refusals that reach the same line: an unpinned run,
-    where this means the channel feed is gone and pinning policy is not the
-    reader's problem, and an unreachable host, where blaming the cutoff would
-    attribute an outage to policy and send the operator to a doc that cannot
-    help.
+    A bare URL reads as a broken CDN to an operator pinned below the cutoff. The cutoff
+    text must stay off an unpinned miss and an unreachable host, where it would mislead.
     """
     pinned = case.startswith("pinned")
     wheel = tmp_path / WHEEL_NAME
@@ -795,12 +769,9 @@ def test_only_a_pinned_manifest_the_host_denied_is_attributed_to_the_cutoff(
 def test_no_documented_cli_pin_is_below_the_declared_cutoff() -> None:
     """No documented pin may sit below the floor the policy declares.
 
-    A pin below the cutoff has no signed manifest, so the installer fails closed
-    on it: a documented example there is a command that cannot succeed for any
-    reader who copies it. Derive the floor from the policy prose and hold two
-    things to it: the three documents state the same floor, and no
-    ``cli.sh --version`` example anywhere in the docs sits below it. Changing the
-    floor then has to move the examples with it instead of stranding them.
+    A pin below the cutoff has no signed manifest, so such an example cannot succeed.
+    The three documents must state one floor, and no ``cli.sh --version`` example
+    may sit below it.
     """
     guide = ROOT / "docs" / "guides" / "install.md"
     stated = re.compile(r"minimum pinnable release\s+is\s+`([0-9]+(?:\.[0-9]+)+)`")
@@ -1080,12 +1051,9 @@ def test_publish_workflow_uses_a_deterministic_manifest_publication_date() -> No
 def _write_workflow_shims(tools: Path, key: SigningKey) -> None:
     """Stand-ins for the two commands the signing step reaches outside the repo.
 
-    ``aws`` answers the two KMS calls the helper makes -- ``get-public-key`` with
-    the test key's DER, ``sign`` with a real PKCS#1 v1.5 signature over the digest
-    the helper hands it -- so the step's ``kms-sign`` produces a manifest OpenSSL
-    verifies for real. ``date`` is shimmed ONLY where the host lacks GNU
-    ``-d`` (macOS), because the step is written for the ubuntu runner and this
-    test judges the step, not the host's coreutils.
+    ``aws`` answers ``get-public-key`` and ``sign`` with real key material, so OpenSSL
+    verifies the manifest for real. ``date`` is shimmed only where the host lacks GNU
+    ``-d`` (macOS), since the step targets the ubuntu runner.
     """
     tools.mkdir(parents=True, exist_ok=True)
     aws = tools / "aws"
@@ -1154,21 +1122,9 @@ def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
 ) -> None:
     """Run the workflow's OWN signing script, unedited, against the real helper.
 
-    Every other test here calls ``cli-manifest.py`` with arguments the test
-    chooses; none proves the arguments ``publish-cli.yml`` chooses still fit.
-    The workflow passes the public key as a RELATIVE path, resolves the wheel's
-    ``Requires-Python`` with ``unzip`` and ``awk``, derives ``--pub-date`` from
-    the commit, and reads ``packaging/MIN_VERSION`` -- none of which a test that
-    hand-builds the argument list exercises, so a helper change can be green
-    under every unit test and refuse the workflow's first real invocation. This
-    test takes the ``run:`` block of "Build and sign CLI artifact manifest"
-    straight out of the YAML and executes it with bash in a fake checkout shaped
-    like the runner's -- the committed helper, the key at
-    ``packaging/signing/cli-manifest-public.pem``, a wheel artifact,
-    ``packaging/MIN_VERSION``, a git commit for ``$GITHUB_SHA`` -- with only
-    ``aws`` standing in. A drift between the workflow's invocation and the
-    helper's contract (a path, a flag, a new required argument) fails here, on
-    the PR, instead of at the next publish.
+    Other tests choose the arguments; this runs the ``run:`` block of "Build and sign CLI
+    artifact manifest" from ``publish-cli.yml`` in a runner-shaped fake checkout, with
+    only ``aws`` stubbed, so a drift in path, flag or argument fails on the PR.
     """
     if os.name == "nt":
         pytest.skip("the publish step runs on the ubuntu runner")
@@ -1190,16 +1146,8 @@ def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
             f"Metadata-Version: 2.1\nName: kirocrew\nVersion: {VERSION}\nRequires-Python: >=3.12\n",
         )
 
-    # Git confined to the fixture. Git reads its whole configuration surface
-    # from GIT_* variables -- where the repository is (GIT_DIR, GIT_WORK_TREE,
-    # GIT_COMMON_DIR, ...), where templates and hooks come from
-    # (GIT_TEMPLATE_DIR), and command-scope config that survives a /dev/null
-    # global config (GIT_CONFIG_COUNT / _KEY_n / _VALUE_n, GIT_CONFIG_PARAMETERS,
-    # which git itself exports into hooks, so a hook-driven test run carries
-    # them). Any one of those inherited would let the fixture's `git init` /
-    # `git commit` touch the REAL repository or run host hooks. Rather than name
-    # the dangerous ones, drop the entire GIT_* namespace and set only what the
-    # fixture needs; the same env drives the step's own `git show`.
+    # Drop the whole GIT_* namespace: an inherited GIT_DIR or GIT_CONFIG_* (git exports
+    # these into hooks) would let the fixture's git commands touch the REAL repo.
     hermetic = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     hermetic.update(
         {
@@ -1391,12 +1339,9 @@ def test_verify_refuses_a_valid_manifest_from_another_artifact_host(
 def test_installer_publish_refuses_an_unconfigured_trust_root() -> None:
     """Merging the strict cli.sh must not brick the live curl one-liner.
 
-    publish-installer.yml path-triggers on cli.sh pushes to main. Until KMS
-    provisioning pins a real fingerprint, cli.sh is deliberately fail-closed
-    (CLI_MANIFEST_KEY_ID=UNCONFIGURED refuses every install), so the publish
-    lane must refuse to replace the live installer with it. This pins the
-    guard's presence, its refusal semantics, and its position before any
-    credentialed/upload step.
+    While CLI_MANIFEST_KEY_ID=UNCONFIGURED, cli.sh refuses every install, so
+    publish-installer.yml must refuse to publish it. Pins the guard and its place before
+    any credentialed or upload step.
     """
     installer_workflow = ROOT / ".github" / "workflows" / "publish-installer.yml"
     workflow = yaml.safe_load(installer_workflow.read_text(encoding="utf-8"))
@@ -1506,27 +1451,11 @@ def test_installer_fetches_authenticated_urls_without_redirects() -> None:
     assert "--max-filesize 65536" in manifest_fetch
 
 
-# ---------------------------------------------------------------------------
 # One contract, two verifiers.
 #
-# publish-installer.yml gates every live channel feed with
-# ``cli-manifest.py verify``, while end users run cli.sh's own inline verifier.
-# Those are separate implementations of one contract, so until the tests below
-# existed nothing failed when a rule was added to one side and not the other --
-# and the shape that reaches users is a publication reporting a feed valid that
-# the installer then refuses.
-#
-# The direction matters and only one direction is a defect. The gate is allowed
-# to be STRICTER than the installer: it caps the payload at 16 KiB against the
-# installer's 64 KiB, caps every field at 2048 characters, and refuses a
-# ``min_version`` above the version the manifest ships. Each of those costs a
-# publisher one loud failure on a feed the installer would have taken, which is
-# a safe trade. The gate may never be LAXER, because that publishes a feed that
-# bricks installs while reporting success.
-#
-# So the invariant is: whatever the gate ACCEPTS, a real cli.sh run must also
-# accept. The fixtures are built once and driven through both sides to hold it.
-# ---------------------------------------------------------------------------
+# publish-installer.yml gates feeds with ``cli-manifest.py verify``; users run cli.sh's
+# inline verifier. The gate may be STRICTER (16 KiB payload vs 64 KiB, 2048-char fields,
+# ``min_version`` cap) but never laxer: whatever the gate ACCEPTS, cli.sh must accept.
 
 #: The fixture classes publication and installation must agree on. ``valid`` is
 #: the only one either side may accept; each other name is a manifest a release
@@ -1638,19 +1567,10 @@ def test_publication_gate_never_accepts_what_the_installer_refuses(
 def test_gate_and_installer_normalize_a_repeated_slash_artifact_base_alike(
     tmp_path: Path, test_key: SigningKey
 ) -> None:
-    """A repeated-slash artifact base was a real false green, not a typo class.
+    """The gate strips one trailing slash from the artifact base, as the installer does.
 
-    cli.sh applies ``${ARTIFACT_BASE%/}`` and wheel_engine interpolates its base
-    unchanged, so both strip at most ONE trailing slash. The gate used
-    ``str.rstrip("/")``, which strips every one, so for a base of
-    ``https://host//`` the gate expected ``https://host/cli/...`` while the
-    installer expected ``https://host//cli/...``. A feed carrying the former
-    passed publication and was refused at install time -- exactly the failure
-    the gate exists to catch, produced by the gate itself.
-
-    The manifest here is signed for the URL the OLD gate accepted, so this test
-    fails against the previous normalization and passes once the gate models the
-    installer.
+    cli.sh's ``${ARTIFACT_BASE%/}`` strips at most ONE slash, so ``str.rstrip("/")``
+    would pass a feed the installer refuses. The manifest is signed for that wrong URL.
     """
     doubled_base = f"{CDN_BASE}//"
     wheel = tmp_path / WHEEL_NAME
@@ -1700,11 +1620,8 @@ def test_gate_still_accepts_a_single_trailing_slash_artifact_base(
 def test_the_live_feed_gate_invokes_the_verifier_these_fixtures_pin() -> None:
     """The invariant is only worth holding if the workflow runs this verifier.
 
-    Reads publish-installer.yml rather than trusting the comment above it: the
-    feed gate must still shell ``cli-manifest.py verify`` with the channel and
-    artifact base bound, and must still take its public key from cli.sh's own
-    embedded trust root rather than from a separately stored copy that could
-    rotate independently.
+    The feed gate in publish-installer.yml must run ``cli-manifest.py verify`` with the
+    channel and artifact base, using cli.sh's embedded key, not a copy that could drift.
     """
     installer_workflow = ROOT / ".github" / "workflows" / "publish-installer.yml"
     workflow = yaml.safe_load(installer_workflow.read_text(encoding="utf-8"))

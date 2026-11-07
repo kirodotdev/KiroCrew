@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bell, MoreHorizontal, Pen, X } from 'lucide-react'
+import { Bell, MoreHorizontal, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import Card from './Card'
 import { parseReminder } from './reminderParse'
@@ -8,30 +8,31 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errorText } from './errorText'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import ReminderScheduleEditor, { type OnReschedule } from './ReminderScheduleEditor'
 import type { Reminder, RemindersPayload } from './types'
 
 type OnEdit = (id: string, text: string) => Promise<unknown>
 
-function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
-  r: Reminder; tag: string; onEdit: OnEdit; onSkip?: () => void; onRemove: () => void
+function ReminderRow({ r, tag, onEdit, onReschedule, onSkip, onRemove, hold }: {
+  r: Reminder; tag: string; onEdit: OnEdit; onReschedule: OnReschedule; onSkip?: () => void; onRemove: () => void
   hold: (r: Reminder, editing: boolean) => void
 }) {
   const ime = useImeGuard()
   const [draft, setDraft] = useState<string | null>(null)
+  const [scheduling, setScheduling] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // One save at a time, so two edits can never land out of order.
   const busy = useRef(false)
   // Compared against what the editor opened with, not r.text: a poll may refresh r.text mid-edit.
   const opened = useRef('')
   const open = () => { opened.current = r.text; setDraft(r.text) }
-  const editing = draft !== null
+  const editing = draft !== null || scheduling
   useEffect(() => { hold(r, editing) }, [hold, r, editing])
-  // The control the editor was opened from: the Edit button, or the More-actions
-  // trigger on a skippable row. Closing unmounts the focused input and a browser
-  // then drops focus to document.body, so Enter and Escape hand focus back here
-  // (the pattern in MeetingTitle). A pointer blur saves but moves nothing:
-  // redirecting focus off the element the user clicked is the context change
-  // WCAG 3.2.2 forbids.
+  // The control an editor was opened from: the row's More-actions trigger.
+  // Closing unmounts the focused input and a browser then drops focus to
+  // document.body, so Enter and Escape hand focus back here (the pattern in
+  // MeetingTitle). A pointer blur saves but moves nothing: redirecting focus
+  // off the element the user clicked is the context change WCAG 3.2.2 forbids.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   // Only take back focus the unmount dropped: a save can resolve after the user
   // has already moved on to another control, and that control keeps it.
@@ -64,27 +65,27 @@ function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
 
   const label = i18nT('apps.crewCompanion.reminders.edit_aria', { text: r.text })
   const more = i18nT('components.chatInput.more_actions')
+  if (scheduling) {
+    return <ReminderScheduleEditor r={r} onReschedule={onReschedule}
+      onClose={() => { setScheduling(false); restoreFocus() }} />
+  }
   if (draft === null) {
     return (<>
       <span className={`cc-rem-text${r.done ? ' cc-rem-done' : ''}`}>{r.text}</span>
       <span className="cc-rem-tag">{tag}</span>
-      {/* A row holds two actions at most, so a skippable row folds Skip and Edit into one menu. */}
-      {onSkip ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button ref={triggerRef} type="button" className="cc-icon-btn cc-edit" title={more} aria-label={more}>
-              <MoreHorizontal className="lucide-inline" aria-hidden /></button>
-          </DropdownMenuTrigger>
-          {/* Focus goes to the editor, not back to the trigger, or its blur would close it. */}
-          <DropdownMenuContent align="end" onCloseAutoFocus={(e) => e.preventDefault()}>
-            <DropdownMenuItem onSelect={onSkip}>{i18nT('apps.crewCompanion.reminders.skip_title')}</DropdownMenuItem>
-            <DropdownMenuItem onSelect={open}>{i18nT('components.commentOverlay.edit')}</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : (
-        <button ref={triggerRef} type="button" className="cc-icon-btn cc-edit" title={label}
-          aria-label={label} onClick={open}><Pen className="lucide-inline" aria-hidden /></button>
-      )}
+      {/* A row holds two actions at most, so Skip, Edit and Change schedule fold into one menu. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button ref={triggerRef} type="button" className="cc-icon-btn cc-edit" title={more} aria-label={more}>
+            <MoreHorizontal className="lucide-inline" aria-hidden /></button>
+        </DropdownMenuTrigger>
+        {/* Focus goes to the editor, not back to the trigger, or its blur would close it. */}
+        <DropdownMenuContent align="end" onCloseAutoFocus={(e) => e.preventDefault()}>
+          {onSkip ? <DropdownMenuItem onSelect={onSkip}>{i18nT('apps.crewCompanion.reminders.skip_title')}</DropdownMenuItem> : null}
+          <DropdownMenuItem onSelect={open}>{i18nT('components.commentOverlay.edit')}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setScheduling(true)}>{i18nT('apps.crewCompanion.reminders.schedule_title')}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <button type="button" className="cc-icon-btn is-remove" title={i18nT('apps.crewCompanion.reminders.remove_title')}
         aria-label={i18nT('apps.crewCompanion.reminders.remove_aria', { text: r.text })} onClick={onRemove}>
         <X className="lucide-inline" aria-hidden /></button>
@@ -102,7 +103,7 @@ function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
   )
 }
 
-export default function RemindersSection({ rem, remError, onAdd, onSkip, onRemove, onEdit }: {
+export default function RemindersSection({ rem, remError, onAdd, onSkip, onRemove, onEdit, onReschedule }: {
   rem: RemindersPayload | null
   remError: string | null
   /** Resolves false when the write failed, so the draft is not thrown away. */
@@ -110,6 +111,8 @@ export default function RemindersSection({ rem, remError, onAdd, onSkip, onRemov
   onSkip: (id: string) => void
   onRemove: (id: string) => void
   onEdit: OnEdit
+  /** Rejects on a failed write, so the schedule editor stays open. */
+  onReschedule: OnReschedule
 }) {
   const [draft, setDraft] = useState('')
   const [addNote, setAddNote] = useState<string | null>(null)
@@ -192,7 +195,7 @@ export default function RemindersSection({ rem, remError, onAdd, onSkip, onRemov
               <div key={r.id} className={`cc-row cc-rem-row${i === 0 ? ' is-first' : ''}`}>
                 <span className={`cc-rem-when${r.done ? ' cc-rem-done' : ''}`}>{l.absLabel ?? l.relLabel}</span>
                 {/* Skip only where there is a next occurrence to move to. */}
-                <ReminderRow r={r} tag={tag} onEdit={onEdit} onRemove={() => onRemove(r.id)} hold={hold}
+                <ReminderRow r={r} tag={tag} onEdit={onEdit} onReschedule={onReschedule} onRemove={() => onRemove(r.id)} hold={hold}
                   onSkip={r.recurrence && !r.done ? () => onSkip(r.id) : undefined} />
               </div>
             )

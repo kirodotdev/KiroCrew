@@ -769,12 +769,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # in `cloud/ssm.py` above.
         "cloud/login_target.py::discover_local_identity",
         "dashboard/chat_voice.py::api_voice_voices",
-        # Computer-use permission probe: `<our own kirocrew binary> computer
-        # doctor --json`, a fixed argv (module constants) with no shell and no
-        # agent-reachable input — the handler passes nothing from the request
-        # body. The binary is resolved by `agent._kirocrew_mcp_invocation`, i.e.
-        # the SAME install as the running gateway (or `sys.executable -m
-        # kiro_crew`), never a PATH shim the agent could plant. It exists as a
+        # Computer-use permission probe: `<this interpreter> -P -m
+        # kiro_crew.computer_use.permission_probe`, a fixed argv (a module
+        # constant) with no shell and no agent-reachable input; the handler
+        # passes nothing from the request body. The interpreter is the gateway's
+        # own `sys.executable`, i.e. the SAME install as the running gateway,
+        # never a PATH shim the agent could plant. It exists as a
         # subprocess precisely to keep the native ctypes probe OUT of the
         # gateway: a missing ctypes argtypes is a SIGSEGV, not an exception, and
         # in-process it would take the chat sessions, cron scheduler and Slack
@@ -919,6 +919,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # process is created and there is no argv to sandbox. Same classification
         # as the other ``asyncio.run`` sites in this list.
         "mcp_gateway/daemon_control.py::_ping_detailed",
+        # NOT a subprocess spawn either: ``asyncio.run`` drives the async
+        # ``backend_record.reap`` from this synchronous stop on Windows. The reap
+        # kills identity-confirmed backend trees through the pinned kill helpers;
+        # it launches nothing an agent chose.
+        "mcp_gateway/daemon_control.py::stop_daemon",
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
@@ -1100,13 +1105,21 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "sandbox_argv.py::_ssh_supports_accept_new",
         # The aggregate slice-ceiling apply: `systemctl --user set-property
         # --runtime kirocrew-agents.slice MemoryMax=<N>M MemorySwapMax=0
-        # TasksMax=<N>`. Argv is a fixed verb plus module-constant unit name;
-        # the only variable tokens are integers derived from config/sysconf
+        # TasksMax=<N>`. Argv is a fixed verb plus the module-constant unit name
+        # (inside a pod, its child `kirocrew-agents-<hex token>.slice`, the
+        # token hashed from the data home); the only variable tokens are
+        # integers derived from config/sysconf
         # (type-checked, junk falls back to defaults) — not agent-influenced.
         # Runs once at gateway startup, not from an agent turn. Sandboxing it
         # would be circular: it constructs the cgroup boundary agent spawns
         # are confined by.
         "sandbox_slice.py::ensure_agents_slice_limits",
+        # A pod's fill of the parent from the same startup call: `systemctl
+        # --user show --property=MemoryMax --property=TasksMax
+        # kirocrew-agents.slice`, then `set-property --runtime` on that
+        # constant unit with only the properties shown as `infinity`. Same
+        # trusted systemctl and config-derived integers as the apply above.
+        "sandbox_slice.py::_fill_unset_parent_limits",
         # Shared Crew per-principal slices: `systemctl --user set-property
         # --runtime <slice> CPUQuota=<N>% MemoryMax=<N>M MemorySwapMax=0
         # TasksMax=<N>`, `start|stop <slice>` and `is-active <unit>`. The binary

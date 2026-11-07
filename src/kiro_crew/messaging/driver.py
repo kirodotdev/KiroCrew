@@ -1474,9 +1474,15 @@ class TurnDriver:
 
     async def _approve(self, event: Any) -> bool:
         """Apply the approval ladder to a permission-request event."""
-        if self.approval_mode in (APPROVAL_AUTO, APPROVAL_TRUST):
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        if self.approval_mode == APPROVAL_AUTO:
             return True
-        if self.approval_mode == APPROVAL_TRUST_READS:
+        # A session mode the ``permission_mode`` policy denies falls through to the
+        # interactive ladder below rather than auto-approving.
+        if self.approval_mode == APPROVAL_TRUST and session_mode_permitted("trust"):
+            return True
+        if self.approval_mode == APPROVAL_TRUST_READS and session_mode_permitted("trust_reads"):
             return bool(getattr(event, "tool_kind", "") == "read")
         # interactive: deny-by-default unless a decider approves.
         if self.decider is not None:

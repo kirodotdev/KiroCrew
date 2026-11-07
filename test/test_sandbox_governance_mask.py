@@ -83,6 +83,16 @@ def _crew_sensitive_paths() -> list[str]:
     ]
 
 
+def _sealed(path: str, readonly: set[str]) -> bool:
+    """*path* is sealed read-only: named itself, or inside a read-only DIRECTORY bind.
+
+    The endorsed copies of the read+write leaves sit inside ``config-provenance``,
+    which every sandbox binds read-only as a directory, so no entry of their own is
+    needed for the shell to be unable to write them.
+    """
+    return path in readonly or any(path.startswith(entry + os.sep) for entry in readonly)
+
+
 def _expected_exceptions() -> set[str]:
     home = _home()
     return {
@@ -194,6 +204,10 @@ class TestKeystonesAreSealedInEveryMode:
         # — a sandboxed process cannot mint a grant however the toggle was
         # spelled.
         "apps/.dev-grants.json",
+        # The host-exec grant directory: a marker here authorizes running a "pod"
+        # OUTSIDE the sandbox, so a writable (or renamable-around) grant would let an
+        # agent authorize its own break-out. Only the gateway writes it.
+        "host-exec-grants",
         # The cloud launcher's config. Its `fargate.image` names the container a launch
         # runs and the task's execution role delivers the model credential into that
         # container, so a write here selects WHO RECEIVES the credential -- which is as
@@ -468,7 +482,7 @@ class TestTheReconciliationIsComplete:
         unaccounted = [
             path
             for path in _crew_sensitive_paths()
-            if path not in hidden and path not in readonly and path not in exceptions
+            if path not in hidden and not _sealed(path, readonly) and path not in exceptions
         ]
         assert not unaccounted, (
             "crew-home paths the tool gate fences but the OS sandbox does not, and that "
@@ -486,7 +500,9 @@ class TestTheReconciliationIsComplete:
         """
         hidden, readonly, _files = _launcher_sets(mode)
         unrestricted = {
-            path for path in _crew_sensitive_paths() if path not in hidden and path not in readonly
+            path
+            for path in _crew_sensitive_paths()
+            if path not in hidden and not _sealed(path, readonly)
         }
         declared = _expected_exceptions()
 

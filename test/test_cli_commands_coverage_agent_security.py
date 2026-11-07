@@ -872,7 +872,7 @@ class TestSecurityCli:
         clean audit says nothing about vector memory."""
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_history", return_value=([], 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
         ):
             cc._security(_ns(sec_action="audit"))
@@ -887,7 +887,7 @@ class TestSecurityCli:
         memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=history),
+            patch("kiro_crew.cli_commands.scan_history", return_value=(history, 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
             pytest.raises(SystemExit) as exc,
         ):
@@ -903,7 +903,7 @@ class TestSecurityCli:
         memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_history", return_value=([], 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
             pytest.raises(SystemExit) as exc,
         ):
@@ -918,13 +918,71 @@ class TestSecurityCli:
         history = [{"file": "s.jsonl", "warning": "w", "snippet": "x"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=history),
+            patch("kiro_crew.cli_commands.scan_history", return_value=(history, 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
             pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
         assert exc.value.code == 1
         assert "No suspicious content in vector memory." in capsys.readouterr().out
+
+    def test_audit_reads_session_transcripts(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A flagged shell command in ``sessions/*.jsonl`` is reported, end to end."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        rows = [
+            {"_type": "metadata", "title": "t"},
+            {"role": "user", "content": "tidy up"},
+            {
+                "role": "tool",
+                "content": "Run",
+                "meta": {"kind": "execute", "input": json.dumps({"command": "chmod 777 /srv"})},
+            },
+        ]
+        (sessions / "dashboard_chat-1-1.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "1 suspicious entries found" in out
+        assert "dashboard_chat-1-1.jsonl" in out and "chmod 777 /srv" in out
+
+    def test_audit_with_no_transcripts_says_nothing_was_scanned(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An empty data home is not a clean scan: no green check is printed."""
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+        ):
+            cc._security(_ns(sec_action="audit"))
+        out = capsys.readouterr().out
+        assert "No session transcripts scanned" in out
+        assert "No suspicious tool usage" not in out
+
+    def test_audit_of_transcripts_with_no_rows_does_not_say_none_were_found(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Files that held nothing to audit are named as such, not as absent."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "empty.jsonl").write_text('{"_type": "metadata"}\n', encoding="utf-8")
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+        ):
+            cc._security(_ns(sec_action="audit"))
+        out = capsys.readouterr().out
+        assert "held no rows to audit" in out
+        assert "none found" not in out
 
     def test_events_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("kiro_crew.cli_commands.sel") as sel:
@@ -983,11 +1041,8 @@ class TestSecurityCli:
     ) -> None:
         """A refused file name is text the AGENT chose, and it lands on a terminal.
 
-        A POSIX name may carry ESC/OSC bytes, and nothing upstream removes them --
-        the consent module's redaction and SEL's write-path pass both police
-        credentials and length, not control sequences. Printed raw here those bytes
-        would execute in the owner's terminal, which is the one place this trail is
-        read, so both untrusted fields go through the shared one-line policy.
+        A POSIX name may carry ESC/OSC bytes, and upstream redaction only polices
+        credentials and length, so both untrusted fields go through the one-line policy.
         """
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = [
@@ -1015,11 +1070,8 @@ class TestSecurityCli:
     ) -> None:
         """``operation`` and ``outcome`` are caller text, like the detail fields.
 
-        SEL's own ``_REDACTED_TEXT_FIELDS`` names ``operation`` beside ``resources``
-        and ``error``, and ``log_api_access`` documents ``outcome`` the same way,
-        because an installed app reaches it through ``ctx.audit``. Sanitizing only
-        the indented detail lines would leave the summary line above them a live
-        path to the same terminal.
+        An installed app sets both through ``ctx.audit``, so the summary line needs the
+        same sanitizing as the detail lines below it.
         """
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = [
@@ -1282,16 +1334,10 @@ class TestPolicyCli:
     def test_show_without_policy_includes_denied_command_summary(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """An agent's only other discovery mechanism for
-        the built-in denied-command rules was to attempt one and be refused.
-        `policy show` must surface them even on a standalone (non-enterprise)
-        install, which is the common case the early-return branch serves.
+        """`policy show` lists the built-in denied-command rules on a standalone install.
 
-        The totals are DERIVED from the catalog rather than spelled out: the
-        printer itself derives them, so a literal here would only duplicate
-        the explicit count assertion in ``test_denied_commands_security.py``
-        and rot on every rule that gets added (it did -- the docstring said
-        139 while the catalog held 140)."""
+        Totals are derived from the catalog; ``test_denied_commands_security.py`` pins
+        the literal count."""
         by_category: dict[str, int] = {}
         for rule in BUILTIN_DENIED_RULES:
             by_category[rule.category] = by_category.get(rule.category, 0) + 1

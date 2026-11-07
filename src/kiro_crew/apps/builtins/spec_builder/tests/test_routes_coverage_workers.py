@@ -686,6 +686,25 @@ class TestTeardownWorkerSlot:
         ops = [c.kwargs["operation"] for c in _quiet_sel.log_api_access.call_args_list]
         assert "spec_slot_archive_failed" in ops
 
+    @pytest.mark.asyncio
+    async def test_a_failed_archive_keeps_a_slot_minted_under_the_key_after_the_pop(
+        self, _quiet_sel
+    ):
+        slot = _Slot("spec-builder-demo")
+        minted = _Slot("spec-builder-demo")
+        state = _State(**{"spec-builder-demo": slot})
+
+        async def _mint_then_fail(*_a, **_kw):
+            state._slots["spec-builder-demo"] = minted
+            raise OSError("disk full")
+
+        with mock.patch(
+            "kiro_crew.dashboard.chat_persistence.save_slot_off_loop",
+            mock.AsyncMock(side_effect=_mint_then_fail),
+        ):
+            assert await r._teardown_worker_slot(state, "demo", require_archive=True) is False
+        assert state._slots["spec-builder-demo"] is minted
+
 
 class TestHaltActiveTurn:
     @pytest.mark.asyncio
@@ -937,6 +956,15 @@ class TestDispatchTurn:
         assert slot.messages[0]["role"] == "queued"
         assert CRED_NAME not in slot.messages[0]["content"]
         assert state.pushes == 1
+
+    def test_a_busy_slot_queues_the_message_meta_with_the_turn(self):
+        # The drain stores the queued entry's meta on the user row: the paste chip.
+        slot = _Slot("spec-builder-demo", running=True)
+        slot.queue_append = mock.Mock()  # type: ignore[method-assign]
+        state = _State(**{"spec-builder-demo": slot})
+        pastes = [{"id": "p1", "seq": 1, "lines": 4, "content": "a\nb\nc\nd"}]
+        r._dispatch_turn(state, slot, "look", message_meta={"pastes": pastes})
+        assert slot.queue_append.call_args.kwargs["meta"]["pastes"] == pastes
 
     def test_a_slot_that_cannot_queue_or_echo_is_tolerated(self):
         slot = _Slot("spec-builder-demo", running=True)

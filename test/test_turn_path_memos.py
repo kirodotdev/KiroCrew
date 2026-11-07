@@ -11,6 +11,7 @@ and a change to any input the answer depends on is still seen.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -247,6 +248,35 @@ class TestVisibleRows:
         loader._iter_visible()
         loader._invalidate_iter_cache()
         assert loader._visible_memo == {}
+
+    def test_the_apps_root_is_resolved_once_for_many_skills(self, tmp_path, monkeypatch, opened):
+        from kiro_crew.apps import manager
+        from kiro_crew.skills import SkillsLoader
+
+        apps_root = tmp_path / "apps"
+        monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
+        skills = apps_root / "tool" / "skills"
+        for key in ("one", "two", "three"):
+            _skill(skills, key)
+        rows = [(key, skills / key / "SKILL.md") for key in ("one", "two", "three")]
+        loader = opened(SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False))
+        real = os.path.realpath
+        resolved: list[str] = []
+
+        def counting(path, *args, **kwargs):
+            if os.fspath(path) == str(apps_root):
+                resolved.append(os.fspath(path))
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os.path, "realpath", counting)
+        assert [loader._owning_app(*row) for row in rows] == ["tool"] * 3
+        assert len(resolved) == 1, "the apps root was resolved again for every skill"
+        moved = tmp_path / "moved-apps"
+        _skill(moved / "other" / "skills", "four")
+        monkeypatch.setattr(manager, "apps_dir", lambda: moved)
+        assert (
+            loader._owning_app("four", moved / "other" / "skills" / "four" / "SKILL.md") == "other"
+        )
 
 
 class TestLastMessagePreview:

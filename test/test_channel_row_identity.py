@@ -1,29 +1,15 @@
 """A channel-born transcript row carries a durable delivery identity.
 
-The dashboard's merge keys on ``meta.mid`` and nothing else: ``isRedeliveredMessage``
-drops a redelivered row by it, ``olderHeadAbovePage`` cuts the retained scrollback
-head at it, and ``rowIdentities``/``tailNotInPage`` decide by it which prior rows a
-page already carries. Every one of those DECLINES rather than guesses when the id is
-absent or has changed -- so a row whose identity is not stable degrades all three at
-once, and the same reply can render more than once in the dashboard's view.
+The dashboard merge (``isRedeliveredMessage``, ``olderHeadAbovePage``,
+``rowIdentities``/``tailNotInPage``) keys on ``meta.mid`` alone and declines when it
+is absent or changed, so an unstable id renders a reply twice. A channel turn has no
+``_ChatSlot.append``, so the dispatcher mints the id; else
+``channel_slots._rebuild_window`` would mint a fresh one on every pass.
 
-Channel dispatchers persisted their rows with no ``mid``, so the row reached disk
-with no ``meta``; each surface that materialized it
-(``channel_slots._rebuild_window`` / ``refresh_channel_window``) then minted a FRESH
-id, giving one logical row a different identity on every pass. The dispatcher is the
-first and only place the row exists -- a channel turn runs on its own session, so
-unlike the dashboard dual-writers there is no ``_ChatSlot.append`` to mint the id and
-hand it back -- so it now mints its own.
+Discord's ``mirrored`` branch has a slot and must reuse its id: ``append_if_absent``
+skips only a row with the SAME mid, so a new id would persist the turn twice.
 
-Discord's ``mirrored`` branch is the one exception and is pinned separately below: it
-DOES have a slot, so it must thread that slot's id into the durable write rather than
-mint a second one. ``append_if_absent`` skips only a body-equal row carrying the SAME
-mid, so an unrelated id can never match the copy the slot save landed and the turn
-would be persisted twice -- a durable duplicate, worse than the display one this
-change fixes.
-
-The unbound ``_persist_turn`` is called with a minimal stand-in so no channel
-client has to be constructed.
+The unbound ``_persist_turn`` gets a minimal stand-in, so no client is built.
 """
 
 from __future__ import annotations
@@ -90,9 +76,7 @@ def _persist(cls, host, key, user_text, reply_text, is_new):
 def _rows_on_disk(log: ConversationLog, key: str) -> list[dict]:
     """The raw JSONL message rows for *key*.
 
-    Read straight off the file rather than through a reader helper: what is being
-    pinned is what is DURABLE, and a reader that re-derived an id would hide the
-    very regression this file exists to catch.
+    Read off the file: a reader helper that re-derived an id would hide a missing one.
     """
     rows: list[dict] = []
     for line in log._path(key).read_text(encoding="utf-8").splitlines():
@@ -108,9 +92,8 @@ class TestMintRowMid:
     """The id format has ONE definition, shared with ``_ChatSlot.append``.
 
     ``mint_row_mid`` is imported inside each test on purpose: the rest of this file
-    must still COLLECT against a tree without the helper, so the behavioural tests
-    below fail on their assertions (the real regression) rather than the whole
-    module erroring out on an ImportError.
+    must still COLLECT without the helper, so the tests below fail on their
+    assertions rather than on an ImportError.
     """
 
     def test_mints_the_shape_every_reader_matches(self) -> None:
@@ -190,16 +173,11 @@ def test_persist_turn_still_writes_an_empty_reply(channel, mod_name, tmp_path) -
 class TestDiscordMirroredBranchStaysIdempotent:
     """The mirrored write must NOT mint a second identity for a row it already has.
 
-    ``append_if_absent`` skips only a body-equal row carrying the SAME ``meta.mid``
-    (``history_append.py``'s own contract). The mirrored branch runs after
-    the turn was mirrored into a live slot, whose save writes that
-    window row under the slot-minted id. Minting a fresh id for the durable copy
-    means the check can never match, so the turn lands on disk TWICE under two
-    unrelated ids -- a durable duplicate no mid-keyed sweep can collapse.
+    The slot save already wrote the row under the slot id, and ``append_if_absent``
+    skips only the SAME ``meta.mid``, so a fresh id would land the turn TWICE.
 
-    ``mirror_mids`` carries both facts: the ids, and (by being present at all)
-    whether there was a slot to mirror into. There is deliberately no second
-    ``mirrored`` flag for the two to disagree about.
+    ``mirror_mids`` carries the ids and, by being present, that a slot existed; there
+    is no second ``mirrored`` flag to disagree with it.
     """
 
     @staticmethod

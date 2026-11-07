@@ -20,6 +20,7 @@ from typing import Any
 
 from kiro_crew import cron_script
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
+from kiro_crew.cron_service.identity import agent_sequence_dispatches
 from kiro_crew.cron_service.model import (
     _ALERT_AFTER_DEFAULT,
     _AUTO_PAUSE_THRESHOLD,
@@ -33,6 +34,7 @@ from kiro_crew.cron_service.schedule import (
     is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    runs_more_than_once_a_day,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
@@ -112,6 +114,24 @@ def cron_session_cwd(job: CronJob, resolved_cwd: str | None) -> str | None:
 _CHAT_FOLDER_NEEDS_PERSISTENT = (
     "Filing runs into a chat folder needs a persistent session: a stateless job "
     "has no job-wide tab to file. Clear the chat folder, or keep the session."
+)
+
+_NEW_CHAT_PER_RUN_NEEDS_STATELESS = (
+    "A new chat per run needs a fresh session per run: set persistent_session "
+    "to false, or turn new_chat_per_run off."
+)
+
+# Each run keeps a tab, and every tab counts against the dashboard's live-tab
+# ceiling, so the switch is held to jobs that run at most once a day.
+_NEW_CHAT_PER_RUN_TOO_OFTEN = (
+    "A new chat per run is for jobs that run at most once a day: every run "
+    "keeps a chat tab. Use a schedule with at least 24 hours between runs, "
+    "or turn new_chat_per_run off."
+)
+
+_NEW_CHAT_PER_RUN_AGENT_ONLY = (
+    "A new chat per run applies to a single-agent (message) job: a script, "
+    "command or multi-agent job never opens a chat tab."
 )
 
 # Table-driven string-field caps for the persistence chokepoint. Every
@@ -282,6 +302,7 @@ def build_job(
     skip_dates: list[str] | None = None,
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
+    new_chat_per_run: bool = False,
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -324,6 +345,7 @@ def build_job(
     valid_approval_modes = ("", "auto")
     if approval_mode not in valid_approval_modes:
         raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+    refuse_policy_denied_auto(approval_mode)
     # Writer mirror of _job_from_record's representable-number type-shape
     # check: the reader may skip a record with a non-representable
     # schedule numeric (NaN/Infinity/bignum) precisely BECAUSE no write
@@ -363,6 +385,10 @@ def build_job(
     )
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    if new_chat_per_run and persistent_session:
+        raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    if new_chat_per_run and (command or script or agent_sequence_dispatches(agent_sequence or [])):
+        raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if project_path and (command or script):
         raise ValueError(_PROJECT_PATH_AGENT_ONLY)
     project_path = resolve_project_path(project_path)
@@ -394,6 +420,8 @@ def build_job(
         schedule = CronSchedule(kind="at", at_ts=at_ts)
     else:
         raise ValueError("Must provide every_secs, at_ts, or cron_expr")
+    if new_chat_per_run and runs_more_than_once_a_day(schedule):
+        raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
 
     return CronJob(
         id=uuid.uuid4().hex[:8],
@@ -416,6 +444,7 @@ def build_job(
         skip_dates=skip_dates,
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
+        new_chat_per_run=bool(new_chat_per_run),
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,
@@ -449,6 +478,10 @@ def apply_job_update(
         valid_approval_modes = ("", "auto")
         if kwargs["approval_mode"] not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
+        if job.approval_mode != "auto":
+            # Refuse only a NEW ``auto``: an edit that resends the stored value must
+            # still save; the fire path already runs it as asking.
+            refuse_policy_denied_auto(kwargs["approval_mode"])
     # Validate before any mutations
     # Table-driven type+length gate for every updatable string
     # field. Falsy values are intentional no-ops (the assignment
@@ -469,6 +502,16 @@ def apply_job_update(
         kwargs.get("persistent_session", job.persistent_session)
     ):
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    # A per-run tab needs a per-run session. Refused only when this request
+    # names the switch on; re-persisting a per-run job turns it off below.
+    if bool(kwargs.get("new_chat_per_run")) and bool(
+        kwargs.get("persistent_session", job.persistent_session)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    if bool(kwargs.get("new_chat_per_run")) and (
+        job.command or job.script or agent_sequence_dispatches(job.agent_sequence)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if (
         "cron_expr" in kwargs
         and kwargs["cron_expr"]
@@ -494,6 +537,25 @@ def apply_job_update(
             raise ValueError(f"Invalid interval: {kwargs['every_secs']}")
         if val < _MIN_INTERVAL_SECS:
             raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
+    # The once-a-day floor, judged on the schedule and switch this update
+    # leaves; only a request that names either one is checked.
+    _schedule = job.schedule
+    if kwargs.get("cron_expr"):
+        _schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+    elif kwargs.get("every_secs"):
+        _schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+    _per_run = (
+        bool(kwargs["new_chat_per_run"])
+        if "new_chat_per_run" in kwargs
+        else job.new_chat_per_run
+        and not bool(kwargs.get("persistent_session", job.persistent_session))
+    )
+    if (
+        _per_run
+        and ("new_chat_per_run" in kwargs or _schedule is not job.schedule)
+        and runs_more_than_once_a_day(_schedule)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
     # Calendar-validity of timezone / skip_dates, validated at the
     # persistence owner so EVERY caller (MCP cron_add/cron_update,
     # dashboard, CLI) is covered by one check rather than each
@@ -647,6 +709,11 @@ def apply_job_update(
         job.minimal_context = bool(kwargs["minimal_context"])
     if "hide_in_chat" in kwargs:
         job.hide_in_chat = bool(kwargs["hide_in_chat"])
+    if "new_chat_per_run" in kwargs:
+        job.new_chat_per_run = bool(kwargs["new_chat_per_run"])
+    elif job.persistent_session:
+        # One shared session again: every run lands in the job's one tab.
+        job.new_chat_per_run = False
     if "folder_id" in kwargs:
         job.folder_id = kwargs["folder_id"] or ""
     if "chat_folder_id" in kwargs:
@@ -709,8 +776,73 @@ def apply_job_update(
     if _alert_after is not None:
         job.alert_after_failures = _alert_after
 
-    # Schedule changes (already validated above)
+    # Schedule changes (already validated above). A recurring schedule is not
+    # deleted after its first run, so a one-shot made recurring clears
+    # ``delete_after_run``.
     if "cron_expr" in kwargs and kwargs["cron_expr"]:
         job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+        job.delete_after_run = False
     elif "every_secs" in kwargs and kwargs["every_secs"]:
         job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+        job.delete_after_run = False
+
+
+def refuse_policy_denied_auto(approval_mode: str) -> None:
+    """Refuse a job's ``auto`` when the ``permission_mode`` policy denies ``trust``.
+
+    ``auto`` approves every tool of the job's own session without asking, which is a
+    session Trust. The fire path re-checks (:func:`effective_job_approval_mode`), so a
+    job saved before the policy landed asks instead of auto-approving.
+
+    The refusal is a governance decision, not input validation, so it is audited
+    here, once, for every writer (CLI, apps SDK, dashboard, import). The audit is
+    best-effort: the refusal outranks it, as in ``mcp_cron._log_cron_denial``.
+    """
+    if approval_mode == "auto" and not cron_job_auto_permitted():
+        msg = "approval_mode 'auto' is disabled by your organization's policy"
+        try:
+            from kiro_crew import cron as seams  # the facade holds the patched names
+
+            seams.sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.approval_mode",
+                outcome="denied",
+                source="cron",
+                resources="approval_mode=auto",
+                error=msg,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).debug("approval_mode denial audit failed", exc_info=True)
+        raise ValueError(msg)
+
+
+def cron_job_auto_permitted() -> bool:
+    """Whether a job's ``approval_mode="auto"`` may auto-approve now. From memory."""
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    return session_mode_permitted("trust")
+
+
+def effective_job_approval_mode(approval_mode: str) -> str:
+    """The mode a job fires with: its own, minus an ``auto`` the policy now denies."""
+    if approval_mode == "auto" and not cron_job_auto_permitted():
+        return ""
+    return approval_mode
+
+
+def auto_job_approver(fallback: Any) -> Any:
+    """The approver an ``auto`` job's turn runs with: approve while ``auto`` holds.
+
+    The turn's ``AUTO_APPROVE`` policy is fixed when it starts, so a deny that lands
+    mid-turn is honoured here, per request: the call goes to *fallback* (the cron's
+    interactive approval) instead.
+    """
+
+    async def _approve(event: Any) -> bool:
+        if cron_job_auto_permitted():
+            return True
+        return bool(await fallback(event))
+
+    return _approve

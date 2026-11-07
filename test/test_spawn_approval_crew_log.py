@@ -16,8 +16,8 @@ was cancelled rather than answered.
 
 Deliberately NOT covered, because the change does not make them: the child's own
 crew log (no subagent path opens one), the dashboard's rendering of the folded
-pending row, and the auto-approve rungs, which answer without a prompt and so have
-no approval to record.
+pending row, and the gate's own auto-approve rungs, which answer without a prompt
+and so have no approval to record.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from off_loop_helpers import off_loop
 from kiro_crew.crew_log import crew_log_path, emit
 from kiro_crew.crew_log.projection import fold_approvals
 from kiro_crew.crew_log.store import CrewLog
-from kiro_crew.subagent import SpawnApprovalUnreachable, SubagentManager
+from kiro_crew.subagent import HostSpawnDecision, SpawnApprovalUnreachable, SubagentManager
 
 SESSION = "acp-spawn-approval-1"
 ASKING_TURN = 6
@@ -281,6 +281,34 @@ async def test_a_declined_spawn_is_recorded_as_rejected(_pinned_parent):
 
 
 @pytest.mark.asyncio
+async def test_an_answer_the_callback_gave_with_nobody_asked_is_the_hosts(_pinned_parent):
+    """An expired window, an auto-approve source or YOLO is not a person's answer.
+
+    Red before: the gate wrote ``by``/``cause`` empty after any normal return, which
+    reads as a person deciding.
+    """
+    from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+
+    _open_session()
+
+    async def _expired(_rid: str, _desc: str, _parent: str = "") -> HostSpawnDecision:
+        return HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
+
+    mgr = _manager(_expired)
+    info = mgr.spawn("Return only the result of 1+1", parent_session_key="dashboard:chat-7")
+    assert info is not None
+    await _settle(info)
+    assert_drained()
+
+    (decided,) = _of("approval/decided")
+    assert decided["decision"] == "rejected"
+    assert decided["by"] == "host"
+    assert decided["cause"] == DENY_CAUSE_APPROVAL_TIMEOUT
+    assert info.done and info.error == "spawn rejected"
+    assert not HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT), "a host no is not a yes"
+
+
+@pytest.mark.asyncio
 async def test_a_prompt_no_surface_received_is_a_host_decline_with_its_cause(_pinned_parent):
     """An undeliverable prompt is attributable, and its reason code says why.
 
@@ -310,8 +338,12 @@ async def test_a_prompt_no_surface_received_is_a_host_decline_with_its_cause(_pi
 
 @pytest.mark.asyncio
 async def test_a_callback_that_raised_is_a_host_decline_with_its_own_cause(_pinned_parent):
-    """A broken approval path must not read as a person saying no."""
-    from kiro_crew.constants import DENY_CAUSE_HOOK_ERROR
+    """A broken approval path must not read as a person saying no, nor as a hook.
+
+    No PreToolUse hook runs on this path, so the hook-error cause would send a
+    reader to a gate that never ran; the prompt simply failed to be delivered.
+    """
+    from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
 
     _open_session()
 
@@ -327,7 +359,7 @@ async def test_a_callback_that_raised_is_a_host_decline_with_its_own_cause(_pinn
     (decided,) = _of("approval/decided")
     assert decided["decision"] == "rejected"
     assert decided["by"] == "host"
-    assert decided["cause"] == DENY_CAUSE_HOOK_ERROR
+    assert decided["cause"] == DENY_CAUSE_APPROVAL_UNDELIVERABLE
 
 
 @pytest.mark.asyncio
@@ -440,4 +472,35 @@ def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():
         decision="approved",
     )
     assert_drained()
+    assert _of("approval/decided") == []
+
+
+def test_a_spawn_pinned_at_turn_zero_writes_neither_half():
+    """A spawn replayed from the durable queue is pinned at turn 0.
+
+    ``dispatch_origin`` answers ``(sid, 0)`` for it, and turn 0 matches no
+    ``turn/started``, so the request helper writes nothing and hands back the
+    empty origin -- which makes the closer write nothing too.
+    """
+    from kiro_crew.subagent_manager.admission.gate import _GateMixin
+    from kiro_crew.subagent_manager.admission.gate_reporting import (
+        _record_crew_log_spawn_approval_requested,
+    )
+
+    _open_session()
+    emit.remember_child_origin("replayed1", SESSION, 0)
+    assert emit.dispatch_origin("replayed1") == (SESSION, 0)
+
+    origin = _record_crew_log_spawn_approval_requested(
+        SimpleNamespace(),
+        SimpleNamespace(id="replayed1"),
+        approval_id="spawn:replayed1",
+        reason="spawn_run(replayed)",
+    )
+    assert origin == ("", 0)
+    _GateMixin._record_crew_log_approval_decided(
+        SimpleNamespace(), origin, approval_id="spawn:replayed1", decision="approved"
+    )
+    assert_drained()
+    assert _of("approval/requested") == []
     assert _of("approval/decided") == []

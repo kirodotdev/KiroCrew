@@ -16,6 +16,7 @@ The actual implementation lives in:
 - chat_voice.py       — TTS config + synthesis (optional)
 - chat_slack.py       — Slack link, handoff, channels
 - chat_fork.py        — fork session
+- chat_merge_back.py  — merge a fork back into its parent
 - chat_resume_all.py  — bulk Resume of every interrupted idle session
 """
 
@@ -51,7 +52,10 @@ from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_slot_pin,
     load_pinned_order_after_listen,
 )
-from kiro_crew.dashboard.chat_fork import api_chat_slot_fork  # noqa: F401
+from kiro_crew.dashboard.chat_fork import (  # noqa: F401
+    api_chat_slot_fork,
+    api_chat_slot_promote,
+)
 from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     MAX_COLOR_INDEX,
     api_chat,
@@ -98,6 +102,10 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_recent_projects,
 )
 from kiro_crew.dashboard.chat_manual_order import api_chat_manual_order  # noqa: F401
+from kiro_crew.dashboard.chat_merge_back import (  # noqa: F401
+    api_chat_slot_merge_back,
+    api_chat_slot_merge_back_draft,
+)
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,
     api_chat_slot_mirror_link,

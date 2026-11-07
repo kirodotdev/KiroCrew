@@ -1,10 +1,7 @@
 """The embedding-model routes of ``kiro_crew.dashboard.handlers.memory`` and its config writes.
 
-This file pins the embedding-model apply endpoint, the status of a custom model,
-``_write_embed_model_config``, the pip bootstrap, enabling and disabling embeddings, the
-apply worker's install and rollback, and the config read-modify-write transactions that
-run on one worker off the event loop. The family's style and its other files are
-described in ``test_handlers_memory_coverage.py``.
+Covers the apply endpoint, ``_write_embed_model_config``, the pip bootstrap, the apply
+worker and the off-loop config transactions. See ``test_handlers_memory_coverage.py``.
 """
 
 from __future__ import annotations
@@ -36,9 +33,7 @@ from kiro_crew.testing.wait import await_until
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
 
-# ---------------------------------------------------------------------------
 # embedding-model apply endpoint (request boundary only)
-# ---------------------------------------------------------------------------
 
 
 def _prog(active: bool = False) -> Any:
@@ -280,9 +275,7 @@ class TestEmbeddingModelEndpoint:
         apply_mock.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # embedding-status custom-model branch
-# ---------------------------------------------------------------------------
 
 
 class TestEmbeddingStatusCustomModel:
@@ -337,10 +330,8 @@ class TestEmbeddingStatusCustomModel:
         assert str(model_path) in body["setup_error"]
 
 
-# ---------------------------------------------------------------------------
 # embedding-status runtime-load fault: a failed llama.cpp runtime load must not
 # read as a healthy idle model.
-# ---------------------------------------------------------------------------
 
 
 class TestEmbeddingStatusRuntimeLoad:
@@ -412,9 +403,7 @@ class TestEmbeddingStatusRuntimeLoad:
         assert body["setup_step"] == "idle"
 
 
-# ---------------------------------------------------------------------------
 # _write_embed_model_config
-# ---------------------------------------------------------------------------
 
 
 class TestWriteEmbedModelConfig:
@@ -471,9 +460,7 @@ class TestWriteEmbedModelConfig:
         assert cfg_path.read_text(encoding="utf-8") == "{ broken"
 
 
-# ---------------------------------------------------------------------------
 # _ensure_pip_available — sandbox refusal + timeout
-# ---------------------------------------------------------------------------
 
 
 class TestEnsurePipEdgeCases:
@@ -539,9 +526,7 @@ class TestEnsurePipEdgeCases:
         assert (ok, err) == (True, "")
 
 
-# ---------------------------------------------------------------------------
 # enable / disable embeddings — guards and the download done-callback
-# ---------------------------------------------------------------------------
 
 
 def _dl_mgr(step: str = "idle", ensure: Any = None) -> Any:
@@ -709,9 +694,7 @@ class TestEnableDisableEmbeddings:
         assert mem_mod._embedding_setup_status["step"] == "error"
 
 
-# ---------------------------------------------------------------------------
 # _apply_embedding_model — the worker's rollback protocol, executed
-# ---------------------------------------------------------------------------
 
 
 def _apply_store(previous_dim: int = 512, retargeted: bool = True) -> Any:
@@ -948,23 +931,9 @@ class TestApplyEmbeddingModelWorker:
 class TestConfigWritesRunOffTheEventLoop:
     """The config read-modify-write must not run on the gateway loop.
 
-    Reading ``config.json``, parsing it, and writing it back through
-    ``write_config_atomically`` (a tmp-file write plus a rename, which can
-    fsync) is all synchronous file I/O. Inline it stalls every other session for
-    its duration -- the class the repo has been closing site by site.
-
-    The load-bearing property is not merely "off the loop" but **the whole
-    transaction on ONE worker**. Offloading only the read would put a suspension
-    point between the read and the write-back while the file is unguarded on
-    disk, so an external editor or CLI landing in that gap would be silently
-    overwritten by a write derived from state nobody re-checked. The gap is zero
-    today because the sequence is synchronous, and these tests are what keep it
-    zero.
-
-    Every seam here is one BOTH shapes reach -- ``write_config_atomically`` is
-    called by the hand-rolled version too -- and each wrapper delegates to the
-    real function, so the assertions are about where real work ran rather than
-    about which helper happens to be patched.
+    The whole transaction must run on one worker: offloading only the read would leave a
+    gap where an external edit gets overwritten. Each wrapper delegates to the real
+    function, so the checks are on where real work ran.
     """
 
     def _instrument(self, monkeypatch, tmp_path, initial: str = '{"existing": "kept"}'):
@@ -1151,17 +1120,8 @@ class TestConfigWritesRunOffTheEventLoop:
     ) -> None:
         """A cancelled caller must not hand the lock over mid-transaction.
 
-        A thread cannot be cancelled. Without the shield, cancelling this
-        coroutine unwinds ``async with _get_config_lock()`` while the worker is
-        still inside its read-modify-write, so the next writer enters the
-        critical section against a file the previous one is still rewriting and
-        lands a config derived from a pre-write snapshot -- the first caller's
-        settings silently revert.
-
-        Ordering is forced with events, never slept for: the worker parks inside
-        the transaction, the caller is cancelled while it is parked, and a second
-        writer then tries to take the lock. It must not get it until the first
-        worker has finished.
+        The thread keeps running, so unwinding ``async with _get_config_lock()`` early
+        lets a second writer revert the first's settings. Ordering uses events, not sleeps.
         """
         import threading
 
@@ -1215,15 +1175,8 @@ class TestConfigWritesRunOffTheEventLoop:
     ) -> None:
         """``{"memory": []}`` plus ``PUT {}`` stays a successful no-op.
 
-        ``read_config_for_update`` validates only that the TOP level is an
-        object, so a hand-edited ``memory`` that is a list reaches the mutate.
-        Reaching into it unconditionally calls ``list.update`` -> AttributeError
-        -> 500, where the pre-existing contract answered 200 and changed nothing.
-
-        Scope note: a NON-empty update against the same malformed section still
-        raises, exactly as it did before this PR. That is pre-existing and is
-        deliberately not papered over here -- fixing it would hide which
-        behaviour this change is responsible for.
+        ``read_config_for_update`` checks only the top level, so a list ``memory`` must
+        not reach ``list.update``. A non-empty update on it still raises; not pinned here.
         """
         seen, cfg = self._instrument(monkeypatch, tmp_path, initial='{"memory": []}')
         monkeypatch.setattr(mem_mod.KiroCrewConfig, "load", staticmethod(lambda: MagicMock()))

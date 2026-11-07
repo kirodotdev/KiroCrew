@@ -475,6 +475,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
+            from kiro_crew.config.loader_snapshots import rescan_if_incomplete
+
+            if (
+                agent_kind == "template"
+                and not bindings.requested_resolved
+                and await rescan_if_incomplete()
+            ):
+                # A scan that could not read a spec may lack this template while
+                # its file is on disk (a member comes from the config just loaded).
+                # The staleness check below covers the extra await.
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    agent,
+                    validate_memory_files=False,
+                    selection_kind=agent_kind,
+                )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             if agent_kind and not bindings.requested_resolved:
                 # A stated namespace never falls back to whoever answers by
@@ -590,9 +607,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # wait. The state-owned 10 ms handoff moves its coalesced full-list frame past
     # the response. Only known request keys may qualify; metadata-bearing,
     # app-owned, mode-specific and nonpersistent creates remain
-    # synchronous. Errors before a successful handoff retain request-visible
-    # publication semantics; delayed publication failures are logged and retried
-    # once by the guarded callback.
+    # synchronous. Without a successful handoff the flush runs at block exit; a
+    # delayed publication failure is logged and retried once by the guarded
+    # callback.
     defer_plain_create_broadcast = bool(
         set(body).issubset(_DEFERRED_PLAIN_CREATE_KNOWN_KEYS)
         and is_new_slot
@@ -986,21 +1003,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
         # same ordering `session_control_parts/session_create.py`'s create span uses ("the whole
         # allocation-to-persist span runs under `suspend_slots_push`", so "a
-        # slot whose birth write fails is never broadcast at all"). Two paths
-        # mint a slot through this context manager; leaving the durable write
-        # outside it is what makes the failure below reachable:
-        #
-        # `suspend_slots_push`'s `__exit__` flushes the owed push, and on the
-        # coalescing window's LEADING edge that flush broadcasts synchronously
-        # (`state.push_slots_update`). An exception there — a non-serializable
-        # value reaching `json.dumps` is the evidenced shape —
-        # escapes `__exit__`, so with the write out here it skipped a metadata
-        # mutation the request had already acknowledged: this `force=True` save
-        # is the ONLY durable record of a recreate's folder filing or pinned
-        # title (see `_save_slot_to_history`'s message-less merge), and the slot
-        # itself survives in memory, so nothing later reconciles the two. Every
-        # client repairs a dropped FRAME on its next read; none of them repairs
-        # a write that never happened.
+        # slot whose birth write fails is never broadcast at all"). This
+        # `force=True` save is the ONLY durable record of a recreate's folder
+        # filing or pinned title (see `_save_slot_to_history`'s message-less
+        # merge), so it lands before `__exit__` publishes anything; a broadcast
+        # that fails there is logged and the create still answers success.
+        # Every client repairs a dropped FRAME on its next read; none of them
+        # repairs a write that never happened.
         #
         # The cost this ordering accepts, named by the comment it replaces: the
         # suspension is process-wide, so other clients' slot updates coalesce

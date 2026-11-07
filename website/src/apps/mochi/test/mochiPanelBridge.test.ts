@@ -15,6 +15,11 @@ class FakeWebSocket {
   onerror: (() => void) | null = null
   readonly url: string
   closed = false
+  sent: string[] = []
+
+  send(payload: string): void {
+    this.sent.push(payload)
+  }
 
   constructor(url: string) {
     this.url = url
@@ -58,6 +63,14 @@ describe('mochi panelBridge chat transport', () => {
   it('connects to the same-origin dashboard websocket', () => {
     bridge.onChatDone(() => {})
     expect(FakeWebSocket.last?.url).toContain('/api/ws')
+  })
+
+  it('asks for its own slot\'s stream frames alone', () => {
+    bridge.onChatDone(() => {})
+    const ws = FakeWebSocket.last!
+    expect(ws.url).toContain('caps=chunk_scope.1')
+    ws.onopen?.()
+    expect(ws.sent.map(m => JSON.parse(m))).toEqual([{ type: 'chunk_watch', slots: ['mochi'] }])
   })
 
   it('forwards mochi:chat-push into the transcript listeners as a pet message', () => {

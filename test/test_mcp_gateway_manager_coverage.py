@@ -280,18 +280,21 @@ def _flag_values(argv, flag):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("prewarm", "watch"),
+    ("prewarm", "watch", "keep"),
     [
-        pytest.param(0, [], id="defaults"),
-        pytest.param(3, [Path("/run/a"), Path("/run/b")], id="configured"),
+        pytest.param(0, [], (), id="defaults"),
+        pytest.param(3, [Path("/run/a"), Path("/run/b")], ("oauth-a", "oauth-b"), id="configured"),
     ],
 )
 async def test_optional_daemon_flags_appear_only_when_configured(
-    monkeypatch, tmp_path, prewarm, watch
+    monkeypatch, tmp_path, prewarm, watch, keep
 ):
-    argv, _m = await _spawn_argv(monkeypatch, tmp_path, watch=watch, prewarm_count=prewarm)
+    argv, _m = await _spawn_argv(
+        monkeypatch, tmp_path, watch=watch, prewarm_count=prewarm, keep_alive_servers=keep
+    )
 
     assert _flag_values(argv, "--prewarm-count") == ([str(prewarm)] if prewarm else [])
+    assert _flag_values(argv, "--keep-alive-server") == list(keep)
     assert _flag_values(argv, "--credential-watch-path") == [str(p) for p in watch]
     assert _flag_values(argv, "--host-available-mb") == ["2048.0"]
 
@@ -416,3 +419,24 @@ async def test_terminate_escalates_to_sigkill_and_reaps_only_what_a_sigkill_orph
     assert proc.kill.called is killed
     assert reap.await_count == int(reaped)
     assert ("SIGKILL also timed out" in caplog.text) is gave_up
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
+async def test_a_sigterm_that_exits_in_the_grace_window_reaps_only_on_windows(
+    monkeypatch, tmp_path, windows
+):
+    """On Windows the SIGTERM is TerminateProcess, so gatewayd never drained."""
+    m = _manager(tmp_path)
+    proc, reap = _proc(["exit"]), AsyncMock()
+    monkeypatch.setattr(m, "_reap_orphaned_backends", reap)
+    monkeypatch.setattr(mgr.platform_compat, "IS_WINDOWS", windows)
+    m._process = proc
+
+    await m._terminate_process(grace_secs=1.0)  # flake-ok: the double's wait() returns at once
+
+    assert not proc.kill.called
+    if windows:
+        reap.assert_awaited_once_with("TerminateProcess skips gatewayd's drain on Windows")
+    else:
+        reap.assert_not_awaited()

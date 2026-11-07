@@ -4,6 +4,8 @@ import type { EnvironmentStart } from '../../components/sessionEnvironmentHooks'
 import { motion } from 'framer-motion'
 
 import { i18nT } from '../../i18n/t'
+import { fmtElapsed } from '../../i18n/format'
+import type { ChatMessage } from '../../types'
 import { GHOST_POSE_ICONS } from '../../components/GhostPoses'
 import { getThemeBranding } from '../../themeBranding'
 import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
@@ -258,7 +260,7 @@ export const STREAM_IDLE_MS = 700
  * One timer, re-armed on each tick: no polling interval, and nothing runs at all
  * once the stream is inactive.
  */
-export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM_IDLE_MS): boolean {
+export function useStreamIdle(tick: number | string, active: boolean, ms: number = STREAM_IDLE_MS): boolean {
   const [idle, setIdleState] = useState(false)
   // Every tick re-arms the timer and clears `idle`; while text flows it is
   // already false, so the ref skips the update instead of scheduling a render
@@ -274,13 +276,104 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
   return active && idle
 }
 
+/** Quiet time, past a slow first token, before the footer says a running turn has shown nothing new. */
+export const STALL_MS = 45_000
+
+const EMPTY_ACTIVITY_KEY = '0::0'
+
+/** Changes whenever the current turn visibly moves: a row lands, the newest row
+ *  changes role, or a row near the end grows (a reasoning burst grows a thinking
+ *  row that sits above the trailing streaming row). It reads only the newest
+ *  rows, so loading an older page above them leaves it unchanged. */
+export function transcriptActivityKey(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 'content' | 'ts'>>): string {
+  if (messages.length === 0) return EMPTY_ACTIVITY_KEY
+  // shortcut: only the newest three rows are read, so growth further up is not
+  // seen; widen if a turn ever grows a row more than two rows from the end.
+  return messages.slice(-3).map(m => `${m.role}:${m.content.length}:${m.ts ?? ''}`).join('|')
+}
+
+function lastUserIndex(messages: ReadonlyArray<Pick<ChatMessage, 'role'>>): number {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i
+  return -1
+}
+
+/** The current turn's opener is this tab's own optimistic send. */
+export function turnSentHere(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 'meta'>>): boolean {
+  const i = lastUserIndex(messages)
+  return i >= 0 && !!messages[i].meta?.optimistic
+}
+
+/** Whether this view may watch the turn for a stall. A turn already running
+ *  when the view opened on its session (a reload, a switch, a split pane) is
+ *  read from a saved page, which cannot tell a quiet tool call from a stall,
+ *  so it is watched only once its transcript moves after the first loaded
+ *  key. A turn this view sent, or one that starts after the view
+ *  read an authoritative idle page (`activityKey` set while not running), is
+ *  watched at once. The store's running flag during a switch is provisional,
+ *  so a session change always starts as restored.
+ *  shortcut: a session already stuck when opened stays silent until it moves;
+ *  upgrade when the slot record carries the turn's live phase. */
+function useStallArmed(session: string, running: boolean, activityKey: string | undefined, sentHere: boolean): boolean {
+  const seen = useRef({ session, restored: true, base: undefined as string | undefined, moved: false })
+  if (seen.current.session !== session) seen.current = { session, restored: true, base: undefined, moved: false }
+  if (sentHere || (!running && activityKey !== undefined)) seen.current.restored = false
+  const s = seen.current
+  // The first key is the baseline, however few rows it has: a host passes no
+  // key until its authoritative page lands, so that page is not movement. A
+  // running turn always has its opener, so an empty transcript (a switch that
+  // failed and cleared it) is never that page.
+  if (s.restored && running && activityKey !== undefined && activityKey !== EMPTY_ACTIVITY_KEY) {
+    if (s.base === undefined) s.base = activityKey
+    else if (activityKey !== s.base) s.moved = true
+  }
+  return !s.restored || s.moved
+}
+
+/** When the turn last moved, once it has held still for `STALL_MS` while `active`; null until then. */
+function useStallSince(activityKey: string, active: boolean): number | null {
+  const stalled = useStreamIdle(activityKey, active, STALL_MS)
+  // The real time of the last move, not the notice's mount: a throttled
+  // background tab fires the timer late and must still show the true gap.
+  const lastMoveRef = useRef(0)
+  useEffect(() => { lastMoveRef.current = Date.now() }, [activityKey, active])
+  return stalled ? lastMoveRef.current : null
+}
+
+/** The sentence is a live region announced once; the ticking time opts out of
+ *  live announcements, including those from the surrounding transcript. */
+function StallNotice({ since }: { since: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  const elapsed = Math.floor(Math.max(STALL_MS, now - since) / 1000) * 1000
+  return (
+    <div data-testid="chat-footer-stall" className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px] text-muted">
+      <span role="status">{i18nT('pages.chat.chatFooter.stalled')}</span>
+      <span aria-live="off" className="tabular-nums" data-testid="chat-footer-stall-elapsed">{i18nT('pages.chat.chatFooter.stall_elapsed', { elapsed: fmtElapsed(elapsed, { wholeSeconds: true }) })}</span>
+    </div>
+  )
+}
+
 /** `streamIdleMs` is how long `streamTick` must hold still before a quiet
  *  stream counts as quiet. A live-socket host keeps the default; a POLLING host
  *  (ChatEmbed) passes a window wider than its poll interval, because its tick
  *  only advances once per poll and a shorter window would flash the indicator
  *  between every two reads of a reply that is still arriving. */
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null }: {
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null, activityKey, sentHere = false, waitingOnUser = false }: {
   running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number
+  /** `transcriptActivityKey(messages)` whenever the host's transcript is
+   *  authoritative (loaded, no switch in flight), running or not; a host may
+   *  pass it only while a turn runs. A host that passes it opts in to the
+   *  notice that the turn has shown nothing new for `STALL_MS`. */
+  activityKey?: string
+  /** `turnSentHere(messages)`: this tab sent the current turn, so its stall
+   *  watch starts at once even when the footer mounts with the turn running. */
+  sentHere?: boolean
+  /** The turn is parked on the person (a tool approval or a question card), so
+   *  its quiet is theirs to end and the stall notice stays off. */
+  waitingOnUser?: boolean
   /** Replaces "Thinking…" while the turn is not yet thinking — a remote session
    *  environment still starting (`useEnvironmentStartLabel`). */
   statusLabel?: EnvironmentStart | null
@@ -307,6 +400,15 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // "still streaming", so the loader stayed hidden with nothing else moving.
   const streamingText = lastRole === 'streaming' && state === 'streaming'
   const streamQuiet = useStreamIdle(streamTick, streamingText, streamIdleMs)
+  // Off where the footer already names the wait (a tool, which may rightly run
+  // for many minutes, a stop, a compaction, an environment start, a browser
+  // hand-back), while the turn waits on the person, and while the newest send
+  // is unconfirmed.
+  const stallArmed = useStallArmed(browserSessionKey ?? '', running, activityKey, sentHere)
+  const stallWatched = stallArmed && activityKey !== undefined && running && !stopping && !sendUnconfirmed && !waitingOnUser
+    && !statusLabel && !browserInControl && state !== 'tool_running' && state !== 'compacting'
+    && stopState !== 'soft_pending' && stopState !== 'killing'
+  const stallSince = useStallSince(`${browserSessionKey ?? ''}:${activityKey ?? ''}`, stallWatched)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for
   // thinking, tool calls, AND the gaps between steps: the backend keeps
   // slot.running true for the whole turn, so the post-tool gap stays covered
@@ -389,6 +491,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
               : <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>}
           </div>
         )}
+        {stallSince !== null && <StallNotice since={stallSince} />}
         {statusLabel && !stopping && stopState !== 'soft_pending' && stopState !== 'killing' && (
           // The whole start, not just its current stage: which steps are done,
           // which one is running and for how long, and what is still ahead.

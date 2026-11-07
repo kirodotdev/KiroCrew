@@ -1,11 +1,8 @@
 """The Discord renderer: streaming, finalization and what a landed message shows.
 
-``DiscordRenderer`` streams a turn into one live message, rotates it at the
-platform cap and seals it on finish; ``DiscordApprovalDecider`` turns a
-permission request into buttons. Redaction is checked where it lands: one
-follow-up notice when redaction rewrote a landed message, no credential put
-together across a rotation seam, and a live bubble's seam grade kept across its
-edits and its seal.
+``DiscordRenderer`` streams a turn into one live message, rotates it at the cap and
+seals it on finish; ``DiscordApprovalDecider`` turns a permission request into buttons.
+Redaction is checked where it lands, including across rotation seams.
 """
 
 from __future__ import annotations
@@ -98,12 +95,8 @@ class TestRenderer:
     async def test_reasoning_as_the_last_event_still_finalizes_the_answer(self) -> None:
         """Reasoning that is the last event before on_done must not un-finalize.
 
-        text -> on_thinking -> on_done with no further chunk reaches
-        ``_flush_thinking`` from ``on_done`` itself. The note is still posted, but
-        the answer segment must NOT be sealed there: ``on_done`` still has to attach
-        the turn footer (and options/tables). Sealing early shipped the answer
-        without its footer AND left ``on_done`` an empty segment that posted a
-        spurious ``"…"`` placeholder message.
+        ``on_done`` still has to attach the footer, so the note flush must not seal the
+        answer; an early seal drops the footer and posts a spurious ``"…"`` message.
         """
         cli = FakeClient()
         r = DiscordRenderer(
@@ -135,13 +128,9 @@ class TestRenderer:
     async def test_a_trailing_note_is_not_the_predecessor_of_the_bubble_above_it(self) -> None:
         """A note left above an un-sealed live bubble must not become its seam base.
 
-        On a trailing-reasoning turn the note is posted BELOW a still-live answer
-        bubble (the finalize path skips the seal, so ``_stream_mid`` stays on that
-        bubble). Recording the note as ``_sent_tail`` would make ``on_done``'s edit
-        of the bubble ABOVE it grade against the note, and a note tail + answer head
-        that join into a key would replace a leading span of VALID answer text with
-        a redaction tag. The note is recorded only when the next delivery lands
-        below it (``_stream_mid is None``).
+        The note sits below a still-live bubble. As ``_sent_tail`` it would make the
+        bubble's final edit grade against the note, and a note tail + answer head that
+        join into a key would redact valid answer text.
         """
         cli = FakeClient()
         r = DiscordRenderer(
@@ -402,16 +391,9 @@ class TestRenderer:
     async def test_rotation_keeps_authored_inner_fence_line_in_4_backtick_block(self) -> None:
         r, cli = self._renderer()
         await r.on_turn_start()
-        # A 4-backtick block whose CONTENT is markdown containing 3-backtick
-        # examples -- how you document fencing. Per CommonMark the inner bare
-        # ``` closes nothing (a closer must be at least as long as its opener),
-        # so the source fence is still open at the cut.
-        #
-        # A per-chunk fence walk run AFTER prepending a bare ``` reopen throws
-        # away the 4-backtick opener's run length: to that walk the tail's fence
-        # is a 3-backtick one the authored inner ``` CLOSES. The shared splitter
-        # carries the opener verbatim instead, so the reopen is the real fence
-        # and the author's own ``` line is never mistaken for scaffolding.
+        # A 4-backtick block holding 3-backtick examples. Per CommonMark the inner
+        # ``` closes nothing, so the fence is still open at the cut. The reopen must
+        # carry the 4-backtick opener verbatim, or the inner ``` would close it.
         src = "````markdown\n" + "Nest a block:\n\n```py\nx = 1\n```\n\n" * 90
         assert len(src) > r._limit()
         await r.on_text_chunk(src)
@@ -1041,17 +1023,9 @@ class TestRedactionNotice:
 class TestRotationSeamCredentialSafety:
     """A rotation must not hand the reader a key by putting two frames in a row.
 
-    The length cut lands on the RAW buffer and every frame is redacted ALONE, so a
-    credential the model wrote with markup across the cut matches nothing in either
-    frame -- and the reader's client renders the markup away and reads the halves
-    as one key, one message under the other.
-
-    Every shape here is asserted on the SCREEN: the frames the fake client actually
-    received, read the two ways a reader can produce (canonicalise the copied join,
-    and canonicalise each frame then read them in order). That is the same pair
-    ``joins_to_a_credential`` grades, but stated over the whole delivered sequence
-    and using only the redactor and the canonicaliser, so it holds whatever the
-    renderer did to get there.
+    Each frame is redacted alone, so a key split by markup across the cut matches in
+    neither frame, yet reads as one key once the client renders the markup away.
+    Assertions read the frames actually sent, both ways a reader can join them.
     """
 
     def _renderer(
@@ -1086,12 +1060,8 @@ class TestRotationSeamCredentialSafety:
     ) -> None:
         """Discord shows the reader the trimmed text, so the grade must trim too.
 
-        This shape is MEASURED, not assumed. At this limit the splitter's own chunks
-        already sever, so the rotation does consult the offset search; the offset a
-        non-trimming transform returns leaves halves whose RAW forms are safe -- the
-        spaces sit between them -- while their DELIVERED forms sit flush and read as one
-        key. The assertion is therefore on the delivered forms: comparing the raw frames
-        is what makes this hazard invisible.
+        The raw halves are safe because spaces sit between them; the delivered forms sit
+        flush and read as one key. So the check is on delivered forms, not raw frames.
         """
         head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
         prefix = "word " * 20
@@ -1120,14 +1090,9 @@ class TestRotationSeamCredentialSafety:
     ) -> None:
         """The offset search grades the source; the rotation delivers source PLUS held.
 
-        An image reference starting at or before the budget leaves the sealable
-        source SHORTER than the budget, so the search takes its ``limit >= len(text)``
-        early return and hands back the whole string. Re-assigning the frames from
-        that answer reproduces the byte-identical pair the gate above just rejected,
-        and the reader sees the label ``![my-secret-value](...)`` canonicalises to
-        sitting straight under a dangling ``SecretAccessKey=``. So the search's answer
-        is a candidate, not a verdict: the delivered pair is graded again and the
-        rotation delivers nothing rather than the pair it already refused.
+        A held image ref leaves the source under budget, so the search returns the whole
+        string and the frames rebuild the pair the gate just rejected. The delivered pair
+        is graded again, and the rotation sends nothing.
         """
         limit = 100
         head = "prose " * 10 + "SecretAccessKey="
@@ -1201,19 +1166,11 @@ class TestRotationSeamCredentialSafety:
     ) -> None:
         """A graded cut must not buy one safe boundary with every later one.
 
-        The presentation branch is TERMINAL: the piece it retains is parked as
-        ``_delivery_text`` with no further rotation ahead of it, and the only thing
-        that bounds it after that is ``_seal_current``'s own re-split -- which cuts
-        on length alone and grades no boundary. So a fallback that replaced the
-        splitter's bounded chunks with ``[head, whole remainder]`` moved the FIRST
-        boundary to safety and handed every later one in the same text to an
-        ungraded cut. The invariant is stated on the retained SIZE, which is what
-        makes it hold whatever the text is.
+        The retained ``_delivery_text`` is bounded only by the seal's re-split, which
+        grades no boundary, so the retained piece must fit the budget.
 
-        The sealed frames are deliberately not size-asserted: the seal redacts each
-        one, and the replacement text is longer than the key it covers, so a frame
-        legitimately ends up wider than the budget. That growth is the protection
-        working, not a boundary escaping.
+        Sealed frames are not size-checked: a redaction tag is longer than the key it
+        replaces, so a frame can exceed the budget.
         """
         head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
         # One unbroken word, so the splitter cuts hard at the budget and the first
@@ -1275,10 +1232,8 @@ class TestRotationSeamCredentialSafety:
     ) -> None:
         """Whatever is kept live must be a SLICE of the source, never rejoined chunks.
 
-        ``split_markdown_safe`` does not concatenate back to its input: a chunk is
-        rstripped and a fence is closed at the seal and reopened after it. Rejoining
-        chunks would glue one paragraph's last word onto the next, or invent a fence
-        run the model never wrote, and that is the text the user is eventually sent.
+        ``split_markdown_safe`` chunks are rstripped and fence-closed, so rejoining them
+        glues words together or invents fences the model never wrote.
         """
         src = (
             "a" * (self._LIMIT - 8)
@@ -1315,21 +1270,13 @@ class TestRotationSeamCredentialSafety:
     ) -> None:
         """The last cut before the wire is the one nothing rotates behind.
 
-        A buffer the rotation WITHHELD as unsafe is parked whole, so it arrives at
-        the seal over the platform cap. The seal splits it again -- and that cut had
-        no redactor, where Telegram's own splitter call has carried one all along. So
-        the gate that refused to cut handed the same text to a cut made on length
-        alone, and a key the markup spans is severed there instead.
-
-        The link target is a long run with no space in it, which is what makes the
-        cut land inside the credential rather than at a break the splitter prefers.
+        A withheld buffer reaches the seal over the cap, and the seal splits it again;
+        that split must grade its boundary too. The link target has no space, so the
+        cut lands inside the credential.
         """
-        # Narrow the generic screen to the readings that existed when this
-        # regression was added. The key lives in the link target behind an
-        # innocuous label, broken by a run of ``*``. Neither whole-text reading
-        # sees it: canonicalising collapses the link to its label, and the literal
-        # form has the run between the halves. The seal's own split grading must
-        # still catch the key after each delivered frame consumes the emphasis run.
+        # Narrow the screen to the plain reading. The key hides in the link target,
+        # broken by a run of ``*``, so neither whole-text reading sees it; only the
+        # seal's split grading catches it.
         from kiro_crew.messaging import display_safety
         from kiro_crew.messaging import split as messaging_split
 
@@ -1367,18 +1314,9 @@ class TestRotationSeamCredentialSafety:
 class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     """A live bubble's seam grade must persist across its edits and its seal.
 
-    The defect (Opus 5 B1): the fresh send grades the bubble against the message
-    above it and records the DELIVERED FRAME into ``_sent_tail`` (so the next fresh
-    message grades against what the reader last saw). That record erased the message
-    above, so a later EDIT of the same bubble -- and the final seal, which edits it
-    in place -- rewrote the bubble with UNGRADED text, restoring the credential span
-    the fresh-send grade had repaired and delivering the key across the predecessor
-    and the bubble.
-
-    Fixed by keeping the bubble's own predecessor in ``_bubble_above`` (which
-    ``_record_sent`` does not touch) and grading the edit branch, the seal, and the
-    fallback send against it. Every assertion is on the SCREEN -- the frames the
-    fake client received, read the two ways a reader can produce them.
+    ``_record_sent`` overwrites ``_sent_tail`` with the bubble's own frame, so edits
+    and the seal grade against ``_bubble_above``, the message above the bubble.
+    Assertions read the frames the fake client received.
     """
 
     @staticmethod
@@ -1394,8 +1332,8 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         r = DiscordRenderer(
             cli, "chan1", DISCORD_CAPABILITIES, session_key="sk", show_thinking=True  # type: ignore[arg-type]
         )
-        # No throttle: every chunk becomes its own live frame so the bubble is
-        # edited more than once, which is exactly where the ungraded rewrite lived.
+        # No throttle: every chunk becomes its own live frame, so the bubble is
+        # edited more than once.
         monkeypatch.setattr("kiro_crew.discord.renderer._EDIT_THROTTLE_S", 0.0)
         return r, cli
 
@@ -1418,14 +1356,10 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     async def test_an_edit_of_the_open_bubble_is_graded_against_the_message_above(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The core B1 case: a note ends in a prefix, the answer bubble completes it.
+        """A note ends in a key prefix and the answer bubble below completes it.
 
-        The reasoning note ends ``...AKIA`` and the answer streamed into the fresh
-        bubble below it begins ``IOSFODNN7EXAMPLE...``; the client renders the note's
-        subtext marker away, so note-tail + bubble-head read as one key across two
-        messages. The first answer frame is graded (fresh send), but the SECOND
-        chunk EDITS the same bubble -- and before the fix that edit shipped ungraded
-        text, restoring the key. It must now be graded against ``_bubble_above``.
+        The second chunk EDITS the bubble, and that edit must be graded against
+        ``_bubble_above`` like the first send was.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
@@ -1434,7 +1368,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         await r._flush_thinking()
         # The note is now a delivered message; a fresh answer lands below it.
         await r.on_text_chunk("IOSFODNN7EXAMPLE")
-        # A SECOND chunk edits that same open bubble -- the path B1 left ungraded.
+        # A SECOND chunk edits that same open bubble.
         await r.on_text_chunk(" and some more answer text after the key")
         await r.on_done()
 
@@ -1469,13 +1403,9 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     async def test_the_record_still_lets_the_next_fresh_message_grade(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The fix must not break the ORIGINAL contract ``_record_sent`` serves.
+        """``_sent_tail`` still records the delivered frame for the next fresh message.
 
-        ``_bubble_above`` holds the bubble's predecessor; ``_sent_tail`` must still
-        record the delivered FRAME so a NEXT fresh message (a new bubble opened
-        after this one seals) grades against what the reader last saw. Here the
-        bubble's own frame ends in a prefix and a second turn's fresh message
-        completes it -- that cross-bubble seam is what ``_sent_tail`` guards.
+        That cross-bubble seam is what ``_sent_tail`` guards.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
@@ -1492,14 +1422,8 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     ) -> None:
         """A failed seal-edit falls to a fresh POST below the STILL-VISIBLE bubble.
 
-        The defect (GPT F1 on the B1 fix): ``edit_message_with_files`` returns False
-        for ANY failure, so a transient 429/5xx is indistinguishable from a deleted
-        message -- but on a transient failure the bubble is STILL ON SCREEN, so the
-        fallback POST lands directly below that visible frame. Grading it against
-        ``_bubble_above`` (the message ABOVE the bubble) would leave the seam to the
-        visible frame ungraded, and a frame ending ``AKIA`` + a fallback beginning
-        ``IOSFODNN7EXAMPLE`` would deliver the key across the two. The fallback must
-        grade against ``_sent_tail`` -- the frame the reader actually sees.
+        On a transient 429/5xx the bubble is still on screen, so the fallback lands
+        right below it and must grade against ``_sent_tail``, not ``_bubble_above``.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
@@ -1528,16 +1452,8 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     ) -> None:
         """A live EDIT is what the reader sees, so it must become ``_sent_tail``.
 
-        The defect (GPT F1 on the F1 fix): ``_stream_live``'s edit branch updated
-        only ``_shown``, never ``_sent_tail``, so after a live edit ``_sent_tail``
-        still held the bubble's FIRST frame. A later failed seal-edit falls to a
-        fresh POST graded against ``_pending_note_tail or _sent_tail`` -- and if
-        ``_sent_tail`` is the stale first frame (ending in a credential prefix)
-        rather than the edited frame on screen, the POST completing that prefix
-        would seat the key across two bubbles. Recording the edited frame fixes it.
-
-        Read directly off ``_sent_tail``: after a live edit it must equal the
-        edited frame, not the opening one.
+        A later failed seal-edit falls to a POST graded against ``_sent_tail``; a stale
+        first frame there would leave the seam to the frame on screen ungraded.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
@@ -1561,13 +1477,8 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     ) -> None:
         """A live edit that FAILS must not poison ``_sent_tail`` with an unsent frame.
 
-        The defect (GPT F1 on the F6 fix): the edit branch recorded
-        ``_shown``/``_sent_tail`` UNCONDITIONALLY, but ``edit_message`` returns False
-        for any failure (a transient 429/5xx included). Recording a frame no reader
-        ever saw makes it the graded predecessor of a later fallback POST, which
-        could then seat a credential across two bubbles. ``_record_sent``'s own
-        contract is "called only after a send or edit reports success" -- so on a
-        failed edit ``_sent_tail`` must stay on the frame still on screen.
+        ``_record_sent`` runs only after a send or edit succeeds; a frame no reader saw
+        would become the graded predecessor of a later fallback POST.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
@@ -1594,18 +1505,9 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     ) -> None:
         """A moderator-deleted bubble: the fallback POST lands below _bubble_above.
 
-        ``edit_message`` returns False for BOTH a transient failure and a DELETED
-        message; when a moderator/automod
-        deletes the live bubble, the on-screen neighbour is ``_bubble_above`` (the
-        message that was above it), NOT the deleted ``_sent_tail``. Grading against
-        the deleted frame leaves the seam to the visible neighbour ungraded and can
-        reconstruct a credential across the two visible messages. The classified
-        EDIT_GONE outcome routes the fallback to ``_bubble_above``.
-
-        Driven through ``_land_sealed`` directly: ``_sent_tail`` is set to an
-        INNOCUOUS deleted frame and ``_bubble_above`` to the visible neighbour ending
-        in a credential PREFIX, so grading against the wrong one (the deleted
-        ``_sent_tail``) leaves the fallback text's leading key half unrepaired.
+        With the bubble deleted (EDIT_GONE), the visible neighbour is ``_bubble_above``,
+        not the deleted ``_sent_tail``. Here ``_sent_tail`` is innocuous and
+        ``_bubble_above`` ends in a key prefix, so grading the wrong one leaks the key.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()

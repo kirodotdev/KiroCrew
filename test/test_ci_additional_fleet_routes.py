@@ -41,6 +41,8 @@ def _evaluate(expression: str, context: dict[str, object]) -> object:
         "fromJSON": json.loads,
         "contains": lambda values, value: value in values,
         "format": lambda template, *args: template.format(*args),
+        # Actions compares case-insensitively.
+        "startsWith": lambda value, prefix: value.lower().startswith(prefix.lower()),
     }
 
     def context_key(node):
@@ -109,6 +111,8 @@ def _evaluate(expression: str, context: dict[str, object]) -> object:
         ("contains(fromJSON('[\"123\"]'), '12')", False),
         ("contains(fromJSON('[\"123\"]'), '123')", True),
         ("format('runner-{0}-{1}', '42', '2')", "runner-42-2"),
+        ("startsWith('CodeBuild-x', 'codebuild-')", True),
+        ("startsWith('ubuntu-latest', 'codebuild-')", False),
     ],
 )
 def test_expression_interpreter_operand_returns_and_short_circuit(expression, expected):
@@ -264,26 +268,22 @@ def test_readiness_never_checks_out_pr_code():
 @pytest.mark.parametrize(
     "event,repo,pr_head,actor,actors,admitted",
     [
-        # A same-repository head from a listed actor uses the fleet, and the
-        # review event is admitted too: this policy names no event.
-        ("pull_request", _REPO, _REPO, "101", _ACTORS, True),
-        ("pull_request_review", _REPO, _REPO, "202", _ACTORS, True),
-        # Executing here but not admitted. On a review event the actor is the
-        # REVIEWER, who is commonly outside the list, so this is the ordinary
-        # path rather than an edge case.
-        ("pull_request", _REPO, _REPO, "999", _ACTORS, False),
-        ("pull_request_review", _REPO, _REPO, "999", _ACTORS, False),
-        ("pull_request", _REPO, _REPO, "101", "", False),
-        ("pull_request", _REPO, _REPO, "101", "[]", False),
+        # A same-repository head from a listed actor uses the fleet: this
+        # policy names no event, so every `pull_request_target` action is in.
+        ("pull_request_target", _REPO, _REPO, "101", _ACTORS, True),
+        ("pull_request_target", _REPO, _REPO, "202", _ACTORS, True),
+        # Executing here but not admitted.
+        ("pull_request_target", _REPO, _REPO, "999", _ACTORS, False),
+        ("pull_request_target", _REPO, _REPO, "101", "", False),
+        ("pull_request_target", _REPO, _REPO, "101", "[]", False),
         # A fork pull request against this repository executes HERE, so the
         # group is reachable even though the head is a fork's.
-        ("pull_request", _REPO, _FORK, "101", _ACTORS, False),
+        ("pull_request_target", _REPO, _FORK, "101", _ACTORS, False),
         # A fork running this workflow in its OWN repository cannot reach an
         # organization group. Dropping the middle branch's repository guard
-        # fails these two rows, which is the point: a job asking there for a
-        # label no runner carries waits out GitHub's pending limit.
-        ("pull_request", _FORK, _FORK, "101", _ACTORS, False),
-        ("pull_request_review", _FORK, _FORK, "101", _ACTORS, False),
+        # fails this row, which is the point: a job asking there for a label
+        # no runner carries waits out GitHub's pending limit.
+        ("pull_request_target", _FORK, _FORK, "101", _ACTORS, False),
     ],
 )
 def test_sensitive_change_review_route_truth_table(event, repo, pr_head, actor, actors, admitted):
@@ -332,12 +332,13 @@ def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
     [
         ("code-review.yml", "autosde-rules"),
         ("code-review.yml", "inclusive-language"),
-        ("code-review.yml", "pr-hygiene"),
+        ("pr-hygiene.yml", "pr-hygiene"),
         ("code-review.yml", "sast"),
         ("pr-merge-conflict-label.yml", "label"),
         ("build-wheel.yml", "build-wheel"),
         ("dependency-vulnerability.yml", "audit-production-dependencies"),
         ("pr-readiness.yml", "readiness"),
+        ("codeql.yml", "analyze"),
     ],
 )
 def test_additional_routes_have_no_container_or_cloud_credential_steps(filename, job_id):
@@ -356,36 +357,15 @@ def test_additional_routes_have_no_container_or_cloud_credential_steps(filename,
 def test_the_ratchet_audit_route_reaches_the_group_on_its_non_fleet_path():
     """`main-ratchet-audit.yml` takes the group label when the fleet declines it.
 
-    This assertion replaces the one that pinned the hosted tail here. That pin
-    existed so moving this policy would be a deliberate act rather than a side
-    effect, and the move was made deliberately: the merge-group leg is the thing
-    it asked to have settled, so settle it here.
+    `merge-queue-readiness.yml` polls this workflow and fails a merge group closed when
+    a queued run outlasts its budget, so a capped group can hold merges. That is
+    acceptable because no ruleset configures a merge queue, `ci.yml`, `fast-gate.yml`
+    and `build.yml` already wait on the same cap, and an actor in `CODEBUILD_ACTOR_IDS`
+    still takes the fleet. Before enabling a merge queue near the group's cap, restore
+    the literal hosted tail on this constant.
 
-    `merge-queue-readiness.yml` lists this workflow in its polled set. It polls
-    every merge group, counts a queued run as pending, and fails the group
-    closed when its budget runs out, so a queued run on a capped group does hold
-    merges. Three things decide that this is acceptable rather than reckless:
-
-    - The leg is dormant. A `merge_group` event needs a merge queue on the
-      branch, and no active ruleset configures one; all 1,099 `merge_group` runs
-      in this repository's history were created in one window, between
-      2026-10-02T18:17Z and 2026-10-03T00:03Z.
-    - It is not unique to this workflow. The queue polls `ci.yml`,
-      `fast-gate.yml` and `build.yml` as well, and their merge-group leg reaches
-      the group whenever the queuing actor is not on the allowlist. Several
-      `ci.yml` jobs reach it unconditionally, with no fleet branch at all. So
-      every merge group already waits on this cap.
-    - Only a merge group queued by an actor OUTSIDE `CODEBUILD_ACTOR_IDS` lands
-      here. An allowlisted queuer still takes the fleet.
-
-    Turning the merge queue back on is therefore the event that makes this live,
-    and it is the rollback trigger: restore the literal hosted tail on this
-    constant before enabling the queue if the group is anywhere near its cap.
-
-    Pinned DIRECTLY, like its predecessor, and not left to the truth table
-    above, because that table reads its expected value out of the expression
-    under test and so would carry along any later edit of the constant and the
-    workflow together.
+    Pinned directly, not via the truth table above, which reads its expected value out
+    of the expression under test.
     """
     assert parity._GROUP_THEN_HOSTED_TAIL in parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR, (
         "main-ratchet-audit.yml's non-fleet path is expected to take the "
@@ -406,3 +386,45 @@ def test_reusable_routes_keep_schedule_callers_off_the_fleet(filename):
         ), f"{caller} must exercise the reusable route"
     for job in workflow["jobs"].values():
         assert job["runs-on"] == parity._CANONICAL_PUSH_EXPR
+
+
+# The resolver output each consumer tier reads, so a case asserts its own size suffix.
+_CONSUMER_OUTPUT = {
+    parity._CANONICAL_CONSUMER_EXPR: "linux_runner",
+    parity._CANONICAL_CONSUMER_EXPR_LARGE: "linux_runner_large",
+    parity._CANONICAL_WINDOWS_CONSUMER_EXPR: "windows_runner",
+}
+
+
+@pytest.mark.parametrize(
+    "job_id,os_leg,output",
+    [
+        (job_id, "ubuntu-latest", _CONSUMER_OUTPUT[expression])
+        for (_, job_id), expression in sorted(parity._EXPECTED_RESOLVER_CONSUMER_JOBS.items())
+        if expression in _CONSUMER_OUTPUT
+    ]
+    + [
+        ("e2e-boot-matrix", "ubuntu-latest", "linux_runner_large"),
+        ("e2e-boot-matrix", "windows-latest", "windows_runner"),
+    ],
+)
+def test_a_rerun_consumer_asks_for_its_own_attempts_fleet_label(job_id, os_leg, output):
+    """Re-running one job is a new attempt that does not re-run `changes`.
+
+    The resolver's outputs still name an earlier attempt, whose label CodeBuild does
+    not reliably serve. At the resolver's own attempt a consumer asks for exactly
+    what it emitted, size suffix included; at a later one, only the attempt moves.
+    """
+    workflow = yaml.safe_load((parity._WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    runs_on = workflow["jobs"][job_id]["runs-on"]
+    outputs = {
+        "linux_runner": "codebuild-kirocrew-gha-linux-456-1",
+        "linux_runner_large": "codebuild-kirocrew-gha-linux-456-1 instance-size:large",
+        "windows_runner": "codebuild-kirocrew-gha-windows-456-1 instance-size:large",
+    }
+    context = {f"needs.changes.outputs.{k}": v for k, v in outputs.items()}
+    context.update({"github.run_id": "456", "matrix.os": os_leg})
+    assert _evaluate(runs_on, {**context, "github.run_attempt": "1"}) == outputs[output]
+    assert _evaluate(runs_on, {**context, "github.run_attempt": "3"}) == outputs[output].replace(
+        "-456-1", "-456-3"
+    )

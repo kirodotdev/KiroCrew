@@ -9,10 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # The ``_session/steering`` readers, re-exported for existing importers.
-from kiro_crew.acp.steering_wire import (  # noqa: F401
-    steering_advertised,
-    steering_outcome,
-)
+from kiro_crew.acp.steering_wire import steering_advertised, steering_outcome  # noqa: F401
 
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
@@ -35,6 +32,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CLIENT_META_SETTINGS,
+    ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
@@ -252,6 +250,14 @@ METHOD_KAS_SESSION_COMPACT = "_kiro/session/compact"
 #: as ``_meta.kiro.checkpoints``. Driven live against kiro-cli 2.32.0's relay: the
 #: model's next answer left the reverted prompt out.
 METHOD_KAS_CHECKPOINT_REVERT = "_kiro/checkpoint/revertMultiple"
+#: KAS's own verbs behind kiro-cli's ``/context <sub>``, ``/knowledge`` and ``/code``.
+#: Each is a REQUEST taking ``{"sessionId", "subcommand", ...}`` and answering
+#: ``{"success": bool, "message"?: str, ...}``; each is listed in ``initialize``'s
+#: ``_meta.kiro.extensionMethods``. The dashboard's slash gate sends them for a
+#: person's typed command (``dashboard/kas_local_commands.py``), never the model.
+METHOD_KAS_SESSION_CONTEXT = "_kiro/session/context"
+METHOD_KAS_KNOWLEDGE = "_kiro/knowledge"
+METHOD_KAS_CODE_INTELLIGENCE = "_kiro/codeIntelligence"
 #: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
 #: drops the session from its local map and unsubscribes the Codex thread, so the
 #: sessionId stops answering while the thread's own record survives on the Codex
@@ -515,10 +521,12 @@ CC_PERMISSION_MODE_AUTO = "auto"
 #
 # It does NOT describe an inherited file. The settings writer is create-or-decline
 # and never READS a file it did not author, so a ``bypassPermissions`` already
-# sitting in a user's own ``settings.local.json`` (or in ``~/.claude``) is neither
-# detected nor stripped -- that session's tool calls do not reach the host gate.
-# That is the disclosed boundary recorded on ``_write_claude_local_settings``, not
-# something this constant closes.
+# sitting in a user's own ``settings.local.json`` (or in ``~/.claude``) is never
+# stripped. ``AcpClient._pin_claude_starting_mode`` moves a session that starts in
+# it to ``default``, but not every session (its docstring names which); one it
+# skips keeps the mode, and its tool calls do not reach the host gate. That is the
+# disclosed boundary recorded on ``_write_claude_local_settings``, not something
+# this constant closes.
 CC_PERMISSION_MODE_BYPASS = "bypassPermissions"
 
 # ── ACP Session Update Types ──
@@ -926,10 +934,7 @@ def _command_from_tool_params(params: dict) -> str | None:
             # verbatim: a value whose repr still holds the real bytes stays
             # scannable. Imported here rather than at module scope because
             # ``_dispatch`` imports THIS module.
-            from kiro_crew.acp._dispatch import (
-                UNSERIALISABLE_SIBLING_VALUE,
-                _dumps_degraded,
-            )
+            from kiro_crew.acp._dispatch import UNSERIALISABLE_SIBLING_VALUE, _dumps_degraded
 
             rendered = _dumps_degraded(parameters, sort_keys=True)
             # A refusal leaves a placeholder where the payload was, and the
@@ -1171,6 +1176,22 @@ class AcpEvent:
     #: resolves it against its workspace root. ``""`` elsewhere: a
     #: relative target is then not covered.
     spec_write_cwd: str = ""
+    #: spec_denied_grant: on the same requests, the grants the agent's spec gets only
+    #: once Crew checks its ``deniedCommands`` / write ``deniedPaths``, with those
+    #: denies (``AcpSessionHandle.kas_spec_denies``, a
+    #: ``platform.spec_denied_grant.SpecDeniedGrant``); ``None`` everywhere else.
+    spec_denied_grant: Any = None
+    #: spec_shell_readonly: on the same requests, whether the agent's spec sets
+    #: ``autoAllowReadonly: true`` beside ``denyByDefault``
+    #: (``AcpSessionHandle.kas_spec_shell_readonly``). The gate's
+    #: ``spec-shell-allowlist`` tier then lets a read-only command past, for the
+    #: read-only tier to answer. ``False`` everywhere else, which lifts nothing.
+    spec_shell_readonly: bool = False
+    #: spec_granted_paths: on the same requests, the agent's write ``allowedPaths``
+    #: as absolute globs (``AcpSessionHandle.kas_crew_answered_paths``). The
+    #: ``spec-builtin-grant`` tier approves a file write every target of which one
+    #: covers. Empty everywhere else, which grants nothing.
+    spec_granted_paths: tuple[str, ...] = ()
     #: native_child_call: a permission request a native KAS sub-agent made under
     #: this session's own id, told apart by the tool-call id its
     #: ``agentSubtaskId`` frame recorded (``_is_native_child_call``), or one
@@ -1702,10 +1723,11 @@ class AcpPromptStats:
         A turn that recorded exactly one reading more than it metered calls
         leaves out its first reading: that is the frame a session sends when it
         opens, which arrives ahead of the first call and measures no call. Any
-        other mismatch keeps every reading, and so does a turn that ended before
-        its metering frame arrived (a cancelled first turn then counts the
-        session-open reading). A turn that compacts mid-way records kiro-cli's
-        post-compaction report like a call's reading, so its sum is approximate.
+        other mismatch keeps every reading, and so does a turn whose metering
+        frame never arrived (a cancelled first turn whose frame missed the
+        bounded read after its answer then counts the session-open reading). A
+        turn that compacts mid-way records kiro-cli's post-compaction report
+        like a call's reading, so its sum is approximate.
         """
         context_sum = self.call_context_sum
         readings = self.call_readings

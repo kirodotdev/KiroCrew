@@ -171,25 +171,38 @@ def release_legacy_zone(job: CronJob) -> None:
 
 
 def store_extra_for_save(
-    extra: Mapping[str, Any], jobs: Iterable[CronJob], *, deferred: bool
+    extra: Mapping[str, Any],
+    jobs: Iterable[CronJob],
+    *,
+    deferred: bool,
+    skipped: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
     """The top-level keys a save writes besides ``version`` and ``jobs``.
 
     While the upgrade waits (*deferred*), :data:`FOLLOWS_DEFAULT_KEY` lists each
     unzoned job the upgrade would stamp that is not held: one created or re-zoned
-    since the load, whose empty zone already means the default. Otherwise the key is
-    dropped, since a current store has no older jobs left to tell apart.
+    since the load, whose empty zone already means the default. A *skipped* record
+    the save keeps stays listed when *extra* listed it, so the job it becomes once
+    fixed by hand is not stamped either. Otherwise the key is dropped, since a
+    current store has no older jobs left to tell apart.
     """
     kept = {key: value for key, value in extra.items() if key != FOLLOWS_DEFAULT_KEY}
     if deferred:
+        listed = follows_default_ids(extra)
         ids = [
             job.id
             for job in jobs
             if not getattr(job, LEGACY_ZONE_ATTR, "")
             and _fired_in_utc(job.timezone, job.schedule.kind, job.skip_dates, "")
         ]
+        ids += [
+            job_id
+            for record in skipped
+            if isinstance(job_id := record.get("id"), str) and job_id in listed
+        ]
         if ids:
-            kept[FOLLOWS_DEFAULT_KEY] = ids
+            # A kept record can share a loaded job's id: list each id once.
+            kept[FOLLOWS_DEFAULT_KEY] = list(dict.fromkeys(ids))
     return kept
 
 
@@ -199,7 +212,11 @@ def pin_records_read_in_utc(
     """:func:`pin_jobs_read_in_utc` for raw store records (a document not yet decoded)."""
     pinned: list[str] = []
     for record in records:
-        if not isinstance(record, dict) or record.get("id") in follows_default:
+        if not isinstance(record, dict):
+            continue
+        # A record the loader skipped can carry any id; only a string can be listed.
+        job_id = record.get("id")
+        if isinstance(job_id, str) and job_id in follows_default:
             continue
         schedule = record.get("schedule")
         kind = schedule.get("kind") if isinstance(schedule, dict) else None

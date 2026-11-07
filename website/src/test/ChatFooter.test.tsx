@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, onTestFinished, vi } from 'vitest'
+import type { ReactElement } from 'react'
 import { render, screen, act, fireEvent } from '@testing-library/react'
-import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS } from '../pages/chat/ChatFooter'
+import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS, STALL_MS, transcriptActivityKey, turnSentHere } from '../pages/chat/ChatFooter'
 import { GHOST_POSE_ICONS, GHOST_POSE_URLS } from '../components/GhostPoses'
 import { registerThemeBranding } from '../themeBranding'
 import { THEME_LOADER_ICONS } from '../themeLoaderIcons'
@@ -506,5 +507,184 @@ describe('pickDistinct', () => {
     const got = pickDistinct(3)
     expect(got).toHaveLength(3)
     expect(new Set(got).size).toBe(3)
+  })
+})
+
+// #10114: a turn whose stream died and one still working looked the same. Once
+// the turn shows nothing new for STALL_MS, the footer says how long it has been.
+describe('ChatFooter stall notice', () => {
+  // The issue's case: the final answer landed in full, the slot still reads running.
+  const quiet = { ...base, running: true, state: 'streaming', lastRole: 'assistant' }
+  const fakeClock = () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-06T12:00:00Z'))
+    onTestFinished(() => { vi.useRealTimers() })
+  }
+  // The view sees the turn start: an authoritative idle page (a key while not
+  // running), then running.
+  const renderLive = (ui: (running: boolean) => ReactElement) => {
+    const view = render(ui(false))
+    view.rerender(ui(true))
+    return view
+  }
+
+  it('appears after STALL_MS without activity, ticks, and clears when the turn moves', () => {
+    fakeClock()
+    const { rerender } = renderLive(r => <ChatFooter {...quiet} running={r} activityKey={'3:assistant:10'} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS - 1000) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    act(() => { vi.advanceTimersByTime(1000) })
+    // The sentence is the live region; the ticking time is outside it.
+    expect(screen.getByText(/No new output for a while/)).toHaveAttribute('role', 'status')
+    expect(screen.getByTestId('chat-footer-stall-elapsed')).toHaveTextContent('Quiet for 45s')
+    act(() => { vi.advanceTimersByTime(25_000) })
+    expect(screen.getByTestId('chat-footer-stall-elapsed')).toHaveTextContent('Quiet for 1m 10s')
+    rerender(<ChatFooter {...quiet} activityKey="4:streaming:10" />)
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('stays off after a switch into a running session until its transcript moves once', () => {
+    fakeClock()
+    const turn = (answer: string) => [{ role: 'user', content: 'q' }, { role: 'tool', content: 'read' }, { role: 'assistant', content: answer }]
+    const activityKey = transcriptActivityKey(turn('done'))
+    const { rerender } = renderLive(r => <ChatFooter {...quiet} running={r} browserSessionKey="chat-a" activityKey={activityKey} />)
+    const footer = screen.getByTestId('chat-footer')
+    act(() => { vi.advanceTimersByTime(STALL_MS + 10_000) })
+    expect(screen.getByTestId('chat-footer-stall-elapsed')).toHaveTextContent('Quiet for 55s')
+
+    // A saved page cannot tell a quiet tool call from a stall, so the switched-to
+    // session is not watched while it holds still.
+    rerender(<ChatFooter {...quiet} browserSessionKey="chat-b" activityKey={activityKey} />)
+    expect(screen.getByTestId('chat-footer')).toBe(footer)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    // Once it moves in this view it is watched again.
+    rerender(<ChatFooter {...quiet} browserSessionKey="chat-b" activityKey={transcriptActivityKey(turn('done and more'))} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS - 1000) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(screen.getByTestId('chat-footer-stall-elapsed')).toHaveTextContent('Quiet for 45s')
+  })
+
+  it('stays off for a turn already running when the view opens (reload, split pane) until it moves once', () => {
+    fakeClock()
+    // A host passes no key until its page lands, so the page landing is not movement.
+    const loaded = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'on it' }, { role: 'tool', content: 'build' }]
+    const { rerender } = render(<ChatFooter {...quiet} />)
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(loaded)} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey([...loaded, { role: 'assistant', content: 'built' }])} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS) })
+    expect(screen.getByTestId('chat-footer-stall')).toBeTruthy()
+  })
+
+  it('never baselines an empty transcript, so a page restored after a failed switch is not movement', () => {
+    fakeClock()
+    const page = [{ role: 'user', content: 'q' }, { role: 'streaming', content: 'Hel' }]
+    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey([])} />)
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(page)} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('watches a short restored turn once it moves (a first reply with no tool rows)', () => {
+    fakeClock()
+    // A reload during a first, tool-free reply: only the opener and the
+    // streaming row, and later chunks grow that same row.
+    const turn = (text: string) => [{ role: 'user', content: 'q' }, { role: 'streaming', content: text }]
+    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey(turn('Hel'))} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 2) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(turn('Hello, here is'))} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS) })
+    expect(screen.getByTestId('chat-footer-stall')).toBeTruthy()
+  })
+
+  it('turns off live announcements for the ticking counter inside a polite transcript', () => {
+    fakeClock()
+    renderLive(r => <div aria-live="polite"><ChatFooter {...quiet} running={r} activityKey={'3:assistant:10'} /></div>)
+    act(() => { vi.advanceTimersByTime(STALL_MS) })
+    const sentence = screen.getByText(/No new output for a while/)
+    const elapsed = screen.getByTestId('chat-footer-stall-elapsed')
+    expect(sentence).toHaveAttribute('role', 'status')
+    expect(elapsed).toHaveAttribute('aria-live', 'off')
+    expect(elapsed).toHaveTextContent('Quiet for 45s')
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(elapsed).toHaveTextContent('Quiet for 46s')
+    expect(elapsed).toHaveAttribute('aria-live', 'off')
+    expect(screen.getByText(/No new output for a while/)).toBe(sentence)
+  })
+
+  it('stays off while a tool runs, and for a host that passes no activityKey', () => {
+    fakeClock()
+    const { rerender } = renderLive(r => <ChatFooter {...quiet} running={r} state="tool_running" lastRole="tool" activityKey={'3:tool:10'} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    rerender(<ChatFooter {...quiet} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  // A turn parked on the person's approval or question is healthy: no frames
+  // arrive until they decide, and the notice must not tell them to stop it.
+  it('stays off while the turn waits on the person', () => {
+    fakeClock()
+    renderLive(r => <ChatFooter {...quiet} running={r} activityKey={'3:assistant:10'} waitingOnUser />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('stays off when a switch reads the run as idle before the page lands running', () => {
+    fakeClock()
+    const { rerender } = renderLive(r => <ChatFooter {...quiet} running={r} browserSessionKey="chat-a" activityKey="3:assistant:10" />)
+    // The switch's provisional mirror says idle while the page is in flight
+    // (no key), then the fetched page says running.
+    rerender(<ChatFooter {...quiet} running={false} browserSessionKey="chat-b" />)
+    rerender(<ChatFooter {...quiet} browserSessionKey="chat-b" activityKey="3:tool:10" />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('stays off for a restored turn when an older page loads above it', () => {
+    fakeClock()
+    // A page that has older history above it is full, so it holds at least three rows.
+    const rows = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'on it' }, { role: 'tool', content: 'build' }]
+    const older = [{ role: 'user', content: 'earlier' }, { role: 'assistant', content: 'old answer' }]
+    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey(rows)} />)
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey([...older, ...rows])} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('watches a turn this view sent, even when the footer mounts already running', () => {
+    fakeClock()
+    // Sending from the empty welcome view (or a split pane) mounts the footer
+    // with the turn running and the tab's own optimistic user row as opener.
+    const sent = [{ role: 'user', content: 'q', meta: { optimistic: true } }]
+    expect(turnSentHere(sent)).toBe(true)
+    expect(turnSentHere([{ role: 'user', content: 'q' }])).toBe(false)
+    render(<ChatFooter {...quiet} activityKey={transcriptActivityKey(sent)} sentHere={turnSentHere(sent)} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS) })
+    expect(screen.getByTestId('chat-footer-stall')).toBeTruthy()
+  })
+
+  it('stays off for a restored turn whose opener is above the loaded window when older rows load', () => {
+    fakeClock()
+    const window = [{ role: 'tool', content: 'step 48', ts: 't48' }, { role: 'tool', content: 'step 49', ts: 't49' }, { role: 'tool', content: 'step 50', ts: 't50' }]
+    const older = [{ role: 'user', content: 'q', ts: 't0' }, { role: 'tool', content: 'step 1', ts: 't1' }]
+    expect(transcriptActivityKey([...older, ...window])).toBe(transcriptActivityKey(window))
+    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey(window)} />)
+    // The older page, opener included, lands above the window.
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey([...older, ...window])} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('keys on a reasoning burst growing above the trailing streaming row', () => {
+    const rows = (thinking: string) => [{ role: 'user', content: 'q' }, { role: 'thinking', content: thinking }, { role: 'streaming', content: '' }]
+    expect(transcriptActivityKey(rows('abcd'))).not.toBe(transcriptActivityKey(rows('ab')))
+    // An older page above the current turn leaves the key alone.
+    expect(transcriptActivityKey([{ role: 'user', content: 'old' }, ...rows('ab')])).toBe(transcriptActivityKey(rows('ab')))
   })
 })

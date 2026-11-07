@@ -15,11 +15,12 @@ are kept apart on purpose (SPEC-ADDENDUM §2):
   actually reclaimed (``residency_charged``); no counter is ever decremented
   for a process that still exists.
 
-A wake never bypasses admission: :meth:`WaitLedger.wake` writes ``running``
-under a NEW generation and the caller re-enters the lane queue (``resume``
-entry) before it may continue -- so a dependency recovering for five hundred
-waiting trees produces five hundred rows eligible for re-admission, not five
-hundred simultaneous runtimes (RFC §14.3).
+A wake never bypasses admission: :meth:`WaitLedger.wake` ends the wait under
+a NEW generation in ``retry_wait``, and the task continues only once admission
+claims it again (the one wake that writes ``running`` directly is admission's
+``resume_grant``, for a slot it already holds) -- so a dependency recovering
+for five hundred waiting trees produces five hundred rows eligible for
+re-admission, not five hundred simultaneous runtimes (RFC §14.3).
 
 Nested propagation S -> A -> B: B waits; A enters ``waiting_children`` only
 when it has no runnable work of its own; the wake fires on the LAST awaited
@@ -587,10 +588,13 @@ class WaitLedger:
         return out
 
     def signal(self, scope: str, *, reason: str = "") -> list[str]:
-        """Wake every ``waiting_dependency`` row for *scope*; returns woken ids.
+        """Wake the ``waiting_dependency`` rows for *scope*; returns woken ids.
 
-        The DependencyCoordinator (wave 2 L) calls this by capacity; the ledger
-        itself wakes in row order and lets admission meter the re-entries.
+        The matching rows are woken in one pass, in row order (a refused wake
+        is skipped), and admission meters the re-entries.
+        :meth:`RunnerAdmission.signal` calls this only when no attached
+        :class:`DependencyCoordinator` holds *scope*; one that does wakes the
+        scope's waiters through its own staged ``tick()`` instead.
         """
         woken: list[str] = []
         for rec in self._store.waiting_rows(state=WAITING_DEPENDENCY):

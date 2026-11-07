@@ -1,9 +1,20 @@
-"""Opt-in recorder for raw inbound ACP frames — a no-op unless switched on.
+"""Opt-in recorder for raw ACP frames — a no-op unless switched on.
 
 Set ``KIROCREW_ACP_RECORD_FRAMES`` to a directory and every agent->client
 JSON-RPC frame the two transports read is appended, one JSON object per line, to
 ``<dir>/<backend>.jsonl``. Unset — which is every ordinary run, and every CI run
 — :func:`record_frame` returns after one environment lookup and touches nothing.
+
+The same switch appends every request and notification the transports WRITE
+(``session/new``, ``session/prompt``, ``session/cancel``, ...) to
+``<dir>/<backend>.out.jsonl`` (:func:`record_sent_frame`), so a developer can
+read the exact prompt a turn sent. It is a separate file because the inbound one
+is corpus material and must hold only what the backend's stdout carried. Two
+things carry credentials by construction and are never recorded: our answers to
+the agent's own requests (one can hold a stored MCP sign-in grant, the value the
+inbound side never records), and every ``mcpServers`` value in a written frame
+(its ``env``, ``headers`` and ``args`` hold the operator's secrets under names no
+key rule can know), which is replaced by its entry count.
 
 Why it exists: the replay corpus under ``test/fixtures/acp_frames/`` is the
 behavioural gate that stops a refactor of the dispatch layer silently changing
@@ -133,8 +144,9 @@ ENV_RECORD_FRAMES = "KIROCREW_ACP_RECORD_FRAMES"
 #: buffer depth.
 QUEUE_LIMIT = 1024
 
-#: Wire bytes that may wait for the writer. The transports cap a single frame at
-#: 10 MiB, so a count limit alone would admit a burst of large frames that holds
+#: Wire bytes that may wait for the writer. A frame read is capped at the
+#: transports' 10 MiB line limit and a written prompt is about as large (its image
+#: budget), so a count limit alone would admit a burst of large frames that holds
 #: gigabytes of parsed JSON on the heap behind one writer; this bounds the
 #: backlog to a few such frames regardless of how many small ones fit.
 QUEUE_BYTES_LIMIT = 32 * 1024 * 1024
@@ -848,8 +860,9 @@ def _open_private_append(directory: Path, name: str):
     return os.fdopen(fd, "ab")
 
 
-def write_frame(backend: str, frame: dict, dest: str) -> None:
-    """Append one scrubbed frame to ``<dest>/<backend>.jsonl``.
+def write_frame(backend: str, frame: dict | bytes, dest: str) -> None:
+    """Append one scrubbed frame to ``<dest>/<backend>.jsonl``, or, for an outbound
+    frame (the bytes that were written), to ``<dest>/<backend>.out.jsonl``.
 
     Runs on a worker thread, never on the event loop. Swallows every failure:
     the caller is a transport reader whose job is the session, not the
@@ -869,14 +882,19 @@ def write_frame(backend: str, frame: dict, dest: str) -> None:
         return
     try:
         directory = Path(dest).expanduser()
-        with _open_private_append(directory, f"{fixture_dir_name(backend)}.jsonl") as handle:
+        suffix = ".out.jsonl" if isinstance(frame, bytes) else ".jsonl"
+        with _open_private_append(directory, f"{fixture_dir_name(backend)}{suffix}") as handle:
             handle.write(data)
     except Exception as exc:  # noqa: BLE001 - a recorder must never take down a reader
         _stand_down(exc)
 
 
-def _frame_line(frame: dict) -> bytes:
+def _frame_line(frame: dict | bytes) -> bytes:
     """The bytes one frame appends: scrubbed JSON, a newline, UTF-8.
+
+    An outbound frame arrives as the bytes that were written and is parsed here,
+    on the writer thread, so the scrub sees the same structure an inbound frame
+    has; its ``mcpServers`` values are dropped first (:func:`_omit_mcp_servers`).
 
     A frame nested past :func:`_scrub_depth_limit` is refused before the walk:
     the scrub is recursive, and each string leaf is judged against its whole
@@ -885,9 +903,24 @@ def _frame_line(frame: dict) -> bytes:
     tool's text cut mid-emoji, which ``json.loads`` keeps) from failing the
     encode.
     """
-    if _nests_deeper_than(frame, _scrub_depth_limit()):
+    parsed: dict = json.loads(frame) if isinstance(frame, bytes) else frame
+    if _nests_deeper_than(parsed, _scrub_depth_limit()):
         raise ValueError(f"frame nested deeper than {_scrub_depth_limit()} levels")
-    return (scrub_frame(frame) + "\n").encode("utf-8", "backslashreplace")
+    if isinstance(frame, bytes):
+        _omit_mcp_servers(parsed)
+    return (scrub_frame(parsed) + "\n").encode("utf-8", "backslashreplace")
+
+
+def _omit_mcp_servers(frame: dict) -> None:
+    """Replace every ``mcpServers`` value in a parsed outbound *frame* by its entry count."""
+    stack: list[Any] = [frame]
+    while stack:
+        node = stack.pop()
+        for key, child in node.items() if isinstance(node, dict) else enumerate(node):
+            if key == "mcpServers" and isinstance(node, dict) and isinstance(child, (dict, list)):
+                node[key] = f"[{len(child)} MCP server(s) not recorded]"
+            elif isinstance(child, (dict, list)):
+                stack.append(child)
 
 
 def _scrub_depth_limit() -> int:
@@ -1052,7 +1085,9 @@ class _Overflow(RuntimeError):
     """The backlog is full (by count, by bytes, or its lock was busy)."""
 
 
-def _enqueue(writer: _Writer, backend: str, frame: dict, dest: str, wire_bytes: int) -> None:
+def _enqueue(
+    writer: _Writer, backend: str, frame: dict | bytes, dest: str, wire_bytes: int
+) -> None:
     """Hand a frame to *writer*, never blocking the caller.
 
     Thread-safe and loop-independent: both transports, on whichever threads
@@ -1092,7 +1127,17 @@ def _enqueue(writer: _Writer, backend: str, frame: dict, dest: str, wire_bytes: 
 
 
 async def record_frame(backend: str, frame: dict, wire_bytes: int = 0) -> None:
-    """Record one inbound frame, if a recording directory is set.
+    """Record one inbound frame, if a recording directory is set (see :func:`_record`)."""
+    _record(backend, frame, wire_bytes)
+
+
+def record_sent_frame(backend: str, data: bytes) -> None:
+    """Record one written frame; the transports' ``on_written`` hook, with the encoded line."""
+    _record(backend, data, len(data))
+
+
+def _record(backend: str, frame: dict | bytes, wire_bytes: int) -> None:
+    """Queue one frame for the writer, if a recording directory is set.
 
     Returns after one environment lookup when ``KIROCREW_ACP_RECORD_FRAMES`` is
     unset, which is the state of every ordinary run. When it is set the frame is
@@ -1105,10 +1150,10 @@ async def record_frame(backend: str, frame: dict, wire_bytes: int = 0) -> None:
     called, recording stands down with a line saying so rather than starting a
     thread from the loop.
 
-    *wire_bytes* is the length of the line *frame* was parsed from. The reader
-    loops already hold it, and it is what the byte bound counts — serializing
-    the frame here to measure it would put a ``json.dumps`` of up to 10 MiB on
-    the reader loop, which is the cost this module exists to avoid.
+    *wire_bytes* is the length of the line *frame* was parsed from or written
+    as. The callers already hold it, and it is what the byte bound counts —
+    serializing the frame here to measure it would put a ``json.dumps`` of up to
+    10 MiB on the event loop, which is the cost this module exists to avoid.
     """
     dest = recording_destination()
     if not dest:

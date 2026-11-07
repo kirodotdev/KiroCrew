@@ -237,7 +237,10 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             # refresh. safe_read_file re-checks the RESOLVED target and raises
             # PermissionError for a refused path — an OSError subclass, so a
             # refused entry is skipped by the same handler as an unreadable one.
-            data = parse_agent_spec_text(safe_read_file(str(af)), af)
+            # The canonical gate judges each resolved path inline: this scan
+            # runs off the loop and reads every spec, and the bounded gate would
+            # send each one to the resolver pool again.
+            data = parse_agent_spec_text(safe_read_file(str(af), canonical_gate=True), af)
         except (ValueError, OSError) as exc:
             # Its agent may be one this scan now leaves out; the scan is partial.
             _SCAN_STATE.complete = False
@@ -495,9 +498,33 @@ def materialized_snapshot_complete() -> bool:
     A pure in-memory read, safe on the event loop. ``False`` before the first
     refresh lands, and after one that skipped a spec it could not read: a name
     missing then may still have its file on disk, so a caller about to fail a
-    turn on that miss rescans once off the loop first (``_turn_admit``).
+    turn or a request on that miss rescans once off the loop first
+    (``_turn_admit``, :func:`rescan_if_incomplete`).
     """
     return _MATERIALIZED_COMPLETE
+
+
+async def rescan_if_incomplete() -> bool:
+    """Rescan once off the loop while the installed snapshot is incomplete.
+
+    For a caller about to refuse an agent that did not resolve. The first scan in
+    a process keeps no name for a spec it could not read, so that agent is missing
+    while its file is on disk. A complete snapshot is trusted and costs no scan.
+    ``True`` when a scan ran, so the caller resolves again. Never raises: a failed
+    rescan leaves the caller's refusal in place.
+    """
+    if materialized_snapshot_complete():
+        return False
+    from kiro_crew.executors import discovery_executor
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), refresh_materialized_agents
+        )
+    except Exception:  # noqa: BLE001 -- the caller refuses as it would without the scan
+        logger.warning("agent snapshot rescan before a refusal failed", exc_info=True)
+        return False
+    return True
 
 
 def materialized_agents_generation() -> int:

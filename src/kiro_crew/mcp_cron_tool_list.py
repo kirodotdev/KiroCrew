@@ -79,7 +79,8 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": "If true, return a JSON document instead "
                         "of text: one record per owned job with its mode, "
-                        "schedule, context settings, prompt, and folded "
+                        "schedule, context settings, prompt, Schedule-page "
+                        "folder ({id, name}, or null when ungrouped), and folded "
                         "run-history counts (runs, failures, distinct results, "
                         "runs that found nothing to do). Takes precedence over "
                         "verbose and over ids' implied verbose, because it "
@@ -213,6 +214,15 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Set False for polling/scanner jobs with no conversational state — "
                         "avoids unbounded context growth. Set True (or omit) for "
                         "conversational reminders that should remember prior runs.",
+                    },
+                    "new_chat_per_run": {
+                        "type": "boolean",
+                        "description": "When true, every run opens its own dashboard chat "
+                        "tab on its own fresh session, so the user can review that run and "
+                        "reply to it alone (default false). Implies persistent_session false "
+                        "when that is omitted. Agent crons only; hide_in_chat still wins. "
+                        "Use it only for infrequent jobs: every run keeps a tab, so the "
+                        "schedule must leave at least 24 hours between runs or it is refused.",
                     },
                     "minimal_context": {
                         "type": "boolean",
@@ -363,6 +373,14 @@ def _list_tools() -> list[dict[str, Any]]:
                     "persistent_session": {
                         "type": "boolean",
                         "description": "Whether this cron reuses one agent session across runs.",
+                    },
+                    "new_chat_per_run": {
+                        "type": "boolean",
+                        "description": "When true, every run opens its own chat tab on its "
+                        "own fresh session. Turning it on implies persistent_session false "
+                        "when that is omitted; persistent_session true turns it off. "
+                        "Use it only for infrequent jobs: every run keeps a tab, so the "
+                        "schedule must leave at least 24 hours between runs or it is refused.",
                     },
                     "minimal_context": {
                         "type": "boolean",

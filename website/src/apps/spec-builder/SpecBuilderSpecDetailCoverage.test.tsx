@@ -14,6 +14,10 @@ let mobile = false
 
 vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
 
+// A long paste as ChatEmbed hands it to `onSend`: expanded in the text, its block on `meta`.
+const PASTED = 'line 1\nline 2\nline 3\nline 4'
+const PASTE_BLOCK = { id: 'p1', seq: 1, lines: 4, content: PASTED }
+
 // The embedded chat, the document renderer and the state panel are all covered
 // by their own tests; stubbing them keeps this file's assertions about
 // SpecDetail's own behaviour. The DocView stub exposes the selection-to-comment
@@ -22,11 +26,14 @@ vi.mock('./components/ChatColumn', () => ({
   default: ({ name, slotKey, onSend }: {
     name: string
     slotKey?: string
-    onSend: (msg: string) => Promise<unknown>
+    onSend: (msg: string, meta?: { pastes?: unknown[] }) => Promise<unknown>
   }) => (
     <div data-testid="chat-column" data-name={name} data-slot={slotKey ?? ''}>
       <button type="button" data-testid="chat-send" onClick={() => { void onSend('typed in the chat') }}>
         send
+      </button>
+      <button type="button" data-testid="chat-send-paste" onClick={() => { void onSend(`look:\n${PASTED}`, { pastes: [PASTE_BLOCK] }) }}>
+        send paste
       </button>
     </div>
   ),
@@ -633,6 +640,19 @@ describe('SpecDetail phase actions', () => {
     fireEvent.click(await screen.findByTestId('chat-send'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
     expect(JSON.parse(calls[0].body).text).toBe('typed in the chat')
+    expect(JSON.parse(calls[0].body).meta).toBeUndefined()
+  })
+
+  it('forwards a chat send\'s collapsed pastes as meta.pastes, so the stored row keeps the chip', async () => {
+    installFetch(BASE)
+    renderDetail()
+
+    fireEvent.click(await screen.findByTestId('chat-send-paste'))
+    await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
+    const body = JSON.parse(calls[0].body)
+    expect(body.text).toBe(`look:\n${PASTED}`)
+    expect(body.meta).toEqual({ pastes: [PASTE_BLOCK] })
+    expect(body.slot_key).toBe('spec-builder-checkout-99')
   })
 
   it('hands the task list off to a build agent', async () => {

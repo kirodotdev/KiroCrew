@@ -202,6 +202,18 @@ It is reserved, so `extra` can neither set nor strip it
 (`test_the_session_claim_cannot_be_set_or_stripped_through_extra`;
 `test_skipping_nonce_registration_does_not_make_a_session`).
 
+`owner_mint` (`token_auth_tokens.OWNER_MINT_CLAIM`, value `"1"`) marks a token
+minted FOR the owner: the desktop `/api/token/local` bootstrap, the startup and
+`KIROCREW_READY` links, the owner's Slack session deep link
+(`messaging_api/proactive_send.py`), and the `/kirocrew dashboard` / `!dashboard`
+link when the caller is the owner loaded into the Slack handler. A
+messaging-allowlist user's link never carries it. The link→session exchange
+copies it onto the session token, the refresh token carries it through every
+rotation, and `_caller_bounds` copies it onto a link a session lends a phone. It
+grants nothing: the owner gate reads it only to label an already-refused former
+owner's session `401 stale_session_reauth` ([security](security.md)). A session
+minted without the claim keeps the generic denial until one fresh sign-in.
+
 Two expiry times:
 - `exp`: link click expiry; query-param validation uses this claim (`token_auth.validate_token`).
 - `session_exp`: cookie-session expiry; cookie validation uses this claim and refresh rotates the cookies before expiry (`token_auth.validate_token`; `test_tr_u_04_session_exp_within_max`).
@@ -245,6 +257,9 @@ differently:
   that has `require_peer` but no signed `peer_key` fails closed and requires one
   new QR scan. Any child mobile/QR link minted by a peer-bound session carries
   the same `require_peer` + `peer_key` pair, so delegation cannot widen it.
+  When that key is not login-scoped (`ts:login:`), the phone-access QR refuses
+  the mint instead (`403 caller_device_bound`): its child could sign in only the
+  device already showing it. A login-scoped key still mints.
 
 `require_peer` is no longer exclusive to the QR shape. An **ordinary** session
 whose `?token=` exchange resolved a daemon-verified allowed peer also opens its
@@ -363,7 +378,7 @@ The `local_only` parameter is accepted for backward compatibility but does not c
 
 Request flow:
 1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`). A mixed internal path's cookie branch, on loopback and off it, sets `auth_from_query_token` from the credential `_extract_and_validate_token` validated, as the main path does: true for a `?token=` link, false for the session cookie, including a cookie adopted after a failed link.
-2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, and `/sandbox-doc/`; exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `GET /api/hooks/agent/status` (`AGENT_HOOK_STATUS_PATH`: the same webhook token, re-checked in `api_hooks_agent_status`), `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
+2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, and `/sandbox-doc/`; exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `GET /api/hooks/agent/status` (`AGENT_HOOK_STATUS_PATH`: the same webhook token, re-checked in `api_hooks_agent_status`), `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`), and `POST /api/relay-viewer/token` (`RELAY_VIEWER_TOKEN_PATH`: the desktop app's relay access token mint, admitted in `api_relay_viewer_token` by loopback or the same-user unix socket, `X-Local-Secret` and a verified host process, like `/api/token/local`) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each
@@ -384,14 +399,39 @@ Request flow:
    refused by `is_owner_dashboard_request`, so a claim would withdraw the
    capability the admission grants. Consulting the registry first changes what is
    recorded, never what is admitted; a registry that raises names no app and
-   leaves the host-process leg to decide as before.
+   leaves the host-process leg to decide as before. On loopback TCP the caller's
+   pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
+   descriptors, so it is resolved once per accepted connection: the answer is kept
+   against that connection's transport with the process start id read beside it,
+   and a later request on the same kept-alive connection reuses it while the pid
+   still reports that start id. A new connection, or a changed start id, resolves
+   again. The owner-process judgement itself still runs on every request. The
+   process that was the connection's unique holder at its first request stays its
+   caller for the connection's life: a later share of that socket (a fork without
+   exec, a descriptor passed over a Unix socket) is the holder delegating, which it
+   could equally do by handing over a minted token, and detecting it would take the
+   full scan this lookup avoids.
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie). The cookie (session) path also requires `kind=session` or a non-empty `app` claim, so a link presented as `mc_token_{port}` is refused (`validate_token_with_app`; `test_unclicked_login_link_is_refused_as_a_session_cookie`). An unexchanged `?token=` on an internal path gets the link rules — its click window and a live nonce — never its session lifetime (`test_link_on_an_internal_path_query_gets_link_rules_not_session_rules`). A client that mints at `/api/token/local` and presents the result as the cookie must first trade it for a session: one `GET /api/status?token=<link>` with redirects off, keeping the `mc_token_{port}` `Set-Cookie` value (`ssh_tunnel_manager` does this)
 5. Check IP binding
 6. On query-param use: mint a SEPARATE session token, bind it to the peer key, add the link token's own nonce to the persisted denylist so the link string can never be presented as a cookie, and set `mc_token_{port}` with `max_age` derived from `session_exp`
 7. Log to SEL
-8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
+8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the relay branch (right after `admit_relay_caller`), the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+
+#### SSM listener: a Crew invite instead of a token
+
+A request whose LOCAL socket is the loopback SSM port (`ssm_gate.SsmGate.owns`;
+the listener exists only while `dashboard.shared_crew.ssm` is on, default off) is
+decided by `token_auth_middleware(ssm_gate=...)` before any other step, and never
+enters the token flow. The only credential is a Crew invite
+(`shared_crew.ssm_invites`), presented once as `?ssm_invite=<id>.<secret>` and kept
+in an `HttpOnly`, `SameSite=Lax` cookie. A dashboard token, an app token and
+`X-Internal-Secret` are ignored or refused, strict internal paths are refused, and
+the request is the dashboard user `ssm:<invite id>` with `auth_ssm` set, so
+`is_owner_dashboard_request` is false and `origin.is_direct_local_request` is false
+for it. It cannot mint a bearer link (`_caller_bounds` lends it no lifetime). A
+revoked invite fails the next request, and an open response is closed within 15 s.
 
 #### Direct tailnet listener: daemon identity instead of a token
 
@@ -926,9 +966,11 @@ removes it, and names the verified person in its own protocol message on the
 Crew's host connection. The Crew's relay client, in process, turns each relayed
 request into an HTTP request to this gateway's loopback TCP listener and stamps the
 person as `x-kiro-relay-user`. `dashboard/kiro_relay/` is the Crew's half of that
-contract. The relay client itself is not built yet; this package is the seam it
-calls. All of it is **off**: the gateway builds its `RelayIngress` off, and the
-setting that turns it on arrives with the relay client.
+contract, and `relay_client/` is the relay client that calls it. All of it is behind
+`tunnel.relay_enabled`, **off by default**: off, the gateway builds its
+`RelayIngress` off and starts no relay client. An enterprise build ignores that
+local switch with the rest of the `tunnel` control
+([platform-context § Local switches with no governance key](platform-context.md#local-switches-with-no-governance-key-edition_lockspy)).
 
 **The relay-path header rule.** Crew trusts `x-kiro-relay-user` only on a request
 its own relay client handed over, never on a local, tailnet, tunnel or any other
@@ -948,10 +990,11 @@ carries any relay header:
 | a personal Crew, and the named user is not its owner | `403 relay_not_owner` |
 | a remote limit applies (below) | `403` with that limit's code |
 | a verified handover whose headers can't be rebuilt without the relay header (a value that can't be re-encoded) | `400 relay_header_invalid`, never served with the header |
+| a `GET` or `HEAD` of the bare `/`, with no query and no `Upgrade` | `302` to `/chat`: the relay root is the Crew address the control plane hands out, and the dashboard's home is `/chat`. Every other path, a query on `/`, and a direct (non-relay) `/` are served as before |
 | otherwise | served as relayed |
 
 **The strip inside the rule.** Both layers name relay headers by one definition,
-`relay_headers.RELAY_HEADER_PREFIX`, which `kiro_relay.caller` imports for the two
+`relay_headers.RELAY_HEADER_PREFIX`, which `kiro_relay.caller` imports for the
 headers the relay client stamps and `kiro_relay.ingress` reads through
 `relay_headers.without_relay_headers`. The rule drops nothing on a request it does
 not serve: the strip is the one place a client-sent relay header is dropped
@@ -986,6 +1029,19 @@ separate Kiro user, so a personal Crew honors only the same provider and the sam
 user as its computer: the owner match is exact on the stable ID, never an email or
 display name. A team Crew takes the person as the relay names them.
 
+**The person's email and name.** When the relay's `request` or `ws-upgrade` frame
+carries `userEmail` or `userName`, the relay client checks each against the
+contract's grammar (`relay_client.protocol.is_display_email` and
+`is_display_name`) and drops a bad one without refusing the frame. `stamp_headers`
+then sets `x-kiro-relay-user-email` (ASCII, as sent) and `x-kiro-relay-user-name`
+(RFC 8187, always `UTF-8''` followed by attr-chars and `%HH`) only for a non-empty,
+valid value. The ingress decodes them once, on a verified handover only, into
+`RelayCaller.email` and `RelayCaller.display_name`; a repeated, malformed or
+over-long value is ignored and the request is still served. Both are display only:
+they are not part of `RelayCaller` equality or repr, never decide the owner check,
+admission or a remote limit, and are never logged or counted. They share the relay
+prefix, so a client-sent copy on any other request is dropped by the strip.
+
 **Token auth.** The relay is the authentication, so `token_auth_middleware` admits
 the published caller before any other branch: the owner of a personal Crew as the
 owner's own subject (`owner_id`, or `local-app` when none is configured), so every
@@ -1004,7 +1060,7 @@ check:
 |---|---|---|
 | Local-only | `relay_local_only` | the strict internal API paths, and any request presenting `X-Internal-Secret`, `X-Local-Secret` or `X-App-Secret` |
 | Instances | `instances_disabled` | `/api/instances` and everything under it, for everyone remote. The code the instances gate already answers when the feature is off, which the dashboard reads as "no instances here" |
-| Local token and secret routes | `relay_local_credential` | `/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`, `/api/auth/refresh`, `/api/apps/<name>/token`, `/api/apps/register`, each path a shipped built-in app declares as a `relay_credential_paths` host grant (`apps.builtin_host_grants`; today Dev Fleet's `/api/apps/dev-fleet/pod-token` and `/apps/dev-fleet/api/pod/token`, a pod's dashboard token), `/api/webhooks/tokens` and under it (a webhook bearer and signing secret that invoke an agent on their own), `/api/logout`, `/api/update/revalidate`, `/api/secrets` and under it |
+| Local token and secret routes | `relay_local_credential` | `/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`, `/api/auth/refresh`, `/api/apps/<name>/token`, `/api/apps/register`, each path a shipped built-in app declares as a `relay_credential_paths` host grant (`apps.builtin_host_grants`; today Dev Fleet's `/api/apps/dev-fleet/pod-token` and `/apps/dev-fleet/api/pod/token`, a pod's dashboard token), `/api/webhooks/tokens` and under it (a webhook bearer and signing secret that invoke an agent on their own), `/api/logout`, `/api/update/revalidate`, `/api/secrets` and under it, `/api/relay-viewer` and under it (the relay viewer calls the control plane with this machine's Kiro sign-in and mints relay access tokens) |
 | Shutdown | `relay_shutdown_refused` | `/api/shutdown` |
 | Apps for teammates | `relay_apps_teammate` | for a teammate only: `/apps/*` (each app's UI and backend proxy), `/api/apps` with everything under it (app management and every route an app registers in-process), `/api/publish-providers` and `/api/app-store/refresh` |
 | Non-canonical path | `relay_path_noncanonical` | a path with a `%` left after decoding, an empty segment or a dot segment, checked before any route: a later hop could read it as another path (the app proxy re-encodes what it captured, so `%2574` reaches an app's backend as `t`) |

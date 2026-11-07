@@ -233,6 +233,7 @@ describe('ArtifactDeployPage — navigation, disclosure, and copy affordances', 
     renderPage()
     expect(await screen.findByText(/No profiles yet/)).toBeInTheDocument()
     expect(screen.getByText(/No deployments yet/)).toBeInTheDocument()
+    expect(screen.getByText(/read live from AWS resource tags/)).toBeInTheDocument()
     expect(screen.getByText(/AWS Profiles \(0\)/)).toBeInTheDocument()
   })
 

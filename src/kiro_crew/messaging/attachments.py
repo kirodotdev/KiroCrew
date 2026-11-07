@@ -148,32 +148,33 @@ class IngestResult:
 
 
 def channel_reads_no_attachments(kind: str = "") -> str:
-    """The rejection for a channel that ingests no attachments at all.
+    """The rejection for a message a channel cannot read at all.
 
-    A transport declaring ``files_inbound=False`` never reaches :func:`ingest`,
-    so it has no ``IngestResult`` to carry a reason and nothing surfaces the
-    defect this module exists to prevent -- the sender is left unable to tell a
-    refused attachment from a broken bot. This is the reason such a channel
-    sends instead, in the same shape and register as the ones :func:`ingest`
-    produces, so a channel that later gains real ingestion changes which
-    function builds the string and not how it reads.
+    A message with no text and nothing :func:`ingest` can fetch (a sticker, a
+    card) never reaches it, so it has no ``IngestResult`` to carry a reason and
+    nothing surfaces the defect this module exists to prevent -- the sender is
+    left unable to tell a refused message from a broken bot. This is the reason
+    the channel sends instead, in the same shape and register as the ones
+    :func:`ingest` produces.
 
     *kind* is the platform's own word for what arrived (Feishu's
-    ``message_type``: ``image``, ``file``, ``audio``, ``post``...). It is
-    included when known because "your image" is answerable and "your
+    ``message_type``: ``sticker``, ``interactive``, ``post``...). It is
+    included when known because "your sticker" is answerable and "your
     attachment" invites a second attempt with a different file. Untrusted
     input: platform-supplied, so it is length-capped and stripped of the
-    characters that would let it forge a second bracketed segment.
+    characters that would let it forge a second bracketed segment. The reason
+    names the kind of message, never the channel: a channel that reads images
+    still cannot read a sticker.
 
     ``post`` is Feishu's rich-text message, not a file, so it is named "rich
-    text" and the trailer says the content was not read rather than that a
+    text" and the trailer says nothing in it could be read rather than that a
     "file" was not opened -- a wrong reason tells the sender the wrong thing.
     """
     clean = _REJECTION_KIND_RE.sub("", kind or "")[:_REJECTION_KIND_MAX]
     if clean == "post":
-        return "[Rich text — this channel reads plain text only; the content was not read]"
+        return "[Rich text — nothing in this message can be read here]"
     subject = f"Attachment ({clean})" if clean else "Attachment"
-    return f"[{subject} — this channel reads text only; the file was not opened]"
+    return f"[{subject} — this kind of message cannot be read here; it was not opened]"
 
 
 def safe_suffix(hint: str, default: str = "bin") -> str:

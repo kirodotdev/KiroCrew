@@ -90,6 +90,19 @@ async def _drain_icon_tasks() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _future_on_a_closed_loop() -> "asyncio.Future[None]":
+    """A pending generation whose loop is gone, so it never finishes or drops its entry."""
+    other = asyncio.new_event_loop()
+    try:
+        orphan: asyncio.Future[None] = other.create_future()
+        # Registered like the task's cleanup callback: cancelling the future would
+        # schedule it onto the closed loop.
+        orphan.add_done_callback(lambda _f: None)
+        return orphan
+    finally:
+        other.close()
+
+
 @pytest.fixture(autouse=True)
 def _clear_icon_task_registries() -> Any:
     """Reset the module-global task registries between tests.
@@ -758,6 +771,35 @@ class TestIconTaskCoalescing:
         assert work is not None and work["icon"] == "💼"
         assert music is not None and music["icon"] == "🎵"
         assert not chat_folders._CHAT_FOLDER_PENDING_ICON_TASKS
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "suffix", "body"),
+        [
+            ("PATCH", "", {"regenerate_icon": True}),
+            ("POST", "/icon-preview", {}),
+            ("DELETE", "", None),
+        ],
+    )
+    async def test_a_pending_task_left_by_a_closed_loop_is_absent(
+        self, method: str, suffix: str, body: dict[str, Any] | None
+    ) -> None:
+        """A regenerate, a preview and a delete each go through for a folder whose
+        pending task belongs to a closed loop: none counts it busy or cancels it, and
+        neither registry keeps it."""
+        state = _state(_ChatSlot("chat-1-100"))
+        orphan = _future_on_a_closed_loop()
+        chat_folders._CHAT_FOLDER_ICON_TASKS.add(orphan)
+        chat_folders._CHAT_FOLDER_PENDING_ICON_TASKS[PERSON] = orphan
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock(return_value="💼")):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.request(
+                    method, f"/api/chat/folders/{PERSON}{suffix}", json=body, headers=HEADERS
+                )
+                assert resp.status == 200
+                await asyncio.wait_for(_drain_icon_tasks(), timeout=30)
+        assert orphan not in chat_folders._CHAT_FOLDER_ICON_TASKS
+        assert chat_folders._CHAT_FOLDER_PENDING_ICON_TASKS.get(PERSON) is not orphan
 
 
 class TestAppOwnership:

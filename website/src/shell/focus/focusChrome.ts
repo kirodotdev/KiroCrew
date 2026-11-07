@@ -2,9 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type HTMLAttributes } fro
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, setFocusModeEnabled, focusModeEnabled } from '../../hooks/useFocusMode'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { railWidthFor } from '../../hooks/useRailWidth'
-import { computeHeaderDragGaps, type DragGap } from '../../lib/dragGaps'
+import { computeTitleBandDragGaps, observeDocumentLayout, observeHeaderLayout, type DragGap } from '../../lib/dragGaps'
 import { isEmbeddedPane } from '../../lib/embedded'
-import { isMacElectron } from '../../lib/electron'
+import { isMacElectron, isWinElectron, WIN_CAPTION_OVERLAY_WIDTH } from '../../lib/electron'
 import { setNativeFocusChrome, subscribeNativeFocusModeToggle } from '../platform/electronBridge'
 
 /**
@@ -207,21 +207,48 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
     }
   }, [focusActive, topChromeShown])
   const focusChromeVisible = useFocusChromeVisible()
-  // Control-free spans of the LOCAL header's band, for the macOS drag strips
+  // Control-free spans of the LOCAL header's band, for the macOS and Windows drag strips
   // `App.tsx` renders — the same geometry a remote pane relays via mc-drag-gaps, computed
-  // directly since the local header lives in this document. Measured when the
-  // header is revealed (its controls are laid out by then; the slide is a
+  // directly since the local header lives in this document. Kept whenever the
+  // header is on screen: docked, and peeked in focus mode (the slide is a
   // transform, which does not move layout rects).
+  //
+  // Docked needs them too. The injected #electron-drag-bar is the first child
+  // of <body>, so any later `no-drag` rectangle reaching into the band cancels
+  // it: a theme pack's decoration iframes (the injected list exempts every
+  // iframe) and transcript content scrolled up under the glass header (inside
+  // the `tabIndex={-1}` scroller, also exempt) both do, and Electron takes
+  // those rectangles from layout without clipping to the scroller. Strips
+  // painted after everything re-add drag over the band's control-free gaps.
+  // Being last, they would also win over any OTHER surface's controls in the
+  // band (the phone nav drawer, the image viewer's toolbar), so the gaps avoid
+  // every visible control there, and re-measure on any document change too.
+  const headerOnScreen = !focusActive || topChromeShown
   const [localHeaderDragGaps, setLocalHeaderDragGaps] = useState<DragGap[]>([])
   useEffect(() => {
-    if (!(focusActive && isMacElectron && topChromeShown)) { setLocalHeaderDragGaps([]); return }
+    if (!((isMacElectron || isWinElectron) && headerOnScreen)) { setLocalHeaderDragGaps([]); return }
     const header = topPeekSurface.current
     if (!header) return
-    const measure = () => setLocalHeaderDragGaps(computeHeaderDragGaps(header, window.innerWidth))
+    let last = ''
+    const measure = () => {
+      // Peeked in focus mode the opaque header overlays the content column, so
+      // controls under it cannot be clicked and must not cut its strips.
+      // On Windows the band stops short of the caption buttons. Their width is
+      // fixed in DIP, so the main process pushes it in CSS px for the current
+      // zoom; a fixed 138 would reach over Minimize below 100% zoom.
+      const reserve = parseFloat(document.documentElement.style.getPropertyValue('--mc-win-drag-reserve')) || WIN_CAPTION_OVERLAY_WIDTH
+      const bandWidth = isWinElectron ? window.innerWidth - reserve : window.innerWidth
+      const gaps = computeTitleBandDragGaps(header, bandWidth, document, focusActive)
+      const json = JSON.stringify(gaps)
+      if (json === last) return
+      last = json
+      setLocalHeaderDragGaps(gaps)
+    }
     measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [focusActive, topChromeShown])
+    const stopHeader = observeHeaderLayout(header, measure)
+    const stopDocument = observeDocumentLayout(measure)
+    return () => { stopHeader(); stopDocument() }
+  }, [headerOnScreen, focusActive])
   useEffect(() => {
     // The drag bar reads these classes (see the #electron-drag-bar rules in
     // electron/main.js). Left at 42px while the header is hidden it is a drag

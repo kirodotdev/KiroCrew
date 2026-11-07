@@ -68,9 +68,7 @@ def _section_fields() -> list[tuple[str, type]]:
     ]
 
 
-# ---------------------------------------------------------------------------
 # SectionReader: the one place a section default is resolved.
-# ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
@@ -122,10 +120,22 @@ class TestSectionReader:
         # The bounds still apply to that fallback, as they always have.
         assert reader.read("count", sections._safe_int, 5, 9) == 5
 
+    def test_a_stored_value_its_bounds_change_is_logged_once(self, caplog):
+        # A class of its own, so no earlier run has already reported this value.
+        knob = dataclasses.make_dataclass("Knob", [("count", int, 3)])
+        caplog.set_level(logging.WARNING, logger=_LOGGER)
+        clamped = sections.SectionReader(knob, {"count": 50})
+        in_range = sections.SectionReader(knob, {"count": "5"})
+        reads = [
+            each.read("count", sections._safe_int, 1, 9) for each in (clamped, clamped, in_range)
+        ]
+        assert reads == [9, 9, 5]
+        assert [r.getMessage() for r in caplog.records if r.name == _LOGGER] == [
+            "Config: Knob.count = 50 is outside its allowed range; using 9"
+        ]
 
-# ---------------------------------------------------------------------------
+
 # build_config: the document into a config, without the filesystem.
-# ---------------------------------------------------------------------------
 
 
 class TestBuildConfig:
@@ -326,9 +336,7 @@ class TestBuildConfig:
         assert cfg._extra_keys == {"agent": {"no_such_key": 2}}
 
 
-# ---------------------------------------------------------------------------
 # read_config_document: the files (or the cache) into a document.
-# ---------------------------------------------------------------------------
 
 
 class TestReadConfigDocument:
@@ -375,10 +383,25 @@ class TestReadConfigDocument:
         assert second.ticket > first.ticket
         assert len(stats) == 2
 
+    def test_each_disk_read_reports_a_clamped_value_again(self, config_home, caplog):
+        caplog.set_level(logging.WARNING, logger=_LOGGER)
+        _write(config_home / "config.json", {"agent": {"completion_keep_chars": 9999999}})
+        for invalidate in (False, False, True):
+            if invalidate:
+                loader._invalidate_config_cache()
+            cfg = loader.build_config(loader.read_config_document())
+        assert cfg.agent.completion_keep_chars == sections.COMPLETION_KEEP_CHARS_MAX
+        line = (
+            "Config: AgentConfig.completion_keep_chars = 9999999 is outside its allowed range;"
+            f" using {sections.COMPLETION_KEEP_CHARS_MAX}"
+        )
+        assert [r.getMessage() for r in caplog.records if "allowed range" in r.getMessage()] == [
+            line,
+            line,
+        ]
 
-# ---------------------------------------------------------------------------
+
 # persist_write_back and the whole load.
-# ---------------------------------------------------------------------------
 
 
 class TestPersistWriteBack:

@@ -15,7 +15,7 @@ import functools
 from typing import TYPE_CHECKING
 
 from kiro_crew.agent_capabilities import CapabilityError
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils import MODEL_UNAVAILABLE_KIND, TRANSIENT_RETRY_KIND
 from kiro_crew.security import redact
 from kiro_crew.session_capabilities import CapabilityStartupError
 
@@ -106,7 +106,7 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     # Non-retryable — respawning hits the same wall — so never re-queue, and
     # latch the service signed-out so the fail-closed gates stop trusting a
     # stale ready value.
-    message = turn.message
+    _message_without_merge_cards = turn._message_without_merge_cards
     session_key = turn.session_key
     sessions = turn.sessions
     logger.warning("ACP auth required in slot %s: %s", slot.key, exc)
@@ -120,7 +120,7 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     # turn decides whether it produced an exact replacement row.
     await _requeue_auth_retry(
         slot,
-        message,
+        _message_without_merge_cards,
         _synthetic_recovery_turn=_synthetic_recovery_turn,
         _synthetic_payload=_synthetic_payload,
         _turn_actor=_turn_actor,
@@ -132,6 +132,11 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     turn._auth_required = _auth_required
     needs_session_reset = True
     turn.needs_session_reset = needs_session_reset
+    # Raised after output streamed only as the translation of a runtime
+    # death (``session_provider._translate_dead``), so the post-login retry
+    # ``session/load``s a log without this prompt and replays the message
+    # without its card frames: the reset returns the drained cards to the
+    # queue (``_native_session_lacks_the_prompt``).
     await _persist_partial_reply(turn, "error: auth required")
     _auth_msg = str(exc)
     # Stamped with a kind (live broadcast `kind`, rebuilt transcript
@@ -140,9 +145,11 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     # same wall. The exception decides (from the harness that raised it)
     # whether that card IS the fix; on a harness with its own credential
     # store the row stays a plain error. The prose is unchanged.
+    # Stays English: ``_auth_msg`` is the harness's own exception text, carried
+    # verbatim; a token would localize no fixed frame of ours.
     slot.append("error", _auth_msg, "msg msg-err", meta=_terminal_error_meta(exc))
     _mark_kiro_signed_out(state)
-    turn.died_notice = "The chat stopped because the agent is signed out. Open the chat to sign in."
+    turn.died_notice = "chat_stopped_signed_out"
     await _deliver_linked_slack_message(state, slot, sessions, session_key, _auth_msg)
 
 
@@ -153,8 +160,8 @@ async def _on_prompt_busy(turn: _ChatTurn) -> None:
     # Provider was killed after prompt-busy retries exhausted — reset (and
     # re-queue only when retry-eligible; see per-branch handling below).
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _turn_emitted = turn._turn_emitted
-    message = turn.message
     logger.info("Prompt busy exhausted in slot %s — resetting session", slot.key)
     needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
     turn.needs_session_reset = needs_session_reset
@@ -162,7 +169,7 @@ async def _on_prompt_busy(turn: _ChatTurn) -> None:
     slot._prompt_busy_retries += 1
     await _requeue_after_prompt_busy(
         slot,
-        message,
+        _message_without_merge_cards,
         _prompt_depth=_prompt_depth,
         _turn_emitted=_turn_emitted,
         _is_synthetic=_is_synthetic,
@@ -196,13 +203,13 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     _directive_loop_id = turn._directive_loop_id
     _directive_self_wake = turn._directive_self_wake
     _escalation = turn._escalation
+    _message_without_merge_cards = turn._message_without_merge_cards
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
     _turn_priority = turn._turn_priority
     _turn_thought = turn._turn_thought
     client = turn.client
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
@@ -379,7 +386,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The verbatim requeue carries the retry identity forward via
         # _queue_recovery itself (one mechanism for every recovery
         # family), so this site needs no site-local re-stamp.
-        _queue_recovery(turn, 0, message, kind=SYNTHETIC_RECOVERY_KIND)
+        _queue_recovery(turn, 0, _message_without_merge_cards, kind=SYNTHETIC_RECOVERY_KIND)
         # Fresh conversation ⇒ fresh ladder for the recovery cycle.
         slot._transient_5xx_retries = 0
         slot._infra_retries = 0
@@ -408,6 +415,21 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The same seam carries the sign-in tag: a session the upstream
         # rejected gets a "Sign in to Kiro" affordance instead.
         _unentitled_meta = _terminal_error_meta(exc)
+        if slot._fallback_walked:
+            # A card that ends a fallback walk is judged by the SELECTED model,
+            # the one a Resume returns to (the start-of-turn restore probe
+            # re-selects it), not by the last candidate's error: a refused
+            # primary whose candidate only throttled must not offer Resume, and
+            # a throttled primary whose candidate was refused keeps it.
+            _primary_refused = getattr(slot, "_fallback_walk_refused", False) is True
+            _last_kind = (_unentitled_meta or {}).get("kind")
+            if _primary_refused and _unentitled_meta is None:
+                _unentitled_meta = {"kind": MODEL_UNAVAILABLE_KIND}
+            elif not _primary_refused and _last_kind == MODEL_UNAVAILABLE_KIND:
+                _unentitled_meta = None
+        # Stays English: ``_err_text`` is the entitlement/startup formatter's own
+        # output (the provider's rejection story), which a token cannot localize
+        # without dropping that text.
         slot.append(
             "error",
             f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
@@ -418,7 +440,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # must act on (a 5xx/throttle timeout, an unentitled model, a
         # malformed-request rejection). Ring the bell so an operator in
         # another session is not left to find the inline card.
-        turn.died_notice = "The chat stopped with an error. Open the chat to see what happened."
+        turn.died_notice = "chat_stopped_error"
         # Record a STRUCTURAL terminal outcome for this slot's last turn,
         # but ONLY for a self-driven nudge fire (``_directive_self_wake``).
         # A malformed-request rejection is deterministic in the payload's
@@ -445,15 +467,17 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
             # because a generation is per-loop, not globally unique.
             slot._last_turn_structural_terminal_loop_id = _directive_loop_id
             slot._last_turn_structural_terminal_loop_gen = _directive_loop_gen
-        # A cycle that never obtained a model session. Same scope rule as
-        # the structural verdict above -- only a self-driven nudge fire
-        # counts, or a human turn that happened to be starved would spend
-        # an unrelated loop's stand-down budget. The streak itself lives on
-        # the loop (``notify_cycle_start_failed``), which backs the loop off
-        # and eventually stands it down instead of firing cycle after cycle
-        # that can only fail the same way. Read with getattr: the two ACP
-        # exception families tag this fact independently and share no base.
-        _note_cycle_start_failure(slot.key, exc, self_wake=_directive_self_wake)
+        # A cycle that never obtained a model session. Only the loop's own
+        # cycle counts, a recovery it queued for itself included
+        # (``_wake_cycle``); a human turn that happened to be starved would
+        # otherwise spend an unrelated loop's stand-down budget. The streak
+        # itself lives on the loop (``notify_cycle_start_failed``), which backs
+        # the loop off and eventually stands it down instead of firing cycle
+        # after cycle that can only fail the same way. Read with getattr: the
+        # two ACP exception families tag this fact independently and share no base.
+        _wake_cycle = turn._wake_cycle
+        _wake_id, _wake_gen = _wake_cycle or ("", 0)
+        _note_cycle_start_failure(slot.key, exc, self_wake=_wake_cycle is not None)
         # A cycle that DID reach a model session and dispatched but then
         # died terminally here -- a backend error after retries were spent,
         # a persistent tool error, a prompt timeout. The gate (self-wake
@@ -467,9 +491,9 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         await _note_cycle_failure(
             slot.key,
             exc,
-            self_wake=_directive_self_wake,
-            loop_id=_directive_loop_id,
-            expected_generation=_directive_loop_gen,
+            self_wake=_wake_cycle is not None,
+            loop_id=_wake_id,
+            expected_generation=_wake_gen,
         )
         # This branch ENDS the retry cycle: the error is terminal and
         # nothing is re-queued. Refresh the transient-5xx budget now so the
@@ -500,6 +524,7 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # moves it back).
         slot._fallback_candidate_idx = 0
         slot._fallback_walked = []
+        slot._fallback_walk_refused = False
 
 
 async def _on_session_closing(turn: _ChatTurn) -> None:
@@ -528,9 +553,9 @@ async def _on_session_closing(turn: _ChatTurn) -> None:
 
 async def _on_error(turn: _ChatTurn, exc) -> None:
     """Any other error the turn raised."""
-    _directive_loop_gen = turn._directive_loop_gen
-    _directive_loop_id = turn._directive_loop_id
-    _directive_self_wake = turn._directive_self_wake
+    # As in _on_acp_error_card: a recovery the loop's cycle queued is that cycle.
+    _wake_cycle = turn._wake_cycle
+    _wake_id, _wake_gen = _wake_cycle or ("", 0)
     slot = turn.slot
     state = turn.state
     _memory_preparation_admitted = turn._memory_preparation_admitted
@@ -611,7 +636,18 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
             "the whole server off or turn those tools back on, then start a new "
             "chat."
         )
-        _err_meta = _terminal_error_meta(exc)
+        # This branch's text is fixed and ours, so it carries a token the
+        # dashboard localizes. The other arms keep ``str(exc)`` / a composed
+        # worker reason and stay English (the text is the exception's own).
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        _err_meta = dict(_terminal_error_meta(exc) or {})
+        _err_meta.update(
+            gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED,
+                setting="agent.member_acp_backend",
+            )
+        )
     else:
         # A session start on the SHARED runtime lands here (see the sibling
         # note below), and its ``session_start_failed`` tag is what lets the
@@ -630,14 +666,14 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     # guided-fix card and a retry repeats them unchanged, so they are not the
     # "work silently stopped" case the bell exists for.
     if not (isinstance(_err_meta, dict) and _err_meta.get("code")):
-        turn.died_notice = "The chat stopped with an error. Open the chat to see what happened."
+        turn.died_notice = "chat_stopped_error"
     # The SIBLING of the tagged-start report in the AcpError branch (_on_acp_error_card).
     # A session start on the SHARED runtime raises AcpRequestTimeout /
     # AcpSessionStartTimeout, which descend from AcpRuntimeError and not from
     # AcpError, so they land here -- and a member slot is exactly the
     # population that runs there. Reporting only in the AcpError branch would
     # leave the loops this bound exists for never backing off.
-    _note_cycle_start_failure(slot.key, exc, self_wake=_directive_self_wake)
+    _note_cycle_start_failure(slot.key, exc, self_wake=_wake_cycle is not None)
     # The SIBLING of the failed-cycle report in the AcpError branch (_on_acp_error_card),
     # for the same reason the start-failure report is duplicated here: a
     # cycle that reached a session and dispatched but then died does not
@@ -661,9 +697,9 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     await _note_cycle_failure(
         slot.key,
         exc,
-        self_wake=_directive_self_wake,
-        loop_id=_directive_loop_id,
-        expected_generation=_directive_loop_gen,
+        self_wake=_wake_cycle is not None,
+        loop_id=_wake_id,
+        expected_generation=_wake_gen,
         err_meta=_err_meta,
     )
     if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):

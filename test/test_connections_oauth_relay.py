@@ -31,7 +31,6 @@ from kiro_crew.dashboard.handlers import connections
                 "http://127.0.0.1/?code=x",
                 "http://127.0.0.1:43123/",
                 "http://user@127.0.0.1:43123/?code=x",
-                "http://127.0.0.1:43123/?code=x&unexpected=value",
                 "http://127.0.0.1:43123/?code=x#fragment",
                 "http://127.0.0.1:43123/?code=x%0d%0aHost:evil",
             ],
@@ -62,6 +61,26 @@ def test_return_address_validation_accepts_runtime_callback_shape(host):
     assert callback is not None
     assert callback.port == 43123
     assert callback.request_target == "/callback?code=one-time&state=opaque"
+
+
+@pytest.mark.parametrize(
+    ("query", "forwarded"),
+    [
+        (
+            "state=opaque&code=one-time&client_id=coda-app&unexpected=value",
+            "state=opaque&code=one-time",
+        ),
+        ("%63ode=one-time&client_id=coda-app", "%63ode=one-time"),
+    ],
+)
+def test_return_address_validation_drops_keys_outside_the_callback_set(query, forwarded):
+    """Coda's callback adds ``client_id``: the paste is accepted, and only the
+    OAuth callback keys, matched as decoded, reach the listener."""
+    callback = connections._validated_loopback_return_address(
+        f"http://127.0.0.1:43123/oauth/callback?{query}"
+    )
+    assert callback is not None
+    assert callback.request_target == f"/oauth/callback?{forwarded}"
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
@@ -498,7 +517,12 @@ def _relay_log_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord
 @pytest.mark.parametrize(
     ("listener_status", "level", "fragment"),
     [
-        (200, logging.INFO, "code delivered to the local callback status=200"),
+        (
+            200,
+            logging.INFO,
+            "code delivered to the local callback status=200; "
+            "the listener finishes the token exchange",
+        ),
         (400, logging.WARNING, "local callback rejected the return address status=400"),
     ],
 )

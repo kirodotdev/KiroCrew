@@ -154,6 +154,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
     clear_trusted_sessions,
     is_session_trusted,
+    trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
@@ -185,6 +186,7 @@ from kiro_crew.security import (  # noqa: F401 - read by the owners
     redact_exfiltration_urls,
     redact_local_paths,
 )
+from kiro_crew.security.text_redaction import ends_plain_sentence  # noqa: F401 - read by the owners
 from kiro_crew.sel import sel
 from kiro_crew.session import (
     _CIRCUIT_BREAKER_THRESHOLD,
@@ -317,6 +319,7 @@ from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
 )
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _append_footer_actions,
+    _backfill_late_link,
     _maybe_auto_title_slack,
     _mirror_to_dashboard,
     _post_review_draft,
@@ -487,6 +490,9 @@ _TRUNCATION_MARKER = "\n… [truncated]"
 # Slack UX strings
 _THINKING = "_Thinking…_"
 _THINKING_PLACEHOLDER = "💭 _Thinking…_"
+_WORKING = "Working…"
+#: Row meta key naming the Slack message a thread import read the row from.
+_SLACK_TS_META = "slack_ts"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
@@ -936,6 +942,7 @@ async def handle_message(
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     user_meta: dict[str, Any] | None = None,
+    interpret_commands: bool = True,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -953,6 +960,10 @@ async def handle_message(
 
     *channel_agent* overrides the default agent for this channel (set via
     per-channel config in ``slack.channels``).
+
+    *interpret_commands* says whether *text* may run as a command: a ``!`` command,
+    a privacy modifier or a keyword command. An OPTIONS answer passes ``False``: the
+    label is model-authored, so it reaches the agent as the answer and never runs.
 
     *spool_text* / *spool_attachments* are what the user sent before voice-memo
     transcription and file ingestion rewrote *text*. The shutdown spool records
@@ -975,7 +986,7 @@ async def handle_message(
 
     if (
         _compaction_replay is None
-        and not _is_control_message(text)
+        and not (interpret_commands and _is_control_message(text))
         and not _sc_turn_gate.in_channel_turn()
         and await _sc_turn_gate.admission_on()
     ):
@@ -1060,6 +1071,7 @@ async def handle_message(
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         user_meta=user_meta,
+        interpret_commands=interpret_commands,
         _t0=_t0,
         reply_ts=reply_ts,
         session_key=session_key,

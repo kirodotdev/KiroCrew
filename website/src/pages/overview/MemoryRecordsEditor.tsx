@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import { Search, Mail, Pencil, Trash2, Check, X, ArrowUpRight, ChevronLeft, ChevronRight, Lightbulb, ShieldCheck, History, ListFilter, Replace } from 'lucide-react'
 import { api } from '../../api/client'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { Badge, Btn, Card, EmptyState, Input, PanelSectionHeader, Skeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -13,6 +13,8 @@ import SegmentedControl from '../../components/SegmentedControl'
 import { fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
 import type { MemoryEditOperation, MemoryEditPreview, MemoryRecord, MemoryRecordQuery, MemoryRecordRevision, MemoryRecordSelection } from '../../types/memoryEditing'
 import { MEMORY_QUERY_PREFIXES, MemoryStoreAvatar, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
+import { semanticWriteErrorMessage } from './embeddingStatusText'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 const PAGE_SIZE = 50
 const MANUAL_LIMIT = 500
@@ -146,7 +148,7 @@ function RecordHistory({ store, row, onProposal, onKeepCurrent, onRestore }: { s
   return <div className="space-y-3"><PanelSectionHeader label={t('memoryEditing.history')} />
     {/* No hand-off: keep the record detail and pending proposal in place. */}<ErrorNotice message={errorText(history.error)} />
     {history.isPending && <p role="status" className="text-[13px] text-muted">{t('pages.overview.memoryTab.loading')}</p>}
-    {!!history.error && <Btn className="min-h-11" disabled={history.isFetching} onClick={() => void (history.isFetchNextPageError ? history.fetchNextPage() : history.refetch())}>{t('memoryV2.retry_read')}</Btn>}
+    {queryReadFailed(history) && <Btn className="min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={history.isFetching || undefined} onClick={() => { if (!history.isFetching) void (history.isFetchNextPageError ? history.fetchNextPage() : history.refetch()) }}>{t('memoryV2.retry_read')}</Btn>}
     {entries.map(item => { const proposal = proposed(item.after_json); const before = proposed(item.before_json); const removed = item.operation === 'forget'; const pending = item.status === 'conflict' && item.base_revision === currentRevision; const current = item.status === 'accepted' && item.revision === currentRevision; const restorable = item.status === 'accepted' && !!proposal && !removed && !current && memoryRecordBody(proposal) !== memoryRecordBody(row); return <details key={item.id} open={pending} className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-[13px]"><Badge variant="muted">{t(item.status === 'conflict' ? 'memoryEditing.proposal' : item.operation === 'restore' ? 'memoryEditing.restored' : 'memoryEditing.accepted')}</Badge>{current && <Badge variant="muted" className="ml-2">{t('memoryEditing.current_version')}</Badge>}<span className="ml-2 text-[12px] text-muted">{fmtDateTimeNumeric(item.created_at)}</span></summary><div className="mt-3 space-y-3"><RecordProvenance row={origin(item)} />{before && <div><PanelSectionHeader label={t('memoryEditing.before')} /><p className="mt-2 whitespace-pre-wrap break-words text-[13px] [overflow-wrap:anywhere]">{memoryRecordBody(before)}</p></div>}{(proposal || removed) && <div><PanelSectionHeader label={t('memoryEditing.after')} /><p className="mt-2 whitespace-pre-wrap break-words text-[13px] [overflow-wrap:anywhere]">{removed ? t('memoryEditing.removed') : memoryRecordBody(proposal!)}</p></div>}{pending && <div className="flex flex-wrap gap-2">{(proposal || removed) && <Btn className="min-h-11" onClick={() => onProposal(proposal || row, removed ? 'forget' : 'set')}>{t('memoryEditing.use_proposal')}</Btn>}<Btn className="min-h-11" onClick={onKeepCurrent}>{t('memoryEditing.keep_current')}</Btn></div>}{restorable && <Btn className="min-h-11" onClick={() => onRestore(item.id)}><History className="lucide-inline" />{t('memoryEditing.restore_version', { value: shortBody(memoryRecordBody(proposal!)) })}</Btn>}</div></details> })}
     {history.data && !entries.length && <p className="text-[13px] text-muted">{t('memoryEditing.no_history')}</p>}
     {history.hasNextPage && !history.error && <Btn className="min-h-11" disabled={history.isFetching} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? t('pages.overview.memoryTab.loading') : t('memoryV2.show_more')}</Btn>}
@@ -290,7 +292,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
         <Btn type="submit" primary className="min-h-11 justify-center" disabled={!newKey.trim() || !newValue.trim() || setGlobalFact.isPending}>{t('pages.overview.vectorMemoryCard.set')}</Btn>
       </form>
       {/* No hand-off: retain the fact key and value when a write fails. */}
-      <ErrorNotice message={errorText(setGlobalFact.error)} />
+      <ErrorNotice message={semanticWriteErrorMessage(setGlobalFact.error) || errorText(setGlobalFact.error)} />
     </Card>}
     <div className="space-y-3">
       <div className="flex min-w-0 items-center gap-2"><Search className="lucide-inline shrink-0 text-muted" /><Input className="min-h-11 min-w-0 flex-1" aria-label={t('memoryV2.search')} placeholder={t('memoryEditing.search_hint')} value={input} disabled={!!all} onChange={event => setInput(event.target.value)} />{(input || kind !== 'all') && <Btn aria-label={t('memoryV2.clear_search')} className="min-h-11 min-w-11 justify-center" disabled={!!all} onClick={resetFilters}><X className="lucide-inline" /></Btn>}</div>
@@ -305,7 +307,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
     </div>
     {/* No hand-off: cross-page selection and editing drafts must stay attached to this store. */}
     <ErrorNotice message={errorText(records.error || (recallCurrent ? recall.error : null))} />
-    {records.error && <div className="flex flex-wrap gap-2"><Btn className="min-h-11" disabled={records.isFetching} onClick={() => void records.refetch()}>{t('memoryV2.retry_read')}</Btn>{onRecovery && <Btn className="min-h-11" onClick={onRecovery}>{t('memoryV2.tab_recovery')}</Btn>}</div>}
+    {queryReadFailed(records) && <div className="flex flex-wrap gap-2"><Btn className="min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={records.isFetching || undefined} onClick={() => { if (!records.isFetching) void records.refetch() }}>{t('memoryV2.retry_read')}</Btn>{onRecovery && <Btn className="min-h-11" onClick={onRecovery}>{t('memoryV2.tab_recovery')}</Btn>}</div>}
     {recallCurrent && recall.data && <RecallEvidence data={recall.data} />}
     <motion.div layout={!reduceMotion} className="rounded-xl border border-border bg-bg-elevated p-3" aria-live="polite">
       <div className="flex min-w-0 flex-wrap items-center gap-2">

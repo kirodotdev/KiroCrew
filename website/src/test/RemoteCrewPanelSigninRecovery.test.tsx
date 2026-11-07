@@ -172,7 +172,7 @@ beforeEach(() => {
 
 /** Open the setup tab, where the launch progress card lives. */
 const openSetup = async (u: ReturnType<typeof userEvent.setup>) => {
-  await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 }
 
 describe('a crew created without a Kiro sign-in — the progress card', () => {

@@ -263,8 +263,9 @@ _BLOCKED_SLASH_COMMANDS = (
 )
 
 # Commands the dashboard serves without the harness: the composer opens /side
-# itself, and the slash gate answers /agent, /clear, /context, /goal, /help, /mcp,
-# /model, /prompts, /tools, /usage and /workflow before any session work. On a
+# itself, and the slash gate answers /agent, /clear, /code, /context, /goal, /help,
+# /hooks, /mcp, /model, /prompts, /tools, /usage and /workflow before any session
+# work (/code and /hooks on KAS alone). On a
 # harness in ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command
 # only gets a notice, so GET /api/slash-commands lists these (plus /compact, which
 # has a gate of its own) and nothing else there.
@@ -273,8 +274,10 @@ _DASHBOARD_SERVED_SLASH_COMMANDS = frozenset(
         "/agent",
         "/clear",
         "/context",
+        "/code",
         "/goal",
         "/help",
+        "/hooks",
         "/mcp",
         "/model",
         "/prompts",
@@ -715,6 +718,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AUTH_REQUIRED_KIND,
         AUTOMATION_NOTICE_KIND,
         AUTOMATION_STEER_META,
+        COMPOSER_SEND_META,
         CONTEXT_OVERFLOW_KIND,
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
@@ -722,11 +726,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
+        MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
-        STEER_INTENT_META,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_POSSIBLY_DELIVERED_NOTE,
         SUBAGENT_COMPLETION_KIND,
@@ -785,18 +789,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
+        cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
         listing_slot_snapshot,
         reject_if_slot_under_construction,
         replacement_shares_transcript,
         restore_replacement_if_handover_did_not_land,
+        revoke_slot_trust,
         session_key_for,
         slot_history_key,
         slot_transcript_key,
         subagent_event_slot,
         tighten_live_slot_memory_mode,
         tighten_replacement_to_restricted_original,
+        transcripts_share_file,
     )
     from kiro_crew.dashboard.chat_utils_turn_recovery import (  # noqa: F401
         _CONTINUATION_BY_CAUSE,
@@ -940,6 +947,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         allowed_hosts_for,
     )
     from kiro_crew.session_surface import (  # noqa: F401
+        dashboard_tab_name,
         has_dashboard_surface,
         set_dashboard_surfaced,
     )

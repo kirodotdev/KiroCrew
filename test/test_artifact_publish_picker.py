@@ -124,3 +124,77 @@ class TestPickerPublicReachable:
 
         (row,) = json.loads(resp.text)["providers"]
         assert row["public_reachable"] is True
+
+
+def _publish_request(provider: str):
+    import json
+
+    from body_stream_helpers import attach_json_body
+
+    req = MagicMock()
+    req.app = {"state": MagicMock()}
+    req.headers = {"X-Session-Key": "dashboard:ui"}
+    req.match_info = {"slug": "doc"}
+    req.query = {}
+    attach_json_body(req, json.dumps({"visibility": "PRIVATE", "provider": provider}).encode())
+    return req
+
+
+class TestPublishProviderNameBoundary:
+    """The picker lists every registered provider, so every name a provider can be
+    registered under has to pass the publish boundary, or its row 400s on click."""
+
+    @pytest.fixture
+    def publish_mock(self, monkeypatch, tmp_path):
+        from unittest.mock import AsyncMock
+
+        from kiro_crew import artifacts as art_mod
+        from kiro_crew.artifacts import ArtifactStore
+        from kiro_crew.dashboard.handlers import artifacts as handlers
+
+        store = ArtifactStore(root=tmp_path / "artifacts")
+        store.create(name="Doc", content="hi", slug="doc", kind="markdown")
+        monkeypatch.setattr(art_mod, "_default_store", store)
+        # Patch through the facade: it mirrors the names into its parts modules.
+        monkeypatch.setattr(handlers, "_is_restricted_session", lambda state, request: False)
+        monkeypatch.setattr(handlers, "_publish_governance_denied", lambda request, name: None)
+        publish = AsyncMock(return_value=None)
+        monkeypatch.setattr(handlers.publish_sync, "publish", publish)
+        return publish
+
+    @pytest.mark.asyncio
+    async def test_underscore_name_reaches_the_provider(self, publish_mock):
+        from kiro_crew.dashboard.handlers import artifacts as handlers
+
+        resp = await handlers.api_artifact_publish(_publish_request("edition_provider"))
+
+        assert resp.status == 200
+        assert publish_mock.await_args.kwargs["provider_name"] == "edition_provider"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        ["a/b", "a b", "a.b", "Abc", "abc\n", "x" * 33],
+        ids=["slash", "space", "dot", "uppercase", "newline", "too-long"],
+    )
+    async def test_unsafe_names_still_400(self, publish_mock, bad):
+        import json
+
+        from kiro_crew.dashboard.handlers import artifacts as handlers
+
+        resp = await handlers.api_artifact_publish(_publish_request(bad))
+
+        assert resp.status == 400
+        assert "^[a-z0-9_-]{1,32}$" in json.loads(resp.text)["error"]
+        publish_mock.assert_not_awaited()
+
+    def test_every_registered_core_provider_name_passes_the_boundary(self, monkeypatch):
+        from kiro_crew import publish_provider as pp
+        from kiro_crew.dashboard.handlers import artifacts as handlers
+        from kiro_crew.publish import personal_drive as pd
+
+        monkeypatch.setattr(pp, "_FACTORIES", dict(pp._FACTORIES))
+        pd.register_public_edition_providers()
+        names = set(pp._FACTORIES) | {pp.DEFAULT_PROVIDER}
+        for name in names:
+            assert handlers._ARTIFACT_PROVIDER_RE.match(name), name

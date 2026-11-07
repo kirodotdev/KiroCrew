@@ -812,6 +812,25 @@ async def api_pull_request_status(request: web.Request) -> web.Response:
     )
 
 
+async def api_pull_request_status_refresh(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/status/refresh``.
+
+    Re-reads the sidebar chips' status now through the same rate-floored
+    forced read a turn boundary uses; results arrive over the owner websocket.
+    """
+    denied = _authorize_owner_request(request, "source.pull_request.status_refresh")
+    if denied is not None:
+        return denied
+    state = request.app["state"]
+    stamps = _submodule("chip_status")._check_cache
+    # Stalest first: one call starts at most CHECK_STATUS_PENDING_MAX reads, so
+    # the next call reaches the chips this one could not.
+    urls = sorted(state.source_link_urls(), key=lambda url: stamps.get(url, (float("-inf"),))[0])
+    refreshing = state.refresh_source_status_now(urls)
+    _audit_source_api(request, "source.pull_request.status_refresh", "completed")
+    return web.json_response({"refreshing": refreshing})
+
+
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
 # The one owner-gate denial that gets a machine-readable label of its own. A
@@ -831,7 +850,9 @@ def stale_owner_session_response(request: web.Request) -> web.Response | None:
     grants, widens, or re-orders access — it only chooses the response body for
     a request that is already refused. Returns the ``401 stale_session_reauth``
     body when the denied caller is a SIGNED dashboard-user bootstrap subject
-    while an owner is configured, and ``None`` for every other denied caller,
+    while an owner is configured, or a signed session minted for an owner whose
+    id has since changed or been cleared (its token carries ``owner_mint``),
+    and ``None`` for every other denied caller,
     who keeps the call site's existing generic response. The discriminator is
     reserved for already-authenticated callers on purpose: an unsigned, absent,
     or app-token caller must not learn which denial class it hit.
@@ -846,11 +867,22 @@ def stale_owner_session_response(request: web.Request) -> web.Response | None:
         # App tokens keep their generic denial, and an absent app claim means
         # the middleware never authenticated this caller as a dashboard user.
         return None
-    if caller not in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+    if not caller:
         return None
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
-    if not owner_id:
+    if caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+        stale = bool(owner_id)
+    else:
+        # A session minted FOR the owner whose subject differs from the
+        # configured owner id (changed or cleared after sign-in). The signed claim is
+        # what tells it apart from a messaging-allowlist user, who keeps the
+        # generic 403. The middleware-validated token is the only one read.
+        from kiro_crew.dashboard.token_auth_tokens import token_owner_minted_unverified
+
+        token = request.get("auth_token", "")
+        stale = isinstance(token, str) and token_owner_minted_unverified(token)
+    if not stale:
         return None
     return web.json_response(
         {
@@ -937,6 +969,9 @@ def _authorize_owner_request(request: web.Request, operation: str) -> web.Respon
         if is_owner_dashboard_request(request):
             return None
         _audit_source_api(request, operation, "denied", "owner_not_configured")
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response({"error": "forbidden"}, status=403)
     if "app" not in request or request["app"] != "":
         _audit_source_api(request, operation, "denied", "app_token_not_allowed")

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from installer_test_helpers import run_bounded
+from spawn_test_helpers import unblocked_signals
 
 from kiro_crew.testing.wait import wait_until
 
@@ -366,16 +367,9 @@ def test_cli_relinks_the_interpreter_when_rebuilding_a_venv(tmp_path: Path) -> N
     """Re-running the installer over an existing managed venv must recreate the
     interpreter links, not inherit them -- WITHOUT destroying the install.
 
-    ``python -m venv`` on an existing venv rewrites pyvenv.cfg but LEAVES an
-    existing bin/python* symlink in place: switching an existing install to
-    --managed-python would produce a hybrid venv that claims the new
-    interpreter while its shebangs still resolve to the old system one, dying
-    the day that interpreter is removed. The fix removes ONLY the interpreter
-    links before the rebuild -- never ``venv --clear``, which would empty
-    site-packages and the entrypoint too, so a failed wheel download in the
-    step after would leave NO working install. This locks both halves: the
-    link is recreated against the new interpreter, and non-link venv content
-    survives.
+    ``python -m venv`` keeps an existing bin/python* symlink, leaving shebangs on
+    the old interpreter. Only the links are removed, never ``venv --clear``, so a
+    failed wheel download afterwards still leaves a working install.
     """
     a_dir = tmp_path / "old-interp"
     a_dir.mkdir()
@@ -766,14 +760,10 @@ def test_cli_never_executes_a_store_interpreter_directly(tmp_path: Path) -> None
 def test_cli_marker_driven_managed_run_falls_back_on_provision_failure(
     tmp_path: Path,
 ) -> None:
-    """A `managed` marker records a DEFAULTED choice, not an explicit request:
-    when the uv download fails on a marker-driven re-run (the shape every
-    `kirocrew update` takes after the first successful default install) and a
-    usable system interpreter exists, the run must degrade to it instead of
-    hard-failing -- otherwise the first successful install would turn every
-    later update into a hard network dependency on the uv download. Only a
-    flag/env request made THIS run fails hard (pinned by
-    test_cli_managed_python_flag_skips_system_interpreters)."""
+    """A `managed` marker records a DEFAULTED choice: when the uv download fails on
+    a marker-driven re-run (every `kirocrew update`), the run degrades to a usable
+    system interpreter. Only a flag/env request made THIS run fails hard
+    (test_cli_managed_python_flag_skips_system_interpreters)."""
     data_home = tmp_path / "data-home"
     data_home.mkdir()
     (data_home / "python-mode").write_text("managed\n")
@@ -1025,12 +1015,10 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
 ) -> None:
     """Ctrl-C during a step must stop the command, not just the spinner.
 
-    The command runs asynchronously, and POSIX starts an async child of a
-    non-interactive shell with SIGINT ignored, so the shell's INT trap is the
-    only thing that can reach it. The step must end with the child's signal
-    status (so the caller's `if !` restore path runs, the same status a
-    foreground pip returns for the keypress), the child must be gone, and
-    the caller's own traps must be back in place afterwards.
+    POSIX starts an async child of a non-interactive shell with SIGINT ignored,
+    so only the shell's INT trap can reach it. The step must end with the child's
+    signal status (so the caller's `if !` restore runs), the child must be gone,
+    and the caller's traps must be restored.
     """
     helpers = tmp_path / "helpers.sh"
     helpers.write_text(_progress_helpers())
@@ -1048,15 +1036,16 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
     )
     # Its own session, so a timed-out run can be reaped as a group in
     # `finally` instead of leaving the sleeps behind.
-    proc = subprocess.Popen(
-        ["sh", "-c", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        cwd=tmp_path,
-        start_new_session=True,
-    )
+    with unblocked_signals():
+        proc = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            start_new_session=True,
+        )
     try:
         # The step owns INT only from its trap takeover to its restore, and the
         # takeover happens before the fork, so the child's pid file is the

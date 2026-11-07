@@ -45,7 +45,7 @@ export function configuredAcpBackend(cfg: AcpBackendConfig): string {
 /**
  * True only when a LOADED config names the kiro-cli backend. `undefined` (the
  * config has not loaded, or failed to) is not kiro: nothing Kiro-only should
- * render on a guess, and the pill's dash is exactly such a thing.
+ * render on a guess.
  */
 export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false
@@ -79,10 +79,11 @@ export function reportsCredits(cfg: AcpBackendConfig | undefined): boolean {
 }
 
 /**
- * True only when a LOADED config runs one of the Kiro harnesses, which apply
- * the user's app.kiro.dev model fallbacks inside the turn before any of Kiro
- * Crew's own. Separate from `reportsCredits` because the two answer different
- * questions that happen to name the same harnesses today.
+ * True only when a LOADED config runs one of the Kiro harnesses: the Kiro
+ * account is behind the turn, so its credit balance is the one the top bar
+ * shows, and the user's app.kiro.dev model fallbacks apply inside the turn
+ * before any of Kiro Crew's own. Separate from `reportsCredits` because the
+ * two answer different questions that happen to name the same harnesses today.
  */
 export function isKiroHarness(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false

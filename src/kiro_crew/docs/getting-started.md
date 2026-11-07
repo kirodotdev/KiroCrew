@@ -44,16 +44,29 @@ faster one, or `--version X.Y.Z` to pin an exact release. The installer uses
 PyPI. To install with pip directly, point it at a release channel's index:
 
 ```bash
-pip install --pre kirocrew \
+umask 022
+pip install kirocrew \
   --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 ```
+
+Stable versions carry no prerelease suffix, so this needs no `--pre`. The
+`insider` and `nightly` indexes publish only prerelease versions and need
+`pip install --pre`, which also lets pip pick prerelease versions of
+third-party dependencies.
 
 `--extra-index-url` (not `--index-url`) is required, because the channel index
 carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
 
+Create the venv and install under `umask 022`. Under umask `002`, a common
+default on Ubuntu and Fedora, `python -m venv` and pip leave the venv
+group-writable, and `kirocrew service install` then refuses to attach the
+AppArmor profile the agent sandbox needs on hosts that restrict user namespaces.
+`chmod -R g-w <venv>` repairs an existing install.
+
 ### From a source checkout
 
 ```bash
+umask 022                       # see the umask note above
 git clone https://github.com/kirodotdev/KiroCrew.git
 cd KiroCrew
 cd website && npm install && npm run build && cd ..

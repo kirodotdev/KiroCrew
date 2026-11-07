@@ -9,7 +9,7 @@ import type { AgentSource } from './useAgentSync'
 import { useImeGuard } from './useImeGuard'
 import { KIRO_GHOST_PIXELS } from './sceneText'
 import ErrorNotice from '../components/ErrorNotice'
-import { sliceCodePoints } from '../components/CommentOverlay'
+import { sliceCodePoints } from '../utils/codePoints'
 
 import { i18nT } from '../i18n/t'
 /** Minimal agent shape for hit-testing — all scene agent types satisfy this */

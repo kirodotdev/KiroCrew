@@ -43,6 +43,7 @@ from kiro_crew.dashboard.handlers.steering import (
     resolve_steering_file,
     steering_roots,
 )
+from kiro_crew.slugs import slug_hash_fallback
 
 # ── Fixtures / helpers ──
 
@@ -408,6 +409,30 @@ class TestKeyParsing:
         ("/", ""),
     ])
     def test_safe_rel_name(self, raw, expected):
+        assert _safe_rel_name(raw) == expected
+
+    def test_distinct_cjk_names_derive_distinct_hashed_keys(self):
+        first, second = _safe_rel_name("编码规范"), _safe_rel_name("测试规则")
+        assert first == f"{slug_hash_fallback('编码规范', 'steering')}.md"
+        assert second == f"{slug_hash_fallback('测试规则', 'steering')}.md"
+        assert first != second
+
+    def test_cjk_name_derives_the_same_key_every_time(self):
+        assert _safe_rel_name("编码规范") == _safe_rel_name("编码规范")
+        assert _safe_rel_name("编码规范.md") == _safe_rel_name("编码规范")
+
+    def test_nested_path_hashes_only_the_erased_segment(self):
+        hashed = slug_hash_fallback("编码规范", "steering")
+        assert _safe_rel_name("team/编码规范") == f"team/{hashed}.md"
+        assert _safe_rel_name("编码规范/style") == f"{hashed}/style.md"
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("规范v2", "--v2.md"),
+        ("a.md.md", "a.md.md"),
+        ("x/.md", "x/.md"),
+        ("---", "---.md"),
+    ])
+    def test_segment_keeping_ascii_is_rewritten_as_before(self, raw, expected):
         assert _safe_rel_name(raw) == expected
 
 
@@ -1123,6 +1148,22 @@ class TestCreateEndpoint:
             assert resp.status == 409
 
     @pytest.mark.asyncio
+    async def test_two_cjk_names_both_create(self, fake_home):
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            first = await client.post(
+                "/api/steering", json={"name": "编码规范", "content": "# a", "source": "user"}
+            )
+            second = await client.post(
+                "/api/steering", json={"name": "测试规则", "content": "# b", "source": "user"}
+            )
+            assert (first.status, second.status) == (200, 200)
+            keys = [(await first.json())["key"], (await second.json())["key"]]
+        assert keys[0] != keys[1]
+        root = fake_home / ".kiro" / "steering"
+        assert (root / keys[0].removeprefix("user/")).read_text() == "# a"
+        assert (root / keys[1].removeprefix("user/")).read_text() == "# b"
+
+    @pytest.mark.asyncio
     async def test_traversal_name_is_confined_to_root(self, fake_home):
         async with TestClient(TestServer(_make_app(_state()))) as client:
             resp = await client.post(
@@ -1342,6 +1383,7 @@ class TestUpdateDeleteEndpoints:
             assert captured["source_bytes"] == b"original\n"
         else:  # pragma: no cover - exercised on Windows CI only
             assert kwargs["preserve_access_control_from"] is None
+        assert kwargs["preserve_windows_dacl"] is True
         # Additive to the permission-bit carry, not a replacement.
         assert kwargs["newline"] == ""
         assert kwargs["fsync"] is True

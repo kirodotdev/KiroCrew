@@ -141,7 +141,17 @@ export function crewPeerUrl(instanceId: string, path: string): string {
   return '/api/instances/' + encodeURIComponent(instanceId) + '/proxy/' + path
 }
 
-export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, sessionKeyHeader: _sk }: ClientTransport) {
+/** One remote Crew the person can open through the Kiro relay. Never carries a token. */
+export interface RelayCrewEntry {
+  endpointId: string
+  name: string
+  crewType: string
+  presence: string
+  relayConnectionStatus: string
+  crewUrl: string
+}
+
+export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, jRelayViewer, sessionKeyHeader: _sk }: ClientTransport) {
   const registryAndTransfer = {
     // Instances (multi-instance management) — owner-only, gated by instances.enabled.
     // listInstances throws ApiError(403) when the feature is disabled; callers
@@ -157,6 +167,9 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     // endpoint's other 403s (a non-owner caller, a Slack-origin request) still
     // journal — they are real authorization failures and a reader needs them.
     listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
+    // Remote Crews reachable through the Kiro relay. 404 `RELAY_VIEWER_OFF` while
+    // `tunnel.relay_viewer_enabled` is off; it throws but is not journaled.
+    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[] }>,
     addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
     updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
       patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,

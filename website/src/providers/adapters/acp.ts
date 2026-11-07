@@ -229,7 +229,9 @@ export class AcpAdapter implements ProviderAdapter {
     sessionProcess: 'ACP subprocess',
     processCountLabel: 'acp_cli',
     configFile: 'kirocrew.json',
-    pluginRegistryName: 'Packages',
+    // A getter, not a literal: the name is shown inside translated copy, and
+    // the adapter is built once, so it must read the language at use time.
+    get pluginRegistryName() { return i18nT('providers.adapters.acp.plugin_registry_name') },
     hooksSection: 'ACP Agent Hooks',
   }
 
@@ -366,6 +368,11 @@ export class AcpAdapter implements ProviderAdapter {
     }))
   }
 
+  async rescanProviderHooks(): Promise<boolean> {
+    const data = await api.rescanKiroHooks()
+    return data.agent_spec_rewritten !== false
+  }
+
   async listPlugins(): Promise<NormalizedPlugin[]> {
     const [agents, skills, mcp] = await Promise.all([
       api.capabilityAgentsList().catch(() => []),
@@ -455,7 +462,7 @@ export class AcpAdapter implements ProviderAdapter {
       // failure. Any other cause clears the auth flag — only this code means a
       // sign-in wall. Another backend's list does not speak for the configured
       // backend's sign-in, so only the configured list sets the flag.
-      markModelsDegraded(health, true)
+      markModelsDegraded(health, true, err instanceof Error ? err.message : '')
       if (configured) markModelsAuthRequired(this.id, apiErrorCode(err) === 'kiro_prerequisite_required')
       return (configured ? readCachedModels() : null) ?? this._defaultModels()
     }

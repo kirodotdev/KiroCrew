@@ -48,6 +48,8 @@ SHARED_BINDINGS_CHECKS = (
     "the_field_scan_counts_every_read_and_write_shape",
     "the_signature_digest_ignores_an_object_address_in_either_spelling",
     "the_bound_function_scans_include_every_static_method",
+    "the_class_only_scan_can_fail",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
 )
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
@@ -264,6 +266,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "inflight_interactive": ("property", False, "7949c1538a15", "session_handle_class"),
     "is_responsive": ("function", False, "4b2fc7c136b8", "session_handle_watchdog"),
     "is_turn_active": ("property", False, "a6632a57e602", "session_handle_class"),
+    "kas_command_call": ("function", True, "0c8766b65545", "session_handle_kas"),
     "last_steer_monotonic": ("property", False, "59162e39f6f1", "session_handle_class"),
     "maybe_refresh_available_models": (
         "function",
@@ -319,6 +322,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_compaction": ("function", True, "0258399cca12", "session_handle_compaction"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "session_handle_mcp"),
     "wait_mcp_ready": ("function", True, "dc863b4461ff", "session_handle_mcp"),
+    "wait_mounted_mcp": ("function", True, "8a1f54daaf86", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),
     "want_mcp_sign_in_named": ("function", False, "ce7410240196", "session_handle_mcp"),
 }
@@ -542,11 +546,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", _OWNERS)
@@ -1065,16 +1064,3 @@ def test_the_inventory_check_reports_a_planted_import() -> None:
 
 def test_every_base_import_stays_bound_on_the_facade() -> None:
     assert sorted(_BASE_IMPORTS - set(vars(session_handle))) == []
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    import source_corpus
-
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve()
-    assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

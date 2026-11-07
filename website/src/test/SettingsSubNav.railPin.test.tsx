@@ -7,8 +7,9 @@
  *     measured room and the list inside it scrolls on its own; the cap lifts
  *     when the list fits again; the room also leaves the space below the list's
  *     row (at least the top inset), because a sticky list cannot leave its row
- *   - wide, capped: a decorative "More below" strip sits under the scrolling
- *     box while rows remain below, hides at the end, and is absent otherwise
+ *   - wide, capped: a "More below" strip sits under the scrolling box while
+ *     rows remain below, scrolls the box down on click, hides at the end, and
+ *     is absent otherwise
  *   - wide again after a narrow stretch: no cap from the earlier measurement
  *     renders before the fresh one lands
  *   - narrow: the <nav> is exactly the plain full-width element (no sticky
@@ -137,8 +138,10 @@ describe('SettingsSubNav two-pane section list stays in view', () => {
 
     const cue = screen.getByTestId(CUE)
     expect(cue.className).not.toContain('invisible')
-    expect(cue).toHaveAttribute('aria-hidden', 'true')
-    expect(cue.querySelector('button, a, [tabindex]')).toBeNull()
+    expect(cue).toBe(screen.getByRole('button', { name: 'More below' }))
+    scrolling.scrollBy = vi.fn()
+    fireEvent.click(cue)
+    expect(scrolling.scrollBy).toHaveBeenCalledWith({ top: 120, behavior: 'smooth' })
     // The strip sits beside the scrolling box, not in it, so it stays on the
     // visible bottom edge while the rows scroll.
     expect(cue.parentElement).toBe(nav)

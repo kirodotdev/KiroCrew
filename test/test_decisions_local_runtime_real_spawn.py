@@ -119,6 +119,34 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+#: Ports to try before the run is a failure rather than a lost race.
+_PORT_ATTEMPTS = 5
+
+
+def activate_on_a_free_port(rt: lr.LocalModelRuntime, before=None) -> int:
+    """Activate the stand-in on a port the OS hands out, wait until it runs; the port.
+
+    The runtime needs a number before the server can listen, so the port is picked,
+    released and handed on. On a shared runner another process -- an outgoing connect
+    given it as its ephemeral source port, say -- can hold it by the time the runtime
+    probes it, and the runtime then reports it in use, correctly. That is a lost race,
+    not the subject, so a fresh port is picked (testing-conventions D9). *before* runs
+    on each picked port ahead of the activation.
+    """
+    errors = []
+    for _ in range(_PORT_ATTEMPTS):
+        port = _free_port()
+        if before is not None:
+            before(port)
+        rt.activate(_model(), port)
+        s = _wait(rt, lr.STATE_RUNNING, lr.STATE_ERROR)
+        if s["state"] == lr.STATE_RUNNING:
+            return port
+        assert "already in use" in s["error"], s["error"]
+        errors.append(s["error"])
+    raise AssertionError(f"every picked port was taken: {errors}")
+
+
 def _model() -> local_models.LocalModel:
     base = local_models.get("laya")
     assert base is not None
@@ -203,10 +231,7 @@ def _wait(rt, *states) -> dict:
 
 
 def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
-    port = _free_port()
-    runtime.activate(_model(), port)
-    s = _wait(runtime, lr.STATE_RUNNING, lr.STATE_ERROR)
-    assert s["state"] == lr.STATE_RUNNING, s["error"]
+    port = activate_on_a_free_port(runtime)
     assert not lr._port_free(port), "the server holds its port"
     pid = server_pid(runtime)
     runtime.deactivate(wait=True)
@@ -218,11 +243,12 @@ def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
     wait_until(lambda: lr._port_free(port), describe=lambda: f"port {port} is not free again")
 
 
-def test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime):
-    port = _free_port()
+def _nothing_attests(port: int) -> None:
     assert lr._health_ok(port, "wrong") is False, "nothing listens yet"
-    runtime.activate(_model(), port)
-    _wait(runtime, lr.STATE_RUNNING)
+
+
+def test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime):
+    port = activate_on_a_free_port(runtime, before=_nothing_attests)
     assert lr._health_ok(port, "not-the-secret") is False
     assert lr._health_ok(port, runtime._run.nonce) is True
 
@@ -235,8 +261,7 @@ _PARENT = textwrap.dedent("""
 
     from pathlib import Path
     rt = t.make_runtime(Path({tmp!r}), setattr)
-    rt.activate(t._model(), {port})
-    t._wait(rt, lr.STATE_RUNNING)
+    t.activate_on_a_free_port(rt)
     print(t.server_pid(rt), flush=True)
     time.sleep(600)
     """)
@@ -244,10 +269,9 @@ _PARENT = textwrap.dedent("""
 
 def test_the_server_does_not_outlive_a_gateway_that_dies(tmp_path):
     """The stdin tether is what ends the server when the gateway is killed outright."""
-    port = _free_port()
     here = str(Path(__file__).resolve().parent)
     src = str(Path(lr.__file__).resolve().parents[2])
-    script = _PARENT.format(paths=[here, src], tmp=str(tmp_path), port=port)
+    script = _PARENT.format(paths=[here, src], tmp=str(tmp_path))
     parent = subprocess.Popen(  # noqa: S603 - fixed argv
         [sys.executable, "-c", script],
         stdout=subprocess.PIPE,
@@ -284,3 +308,19 @@ def test_the_server_does_not_outlive_a_gateway_that_dies(tmp_path):
         except subprocess.TimeoutExpired:
             parent.kill()
             parent.wait(timeout=10)
+
+
+def test_a_picked_port_taken_before_the_server_binds_it_is_picked_again(runtime, monkeypatch):
+    """The picked port held elsewhere by the time the runtime probes it.
+
+    The holder is bound and not listening, the way an outgoing connect's source port
+    is: the runtime's probe reads it taken while a connect to it is refused.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        taken = int(held.getsockname()[1])
+        picks = iter([taken])
+        real = _free_port
+        monkeypatch.setitem(globals(), "_free_port", lambda: next(picks, None) or real())
+        test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime)
+        assert runtime.status()["port"] != taken

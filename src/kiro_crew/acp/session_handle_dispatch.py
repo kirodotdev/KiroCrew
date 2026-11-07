@@ -62,6 +62,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -102,6 +103,11 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 #: a turn budget it never reaches, instead of racing the arm against the turn's
 #: own deadline.
 QUEUE_POLL_SECS = 5.0
+
+#: Longest a cancelled kiro turn waits for the metering frame behind its answer.
+#: The frame follows within milliseconds; the bound keeps a missing one from
+#: delaying the Stop acknowledgement.
+_CANCELLED_TURN_METERING_GRACE_SECS = 0.25
 
 
 async def _dispatch_events(
@@ -577,8 +583,12 @@ async def _dispatch_events(
                     if self._runtime._last_activity > _stale_runtime_before:
                         continue
                     if verdict == VERDICT_WORKING:
-                        self._log_working_deferral(_stale_idle, evidence, timeout)
-                        continue
+                        if _stale_idle <= wd.tool_stall_hard_cap_secs:
+                            self._log_working_deferral(_stale_idle, evidence, timeout)
+                            continue
+                        # A model-wait WORKING is movement under the runtime,
+                        # which a busy MCP server also makes: past the hard
+                        # cap it gets the probe below.
                     # established_flat (a backend socket held, nothing
                     # flowing) and platform_limited (macOS: a flat tree with
                     # no socket evidence to tell a think from a wedge) both
@@ -595,7 +605,8 @@ async def _dispatch_events(
                         window = wd.model_silent_probe_secs if _flat_wait else wd.stale_window_secs
                         if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
                             continue
-                    # DEAD, or UNKNOWN past its window: probe via session/cancel.
+                    # DEAD, WORKING past the hard cap, or UNKNOWN past its
+                    # window: probe via session/cancel.
                     # The probe is NON-LETHAL either way — a live turn's cancel
                     # ack is reclassified to STOP_REASON_STALE_RECOVER in the
                     # turn-complete branch (auto-recovery, never "cancelled by
@@ -608,13 +619,20 @@ async def _dispatch_events(
                     # case is an EXTENSION for model-wait (silence of a
                     # non-streamed think), not a narrowing as on the tool
                     # branch — emitting "extended" lets dashboards distinguish
-                    # the two cases correctly.
+                    # the two cases correctly. "working_cap" is a WORKING
+                    # reading past the hard cap, as on the tool branch.
+                    if verdict == VERDICT_WORKING:
+                        _probe_window = "working_cap"
+                    elif _flat_wait:
+                        _probe_window = "extended"
+                    else:
+                        _probe_window = "standard"
                     self._emit_watchdog_metric(
                         "probe",
                         verdict,
                         evidence,
                         _stale_idle,
-                        window="extended" if _flat_wait else "standard",
+                        window=_probe_window,
                     )
                     logger.warning(
                         "Stale turn on session %s (idle %.0fs, verdict=%s: %s) — "
@@ -743,6 +761,16 @@ async def _dispatch_events(
                 self._tool_dispatched = False
                 for _injected in self._release_proven_steers(reason, _refusal):
                     yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_injected)
+                if (
+                    reason == STOP_REASON_CANCELLED
+                    and self._runtime.acp_backend == ACP_BACKEND_KIRO
+                ):
+                    # kiro-cli answers a cancelled prompt first and sends the frame that
+                    # bills the turn right after it; that frame also repeats the context
+                    # percentage the drain stops on (live-probe confirmed, 3.1.0).
+                    await self._drain_post_compaction_metadata(
+                        grace=_CANCELLED_TURN_METERING_GRACE_SECS
+                    )
                 self._turn_done.set()
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,

@@ -285,7 +285,16 @@ def test_every_slack_only_field_is_covered_by_the_refusal() -> None:
     # and target_id are the OTHER destination mechanism, and include_session_link
     # is a cross-surface opt-in that DEGRADES to a no-op off Slack (never refused
     # -- the message must still deliver), so it must not join _SLACK_ONLY_FIELDS.
-    core = {"text", "title", "session", "channel_type", "target_id", "include_session_link"}
+    # format is the same kind of opt-in, a no-op on a channel that renders nothing.
+    core = {
+        "text",
+        "title",
+        "session",
+        "channel_type",
+        "target_id",
+        "include_session_link",
+        "format",
+    }
     assert set(_SLACK_ONLY_FIELDS) == properties - core
 
 
@@ -408,7 +417,9 @@ async def test_a_body_caller_session_is_ignored_without_internal_auth() -> None:
     """
     seen: list[str] = []
 
-    async def _capture(state, channel_type, target_id, text, *, caller_session="", request_app=""):
+    async def _capture(
+        state, channel_type, target_id, text, *, caller_session="", request_app="", markdown=False
+    ):
         seen.append(caller_session)
         return web.json_response({"ok": True, "delivered_to": channel_type, "parts": 1})
 
@@ -653,7 +664,7 @@ async def test_a_non_cron_channel_session_vets_on_the_headers_attested_identity(
     """
     seen: list[str] = []
 
-    async def _capture(state, channel_type, text, *, caller_session=""):
+    async def _capture(state, channel_type, text, *, caller_session="", markdown=False):
         seen.append(caller_session)
         return True, "", ""
 

@@ -126,6 +126,10 @@ def _carried_in_reply(
     return carried
 
 
+#: The release route's retryable answer (the gateway's ``TASK_STORE_UNAVAILABLE_CODE``);
+#: spelled here so this MCP-side module does not import the gateway's admission package.
+_TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
+
 #: Server-side hold per resume-poll request (seconds); under the client GET
 #: timeout so a held request never reads as a hang.
 RESUME_HOLD_SECS = 8.0
@@ -149,6 +153,36 @@ class _ResumeHold:
             self.parent_id = parent_session[len("subagent:") :]
         self.deadline = deadline
         self.held = False
+        # The release is sent once, and again only after an answer that says
+        # acceptance is unknown or the task store could not complete it.
+        self.released = False
+
+    def release_deferred(self, ids: set[str]) -> None:
+        """Tell the gateway to stop awaiting *ids*, the members settled as deferral-held.
+
+        Without this, a deferred member would hold the parent's resume until it
+        ends. Sent once before the first probe. A transport failure or
+        retryable store outage sends it again on the next probe; every final
+        answer, a refusal included, is sent only once.
+        """
+        if self.released or not self.parent_id or not ids:
+            return
+        try:
+            res = mcp_core._post(
+                f"/api/spawn/{self.parent_id}/release-deferred",
+                {"ids": sorted(ids)},
+                timeout=10,
+                session_key=f"subagent:{self.parent_id}",
+            )
+        except Exception:
+            return  # transport: try again on the next probe
+        if isinstance(res, dict) and (
+            res.get("transport_error")
+            or res.get("retry")
+            or res.get("code") == _TASK_STORE_UNAVAILABLE_CODE
+        ):
+            return
+        self.released = True
 
     def probe(self) -> tuple[bool, dict[str, Any] | None]:
         """``(done, note)``: ``done`` False means ask again; ``note`` is the
@@ -278,7 +312,6 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     max_wait = max(60.0, min(7200.0, max_wait))  # clamp: 1 min .. 2 hours
     return _SubAgentsStep(
         sa_ids=[],
-        sa_deferred=set(),
         sa_errors=[],
         parent_session=parent_session,
         max_wait=max_wait,
@@ -309,7 +342,6 @@ class _SubAgentsStep(DeferredTool):
         self,
         *,
         sa_ids: list[str],
-        sa_deferred: set[str],
         sa_errors: list[str],
         parent_session: str,
         max_wait: float,
@@ -329,7 +361,6 @@ class _SubAgentsStep(DeferredTool):
         self.call_id = call_id
         self._submit_index = 0
         self.sa_ids = sa_ids
-        self.sa_deferred = sa_deferred
         self.sa_errors = sa_errors
         # Members whose POST failed in transport: the gateway may have accepted
         # them, so they are neither ids nor plain refusals, and a retry could
@@ -343,6 +374,9 @@ class _SubAgentsStep(DeferredTool):
         self.next_ping = now + self.KEEPALIVE_SECS  # first keepalive after 60s, not immediately
         self.next_due = now
         self.wait_settled: set[str] = set()
+        # The part of ``wait_settled`` settled because a gate deferral holds it;
+        # the hold releases these from the parent's wait (``release_deferred``).
+        self.deferral_settled: set[str] = set()
         self.phase = "submit" if agents_input is not None else "poll"
         self.hold = _ResumeHold(parent_session, self.deadline)
         self.resume_note: dict[str, Any] | None = None
@@ -451,10 +485,7 @@ class _SubAgentsStep(DeferredTool):
                     f"{redact(prompt)[:60]}: {redact(data['error'])}"[:_SA_ERROR_MAX_CHARS]
                 )
             elif data.get("id"):
-                aid = data["id"]
-                self.sa_ids.append(aid)
-                if data.get("status") == "queued":
-                    self.sa_deferred.add(aid)
+                self.sa_ids.append(data["id"])
             else:
                 self.sa_errors.append(
                     f"{redact(prompt)[:60]}: spawn returned no agent id"[:_SA_ERROR_MAX_CHARS]
@@ -493,6 +524,7 @@ class _SubAgentsStep(DeferredTool):
             # until the grant or its bound, so a grant is seen at once. Bounded
             # by the same deadline; on expiry the results are still returned,
             # with the pending resume named.
+            self.hold.release_deferred(self.deferral_settled)
             done, self.resume_note = self.hold.probe()
             if done:
                 self.phase = "collect"
@@ -522,8 +554,11 @@ class _SubAgentsStep(DeferredTool):
         all_settled = True
         for aid in [a for a in self.sa_ids if a not in self.wait_settled]:
             sa_st = mcp_core._get(f"/api/spawn/{aid}")
-            if sa_st.get("done") or _held_by_a_deferral(sa_st):
+            if sa_st.get("done"):
                 self.wait_settled.add(aid)
+            elif _held_by_a_deferral(sa_st):
+                self.wait_settled.add(aid)
+                self.deferral_settled.add(aid)
             elif not sa_st.get("error"):
                 all_settled = False
                 break
@@ -563,41 +598,32 @@ class _SubAgentsStep(DeferredTool):
                 else:
                     never_started[aid] = _queued_why(sa_st)
                 continue
-            if sa_st.get("error"):
-                errored += 1
-                failure: dict[str, Any] = {
-                    "agent": label,
-                    "status": "error",
-                    "error": redact(sa_st["error"]),
-                }
-                if sa_st.get("done"):
-                    # On a finished run ``error`` is why it ended badly, sent next to
-                    # the output the run retained (a timed-out run keeps its partial
-                    # work). This call marks the child collected, so its completion
-                    # event is not injected either: the reply is where that output
-                    # reaches the caller.
-                    failure["text"] = self._inline_result(aid, sa_st.get("result", ""))
-                # The hint goes on a deferred child that is not done, and on any child
-                # whose answer carries no ``done`` at all: that is the error _get()
-                # returns when the gateway does not answer, so no row was read and the
-                # child, accepted at spawn time, may still be running.
-                if not sa_st.get("done") and (aid in self.sa_deferred or "done" not in sa_st):
-                    failure["hint"] = (
-                        "accepted at spawn time; its state couldn't be read now; "
-                        "check spawn_status before re-spawning"
-                    )
-                # Settled only when done is also true (confirmed terminal state).
-                # An "error" without "done" could be a transport failure from
-                # _get(): the agent may still be running.
-                if sa_st.get("done"):
-                    _block_of[aid] = len(sa_results)
-                sa_results.append(json.dumps(failure))
-            elif not sa_st.get("done"):
+            if not sa_st.get("done"):
                 still_running += 1
-                if sa_st.get("awaiting_approval"):
+                if sa_st.get("error"):
+                    # The gateway sends ``error`` only on a finished row, so this is a
+                    # read that failed (a timeout, a 404, a 503) and says nothing about
+                    # the child, which may still be running. Reported as an error, the
+                    # caller would move on and its completion would land in a busy turn.
+                    _unsettled[aid] = "unread"
+                elif sa_st.get("awaiting_approval"):
                     _unsettled[aid] = "waiting_permission"
                 else:
                     _unsettled[aid] = "running"
+            elif sa_st.get("error"):
+                errored += 1
+                # ``error`` is why the run ended badly, sent next to the output the
+                # run retained (a timed-out run keeps its partial work). This call
+                # marks the child collected, so its completion event is not injected
+                # either: the reply is where that output reaches the caller.
+                _block_of[aid] = len(sa_results)
+                failure = {
+                    "agent": label,
+                    "status": "error",
+                    "error": redact(sa_st["error"]),
+                    "text": self._inline_result(aid, sa_st.get("result", "")),
+                }
+                sa_results.append(json.dumps(failure))
             else:
                 completed += 1
                 result_text = self._inline_result(aid, sa_st.get("result", ""))
@@ -615,13 +641,15 @@ class _SubAgentsStep(DeferredTool):
                 _block_of[aid] = len(sa_results)
                 sa_results.append(json.dumps(record))
         if _unsettled:
+            # The wait can end before max_wait (a failed read settles its pass).
+            waited = mcp_core.time.monotonic() - (self.deadline - self.max_wait)
             sa_results.append(
                 json.dumps(
                     {
                         "status": "still_running",
                         "task_ids": list(_unsettled),
                         "states": _unsettled,
-                        "waited_secs": int(self.max_wait),
+                        "waited_secs": int(min(self.max_wait, waited)),
                         "query": "spawn_status/spawn_list",
                         "note": (
                             "The blocking wait ended; these sub-agents were NOT cancelled and "

@@ -67,6 +67,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_CRON_BODY_BYTES,
         _T,
         _ChatFolderGone,
+        _invalid_new_chat_per_run,
         _member_store,
         _persist_holding_folder,
         _refuse_mate_home_chat_folder,
@@ -94,6 +95,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LESSON_EMBED_DEADLINE_SECS,
         _candidate_applies,
         _embed_lesson_bounded,
+        _is_operator_browser,
         _lesson_jsonl_store,
         _lesson_list_page,
         _lesson_scope_selector,
@@ -124,8 +126,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.cron_secret_grants import (  # noqa: F401
         _SHA256_HEX_RE,
+        _expected_ts_value,
         _is_str_mapping,
         _promote_pending_grant,
+        _unrepresentable_ts_response,
         api_cron_secret_grant,
     )
     from kiro_crew.dashboard.handlers.cron_shared import (  # noqa: F401
@@ -234,6 +238,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.hooks import (  # noqa: F401
         FileTooLargeError,
         safe_read_file_bytes_nolink,
+    )
+    from kiro_crew.lesson_events import (  # noqa: F401
+        LESSON_REMOVED,
+        LESSON_SOURCE_USER,
+        emit_lessons_changed,
+        lesson_write_action,
     )
     from kiro_crew.lesson_validation import (  # noqa: F401
         LESSON_APPLIES_ON_TOPIC,

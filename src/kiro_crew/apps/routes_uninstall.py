@@ -234,8 +234,14 @@ async def _run_uninstall(
     keep_dependencies: bool,
     keep_specific: list[str],
     retired_builtin: bool = False,
+    caller: str = "dashboard",
 ) -> web.Response:
-    """Run the uninstall preconditions and teardown for an owner-authorized request."""
+    """Run the uninstall preconditions and teardown for an owner-authorized request.
+
+    *request* is read only for ``request.app`` (the gateway state), so an in-process
+    caller passes a stand-in that carries the application; *caller* names it in the
+    audit records.
+    """
     operation = "app_migrate_cleanup" if retired_builtin else "app_uninstall"
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
@@ -272,7 +278,7 @@ async def _run_uninstall(
 
             if not await asyncio.to_thread(migrated_builtin_cleanup_applies, name):
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=name,
@@ -313,7 +319,7 @@ async def _run_uninstall(
                 grant_blocked,
             )
             sel().log_api_access(
-                caller="dashboard",
+                caller=caller,
                 operation=operation,
                 outcome="denied",
                 resources=f"app={name}",
@@ -380,7 +386,7 @@ async def _run_uninstall(
                 # partially-cleaned state.
                 removed = await _deregister_crons_with_retry(name, cron_service)
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation="app_crons_deregister",
                     outcome="completed",
                     resources=f"app={name} removed={removed}",
@@ -394,7 +400,7 @@ async def _run_uninstall(
                     exc,
                 )
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
@@ -431,7 +437,7 @@ async def _run_uninstall(
                     exc,
                 )
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
@@ -469,7 +475,7 @@ async def _run_uninstall(
                     exc,
                 )
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
@@ -793,7 +799,7 @@ async def _run_uninstall(
                             uninstall_log.append(f"Removed workspace for {app_reg_name}")
     if not result.ok:
         sel().log_api_access(
-            caller="dashboard",
+            caller=caller,
             operation=operation,
             outcome="failed",
             resources=name,
@@ -818,9 +824,7 @@ async def _run_uninstall(
         else:
             uninstall_log.append(f"Dropped {dropped} conversation pointer(s)")
 
-    sel().log_api_access(
-        caller="dashboard", operation=operation, outcome="completed", resources=name
-    )
+    sel().log_api_access(caller=caller, operation=operation, outcome="completed", resources=name)
     resp = result.to_dict()
     if retired_builtin:
         from kiro_crew.security import redact
@@ -842,6 +846,54 @@ async def _run_uninstall(
     if cleaned_deps:
         resp["cleaned_dependencies"] = cleaned_deps
     return web.json_response(resp)
+
+
+class _InProcessRequest:
+    """The one part of a request ``_run_uninstall`` reads: the gateway application."""
+
+    def __init__(self, app: web.Application) -> None:
+        self.app = app
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return default
+
+
+async def uninstall_app_in_process(
+    app: web.Application, name: str, *, caller: str
+) -> dict[str, Any]:
+    """Uninstall *name* from code running inside the gateway, keeping its ``data/``.
+
+    The same sequence as ``POST /api/apps/{name}/uninstall`` (cron cleanup first,
+    onUninstall, backend stop, deregistration, dependency cleanup, file removal,
+    conversation pointers), for a caller that has no owner request: an edition
+    retiring an app at startup. It never purges ``data/``. Authorizing the call is
+    the caller's job; *caller* is recorded in every audit record it writes.
+
+    Returns the route's JSON payload plus ``status``, the HTTP status the route
+    would have answered (``ok`` is true only below 400).
+    """
+    info = await asyncio.to_thread(get_app, name)
+    if not info:
+        return {"ok": False, "status": 404, "error": f"app {name!r} not installed"}
+    if info.get("lifecycle", "gateway") == "locked":
+        return {
+            "ok": False,
+            "status": 400,
+            "error": f"app {name!r} cannot be uninstalled (lifecycle=locked)",
+        }
+    response = await _run_uninstall(
+        _InProcessRequest(app),  # type: ignore[arg-type]
+        name,
+        info,
+        keep_data=True,
+        keep_dependencies=False,
+        keep_specific=[],
+        caller=caller,
+    )
+    payload = json.loads(response.text or "{}")
+    payload["ok"] = response.status < 400
+    payload["status"] = response.status
+    return payload
 
 
 async def handle_migrate_cleanup(request: web.Request) -> web.Response:

@@ -17,7 +17,7 @@
  * pulls in that is irrelevant here, and capture the props handed to the panel.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -37,6 +37,7 @@ const USER_ISSUE = 'https://github.com/acme/widgets/issues/55'
 
 interface PanelSnapshot {
   sources: string[]
+  dismissSource?: (url: string) => void
   issues: string[]
   selectedSourceUrl: string
   selectedIssueUrl: string
@@ -50,10 +51,12 @@ vi.mock('../pages/chat/SidePanel', () => ({
     issues?: { url: string }[]
     selectedSourceUrl?: string
     selectedIssueUrl?: string
+    onDismissSource?: (url: string) => void
     tabsCtl: { activeId: string | null }
   }) => {
     panelSnapshots.push({
       sources: (props.sources ?? []).map(s => s.url),
+      dismissSource: props.onDismissSource,
       issues: (props.issues ?? []).map(i => i.url),
       selectedSourceUrl: props.selectedSourceUrl ?? '',
       selectedIssueUrl: props.selectedIssueUrl ?? '',
@@ -249,6 +252,20 @@ describe('ChatPage – sidebar chip reveals a source in the panel', () => {
     await waitFor(() => expect(screen.getByTestId('side-panel')).toBeInTheDocument())
     expect(latest().sources).toEqual([AGENT_PR])
     expect(latest().activeTabId).toBe('changes')
+  })
+
+  it('a chip reopens a pull request the user closed from the strip', async () => {
+    renderChatPage()
+    fireEvent.click(screen.getByText('reveal-pr'))
+    await waitFor(() => expect(latest().sources).toEqual([USER_PR, AGENT_PR]))
+
+    // Closing it beats the reveal that put it there.
+    act(() => latest().dismissSource?.(USER_PR))
+    await waitFor(() => expect(latest().sources).toEqual([AGENT_PR]))
+
+    fireEvent.click(screen.getByText('reveal-pr'))
+    await waitFor(() => expect(latest().sources).toEqual([USER_PR, AGENT_PR]))
+    expect(latest().selectedSourceUrl).toBe(USER_PR)
   })
 
   it('the reveal survives a reload instead of silently swapping the panel', async () => {

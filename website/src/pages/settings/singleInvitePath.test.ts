@@ -46,6 +46,12 @@ describe('one invite path', () => {
 
   it('revokes through one control, whoever the row is for', () => {
     expect(uses(/\.tailscaleRevokeInvite\(/g)).toEqual({ 'pages/settings/TailscaleInvites.tsx': 1 })
-    expect(uses(/<RevokeControl\b/g)).toEqual({ 'pages/settings/PeopleCrew.tsx': 1, 'pages/settings/TailscaleInvites.tsx': 1 })
+    // An AWS SSM invite revokes through the same control, in the same words.
+    expect(uses(/\.sharedCrewSsmRevokeInvite\(/g)).toEqual({ 'pages/settings/TailscaleInvites.tsx': 1 })
+    expect(uses(/<RevokeControl\b/g)).toEqual({
+      'pages/settings/PeopleCrew.tsx': 2,
+      'pages/settings/SsmInvite.tsx': 1,
+      'pages/settings/TailscaleInvites.tsx': 1,
+    })
   })
 })

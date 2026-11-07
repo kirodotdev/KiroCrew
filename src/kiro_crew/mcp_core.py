@@ -990,6 +990,12 @@ def run_mcp_core_server() -> None:
     from kiro_crew.mcp_tools.sessions import gateway_cjk_words
 
     register_cjk_segmenter(gateway_cjk_words)
+    # Before the first request: an enforced harness's element carries a one-time
+    # pickup in place of the secret it withholds (agent_ipc_client).
+    from kiro_crew.agent_ipc_client import redeem_at_startup
+    from kiro_crew.mcp_core_parts import gateway as _gateway_part
+
+    redeem_at_startup(_gateway_part._api_port)
     run_mcp_stdio_loop(
         "kirocrew-core",
         "1.0.0",

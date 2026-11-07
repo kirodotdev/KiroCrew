@@ -108,6 +108,85 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
 | `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
 
+**Sandbox-loosening content provenance.** `config/loosening_provenance.py` stores the exact
+bytes of every gateway write of `config.json` / `config.local.json` (at
+`write_config_atomically`) -- and of `denied_commands.json` and `computer_use.json` at their own
+savers -- as the ENDORSED COPY under the sealed `config-provenance` directory. The writer
+endorses its OWN payload before the rename publishes it (`endorsing`), never a re-read of the
+destination; the leaf is matched by resolved identity (`leaf_for`), so a symlinked
+`config.json` resolved by `update_config_locked` / `KiroCrewConfig.save` is still endorsed under
+its logical name. `read_config_document` parses `reconcile(leaf, disk_bytes)`, and so does
+`read_config_for_update`, the read half of every read-modify-write: where the namespace sandbox
+seals these files, both serve the endorsed copy whenever the on-disk bytes differ, PER FILE and
+before the merge, so an unrelated save cannot re-endorse a tampered file. Under enforcement the
+store fails closed: a failed copy write keeps the previous copy and aborts the save before
+publishing, a failed publish restores the prior copy, and an existing but unreadable copy
+raises rather than serving disk bytes. It is whole-file, so every key is covered with no key
+list to maintain. It runs only where
+the per-file bind can detach (`enforcement_active`: a Linux host that can build the namespace
+sandbox, decided by host facts so it never reads the file it protects; always on inside a
+sandbox; the gateway probes userns once at start in a worker thread (`prime_host_verdict`) and
+the check is on until that answer exists, never probing on the event loop or per read; a process
+that is not the gateway probes once off-loop so it agrees); off Linux, and on a Linux host
+without user namespaces (a container), the on-disk file is served as written. Every read of a protected file refuses anything but a regular file (a FIFO or
+device reads as removed). It is
+separate from the sibling `write_provenance.py`: that one pins the INODE
+identity for the Linux launcher, this one keeps the CONTENT the loaders parse. The copy is
+always a writer's published bytes; nothing endorses a file at rest. A file with no copy yet (one
+the gateway has not saved since this check shipped) is not pending and is served as written, as before this
+check; the gateway's first save of it endorses it (the known limit for such a file is in
+[security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
+a changed-key diff with credential-bearing values withheld): it keeps loading as the endorsed
+copy until the owner applies or discards it in Settings > Security
+(`dashboard/handlers/config_pending.py`; apply re-endorses the on-disk document through
+`update_config_locked` / the denied-command saver / `enable_state.save_state`, discard writes
+the endorsed document back through the same writer; only these two pass
+`resolving_pending=True`). Any OTHER save of a pending file is refused before anything is
+endorsed or written (`refuse_save_if_pending`, inside `endorsing`, raising
+`PendingEditBlocksSave`, a `ConfigWriteRefused` with code `file_pending_review` and the plain
+sentence `PENDING_SAVE_REFUSED`): it would publish the endorsed copy plus its change over the
+pending edit, which would then be lost. Saves of the other files are unaffected. The dashboard
+save handlers answer that code (a handler with no catch of its own is answered `409` with it by
+the chain's `spa_fallback` layer) and the frontend shows its own translation with a link to the
+pending card; the CLI prints the sentence and exits 1 (`cli.main`'s `_exit_on_pending_save`, for
+every subcommand); the migration write-back each load retries is refused too and logged once per
+pending version (`log_writeback_refused_once`); an app uninstall whose grant would need
+that save is refused by its precondition (`trust_grant_removal_blocked`) before any destructive
+step, as are a trust revoke and turning blanket app trust off (`_preflight_agent_config_mutable`). Restore (`record` / `endorse_installed`) is not an ordinary
+save and is not refused. Apply is validated as that file's normal
+save is: for `config.json` and `config.local.json` that is the publish floor every config
+write lands through (`_refuse_unpublishable`, `_refuse_aws_project_profiles`), whose
+"left as it found it" exemption compares against the prior document as the loader reads it
+(`_prior_document`: the endorsed copy where the seal applies), so a refused value the pending
+edit added answers `409 write_refused` with the floor's own message instead of publishing.
+Those routes are owner-gated and CSRF-guarded and never reachable by an agent or MCP tool; a
+heartbeat sync raises one bell note per pending version, on the unmutable `system.approval`
+channel, and acknowledges it once resolved; the scan and the note writes together are bounded
+so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these four files goes
+through the leaf's endorsing writer, so its own saves take effect at once and are never
+pending: the CLI (`config set`, `--local`, `--file`, `config defaults`, setup, workspace and
+telemetry commands), the dashboard savers (including the Weixin sign-in and settings save),
+and restore and import (`endorse_installed`). Two writers do not endorse: `kirocrew pod`'s
+seed-floor rewrite of a pod's `config.json` (another data home), and `kirocrew config edit`, which
+runs `$EDITOR` on `config.json` itself. Where the seal applies and the file already has a copy,
+their result is an outside change like any other: pending until the owner applies it in
+Settings > Security. A reader outside the load decides that a protected file is absent only through
+`read_endorsed_config_text` / `read_config_for_update` (no `is_file()` / `exists()` check
+first), so a deleted file whose endorsed copy is in force reads as that copy everywhere. The
+pending diff and Apply compare values type-strictly (`strict_json_equal`: `true` is not `1`),
+and an on-disk document nested past `MAX_DOCUMENT_NESTING` (or one the decoder cannot parse
+for depth) is listed as `disk_valid: false` and cannot be applied; so is one holding a number
+JSON cannot spell (`NaN`, `Infinity`, or a literal such as `1e400` that overflows), which the
+browser could not parse, and Discard still resolves it. The diff lists at most 100 changed keys,
+those touching a key whose change can loosen confinement (`_SECURITY_KEYS`, the keys the card's
+`securityHints` words) first, so `truncated` never hides one; each listed path is cut to 200
+characters, and no more rows than that are kept however many keys changed. When the list is
+truncated, the card's Apply asks first and says not every change is listed. A publish that
+fails after its endorse puts the previous copy back and drops the config cache, so a load
+inside that window does not keep serving the attempted values. The Settings list is built
+off the event loop. Why, and the threat it closes:
+[security](../modules/security.md).
+
 **The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
@@ -1297,11 +1376,15 @@ Contract:
   silently reset across origins -- notification sound (`mc-notification-sound`),
   interface mode (`mc-ui`), reading width (`mc-reading-width`), the sessions
   sidebar width and the width to give back when leaving board view
-  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), and the board folder
-  collapse overrides described above -- are durable, and so are the Settings >
-  Shortcuts choices: the on/off switch (`mc-keyboard-shortcuts`), the macOS
-  digit modifier (`mc-mac-ctrl-digits`), the Search everywhere chord
-  (`mc-quicksearch-shortcut`), and the panel toggle chords
+  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), the board folder
+  collapse overrides described above, and the Settings > Display > Sidebar
+  Colors palette, intensity, display mode and default for new sessions
+  (`mc-session-colors-palette`, `mc-session-colors-intensity`,
+  `mc-session-colors-mode`, `mc-session-default-color`) -- are durable, and
+  so are the Settings > Shortcuts choices: the on/off switch
+  (`mc-keyboard-shortcuts`), the macOS digit modifier (`mc-mac-ctrl-digits`),
+  the Search everywhere chord (`mc-quicksearch-shortcut`), and the panel
+  toggle chords
   (`mc-panel-toggle-shortcuts`), and the push-to-talk key (`mc-ptt-config`)
   on Settings > Voice. The push-to-talk binding is positional and the
   platform defaults differ, so a client that inherits another machine's
@@ -1518,8 +1601,8 @@ file. It then sets `ui_prefs_restored`, only when the archive carried a vetted
 
 `config/sections_shared_crew.py` owns the section. Every integer is clamped to
 `SHARED_CREW_BOUNDS` and a wrong-typed value reads as its default, so an edit can
-narrow or widen a limit but never remove one. The exposure switch `tailnet_direct`
-reads fail-narrow: it turns on only for a literal `true`. No code reads the section in this build yet, so the
+narrow or widen a limit but never remove one. The exposure switches `tailnet_direct` and `ssm`
+read fail-narrow: each turns on only for a literal `true`. `ssm_port` is 1024 to 65535. No code reads the section in this build yet, so the
 section is marked `restart=True` and every help text says it is not active. `effective_limits`
 resolves `0` (auto) values against a caller-supplied automatic Crew width and caps
 per-person limits at the Crew's. Every switch that changes behaviour is off by
@@ -1617,7 +1700,7 @@ an underscore, or appears in one of two explicit maps in `resolution.py`:
 | map | why the key is excluded |
 | --- | --- |
 | `_SECTION_KEYS_EMITTED_ELSEWHERE` | `to_dict()` writes it from outside the section dataclass, either conditionally (`slack.channels`, `dm_activation`, `trusted_bot_ids` — absence is a deliberate deletion) or from the top-level object (`slack.observe_max_messages`, `observe_ttl_hours`). |
-| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it: RENAMED (`knowledge.auto_ingest_doc_links`, still read, canonical spelling written) or RETIRED (the removed local-STT install paths — re-persisting them would keep offering a setting with nothing behind it). |
+| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it. The union of `_SECTION_KEYS_RENAMED` (`knowledge.auto_ingest_doc_links`: still read, so only `save()` drops it, writing the canonical spelling) and `_SECTION_KEYS_RETIRED` (the removed local-STT install paths, the retired `knowledge` folder-discovery keys — re-persisting them would keep offering a setting with nothing behind it). The Settings PATCH and PUT and `kirocrew config set` also drop the RETIRED keys (`drop_retired_section_keys`); other raw writers leave them in place. |
 
 A key the schema DOES model but validation rejected also stays dropped, because
 re-emitting it would make the bad value permanent and re-warn on every load.
@@ -1743,7 +1826,16 @@ workflow identity checks still run at every existing call site.
 included, or the default declared on the DTO's field when the section omits the
 key. `read(key, coerce, *bounds, **options)` calls
 `coerce(value, default, *bounds, **options)`, so a `_safe_*` coercer falls back to
-that same default. A `default_factory` field gives a
+that same default. The extra arguments are the coercer's bounds: when a stored
+value comes back different from the unbounded coercion, the read logs a WARNING
+naming the DTO, the key, the stored value and the value used. `load()` runs the
+builders on every call, so each DTO, key and value warns once per disk read of the
+config files (`_REPORTED_CLAMPS`, cleared by `read_config_document` beside the
+validation that warns on the same read). A clamp outside `read`'s bounds is not
+reported this way: a coercer of its own (`_clamp_compact_wait_secs`,
+`_title_refresh_every_turns`), a direct `_safe_*` call, a `max()` or `min()` around a
+read, or a DTO's `__post_init__`; `_clamp_security_bounds` reports the fields it
+lists before the builders run. A `default_factory` field gives a
 fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
 `__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
 stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
@@ -2151,6 +2243,15 @@ scan has not landed); if the re-resolve still misses, that turn fails with
    *before* `get_or_create`, while no session lock is held, so the standard
    `finally` teardown runs without ever creating a session or dispatching an agent.
 
+A chat create and an agent switch with `agent_kind: "template"`
+(`dashboard/chat_api/slot_create.py`, `dashboard/chat_api/agent_switch.py`) refuse
+a name that did not resolve too. Before refusing, each awaits
+`rescan_if_incomplete()` (`config/loader_snapshots.py`): one off-loop scan on
+`discovery_executor()` while `materialized_snapshot_complete()` is False, then one
+re-resolve. It matters most after the first scan in a process, which has no earlier
+snapshot to keep a skipped spec's name from. A complete snapshot costs no scan, and
+a failed scan leaves the refusal in place.
+
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own
 agent rather than the default, which a first real turn would otherwise have to
@@ -2199,7 +2300,10 @@ The snapshot is only ever rebuilt off-loop:
 - `refresh_materialized_agents()` — full rescan; **must** run off-loop. Reads each
   config through `hooks.safe_read_file`, so a symlink planted in that
   user-writable directory cannot make a boot refresh read a protected file;
-  refused paths are skipped. A stem is trusted only after the file parses as a
+  refused paths are skipped. The read passes `canonical_gate=True`: off the loop
+  each spec's resolved path and opened descriptor are judged inline, so a refresh
+  sends no resolution to the `mc-pathres` pool, where the bounded gate costs
+  about 8 per spec. A stem is trusted only after the file parses as a
   JSON object. A scan that skipped a spec is **incomplete**: the installed
   snapshot keeps the names and stem mappings the previous snapshot held for the
   skipped files (their stem, or the name that stem mapped to), because those
@@ -3055,7 +3159,9 @@ process-wide registry state
 live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
-`dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`), and
+`dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
+`dashboard.terminal.enabled` (→ `handlers/terminal_lifecycle.py::apply_terminal_enabled`, run
+off the cycle like the provider switch below, since ending a shell can outlast the bound), and
 `agent.model_context_tokens` (→ `model_registry.apply_operator_windows`, process state of
 the model registry rather than of any holder, so it is also installed once from the boot
 document: the first tick reports only what changed since boot). The log-level applier
@@ -3460,6 +3566,7 @@ class DashboardConfig:
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
+    preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
@@ -3486,6 +3593,7 @@ class TelegramConfig:
     soft_threshold_pct: int = 80       # prompt to /compact or /new when context passes this %
     allow_forum: bool = False          # serve supergroup forum Topics as per-Topic sessions (Slack-thread style). Fail-closed: also requires the supergroup's chat_id in allowed_forum_chat_ids, and only real Topics (message_thread_id present) are served — ordinary groups and the supergroup General chat are denied
     allowed_forum_chat_ids: list[int] = []  # numeric supergroup chat_ids permitted to run forum-topic sessions; empty = deny all groups (fail closed)
+    max_text_inject_kb: int = 50       # KiB of an attached text file or document's text that reach the prompt (IngestLimits.max_text_inject); min 1; read per turn from the live config
 
 # Additional top-level DTOs (not fully expanded here — see the owner modules in the Overview):
 # CronHistoryConfig, TunnelConfig, InstancesConfig, HeartbeatConfig,
@@ -4144,7 +4252,13 @@ stamped one, in the stored order: on a pre-upgrade tree that is the order the pe
 already had, and the pick looks broken unless the menu says why (*Folders made
 before dates were recorded have no date; they come last, in your Custom order*);
 `chat_folder_tree` states the same fact in its header for the agent reading the
-tree, so neither reader takes that stored-order tail for a date order. The hint itself stays until
+tree, so neither reader takes that stored-order tail for a date order. On the rows
+themselves, in `created` mode each folder name's tooltip (the tree row and the board
+column row) leads with the key it was ordered by -- *Created {date and time}*
+(`fmtDateTime`), or *No creation date recorded — kept in your Custom order* for a
+row with no `created_at` -- above the rename hint where the row offers rename, so
+the order can be traced once the menu is closed; outside `created` the tooltip is
+the rename hint alone. The hint itself stays until
 the person's next interaction away from it -- a pointer or key landing anywhere but
 on the line -- a switch back to Custom, or the next drag; never a clock, which took
 the action away from under a hand reaching for it. The mode's saves go out ONE at a
@@ -4453,6 +4567,16 @@ rules bind every reply, on every surface, for every agent, and outrank any
 response-style guidance in the agent prompt. `default` and any unknown value
 render `""`, so an install that never touched the setting sees byte-identical
 context.
+
+`dashboard.preferred_language` rides the same frame. A set code appends a
+`## Reply language` section (`_reply_language_rule`) after the level's rules, so
+it applies at `default` too: reply in that language even when the message mixes
+languages, switch only when the user asks in the conversation, keep code and
+identifiers verbatim, and leave text written for other readers (commits, PR
+text, code comments, public posts) in the project's own language. The section
+says it outranks the levels' "user's language" line, which is written for the
+auto case. The frame renders `""` only when the level is `default` AND no
+language is set.
 
 `build_message` mints the frame as its own trusted part on every session-start
 turn (full, `minimal_context` cron, and slim resume), placed AFTER the scrubbed

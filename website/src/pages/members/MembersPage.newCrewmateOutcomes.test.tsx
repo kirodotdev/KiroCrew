@@ -475,7 +475,7 @@ describe('New mate dialog', () => {
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
-  it('a 2xx whose body carries `error` is said in the product\'s words, not the body\'s', async () => {
+  it('a 2xx whose body carries `error` is said in the product\'s words, then the body\'s short reason', async () => {
     ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ error: 'config lock held' })
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -483,8 +483,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the Bot. Nothing was created — try again.")
-    expect(notice).not.toHaveTextContent(/lock held/)
+    expect(notice).toHaveTextContent("Couldn't create the Bot. Nothing was created — try again. Details: config lock held")
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
   })
 
@@ -736,9 +735,9 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'Dr Eggbot' })))
   })
 
-  it('a server failure other than a taken name is said in the product\'s words, not the server\'s sentence', async () => {
+  it('a server failure the dialog has no copy for is said in the product\'s words, then the server\'s short reason', async () => {
     ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new ApiError(500, 'Internal Server Error: config lock held', JSON.stringify({ error: 'config lock held' })),
+      new ApiError(500, 'Internal Server Error:\n  config lock held', JSON.stringify({ error: 'config lock held' })),
     )
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -746,10 +745,110 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the Bot. Nothing was created — try again.")
-    expect(notice).not.toHaveTextContent(/lock held/)
+    // The reason is folded onto one line.
+    expect(notice.textContent).toContain("Couldn't create the Bot. Nothing was created — try again. Details: Internal Server Error: config lock held")
     // Not about the name, so the Name field does not point at it.
     expect(screen.getByLabelText('Name')).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('a long server reason is cut to one short line', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(500, 'x'.repeat(500), ''),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice.textContent).toContain(`Details: ${'x'.repeat(199)}…`)
+    expect(notice.textContent).not.toContain('x'.repeat(200))
+  })
+
+  it.each([
+    ['member_memory_unavailable', 'disk I/O error'],
+    ['workspace_dir_uncreatable', "directory 'workspace-member-radar' could not be made owner-only: Access is denied"],
+    ['workspace_dir_not_a_directory', "'workspace-member-radar' exists and is not a directory"],
+  ])('a storage refusal (%s) says the files could not be saved, what to try, and the reason', async (code, reason) => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, reason, JSON.stringify({ error: reason, code })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent("Couldn't create the Bot: Kiro Crew couldn't save its files on this computer. Nothing was created. Make sure the disk has free space, then try again.")
+    expect(notice).toHaveTextContent(`Details: ${reason}`)
+    expect(screen.getByLabelText('Name')).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('a data home another account owns says so and gives the server\'s repair line to copy', async () => {
+    const fix = "sudo chown -R ann '/srv/crew-data' && chmod -R u+rwX '/srv/crew-data'"
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, 'files belong to another user', JSON.stringify({
+        error: 'Some Kiro Crew files belong to another user: /srv/crew-data/config.json',
+        code: 'data_home_not_owned',
+        fix_command: fix,
+      })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent("Some Kiro Crew files belong to another user, so Kiro Crew can't read them.")
+    expect(notice).not.toHaveTextContent('Details')
+    const block = screen.getByTestId('crewmate-create-fix-command')
+    expect(block.querySelector('code')?.textContent).toBe(fix)
+    // Editing the name clears the notice and its command together.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar2' } })
+    expect(screen.queryByTestId('crewmate-create-fix-command')).toBeNull()
+  })
+
+  it('a later failure of another kind drops the repair line', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new ApiError(409, 'x', JSON.stringify({ error: 'x', code: 'data_home_not_owned', fix_command: 'FIX' })))
+      .mockRejectedValueOnce(new ApiError(500, 'config lock held', ''))
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await screen.findByTestId('crewmate-create-fix-command')
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(screen.getByTestId('crewmate-create-error')).toHaveTextContent('config lock held'))
+    expect(screen.queryByTestId('crewmate-create-fix-command')).toBeNull()
+  })
+
+  it('a model refusal points at the Model field under Advanced settings', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'unknown model: example-model', JSON.stringify({ error: 'unknown model: example-model', code: 'invalid_model' })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent('the model chosen in Advanced settings can\'t be used right now. Set Model back to “Inherited” and try again. Details: unknown model: example-model')
+  })
+
+  it('a name an agent template already holds marks the Name field, without the server\'s sentence', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, "A template is already named 'radar'", JSON.stringify({ error: "A template is already named 'radar'", code: 'template_name_in_use' })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent('That name is already taken by a template. Pick another name for the Bot.')
+    expect(notice).not.toHaveTextContent('Details')
+    expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
   })
 
   it('a name the server refuses as credential-shaped (400) is said in the error notice with its cause and marks the Name field, never as "nothing was created — try again"', async () => {

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _TurnExit,
     )
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _TurnDiedNote
     from kiro_crew.dashboard.chat_turn.turn_stats import _FirstVisibleClock
     from kiro_crew.dashboard.deny_override import DenyOverrideOffer
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
@@ -87,6 +88,9 @@ class _ChatTurn:
     _directive_self_wake: "bool"
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
+    # The loop whose own cycle this turn is, for its fault counts: the delivered
+    # wake's, or the one a recovery entry carried (``_recovered_wake``).
+    _wake_cycle: "tuple[str, int] | None"
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
     _directive_source_channels: "tuple[str, ...]"
@@ -144,17 +148,23 @@ class _ChatTurn:
     _current_replay_message: "dict[Any, Any] | None"
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
-    died_notice: "str | None"
+    died_notice: "_TurnDiedNote | None"
     _deferred_options_expiry: "bool"
     _deny_override: "DenyOverrideOffer | None"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
+    _drained_merge_contexts: "list[dict[str, Any]]"
+    # The sub-agent notices _turn_build_prompt took off the slot's queue, settled or
+    # put back in _turn_settle_debts. Set in __init__ so every exit can read it.
+    _drained_subagent_notices: "list[str]"
+    _empty_verdict_left_prompt_unanswered: "bool"
     _engine_fallback_walk: "EngineFallbackWalk"
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
     _had_empty_response_verdict: "bool"
+    _held_after_terminal: "list[Any]"
     _held_runs: "list[tuple[dict[str, Any], str, int | None, int]]"
     _incoming_message: "str"
     _interrupted_turn_preamble: "str"
@@ -170,6 +180,8 @@ class _ChatTurn:
     _local_turn_marker_generation: "int"
     _member_session_start_pending: "bool"
     _memory_preparation_admitted: "bool"
+    _merge_contexts_completed: "bool"
+    _message_without_merge_cards: "str"
     _mirror_active_task: "str"
     _mirror_active_task_title: "str"
     _mirror_chan: "str | None"
@@ -267,6 +279,7 @@ class _ChatTurn:
     _turn_footer_attached: "bool"
     _turn_is_completion: "bool"
     _turn_landed: "bool"
+    _turn_lands: "bool"
     _turn_model: "str"
     _turn_msg_boundary: "int"
     _turn_priority: "StartPriority"
@@ -350,6 +363,7 @@ class _ChatTurn:
         _directive_self_wake: "bool",
         _directive_loop_id: "str",
         _directive_loop_gen: "int",
+        _recovered_wake: "tuple[str, int] | None",
         _skill_trigger_text: "str | None",
         _directive_channel_origin: "bool",
         _directive_owner_origin: "bool",
@@ -384,6 +398,9 @@ class _ChatTurn:
         self._directive_self_wake = _directive_self_wake
         self._directive_loop_id = _directive_loop_id
         self._directive_loop_gen = _directive_loop_gen
+        self._wake_cycle = (
+            (_directive_loop_id, _directive_loop_gen) if _directive_self_wake else _recovered_wake
+        )
         self._skill_trigger_text = _skill_trigger_text
         self._directive_channel_origin = _directive_channel_origin
         self._directive_source_channels = tuple(_directive_source_channels)
@@ -402,6 +419,7 @@ class _ChatTurn:
         self._agent_cancel_event = None
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
+        self._drained_subagent_notices = []
 
     @property
     def assistant_text(self) -> str:

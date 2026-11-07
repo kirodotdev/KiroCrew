@@ -270,11 +270,17 @@ def _mint_manifest_path() -> Path:
     return data_home() / "connections" / _MINT_MANIFEST_NAME
 
 
-def _read_mint_manifest() -> dict[str, float]:
-    """Recorded spec paths -> creation time. Unreadable or malformed reads as empty."""
+def _read_mint_manifest(*, strict: bool = False) -> dict[str, float]:
+    """Recorded spec paths -> creation time; ``{}`` when missing or malformed, and
+    when unreadable unless *strict*, where the ``OSError`` propagates.
+    """
     try:
         raw = json.loads(_mint_manifest_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        if strict and isinstance(exc, OSError):
+            raise
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -342,7 +348,11 @@ def _sweep_mint_specs() -> None:
 def _record_mint_spec(spec_path: str) -> bool:
     """Record the intent to create a spec. Returns False if the row missed disk."""
     with _MINT_MANIFEST_LOCK:
-        rows = _read_mint_manifest()
+        try:
+            rows = _read_mint_manifest(strict=True)
+        except OSError:
+            logger.debug("mint spec manifest read failed", exc_info=True)
+            return False
         rows[spec_path] = time.time()
         return _write_mint_manifest(rows)
 

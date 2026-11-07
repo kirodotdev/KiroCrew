@@ -324,7 +324,7 @@ gesture:
 | cell | who renders it | what is in it |
 |---|---|---|
 | leading (`auto`) | `shell/topbar/shellHeader.tsx` | the crew switcher (when a remote crew exists) and downstream widgets (while they exist); usually empty. Not the update pill: beside a remote crew's chip + dropdown it was a third action, so on this page a pending update is the first item of the overflow menu (`UpdatePill variant="menu-item"`, same lifecycle label) |
-| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the session title with the menu chevron flush after it (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
+| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the menu chevron with the session title after it, the same order as the desktop header (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
 | trailing (`auto`, `.tb-trail`) | `shell/topbar/shellHeader.tsx`, plus the same `MobileTopBar`'s portal into `#mobile-topbar-trail-slot` | exactly two: the bell, then the page's overflow menu (update when pending, pop out or focus the popped-out window, activity panel, split view). The update row reads `<status> — Open update settings`: a menu row is read as an action, and the row only navigates to Settings › About, so it names that outcome instead of implying a download or restart. The update row is a lazy chunk inside its own `ErrorBoundary`, so a chunk that fails to load costs the row, not the page (a rejection would otherwise reach the route boundary); the fallback is an inline `ErrorNotice` plus its `ErrorNoticeMenuItem` hand-off (`errors-use-error-notice`), never `null`, because this menu is the update's only phone home and a silent gap would hide the failure |
 
 That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), applied only while
@@ -368,8 +368,9 @@ account modal (balance, sign-in state, `KiroAccountModal`), so the same two draw
 carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
 in the chat drawer's rail, both between Capabilities and Settings (in the rail
 only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
-see below), both opening the modal. On the Kiro backend it is always there (the modal's Refresh fills an empty
-reading); on any other harness only for a reading the desktop segment would show --
+see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
+always there (the modal's Refresh fills an empty reading); on any other harness
+only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
 segment's own derivation minus the warming `null`, where the desktop's spinner would
 become a nav row blinking in and out. Same test file pins both states.
@@ -554,6 +555,15 @@ therefore commits its own target the moment it starts, and the prop is adopted w
 CHANGES, which is the authority for a panel opened by tap rather than by gesture. Both
 halves are load-bearing: without the first, re-opening is declined; without the second, a
 hamburger-opened drawer cannot be dragged shut.
+
+**A settle a takeover ended never reports its arrival, even one whose time was up.** On
+the main-thread path, framer's `stop()` COMPLETES an animation whose duration has already
+passed, and `animate()` delivers that `onComplete` a microtask later, after the new
+gesture has committed. A busy main thread is exactly when that happens, and the stale
+arrival slid the side panel back open over a closing drag (#29908). Both main-thread
+settles, `animateDrawer`'s and the trackpad's `settleTrackpadDrag`, therefore note
+framer's `onStop` (it runs inside `stop()`, before that late `onComplete`) and drop an
+arrival that comes after it.
 
 **A MODAL LAYER owns every touch inside it, read from its `role`.** A dialog is not
 necessarily portaled out of the shell: the changelog and update-error overlays are plain

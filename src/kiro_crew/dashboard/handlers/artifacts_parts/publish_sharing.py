@@ -49,8 +49,9 @@ from kiro_crew.publish_provider import (
 # module doesn't carry those tools, so the constraint lives here at the sole
 # HTTP boundary that accepts a provider name. ``\Z``-anchored like
 # ``_SESSION_KEY_RE`` in route_plumbing: matched raw with ``.match``, so a ``$`` anchor would
-# admit a trailing newline.
-_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}\Z")
+# admit a trailing newline. ``_`` is allowed because an edition may register a
+# provider whose name contains one; the name is only a registry lookup key.
+_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9_-]{1,32}\Z")
 
 
 # ── Publishing / sharing ─────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     requested_provider = body.get("provider") if isinstance(body, dict) else None
     provider_name = requested_provider or DEFAULT_PROVIDER
     if not isinstance(provider_name, str) or not _ARTIFACT_PROVIDER_RE.match(provider_name):
-        return _err("provider must match ^[a-z0-9-]{1,32}$")
+        return _err("provider must match ^[a-z0-9_-]{1,32}$")
     # Resolve the EFFECTIVE destination BEFORE the governance gate. For an
     # already-published artifact, publish_sync.publish() ignores provider_name
     # and re-pushes to publication.provider — so the gate must evaluate THAT

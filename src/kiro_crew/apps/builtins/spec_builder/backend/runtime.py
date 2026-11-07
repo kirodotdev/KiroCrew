@@ -327,12 +327,15 @@ async def _teardown_worker_slot(
         # spec from the index (delete) asks for require_archive, because reporting
         # success here would discard a conversation that was never written. The
         # slot is put back so the caller can restore the entry and the user can
-        # retry; callers that do not require the archive keep the old
-        # best-effort behaviour (an abort path has already lost the race).
+        # retry, but only onto a free key: an opener may have minted a slot under
+        # it since the pop, and overwriting that one would lose it instead.
+        # Callers that do not require the archive stay best-effort (an abort
+        # path has already lost the race).
         logger.warning("closing save failed for %s", slot_key, exc_info=True)
         if require_archive:
             try:
-                state._slots[slot_key] = slot
+                if state._slots.get(slot_key) is None:
+                    state._slots[slot_key] = slot
             except Exception:
                 logger.warning("could not restore slot %s after a failed archive", slot_key)
             _audit("spec_slot_archive_failed", name, outcome="denied")
@@ -404,7 +407,7 @@ def _dispatch_turn(
     slot: Any,
     message: str,
     *,
-    message_meta: dict[str, str] | None = None,
+    message_meta: dict[str, Any] | None = None,
     append_user: bool = True,
     directive_user_origin: bool = False,
     message_is_typed: bool = True,
@@ -421,9 +424,11 @@ def _dispatch_turn(
             # designed behaviour rather than a containment change.
             from kiro_crew.dashboard.session_control import containment_meta
 
+            # The drain stores the entry's meta on the user row, so a queued
+            # message keeps its `message_meta` (pastes) like a dispatched one.
             slot.queue_append(
                 message,
-                meta=containment_meta(state, slot),
+                meta={**(message_meta or {}), **containment_meta(state, slot)},
                 directive_user_origin=directive_user_origin,
             )
         except Exception:

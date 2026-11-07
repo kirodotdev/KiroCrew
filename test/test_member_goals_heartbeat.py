@@ -238,6 +238,25 @@ def test_a_wake_is_one_hidden_turn_whose_handoff_follows_the_session_tools(
         assert word not in prompt.lower()
 
 
+def test_with_the_ledger_a_heartbeat_handoff_is_a_tracked_item() -> None:
+    rec = {"goals": [{"id": "g1", "text": "Keep docs current"}], "key_results": [], "schedules": {}}
+    plain = goal_reminder.heartbeat_prompt(rec, has_session_tools=True)
+    tracked = goal_reminder.heartbeat_prompt(rec, has_session_tools=True, ledger=True)
+    assert "bind it to the item" not in plain
+    order = [
+        tracked.index(w)
+        for w in ("item in your work ledger", "session_create", "bind it", "session_send")
+    ]
+    assert order == sorted(order)
+    assert "[Worker report]" in tracked
+    # Without the session tools the ledger changes nothing.
+    assert goal_reminder.heartbeat_prompt(
+        rec, has_session_tools=False, ledger=True
+    ) == goal_reminder.heartbeat_prompt(rec, has_session_tools=False)
+    for word in ("must", "never", "exactly", "do not"):
+        assert word not in goal_reminder._HEARTBEAT_WORKERS_LEDGER.lower()
+
+
 def test_a_wake_skips_like_the_other_check_ins(_floor_monkeypatch) -> None:
     state = FakeState()
     slug, slot = _armed(state)

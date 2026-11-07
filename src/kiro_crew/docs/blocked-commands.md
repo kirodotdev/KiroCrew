@@ -107,6 +107,20 @@ The **Credentials** section reports:
   credentials — the recommended setup)
 - whether this host mounts an MCP server that vends credentials directly, which
   some managed and enterprise editions install
+- on Linux, whether sandboxed agents can see your Kerberos ticket. The sandbox
+  starts each agent in its own user namespace, and the kernel keeps
+  `KEYRING:persistent:` and `KEYRING:user:` ticket caches per user namespace
+  (`KEYRING:persistent:%{uid}` is the default on some distributions), so there
+  the cache is a different, empty keyring: MCP servers that need a ticket
+  report none while `klist` in your terminal shows one. A file cache works on
+  both sides. Run `kinit -c FILE:/tmp/krb5cc_$(id -u)`: Kiro Crew points agents
+  at that file automatically, and it is not renewed for you, so re-run it when
+  the ticket expires. Or, host-wide for every user, set
+  `default_ccache_name = FILE:/tmp/krb5cc_%{uid}` in the `[libdefaults]`
+  section of `krb5.conf`; after that change every user runs `kinit` again. Each
+  Kiro Crew process also logs this once as a warning. The row reads the
+  environment of the shell `doctor` runs in, which can differ from the
+  gateway's.
 
 Nothing in that section reads a secret value, and it never fails the overall
 `doctor` run — a missing AWS setup is not a Kiro Crew fault.

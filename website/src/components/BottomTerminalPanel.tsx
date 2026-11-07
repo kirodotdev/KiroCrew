@@ -37,6 +37,7 @@ import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { isMac } from '../utils/platform'
+import { TERMINAL_TAB_COMMAND_EVENT, type TerminalTabCommand } from '../lib/panelToggleShortcuts'
 
 /** Longest a phone waits for an idle moment to build a restored terminal. */
 const PREWARM_IDLE_TIMEOUT_MS = 4000
@@ -486,6 +487,23 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
     finishTargets(targets)
   }, [closingIds.size, confirm, confirmOpen, del, finishPendingPopoutClose, finishTargets, tabs, variant])
 
+  // The close / previous / next terminal chords act on this strip as its × and
+  // a click on a tab do; previous and next wrap. Not while restored tabs are
+  // unverified, when the strip draws no tabs to act on.
+  useEffect(() => {
+    if (hydratePending) return
+    const onCommand = (e: Event) => {
+      const command = (e as CustomEvent<TerminalTabCommand>).detail
+      if (!activeId) return
+      if (command === 'close') { void closeTabs([activeId]); return }
+      const i = tabs.findIndex(tab => tab.id === activeId)
+      const target = tabs[(i + (command === 'next' ? 1 : -1) + tabs.length) % tabs.length]
+      if (target) setActiveTab(target.id)
+    }
+    window.addEventListener(TERMINAL_TAB_COMMAND_EVENT, onCommand)
+    return () => window.removeEventListener(TERMINAL_TAB_COMMAND_EVENT, onCommand)
+  }, [hydratePending, activeId, tabs, closeTabs])
+
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs
    *  the user activation), and this window's WebSockets are released only
@@ -865,8 +883,11 @@ export default function BottomTerminalPanel() {
   const motionKey = isRight ? 'right-terminal' : 'bottom-terminal'
   // A bottom-docked terminal being typed into rises above the on-screen
   // keyboard instead of relying on Safari's focus pan (see useKeyboardLift).
+  // Measured on the wrapper that takes the lift as padding, so the lift does
+  // not move the measured edge.
+  const liftRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
-  const keyboardLift = useKeyboardLift(panelRef, open && !isRight)
+  const keyboardLift = useKeyboardLift(liftRef, open && !isRight)
   // A terminal opened for the first time waits until the slide is over before
   // xterm builds itself (see CliPanel's `deferOpen`), so the slide, and a
   // drawer the same tap closes (it settles before the slide does), run without
@@ -897,6 +918,7 @@ export default function BottomTerminalPanel() {
           of over it. When the band leaves less room than the panel's height,
           the panel shrinks (min-h-0) instead of running under the keyboard. */}
       <div
+        ref={liftRef}
         className={isRight ? 'shrink-0 flex' : 'flex flex-col min-h-0'}
         style={keyboardLift > 0 ? { paddingBottom: keyboardLift } : undefined}
       >

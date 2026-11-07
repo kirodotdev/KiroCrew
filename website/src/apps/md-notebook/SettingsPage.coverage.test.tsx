@@ -7,6 +7,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { i18nT } from '../../i18n/t'
+import { i18next } from '../../i18n/index'
+import '../../i18n/all'
 import { DEFAULT_SYNC_SHORTCUT } from './constants'
 import { SettingsBar, SettingsPage, type SettingsPageProps } from './SettingsPage'
 import type { Vault } from './types'
@@ -90,9 +92,36 @@ describe('SettingsPage knowledge, token and sync', () => {
     const p = props()
     render(<SettingsPage {...p} />)
     fireEvent.click(switches(KNOW)[0])
-    expect(await screen.findByText(i18nT('apps.mdNotebook.settings.knowledgeAddedCount', { n: 3 }))).toBeTruthy()
+    expect(await screen.findByText('Added to Knowledge — 3 files queued for indexing.')).toBeTruthy()
     expect(h.register).toHaveBeenCalledWith(LOCAL)
     expect(p.onSetKnowledge).toHaveBeenCalledWith('v1', true, 'src-1')
+  })
+
+  it('reports one queued file in the singular and formats a large count', async () => {
+    h.register.mockResolvedValueOnce({ sourceId: 'src-1', fileCount: 1 })
+    const first = render(<SettingsPage {...props()} />)
+    fireEvent.click(switches(KNOW)[0])
+    expect(await screen.findByText('Added to Knowledge — 1 file queued for indexing.')).toBeTruthy()
+    first.unmount()
+
+    h.register.mockResolvedValueOnce({ sourceId: 'src-1', fileCount: 12345 })
+    render(<SettingsPage {...props()} />)
+    fireEvent.click(switches(KNOW)[0])
+    expect(await screen.findByText('Added to Knowledge — 12,345 files queued for indexing.')).toBeTruthy()
+  })
+
+  it('picks each language plural form for the queued-file notice', async () => {
+    const say = (count: number) => i18nT('apps.mdNotebook.settings.knowledgeAddedCount', { count, n: String(count) })
+    try {
+      await i18next.changeLanguage('de')
+      expect(say(1)).toBe('Zum Wissen hinzugefügt – 1 Datei zur Indexierung eingereiht.')
+      await i18next.changeLanguage('ru')
+      expect(say(1)).toBe('Добавлено в знания — 1 файл в очереди на индексацию.')
+      expect(say(3)).toBe('Добавлено в знания — 3 файла в очереди на индексацию.')
+      expect(say(5)).toBe('Добавлено в знания — 5 файлов в очереди на индексацию.')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('unregisters a new source when recording it fails', async () => {
@@ -156,6 +185,16 @@ describe('SettingsPage shortcut, close and SettingsBar', () => {
     fireEvent.click(buttons(i18nT('apps.mdNotebook.settings.shortcut'))[0])
     fireEvent.keyDown(window, { key: 'K', metaKey: true, shiftKey: true })
     expect(p.onSetShortcut).toHaveBeenCalledWith({ key: 'k', meta: true, ctrl: false, alt: false, shift: true })
+  })
+
+  it('reports whether the shortcut button is recording', () => {
+    render(<SettingsPage {...props()} />)
+    const recorder = buttons(i18nT('apps.mdNotebook.settings.shortcut'))[0]
+    expect(recorder.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(recorder)
+    expect(recorder.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(recorder)
+    expect(recorder.getAttribute('aria-pressed')).toBe('false')
   })
 
   it('closes on Escape and from the close button', () => {

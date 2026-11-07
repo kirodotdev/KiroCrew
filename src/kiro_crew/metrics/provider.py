@@ -51,6 +51,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics import otlp_endpoints, otlp_governance
+from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -1063,7 +1064,12 @@ def _build_recorder() -> _Build:
             register_mcp_gateway_gauges(meter)
         except Exception:
             logger.warning("mcp gateway gauges unavailable", exc_info=True)
-        return _Build(MetricsRecorder(meter), provider, consent, agent_key, endpoints_key)
+        # Behavioral metrics get their own scope, so a downstream analytics
+        # collector can admit them without taking the inventory gauges above.
+        behavioral_meter = provider.get_meter(BEHAVIORAL_SCOPE)
+        return _Build(
+            MetricsRecorder(meter, behavioral_meter), provider, consent, agent_key, endpoints_key
+        )
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: an egress

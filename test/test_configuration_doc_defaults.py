@@ -113,15 +113,8 @@ def _rendered(value: object) -> str:
 def _agrees(shown: str, actual: object) -> bool:
     """Whether a doc cell's literal states *actual*.
 
-    Three spellings are all correct and must all pass:
-
-    * exact -- a string default is quoted verbatim in the cell;
-    * numeric -- ``10.0`` and ``10`` agree, since the page picks whichever reads
-      better and neither is wrong;
-    * JSON -- a list or dict default is written the way a reader would put it in
-      ``config.json`` (``["markdown", "text"]``), not the way Python repr()s it
-      (``['markdown', 'text']``). Comparing those as text would fail on quote style
-      alone, so containers are compared structurally.
+    Accepts an exact quoted string, an equal number (``10.0`` vs ``10``), or a
+    container written as JSON (``["markdown", "text"]``), compared structurally.
     """
     want = _rendered(actual)
     if shown == want:

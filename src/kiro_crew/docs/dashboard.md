@@ -24,7 +24,7 @@ If the dashboard doesn't load after setup:
 
 ### Chat (`/chat`)
 
-Multi-session parallel chat with full Markdown rendering, syntax-highlighted code blocks, Mermaid diagrams, and clickable file paths. A confirmed local file link in an agent reply opens that file in the chat side panel; a `:line` suffix opens the file at that line instead of navigating the browser back to Chat. A link that leaves the dashboard (a web page, or an editor or mail link) always goes where it points: when its text is a file path (a repo file linked to its GitHub page, say), clicking it opens the link, not the local file, and the path is not turned into a clickable path chip. A reply can also offer a file it wrote as a one-click **Open file** chip under the reply, with a hidden `<!-- kirocrew:open-file path="/abs/path" -->` marker (absolute paths only). The chip opens nothing by itself: a click opens the file in the side panel exactly as clicking its path does. To get one after each note, ask your agent (for example in its instructions) to add the marker for the files it writes.
+Multi-session parallel chat with full Markdown rendering, syntax-highlighted code blocks, Mermaid diagrams, PlantUML diagrams (drawn when the gateway host has PlantUML 1.2023.9 or later as a `plantuml` command on `PATH`; otherwise the fence stays a code block), and clickable file paths. A confirmed local file link in an agent reply opens that file in the chat side panel; a `:line` suffix opens the file at that line instead of navigating the browser back to Chat. A link that leaves the dashboard (a web page, or an editor or mail link) always goes where it points: when its text is a file path (a repo file linked to its GitHub page, say), clicking it opens the link, not the local file, and the path is not turned into a clickable path chip. A reply can also offer a file it wrote as a one-click **Open file** chip under the reply, with a hidden `<!-- kirocrew:open-file path="/abs/path" -->` marker (absolute paths only). The chip opens nothing by itself: a click opens the file in the side panel exactly as clicking its path does. To get one after each note, ask your agent (for example in its instructions) to add the marker for the files it writes.
 
 - **Multiple tabs**: each tab runs its own agent session in parallel.
 - **Agent selection**: pick an agent before starting a chat, or switch mid-session.
@@ -36,7 +36,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
-- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
+- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts. To keep the arrow keys for moving the cursor only, turn off **Recall Sent Messages with Arrow Keys** under Settings → Chat → Composer.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
 - **Batch tool rejection**: reject multiple pending tool approvals at once.
 - **Cancel queued messages**: cancel button for messages waiting in the queue.
@@ -52,7 +52,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **File upload**: on desktop, use **Upload file** from the `+` menu or drop a file into Chat. On a phone or other touch device, tap `+` to open the native system Files picker directly. Both paths accept images and regular files such as `.zip`, `.csv`, and `.docx`.
 - **Folder management**: create, rename, and organize sessions into sidebar folders with indent borders.
 - **Per-channel session folders**: optional, off by default — every messaging channel's settings panel can file conversations that start there into a named sidebar folder, marked with the channel's brand mark. Config key: `<channel>.session_folder` ("" = off). The folder is created when the setting is saved, so the surfacing path only ever reads the folder store; a configured folder that no longer exists (config.json hand-edited, or the folder deleted) leaves conversations unfiled until the next save recreates it. Filing applies as each conversation is first surfaced; a session moved by hand afterwards stays where it was put.
-- **Session colors**: per-session color picker for visual organization.
+- **Session colors**: per-session color picker for visual organization. The last custom color you give a session while its color menu is open joins a row of recent colors under the palette when the menu closes, so one click puts it on another session. The row keeps the eight most recently used, in this browser.
 
 #### Tags
 

@@ -172,10 +172,12 @@ class TestAggregation:
     def test_snapshot_is_cached_until_refresh(self):
         registry = _registry([_entry("a")])
         calls = 0
+        use_cache_values: list[bool] = []
 
-        async def probe(profile: str, region: str, **_kw) -> aws_consent.Identity:
+        async def probe(profile: str, region: str, **kw) -> aws_consent.Identity:
             nonlocal calls
             calls += 1
+            use_cache_values.append(kw.get("use_cache", True))
             return _identity(True, account="1")
 
         with (
@@ -188,8 +190,10 @@ class TestAggregation:
             asyncio.run(accounts_mod.list_accounts())
             asyncio.run(accounts_mod.list_accounts())
             assert calls == 1  # served from the snapshot
+            assert use_cache_values == [True]
             asyncio.run(accounts_mod.list_accounts(refresh=True))
             assert calls == 2  # refresh bypasses it
+            assert use_cache_values == [True, False]
 
 
 # Reconnect classification + plan

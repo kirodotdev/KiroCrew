@@ -12,6 +12,7 @@ import { Check, Copy, ExternalLink, Pencil } from 'lucide-react'
 import { api } from '../../api/client'
 import type { SetupPathCapability, TailnetDirect } from '../../api/sharedCrew'
 import { AVATAR_MAX_BYTES, AVATAR_TYPES, avatarPreviewUri, avatarUrl, fileToBase64, inviteErrorCode } from '../../api/sharedCrewInvites'
+import { ssmInviteFor, waitingSsmInvites, type SsmInvite } from '../../api/sharedCrewSsm'
 import { principalInitials, principalName, waitingInvites, type PeopleRow } from '../../api/sharedCrewUi'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Badge, Btn, Input, PanelSectionHeader } from '../../components/ui'
@@ -24,7 +25,10 @@ import { i18nT } from '../../i18n/t'
 import { copyToClipboard } from '../../utils/clipboard'
 import { TAILSCALE_USERS_URL, statusBadge } from './PeopleModes'
 import type { TailscaleInvite } from '../../api/sharedCrewInvites'
-import { CopyInviteMessage, InviteEntry, InviteRow, RevokeControl, inviteErrorText, useInvites } from './TailscaleInvites'
+import { SsmInviteRow, useSsmStatus } from './SsmInvite'
+import { CopyInviteMessage, InviteEntry, InviteRow, RevokeControl, inviteErrorText, useCanInvite, useInvites, useOwnerRead } from './TailscaleInvites'
+
+export { useCanInvite, useOwnerRead }
 
 /** At most this many faces in the "here now" stack; the count says the rest. */
 const STACK_MAX = 4
@@ -177,12 +181,14 @@ function RemovePerson({ invite, name, member, children }: { invite: TailscaleInv
   )
 }
 
-/** One person. *invite* is the invite they came in by, known only to the owner,
- *  who is also the only one offered a way to remove them (*canRemove*). */
-function PersonLine({ row, usageAvailable, invite, canRemove, onEdit }: {
+/** One person. *invite* (Tailscale) or *ssmInvite* is the invite they came in by,
+ *  known only to the owner, who is also the only one offered a way to remove
+ *  them (*canRemove*, or the SSM invite itself). */
+function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit }: {
   row: PeopleRow
   usageAvailable: boolean
   invite: TailscaleInvite | undefined
+  ssmInvite: SsmInvite | undefined
   canRemove: boolean
   onEdit: (row: PeopleRow) => void
 }) {
@@ -224,7 +230,9 @@ function PersonLine({ row, usageAvailable, invite, canRemove, onEdit }: {
         {otherAccount && <span className="text-[12px] text-muted" data-testid="person-other-account">{i18nT('sharedCrew.invite_other_account', { email: otherAccount })}</span>}
       </div>
       {isHere(row) && <HereDot label={i18nT('sharedCrew.here_now_label')} />}
-      {removable ? <RemovePerson invite={invite} name={name} member={!!row.member?.invite_id}>{edit}</RemovePerson> : edit}
+      {ssmInvite && !row.is_owner && !row.is_viewer
+        ? <RevokeControl inviteId={ssmInvite.id} name={name} transport="ssm" state="member">{edit}</RevokeControl>
+        : removable ? <RemovePerson invite={invite} name={name} member={!!row.member?.invite_id}>{edit}</RemovePerson> : edit}
     </li>
   )
 }
@@ -241,12 +249,16 @@ function EditPersonDialog({ row, onClose }: { row: PeopleRow; onClose: () => voi
   const readingRef = useRef(false)
   const [reading, setReading] = useState(false)
   const [readFailed, setReadFailed] = useState(false)
-  const submit = () => { if (!readingRef.current) save.mutate() }
+  // Save sends the form of the render it was pressed in: `reading` drops a
+  // submit from a render that still shows the read after the ref has cleared,
+  // and the form is passed to mutate() because useMutation installs a new
+  // mutationFn only in a passive effect, after the render that enables Save.
+  const submit = () => { if (!readingRef.current && !reading) save.mutate({ alias, picture, clear }) }
   const save = useMutation({
-    mutationFn: () => api.sharedCrewSetPersonDisplay(row.tailscale_user_id ?? '', {
-      alias,
-      ...(picture ? { avatar_data_base64: picture.base64 } : {}),
-      ...(clear && !picture ? { clear_avatar: true } : {}),
+    mutationFn: (form: { alias: string; picture: typeof picture; clear: boolean }) => api.sharedCrewSetPersonDisplay(row.tailscale_user_id ?? '', {
+      alias: form.alias,
+      ...(form.picture ? { avatar_data_base64: form.picture.base64 } : {}),
+      ...(form.clear && !form.picture ? { clear_avatar: true } : {}),
     }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: sharedCrewKeys.people }); onClose() },
   })
@@ -327,13 +339,15 @@ function EditPersonDialog({ row, onClose }: { row: PeopleRow; onClose: () => voi
 
 /** "Invites · N": invites whose person is not a row yet, below the people
  *  they are not counted in. */
-function NotJoined({ invites }: { invites: TailscaleInvite[] }) {
-  if (invites.length === 0) return null
+function NotJoined({ invites, ssmInvites }: { invites: TailscaleInvite[]; ssmInvites: SsmInvite[] }) {
+  const total = invites.length + ssmInvites.length
+  if (total === 0) return null
   return (
     <>
-      <PanelSectionHeader label={i18nT('sharedCrew.invites_title')} count={fmtNumber(invites.length)} className="pt-3" />
+      <PanelSectionHeader label={i18nT('sharedCrew.invites_title')} count={fmtNumber(total)} className="pt-3" />
       <ul className="flex flex-col divide-y divide-border" data-testid="people-waiting">
         {invites.map(invite => <InviteRow key={invite.id} invite={invite} />)}
+        {ssmInvites.map(invite => <SsmInviteRow key={invite.id} invite={invite} />)}
       </ul>
     </>
   )
@@ -353,13 +367,16 @@ export function PeopleList({ people, usageAvailable, notes = [], footer }: {
   const invites = useInvites()
   const all = invites.data?.invites ?? []
   const waiting = waitingInvites(people, all)
+  const ssm = useSsmStatus()
+  const ssmInvites = ssm.data?.invites ?? []
+  const waitingSsm = waitingSsmInvites(people, ssmInvites)
   const count = people.length
   const canRemove = !!invites.data
   return (
     <SettingsSection title={i18nT('sharedCrew.people_title', { n: fmtNumber(count) })}>
       <SettingsCard>
         {notes.map(note => <p key={note} className="text-[13px] text-muted pb-2" data-testid="people-note">{note}</p>)}
-        {count + waiting.length === 0 ? (
+        {count + waiting.length + waitingSsm.length === 0 ? (
           !invites.isLoading && (!invites.isError || inviteErrorCode(invites.error) === 'owner_only') && !invites.data?.sync?.error
             ? <p className="text-[13px] text-muted">{i18nT('sharedCrew.people_seen_empty')}</p>
             : null
@@ -371,13 +388,14 @@ export function PeopleList({ people, usageAvailable, notes = [], footer }: {
                 row={row}
                 usageAvailable={usageAvailable}
                 invite={all.find(i => i.id === row.member?.invite_id)}
+                ssmInvite={ssmInviteFor(row, ssmInvites)}
                 canRemove={canRemove}
                 onEdit={setEditing}
               />
             ))}
           </ul>
         )}
-        <NotJoined invites={waiting} />
+        <NotJoined invites={waiting} ssmInvites={waitingSsm} />
         {footer}
       </SettingsCard>
       {editing && <EditPersonDialog row={editing} onClose={() => setEditing(null)} />}
@@ -386,13 +404,9 @@ export function PeopleList({ people, usageAvailable, notes = [], footer }: {
 }
 
 /** The invite rows when there is no People list (personal mode), so an
- *  invite nobody accepted can still be resent or removed. */
+ *  invite nobody accepted can still be resent or removed, over either path. */
 export function PersonalWaiting() {
   const invites = useInvites()
-  return <NotJoined invites={waitingInvites([], invites.data?.invites ?? [])} />
-}
-
-/** Whether the invite routes answered for this viewer (the owner). */
-export function useCanInvite(): boolean {
-  return !!useInvites().data
+  const ssm = useSsmStatus()
+  return <NotJoined invites={waitingInvites([], invites.data?.invites ?? [])} ssmInvites={waitingSsmInvites([], ssm.data?.invites ?? [])} />
 }

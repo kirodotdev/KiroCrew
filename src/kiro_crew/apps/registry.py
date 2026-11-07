@@ -331,6 +331,13 @@ async def _run_app_build(
                 "name": app_name,
                 "error": f"build timed out after {_BUILD_TIMEOUT}s ({' '.join(cmd)})",
             }
+        except asyncio.CancelledError:
+            # The build runs in its own session, so once this coroutine stops
+            # awaiting it nothing else will stop it: no timeout is left.
+            # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+            if proc.returncode is None:
+                await platform_compat.kill_and_reap(proc)
+            raise
 
         if proc.returncode != 0:
             return {
@@ -748,6 +755,8 @@ if _typing.TYPE_CHECKING:
         _SCRIPT_TIMEOUT,
         NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
+        Awaitable,
+        Callable,
         StreamingLogLines,
         _adoption_pending,
         _install_script_platform_refusal,

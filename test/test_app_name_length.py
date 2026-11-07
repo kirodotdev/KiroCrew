@@ -76,9 +76,7 @@ class TestAppNameLengthGate:
             assert len(component.encode("utf-8")) <= _COMPONENT_LIMIT, component
 
 
-# ---------------------------------------------------------------------------
 # Install route
-# ---------------------------------------------------------------------------
 
 
 def _make_app_source(tmp_path, name):

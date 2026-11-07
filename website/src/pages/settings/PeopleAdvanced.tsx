@@ -20,6 +20,7 @@ const PATH = {
   crew_concurrency: 'dashboard.shared_crew.crew_concurrency',
   typing_idle_seconds: 'dashboard.shared_crew.typing_idle_seconds',
   tailnet_direct: 'dashboard.shared_crew.tailnet_direct',
+  ssm: 'dashboard.shared_crew.ssm',
 } as const
 
 type Field = keyof typeof PATH
@@ -46,10 +47,13 @@ function parseWhole(raw: string): number | null {
   return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : null
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 py-1.5 min-w-0">
-      <span className="text-[13px] text-text min-w-0">{label}</span>
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[13px] text-text min-w-0">{label}</span>
+        {hint && <span className="text-[12px] text-muted">{hint}</span>}
+      </div>
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         {children}
       </div>
@@ -177,6 +181,15 @@ export function PeopleAdvanced() {
             onChange={v => save.mutate({ field: 'tailnet_direct', value: v })}
             disabled={locked}
             label={i18nT('sharedCrew.adv_direct')}
+          />
+        </Row>
+        <Row label={i18nT('sharedCrew.adv_ssm')} hint={i18nT('sharedCrew.adv_ssm_help')}>
+          <SchemaRestartBadge configKey={PATH.ssm} />
+          <Toggle
+            checked={overlay.shown(PATH.ssm, section.ssm === true)}
+            onChange={v => save.mutate({ field: 'ssm', value: v })}
+            disabled={locked}
+            label={i18nT('sharedCrew.adv_ssm')}
           />
         </Row>
         {save.isError && (

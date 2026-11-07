@@ -2,12 +2,13 @@
  *  reasoning, and tool calls, with the attention, recency, voice and
  *  run-status effects each one carries. */
 import { useMemo, type MutableRefObject } from 'react'
+import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote, queueEntryBanner, selectSlotToolLog } from '../../store/chatSlice'
+import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, markToolReturned, queueEntryQuote, queueEntryBanner, selectSlotToolLog } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
-import { isSlotMuted } from '../sessionMute'
+import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { isTerminalErrorRow, noteTurnErrorRow, takeTurnErrored } from '../turnError'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
@@ -17,18 +18,21 @@ import { i18nT } from '../../i18n/t'
 import { isReconcileNote } from '../../lib/noteContract'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
+import { toolReturned } from '../../utils/toolReturned'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, crewWorkerRoot } from './attention'
 import { emitToolCall } from './browserEvents'
 import type { StreamBuffers } from './streamBuffers'
 import { batchedUnlessOpen } from '../../lib/streamBatch'
 import type { VoicePlayback } from './voicePlayback'
+import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import type { FrameData } from './frames'
 import type { ChatMessage } from '../../types'
 import { readRelay } from '../../pages/chat/sessionRelay'
 
 export interface ChatStreamDeps {
   dispatch: AppDispatch
+  queryClient: QueryClient
   buffers: StreamBuffers
   voice: VoicePlayback
   reconnectingRef: MutableRefObject<boolean>
@@ -40,9 +44,17 @@ export interface ChatStream {
   onChatChunk(data: FrameData): void
   onChatThinking(data: FrameData): void
   onToolCall(data: FrameData): void
+  /** A tool call's effect on its slot's running-status line alone, shared by
+   *  `tool_call` and `tool_status`. */
+  applyToolStatus(data: FrameData): void
+  /** `chat_phase`: a slot this tab does not watch moved to streaming or thinking. */
+  onChatPhase(data: FrameData): void
+  /** `tool_status`: a tool call on a slot this tab does not watch, or with
+   *  `returned: true`, its return. */
+  onToolStatus(data: FrameData): void
 }
 
-export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: ChatStreamDeps): ChatStream {
+export function useChatStream({ dispatch, queryClient, buffers, voice, reconnectingRef }: ChatStreamDeps): ChatStream {
   return useMemo<ChatStream>(() => ({
     onChatMessage(data) {
       buffers.flushChunks()
@@ -123,12 +135,12 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         const marks = isMemberThreadSlot(slot, slots)
           ? memberThreadRowMarksUnread(data.role, data.meta?.notice)
           : chatMessageMarksUnread(data.role, data.meta?.notice)
-        // Criterion 7: a muted session (per row or by its creator) never becomes
-        // unread from its own activity. This is the chat_message half of the
-        // two automatic markSlotUnread sites; turnCompletion.ts has the other.
-        // A terminal error row is exempt: the worker has stopped, and a
+        // Criterion 7: a muted session (per row, by its app or by its creator)
+        // never becomes unread from its own activity. This is the chat_message
+        // half of the two automatic markSlotUnread sites; turnCompletion.ts has
+        // the other. A terminal error row is exempt: the worker has stopped, and a
         // silenced failure stalls it unseen just as a silenced approval would.
-        if (marks && (!isSlotMuted(slots, slot) || isTerminalErrorRow(data))) {
+        if (marks && (!isSlotMuted(slots, slot, appsMutingSessions(queryClient.getQueryData(['kirocrewConfig']))) || isTerminalErrorRow(data))) {
           dispatch(batchedUnlessOpen(slot, markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined })))
         }
       })
@@ -147,7 +159,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // A note breadcrumb starts no turn, so no chat_done arrives to undo either
       // effect: cutting speech would strand it and a thinking status would never clear.
       const isPassiveNote = data.role === 'inject' && isReconcileNote(data.cls)
-      if (!isPassiveNote && data.slot === store.getState().chat.activeSlot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
+      if (!isPassiveNote && data.slot === storeFocusedSlot() && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
         voice.resetForNewTurn()
       }
       if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
@@ -241,6 +253,12 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
     onToolCall(data) {
       emitToolCall(data)
       dispatch(batchedUnlessOpen(data.slot, sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean; tool_name?: string; mcp_server?: string }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true })))
+      this.applyToolStatus(data)
+      // Note: do NOT dispatch sseChatMessage here. The backend persists the
+      // tool message via slot.append and broadcasts it as 'chat_message'.
+      // Dispatching here would insert a duplicate entry in the message list.
+    },
+    applyToolStatus(data) {
       if (data.slot) {
         // A refinement (`is_update`) carries only the fields it refines,
         // so merge it into the live status the way sseToolActivity merges
@@ -276,7 +294,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         if (isUpdate && tcid) {
           const entry = selectSlotToolLog(store.getState(), data.slot)
             .findLast((e) => e.type === 'tool' && e.tool_call_id === tcid)
-          if (entry && entry.output !== undefined && !entry.output_partial) return
+          if (entry && toolReturned(entry) && !entry.output_partial) return
         }
         const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
         const frame = data as Record<string, unknown>
@@ -318,9 +336,37 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
           ...(tcid ? { toolCallId: tcid } : {}),
         })))
       }
-      // Note: do NOT dispatch sseChatMessage here. The backend persists the
-      // tool message via slot.append and broadcasts it as 'chat_message'.
-      // Dispatching here would insert a duplicate entry in the message list.
     },
-  }), [dispatch, buffers, voice, reconnectingRef])
+    onToolStatus(data) {
+      // The gateway sends this for a slot the tab renders no transcript for.
+      // A return moves the status line off the call. A call seeds the slot's
+      // tool log (an approval card reads its purpose there) WITHOUT its input:
+      // the frame's input is shrunk, and a pane opened later reads the full
+      // input from the persisted row instead (ToolCallLine).
+      const frame = data as { returned?: unknown; tool_call_id?: unknown; output?: unknown }
+      if (frame.returned === true) {
+        if (data.slot && typeof frame.tool_call_id === 'string' && frame.tool_call_id) {
+          const output = typeof frame.output === 'string' ? frame.output : undefined
+          dispatch(batchedUnlessOpen(data.slot, markToolReturned({ slot: data.slot, tool_call_id: frame.tool_call_id, ...(output ? { output } : {}) })))
+        }
+        return
+      }
+      const call = data as Record<string, unknown>
+      dispatch(batchedUnlessOpen(data.slot, sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; is_shell?: boolean; tool_name?: string; mcp_server?: string }, input_preview: '', auto: call.auto === true, tool_call_id: call.tool_call_id as string | undefined, is_update: call.is_update === true, is_shell: call.is_shell === true })))
+      this.applyToolStatus(data)
+    },
+    onChatPhase(data) {
+      // The status-line half of a run of chunks or reasoning, sent once per
+      // transition. Same rule as the frame flush (store/streamFlush.ts): content
+      // always moves the line to `streaming`, reasoning moves it to `thinking`
+      // unless it already shows `streaming` or `thinking`.
+      const slot = data.slot
+      const phase = (data as { phase?: unknown }).phase
+      if (!slot || (phase !== 'streaming' && phase !== 'thinking')) return
+      const cur = store.getState().chat.slotStatusDetail[slot]
+      if (phase === 'thinking' && (cur?.kind === 'streaming' || cur?.kind === 'thinking')) return
+      buffers.supersedePendingStatus(slot)
+      dispatch(batchedUnlessOpen(slot, setSlotStatusDetail({ slot, kind: phase })))
+    },
+  }), [dispatch, queryClient, buffers, voice, reconnectingRef])
 }

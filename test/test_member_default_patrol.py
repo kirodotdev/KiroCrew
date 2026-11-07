@@ -603,6 +603,25 @@ async def test_a_rewritten_patrol_row_is_refused_at_fire_time(tmp_path, audits, 
 
 
 @pytest.mark.asyncio
+async def test_a_patrol_armed_with_an_earlier_shipped_text_still_wakes(tmp_path, audits):
+    """A loop persisted before an upgrade keeps the text it was armed with; every text
+    the gateway shipped is still the fixed patrol at fire time, so the upgrade does
+    not leave dispatched work unpatrolled."""
+    (legacy,) = conductor_patrol.SHIPPED_PATROL_MESSAGES - {conductor_patrol.PATROL_MESSAGE}
+    svc = AutoNudgeService(base_dir=tmp_path / "an")
+    state = _real_state()
+    try:
+        patrol, error, status = await authorize_and_add_nudge(
+            svc=svc, state=state, **_patrol_kwargs()
+        )
+        assert (error, status) == (None, 200)
+        patrol.message = legacy
+        assert await GatewayOrchestrator._dashboard_mode_admits(patrol, state._slots[MATE])
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "edit",
     [

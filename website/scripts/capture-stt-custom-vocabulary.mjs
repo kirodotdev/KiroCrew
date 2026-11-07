@@ -159,8 +159,7 @@ async function openVoiceSettings(config, listing = listingOk) {
     if (path === '/api/voice/config') return json(route, VOICE_CONFIG_FIXTURE), true
     return false
   }
-  await stubDashboardApi(page, { extra })
-  await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
+  await stubDashboardApi(page, { extra, localStorageEntries: { 'mc-lang': 'en' } })
   await page.goto(`${base}/settings?tab=voice`, { waitUntil: 'domcontentloaded' })
   const picker = page.getByRole('combobox', { name: 'Custom vocabulary' })
   await picker.waitFor({ timeout: 15_000 })

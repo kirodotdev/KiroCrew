@@ -21,6 +21,7 @@ from slack_interactions_coverage_helpers import _restore_module_globals  # noqa:
 from slack_interactions_coverage_helpers import ix_logs_fixture  # noqa: F401
 from slack_interactions_coverage_helpers import orch_fixture  # noqa: F401
 from slack_interactions_coverage_helpers import _action_payload, _ix_messages, _payload
+from slack_wire_helpers import slack_wire
 
 from kiro_crew import sel as sel_mod
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
@@ -127,6 +128,33 @@ class TestDispatchTransportToolApproval:
         assert is_session_trusted("sess1")
         assert await await_until(waiter) is True
         assert orch.slack.update_message.await_args.kwargs["text"].startswith("🔓 Trusted")
+
+    @pytest.mark.asyncio
+    async def test_trust_denied_during_the_channels_check_approves_once(
+        self, orch: MagicMock, _decider: MagicMock, audit: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``permission_mode`` deny of ``trust`` that lands during the channels await
+        approves the one tool, and the label and audit do not claim a grant."""
+        from kiro_crew.messaging import session_trust
+        from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
+
+        allowed = {"trust": True}
+        monkeypatch.setattr(ix, "trust_permitted", lambda: allowed["trust"])
+        monkeypatch.setattr(session_trust, "trust_permitted", lambda: allowed["trust"])
+
+        async def _deny_during_check(_channel: str) -> bool:
+            allowed["trust"] = False
+            return True
+
+        monkeypatch.setattr(ix, "channel_inbound_permitted", _deny_during_check)
+        _, nonce, waiter = _prompt("sess1", "rid7")
+        await ix.dispatch(_action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid7", f"sess1:rid7|{nonce}"))
+        assert is_session_trusted("sess1") is False
+        assert await await_until(waiter) is True
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+        assert _audit_ops(audit, "slack.transport_tool_approval") == [
+            ("approved", "approval_key=sess1:rid7")
+        ]
 
     @pytest.mark.asyncio
     async def test_expired_approval_reports_expiry(
@@ -299,9 +327,14 @@ class TestAckHandlers:
         assert _acked_by_ts(tmp_path) == {"n1": True, "n2": False}
 
     @pytest.mark.asyncio
-    async def test_subagent_ack_still_acks_button_without_id(self, orch: MagicMock) -> None:
+    async def test_subagent_ack_still_acks_button_without_id(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch.dashboard_state = None
-        await ix._handle_subagent_ack(_payload(), {}, "C1", "m1")
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await ix._handle_subagent_ack(_payload(), {}, "C1", "m1")
         # The visual ack happens before the early return.
-        orch.slack.update_message.assert_awaited_once()
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        assert [
+            (u.get("channel"), u.get("ts"), u.get("text")) for u in wire.sent("chat.update")
+        ] == [("C1", "m1", "✅ Acknowledged")]

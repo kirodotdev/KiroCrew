@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import heapq
 import json
 import logging
 import sys
 import time
 from collections.abc import Collection
+from contextvars import copy_context
 from typing import Any, Callable
 
 from aiohttp import WSCloseCode, WSMsgType, web
@@ -17,6 +19,7 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard import websocket_hub as _ws_hub
+from kiro_crew.dashboard import ws_chunk_scope as _ws_chunk_scope
 from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
@@ -34,7 +37,9 @@ from kiro_crew.dashboard.subagent_replay_scope import (
     UNIT_INDEX,
     SubagentReplayQueue,
     live_subagent_ids,
+    replay_executor,
     requested_slots,
+    startup_restore_wait,
 )
 from kiro_crew.dashboard.warm_task_brief import handle_focus_frame, note_view_closed
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_CAPABILITY, SLOT_PATCH_WS_FLAG
@@ -275,8 +280,9 @@ def crew_log_panel_units(slot_names: Collection[str]) -> list[tuple[str, str]]:
     machinery: the log is an optional subsystem behind a flag, and this module is
     on the gateway's boot path.
 
-    Blocking. A caller on the event loop must wrap this in
-    :func:`asyncio.to_thread`, passing a snapshot of the names taken on the loop.
+    Blocking. A caller on the event loop runs it on
+    :func:`~kiro_crew.dashboard.subagent_replay_scope.replay_executor`, passing a
+    snapshot of the names taken on the loop.
     Each name costs a cached index lookup plus its own exclusion-list read.
     """
     from kiro_crew.session_ledger import crew_log_units
@@ -311,7 +317,8 @@ def backfill_legacy_panel_dismissals(units: Collection[tuple[str, str]]) -> froz
     offered a dismissal of a row this reads, and a registry entry for it predates
     nothing.
 
-    Blocking. A caller on the event loop must wrap this in :func:`asyncio.to_thread`.
+    Blocking. A caller on the event loop runs it on
+    :func:`~kiro_crew.dashboard.subagent_replay_scope.replay_executor`.
     """
     from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard.subagent_replay_scope import UNIT_ROWS
@@ -390,8 +397,8 @@ def read_fold_subagent_records(
     it: ``seq_spawned`` orders rows inside one log and says nothing across two.
     What ``keep`` cut is COUNTED and returned, never silently dropped.
 
-    Blocking. A caller on the event loop must wrap this in
-    :func:`asyncio.to_thread`.
+    Blocking. A caller on the event loop runs it on
+    :func:`~kiro_crew.dashboard.subagent_replay_scope.replay_executor`.
     """
     from kiro_crew.dashboard.subagent_replay_scope import UNIT_ROWS
 
@@ -530,6 +537,9 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
     The key is OMITTED entirely when the agent is not stalled, so a client
     cannot attach an idle span to a healthy row — the reducer pairs the span
     with the flag and would otherwise have to defend against the mismatch.
+
+    ``slot`` is the tab of the chat the run's spawn tree started from
+    (``root_session_key``), so a nested run replays where its live frames draw.
     """
     ts = time.time() if now is None else now
 
@@ -540,7 +550,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
 
     data: dict = {
         "id": a.id,
-        "slot": subagent_event_slot(a.parent_session_key),
+        "slot": subagent_event_slot(getattr(a, "root_session_key", "") or a.parent_session_key),
         # The sub-agent's OWN session key (where it writes its ctx_blocks /
         # token rows), so a client can fetch this node's own context-trace and
         # render its window composition. Mirrors the run key derived in
@@ -855,6 +865,9 @@ async def _serve_ws(
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
     # ``fold_delta.2`` beside it: this tab applies ``slot_fold`` deltas for ``work``.
     state.set_fold_apply_capable(ws, _ws_hub.FOLD_APPLY_CAPABILITY in declared_caps)
+    # ``chunk_scope.1``: stream frames only for the slots this tab names in
+    # ``chunk_watch``; coarse status for the rest (dashboard users only).
+    state.set_chunk_scope_capable(ws, _ws_chunk_scope.declared(declared_caps))
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -1055,12 +1068,13 @@ async def _serve_ws(
                     # while the payload stays counts-and-environment: the
                     # checkout's branch and commit say what the operator is
                     # working ON, which is not an app's business and has no
-                    # consumer outside the owner surfaces. Strip them here
+                    # consumer outside the owner surfaces; the policy file's
+                    # path names the operator's home directory. Strip them here
                     # rather than moving the whole frame behind a declaration,
                     # which would silently cut every existing app off from the
                     # version signal. ``/api/status`` and the SSE stream run on
                     # dashboard-user tokens and keep the full snapshot.
-                    for _owner_only in ("branch", "commit"):
+                    for _owner_only in ("branch", "commit", "update_policy_file"):
                         data.pop(_owner_only, None)
                 # Tier 0 admits every socket unconditionally, but the decision
                 # is still a grant per ``AUTOSDE.yaml`` -- this frame is sent
@@ -1407,7 +1421,9 @@ async def _serve_ws(
                                 # prefix-strip tags replayed cards with a slot
                                 # no tab reads, so the panel rehydrated empty
                                 # after every reconnect for cron/channel tabs.
-                                slot = subagent_event_slot(a.parent_session_key)
+                                slot = subagent_event_slot(
+                                    getattr(a, "root_session_key", "") or a.parent_session_key
+                                )
                                 try:
                                     _replay.append(
                                         {
@@ -1531,6 +1547,11 @@ async def _serve_ws(
                                     _audit_deny(ws_app or "<dashboard>", "subagent_done", _no)
                                     return False
 
+                                # Either read runs on the replay's own pool (rule 4 of
+                                # subagent_replay_scope), in a copy of this context as
+                                # asyncio.to_thread would, so a denial it audits keeps
+                                # the request's SEL provenance.
+                                _loop = asyncio.get_running_loop()
                                 if crew_log_enabled():
 
                                     def _fold_durable() -> tuple[list[dict], int]:
@@ -1557,7 +1578,9 @@ async def _serve_ws(
                                             admit=_admit_folded,
                                         )
 
-                                    _folded, _overflow = await asyncio.to_thread(_fold_durable)
+                                    _folded, _overflow = await _loop.run_in_executor(
+                                        replay_executor(), copy_context().run, _fold_durable
+                                    )
                                     # The fold reads every row of every unit it was
                                     # given, so its overflow is the exact count past
                                     # the cap and never a floor.
@@ -1569,12 +1592,16 @@ async def _serve_ws(
                                     # this process never tracked, on the same bounds and
                                     # through the same gates. Reading them here is what
                                     # keeps the opt-out costing the panel nothing.
-                                    _records = await asyncio.to_thread(
-                                        read_panel_records,
-                                        keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
-                                        max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
-                                        exclude_ids=_live_ids,
-                                        admit=_admit_folded,
+                                    _records = await _loop.run_in_executor(
+                                        replay_executor(),
+                                        copy_context().run,
+                                        functools.partial(
+                                            read_panel_records,
+                                            keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                            max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+                                            exclude_ids=_live_ids,
+                                            admit=_admit_folded,
+                                        ),
                                     )
                                     _folded, _overflow = _records.records, _records.overflow
                                     # The folder scan has its OWN candidate window, and
@@ -1700,7 +1727,15 @@ async def _serve_ws(
                                 return False
 
                             _replay_queue = SubagentReplayQueue(
-                                _durable_replay, admit=_replay_admits
+                                _durable_replay,
+                                admit=_replay_admits,
+                                # An app's visible slots are read at subscribe, so
+                                # waiting would admit nothing for it.
+                                ready=(
+                                    startup_restore_wait(state)
+                                    if ws.get("_is_dashboard_user", False)
+                                    else None
+                                ),
                             )
                         else:
                             _replay_queue.reset(_durable_replay)
@@ -1742,6 +1777,18 @@ async def _serve_ws(
                         state.set_fold_watch(ws, data.get("slots"))
                     elif msg_type == "slots_resync":  # a diff missed its base
                         _ws_slot_diff.handle_slots_resync(state, ws)
+                    elif msg_type == _ws_chunk_scope.CHUNK_WATCH_FRAME:
+                        # Replaces the set; no-op unless capable. The ack goes
+                        # through the fan-out's own send path so it is ordered
+                        # before every chunk the new set admits.
+                        _ack = state.set_chunk_watch(ws, data.get("slots"))
+                        if _ack is not None:
+                            state._spawn_ws_send(
+                                ws,
+                                json.dumps(
+                                    {"type": _ws_chunk_scope.CHUNK_WATCH_ACK_FRAME, "data": _ack}
+                                ),
+                            )
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —

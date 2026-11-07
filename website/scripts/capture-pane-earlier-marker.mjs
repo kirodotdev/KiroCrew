@@ -116,11 +116,8 @@ async function main() {
       if (path === '/api/chat/pins') { await json(route, { pins: [] }); return true }
       return false
     },
+    localStorageEntries: { 'mc-split-layouts': JSON.stringify(LAYOUT) },
   })
-  // Added after stubDashboardApi so it runs after that script's localStorage.clear().
-  await page.addInitScript(layout => {
-    localStorage.setItem('mc-split-layouts', JSON.stringify(layout))
-  }, LAYOUT)
   logPageProblems(page)
 
   await page.goto(`${base}/chat/${LONG}`, { waitUntil: 'domcontentloaded' })

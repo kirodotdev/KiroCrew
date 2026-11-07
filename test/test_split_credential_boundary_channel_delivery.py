@@ -82,12 +82,8 @@ class TestWhatsAppsOwnSendPathStaysBounded:
     def test_the_stable_split_is_a_plain_prefix_stable_redacted_cut(self) -> None:
         """The stable split redacts, then cuts at the budget -- and nothing later.
 
-        A sealed chunk is a promise to the client, so this branch runs no
-        whole-body repair: it splits the display-redacted body at the budget, so
-        chunk *i* is a function of the text before it alone. The cross-message
-        seam (a chunk ending in a key PREFIX the next completes) is the turn
-        renderer's job -- it knows which chunks are still unsealed and gives up
-        only the completing span on a boundary it has not yet promised.
+        A sealed chunk is a promise, so chunk *i* depends only on the text before it.
+        A key PREFIX completed by the next chunk is the turn renderer's job.
         """
         converted = to_whatsapp_text(self._dense())
         redacted, _ = redact_for_display(converted, _redact_all)
@@ -251,11 +247,8 @@ class TestAStreamedReplyNeverRevisesADeliveredChunk:
     def test_the_finalization_repairs_against_what_was_already_sent(self) -> None:
         """The notice counts what shipped, and the repair subject is one chunk.
 
-        A chunk sealed while its tail was only a credential PREFIX is already on
-        screen, so the completion arriving later can be given up only on the side
-        not yet sent. Each send is graded against the previous one and the shipped
-        list is what the tally reads, so a reply whose only placeholder came from a
-        repair does not announce none.
+        A sealed chunk ending in a credential PREFIX is on screen, so only the unsent
+        side can be repaired; the tally reads the shipped list so a repair is counted.
         """
         tree = ast.parse((SRC / "whatsapp" / "turn_renderer.py").read_text(encoding="utf-8"))
         assigned = {
@@ -406,13 +399,10 @@ class TestTheSeamGradeReadsWhatTheReaderSees:
 
 
 class TestAHardByteCapIsNeverExceeded:
-    """The splitter may answer with the text WHOLE, so a hard-capped transport
-    has to bound the result itself.
+    """The splitter may return the text WHOLE, so a hard-capped transport bounds it.
 
-    Declining to cut is the fail-closed answer when no budget is clean, and it
-    costs the caller a chunk over its budget. A client that truncates a larger
-    payload would drop the answer's tail with no notice, so that caller grades the
-    sequence once more and cuts the repair back to its budget.
+    A client that truncates would drop the tail silently, so that caller re-grades
+    and cuts the repair back to its budget.
     """
 
     def test_webex_bounds_its_own_chunks(self) -> None:

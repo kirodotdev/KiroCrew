@@ -48,6 +48,7 @@ import { PILL_TIP_OPEN_CLASS, ToolCommandTip } from './ToolCommandTip'
 import { useReportRowActive } from './rowActivity'
 import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
+import { toolReturned } from '../../utils/toolReturned'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk.
 const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
@@ -276,7 +277,13 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
   const e = lookupLogEntry(index, toolCallId, label)
   if (e) {
     const rejected = !!e.rejected || wasRejectedByPerm()
-    const isDone = e.output != null || rejected || autoDenied || !slotRunning
+    const isDone = toolReturned(e) || rejected || autoDenied || !slotRunning
+    // A log entry seeded from `tool_status` (a slot this tab did not watch)
+    // has no input or output. The persisted row carries both, and for a call
+    // that still runs it holds the progress the watch-ack catch-up restored.
+    // So the row's output is read whenever the entry has none, whether or not
+    // the call returned; `isDone` above decides completion on its own.
+    const metaOutput = typeof message.meta?.output === 'string' ? message.meta.output : ''
     return {
       effectiveId: e.tool_call_id || null,
       isDone, isRejected: rejected,
@@ -284,13 +291,14 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
       autoDenyReason,
       autoDenyNotice,
       purpose: e.purpose || '',
-      input: e.input || '',
-      output: e.output || '',
+      input: e.input || (typeof message.meta?.input === 'string' ? message.meta.input : ''),
+      output: e.output || metaOutput,
       // Clamp seams for the two payloads (null when nothing was cut). The
       // panel renders the localized marker there at view time; the store
-      // holds only the offset, so a language switch re-renders it.
+      // holds only the offset, so a language switch re-renders it. The
+      // persisted row is served whole, so its output has no seam.
       inputCut: e.input_cut ?? null,
-      outputCut: e.output_cut ?? null,
+      outputCut: e.output ? (e.output_cut ?? null) : null,
       auto: !!e.auto,
       ts: e.ts || 0,
       executionStartedAt: e.execution_started_at || 0,
@@ -418,7 +426,7 @@ function selectToolRowView(s: RootState, slot: string | undefined, message: Chat
   const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
   const runMemberRunning = isRun && slotRunning && runMembers.slice(1).some(m => {
     const e = index.logById.get(m.meta?.tool_call_id as string)
-    return !!e && e.output == null && !e.rejected
+    return !!e && !toolReturned(e) && !e.rejected
   })
   // Every member's output, lead first: its newest tool-log entry's output when
   // the log has one, else the output persisted on the row (history). The
@@ -1371,7 +1379,9 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
                   {i18nT('pages.chat.toolCallLine.edit_n_of_m', { n: i + 1, total: runCodes.length })}
                 </span>
               )}
-              <DiffBlock code={code} complete onFileOpen={onFileOpen} />
+              {/* No line links: a replace's card diffs the replaced text
+                  alone, so its gutter counts from 1, not from the file. */}
+              <DiffBlock code={code} complete onFileOpen={onFileOpen} lineLinks={false} />
             </div>
           ))}
         </div>

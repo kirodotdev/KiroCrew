@@ -14,9 +14,9 @@
  * lost to every fresh origin: another browser or device, the desktop app beside
  * a browser tab, a changed dashboard port, or cleared site data. Every reader
  * below still reads the cache, so the nav rail and the registry stay
- * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy,
- * carries a cache-only ON up to the server once, and sends each toggle to the
- * server through the writer it registers with {@link setPreviewFlagPersister}.
+ * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy
+ * and sends each toggle to the server through the writer it registers with
+ * {@link setPreviewFlagPersister}.
  * A flag has no server behavior of its own unless its own note says so
  * ({@link PREVIEW_MATE_SESSIONS} is the one that does).
  *
@@ -105,9 +105,9 @@ export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
 
 /**
  * RETIRED: the old "Remote crew sessions" switch, folded into
- * {@link PREVIEW_REMOTE_CREW_CHAT}. Kept only so a device that turned it on
- * still has the feature on: `useRemoteCrewChat` reads either key as ON,
- * and {@link setRemoteCrewChat} clears it when the feature is turned off. Never
+ * {@link PREVIEW_REMOTE_CREW_CHAT}. `useRemoteCrewChat` reads either key as
+ * ON, {@link setRemoteCrewChat} clears it when the feature is turned off, and
+ * `usePreviewFlagServerSync` clears it when it mounts. Never
  * gate anything on it directly.
  */
 export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-sessions`
@@ -206,8 +206,7 @@ export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
  * to the gateway's `FEATURE_PREVIEW_FLAGS`, and `previewFlagServerSync.test.tsx`
  * pins it to every flag constant declared here. The retired
- * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it, and
- * its ON is carried up as {@link PREVIEW_REMOTE_CREW_CHAT}.
+ * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it.
  */
 export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_WEBHOOKS,

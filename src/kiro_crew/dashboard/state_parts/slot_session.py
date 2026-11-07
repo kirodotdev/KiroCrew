@@ -12,7 +12,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_retry_at``, ``_eager_spawn_task``, ``_effort_pick_gen``, ``_fork_lock``,
-``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``, ``_mcp_banner_shown``, ``_mcp_report``,
+``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
+``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
 ``_model_pick_lock``, ``_model_runtime_pick_gen``, ``_model_withheld``,
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
@@ -24,7 +25,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
-``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
+``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
@@ -200,10 +201,6 @@ def init_session_fields(self: _ChatSlot) -> None:
     # choice landed even when that choice returned to the level it saw.
     self._effort_pick_gen = 0
     self._reasoning_effort = ""
-    # Per-session auto-compact threshold override (percent). None = follow
-    # the global session.autocompact_pct. Persisted with the slot and
-    # re-seeded into the SessionManager after restore.
-    self.autocompact_pct = None
     # Per-session turn time limit (seconds). None = follow the global
     # agent.chat_turn_timeout_secs. Persisted with the slot; read by the turn
     # dispatch (turn_dispatch.resolve_turn_limit) when each turn starts.
@@ -351,6 +348,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # (digest of the ACP session id, sign-in round, digest of the text). In
     # memory only and bounded; see dashboard.mcp_banner_dedupe.
     self._mcp_banner_shown = {}
+    self._hidden_scratch_notice_shown = False
     # Set by api_chat_slot_project; consumed in _run_chat instead of
     # inline because the endpoint can be reached from inside the kiro-cli
     # process group via the set_project MCP tool.
@@ -431,6 +429,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     # than being silently classified as user-initiated. Deny-by-default.
     self._origin = ""
     self.forked_from = None  # parent slot key if this is a fork
+    # The parent transcript's created_at when forked: a chat later created
+    # on the parent's key after a permanent delete has another.
+    self.forked_from_created_at = ""
     self._fork_lock = asyncio.Lock()  # serialises concurrent forks on this slot
     # Serialises explicit model-pick transactions (check → mutate → live
     # switch → rollback) on this slot: picks interleaving at the set_model

@@ -12,6 +12,8 @@ refused with no second card. With the flag on the request is its card, as ever.
 from __future__ import annotations
 
 import asyncio
+import errno
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -297,6 +299,23 @@ def test_an_offer_is_reserved_once():
     assert mate_tool_access.reserve_offer(ORDINARY, {"params": {}}) is True
     assert mate_tool_access.reserve_offer(ORDINARY, {"params": {"x": 1}}) is False
     assert mate_tool_access.entry(ORDINARY)["held"] == {"params": {}}
+
+
+def test_an_unreadable_store_refuses_the_offer_and_keeps_every_record(monkeypatch):
+    assert mate_tool_access.reserve_offer("other", {"params": {}}) is True
+    path = mate_tool_access._path()
+    before = path.read_bytes()
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    with pytest.raises(PermissionError):
+        mate_tool_access.reserve_offer(ORDINARY, {"params": {}})
+    assert path.read_bytes() == before
 
 
 def test_a_held_request_waits_for_its_own_crewmates_flag(off, proposals):

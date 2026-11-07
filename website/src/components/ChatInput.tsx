@@ -23,10 +23,11 @@ import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { motion, AnimatePresence } from 'framer-motion'
-import { COMPOSER_ROW_SPRING, ComposerSizer } from './chat-input/ComposerSizer'
+import { COMPOSER_ROW_SPRING, ComposerSizer, SHAPE_FLIP_WINDOW_MS } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
+import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
 import TrustDropdown from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -45,7 +46,7 @@ import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
+import { useComposerDraftText, useComposerMentionSlice, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
 import { hasListLine } from './composerListIndent'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
@@ -60,7 +61,7 @@ import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
-import { useTextareaListContinuation } from './chat-input/listContinuation'
+import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
@@ -79,10 +80,10 @@ import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { useComposerStopKey } from './chat-input/stopKey'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
-import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
+import { INPUT_DRAG_MIN_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
-import { usePromptOptimizer } from './chat-input/optimizer'
+import { useOptimizeBeforeSend, usePromptOptimizer } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
@@ -105,8 +106,6 @@ const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
-/** Set once the user dismisses the visible list-indent hint under the composer. */
-const LIST_HINT_DISMISSED_KEY = 'kirocrew:list-indent-hint-dismissed'
 // HEIC/HEIF is listed by type AND extension: macOS file dialogs often report
 // an iPhone photo with no type, so the extension is what offers it. The upload
 // converts it to JPEG in the browser (utils/heicImage.ts).
@@ -134,9 +133,6 @@ const COMPOSER_ONE_ROW_RADIUS = 23
 // each of them at its own font size. Not `1lh`: Safari before 16.4 has no
 // such unit, and an invalid value would drop the padding to 0.
 const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]'
-// How long after a shape flip the text column still slides rather than jumps:
-// the spring above is settled well inside this.
-const SHAPE_FLIP_WINDOW_MS = 450
 // The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
 // gives up besides the clusters themselves.
 const ONE_ROW_CLUSTER_PAD_PX = 12
@@ -149,7 +145,7 @@ const ONE_ROW_TEXT_PULL_PX = 10
 // would get half the rim of a two-row one, so the rim is sized from the
 // two-row height (one wrapped line of text plus the toolbar) in both shapes.
 const COMPOSER_RIM_FROM_PX = 102
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
@@ -188,10 +184,11 @@ function ChatInput({
   holdSend = false,
   onCancelUpload,
   uploadCount = 0,
+  uploadSlot,
   pendingFiles = [],
   pendingDirs = [],
   resizedInfo,
-  onRemoveFile,
+  onRemoveFile: onRemoveFileProp,
   onRemoveDir,
   attachmentAnnouncement,
   pendingSessions = [],
@@ -233,6 +230,7 @@ function ChatInput({
   onStop,
   continuable = false,
   continueIsRecovery = false,
+  restoredQueueCount = 0,
   onContinue,
   continuing = false,
   isQueued = false,
@@ -244,7 +242,7 @@ function ChatInput({
   effortIsDefault = false,
   hasEffort,
   providerId: _providerId,
-  onFileSelect,
+  onFileSelect: onFileSelectProp,
   onTreeEntryDrop,
   clampDropOffset,
   onMentionKey,
@@ -256,7 +254,7 @@ function ChatInput({
   projectBranch,
   projectDetached,
   memoryMode,
-  sentMessages,
+  sentMessages: sentMessagesProp,
   onEditLastRequest,
   onAutomationClick,
   automation,
@@ -341,6 +339,14 @@ function ChatInput({
     voicePendingCaretRef,
     onClearVoiceError,
   } = composerVoice?.inputProps ?? NO_VOICE
+  // The root's Mention atom stands in for a host that wires neither (a split
+  // pane): a pick stages the file and its chip's remove strips its token. Its
+  // menu cuts each row's folder from the start, so sibling rows stay apart at
+  // pane width.
+  const rootMention = useComposerMentionSlice()
+  const mention = onFileSelectProp || onRemoveFileProp ? null : rootMention
+  const onFileSelect = onFileSelectProp ?? mention?.onFileSelect
+  const onRemoveFile = onRemoveFileProp ?? mention?.onRemoveFile
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const disabled = disabledProp
   // Someone else holds this session's typing lease: read-only, not disabled, so
@@ -378,13 +384,15 @@ function ChatInput({
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
   // render site of this component honours it and none can forget to pass it.
   const spellCheck = useComposerSpellcheck()
   const inlineMarkdown = useComposerInlineMarkdown()
+  // ↑/↓ recall off: no composer engine gets the sent prompts, so the keys only move the caret.
+  const sentMessages = useComposerArrowKeyHistory() ? sentMessagesProp : undefined
   // Live markdown styling needs rich text, which a textarea cannot draw, so the
   // Style Markdown While Typing setting also opts this user into the Lexical
   // composer. With the setting off (the default) the textarea path is unchanged.
@@ -453,6 +461,7 @@ function ChatInput({
     voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle,
   })
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const { inputAreaRef, keyboardLift } = useInputAreaKeyboardLift()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fileInputId = useId()
   const listIndentHintId = useId()
@@ -608,9 +617,9 @@ function ChatInput({
   // drift — recomputing it at each site is how the chip silently regresses to
   // claiming active work over a dead session.
   const resumeOffered = !!(continuable && onContinue && continueIsRecovery)
-  const continuePlaceholder = resumeOffered
-    ? i18nT('components.chatInput.turn_interrupted_press_resume')
-    : ''
+  const continuePlaceholder = !resumeOffered ? '' : restoredQueueCount > 1
+    ? i18nT('components.chatInput.turn_interrupted_restored_queue', { count: restoredQueueCount })
+    : i18nT(restoredQueueCount === 1 ? 'components.chatInput.turn_interrupted_restored_card' : 'components.chatInput.turn_interrupted_press_resume')
   const continueLabel = i18nT(continueIsRecovery
     ? 'components.chatInput.resume_interrupted_turn'
     : 'components.chatInput.continue_thread')
@@ -676,7 +685,7 @@ function ChatInput({
     setTextareaRef(textarea)
     attachListContinuation(textarea)
   }, [setTextareaRef, attachListContinuation])
-  const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize } = usePromptOptimizer({
+  const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize, optimizeBusy, sayBusy } = usePromptOptimizer({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands, optimizerMentionGuard,
     composerDisabled: disabled || typingLocked,
@@ -684,8 +693,13 @@ function ChatInput({
   useEffect(() => { onOptimizingChange?.(optimizing) }, [optimizing, onOptimizingChange])
   // A locked composer (a memory-mode switch is moving its draft) must not
   // start an optimize: the rewrite would land in the slot being deleted.
-  // Every entry -- button, textarea chord, Lexical chord -- goes through here.
-  const optimizeUnlessLocked = useCallback(() => { if (!disabled) optimizePrompt() }, [disabled, optimizePrompt])
+  // Every optimize entry, Send included, goes through here.
+  const optimizeUnlessLocked = useCallback(() => !disabled && optimizePrompt(), [disabled, optimizePrompt])
+  // Enter, Send and the Lexical send; every other send keeps today's path.
+  const sendOrOptimize = useOptimizeBeforeSend({
+    enabled: promptOptimizer && connected && !disabled && !terminal.active && !isRunning && !typingLocked && !voiceTranscribing && !holdSend,
+    slotId, value, optimize: optimizeUnlessLocked, onBusy: sayBusy, send: fireComposer,
+  })
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
   // OS file and text drags fall through to the host's handlers.
   // A typing-locked composer takes no drop at all: a tree row, a folder path
@@ -717,8 +731,8 @@ function ChatInput({
   // yielding to a picker, dictation, an approval, a dialog, IME composition or
   // an Escape that stopped voice read-back. Wired into BOTH editors: the textarea's keydown and the rich-text editor's
   // Escape command, so the binding holds with "Style Markdown While Typing" on.
-  const stopTurnOnEscape = useComposerStopKey({
-    isRunning, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
+  const { stopTurnOnEscape, escapeArmed } = useComposerStopKey({
+    slotKey: slotId, isRunning, stopState, onStop, anyPickerOpenRef, voiceRecording, voiceDrainCancellable, hasApproval, approvalNudgeActive,
     optimizingRef, onCancelOptimize: cancelOptimize,
   })
   // While an optimize runs the rich-text editor is not editable, so Lexical
@@ -748,8 +762,8 @@ function ChatInput({
     isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
   })
   const handleKeyDown = useComposerKeyDown({
-    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, valueFromUserRef, optimizingRef,
-    fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
+    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef,
+    fireComposer: sendOrOptimize, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
   })
   const { handleTextareaChange, handleLexicalChange, beforeInputRef } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef, mentionEditRange, inputRef })
   // Compose the textarea ref: the existing wiring (autosize + list continuation)
@@ -973,8 +987,8 @@ function ChatInput({
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
-    <div className={`input-area px-4 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
-      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
+    <div ref={inputAreaRef} className={`input-area px-4 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
+      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH + keyboardLift) + 'px' } : {}), ...(keyboardLift > 0 ? { paddingBottom: `calc(0.25rem + ${keyboardLift}px)`, ['--glass-shelf-lift' as string]: `${keyboardLift}px` } : {}) }}>
 
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}
@@ -1165,9 +1179,9 @@ function ChatInput({
                   )}
                   {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
                       resolves — a keyboard chord lands on this row's first enabled
-                      control. A `data-` hook rather than button text because every
-                      catalog translates the labels. */}
-                  <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
+                      control, and the reject chord's event arrives on the row. A `data-`
+                      hook rather than button text because every catalog translates the labels. */}
+                  <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
                       {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
                       {/* One dropdown carries every standing grant (trust-reads is a tier in it):
@@ -1232,7 +1246,10 @@ function ChatInput({
           />
         </div>
       )}
-      {approvalNotice && approvalNoticeKind === 'error' && (
+      {optimizeBusy && (
+        <div role="status" data-testid="optimize-busy" className="px-4 mb-1 text-muted text-[13px]">{optimizeBusy}</div>
+      )}
+      {typeof approvalNotice === 'string' && approvalNotice && approvalNoticeKind === 'error' && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below is unsaved. */}
           <ErrorNotice
@@ -1284,7 +1301,7 @@ function ChatInput({
       )}
       {appActions.popover}
 
-      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
+      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} filePathTail={!!mention} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),
@@ -1332,7 +1349,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`@container/composer ${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} relative transition-[color,background-color,border-color,border-radius] overflow-hidden ${inlineToolbarWhileFits ? 'shrink-0 ' : ''}${manualHeight !== null ? 'flex flex-col min-h-0' : inlineToolbar ? 'flex items-center' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
+        className={/* With the textarea, a manual height never goes below what its rows need (min-h-min). The text column carries the 44px of the textarea itself, because its 0% flex basis adds nothing to min-content. So a row shown in the box, like the list-indent hint, grows it instead of being painted over by the text. The rich-text editor keeps min-h-0: its draft would count toward min-content and grow the box. */ `@container/composer ${hasApproval ? 'rounded-b-2xl rounded-t-none' : inlineToolbar ? 'rounded-[23px]' : 'rounded-2xl'} relative transition-[color,background-color,border-color,border-radius] overflow-hidden ${inlineToolbarWhileFits ? 'shrink-0 ' : ''}${manualHeight !== null ? `flex flex-col ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-min'}` : inlineToolbar ? 'flex items-center' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
 
         data-inline-toolbar={inlineToolbar ? 'true' : undefined}
         data-tree-drop-active={treeDrop.state === 'accept' ? 'true' : undefined}
@@ -1437,7 +1454,7 @@ function ChatInput({
         <motion.div
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
-          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
+          className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
           // Composing in either editor (textarea or rich text) re-arms a
           // reclaimed session's resume prefetch; the sender throttles.
           onFocusCapture={() => emitComposeIntent(slotId)}
@@ -1476,7 +1493,7 @@ function ChatInput({
                 onChange={handleLexicalChange}
                 onBlocksChange={onPasteBlocksChange}
                 showFullPastes={showFullPastes}
-                onSend={fireComposer}
+                onSend={sendOrOptimize}
                 onOptimizeChord={lexicalOptimizeChord}
                 onUploadFiles={onUploadFiles}
                 controlRef={lexicalControlRef}
@@ -1623,7 +1640,7 @@ function ChatInput({
         <div data-testid="composer-bottom-row" className={inlineToolbar ? 'contents' : `flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           {typingLock && <TypingLockBanner lock={typingLock} />}
           <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}${typingLocked ? ' hidden' : ''}`}>
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} appActionRows={appActions.rows} />
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} uploadSlot={uploadSlot} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} appActionRows={appActions.rows} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
@@ -1807,7 +1824,7 @@ function ChatInput({
               ) : (
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                onClick={fireComposer}
+                onClick={sendOrOptimize}
                 disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || holdSend || optimizing || !connected}
                 title={holdSend ? holdSendReason : undefined}
                 aria-label={i18nT('components.chatInput.send')}
@@ -1818,6 +1835,7 @@ function ChatInput({
               </button>
               )}
             </>)}
+            {escapeArmed && <span role="status" className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="escape-stop-armed-hint">{i18nT('components.chatInput.esc_again_to_stop')}</span>}
           </div>
         </div>
 
@@ -1967,7 +1985,7 @@ function ChatInput({
           <div className="flex items-center gap-2 min-w-0">
           {presence}
           {contextPct != null && (
-            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
+            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} cacheSlot={sessionOnPeer ? null : activeSlot} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (
             <ModelChip modelName={modelName} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />

@@ -68,10 +68,11 @@ the larger of 8px and the space between the list's row and the end of the conten
 the whole list inside the area at the end of the scroll as well. Both are measured off
 the nearest scrolling ancestor rather than computed from the viewport, so the cap also
 holds when Settings is embedded in a split pane. A capped list shows the same
-decorative "More below" cue as SidePanelLayout's tab column (`MoreBelowCue`) while
-rows remain below. The cue is a strip inside the cap, under the scrolling rows, so it
-stays on the list's visible bottom edge as the rows scroll; it hides at the end of the
-list and is absent when the list fits. The narrow single-column layout is unchanged.
+"More below" cue as SidePanelLayout's tab column (`MoreBelowCue`) while rows remain
+below. The cue is a strip inside the cap, under the scrolling rows, so it stays on the
+list's visible bottom edge as the rows scroll; it hides at the end of the list and is
+absent when the list fits. The cue is a button: a click scrolls the list down by most
+of its height. The narrow single-column layout is unchanged.
 
 ### Read every class here narrow-first
 

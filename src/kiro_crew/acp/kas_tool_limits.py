@@ -1,7 +1,8 @@
 """Which per-server keys the KAS customAgents wire drops, and the one Crew re-carries.
 
-A sibling of :mod:`kiro_crew.acp.kas_agents`, which imports every name here and is
-the import path callers use.
+A sibling of :mod:`kiro_crew.acp.kas_agents`, which imports the projection's names
+here and is the import path callers use for them. :func:`with_switched_off_tools`
+runs after the projection, so the KAS harness imports it from here.
 """
 
 from __future__ import annotations
@@ -72,3 +73,21 @@ def disabled_tool_exclusions(spec: dict[str, Any]) -> tuple[list[str], list[str]
             continue
         refs.extend(f"@{name}/{tool}" for tool in tools)
     return list(dict.fromkeys(refs)), sorted(unusable)
+
+
+def with_switched_off_tools(
+    custom_agents: list[dict[str, Any]], disabled_tools: frozenset[tuple[str, str]]
+) -> list[dict[str, Any]]:
+    """*custom_agents* with ``@server/tool`` in ``excludedTools`` for each pair.
+
+    The pairs are ``session_mcp.session_mcp_disabled_tools``'s.
+    :func:`disabled_tool_exclusions` reads the spec alone; the dashboard's tool-off
+    action (``api_mcp_toggle_tool``) writes only the global settings file.
+    """
+    refs = [f"@{server}/{tool}" for server, tool in sorted(disabled_tools)]
+    if not refs:
+        return custom_agents
+    return [
+        {**entry, "excludedTools": list(dict.fromkeys([*entry.get("excludedTools", []), *refs]))}
+        for entry in custom_agents
+    ]

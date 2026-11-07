@@ -38,11 +38,11 @@ async def _send(
 ) -> list[str]:
     sent: list[str] = []
 
-    async def _dm(_state, _channel, text, *, caller_session):
+    async def _dm(_state, _channel, text, *, caller_session, markdown=False):
         sent.append(text)
         return True, "", ""
 
-    async def _own(_state, _key, text, *, channel_type=""):
+    async def _own(_state, _key, text, *, channel_type="", markdown=False):
         sent.append(text)
         return True
 

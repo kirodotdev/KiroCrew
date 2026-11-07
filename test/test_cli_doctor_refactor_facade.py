@@ -108,6 +108,7 @@ _BASE_NAMES: dict[str, str] = {
     "_doctor_cron_health": "own-func",
     "_doctor_cron_script_sources": "own-func",
     "_doctor_data_home": "own-func",
+    "_doctor_data_home_owner": "own-func",
     "_doctor_deprecated_agent_specs": "own-func",
     "_doctor_discord": "own-func",
     "_doctor_effective_model": "own-func",

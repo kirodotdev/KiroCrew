@@ -279,8 +279,20 @@ never relabel it success in the friction report.
    live work needs a larger or renewed bound, raise `max_cycles` and
    `max_runtime_secs` together with `monitor_update` before either expires, under
    the same rule; `max_cycles` counts the loop's whole life and the server caps it
-   at 1000. `monitor_start` is create-only. Call `autonudge_stop` yourself when
-   the exit condition fires — coasting into a bound is a failure, not a finish.
+   at 1000. `monitor_start` is create-only. So one loop lasts at most 1000
+   cycles, renewals included, and only a fresh loop goes further. **Never stop
+   and re-arm from a patrol wake:** while the loop runs `monitor_start` is
+   refused, and once a wake stops it the server refuses the replacement, which
+   leaves no patrol at all. When a cycle's `[patrol budget: ...]` line says
+   `10% or less left` and live work remains, ask once in your reply text (not
+   with `ask_question`, whose answer comes back inside the wake) for one message
+   in this chat to renew the patrol, and record the owed re-arm in
+   `conductor_tasks`. In the next turn the person's own message starts, never a
+   wake or an injected message, call `autonudge_stop`, then `monitor_start` with
+   the same interval, bounds and standing instruction; if that start is refused,
+   say so, because no patrol is running. With no reply the patrol ends at its
+   bound. Call `autonudge_stop` yourself when the exit condition fires —
+   coasting into a bound is a failure, not a finish.
    That ~90s interval is also what sizes your panel's stale window:
    `BOARD_STALE_AFTER_SECONDS` in `kiro_crew.dashboard.handlers.agent_panel` is
    about ten of these intervals, so a board reads stale only after the log has
@@ -316,9 +328,10 @@ via `monitor_update`, see "Live steering"):
 > of the run, because by then the reasoning is what has been lost.
 > Check budgets on items with open sessions every ~5 cycles. Admission per the
 > delivery counters first, load/memory second, and never pad the fleet — an idle
-> slot is a supply reading, not a gap to fill. Quiet cycle = one line, end
-> turn. EXIT when queue empty and fleet drained: final tally, then
-> `autonudge_stop`.
+> slot is a supply reading, not a gap to fill. `10% or less left` on the
+> budget line with live work → ask once for a renewal (Startup step 4).
+> Quiet cycle = one line, end turn. EXIT when queue empty and fleet drained:
+> final tally, then `autonudge_stop`.
 
 ## Your panel: publish JUDGMENTS, never numbers
 

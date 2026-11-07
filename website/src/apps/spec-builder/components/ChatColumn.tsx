@@ -2,7 +2,7 @@
 // (ChatEmbed → ChatMessageList: markdown, tool cards, options, streaming) to
 // this spec's slot. Uses the new frameless + startAtBottom ChatEmbed props
 // instead of the CSS overrides the external app relied on.
-import ChatEmbed from '../../../app-sdk/ChatEmbed'
+import ChatEmbed, { type ChatEmbedSendMeta } from '../../../app-sdk/ChatEmbed'
 
 import { i18nT } from '../../../i18n/t'
 export interface ChatColumnProps {
@@ -22,7 +22,7 @@ export interface ChatColumnProps {
    * resurrect an unscoped slot whose approved tools would run outside the
    * project.
    */
-  onSend: (message: string) => Promise<unknown>
+  onSend: (message: string, meta?: ChatEmbedSendMeta) => Promise<unknown>
 }
 
 export default function ChatColumn({ name, slotKey, onSend }: ChatColumnProps) {

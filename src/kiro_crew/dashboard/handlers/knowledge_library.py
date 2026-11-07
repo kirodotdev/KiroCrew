@@ -405,6 +405,11 @@ async def update_item(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     allowed = {"tags", "item_type", "status", "title", "summary", "namespace"}
     fields = {k: v for k, v in body.items() if k in allowed}
+    # ``title`` and ``item_type`` are NOT NULL columns; a null there means "no
+    # change", not a write the store would refuse with an integrity error.
+    for column in ("title", "item_type"):
+        if column in fields and fields[column] is None:
+            del fields[column]
     if not fields:
         return web.json_response({"error": "no valid fields"}, status=400)
     await _audited_write(

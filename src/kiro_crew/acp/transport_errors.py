@@ -113,9 +113,12 @@ class AcpError(Exception):
             self.rejected_model: str | None = None
         if not hasattr(self, "advertised"):
             self.advertised: list[str] = []
-        # Sign-in failure tag, set by :func:`_raise_acp_error` when the raw frame
-        # is a session-expiry / rejected-credential answer, so the dashboard's
-        # error row can offer the Kiro sign-in card instead of a retry.
+        # Sign-in failure tags, set by :func:`_raise_acp_error` when the raw frame
+        # is a session-expiry / rejected-credential answer. ``sign_in_needed`` is
+        # set for every harness, so the task queue fails the row as auth without
+        # reading the prose; ``auth_required`` only for a harness that signs in
+        # through Crew, so the dashboard's error row offers the Kiro sign-in card.
+        self.sign_in_needed: bool = False
         self.auth_required: bool = False
         # Spent-allowance tag, set by :func:`_raise_acp_error` when the raw
         # frame is a usage-limit answer ("The monthly usage limit has been
@@ -174,6 +177,8 @@ class AcpError(Exception):
         # ``connection_failure``. The interactive ladder waits longer for it and
         # rewinds the failed prompt before re-sending. ``None`` means unclassified.
         self.throttle: bool | None = None
+        # A TRANSIENT capacity/rollout refusal (raw frame); its card offers the picker.
+        self.model_unavailable: bool = False
         # Set by :func:`_raise_acp_error` when the frame's ``data`` names
         # ``errorKind: cloud_credential_error``: the process cached credentials
         # it cannot reload, so the remedy is a fresh process, not a retry.
@@ -1629,8 +1634,8 @@ def _format_acp_error_worded(
             )
         elif _is_session_expired(haystack):
             # Session expiry (401/403, or prose saying as much) — distinct from
-            # the Bedrock credential errors above. Retrying or switching models
-            # cannot succeed, so the message must not suggest either.
+            # the Bedrock credential errors above. Switching models cannot
+            # succeed, so the message must not suggest it.
             #
             # The sign-in half comes from the harness's own declaration: which
             # command re-authenticates is a per-harness fact. This arm HAS
@@ -1642,16 +1647,19 @@ def _format_acp_error_worded(
             # kiro id IS the empty string. That is correct rather than a fallback:
             # a caller reaching here with no backend in hand is on the shared
             # runtime, whose harnesses are the two on the host identity store.
-            # The retry verdict stays hard-coded -- that is this arm's own finding
-            # about the error, not sign-in advice.
+            # The model-switch verdict stays hard-coded -- that is this arm's own
+            # finding about the error, not sign-in advice.
+            #
+            # No "Your session has expired." lead: these signals also fire for a
+            # host that was never signed in, and the signed-out message is true
+            # in both cases.
             formatted = (
-                "Your session has expired. "
                 f"{host_auth.signed_out_message(backend)} "
-                "Retrying or switching models will not help — this is a "
-                "sign-in issue, not a backend error."
+                "Switching models will not help — this is a sign-in issue, not "
+                "a backend error."
                 f"{req_id_suffix}"
             )
-        elif is_model_registry_unavailable(data):
+        elif is_model_registry_unavailable(error.get("data")):
             formatted = MODEL_REGISTRY_UNAVAILABLE_TEXT + req_id_suffix
         elif _RE_CONNECTION.search(haystack) or _RE_CONNECTOR_FAILURE.search(haystack):
             formatted = (
@@ -1894,12 +1902,9 @@ def _raise_acp_error(
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.
-    err.connection_failure = (
-        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_CONNECTION
-    )
-    err.throttle = (
-        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_THROTTLE
-    )
+    _frame_kind = classify_provider_error(raw_data).kind
+    err.connection_failure = bool(err.transient) and _frame_kind == PROVIDER_ERROR_CONNECTION
+    err.throttle = bool(err.transient) and _frame_kind == PROVIDER_ERROR_THROTTLE
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except
@@ -1911,6 +1916,8 @@ def _raise_acp_error(
     # the same context.
     raw_data_field = provider_data_text(error)  # the same field the verdict above read
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
+    _data_kind = classify_provider_error(raw_data, data=raw_data_field).kind
+    err.model_unavailable = bool(err.transient) and _data_kind == PROVIDER_ERROR_MODEL_UNAVAILABLE
     # The claude adapter's overflow rides in ``message`` (anchored match, see
     # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
     # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag
@@ -1965,15 +1972,14 @@ def _raise_acp_error(
     # happens to carry a 401/403 is not a Kiro sign-in problem. Gated on the
     # harness signing in through Crew's own identity (harness parity H6): for a
     # harness with its own credential store the card would sign in the wrong
-    # thing, so its 401 stays a plain error carrying that harness's remedy.
-    if (
+    # thing, so its 401 carries only ``sign_in_needed`` and that harness's remedy.
+    err.sign_in_needed = (
         not rejected
-        and backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
         and _is_session_expired(raw_data)
         and not _RE_AUTH.search(raw_data)
         and not _RE_USAGE_LIMIT.search(raw_data)
-    ):
-        err.auth_required = True
+    )
+    err.auth_required = err.sign_in_needed and backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
     # Tag a spent plan allowance the same way: from the raw frame, and only when
     # the formatter reached its usage-limit branch -- an entitlement rejection
     # that happens to carry limit wording keeps its own (served-model) remedy.

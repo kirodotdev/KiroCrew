@@ -10,22 +10,23 @@
  * password field was typeable by the agent and unmasked in the live view.
  * Pinned here against the real source, evaluated the way the browser does.
  */
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { readSource } from './readSource'
+
 const HARNESS_DIR = join(__dirname, '../../../src/kiro_crew/browser_harness')
 
 function walkerSource(): string {
-  const lines = readFileSync(join(HARNESS_DIR, 'snapshot_walker.js'), 'utf8').split('\n')
+  const lines = readSource(join(HARNESS_DIR, 'snapshot_walker.js')).split('\n')
   while (lines.length && (!lines[0].trim() || lines[0].trimStart().startsWith('//'))) lines.shift()
   return lines.join('\n').trim()
 }
 
 /** `_MASK_JS` exactly as Python concatenates it: the adjacent string literals joined. */
 function maskSource(): string {
-  const py = readFileSync(join(HARNESS_DIR, 'screencast.py'), 'utf8')
+  const py = readSource(join(HARNESS_DIR, 'screencast.py'))
   const start = py.indexOf('_MASK_JS = (')
   const end = py.indexOf('\n)\n', start)
   const body = py.slice(start, end)

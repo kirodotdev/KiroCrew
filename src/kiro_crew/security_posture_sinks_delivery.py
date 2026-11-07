@@ -362,8 +362,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Feishu answer body",
         "feishu/renderer.py",
-        "The answer body Feishu renders as markdown. `text()` is what `on_done` "
-        "sends, and Feishu is a buffered zero-widget channel: its body reaches "
+        "The answer body Feishu renders as markdown. Feishu is a buffered "
+        "zero-widget channel: its body reaches "
         "`render_options_as_text` -> `apply_options_cap`, which display-redacts the "
         "numbered OPTIONS choices but returns the body itself unscrubbed, so the "
         "only pass the body had was the driver's channel-neutral LITERAL stream "
@@ -371,8 +371,9 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "survives that scan and is reassembled when Feishu renders the markdown. "
         "The body is screened at the send boundary through `Renderer.redact_for_"
         "target` -- the `redact_for_display` pass over the credential + "
-        "exfiltration-URL chain, on the display form that actually ships. `text()` "
-        "is where the scrub lands because `text()` is what `on_done` sends; history "
+        "exfiltration-URL chain, on the display form that actually ships: `on_done` "
+        "runs it over the body after taking out the image references it uploads, so "
+        "the refusal lines and the failed-upload note are covered too; history "
         "is persisted separately by `messaging.dispatch` from the driver's own "
         "accumulated text, so this pass covers the shipped bytes without touching "
         "the transcript.",
@@ -536,11 +537,13 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "_redact_project_path, which the Git panel and the file tree share.",
     ),
     (
-        "Git panel status and log",
+        "Git panel status, log and branch diff",
         "dashboard/file_api/git_panel.py",
         "The branch, file paths, commit messages and authors the Git panel's "
         "status and log (api_project_git_status, api_project_git_log) return are "
-        "redacted; file paths go through redact_path_segments.",
+        "redacted; file paths go through redact_path_segments. The branch diff "
+        "(api_project_git_branch_diff) masks both whole bodies of each file before "
+        "diffing them, as api_file_diff does.",
     ),
     (
         "Project file tree",
@@ -639,7 +642,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential sitting in a legacy row — written by an older build, or by any "
         "path other than the redacting POST /ledger route — would be fetched by every "
         "teammate and require a history rewrite to recall. The pre-push scan takes the "
-        "UNION of `security.get_credential_patterns()` and this app's own "
+        "UNION of `security.iter_credential_matches` and this app's own "
         "`secrets.redact_tokens`, because neither is a superset: the core patterns "
         "carry AKIA/ASIA and miss a prefixed Datadog application key, while "
         "redact_tokens knows the provider shapes and misses an AWS access key id. A "

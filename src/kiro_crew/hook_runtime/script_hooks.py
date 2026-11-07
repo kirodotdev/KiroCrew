@@ -55,7 +55,10 @@ if TYPE_CHECKING:
 
 
 def _hook_subprocess_env(
-    hook: "ScriptHook", context: str, acp_session_id: str | None = None
+    hook: "ScriptHook",
+    context: str,
+    acp_session_id: str | None = None,
+    session_model: str | None = None,
 ) -> dict[str, str]:
     """Build the environment a script-hook subprocess runs with.
 
@@ -80,12 +83,18 @@ def _hook_subprocess_env(
     :mod:`kiro_crew.agent_sdk.spec_hooks`). It is set as ``KIRO_SESSION_ID``, the
     name kiro-cli gives the hooks it runs itself, so a spec hook reads the same
     value on either backend. Not known yet, it stays unset rather than empty.
+
+    ``session_model`` is the model the firing session runs on, set as
+    ``KIROCREW_SESSION_MODEL``. kiro-cli has no such variable, so the name is
+    Kiro Crew's. Unknown, it stays unset.
     """
     env = {k: v for k, v in os.environ.items() if k in _HOOK_BASE_ENV_KEYS}
     env["KIROCREW_HOOK_EVENT"] = hook.event
     env["KIROCREW_HOOK_CONTEXT"] = context[:500]
     if acp_session_id:
         env["KIRO_SESSION_ID"] = acp_session_id
+    if session_model:
+        env["KIROCREW_SESSION_MODEL"] = session_model
     return env
 
 
@@ -151,12 +160,14 @@ async def run_script_hook(
     hook_event: dict | None = None,
     cwd: str | None = None,
     acp_session_id: str | None = None,
+    session_model: str | None = None,
 ) -> ScriptHookResult:
     """Execute a script hook's command with timeout.
 
     Passes hook event as JSON via STDIN (Kiro CLI compatible). ``cwd`` is the
     directory the command runs in; ``None`` keeps the gateway's own.
-    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` (see ``_hook_subprocess_env``).
+    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` and ``session_model``
+    ``KIROCREW_SESSION_MODEL`` (see ``_hook_subprocess_env``).
     """
     start = time.monotonic()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
@@ -275,10 +286,10 @@ async def run_script_hook(
         )
 
         # A script hook inherits only the minimum env its shell + command need
-        # (``_HOOK_BASE_ENV_KEYS``) plus the two hook-metadata variables — NOT a
+        # (``_HOOK_BASE_ENV_KEYS``) plus the hook-metadata variables — NOT a
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
-        env = _hook_subprocess_env(hook, context, acp_session_id)
+        env = _hook_subprocess_env(hook, context, acp_session_id, session_model)
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
         # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
         # platforms — only the eventual spawn form differs (see the Windows
@@ -479,6 +490,12 @@ class ScriptHookStore:
         # belong to the user. Preserve their raw JSON values across later status
         # and CRUD writes so fail-soft loading does not become silent data loss.
         self._unparsed_hook_entries: list[object] = []
+        # True while the hooks in the file are not the hooks in memory: the last
+        # load could not read or represent the file, so ``self._hooks`` is empty
+        # (or partial) rather than a copy of it. Saving that would replace every
+        # hook the file holds, so ``_write_hooks_file`` refuses while it is set and
+        # each mutation reloads first (``_atomic_mutation``).
+        self._load_failed = False
         # Mutations are offloaded with asyncio.to_thread (the persistence takes a
         # file lock and fsyncs, which must not block the loop) rather than being
         # implicitly serialised on the single event-loop thread, so two of them can
@@ -495,12 +512,12 @@ class ScriptHookStore:
     def _load(self) -> None:
         if not self._path.exists():
             return
-        from kiro_crew.user_json import loads_user_json
-
         try:
-            data = loads_user_json(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+            # Bytes: json.loads detects UTF-8 (BOM or not), UTF-16 and UTF-32.
+            data = json.loads(self._path.read_bytes())
+        except (ValueError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
+            self._load_failed = True
             return
         self._load_data(data)
 
@@ -518,10 +535,12 @@ class ScriptHookStore:
         # mutation rather than overwriting data the store cannot preserve.
         if not isinstance(data, dict):
             logger.warning("Failed to load hooks: root is not an object")
+            self._load_failed = True
             return
         hooks_data = data.get("hooks", [])
         if not isinstance(hooks_data, list):
             logger.warning("Failed to load hooks: hooks collection is not a list")
+            self._load_failed = True
             return
 
         for h in hooks_data:
@@ -575,14 +594,19 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
-        from kiro_crew.user_json import loads_user_json
-
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
+            if self._load_failed:
+                # The in-memory hooks are not the file's: writing them would erase
+                # every hook the failed load could not read.
+                raise webhooks.WebhookStoreUnreadable(
+                    f"{self._path.name} could not be loaded; refusing to overwrite it "
+                    "and erase the hooks it holds"
+                )
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
+                    loaded = json.loads(self._path.read_bytes())
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"
@@ -595,7 +619,7 @@ class ScriptHookStore:
                     data = {k: v for k, v in loaded.items() if k != "hooks"}
                 except webhooks.WebhookStoreUnreadable:
                     raise
-                except (json.JSONDecodeError, OSError) as exc:
+                except (ValueError, OSError) as exc:
                     logger.warning("hooks.json unreadable, refusing to overwrite it: %s", exc)
                     raise webhooks.WebhookStoreUnreadable(
                         f"{self._path.name} is unreadable; refusing to overwrite it "
@@ -625,7 +649,26 @@ class ScriptHookStore:
         ``ScriptHook`` in place; a shallow dict copy would share those objects and
         restore nothing. The set is small (tens of hooks), so the copy is cheap
         next to the fsync it guards.
+
+        A store whose load failed reloads from disk first, so the mutation applies
+        to the hooks the file actually holds; when the file still cannot be loaded
+        the mutation raises :class:`webhooks.WebhookStoreUnreadable` before it
+        changes anything. Callers hold ``self._mutex``.
         """
+        if self._load_failed:
+            self._hooks = {}
+            self._unparsed_hook_entries = []
+            self._load_failed = False
+            try:
+                self._load()
+            except BaseException:
+                self._load_failed = True
+                raise
+            if self._load_failed:
+                raise webhooks.WebhookStoreUnreadable(
+                    f"{self._path.name} could not be loaded; refusing to overwrite it "
+                    "and erase the hooks it holds"
+                )
         snapshot = copy.deepcopy(self._hooks)
         try:
             yield
@@ -787,6 +830,7 @@ class ScriptHookStore:
         extra_hooks_tool_names: Sequence[str] | None = None,
         tool_match_names: Sequence[str] | None = None,
         acp_session_id: str | None = None,
+        session_model: str | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -832,6 +876,9 @@ class ScriptHookStore:
         stdin: they are the spec hooks kiro-cli would
         run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
         backend, so they still do not.
+
+        ``session_model`` is the model the firing session runs on. Every hook
+        this fire runs, stored or extra, gets it as ``KIROCREW_SESSION_MODEL``.
 
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
@@ -883,7 +930,10 @@ class ScriptHookStore:
             extra_event["cwd"] = extra_hooks_cwd
         if extra_hooks_tool_names:
             extra_event["tool_name"] = extra_hooks_tool_names[0]
-        extra_run: dict[str, str] = {}
+        stored_run: dict[str, str] = {}
+        if session_model:
+            stored_run["session_model"] = session_model
+        extra_run = dict(stored_run)
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
@@ -992,7 +1042,7 @@ class ScriptHookStore:
                 result = await run_script_hook(hook, context, extra_event, **extra_run)
                 result.from_spec = bool(hook.spec_origin)
             else:
-                result = await run_script_hook(hook, context, hook_event)
+                result = await run_script_hook(hook, context, hook_event, **stored_run)
             results.append(result)
             logger.info(
                 "Hook %s (%s): %s in %dms (exit=%d)",

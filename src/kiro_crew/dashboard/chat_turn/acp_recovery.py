@@ -36,6 +36,7 @@ from kiro_crew.dashboard.state import _TURN_CONTINUING_INJECT_KINDS
 from kiro_crew.llm_helpers import (
     CREDENTIAL_RELOAD_RETRY_NOTICE,
     acp_error_is_connection_failure,
+    acp_error_is_pipe_death,
     acp_error_is_throttle,
     acp_error_needs_fresh_credentials,
     connection_retry_delay,
@@ -269,9 +270,9 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     _prompt_depth = turn._prompt_depth
     slot = turn.slot
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _turn_emitted = turn._turn_emitted
     client = turn.client
-    message = turn.message
 
     logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
     # The class this handler caught is a fact only this site holds, and the
@@ -282,6 +283,10 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     turn._crew_log_error = _crew_log_error
     needs_session_reset = True
     turn.needs_session_reset = needs_session_reset
+    # The process died mid-answer, so kiro-cli never wrote this prompt to
+    # its log and the ``session/load`` the next claim runs lacks it: the
+    # reset returns a drained merge card to the queue whether or not a
+    # recovery is queued below (``_native_session_lacks_the_prompt``).
     if getattr(exc, "ambiguous_delivery", False) is True:
         # Every steer written into this turn sits in the same stalled pipe as
         # its prompt, so the teardown requeues each as possibly delivered.
@@ -341,7 +346,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
             },
         )
         _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
+            _message_without_merge_cards,
             _turn_emitted,
             cause=ResetCause.CONNECTION_LOST,
             message_is_synthetic=_is_synthetic,
@@ -370,9 +375,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
             )
-            turn.died_notice = (
-                "The connection to the agent kept dropping. Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_connection_dropped"
         else:
             slot.append(
                 "error",
@@ -380,10 +383,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING),
             )
-            turn.died_notice = (
-                "The agent process kept restarting and the turn did not finish. "
-                "Open the chat to retry."
-            )
+            turn.died_notice = "chat_stopped_agent_restarting"
     else:
         slot.append(
             "error",
@@ -398,11 +398,11 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     from kiro_crew.dashboard import gateway_notice as gn
 
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
     client = turn.client
-    message = turn.message
     slot = turn.slot
 
     logger.info(
@@ -423,7 +423,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     # Option Y: pipe-death ("process exited"/"not running") shares the
     # _acp_pipe_death_retries counter with the AcpProcessDied handler;
     # genuine "already in progress" busy uses _prompt_busy_retries.
-    _is_pipe_death = "process exited" in _msg or "not running" in _msg
+    _is_pipe_death = acp_error_is_pipe_death(exc)
     # Bound BEFORE the branch, not inside it. Both arms below fall
     # through to the same `elif _exhausted:` reporting, which reads this
     # flag -- so binding it only where a death is involved leaves the
@@ -435,6 +435,12 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     # verdict is the correct one and stays unchanged.
     _own_fault = True
     if _is_pipe_death:
+        # The pipe death that arrives as a plain AcpError is the same
+        # mid-answer death the typed arm handles: the reloaded native
+        # session lacks this prompt, so the reset returns a drained
+        # merge card to the queue (``_native_session_lacks_the_prompt``).
+        # A busy session refused the prompt before any output, so there
+        # the restore follows from nothing having streamed.
         # Same attribution question as `_on_process_died`,
         # and the same answer: this arm catches the pipe-death that
         # arrives as an AcpError instead of a typed one, so a shared
@@ -477,9 +483,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
             )
             turn.died_notice = (
-                "The connection to the agent kept dropping. Open the chat to start a new one."
-                if _is_pipe_death
-                else "The chat stopped and could not recover. Open the chat to start a new one."
+                "chat_stopped_connection_dropped" if _is_pipe_death else "chat_stopped_unrecovered"
             )
         else:
             slot.append(
@@ -488,10 +492,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING),
             )
-            turn.died_notice = (
-                "The agent process kept restarting and the turn did not finish. "
-                "Open the chat to retry."
-            )
+            turn.died_notice = "chat_stopped_agent_restarting"
     elif _prompt_depth == 0:
         # Single emit (see the _on_process_died note): slot.append persists +
         # broadcasts one chat_message via _on_message; no explicit broadcast_ws.
@@ -512,7 +513,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
             meta={"kind": TRANSIENT_RETRY_KIND, **gn.gateway_notice_meta(_retry_notice)},
         )
         _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
+            _message_without_merge_cards,
             _turn_emitted,
             # Shared branch: `_status` above already told the user
             # which of the two happened, so the continuation must
@@ -546,9 +547,9 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
     from kiro_crew.dashboard import gateway_notice as gn
 
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     # The backend process is alive but holds no session under the id this
@@ -567,6 +568,9 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
     )
     needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
     turn.needs_session_reset = needs_session_reset
+    # Either cause replaces the process before the model answered, so
+    # nothing it reloads holds this prompt: the reset returns a drained
+    # merge card to the queue (``_native_session_lacks_the_prompt``).
     await _persist_partial_reply(
         turn,
         "error: cloud credentials not loaded" if _creds else "error: session not found",
@@ -592,7 +596,7 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             },
         )
         _requeue_text, _requeue_payload = build_recovery_requeue(
-            message,
+            _message_without_merge_cards,
             _turn_emitted,
             cause=ResetCause.CONNECTION_LOST,
             message_is_synthetic=_is_synthetic,
@@ -619,6 +623,10 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
         # The fresh process failed too, so the helper itself is broken
         # and a new chat would fail the same way: the provider's own
         # instruction is the only actionable line.
+        # Stays English: ``credential_give_up_text(exc)`` is the provider
+        # helper's own instruction, carried verbatim; a token would localize
+        # only the surrounding "Then send your message again." fragment and
+        # drop that instruction.
         slot.append(
             "error",
             f"❌ {credential_give_up_text(exc)} Then send your message again.",
@@ -709,8 +717,8 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
 
     _escalation = turn._escalation
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _turn_emitted = turn._turn_emitted
-    message = turn.message
     session_key = turn.session_key
     slot = turn.slot
     # Kiro accepted this turn with no new attachment, then rejected an
@@ -745,7 +753,9 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
     else:
         # No model activity landed, so the current text is safe to
         # replay verbatim after removing the poisoned native history.
-        _image_recovery_text = message
+        # Without its merge-card frames: the finally puts the cards'
+        # contexts back on the queue and the replay turn drains them.
+        _image_recovery_text = _message_without_merge_cards
         _image_recovery_payload = payload_for_replay(_is_synthetic)
     slot.append(
         "error",
@@ -793,10 +803,10 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
 async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
     """A transient error before the first token: retry the turn."""
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     client = turn.client
-    message = turn.message
     slot = turn.slot
     # Transient backend 5xx (InternalServerError / DispatchFailure /
     # ConnectionReset, JSON-RPC -32603): the kiro-cli process is ALIVE —
@@ -964,7 +974,7 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
             _queue_recovery(
                 turn,
                 0,
-                message,
+                _message_without_merge_cards,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 # Verbatim replay: ORIGINAL only if the incoming text was
                 # the user's. On a recovery turn it is the runner's
@@ -989,8 +999,8 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
     _crew_log_sid = turn._crew_log_sid
     _crew_log_turn_no = turn._crew_log_turn_no
     _is_synthetic = turn._is_synthetic
+    _message_without_merge_cards = turn._message_without_merge_cards
     client = turn.client
-    message = turn.message
     slot = turn.slot
     # Append-only the session's log (flag-gated, fail-soft). Emitted HERE,
     # in the branch body, so it runs after _fallback_swap_for_turn has
@@ -1023,6 +1033,12 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
     # in v1 and Stop-suppressed cycles never swap (both guarded in
     # _run_chat's elif condition before the side-effecting swap runs).
     slot.purge_chunks()
+    if len(slot._fallback_walked) == 1:
+        # The walk's first swap: `exc` is the SELECTED model's own error. Record
+        # whether it was a capacity/rollout refusal, so a card the walk ends on
+        # is judged by that model (a Resume returns to it) and not by the last
+        # candidate's error (see `_on_acp_error_card`).
+        slot._fallback_walk_refused = getattr(exc, "model_unavailable", False) is True
     _fb_primary_safe, _ = redact_exfiltration_urls(
         slot._fallback_primary_model or "the selected model"
     )
@@ -1093,7 +1109,7 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
         _queue_recovery(
             turn,
             0,
-            message,
+            _message_without_merge_cards,
             kind=SYNTHETIC_RECOVERY_KIND,
             # Verbatim replay, same rule as in _on_acp_transient_retry.
             payload=payload_for_replay(_is_synthetic),

@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # ingest+append pair (mirrors discord/telegram).
 __all__ = [
     "append_attachment_context",
+    "attachment_names",
     "process_weixin_attachments",
 ]
 
@@ -99,6 +100,12 @@ def _voice_mime_ext(sub: dict[str, Any]) -> tuple[str, str]:
     return _VOICE_ENCODINGS[6]
 
 
+def _file_name(sub: dict[str, Any]) -> str:
+    """A file item's own name, else ``file.bin``."""
+    raw_name = sub.get("file_name")
+    return raw_name if isinstance(raw_name, str) and raw_name.strip() else "file.bin"
+
+
 def _describe(item: dict[str, Any]) -> tuple[str, str, int]:
     """``(name, mimetype, size)`` for one media item."""
     item_type = item.get("type")
@@ -115,8 +122,7 @@ def _describe(item: dict[str, Any]) -> tuple[str, str, int]:
         return f"voice.{ext}", mime, 0
 
     if item_type == ITEM_FILE:
-        raw_name = sub.get("file_name")
-        name = raw_name if isinstance(raw_name, str) and raw_name.strip() else "file.bin"
+        name = _file_name(sub)
         mime = _PORTABLE_FILE_MIMES.get(Path(name).suffix.lower()) or (
             mimetypes.guess_type(name)[0] or ""
         )
@@ -148,6 +154,23 @@ def _to_attachment(item: dict[str, Any]) -> tuple[Attachment, str] | None:
         Attachment(name=name, mimetype=mimetype, size=size, url=param, suffix_hint=suffix),
         aes_key,
     )
+
+
+def attachment_names(items: list[Any]) -> tuple[str, ...]:
+    """The name each media item is ingested under: a file's own, else its kind.
+
+    A file's name is read without the MIME guess ``_describe`` makes, because
+    ``mimetypes.guess_type`` raises on a URL-shaped name and this runs before
+    ingestion's own error handling.
+    """
+    names = []
+    for item in items:
+        if item.get("type") != ITEM_FILE:
+            names.append(_describe(item)[0])
+            continue
+        sub = item.get(_MEDIA_FIELD[ITEM_FILE])
+        names.append(_file_name(sub if isinstance(sub, dict) else {}))
+    return tuple(names)
 
 
 def _voice_transcript(item: Any) -> str | None:

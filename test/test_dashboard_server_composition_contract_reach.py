@@ -765,7 +765,8 @@ _API_HOOKS = {
 #: they make count. A boot step added on purpose updates these with it.
 _DASHBOARD_BOOT = tuple("""
     consume_managed_service_launch_environment set_pending_staged_hook
-    set_pending_consumed_hook set_global_hook_store register_skill_read_observer
+    set_pending_consumed_hook _register_lesson_change_hook set_lessons_changed_hook
+    set_global_hook_store register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
     _apply_builtin_adoptions
@@ -784,6 +785,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
@@ -804,11 +806,13 @@ _DASHBOARD_BOOT = tuple("""
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
-    _register_unix_socket_cleanup build_hardened_runner on_gateway_startup
+    _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
+    on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
-    _kick_builtin_adoption_staging _kick_interrupted_update_sweep _resolved_bound_port
+    _kick_builtin_adoption_staging _kick_interrupted_update_sweep _kick_app_backend_backstop
+    _resolved_bound_port
     _start_unix_site
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
@@ -866,12 +870,14 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
     _register_browser_harness_lifecycle _register_connections_warm_lifecycle _register_workflow_lifecycle
-    _register_unix_socket_cleanup build_hardened_runner register_pre_exec_stop bind_address_for _start_site
+    _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
+    register_pre_exec_stop bind_address_for _start_site
     _arm_listener_guard _kick_pinned_order_load _export_bound_port _resolved_bound_port
     _resolved_bound_port _start_unix_site _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
@@ -1110,8 +1116,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 335
-_MCP_TABLE_DIGEST = "391a27bb30d9f764a79e2dc5ef5bc00429f414975800e301a7c65b63928b75df"
+_MCP_TABLE_ROWS = 340
+_MCP_TABLE_DIGEST = "00c0f8d784339a72680b7ea1593ec1fa2e7960e2b5e774db846a34e0a46e8f55"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

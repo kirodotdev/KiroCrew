@@ -394,16 +394,17 @@ UNKNOWN_AGENT_AUTH = AgentAuthDeclaration(
 
 #: kiro-cli's action, and its signed-out statement, kept separate for the reason on
 #: the two fields. The statement is the string the auth-required path raises: that
-#: path reaches it on the harness's own stderr evidence.
+#: path reaches it on the harness's own stderr evidence. Both end at sending again:
+#: signing in again keeps the chat, so its next message succeeds.
 #:
 #: Each names :data:`KIRO_CLI_LOGIN_COMMAND`, the form that works for a kiro-cli
 #: on the user's ``PATH``. :func:`sign_in_remedy` and :func:`signed_out_message`
 #: swap it for the absolute-path form when the spawn runs a copy the user's shell
 #: does not find, such as the desktop app's bundled one.
-_KIRO_REMEDY = f"Run {KIRO_CLI_LOGIN_COMMAND} in your terminal, then start a new chat."
+_KIRO_REMEDY = f"Run {KIRO_CLI_LOGIN_COMMAND} in your terminal, then send your message again."
 _KIRO_SIGNED_OUT = (
     f"kiro-cli is not logged in. Run `{KIRO_CLI_LOGIN_COMMAND}` in your terminal, then "
-    "start a new chat."
+    "send your message again."
 )
 # Choosing KAS means Kiro Crew's own sign-in: the Kiro sign-in card is the remedy
 # on every KAS route. A spawn takes Crew's sign-in through kiro-cli's relay or on
@@ -411,10 +412,10 @@ _KIRO_SIGNED_OUT = (
 # sends the user to kiro-cli. :func:`sign_in_remedy` and :func:`signed_out_message`
 # name the route of the running engine in front of it once a spawn has chosen one.
 # Plain prose (no backticks, no "--") in the remedy: the panel renders it as text.
-_KAS_REMEDY = "Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat."
+_KAS_REMEDY = "Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again."
 _KAS_SIGNED_OUT = (
     "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, "
-    "then start a new chat."
+    "then send your message again."
 )
 
 
@@ -987,7 +988,9 @@ def _with_kas_route(backend: str, text: str, *, quoted: bool) -> str:
                 # Crew's vault answers the engine too: either sign-in can be the
                 # one that failed, so both remedies are named.
                 return f"{route.describe()}. Run {command} in your terminal, or: {text}"
-            return f"{route.describe()}. Run {command} in your terminal, then start a new chat."
+            return (
+                f"{route.describe()}. Run {command} in your terminal, then send your message again."
+            )
     return text if route is None else f"{route.describe()}. {text}"
 
 
@@ -1047,6 +1050,29 @@ def signed_out_message(
         environ,
         platform_name,
     )
+
+
+def kas_signed_out_route(text: str) -> Optional[str]:
+    """The route a KAS signed-out sentence names, for a translated copy of it.
+
+    ``""`` for the bare sentence (no spawn has chosen a route), the route's name
+    (``"relay"`` or ``"bundle"``) for the sentence led by the route the last spawn
+    took, and ``None`` for anything else: the launcher form that names
+    ``kiro-cli login``, any other wording, or a route that changed since the
+    sentence was written. ``None`` keeps the English, so a translation never says
+    something the sentence did not.
+    """
+    if text == _KAS_SIGNED_OUT:
+        return ""
+    if text != signed_out_message(ACP_BACKEND_KAS):
+        return None
+    import sys
+
+    kas_route = sys.modules.get("kiro_crew.acp.kas_route")
+    route = kas_route.last_spawn_route() if kas_route is not None else None
+    if route is None or route.reason == "kiro_cli_launcher":
+        return None
+    return route.name
 
 
 def reports_signed_out(backend: str, text: str) -> bool:

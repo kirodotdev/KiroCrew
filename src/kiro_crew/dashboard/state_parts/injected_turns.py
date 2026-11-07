@@ -379,6 +379,10 @@ def build_refusal_recovery_prompt(
             "blocked call, not an interruption by the user -- disregard those "
             "messages."
         )
+    lines.append(
+        "No part of a blocked call ran: if it chained several shell commands, none "
+        "of them ran, the earlier ones included."
+    )
     lines += ["", "Blocked:"]
     for title, reason in refusals:
         # A catalog rule is named by its id before the pattern; the reason's
@@ -396,8 +400,10 @@ def build_refusal_recovery_prompt(
             "has read it. If the task is NOT finished, continue from there: use an "
             "allowed alternative (for a shell command, a read-only variant) or a "
             "different tool, and say what it changed. Only if the task IS finished "
-            "and the block left nothing missing, reply with one short line noting "
-            "the block and stop."
+            "and the block left nothing missing, open with a one-line recap of the "
+            "outcome of the work (the one restatement allowed here: this reply "
+            "becomes the last message the user sees), then one short line noting "
+            "the block, and stop."
             if answered
             else "Decide how to proceed: use an allowed alternative (for a shell "
             "command, a read-only variant), a different tool, or — if the block is "
@@ -489,6 +495,7 @@ def build_tool_stall_recovery_prompt(
     idle_secs: int,
     command: str = "",
     stuck_input: bool = False,
+    processes_terminated: int = 0,
 ) -> str:
     """Body of the continuation injected after a watchdog tool-stall cancel.
 
@@ -507,6 +514,16 @@ def build_tool_stall_recovery_prompt(
         f"~{idle_mins} minute(s) and the turn was ended by a Kiro Crew watchdog. "
         "This was NOT a user action — do not treat it as a cancellation or "
         "interruption by the user.",
+    ]
+    if processes_terminated > 0:
+        noun = "process" if processes_terminated == 1 else "processes"
+        lines += [
+            "",
+            f"The watchdog terminated {processes_terminated} {noun} from the "
+            "stalled shell command. Those old processes are no longer running; "
+            "still check for any related survivor before retrying.",
+        ]
+    lines += [
         "",
         "Before doing anything else, check whether the tool actually completed "
         "or left partial results — do NOT blindly re-run the whole task or "

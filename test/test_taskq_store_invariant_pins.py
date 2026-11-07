@@ -1,9 +1,9 @@
 """Mutation pins for the load-bearing lines in ``taskq.store`` that carried no test.
 
-Five lines in ``kiro_crew.taskq.store``'s ``store_waits`` and ``store_reads`` owners
-carry invariants that no other test observes: delete any one of them and the whole
-suite stays green. This file pins those five -- the reachable ones, whose silent
-removal loses or double-runs work.
+These lines in ``kiro_crew.taskq.store``, its ``store_waits`` and ``store_reads``
+owners, and the legacy import that fills it carry invariants that no other test
+observes: delete any one of them and the whole suite stays green. This file pins
+the reachable ones, whose silent removal loses, misfiles or double-runs work.
 Lines whose invariant is unreachable are deliberately left unpinned, because a
 pin on an unreachable line freezes dead code instead of protecting behaviour.
 
@@ -16,21 +16,26 @@ red under three mutations, not one:
 3. the HEALTHY side asserted -- under a satisfied fence the write COMMITS and the
    row moves.
 
-Every class below carries all three. Each is verified by applying the audit's own
-mutation to its line in ``store_waits.py`` / ``store_reads.py`` and observing this file
-red; the counts are in the PR description.
+Every class below carries all three. Each is verified by applying the mutations its
+docstring names to its line and observing this file red; the counts are in the PR
+description.
 """
 
 from __future__ import annotations
 
+import contextlib
+import json
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 from overload_fakes import Clock, open_task_store
 
-from kiro_crew.taskq import lanes, model
+from kiro_crew.taskq import lanes, migrate, model
+from kiro_crew.taskq import store as store_mod
 from kiro_crew.taskq.model import InvalidTransition
-from kiro_crew.taskq.store import TaskStore
+from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 from kiro_crew.taskq.waits import WaitRecord
 
 
@@ -297,3 +302,193 @@ class TestFairFetchHonoursThePerLaneCap:
             "a2",
             "a3",
         ], "no cap means the lane fills the batch: the cap is what differs"
+
+
+def _damage_an_index(path: Path) -> None:
+    """Give *path* damage that only ``PRAGMA integrity_check`` sees.
+
+    An index re-pointed at another column keeps a valid header and schema, so the
+    file opens and ``quick_check`` (which skips index-vs-table content) says ok.
+    """
+    with contextlib.closing(sqlite3.connect(str(path))) as conn:
+        conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, False)
+        conn.execute("CREATE TABLE scratch (a INTEGER, b INTEGER)")
+        conn.execute("CREATE INDEX scratch_a ON scratch(a)")
+        conn.executemany("INSERT INTO scratch VALUES (?, ?)", [(i, -i) for i in range(10)])
+        conn.commit()
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_schema SET sql='CREATE INDEX scratch_a ON scratch(b)' "
+            "WHERE name='scratch_a'"
+        )
+        conn.commit()
+    with contextlib.closing(sqlite3.connect(str(path))) as conn:
+        assert conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert (
+            conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
+        ), "the fixture no longer models a file that opens but fails integrity_check"
+
+
+class TestOpenQuarantinesAFileThatFailsTheIntegrityCheck:
+    """``_open_connection``'s ``integrity_check`` verdict is the only trigger for a
+    file that OPENS: every other one needs a statement touching the bad page, and
+    ``open()`` reads only the schema. Without it the damaged file is served.
+
+    Mutation this pin must red: the ``raise _CorruptStore`` arm -> ``if False:``;
+    loosened to ``PRAGMA quick_check`` or to a logged warning.
+    """
+
+    def test_a_file_that_opens_but_fails_the_check_is_quarantined(
+        self, tmp_path: Path, clock: Clock
+    ) -> None:
+        path = tmp_path / "tasks" / "tasks.db"
+        first = TaskStore(path, clock=clock, network_fs=False).open()
+        first.accept_one(model.TaskRecord(id="before", kind=model.KIND_SUBAGENT))
+        first.close()
+        _damage_an_index(path)
+
+        store = TaskStore(path, clock=clock, network_fs=False).open()
+        try:
+            assert store.quarantined_to is not None, "a file failing integrity_check is served"
+            assert any(
+                "integrity_check" in w for w in store.warnings
+            ), "the verdict, not another trigger, must be what quarantined it"
+            assert store.get("before") is None, "the recreated store starts empty"
+        finally:
+            store.close()
+
+    def test_the_healthy_side_keeps_a_sound_file_and_its_rows(
+        self, tmp_path: Path, clock: Clock
+    ) -> None:
+        path = tmp_path / "tasks" / "tasks.db"
+        first = TaskStore(path, clock=clock, network_fs=False).open()
+        first.accept_one(model.TaskRecord(id="kept", kind=model.KIND_SUBAGENT))
+        first.close()
+
+        store = TaskStore(path, clock=clock, network_fs=False).open()
+        try:
+            assert store.quarantined_to is None
+            assert store.state_of("kept") == model.QUEUED
+        finally:
+            store.close()
+
+
+class TestAnExplicitLaneParamFilesTheRowInThatLane:
+    """``_lane_in_tx``'s ``params["lane"]`` override is how a runner row lands in
+    the lane ``lane_for(session_key, source)`` names: ``system`` for a cron- or
+    hook-launched run, whatever its session key. Without it that run competes
+    with the person's own chat for their lane's cap.
+
+    Mutation this pin must red: ``if explicit: return explicit`` -> ``if False:``;
+    loosened to letting a parent's lane win over it.
+    """
+
+    def test_the_param_decides_the_lane_and_its_absence_the_session(self, store: TaskStore) -> None:
+        kind = model.KIND_TASKRUNNER_STEP
+        store.accept_one(
+            model.TaskRecord(
+                id="cron-run", kind=kind, session_key="dash:a", params={"lane": lanes.SYSTEM_LANE}
+            )
+        )
+        store.accept_one(model.TaskRecord(id="chat-run", kind=kind, session_key="dash:a"))
+        assert store.get("cron-run").lane == lanes.SYSTEM_LANE
+        assert store.get("chat-run").lane == "dash:a", "no param: the session's lane"
+
+    def test_the_param_wins_over_the_parents_lane(self, store: TaskStore) -> None:
+        _row(store, "parent", "dash:a")
+        store.accept_one(
+            model.TaskRecord(
+                id="child",
+                kind=model.KIND_TASKRUNNER_STEP,
+                session_key="dash:a",
+                parent_id="parent",
+                params={"lane": lanes.SYSTEM_LANE},
+            )
+        )
+        assert store.get("parent").lane == "dash:a"
+        assert store.get("child").lane == lanes.SYSTEM_LANE
+
+
+class TestATerminalTransitionEmitsOneCompletion:
+    """``transition``'s ``emit_counter(TASKQ_COMPLETIONS, ...)`` is the series the
+    spec promises for every terminal write. The counter test only checks that
+    ``store.py`` names it, which ``cancel``'s own emission keeps true.
+
+    Mutation this pin must red: the emission -> ``if False:``; loosened to every
+    transition, or to before the write is known to have committed.
+    """
+
+    @pytest.fixture
+    def emitted(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+        seen: list[tuple[str, dict[str, Any]]] = []
+        monkeypatch.setattr(
+            store_mod, "emit_counter", lambda name, attrs: seen.append((name, dict(attrs)))
+        )
+        return seen
+
+    def test_each_committed_terminal_write_emits_its_outcome_once(
+        self, store: TaskStore, emitted: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        _running(store, "ok")
+        _running(store, "bad")
+        assert store.finish("ok", model.DONE)
+        assert store.finish("bad", model.FAILED, error="boom")
+        assert emitted == [
+            (store_mod.TASKQ_COMPLETIONS, {"outcome": model.DONE}),
+            (store_mod.TASKQ_COMPLETIONS, {"outcome": model.FAILED}),
+        ]
+
+    def test_a_non_terminal_or_refused_write_emits_nothing(
+        self, store: TaskStore, emitted: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        _running(store, "t")
+        stale = store.get("t").generation - 1
+        assert store.finish("t", model.DONE, generation=stale) is False
+        assert emitted == [], "starting, running and a refused finish are not completions"
+
+
+class TestOneRefusedLegacyRowDoesNotAbortTheImport:
+    """``import_legacy``'s per-row ``except`` keeps one row the store refuses (a
+    locked moment) from stopping the boot import of every row after it; it is
+    also the only writer of ``ImportReport.errors``.
+
+    Mutation this pin must red: the ``except`` deleted or narrowed to an
+    exception the store never raises; loosened to ``break`` at the first failure.
+    """
+
+    REFUSED = f"{migrate.TASKRUNNER_ID_PREFIX}r1"
+    LATER = f"{migrate.TASKRUNNER_ID_PREFIX}r2"
+
+    @pytest.fixture
+    def runs(self, tmp_path: Path) -> Path:
+        path = tmp_path / "runs.json"
+        paused = [{"task_id": "r1", "status": "paused"}, {"task_id": "r2", "status": "paused"}]
+        path.write_text(json.dumps(paused), encoding="utf-8")
+        return path
+
+    def _import_refusing_r1(self, store: TaskStore, runs: Path) -> migrate.ImportReport:
+        def insert(rec: model.TaskRecord) -> bool:
+            if rec.id == self.REFUSED:
+                raise TaskStoreUnavailable("database is locked")
+            return store.insert_if_absent(rec)
+
+        return migrate.import_legacy(insert, subagents_dir=None, taskrunner_runs_path=runs)
+
+    def test_the_rows_after_a_refused_one_are_still_imported(
+        self, store: TaskStore, runs: Path
+    ) -> None:
+        report = self._import_refusing_r1(store, runs)
+        assert store.get(self.LATER) is not None, "the refusal of r1 must not cost r2"
+        assert report.taskrunner_imported == 1
+        assert len(report.errors) == 1 and report.errors[0].startswith(self.REFUSED)
+
+    def test_the_healthy_side_imports_the_refused_row_on_the_next_pass(
+        self, store: TaskStore, runs: Path
+    ) -> None:
+        self._import_refusing_r1(store, runs)
+        again = migrate.import_legacy(
+            store.insert_if_absent, subagents_dir=None, taskrunner_runs_path=runs
+        )
+        assert again.errors == [] and again.taskrunner_imported == 1
+        assert again.skipped_existing == 1
+        assert store.state_of(self.REFUSED) == model.RECOVERING

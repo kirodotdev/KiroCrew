@@ -3,12 +3,12 @@
 #
 # One script, two callers, so fork and same-repo PRs follow the same rules:
 # `fork-pr-description.yml` publishes the verdict as a check-run a fork author
-# sees before any workflow is approved, and `code-review.yml`'s PR Hygiene job
+# sees before any workflow is approved, and `pr-hygiene.yml`'s PR Hygiene job
 # fails on it, which blocks PR Readiness for every PR.
 #
 # Inputs (environment): PR_BODY (untrusted, read as data only), PR_DRAFT
 # ("true"/"false"), PR_CALLER ("fork-check" by default, "pr-hygiene" from
-# code-review.yml), GITHUB_REPOSITORY, GITHUB_OUTPUT. Writes `conclusion`
+# pr-hygiene.yml), GITHUB_REPOSITORY, GITHUB_OUTPUT. Writes `conclusion`
 # (success | neutral | failure), `title`, a one-line `annotation` (the
 # missing parts plus the fix, empty on success) and a multiline `summary`
 # to $GITHUB_OUTPUT. The PR body is never interpolated into code: it is written to

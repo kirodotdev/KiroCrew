@@ -82,4 +82,4 @@ def test_a_failed_create_warns_and_lets_the_spawn_go_ahead(
 
     assert established == []
     assert not (tmp_path / "nope").exists()
-    assert "could not create an empty" in caplog.text
+    assert f"could not create {tmp_path / 'nope' / '.env'}" in caplog.text

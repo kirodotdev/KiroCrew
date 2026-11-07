@@ -59,6 +59,7 @@ from kiro_crew.port_resolution import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
+from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
 
 
@@ -371,10 +372,11 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     # overload resolution on the build fleet). POSIX: start_new_session=True (own
     # session/group, immune to SIGHUP); creationflags resolves to 0 (no-op).
     # Windows: there is no setsid (start_new_session is silently ignored), so
-    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP gives the child its own
-    # console-less process group that survives the parent. The flags come from
-    # platform_compat (getattr) so referencing them doesn't fail mypy's
-    # [attr-defined] check on Linux where subprocess.* lacks them.
+    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP gives the child its own process
+    # group that survives the parent and a hidden console of its own, which its
+    # console children inherit instead of each opening a visible window. The
+    # flags come from platform_compat (getattr) so referencing them doesn't fail
+    # mypy's [attr-defined] check on Linux where subprocess.* lacks them.
     proc = subprocess.Popen(  # noqa: S603 — argv from trusted sources
         argv,
         stdin=subprocess.DEVNULL,
@@ -383,7 +385,9 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         close_fds=True,
         cwd=str(Path.home()),
         start_new_session=platform_compat.IS_POSIX,
-        creationflags=(platform_compat.DETACHED_PROCESS | platform_compat.CREATE_NEW_PROCESS_GROUP),
+        creationflags=(
+            platform_compat._SUBPROCESS_NO_WINDOW | platform_compat.CREATE_NEW_PROCESS_GROUP
+        ),
     )
     return proc
 
@@ -470,10 +474,12 @@ _RESTART_READY_POLL_INTERVAL = 0.5
 # case costs a fraction of a second.
 _RESTART_STOP_TIMEOUT = 30.0
 
-# Verdicts returned by :func:`_wait_gateway_ready`. The two failure modes are
-# kept apart because they need different operator action: a replacement that
-# DIED is a refused/broken startup (read the log), while one that never became
-# READY is still running and may simply be slow.
+# Verdicts returned by :func:`_wait_gateway_ready`. The failure modes are kept
+# apart because they need different operator action: a replacement that DIED is
+# a refused/broken startup (read the log), one that never became READY is still
+# running and may simply be slow, and an UNCONFIRMED one leaves a port answering
+# ``/api/ready`` that the run marker does not tie to the replacement, where a
+# re-run would stop a gateway that may be serving.
 _READY_OK = "ready"
 
 
@@ -481,6 +487,9 @@ _READY_DIED = "died"
 
 
 _READY_TIMEOUT = "timeout"
+
+
+_READY_UNCONFIRMED = "unconfirmed"
 
 
 def _probe_gateway_ready(port: int, timeout: int = 3) -> int:
@@ -546,8 +555,8 @@ def _replacement_is_serving(port: int, prior_pid: int | None) -> bool:
     So an unreadable marker returns ``False``: the caller keeps polling until a
     marker appears or the deadline passes. The cost is a gateway whose marker
     write failed (the write is best-effort, wrapped in ``except Exception``)
-    being reported as "not ready" while it is in fact serving. That is the right
-    way to be wrong here — a misleading timeout leaves a working gateway and an
+    being reported as unconfirmed while it is in fact serving. That is the right
+    way to be wrong here — an unconfirmed report leaves a working gateway and an
     accurate ``kirocrew token``, whereas a false success leaves the operator
     believing a dead replacement is up.
     """
@@ -570,8 +579,10 @@ def _wait_gateway_ready(
     """Poll until the spawned gateway actually serves *port*, or fail.
 
     Returns ``(_READY_OK, None)`` once the replacement answers ``/api/ready``,
-    ``(_READY_DIED, exit_status)`` as soon as the child has exited, or
-    ``(_READY_TIMEOUT, None)`` when the deadline passes with it still up.
+    ``(_READY_DIED, exit_status)`` as soon as the child has exited, or, when the
+    deadline passes with it still up, ``(_READY_UNCONFIRMED, None)`` if the last
+    probe got a 200 that :func:`_replacement_is_serving` could not attribute to
+    the replacement and ``(_READY_TIMEOUT, None)`` otherwise.
 
     Two details earn their keep:
 
@@ -603,7 +614,8 @@ def _wait_gateway_ready(
         status = proc.poll()
         if status is not None:
             return _READY_DIED, status
-        if _probe_gateway_ready(port) == 200 and _replacement_is_serving(port, prior_pid):
+        answered = _probe_gateway_ready(port) == 200
+        if answered and _replacement_is_serving(port, prior_pid):
             return _READY_OK, None
         now = time.monotonic()
         if not checkpoint_printed and checkpoint <= now < deadline:
@@ -613,7 +625,7 @@ def _wait_gateway_ready(
             status = proc.poll()
             if status is not None:
                 return _READY_DIED, status
-            return _READY_TIMEOUT, None
+            return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
@@ -909,12 +921,13 @@ def _restart(cli_port: int | None = None) -> None:
 
         # Our unit is stopped and no gateway runs: never start one outside it.
         unit = service_controller.installed_unit_path()
+        if unit is not None and not service_controller.unit_is_ours(unit):
+            # The system file is not our loaded unit (an alias of another unit, or
+            # a file the manager does not load); our per-user unit may still be
+            # installed beside it.
+            unit = svc_linux.user_unit_path()
         running = True
-        if (
-            unit is not None
-            and service_controller.unit_is_ours(unit)
-            and not platform_compat.find_listening_pids(port)
-        ):
+        if unit is not None and not platform_compat.find_listening_pids(port):
             try:
                 running = lock_holder(config_dir()).pid is not None
             except LockProbeError:
@@ -1094,11 +1107,12 @@ def _restart(cli_port: int | None = None) -> None:
     ready_timeout = _resolve_restart_ready_timeout()
     verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, ready_timeout)
     if verdict != _READY_OK:
-        reason = (
-            f"replacement_died exit={exit_status}"
-            if verdict == _READY_DIED
-            else f"replacement_not_ready_within={ready_timeout}s"
-        )
+        if verdict == _READY_DIED:
+            reason = f"replacement_died exit={exit_status}"
+        elif verdict == _READY_UNCONFIRMED:
+            reason = f"replacement_unconfirmed_within={ready_timeout}s"
+        else:
+            reason = f"replacement_not_ready_within={ready_timeout}s"
         sel().log_api_access(
             caller="cli",
             operation="gateway_restart",
@@ -1119,6 +1133,16 @@ def _restart(cli_port: int | None = None) -> None:
                 refusal = _signing_key_refusal_lines()
                 if refusal:
                     print("\n".join(refusal))
+        elif verdict == _READY_UNCONFIRMED:
+            print(
+                f"❌ Port {port} answers /api/ready, but within {ready_timeout}s "
+                f"restart could not confirm that replacement gateway (pid {pid}) "
+                f"is the one serving it.\n"
+                f"   It may already be serving; re-running restart would stop it.\n"
+                f"   Restart identifies it by its run marker: check that "
+                f"{config_dir() / run_marker.RUN_DIR_NAME} is writable.\n"
+                f"   To read its log, run: kirocrew logs -f"
+            )
         else:
             print(
                 f"❌ Replacement gateway (pid {pid}) did not become ready within "

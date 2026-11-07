@@ -67,13 +67,10 @@ class TestLearnCli:
     def test_add_does_not_write_jsonl_when_the_store_declines(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """This replaces a test that PINNED the defect.
+        """A declining vector store never routes the lesson to the JSONL fallback.
 
-        It asserted the JSONL fallback fires whenever the vector store returns a
-        falsy value -- which is most often "the lesson is already stored exactly as
-        submitted". So the old contract was: write a duplicate record for a lesson
-        that was fine, and print "Saved:" when nothing needed saving. The declining
-        outcomes are now distinguished, and none of them routes to the other store.
+        A falsy answer most often means the lesson is already stored as submitted, so a
+        fallback write would duplicate it and print "Saved:" for nothing.
         """
         with _LearnHarness() as h:
             h.vs.write_lesson.return_value = LessonWriteResult(LessonWriteOutcome.UNCHANGED)
@@ -1436,14 +1433,9 @@ print("wrote=" + report_path.name + "," + json_path.name)
     def test_the_artifacts_survive_a_non_utf8_default_codec(self, tmp_path: Path) -> None:
         """The report is written as UTF-8, not the host's locale codec.
 
-        Run in a CHILD PROCESS on purpose, against this file's usual convention:
-        the default codec ``open()`` picks is fixed when the interpreter starts,
-        so it cannot be substituted in-process — patching ``locale`` does not
-        reach the C-level lookup ``io`` actually performs.
-
-        Without ``encoding="utf-8"`` the write raises ``UnicodeEncodeError`` under
-        cp1252/cp950/cp932, and it raises after the eval has already run, so both
-        artifacts are lost.
+        Run in a CHILD PROCESS: ``open()``'s default codec is fixed at interpreter start,
+        and patching ``locale`` does not reach it. Under cp1252/cp950/cp932 the write
+        would raise after the eval ran, losing both artifacts.
         """
         env = dict(os.environ)
         # PEP 540 off, PEP 538 coercion off, C locale: a non-UTF-8 default on

@@ -29,7 +29,7 @@ Each mode prints one JSON object on stdout. Stdlib only.
     to the 300 s floor. A runtime under 3000 s cannot hold even a 300 s
     interval in its last 10%, so it is refused with ``suggest`` null (exit 21).
     Exit: 0 ok, 20 refused (use ``suggest``), 21 runtime too short for any
-    passing interval (ask the user for a longer one), 2 bad arguments.
+    passing interval (re-run with 3000 and tell the user), 2 bad arguments.
 
 ``renew`` - run only on a cycle whose budget line ends ``10% or less left``.
     Reads what is left from the header the gateway already prints, so the
@@ -44,8 +44,8 @@ Each mode prints one JSON object on stdout. Stdlib only.
     ``interval x cycles >= runtime`` true.
     Exit: 0 renew now (pass ``max_cycles`` / ``max_runtime_secs`` to
     ``monitor_update``), 10 not yet, 20 no open items (stop normally),
-    30 renewal cap reached (3 renewals, 1000 cycles or 7 days: stop and
-    hand the decision to the user),
+    30 renewal cap reached (3 renewals, 1000 cycles or 7 days: the gateway's
+    open-ledger extension takes over below its 7-day ceiling; at it, ask),
     2 bad arguments.
 """
 
@@ -125,13 +125,14 @@ def check(interval: int, cycles: int, runtime: int) -> tuple[dict, int]:
         )
     clamped_cycles = min(max(cycles, 1), SERVER_MAX_CYCLES)
     if not _within_share(POLICY_MIN_INTERVAL_SECS, good_runtime):
-        # Even the floor interval does not fit this runtime's last 10%. The
-        # runtime is the user's time budget, so it is never raised here: refuse
-        # with no suggestion and let the user choose a longer one.
+        # Even the floor interval does not fit this runtime's last 10%. This
+        # script never raises a runtime: it refuses with no suggestion, and the
+        # conductor re-runs with the 3000 s minimum and tells the user it raised
+        # their bound.
         problems.append(
             f"max_runtime_secs below {math.ceil(POLICY_MIN_INTERVAL_SECS / RENEW_THRESHOLD)}"
             f" cannot hold a {POLICY_MIN_INTERVAL_SECS} s interval in its renewal"
-            " window; ask the user for a longer runtime (it is never raised for them)"
+            " window; re-run check with the 3000 s minimum and tell the user"
         )
         return {"ok": False, "problems": problems, "suggest": None}, 21
     if not _within_share(good_interval, good_runtime):

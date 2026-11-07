@@ -281,12 +281,13 @@ class ApprovalMint:
     whatever optional withdrawal check the caller did or did not pass.
     """
 
-    __slots__ = ("_gate_event", "_generation", "_session_key", "_token")
+    __slots__ = ("_connection_token", "_gate_event", "_generation", "_session_key", "_token")
 
     def __init__(self, session_key: str, gate_event: Any) -> None:
         self._session_key = session_key
         self._gate_event = gate_event
         self._token = ""
+        self._connection_token = ""
         self._generation = _cancel_generation_of(session_key) if session_key else 0
 
     @property
@@ -296,6 +297,9 @@ class ApprovalMint:
         Every other approval mints nothing, so a transport hands it no extra
         write check and its answer is sent exactly as before.
         """
+        return self._is_mediated() or self._is_connection()
+
+    def _is_mediated(self) -> bool:
         event = self._gate_event
         return (
             event is not None
@@ -303,8 +307,30 @@ class ApprovalMint:
             and getattr(event, "tool_name", None) == _TOOL_NAME
         )
 
+    def _is_connection(self) -> bool:
+        """A tool of a Crew-owned Connection this session reaches through its bridge.
+
+        Always False unless ``connections.crew_oauth`` projected a bridge for it.
+        """
+        event = self._gate_event
+        if event is None or not self._session_key:
+            return False
+        from kiro_crew.connections import crew_oauth_proxy
+
+        return crew_oauth_proxy.is_connection_server(
+            self._session_key, getattr(event, "mcp_server_name", None) or ""
+        )
+
     def mint(self) -> None:
         if not self.applies or _cancel_generation_of(self._session_key) != self._generation:
+            return
+        if self._is_connection():
+            from kiro_crew.connections import crew_oauth_proxy
+
+            # The proxy forwards this call only against this approval.
+            self._connection_token = crew_oauth_proxy.note_approval(
+                self._session_key, self._gate_event
+            )
             return
         token = mint_for_gate_event(self._session_key, self._gate_event)
         if not token:
@@ -318,6 +344,10 @@ class ApprovalMint:
         self._token = token
 
     def settle(self, *, sent: bool) -> None:
+        if self._connection_token and not sent:
+            from kiro_crew.connections import crew_oauth_proxy
+
+            crew_oauth_proxy.revoke_approval(self._connection_token)
         # A token is only ever minted from a non-None gate event.
         if self._token and not sent:
             revoke_minted(self._session_key, self._gate_event.tool_call_id, self._token)
@@ -369,6 +399,10 @@ def invalidate_session(session_key: str) -> None:
             _pending.pop(key, None)
         for tok in [t for t, g in _active.items() if g.session_key == session_key]:
             _active.pop(tok, None)
+    # Outside the lock: the connection proxy has its own.
+    from kiro_crew.connections import crew_oauth_proxy
+
+    crew_oauth_proxy.invalidate_session(session_key)
 
 
 def _cancel_generation_of(session_key: str) -> int:

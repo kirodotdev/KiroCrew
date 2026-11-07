@@ -22,7 +22,7 @@ import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
-import { autoShareCandidates, reloadChats } from '../pages/settings/mcpManagementModel'
+import { autoShareCandidates, reloadChats, settleSkipped } from '../pages/settings/mcpManagementModel'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 
@@ -455,6 +455,16 @@ describe('turning sharing on', () => {
   it('picks only shareable servers nobody chose for', () => {
     const picked = autoShareCandidates(rows as never, { waiting: changed } as never).map(s => s.name)
     expect(picked).toEqual(['never-set'])
+  })
+
+  it('keeps a skip only when the set in effect does not hold the server', () => {
+    // A follower of kirocrew-core is stubbed once kirocrew-core is, whatever its own write said.
+    expect(settleSkipped(['kirocrew-work', 'other'], ['kirocrew-core', 'kirocrew-work'])).toEqual({
+      stubbed: ['kirocrew-work'],
+      skipped: ['other'],
+    })
+    // No write reported the set in effect: every skip stands.
+    expect(settleSkipped(['kirocrew-work'], undefined)).toEqual({ stubbed: [], skipped: ['kirocrew-work'] })
   })
 
   it('names exactly what it shares in the confirm, then turns sharing on before the pinned writes', async () => {

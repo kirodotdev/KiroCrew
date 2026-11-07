@@ -543,7 +543,14 @@ class TestVersions:
 
 
 class TestPruning:
-    def test_old_versions_pruned(self, store: ArtifactStore) -> None:
+    def test_old_versions_pruned(
+        self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import artifacts
+
+        # Pins pruning, not durability (test_artifacts_disk_safety.py pins the
+        # fsync), so ~200 fsyncs do not price this test against --timeout.
+        monkeypatch.setattr(artifacts, "_sync_before_publish", lambda fh: None)
         store.create(name="x", content="v1")
         for i in range(2, MAX_VERSIONS + 5):
             store.update("x", content=f"v{i}", snapshot=True)

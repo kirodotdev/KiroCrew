@@ -429,6 +429,9 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
+  /** Crew holds this server's sign-in (`connections.crew_oauth` on KAS):
+   *  `authGrantPresent` is Crew's, and KAS chats use it through Crew. */
+  authCrewHeld?: boolean
   /** The owner added this remote server from the dashboard, at this url, so the
    *  table may offer the in-place sign-in on it. Absent or false for a server
    *  an agent, a session or a hand edit added. */
@@ -465,6 +468,10 @@ export interface McpServer {
    *  mounted into new sessions. Distinct from `enabled`, which is the user's own
    *  choice and is never overwritten by this. */
   probeFailing?: boolean
+  /** Set when the latest default-agent rebuild left this server out of the
+   *  agent, so its tools never reach a chat. `command` is the declared command
+   *  that was not found. Absent when the server was mounted. */
+  agentDropped?: { command: string; reason: 'command_not_found' }
 }
 
 export interface McpApplyChange {

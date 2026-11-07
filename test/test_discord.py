@@ -1,20 +1,9 @@
-"""Unit tests for the Discord channel on the messaging-transport abstraction.
+"""Unit tests for Discord command parsing, renderer helpers, gateway client and transport.
 
-Covers: command parsing (commands.py), text chunking + [OPTIONS:] extraction +
-button components (renderer.py), deny-by-default auth + DM-only guard +
-capabilities + inbound normalization (transport.py), streaming render +
-finalization (renderer.py), the interactive approval decider, and the dispatch
-turn + interaction routing (transport_dispatch.py). Mirrors test_telegram.py.
-
-The family is split by the module under test. This file holds the command
-parsing, the renderer's chunking and option helpers, the gateway client and the
-transport. The streaming render, finalization and the approval decider are in
-``test_discord_renderer.py``; the dispatch turn is in
-``test_discord_dispatcher.py`` and ``test_discord_mirroring.py`` (the
-conversation as its own mirror, and its crew log); interaction routing and the
-command surfaces are in ``test_discord_interactions.py``. The shared fakes are
-in ``discord_helpers.py``; this module re-exports the ones other suites import
-from it.
+Streaming render and the approval decider are in ``test_discord_renderer.py``, the
+dispatch turn in ``test_discord_dispatcher.py`` and ``test_discord_mirroring.py``,
+interaction routing in ``test_discord_interactions.py``. Shared fakes live in
+``discord_helpers.py``; this module re-exports the ones other suites import from it.
 """
 
 from __future__ import annotations
@@ -166,15 +155,10 @@ _FENCE_SHAPES = [
 
 
 class TestRotationSplitting:
-    """The regression corpus, repointed onto the shared splitter.
+    """How the renderer uses the shared splitter: which chunks it seals and keeps live.
 
-    Discord owns no splitter: ``_rotate_on_length`` consumes
-    ``split_markdown_safe``, so every shape below is that module's behavior as a
-    Discord user reads it. The module's own contracts -- fence grammar, budget,
-    prefix stability, lossless reassembly -- are pinned in
-    ``test_messaging_split.py`` and are deliberately not restated here. These
-    tests pin the INTEGRATION: which chunks the renderer seals, which one it
-    keeps live, and that it adds and removes nothing on the way.
+    The splitter's own contracts are pinned in ``test_messaging_split.py``; these
+    tests check that the rotation adds and removes nothing on the way.
     """
 
     def _renderer(
@@ -246,8 +230,7 @@ class TestRotationSplitting:
     async def test_a_lone_chunk_is_handed_back_untouched(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Nothing appended and nothing to undo, including for the shapes the
-        # deleted tail-closer strip would have to reason about.
+        # Nothing appended and nothing to undo, including for open-fence shapes.
         for text in ["```py\nx = 1\n", "type ``` here", "plain prose"]:
             assert await self._rotate(monkeypatch, text, 1900) == ([], text)
 
@@ -275,12 +258,8 @@ class TestRotationSplitting:
     async def test_the_retained_tail_is_left_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The final chunk keeps a still-arriving fence OPEN, by contract.
 
-        This is what replaced a whole append-then-strip protocol. The private
-        splitter sealed every chunk including the last and reported, through a
-        returned flag, that it had done so; the rotation then undid it on the
-        retained tail. The shared splitter never seals the final chunk, so there
-        is no flag to read and nothing to strip -- and no way for an append and
-        a strip to disagree, which is what every defect in that cluster was.
+        The shared splitter never seals the final chunk, so the rotation has no
+        closer to strip from the retained tail.
         """
         src = "```py\n" + "x = 1\n" * 50  # the model's closing ``` has not arrived
         sealed, tail = await self._rotate(monkeypatch, src, 120)
@@ -295,13 +274,10 @@ class TestRotationSplitting:
     async def test_a_seal_ending_in_escape_degrades_uploads(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Escape opener UNMATCHED across the seam: the sealed prefix ends in an
-        odd backslash run, so a marker on the live tail's first line is escaped
-        (literal) in the full text but real when the tail is scanned alone.
+        """A sealed prefix ending in a lone backslash disables uploads for the segment.
 
-        The seam-aware classifier asks the extraction reader at the tail's own
-        resume point: the two readings disagree, so the rotation fails closed.
-        Left un-degraded, the semantic seal would upload a source-literal file.
+        The backslash escapes a marker on the tail in the full text but not in the
+        tail alone, so the two readings disagree and the rotation fails closed.
         """
         r, _ = self._renderer(monkeypatch, 60)
         # Cut lands right after a lone backslash; the tail opens with markup the
@@ -314,13 +290,10 @@ class TestRotationSplitting:
     async def test_an_escaped_trailing_space_is_not_escape_debt(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Escape opener MATCHED (spent) at the seam: a backslash escaping a real
-        trailing space straddles nothing the tail resumes.
+        """A backslash escaping a real trailing space leaves uploads eligible.
 
-        The extraction reader judges both readings the same, so the classifier
-        sees no flip and uploads stay eligible. A whole-head escape count on the
-        rstripped sealed chunk would have faked debt here; consulting the reader
-        at the tail's resume point does not.
+        Both readings agree. Counting escapes on the rstripped sealed chunk would
+        wrongly see debt here.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -344,13 +317,10 @@ class TestRotationSplitting:
     async def test_a_backtick_balanced_within_the_seam_block_is_not_debt(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A backtick BALANCED within the seam's own blank-line block is not
-        debt: the block closes its inline-code span before the seam, so the
-        prefix opens nothing the tail inherits.
+        """Backticks paired within the seam's own blank-line block leave uploads eligible.
 
-        Check 1 masks the seam's own block with the reader's segmentation. A
-        block whose backticks pair leaves no surviving opener, so uploads stay
-        eligible -- degrading here would only cost a genuinely-real image later.
+        The block closes its inline-code span before the seam, so the tail inherits
+        no open context.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -365,14 +335,10 @@ class TestRotationSplitting:
     async def test_an_open_inline_code_opener_in_the_seam_block_degrades(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An inline-code opener still OPEN in the seam's own block degrades,
-        fail-closed.
+        """An inline-code opener still OPEN in the seam's own block degrades, fail-closed.
 
-        The seam's block ends inside an unclosed inline-code span. Whether a
-        closing backtick arrives later on the tail is unknown at rotation, and if
-        it does the tail-alone read promotes a marker the full text keeps
-        literal -- so the classifier fails closed on the open opener in the
-        seam's own block rather than gambling on the closer never arriving.
+        A closer may arrive later on the tail, and the tail alone would then read a
+        marker as real that the full text keeps literal.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -386,16 +352,10 @@ class TestRotationSplitting:
     async def test_two_unmatched_backticks_in_separate_paragraphs_degrade(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Two unmatched backticks in SEPARATE paragraphs, then a literal local
-        image across the seam, must degrade (GPT finding on the whole-region
-        mask).
+        """Lone backticks in SEPARATE paragraphs must not pair up across the blank line.
 
-        A whole-prefix mask pairs the two lone backticks across the blank line
-        and sees no debt, so a later ``![b](...)`` that the full text keeps
-        literal -- because the second paragraph's inline-code span still covers
-        it -- is uploaded once the tail is scanned alone. Block-bounding the mask
-        to the seam's own block (the reader's own segmentation) sees the second
-        paragraph's opener still open and degrades. Fail closed.
+        The second paragraph's span stays open and covers a later ``![b](...)``, so
+        the mask is bounded to the seam's own block and the segment degrades.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -426,14 +386,11 @@ class TestRotationSplitting:
     async def test_an_open_fence_across_the_seam_does_not_disable_uploads(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fence opener across the seam via a REOPENER tail: the splitter builds
-        ``tail = reopener + remainder`` with a synthetic ``"```lang\\n"`` the
-        source never had, so ``split_source.endswith(tail)`` is False.
+        """An open fence across the seam leaves uploads eligible.
 
-        The seam then sits inside an open fence -- literal in both readings and
-        already owned by the fence-aware per-chunk span scan -- so the classifier
-        is skipped and uploads stay eligible. A naive concatenation check would
-        have fabricated a closing-then-reopening fence and faked debt.
+        The tail starts with a synthetic reopener, so ``split_source.endswith(tail)``
+        is False and the seam classifier is skipped: inside a fence both readings
+        are literal.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -446,13 +403,10 @@ class TestRotationSplitting:
     async def test_an_over_limit_indented_fenced_block_stays_eligible(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A fenced block whose lines are themselves indented, crossing the
-        limit, must not disable uploads.
+        """An over-limit fenced block with indented lines must not disable uploads.
 
-        The reopener tail makes ``split_source.endswith(tail)`` False, so the
-        seam classifier is skipped: every seam is inside the open fence, literal
-        in both readings. Otherwise the reopened fence's indent would have faked
-        indentation debt and disabled uploads for the whole segment.
+        The reopener tail skips the seam classifier, so the indent inside the fence
+        is not read as indentation debt.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -464,15 +418,10 @@ class TestRotationSplitting:
     async def test_a_midline_cut_in_indented_code_degrades_uploads(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Indentation opener UNMATCHED across the seam (head indented, tail
-        not): a four-space indented logical line dirty-cut MID-LINE leaves the
-        tail continuing that literal-code context WITHOUT its indent.
+        """A mid-line cut in a four-space indented line degrades uploads.
 
-        The full text reads a marker on that line literal (indented code); the
-        de-indented tail reads it real. The classifications differ -- the seam
-        classifier sees the flip and fails closed. This is the original
-        local-path leak repro: left un-degraded, the semantic seal would upload
-        a source-literal file.
+        The tail continues the line without its indent, so a marker literal in the
+        full text reads real in the tail alone and would leak a local file.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -502,16 +451,10 @@ class TestRotationSplitting:
     async def test_a_midline_cut_before_a_tab_led_tail_degrades_uploads(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Indentation opener UNMATCHED the OTHER way (head not indented, tail
-        tab-led): the mirror flip.
+        """A cut that leaves the tail tab-led on an unindented line degrades uploads.
 
-        ``_safe_cut`` admits a mid-line boundary right before a leading ``\\t``
-        (a tab is not a delimiter lead), so the retained tail BEGINS tab-led and
-        reads as indented code at offset 0 -- while the source line's own start
-        is not indented. The full text reads a marker on that line REAL, the
-        tail-alone reading reads it LITERAL: the seal drops the image and ships
-        the raw local path to Discord as display text. The seam classifier fails
-        closed on the mismatch.
+        ``_safe_cut`` may cut right before a ``\\t``, so the tail alone reads as
+        indented code and would show the raw local path as text instead of the image.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -541,14 +484,10 @@ class TestRotationSplitting:
     async def test_the_original_local_path_leak_is_not_uploaded(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """End-to-end: the indentation-seam leak (the class all three review
-        blocks descended from) does not surface a workspace path as an upload.
+        """End-to-end: an image marker after an indentation-seam cut is not uploaded.
 
-        A four-space indented over-limit line is cut mid-line; a later image
-        marker arrives on the de-indented tail. The full text keeps it literal
-        (indented code), so the file must NOT be extracted -- degrading routes
-        the seal to redacted display text, where the marker stays literal, and
-        no OutboundFile is produced.
+        The full text keeps the marker literal (indented code), so the degraded seal
+        sends redacted text and no OutboundFile.
         """
         r, cli = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -566,16 +505,10 @@ class TestRotationSplitting:
     async def test_an_inline_code_span_opened_before_the_seam_degrades(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A `` ``code `` inline-code span opened in the sealed prefix, whose
-        closer sits DEEP in the live tail, degrades the segment.
+        """A `` ``code `` span opened in the sealed prefix, closed deep in the tail, degrades.
 
-        The rotation seals a prefix that opens a two-backtick inline span; the
-        tail is later sealed WITHOUT that opener, so a marker the full text kept
-        literal because the span covered it reads as real once the tail is
-        scanned alone. The ref-set at the rotation seam cannot see it -- the tail
-        still carries the closing delimiter at that instant -- so the classifier
-        catches it as an inline-code opener with no closer before the seam. Fail
-        closed: the whole segment degrades.
+        The tail alone would read a covered marker as real. The ref-set at the seam
+        cannot see this, so the classifier catches the opener with no closer.
         """
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
@@ -592,11 +525,8 @@ class TestRotationSplitting:
     ) -> None:
         """Only a real fence line opens a block, and its run length is kept.
 
-        A ``` counted as a substring reads prose about fencing as code and
-        inverts every later decision; a closer shorter than its opener closes
-        nothing. Each row is (opener line, the tail's reopener, the closer a
-        sealed frame carries) -- an empty reopener means the source opened no
-        fence at all, so no frame may carry a closer either.
+        Each row is (opener line, the tail's reopener, the closer a sealed frame
+        carries); an empty reopener means no fence opened, so no frame has a closer.
         """
         code = "x = 1\n" * 60
         for opener, reopen, closer in [
@@ -621,11 +551,8 @@ class TestRotationSplitting:
     ) -> None:
         """A 4-backtick block documenting 3-backtick ones keeps its own ``` lines.
 
-        Per CommonMark the inner bare ``` closes nothing, so the source fence is
-        still open at the cut and every continuation reopens the 4-backtick one.
-        A per-chunk walk run after a BARE ``` reopen loses the opener's run
-        length, reads the authored inner closer as closing the block, and the
-        strip that followed then deleted the author's own line.
+        Per CommonMark the inner bare ``` closes nothing, so every continuation
+        reopens the 4-backtick fence and no authored line is lost.
         """
         src = "````markdown\n" + "Nest a block:\n\n```py\nx = 1\n```\n\n" * 90
         sealed, tail = await self._rotate(monkeypatch, src, 1800)
@@ -656,9 +583,8 @@ class TestRotationSplitting:
     ) -> None:
         """Blank lines are CONTENT inside a fence, and no cut absorbs a run.
 
-        ``lstrip("\\n")`` on a boundary remainder deleted whole runs of them and
-        pulled the next code line up a row. The shared splitter absorbs no line
-        separator at all, so the run reaches the retained tail intact.
+        An ``lstrip("\\n")`` on a remainder would delete the run and pull the next
+        code line up a row; the shared splitter absorbs no line separator.
         """
         # A remainder of nothing but newlines.
         _, tail = await self._rotate(monkeypatch, "```py\n" + "x = 1\n" * 299 + "\n\n", 1800)
@@ -687,18 +613,10 @@ class TestRotationSplitting:
     async def test_a_rotation_terminates_on_pathological_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Input no cut fits cleanly must finish rather than spin.
+        """Input with no clean cut anywhere must finish rather than spin.
 
-        An all-newline tail, a bare backtick run, and a budget too small to hold
-        a fence's own scaffolding are the three shapes with no clean cut
-        anywhere. Chunks legitimately go over budget in the last of them; what
-        matters is that the call returns and makes progress.
-
-        The run is five times the limit: termination does not depend on its
-        length, but the cost does. Every cut of a bare run is two characters
-        wide, and the sever grade reads each boundary against the whole text,
-        so the work grows with the square of the run -- 5000 backticks took
-        about 4 s alone and timed out on a loaded coverage shard.
+        The backtick run is kept at 500: the sever grade costs the square of the
+        run, and 5000 backticks took about 4 s and timed out on a loaded shard.
         """
         for src, limit in [
             ("\n\n", 1),
@@ -712,15 +630,10 @@ class TestRotationSplitting:
     async def test_an_overlimit_chunk_never_reaches_the_api_whole(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The splitter's one documented budget exception, bounded again here.
+        """The splitter's one over-budget case is sliced again before Discord's hard cap.
 
-        A logical line that admits no cut clean on both sides is placed WHOLE
-        and its chunk carries the fence scaffolding on top of the limit. The 100
-        characters ``_limit`` holds back absorb ordinary scaffolding, but an
-        opener this long does not fit in them, so the chunk passes Discord's
-        hard cap -- where ``send_message`` truncates and drops the tail
-        INCLUDING the synthetic closer, leaving an unterminated code block
-        missing content and no signal that anything went.
+        A line with no clean cut plus a 260-backtick opener exceeds the cap, and
+        ``send_message`` would truncate it, dropping the closer and content silently.
         """
         opener = "`" * 260  # scaffolding wider than _limit's headroom
         line = "x" + "`" * 1699  # content: not a bare run, and no cut is clean
@@ -752,12 +665,8 @@ class TestRotationSplitting:
     ) -> None:
         """Prefix stability, end to end: incremental == one-shot.
 
-        Splitting is greedy left-to-right, so re-splitting a longer prefix of
-        the same stream reproduces every chunk but the last byte-for-byte. That
-        is what lets this renderer POST a sealed chunk and keep only the final
-        one live -- Discord has no affordance for un-posting a message, so a cut
-        that moved once more text arrived would be unrecoverable. Streaming the
-        source in slices must therefore land exactly the messages one shot does.
+        A posted Discord message cannot be un-posted, so a sealed chunk must never
+        move as more text arrives.
         """
         src = _FENCE_SHAPES[3]  # a 4-backtick block full of inner 3-backtick ones
         limit = 200
@@ -778,19 +687,9 @@ class TestRotationSplitting:
     ) -> None:
         """Swept oracle: a rotation IS the splitter's output, verbatim.
 
-        The renderer must not carry its own splitter and then undo part of it, since
-        every defect in that cluster was the append and the strip disagreeing on
-        one shape. There is nothing left to disagree about, and this pins that:
-        each chunk but the last is sealed exactly once, in order, and the last is
-        retained as the live buffer byte-for-byte. The only transform in the
-        identity is ``_strip_steering``, the renderer's pre-existing normalizer
-        (which also collapses runs of 3+ newlines, so THAT is the visible
-        blank-line cap, not the splitter's) -- any re-added append or strip fails
-        it, whatever shape motivated it.
-
-        Shapes cover what a per-chunk fence walk cannot recover from the source:
-        3/4/5-backtick openers, authored inner bare ``` lines, literal backticks
-        in prose, 4-space-indented lookalikes, info strings, and blank-line runs.
+        Each chunk but the last is sealed once, in order, and the last stays live.
+        The only transform is ``_strip_steering``, which also collapses 3+ newlines,
+        so that is the visible blank-line cap, not the splitter.
         """
         rotated = frames = 0
         for src in _FENCE_SHAPES:
@@ -884,11 +783,8 @@ class TestStripSteering:
     def test_removes_a_marker_whose_summary_wrapped(self) -> None:
         """kiro-cli's rephrase is free to wrap, and the frame is still a frame.
 
-        Every other reader of this frame says so: ``messaging.driver`` matches it
-        with ``re.DOTALL``, ``constants._STEERING_TAIL_PREFIX_RE`` closes the same
-        grammar's prefix with ``re.DOTALL``, and the dashboard's parser spells the
-        summary ``[\\s\\S]*?``. A class that stopped at the first line end left the
-        marker in the delivered Discord message.
+        ``messaging.driver``, ``constants._STEERING_TAIL_PREFIX_RE`` and the dashboard
+        parser all match across newlines, so this strip must too.
         """
         text = "before [STEERING steer-ab12: switching to the job id\nand re-running it] after"
         out = _strip_steering(text)
@@ -1222,11 +1118,9 @@ class TestTransportAuth:
 class TestPublicInjectionSurface:
     """Locks the out-of-band injection contract used by AutoNudge + REST.
 
-    The AutoNudge fire path and POST /api/autonudge reach the dispatcher only
-    through ``transport.dispatcher`` and call only ``is_authorized`` /
-    ``current_session_key`` / ``handle_message``. If any of these are renamed,
-    these tests fail loudly — before a refactor can silently retire live
-    monitoring loops at fire time.
+    Both reach the dispatcher only through ``transport.dispatcher`` and call only
+    ``is_authorized`` / ``current_session_key`` / ``handle_message``; a rename
+    would silently break live monitoring loops at fire time.
     """
 
     def test_transport_dispatcher_exposes_bound_dispatcher(self) -> None:

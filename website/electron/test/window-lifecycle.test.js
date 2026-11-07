@@ -1008,7 +1008,7 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
+function dashboardWindowHarness({ platform, frameless = false, remoteHosts = null, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
   const log = [];
   const prompts = [];
   const sessionListeners = new Map();
@@ -1100,7 +1100,7 @@ function dashboardWindowHarness({ platform, frameless = false, downloadExpectati
       nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
       app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
     },
-    store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
+    store: { get: (key) => (key === "linuxFrameless" ? frameless : key === "remoteHosts" ? remoteHosts : null) },
     platform,
     env: {},
     downloadExpectations,
@@ -1140,7 +1140,7 @@ describe("dashboard window wiring order", () => {
       "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "view.on:enter-html-full-screen",
-      "view.on:leave-html-full-screen",
+      "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "win.on:show",
       "win.on:restore",
@@ -1186,6 +1186,14 @@ describe("dashboard window wiring order", () => {
     assert.ok(!wiring.some((entry) => entry.startsWith("win.setWindowButtonPosition")));
     assert.equal(onLoad[1], "win.setTitle:Kiro Crew", "the default local port is omitted on Windows");
     assert.equal(onLoad[2], "view.insertCSS:#electron-drag-bar {");
+  });
+
+  it("a window whose port names a configured crew withholds the local-only bridges", async (t) => {
+    const { wiring } = await wireDashboardWindow(t, {
+      platform: "darwin",
+      remoteHosts: { 5476: { host: "crew.example.test" } },
+    });
+    assert.equal(wiring[0], "new WebContentsView:[\"--kc-remote-gateway\"]");
   });
 
   it("a frameless Linux window injects caption controls after the drag band", async (t) => {
@@ -1793,6 +1801,25 @@ describe("gateway port prompt", () => {
   });
 });
 
+// Enough of Electron for createTray, recording every Tray it makes.
+function trayElectron(trays = []) {
+  return {
+    app: { name: "Kiro Crew", getVersion: () => "0.8.0", getPath: () => "/virtual/logs" },
+    Tray: class {
+      constructor() { this.destroyed = false; trays.push(this); }
+      setToolTip() {}
+      setContextMenu() {}
+      on() {}
+      destroy() { this.destroyed = true; }
+    },
+    Menu: { buildFromTemplate: (template) => ({ template }) },
+    nativeImage: {
+      createFromPath: () => ({ resize: () => ({ fake: "icon" }), setTemplateImage() {} }),
+    },
+    shell: {},
+  };
+}
+
 // ── Close button: background vs quit (#12204) ───────────────────────────────
 
 describe("main window close action", () => {
@@ -1820,7 +1847,8 @@ describe("main window close action", () => {
       get: (key) => data[key],
       set: (key, value) => { writes.push([key, value]); data[key] = value; },
     };
-    const lifecycle = createWindowLifecycle(validOptions({ store }));
+    // Setting the close action re-syncs the tray icon, so Tray must exist.
+    const lifecycle = createWindowLifecycle(validOptions({ store, electron: trayElectron() }));
     return { lifecycle, data, writes };
   }
 
@@ -1862,10 +1890,79 @@ describe("main window close action", () => {
       platform: "linux",
       env: {},
     }));
-    lifecycle.createTray();
+    lifecycle.syncTray();
     assert.deepEqual(
       menus[0].map((item) => item.label || item.type),
       ["Show Kiro Crew", "separator", "New Connection Window…", "separator", "Open Config File", "separator", "Quit"],
     );
+  });
+});
+
+// ── Show tray icon (#21924) ─────────────────────────────────────────────────
+
+describe("tray icon setting", () => {
+  function trayHarness(stored = {}, platform = "linux") {
+    const data = { ...stored };
+    const trays = [];
+    const lifecycle = createWindowLifecycle(validOptions({
+      electron: trayElectron(trays),
+      store: { path: "/virtual/config.json", get: (key) => data[key], set: (key, value) => { data[key] = value; } },
+      platform,
+      env: {},
+    }));
+    const live = () => trays.filter((tray) => !tray.destroyed).length;
+    return { lifecycle, data, trays, live };
+  }
+
+  it("creates the icon at startup unless the user hid it while the close button quits", () => {
+    const shown = trayHarness();
+    shown.lifecycle.syncTray();
+    assert.equal(shown.live(), 1);
+
+    const hidden = trayHarness({ closeAction: "quit", showTrayIcon: false });
+    hidden.lifecycle.syncTray();
+    assert.equal(hidden.trays.length, 0, "no Tray is created");
+  });
+
+  it("hides and shows the icon live, and brings it back when the close button hides the window again", () => {
+    const h = trayHarness({ closeAction: "quit" });
+    h.lifecycle.syncTray();
+    assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: false, canHide: true });
+    assert.equal(h.live(), 0);
+    assert.equal(h.lifecycle.getTray(), null);
+
+    h.lifecycle.closeAction.set("background");
+    assert.equal(h.live(), 1, "the way back to a hidden window returns with the setting");
+    assert.deepEqual(h.lifecycle.trayIcon.get(), { show: true, canHide: false });
+
+    h.lifecycle.closeAction.set("quit");
+    assert.equal(h.live(), 0, "the stored choice applies again once the close button quits");
+    assert.equal(h.lifecycle.trayIcon.set(true).show, true);
+    assert.equal(h.live(), 1);
+    assert.equal(h.trays.length, 3);
+  });
+
+  it("refuses to hide the icon while the close button hides the window off macOS", () => {
+    const h = trayHarness({ closeAction: "background" });
+    h.lifecycle.syncTray();
+    assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: true, canHide: false });
+    assert.equal(h.live(), 1);
+    assert.equal(h.data.showTrayIcon, undefined, "nothing is written");
+  });
+
+  it("re-syncs the icon before the close button hides the window", () => {
+    // The close action is read from the store at close time, so a hand-edited
+    // switch to hide must bring the icon back before the window disappears.
+    const hide = SOURCE.slice(SOURCE.indexOf("close: hiding to tray"));
+    const sync = hide.indexOf("syncTray();");
+    assert.ok(sync !== -1 && sync < hide.indexOf("hideToTray(mainWindow"),
+      "the close handler's hide path calls syncTray() before hideToTray()");
+  });
+
+  it("hides the icon on macOS whatever the close button does", () => {
+    const h = trayHarness({ closeAction: "background" }, "darwin");
+    h.lifecycle.syncTray();
+    assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: false, canHide: true });
+    assert.equal(h.live(), 0);
   });
 });

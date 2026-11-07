@@ -10,7 +10,9 @@ here.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import threading
 from pathlib import Path
 
 from kiro_crew.crew_log.errors import CrewLogError, IndeterminateAppend
@@ -88,6 +90,7 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
             # bytes are on disk must be indeterminate, since the writer reads CrewLogError
             # as "declined before any byte" and drops the event instead of retrying it.
             except (OSError, CrewLogError) as undo:
+                _note_residue(path, before, blob)
                 raise IndeterminateAppend(
                     f"append to {path.name} failed ({exc}) and could not be rolled "
                     f"back ({undo}): the file may hold bytes no entry claims",
@@ -95,6 +98,87 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
                     offset=before,
                 ) from exc
             raise
+
+
+#: path -> ``(offset, marks)`` of an append whose rollback failed
+#: (:class:`IndeterminateAppend`), undone by :func:`_settle_residue` under the unit's
+#: lock before that path's next append. ``marks`` is one ``(end, sha256 of the bytes up
+#: to end)`` per line of the failed write, so no payload is held. Keyed by path, so a
+#: handle reopened between the failure and the retry still finds it.
+_RESIDUE: "dict[Path, tuple[int, tuple[tuple[int, bytes], ...]]]" = {}
+
+#: Most residues held at once, oldest forgotten first. A forgotten one costs what it
+#: cost before this map existed: the retry may write that run again.
+_RESIDUE_MAX = 64
+
+#: Guards :data:`_RESIDUE`: the writer's lanes append to different units at once.
+_RESIDUE_LOCK = threading.Lock()
+
+
+def _note_residue(path: Path, offset: int, blob: bytes) -> None:
+    """Remember where *blob* went, as line-end digests, for :func:`_settle_residue`."""
+    digest = hashlib.sha256()
+    marks: "list[tuple[int, bytes]]" = []
+    start = 0
+    while start < len(blob):
+        end = blob.find(b"\n", start)
+        end = len(blob) if end < 0 else end + 1
+        digest.update(blob[start:end])
+        marks.append((end, digest.copy().digest()))
+        start = end
+    with _RESIDUE_LOCK:
+        _RESIDUE.pop(path, None)
+        _RESIDUE[path] = (offset, tuple(marks))
+        while len(_RESIDUE) > _RESIDUE_MAX:
+            _RESIDUE.pop(next(iter(_RESIDUE)))
+
+
+def _settle_residue(path: Path) -> None:
+    """Undo *path*'s leftover failed-append bytes, if any. The unit's lock is held.
+
+    A retry of an :class:`IndeterminateAppend` would otherwise write the same entries a
+    second time under new seqs. A cut that raises keeps the entry for the next try.
+    """
+    with _RESIDUE_LOCK:
+        residue = _RESIDUE.get(path)
+    if residue is not None:
+        _undo_residue(path, *residue)
+        with _RESIDUE_LOCK:
+            _RESIDUE.pop(path, None)
+
+
+def _undo_residue(path: Path, offset: int, marks: "tuple[tuple[int, bytes], ...]") -> None:
+    """Finish the rollback an :class:`IndeterminateAppend` could not do. Lock held.
+
+    Cuts *path* back to *offset* only when everything after *offset* is the failed
+    write or a prefix of it: whole lines whose running digest matches a mark, then at
+    most an unterminated piece of the next line. Then those bytes are this append's own
+    and nothing came after them. Without this a retry appends the same entries again
+    under new seqs, and a group commit's whole run is on disk twice. Anything else on the
+    tail is left for the torn-tail repair, as before. A cut that fails raises, so the
+    retry fails too and stays retryable.
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    held = size - offset
+    if held <= 0 or not marks or held > marks[-1][0]:
+        return
+    end, want = 0, b""
+    for mark_end, mark_digest in marks:
+        if mark_end > held:
+            break
+        end, want = mark_end, mark_digest
+    with open(path, "rb") as handle:
+        handle.seek(offset)
+        ours = handle.read(held)
+    # A PARTIAL write counts too: its complete lines would survive the torn-tail repair.
+    if end and hashlib.sha256(ours[:end]).digest() != want:
+        return
+    if b"\n" in ours[end:]:
+        return
+    _truncate(path, offset)
 
 
 def _rollback_append(path: Path, size: int) -> None:

@@ -7,7 +7,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { PANE_HYDRATE_LIMIT, hydrateSlotMessages, appendSlotMessage, switchSlot } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, hydrateSlotMessages, appendSlotMessage, switchSlot, confirmOptimisticSend } from '../store/chatSlice'
+import { STALL_MS } from '../pages/chat/ChatFooter'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -469,5 +470,56 @@ describe('the bounded-length record marks the active view as provisional', () =>
       meta: { arg: slot },
     })
     expect(store.getState().chat.slotPaneBounded[slot]).toBeUndefined()
+  })
+})
+
+// The footer's quiet-time notice needs an activity key from the pane. A
+// background pane passes one only once its own page has landed, or for a turn
+// it sent itself, and that mark must outlive the send's confirmation.
+describe('ChatPane stall watch for a turn it sent', () => {
+  it('still shows the quiet-time notice after the send is confirmed, with no loaded page', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    const slot = 'pane-sent-stall'
+    const view = renderPane(slot, { running: true })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        view.store.dispatch(appendSlotMessage({ slot, message: { role: 'user', content: 'q', ts: 't1', meta: { optimistic: true, sendId: 'send-1' } } as never }))
+        view.store.dispatch(appendSlotMessage({ slot, message: { role: 'streaming', content: 'Hel', ts: 't2' } as never }))
+      })
+      act(() => { view.store.dispatch(confirmOptimisticSend({ slot, sendId: 'send-1' })) })
+      act(() => { vi.advanceTimersByTime(STALL_MS) })
+      expect(view.queryByTestId('chat-footer-stall')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps watching a quiet turn when its slot stops being the active one', async () => {
+    // The pane's own fetch fails, so only the parked active transcript is loaded.
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    const slot = 'pane-parked-stall'
+    const view = renderPane(slot, {
+      activeSlot: slot,
+      running: true,
+      messages: [
+        { role: 'user', content: 'q', ts: 't1' },
+        { role: 'streaming', content: 'Hel', ts: 't2' },
+      ],
+    })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    vi.useFakeTimers()
+    try {
+      // The restored turn moves once, so it is watched, then goes quiet.
+      act(() => { view.store.dispatch(appendSlotMessage({ slot, message: { role: 'streaming', content: 'Hello', ts: 't3' } as never })) })
+      act(() => { vi.advanceTimersByTime(STALL_MS / 2) })
+      // The reader opens another chat: this slot's transcript is parked.
+      act(() => { view.store.dispatch(switchSlot.pending('rid', 'other')) })
+      act(() => { vi.advanceTimersByTime(STALL_MS / 2) })
+      expect(view.queryByTestId('chat-footer-stall')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -48,4 +48,16 @@ describe('ChatInput textarea: Escape stops the running turn (#22315)', () => {
       document.removeEventListener('keydown', markSpeech, true)
     }
   })
+
+  it('with a second Escape required, the first shows the hint and only the second stops (#23462)', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+    const onStop = vi.fn()
+    renderWithProviders(<Host isRunning onStop={onStop} />)
+    fireEvent.keyDown(textarea(), { key: 'Escape', code: 'Escape' })
+    expect(onStop).not.toHaveBeenCalled()
+    expect(screen.getByTestId('escape-stop-armed-hint')).toHaveTextContent('Esc again to stop')
+    fireEvent.keyDown(textarea(), { key: 'Escape', code: 'Escape' })
+    expect(onStop).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('escape-stop-armed-hint')).toBeNull()
+  })
 })

@@ -117,7 +117,6 @@ own `/api/apps/<app>/` or `/apps/<app>/` namespace):
 | Grant | Value | Applied by |
 |---|---|---|
 | `build_rlimit` | yes | `apps/backend.py` spawns the backend with `RLIMIT_PROFILE_BUILD` |
-| `bound_port` | yes | `apps/backend.py` hands it `KIROCREW_BOUND_PORT`; it spawns in the one boot wave, after the port is reserved and exported |
 | `backend_env_names` | `KIROCREW_DEVFLEET_REPO` | forwarded to every app backend by `apps/backend.py` |
 | `backend_env_prefixes` | `KIROCREW_DEVFLEET_BIN_` | as above, by prefix |
 | `config_top_keys` | `dev_fleet` | `config/validation.py`'s unrecognized-key warning skips it |
@@ -358,7 +357,7 @@ Contract:
   registered at startup and Dev Fleet ships `defaultEnabled: false`.
 - **No operator opt-in and no per-call approval, deliberately.** A pod runs the code
   in a git worktree an agent can write, started by the per-user service manager
-  (systemd `--user` on Linux or launchd on macOS), so it
+  (systemd `--user` on Linux, launchd on macOS or Task Scheduler on Windows), so it
   executes outside the agent's sandbox. That reachability is Kiro Crew's DOCUMENTED
   posture rather than something these routes introduce: `security.md`, under "Scoped
   user-bus locator forward", records that sandboxed agent shells legitimately run
@@ -541,8 +540,13 @@ name never has two workers racing to remove the same worktree. The frontend rend
 failure reason); the preview dialog maps the kept-list verdict codes to human-readable
 reasons so users can see why a worktree is a candidate or is kept.
 
-**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` --
-and for merged- or closed-verdict candidates a `gh` lookup -- per worktree. Those
+**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` per
+worktree, but asks GitHub once per `_PR_BATCH_HEADS` heads: `_fetch_pr_rows` fetches every
+upstream PR of every head up front, in one `gh api graphql` call of aliased
+`pullRequests(headRefName:)` connections, the same newest-first rows
+`gh pr list --head <branch> --state all` returns. Each verdict rules on its head's rows
+exactly as on its own query; a head whose batch failed, and a PR found only in a legacy
+repo, are still looked up alone, and the removal re-check never reads the batch. The
 per-worktree verdicts run concurrently, bounded by `_PRUNE_CONCURRENCY` (the same bound
 the parallel prune workers use), because a serial scan of a large fleet exceeds the
 gateway app proxy's 30s `_PROXY_TIMEOUT` and returns a 504. The scan is read-only git
@@ -571,8 +575,11 @@ probe for its advisory row. Low-level `systemctl()`, `is_active()`, and `main_pi
 keep only the cheap platform, executable, and bus-address checks, so a multi-query verb does
 not pay a five-second probe before every unit command. A provably absent bus address returns
 `no_session` without spawning systemctl, and that pre-spawn check is the only source of
-backend absence. Every spawned probe failure is operational except a positive permission-denied
-match, which is `sandboxed_away`; neither can become `PodBackendAbsent`. Probe and unit operations
+backend absence. On that branch the gate spawns no `--user` call; it asks only the SYSTEM
+manager (`systemctl show --property=LoadState user@<uid>.service`) which remedy the
+refusal names, and any answer, or none, leaves it `PodBackendAbsent`. Every spawned probe
+failure is operational except a positive permission-denied match, which is `sandboxed_away`;
+neither can become `PodBackendAbsent`. Probe and unit operations
 resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
 the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
 If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
@@ -735,7 +742,11 @@ predicate `pod ls` and `pod prune` use, rather than a bare directory probe — s
 symlinks are skipped and, on macOS, a name whose per-pod plist exists counts as
 *installed* rather than orphaned and is never reclaimed from underneath a
 concurrent `up`. That predicate keys on the pod root, liveness and plist and
-never on the checkout pin, so attribution is not its job.
+never on the checkout pin, so attribution is not its job. On systemd, liveness
+includes the pod's own evidence: a HOME whose `gateway.lock` a gateway holds, or
+that a process has open, is not an orphan. The removal then refuses: what uses it
+runs outside the unit (a gateway started by hand, say) and may be serving from this
+checkout.
 
 Attribution and teardown are ONE locked transaction. `_reclaim_pod_locked` runs
 entirely inside `runtime.pod_name_mutex` — the cross-process flock every mutating
@@ -848,13 +859,16 @@ The unit template is written once by `pod install`, so a machine keeps whatever 
 installed. On `pod up`, the pod CLI re-renders it when the installed unit is one this
 build will not boot:
 
-1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on either of two
+1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on any of three
    triggers:
    - the baked `ExecStart` binary no longer exists — `unit.unit_exec_ok(cfg)` reads the
      unit file and checks `os.access(exe, os.X_OK)` on the baked path (typically the
      worktree it resolved into was pruned)
    - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
      currently `ExecStopPost=` — see the pod module's teardown section)
+   - the unit lacks a directive this build requires (`unit._REQUIRED_DIRECTIVES`,
+     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal, and
+     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
@@ -1604,14 +1618,15 @@ choose the gateway's next image. Instead:
   a `GatewayPointerBroker` (`pointer_broker.py`) as `live`'s pointer provider: it
   exchanges the app secret at `POST /api/apps/dev-fleet/token` and reads
   `GET /api/apps/dev-fleet/live-target` (30 s display cache; `fresh=1` for the
-  removal guards). The broker aims at `KIROCREW_BOUND_PORT`, which
-  `apps/backend.py` hands to this one backend at spawn from the gateway's own
-  environment — the port is exported the moment it is reserved
+  removal guards). The broker aims at `KIROCREW_GATEWAY_ORIGIN`, which
+  `apps/backend.py` builds for every backend at spawn from the gateway's own
+  `KIROCREW_BOUND_PORT` — the port is exported the moment it is reserved
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;
   `_export_bound_port` republishes it once the site serves), so
   `dashboard.server.start_dashboard` spawns this backend in the one boot wave
-  with every other app, before `runner.setup()` (the app's `bound_port` host
-  grant, `apps.builtin_host_grants.bound_port_apps()`, only scopes the variable).
+  with every other app, before `runner.setup()`. A gateway bound to a specific
+  non-loopback interface gets no origin, so the broker is unconfigured there and
+  live state reads as unavailable.
   A broker call made while the gateway is still booting waits in the reserved
   socket's backlog until the listener accepts; one that outlasts the broker's 5 s
   timeout is a broker outage, handled as below.
@@ -1736,8 +1751,8 @@ choose the gateway's next image. Instead:
   stub is a point fix for the one hidden leaf whose absence is a code-execution
   input; the other file leaves in `sandbox._CREW_HIDDEN_LEAVES` share the
   absent-mask gap (secret disclosure, not execution) and are tracked as a separate,
-  class-level follow-up rather than closed here (`.env` is closed: see
-  [security](security.md), *Channel credentials*).
+  class-level follow-up rather than closed here (the leaves closed so far are listed in
+  [security](security.md), from *Channel credentials* on).
   `read_target_reason` reads the stub as `(None, None)` exactly like an absent
   file. A present `checkout` of another type, or a missing key, is still reported
   as a defect. **Downgrade note:** the stub is an ordinary file and survives a roll
@@ -1750,6 +1765,11 @@ choose the gateway's next image. Instead:
   (`backend_confined`: a replacement spawned inside the sandbox would inherit its
   confinement). In the gateway there is no confinement, so the last-resort
   foreground restart is *attempted* there — the same detached `kirocrew restart` the CLI's own restart uses.
+  It is never attempted for a gateway a generated service definition launched
+  (`_foreground_eligible` reads `launched_as_managed_service()` in the gateway):
+  the detached restart would run in the unit's cgroup and be stopped with the
+  gateway it stops, so Restart Gateway answers with the service reason and the
+  manual command, and Make Live is staged only.
 
 ### Live-worktree resolution
 
@@ -1854,7 +1874,10 @@ Fleet can also bounce the gateway:
   systemd > launchd > foreground, POSIX-only, and requires: an UNCONFINED
   backend (no `KIROCREW_SANDBOX_ACTIVE` marker, not inside
   `kirocrew-agents.slice` — a replacement spawned from inside the sandbox or
-  cgroup scope would inherit that confinement for the gateway's whole life);
+  cgroup scope would inherit that confinement for the gateway's whole life); a
+  gateway no generated service definition launched (see *Foreground restart*; a
+  definition old enough to lack the launch marker is not detected, and
+  `kirocrew doctor` asks for its re-install);
   exactly ONE run-marker whose recorded pid is alive; and the marker's own
   recorded `kirocrew` launcher (keystone-fenced `run/` dir — there is
   deliberately NO `PATH` fallback, which an agent-planted `~/.local/bin/kirocrew`
@@ -2123,7 +2146,7 @@ The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
 because that is where it genuinely runs: the fleet view, PR status, commit and
 disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
 no service-manager dependency in them. The pod plane needs systemd `--user` on
-Linux or launchd on macOS; Windows has no supported pod backend. Make Live stages
+Linux, launchd on macOS or Task Scheduler on Windows. Make Live stages
 its pointer on every platform (only the automatic restart needs a drivable service manager).
 The app says so in the UI rather than in the manifest — a `highlights` line
 states the pod requirement, and `GET /api/fleet` carries the reason that renders
@@ -2149,7 +2172,7 @@ things:
 | Flag | Meaning | True when |
 |---|---|---|
 | `_POD_IMPORTED` | the `kiro_crew.pod` modules imported, so its platform-neutral helpers are callable | the import succeeded (any platform) |
-| `_POD_AVAILABLE` | pods can actually **run** here | Linux with `systemctl` on PATH, or macOS with `launchctl` on PATH |
+| `_POD_AVAILABLE` | pods can actually **run** here | Linux with `systemctl` on PATH, macOS with `launchctl` on PATH, or Windows with `schtasks.exe` in a trusted system directory |
 
 Build state (`prov.has_venv` / `prov.has_dist`, plain filesystem checks) is computed
 on every platform, outside the pod-runnable gate, so a host without a runnable pod
@@ -2173,7 +2196,10 @@ Per-platform behavior:
   pods have no enforced memory/CPU ceiling. Automatic Make Live additionally
   requires the current LaunchAgent restart contract; otherwise it stages the
   pointer and asks the operator to restart manually.
-- **Windows / macOS without `launchctl` / Linux without `systemctl`** — the Fleet
+- **Windows + Task Scheduler** — pod lifecycle and the non-pod fleet actions
+  work. Restart stops then starts the pod, so its HOME is reclaimed.
+- **Windows without `schtasks.exe` / macOS without `launchctl` / Linux without
+  `systemctl`** — the Fleet
   view, per-branch PR status, commit counts, disk usage, Provision, Sync (pull
   main + rebuild), Rebase and Prune all work. The UI shows a notice carrying
   `pods_unavailable_reason` and hides the actions that cannot work: Spin up /

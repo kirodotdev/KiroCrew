@@ -24,9 +24,7 @@ from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 
-# =============================================================================
-# Task 1a: own-commits-only argv in _worktree_detail
-# =============================================================================
+# Own-commits-only argv in _worktree_detail
 
 
 @pytest.mark.asyncio
@@ -87,9 +85,7 @@ async def test_worktree_detail_uses_own_commits_log():
     assert len(bare_log_calls) == 0
 
 
-# =============================================================================
-# Task 1b: design_docs filter
-# =============================================================================
+# design_docs filter
 
 
 @pytest.mark.asyncio
@@ -136,22 +132,17 @@ async def test_worktree_detail_design_docs_filter():
     assert set(result["design_docs"]) == {"docs/README.md", "package/docs/spec.md", "design-doc.md"}
 
 
-# =============================================================================
-# Task 2: restart-gateway endpoint
-# =============================================================================
+# restart-gateway endpoint
 
 
 @pytest.mark.asyncio
 async def test_restart_gateway_not_active():
-    """restart-gateway returns ok:false when service is not active."""
     with patch.object(
         runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(3, "", "inactive\n")
     ):
         result = await mod._restart_gateway()
     assert result["ok"] is False
-    # With the foreground fallback, the error comes from whichever backend
-    # ultimately fails: either "not running as a user service" (no foreground
-    # eligible) or the foreground backend's own diagnostic.
+    # The error text depends on which backend fails last (foreground fallback).
     assert result["error"]
 
 
@@ -196,9 +187,7 @@ async def test_restart_gateway_audited():
     assert callable(fn) and inspect.iscoroutinefunction(fn)
 
 
-# =============================================================================
-# Task: make-live (switch the live gateway to another worktree)
-# =============================================================================
+# make-live (switch the live gateway to another worktree)
 
 
 @pytest.mark.asyncio
@@ -299,14 +288,11 @@ async def test_make_live_missing_dist(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 @_POSIX_ONLY
 async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
-    """A real cutover on a drivable service writes the pointer AND restages the
-    service definition, issues a detached restart, and invalidates the
-    live-worktree cache.
+    """A real cutover writes the pointer, restages the service definition,
+    restarts detached and invalidates the live-worktree cache.
 
-    Restaging the definition is what keeps its ExecStart binary present: a
-    definition left pinned to a worktree made live earlier fails EXEC once
-    that worktree is pruned, and the gateway then never starts far enough to read
-    the pointer at all.
+    A definition left pinned to a pruned worktree fails EXEC before the gateway
+    can read the pointer, so the definition must be restaged.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
@@ -331,7 +317,6 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is True and res.get("cutover") is True
     assert res.get("staged_only") is not True
-    # Pointer file written with the resolved checkout path.
     ptr_file = ptr_dir / "live_target.json"
     assert ptr_file.is_file()
     import json as _json
@@ -345,7 +330,6 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     assert ["systemctl", "--user", "daemon-reload"] in calls
     # A DETACHED restart was issued (platform-specific; linux = systemd-run).
     assert any(c[:2] == ["systemd-run", "--user"] and "restart" in c for c in calls)
-    # Live-worktree cache invalidated so the next poll re-resolves.
     assert mod._LIVE_WORKTREE is None
     assert mod._LIVE_CHECK_AT == 0.0
 
@@ -438,11 +422,8 @@ async def test_make_live_staged_only_leaves_service_definition_untouched(
     tmp_path,
 ):
     """On a host whose service Dev Fleet cannot drive, only the pointer is
-    staged.
-
-    The definition there is the baseline install, whose ExecStart binary is by
-    construction the one currently running — so touching it could only break a
-    working definition, and the pointer alone carries the cutover.
+    staged: the definition there runs the current binary, so touching it could
+    only break it.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -503,7 +484,6 @@ async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
     ptr_dir = tmp_path / "ptr"
     _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
 
-    # Make write_target raise an OSError to simulate a disk failure.
     original_write = live_mod.live_target.write_target
     call_count = {"n": 0}
 
@@ -579,10 +559,8 @@ async def test_live_worktree_path_falls_back_to_execstart(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 async def test_make_live_already_live_space_path(monkeypatch, tmp_path):
-    """already_live is detected when the live WorkingDirectory (and target)
-    contain spaces — the regression the WorkingDirectory switch fixes: the old
-    ExecStart path= regex truncated at the space, never matched, and would let
-    the same worktree be pointlessly re-cut over and over."""
+    """already_live is detected when the live WorkingDirectory contains spaces;
+    an ExecStart path= regex truncates at the space and never matches."""
     wt = tmp_path / "my worktrees" / "kirocrew-wt-feat"
     wt.mkdir(parents=True)
     vb = wt / ".venv" / "bin"
@@ -623,8 +601,8 @@ def test_make_live_route_registered_and_audited():
 # --- make-live: fail-closed pod guard ---
 def test_in_pod_tristate(monkeypatch, tmp_path):
     """_in_pod is tri-state: True inside a pod home, False outside, and None
-    when the config home cannot be resolved (fail-closed at the source — the
-    previous fail-OPEN False would have let a pod cut the live gateway)."""
+    when the config home cannot be resolved (fail-closed: a False there would
+    let a pod cut the live gateway)."""
     import kiro_crew.config.loader as cfg_loader
 
     pod_home = tmp_path / ".kirocrew-pods" / "kirocrew-wt-x"
@@ -682,16 +660,13 @@ async def test_make_live_stages_only_when_service_not_drivable(monkeypatch, tmp_
         # handshake, so a staged_only response without it would silently drop the
         # only instruction the operator gets.
         assert res["manual_restart"] in res["notice"]
-        # Pointer written with the target.
         ptr_file = ptr_dir_sub / "live_target.json"
         assert ptr_file.is_file()
         import json as _json
 
         data = _json.loads(ptr_file.read_text())
         assert Path(data["checkout"]).resolve() == wt.resolve()
-        # NOT latched: a subsequent cutover to another worktree stays allowed.
         assert mod._MAKE_LIVE_COMMITTED is False
-        # No restart command issued.
         assert not any(c[:2] == ["systemd-run", "--user"] for c in calls)
 
 
@@ -699,9 +674,7 @@ async def test_make_live_stages_only_when_service_not_drivable(monkeypatch, tmp_
 async def test_live_user_unit_status_no_manager(monkeypatch):
     """A platform with neither systemd nor launchd -> no_systemd, no spawn.
 
-    ``platform="darwin"`` is a SUPPORTED backend, so the "no manager at all"
-    case has to be expressed with
-    a platform that really has none.
+    ``darwin`` has a backend, so this case needs a platform with none.
     """
     monkeypatch.setattr(live_mod, "sys", MagicMock(platform="win32"))
     assert await mod._live_user_unit_status() == "no_systemd"

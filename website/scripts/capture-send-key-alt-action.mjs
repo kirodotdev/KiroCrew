@@ -25,10 +25,10 @@ const SLOTS = [
 const { srv, base } = await serveDist(process.env.DIST || DEFAULT_DIST)
 const browser = await chromium.launch({ executablePath: chromiumExecutable() })
 
-async function open(theme) {
+async function open(theme, seeds = {}) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 1100 }, deviceScaleFactor: 2 })
   const page = await ctx.newPage()
-  await stubDashboardApi(page, { slots: SLOTS, folders: [], theme, localStorageEntries: { 'mc-lang': 'en' } })
+  await stubDashboardApi(page, { slots: SLOTS, folders: [], theme, localStorageEntries: { 'mc-lang': 'en', ...seeds } })
   return { ctx, page }
 }
 
@@ -50,8 +50,7 @@ for (const theme of ['light', 'dark']) {
   // Same card with "⌘/Ctrl+Enter sends" selected: the description switches to the
   // no-chord variant (the flip chord is the send key in that mode).
   {
-    const { ctx, page } = await open(theme)
-    await page.addInitScript(() => { localStorage.setItem('mc-chat-config', JSON.stringify({ sendOnEnter: 'ctrl-enter' })) })
+    const { ctx, page } = await open(theme, { 'mc-chat-config': JSON.stringify({ sendOnEnter: 'ctrl-enter' }) })
     await page.goto(`${base}/settings/chat`)
     const label = page.getByText('Send shortcut', { exact: true }).first()
     await label.waitFor({ timeout: 20000 })

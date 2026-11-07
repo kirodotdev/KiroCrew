@@ -242,7 +242,11 @@ describe('final-segment dispatch is retried, never swallowed', () => {
     // `toDispatch`, not `text`: the caller's dedup returns only the NEW suffix of
     // a growing final, and dispatching the raw text would re-send what the agents
     // already have (see the growing-final suite below).
-    expect(TranscriptionSource).toContain('dispatchWithRetry(toDispatch)')
+    expect(TranscriptionSource).toContain('dispatchInOrder(toDispatch)')
+    // The ordered issue hands that text on to the retry helper unchanged.
+    const ordered = TranscriptionSource.match(/const dispatchInOrder[\s\S]*?\n  \}, \[dispatchWithRetry\]\)/)
+    expect(ordered, 'dispatchInOrder not found').not.toBeNull()
+    expect(ordered![0]).toContain('dispatchWithRetry(text)')
     // The helper awaits the API and retries on the declared schedule.
     const helper = TranscriptionSource.match(
       /const dispatchWithRetry[\s\S]*?\n  \},\n?\s*\[[^\]]*\],?\n?\s*\)/,
@@ -644,7 +648,9 @@ describe('the live caption shows the newest speech, not the meeting opening', ()
     // passed, so the guard is on the source itself.
     expect(TranscriptionSource).not.toContain("finalsRef.current.join(' ')")
     expect(TranscriptionSource).toContain('captionWindow(finalsRef.current, lastPartial)')
-    expect(TranscriptionSource).toContain('captionWindow(finalsRef.current)')
+    // The final branch passes the LIVE lease's partial, so a draining
+    // predecessor's final does not leave its own stale partial in the caption.
+    expect(TranscriptionSource).toContain('captionWindow(finalsRef.current, livePartial)')
   })
 
   it('bounds the browser-only final segment buffer', () => {
@@ -816,14 +822,18 @@ describe('STT error frame is terminal — no reconnect loop', () => {
     // the stop() branch never fires, and buffered PCM is flushed into the notes.
 
     // Hook must export connecting
-    expect(TranscriptionSource).toContain('connecting, halted, isStarting, start, stop, supported: transcriptionSupported')
-    // connecting is set to true just before await readyPromise
+    expect(TranscriptionSource).toContain('connecting, halted, isStarting, start, stop, flush, supported: transcriptionSupported')
+    // connecting is set to true just before the lease's ready gate is awaited
     expect(TranscriptionSource).toContain('setConnecting(true)')
     // connecting is cleared once the stream is live, after the ready gate
-    const awaitIdx = TranscriptionSource.indexOf('await readyPromise')
+    const awaitIdx = TranscriptionSource.indexOf('await lease.settled')
     expect(TranscriptionSource.indexOf('setConnecting(false)', awaitIdx)).toBeGreaterThan(awaitIdx)
-    // Buffer flush is guarded by stoppingRef so stop() during connect discards the PCM
-    expect(TranscriptionSource).toContain('!stoppingRef.current && ws.readyState === WebSocket.OPEN')
+    // A `ready` landing after stop() during connect discards the buffered PCM
+    // instead of flushing it into the paused meeting.
+    const readyIdx = TranscriptionSource.indexOf("msg.type === 'ready'")
+    const readyBranch = TranscriptionSource.slice(readyIdx, TranscriptionSource.indexOf("msg.type === 'partial'"))
+    expect(readyBranch).toContain('if (isActive() && stoppingRef.current) {')
+    expect(readyBranch).toContain('lease.buffer = []')
   })
 
   it('does not call setActive(true) before readyPromise — activation deferred to ready frame', () => {
@@ -839,14 +849,14 @@ describe('STT error frame is terminal — no reconnect loop', () => {
     const readyBranch = TranscriptionSource.slice(readyIdx, TranscriptionSource.indexOf("msg.type === 'partial'"))
     expect(readyIdx).toBeGreaterThan(0)
     expect(readyBranch).not.toContain('setActive(true)')
-    const awaitReady = TranscriptionSource.indexOf('await readyPromise')
+    const awaitReady = TranscriptionSource.indexOf('await lease.settled')
     expect(TranscriptionSource.indexOf('setActive(true)', awaitReady)).toBeGreaterThan(awaitReady)
 
-    // The code section between 'addModule(' and 'await readyPromise' must NOT
+    // The code section between 'addModule(' and 'await lease.settled' must NOT
     // contain setActive(true) — that section is the early activation site removed
     // by this fix.
     const addModuleIdx = TranscriptionSource.indexOf('addModule(')
-    const awaitReadyIdx = TranscriptionSource.indexOf('await readyPromise')
+    const awaitReadyIdx = TranscriptionSource.indexOf('await lease.settled')
     expect(addModuleIdx).toBeGreaterThan(0)
     expect(awaitReadyIdx).toBeGreaterThan(addModuleIdx)
     const setupSection = TranscriptionSource.slice(addModuleIdx, awaitReadyIdx)
@@ -858,17 +868,18 @@ describe('connecting stuck-true guard and transcriptionErrorMessage lifecycle', 
   // Opus 5.5 advisory findings addressed here.
 
   it('guards setConnecting(true) against a socket closed during addModule', () => {
-    // If the socket closes while addModule is loading, cleanup() runs first and
-    // sets wsRef.current = null. Without a guard, the code after addModule still
+    // If the lease closes while addModule is loading, cleanup() runs first and
+    // nulls the active lease. Without a guard, the code after addModule still
     // calls setConnecting(true), leaving connecting stuck true with no live
     // socket. The session effect's !connecting guard then blocks every future
     // start() call for the rest of the meeting.
     //
-    // Guard: `if (wsRef.current !== ws) return` placed after source.connect(node)
-    // and before startingRef.current = false / setConnecting(true).
+    // Guard: `if (activeRef.current !== lease) return` placed after
+    // source.connect(node) and before startingRef.current = false /
+    // setConnecting(true).
     const addModuleIdx = TranscriptionSource.indexOf('addModule(')
     const setConnTrue = TranscriptionSource.indexOf('setConnecting(true)', addModuleIdx)
-    const guard = TranscriptionSource.indexOf('if (wsRef.current !== ws) return', addModuleIdx)
+    const guard = TranscriptionSource.indexOf('if (activeRef.current !== lease) return', addModuleIdx)
     expect(addModuleIdx).toBeGreaterThan(0)
     expect(setConnTrue).toBeGreaterThan(addModuleIdx)
     // Guard must appear between addModule and setConnecting(true)

@@ -160,6 +160,28 @@ def _probe_currency() -> dict[str, bool]:
     return {s.name: cached_probe_is_current(s) for s in list_servers()}
 
 
+def _probe_view() -> tuple[dict[str, bool], frozenset[str]]:
+    """``_probe_currency``, plus the names a measure pass can probe. BLOCKING.
+
+    One ``list_servers()`` read for both. A row gets the handshake its verdict
+    needs only from a probe of its exact name, and a pass never probes a row that
+    is switched off, has no command, is left out by ``probe_all`` after repeated
+    failures (a pre-flight does not fill the probe cache), or names a
+    ``secret://`` value in its env (``probe_server`` refuses that one every time).
+    """
+    from kiro_crew.mcp_discovery import _spawn_excluded, list_servers
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    servers = list_servers()
+    held = _spawn_excluded()
+    probeable = frozenset(
+        s.name
+        for s in servers
+        if not s.disabled and s.command and s.name not in held and not secret_reference_keys(s.env)
+    )
+    return {s.name: cached_probe_is_current(s) for s in servers}, probeable
+
+
 def _recheck_routed(rows: list[dict[str, Any]], servers: list[McpServerInfo]) -> None:
     """Re-ask the gateway routing for every ``routed`` row; blocking.
 
@@ -218,6 +240,27 @@ def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
         if state:
             row["probeFailures"] = state["fails"]
             row["probeFailing"] = state["failing"]
+
+
+def _annotate_agent_drops(rows: list[dict[str, Any]]) -> None:
+    """Stamp ``agentDropped`` onto rows the latest default-agent rebuild left out.
+
+    Recorded keys may be raw spec names while rows use canonical aliases.
+    Exact-name matches win over aliases; cached notes are refreshed each time.
+    """
+    from kiro_crew.mcp_dropped_servers import load_dropped
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    drops = load_dropped()
+    aliased_drops = {mcp_server_alias(key): drop for key, drop in drops.items()}
+    for row in rows:
+        row.pop("agentDropped", None)
+        name = row.get("name")
+        if not isinstance(name, str):
+            continue
+        drop = drops.get(name) or aliased_drops.get(mcp_server_alias(name))
+        if drop is not None:
+            row["agentDropped"] = drop
 
 
 def _record_probe_verdicts(rows: list[dict[str, Any]]) -> None:
@@ -568,6 +611,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
 
     # Decide AND arm the re-probe here, at the very end, all synchronously.
     #
@@ -736,6 +780,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -888,6 +933,7 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
     edited = _edited_since_probe(servers)

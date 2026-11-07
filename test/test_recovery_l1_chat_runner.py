@@ -357,9 +357,11 @@ class TestRunnerBranch:
         # normally and were kept, so they MUST settle. A pre-output 5xx (no
         # terminal), a cancelled Stop (discarded) and an empty-response re-queue
         # all keep the debt armed; a STARTED-but-not-completed compaction is not
-        # yet durable and also stays armed.
-        delivered = src.index("_first_turn_history_delivered = (")
-        dwin = src[delivered : delivered + 700]
+        # yet durable and also stays armed. The rule is defined once, as the
+        # turn-scoped helper the settle and the merge-card consumption both read.
+        delivered = src.index("def _kiro_cli_kept_the_prompt(")
+        dwin = src[delivered : delivered + 1400]
+        assert "_first_turn_history_delivered = _kiro_cli_kept_the_prompt(" in src
         # The fix: the predicate must NOT gate on _turn_landed (that excluded the
         # promise-only / leaked-tool / infra-recovery terminals the reviewer named).
         assert "_turn_landed" not in dwin
@@ -1320,3 +1322,57 @@ class TestTheRunnerCallSitesChargeTheFailedCycle:
             "an ACP transient-5xx same-session retry charged the failed-cycle "
             "streak -- a retried cycle has not failed"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "recovery_error",
+        [_transient_error, lambda: RuntimeError("the model session died mid-turn")],
+        ids=["acp-error-arm", "generic-arm"],
+    )
+    async def test_a_wake_whose_recovery_dies_charges_the_wakes_loop(
+        self, tmp_path, recovery_error
+    ) -> None:
+        """The wake's own turn streams and hits a transient error, so its one-shot
+        CONTINUE is queued; that recovery streams and then dies in either terminal
+        arm. The recovery is a new turn the wake never marked, so unless the wake's
+        loop rides its entry, neither turn charges the loop, and the work-ledger
+        wake's one retry (``gate._spend_ledger_wake_retry``) never comes.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            error = _transient_error() if len(prompts) == 1 else recovery_error()
+
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="reading the ledger ")
+                raise error
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        svc = _RecordingNudgeSvc()
+        slot = _RecordingSlot("chat-1-wake-recovery")
+        with (
+            patch.object(chat_runner, "_recovery_delay", new=AsyncMock()),
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[work-ledger wake] item=it_1 status=question",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-ledger",
+                _directive_loop_gen=3,
+            )
+            if slot.task:
+                await slot.task
+        assert slot.recovery_inserts == [chat_runner._POSTTOKEN_RECOVER_MSG]
+        assert len(prompts) == 2, "the CONTINUE recovery never reached the model"
+        assert svc.charges == [
+            ("chat-1-wake-recovery", "loop-ledger", 3)
+        ], "the wake's recovery died uncharged, so its loop never retries the wake"

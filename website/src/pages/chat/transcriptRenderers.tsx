@@ -44,7 +44,7 @@ import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAge
 import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
-import { resolveGatewayNotice } from './gatewayNotice'
+import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
@@ -55,6 +55,7 @@ import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './su
 import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
+import { isModelUnavailable } from '../../lib/modelUnavailable'
 import UserMessage from './UserMessage'
 import SessionMessageCard from './SessionMessageCard'
 import { isSessionSendTool, parseSessionSend } from './sessionRelay'
@@ -214,6 +215,13 @@ export interface TranscriptRendererOptions {
    *  `crewmate`. A getter, called on every row render, so the host can keep
    *  this renderer set's identity while the transcript streams. */
   crewmateTranscript?: () => ChatMessage[] | undefined
+  /** Read a crewmate's reply aloud from its More menu, the same action the
+   *  Sessions chat offers (`speakReply`). Read only with `crewmate`. */
+  onSpeak?: (content: string) => void
+  /** The browser blocked playback for this crewmate's slot: its replies show
+   *  their action rows without hover (the Sessions chat's `revealActions`).
+   *  Read only with `crewmate`. */
+  revealActions?: boolean
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -730,6 +738,8 @@ export function createTranscriptRenderers(
               activeSession: o.activeSession,
               messageTs: m.ts,
               redactionSlot: o.revealSlot,
+              onSpeak: o.onSpeak,
+              revealActions: o.revealActions,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -754,6 +764,11 @@ export function createTranscriptRenderers(
           return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
         }
         const unentitled = isModelUnentitled(m)
+        // A model the backend refused for capacity or a rollout, after the
+        // retry ladder and the fallback chain were spent: the same fix as an
+        // unentitled model (pick another one, and change the default if new
+        // chats start on it), and never a Resume that re-sends to it.
+        const pickModelFix = unentitled || isModelUnavailable(m)
         const authRequired = isAuthRequired(m)
         const refusal = capabilityRefusal(m)
         const capabilitiesMember = refusal ? String((m.meta as { member?: unknown } | undefined)?.member ?? '') : ''
@@ -788,28 +803,30 @@ export function createTranscriptRenderers(
         // already answered past, is settled and its session may already be new.
         const overflow = isContextOverflow(m)
         const imageRepair = isImageRepair(m)
+        // The sign-in button sits under the row, so its copy points at it.
+        const besideSignIn = authRequired && o.onOpenSignIn ? kasSignedOutBesideButton(m) : null
         return ctx.row(
           <ErrorCard
-            content={transient ? transient.text : m.content}
+            content={besideSignIn ?? (transient ? transient.text : m.content)}
             resumeContent={transient?.card === 'error' ? transient.resumeText : undefined}
             meta={m.meta}
             // A rejection the backend says no retry can fix never offers Continue,
             // even when this row is the newest and the turn was interrupted:
             // resuming would replay the identical rejection (or the same
             // signed-out wall, or the same spent allowance, or the same start
-            // that already failed twice).
+            // that already failed twice, or the same model the backend refused).
             onContinue={
-              !unentitled && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
+              !pickModelFix && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
                 ? o.onContinue
                 : undefined
             }
             sessionStartRepeat={sessionStartRepeat}
             onRestartGateway={sessionStartRepeat ? o.onRestartGateway : undefined}
             continuing={o.continuing}
-            onPickModel={unentitled ? o.onPickModel : undefined}
-            onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
+            onPickModel={pickModelFix ? o.onPickModel : undefined}
+            onOpenDefaultModel={pickModelFix ? o.onOpenDefaultModel : undefined}
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
-            unentitledElsewhere={unentitled}
+            unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
             kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}
             onOpenCapabilities={openCapabilities}

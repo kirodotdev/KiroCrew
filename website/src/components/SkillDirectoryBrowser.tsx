@@ -141,6 +141,7 @@ function TreeRow({
           onClick={() => onToggle(node.path)}
           className="flex items-center gap-1 w-full text-left text-[13px] py-1 hover:bg-bg-elevated rounded cursor-pointer"
           style={indent}
+          aria-expanded={isOpen}
           aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${node.name || 'root'}`}
         >
           <ChevronRight size={12} className={`shrink-0 text-muted transition-transform ${isOpen ? 'rotate-90' : ''}`} />

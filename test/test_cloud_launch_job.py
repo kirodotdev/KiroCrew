@@ -294,11 +294,8 @@ class TestRunLaunch:
     def test_registration_unavailable_never_persists_a_reapable_intermediate(self, tmp_path):
         """No save may leave a failed connect step beside a non-terminal status.
 
-        That pair is exactly what ``reap_orphans`` reads as an interrupted launch,
-        and it rewrites the status to FAILED. A restart in such a window would turn
-        the DONE this path is heading for into a red card over a running crew. This
-        watches every save and asserts the combination is never on disk, so the
-        window does not exist rather than being merely narrow.
+        ``reap_orphans`` reads that pair as an interrupted launch and marks it FAILED,
+        so a restart then would show a red card over a running crew. Every save is watched.
         """
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
@@ -581,13 +578,8 @@ class TestRealSigninHandleFailures:
 class TestRealEngineGatewayPort:
     """A provisioned crew takes the stock port on BOTH ends.
 
-    The launch engine once allocated a bespoke gateway port because the tunnel
-    forced local_port == remote_port and hard-failed when that port was busy —
-    the operator's own gateway usually owns the default, so a crew registered on
-    it could never be connected. The hub now picks its local forward port
-    independently, so crews share the stock remote port: the stack binds its
-    DashboardPort default, the registry records its matching default, and no
-    allocation step exists to reintroduce.
+    The hub picks its local forward port on its own, so crews share the stock remote
+    port: the stack binds its DashboardPort default and the registry records the same.
     """
 
     def _engine(self, monkeypatch):
@@ -623,12 +615,8 @@ class TestRealEngineGatewayPort:
     def test_the_template_default_and_the_registry_default_name_the_same_port(self):
         """The invariant behind the no-override contract above.
 
-        Both ends resolve independently -- the stack binds the template's
-        ``DashboardPort`` Default, the registry records ``register_instance``'s
-        signature default -- so nothing at runtime checks they agree. A drift in
-        either literal ships crews whose tunnel forwards to a port nothing is
-        listening on, with every other test green. This is the one place the two
-        numbers are compared.
+        The template's ``DashboardPort`` Default and ``register_instance``'s signature
+        default resolve independently; this is the one place they are compared.
         """
         import re
 
@@ -976,12 +964,9 @@ class TestTargetCompatibilityIsDecidedBeforeProvisioning:
 class TestTheRegionIsDefaulted:
     """A launch with no region must not reach preflight with an empty one.
 
-    Every provisioner's preflight refuses it, and the Fargate identity check
-    reports it as ``region='' is not a region`` -- which reads as a malformed
-    value rather than an absent one, so the reader looks for a bad setting
-    instead of a missing one. A dashboard form that has no region field of its
-    own posts an empty string, so the default belongs here, where every caller
-    passes through, rather than at each call site.
+    Preflight would report ``region='' is not a region``, which reads as malformed
+    rather than absent. A form with no region field posts "", so the default is applied
+    here, where every caller passes.
     """
 
     def test_an_empty_region_takes_the_configured_one(self, tmp_path, monkeypatch):

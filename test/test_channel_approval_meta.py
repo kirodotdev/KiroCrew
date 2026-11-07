@@ -334,12 +334,8 @@ def _write_config(document):
 async def _expire_one_card(monkeypatch, *, loader=None):
     """Run one approval to expiry; return (waited, steered reasons, client).
 
-    The module's own ``asyncio`` binding is replaced by a namespace that
-    delegates every other name to the real module, so ``wait_for`` reports the
-    window it was given and expires at once: no wall clock is involved. The
-    window is read from the ``config.json`` the test wrote. ``loader`` replaces
-    ``KiroCrewConfig`` on the module for the one case a real loader cannot
-    produce: a config read that raises.
+    The module's ``asyncio`` is swapped so ``wait_for`` records its window and expires at
+    once, with no wall clock. ``loader`` replaces ``KiroCrewConfig`` for a read that raises.
     """
     import asyncio
     import types
@@ -636,3 +632,29 @@ async def test_an_unreadable_config_keeps_the_full_cap(monkeypatch):
     waited, reasons, _client = await _expire_one_card(monkeypatch, loader=_Unreadable)
     assert waited == [3600]
     assert reasons == ["the channel approval card went unanswered for 3600s"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("source", "carded"), [("cli", True), ("dashboard", False)])
+async def test_a_cli_grant_leaves_channel_agents_asking(monkeypatch, source, carded):
+    """``gateway --approval yolo``'s grant is for dashboard chats: a channel agent still asks."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.safety_override import reset_singleton, safety_override
+
+    monkeypatch.setattr("kiro_crew.safety_override.sel", MagicMock())
+    reset_singleton()
+    assert safety_override().activate_declared(source).active is True
+    agent = _make_agent()
+    ch = _make_channel(agent)
+    client = _make_client(
+        [_perm_event(tool_input=json.dumps({"command": "ls -la"}), is_shell=True), _done()]
+    )
+    try:
+        await _stream_task(agent, ch, client, "hi", is_yolo=lambda: True)
+    finally:
+        reset_singleton()
+
+    cards = [kw for _args, kw in ch.post.call_args_list if kw.get("msg_type") == "approval"]
+    assert bool(cards) is carded
+    assert client.approve_tool.await_count == (0 if carded else 1)

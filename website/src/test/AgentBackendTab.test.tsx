@@ -25,9 +25,10 @@
  * AgentBackendTabTestUtils.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
+import { i18next } from '../i18n/all'
 import { ApiError } from '../api/apiError'
 
 const {
@@ -484,7 +485,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
 
   it('makes a dead Use button look dead, in the onboarding button style', async () => {
     // The detail's one mutating control is the same accent button first-run setup
-    // uses, and its dead state is that button's: disabled, faded, no pointer. A dead
+    // uses, and its dead state is that button's: disabled, muted, no pointer. A dead
     // click is answered by silence, so the button must not read as pressable.
     acpBackendsMock.mockResolvedValue({
       backends: [
@@ -497,7 +498,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     highlight('Claude Code')
     await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
     const dead = useButton('Claude Code').className
-    expect(dead).toContain('disabled:opacity-30')
+    expect(dead).toContain('disabled:bg-bg-hover')
     expect(dead).toContain('disabled:cursor-not-allowed')
     expect(dead).toContain('bg-accent')
 
@@ -1000,6 +1001,28 @@ describe('AgentBackendTab status strip', () => {
     // blind reader called it before this sentence existed.
     expect(panel().getByText(/You can still switch to it/)).toBeInTheDocument()
     expect(useButton('Claude Code')).toBeEnabled()
+  })
+
+  it('runs the Japanese could-not-check note on as one sentence', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      acpBackendsMock.mockResolvedValue({
+        backends: [probeRow('kiro', card()), probeRow('claude', { installed: 'unknown', ...card() })],
+      })
+      wrap()
+      await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+      highlight('Claude Code')
+      const sentence =
+        'このマシンにインストールされているか確認できませんでした。それでも切り替えられます。未インストールなら、セッション開始時に知らせます。'
+      await waitFor(() => expect(panel().getAllByText(sentence).length).toBeGreaterThan(0))
+      // A failed probe is an error, so the detail renders it through ErrorNotice.
+      const alert = panel().getAllByText(sentence).map(el => el.closest('[role="alert"]')).find(Boolean)
+      expect(alert).toBeTruthy()
+      // No hand-off here: the same detail can hold unsaved Strands setup drafts.
+      expect(within(alert as HTMLElement).queryAllByRole('button')).toHaveLength(0)
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('falls back to schema-only gating when the probe endpoint refuses (403)', async () => {

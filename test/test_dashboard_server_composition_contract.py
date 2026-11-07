@@ -182,8 +182,9 @@ _BASE_NAMES = frozenset("""
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
-#: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "e49860c4f160d2d4a0415334722d285cdada119f540333842f6ed84a81d61614"
+#: name keeps the kind and signature it had there, except ``_apply_startup_yolo``,
+#: which also takes the gateway's ``approval_mode``.
+_BASE_SHAPE_DIGEST = "8177a15dcf3115ecb5fbe803a7f343b86cca6a8bb28555e72ed57bbe2852b33f"
 
 #: The definitions of the one-module file that ``_BASE_OWNERS`` does not name: the two
 #: entrypoints, and the helpers repository guards read by path or that own module
@@ -402,14 +403,16 @@ _LAZY_IMPORTS = {
     "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit",
-    "kiro_crew.edition_locks": "local_enable_locked",
+    "kiro_crew.edition_locks": "local_enable_locked relay_selected",
     "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances tailnet_direct_listener",
     "kiro_crew.dashboard.chat": "_run_chat",
+    "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
+    "kiro_crew.relay_client.provider": "publish_gateway_ingress",
     "kiro_crew.dashboard.enterprise_gate_middleware": (
         "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
     ),
     "kiro_crew.enterprise_boot": "require_kiro_login",
-    "kiro_crew.dashboard.handlers": "remote_puller wf_handlers work_ledger",
+    "kiro_crew.dashboard.handlers": "config_pending remote_puller wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.agents": "_remove_member_leftovers",
     "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
     "kiro_crew.dashboard.handlers.ask_question": (
@@ -428,6 +431,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
     "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
+    "kiro_crew.dashboard.handlers.terminal": "apply_terminal_enabled",
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
@@ -486,7 +490,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 130
+    assert len(expected) == 135
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

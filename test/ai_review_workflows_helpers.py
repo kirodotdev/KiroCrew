@@ -59,11 +59,8 @@ def _child_env(env: "dict[str, str]") -> "dict[str, str]":
 def _proc_log(result: "subprocess.CompletedProcess[str]") -> str:
     """A failure message from a completed process that cannot itself raise.
 
-    `result.stdout + result.stderr` raises when either stream is None -- observed on
-    the Windows shard even with `capture_output=True`, cause not established. Since
-    these streams exist only to explain a failed assertion, build the message by
-    repr: a None then READS as `stdout=None` in the report rather than replacing the
-    diagnostic with a TypeError or, worse, with an empty string.
+    A stream can be None on the Windows shard even with `capture_output=True`, so
+    concatenating would raise; repr shows `stdout=None` instead.
     """
     return f"rc={result.returncode}\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
 
@@ -71,11 +68,8 @@ def _proc_log(result: "subprocess.CompletedProcess[str]") -> str:
 def _bash() -> str | None:
     """Return a Bash that can consume native paths from this Python process.
 
-    On Windows, ``shutil.which("bash")`` commonly resolves to the WSL launcher
-    in System32.  That executable starts a Linux process but does not translate
-    the Windows argv paths or inherit arbitrary environment variables, so these
-    host-side workflow tests produce false failures.  Git for Windows ships a
-    native-path-aware Bash; prefer it when available.
+    On Windows, ``shutil.which("bash")`` often finds the WSL launcher, which does not
+    translate argv paths or pass the environment; prefer Git for Windows' Bash.
     """
     if os.name == "nt":
         git = shutil.which("git")
@@ -258,22 +252,10 @@ FP_LANES = ("first-principles-review.yml", "fork-first-principles-review.yml")
 def _reads_header_anchored(workflow: str, header: str) -> bool:
     """Whether *workflow*'s verdict CAPTURE reads *header* anchored to line start.
 
-    Tool-agnostic on purpose. A lane may read its verdict header with ``grep
-    -iE '^Header:'`` or with an ``awk`` record match ``!found && tolower($0) ~
-    /^header:/``; what the lanes must not lose is the ANCHOR, because an
-    unanchored read turns a model that merely mentions the header in prose into
-    a verdict. A pin naming one program stops finding the capture the day the
-    capture changes tool, and then passes while measuring nothing.
-
-    The match is the verdict CAPTURE expression in either spelling, not a bare
-    anchored header anywhere in the file: these steps also TRIM the summary to
-    the header one or more lines above the capture (``grep -qiE '^Header:'`` and
-    ``awk 'f || tolower($0) ~ /^header:/'``), and a file-wide search for ``^Header:``
-    is satisfied by the trim alone. That would pass even with the capture deleted
-    outright, measuring the trim instead of the verdict read. Both capture
-    spellings carry a mark the trim does not: the grep capture has no ``-q`` and
-    is followed by ``head -n1``; the awk capture opens ``!found &&`` where the
-    trim opens ``f ||``.
+    Accepts ``grep -iE '^Header:'`` or awk ``!found && tolower($0) ~ /^header:/``; an
+    unanchored read turns a prose mention into a verdict. The TRIM lines also match
+    ``^Header:``, so the capture is told apart by its mark: grep without ``-q`` then
+    ``head -n1``, or awk opening ``!found &&`` where the trim opens ``f ||``.
     """
     escaped = re.escape(header)
     lowered = re.escape(header.lower())
@@ -345,22 +327,12 @@ def _fork_scope_comment(
 ) -> dict[str, str]:
     """Write the fork scope lane's comment body the way the lane itself writes it.
 
-    That lane's upsert step consumes ``$RUNNER_TEMP/scope-comment.md``, which a
-    SEPARATE step composes, so the fixture runs the real "Assemble the comment
-    body" bash rather than hand-writing a body. Hand-writing it would pin a shape
-    the lane never emits, and the withheld-notice wording is the exact thing the
-    guard reads -- a fixture that drifted there would report a guarantee about
-    text no run produces.
+    Runs the real "Assemble the comment body" step that writes
+    ``$RUNNER_TEMP/scope-comment.md``, since the guard reads its withheld-notice text.
 
-    ``marker_head`` is the sha the model's own text claims: this run's head for a
-    completed verdict, a different sha (or ``None`` for no text at all) for
-    output that cannot be attributed to this revision.
-
-    ``rows`` says whether the CLASSIFIER folded a verdict. It is a separate axis
-    from the marker: the classifier measured both refs itself, so its rows are
-    attributable to this head even when the model half produced nothing. With
-    ``rows=False`` nothing was measured at all, which is the state that leaves the
-    body with no stamp of any kind.
+    ``marker_head`` is the sha the model's text claims (``None`` for no text).
+    ``rows`` says whether the classifier folded a verdict, a separate axis: its rows
+    belong to this head even when the model produced nothing.
     """
     bash = _bash()
     if bash is None:
@@ -713,14 +685,8 @@ def _review_contract_module():
 def _bash_has_jq(bash: str) -> bool:
     """Whether *bash* resolves a ``jq`` -- asked of the bash the step runs under.
 
-    ``pr-body-snapshot.sh`` fails closed without ``jq`` ("::error::jq is not
-    available ..."), so a host without one reddens every evidence-step case
-    unless the harness stands one in (``_jq_stub``); this answer is what decides
-    that. The probe goes through the SAME bash the step will run under, not
-    ``shutil.which`` from this process: Git for Windows' ``bin\\bash.exe``
-    prepends its own ``/usr/bin`` to ``PATH``, so the two can disagree on what
-    ``jq`` means. Cached per bash, since the answer is a host fact that does not
-    change within a run.
+    Decides whether ``_jq_stub`` stands in. Asked through that bash, not
+    ``shutil.which``: Git for Windows' ``bin\\bash.exe`` prepends its own ``/usr/bin``.
     """
     try:
         probe = subprocess.run(
@@ -855,19 +821,11 @@ class UxEvidenceGateHarness:
     )
 
     def _jq_stub(self, tmp_path: Path, env: dict[str, str]) -> str:
-        """A `jq` for a bash that has none, so the evidence step is exercised
-        rather than skipped where the host lacks the binary.
+        """A `jq` for a bash that has none, so the evidence step runs instead of skipping.
 
-        `pr-body-snapshot.sh` fails closed without `jq` ("::error::jq is not
-        available ..."), which on a Git Bash without one made every evidence-step
-        case red instead of measuring the script; and a `pytest.skip` here is a
-        loosened ratchet (`a-ratchet-may-only-tighten`). The stand-in is the
-        smallest thing that is honest: it implements the three invocations the
-        step and the gh stub make, byte-exact, and exits 2 on any other filter,
-        so a step that grew a fourth jq call is caught here rather than passed.
-        It is only defined when the bash the step runs under resolves no `jq`
-        (`_bash_has_jq`): where the host has the real binary, the real binary
-        runs, as with `_bash()` preferring the host's Git Bash.
+        A skip would loosen a ratchet (`a-ratchet-may-only-tighten`). It implements the
+        three filters the step and gh stub use, byte-exact, and exits 2 on any other.
+        Used only when `_bash_has_jq` is false.
         """
         script = tmp_path / "jq_stub.py"
         script.write_text(self._JQ_STUB_PY, encoding="utf-8", newline="\n")
@@ -878,19 +836,11 @@ class UxEvidenceGateHarness:
     def _curl_stub(self, tmp_path: Path, fixtures: dict[str, bytes | str]) -> str:
         """A `curl` that records its argv and serves the fixture the URL names.
 
-        It is a shell FUNCTION, sourced through `BASH_ENV`, not a script on
-        `PATH`: Git for Windows' `bin\\bash.exe` is a wrapper that prepends
-        `mingw64\\bin` -- which ships `curl.exe` -- to `PATH` before bash
-        starts, so a `PATH` stub is shadowed there and every download hits the
-        real curl (and 404s on the fixture URLs). A function shadows any
-        executable regardless of `PATH` order, on every platform.
+        A shell FUNCTION via `BASH_ENV`, not a `PATH` script: Git for Windows'
+        `bin\\bash.exe` prepends `mingw64\\bin`, which ships `curl.exe`.
 
-        Every invocation appends its arguments, one per line, then a `--`
-        separator, to the log the test reads back. The last argument is the
-        URL; `-o` names the output path. A fixture value of ``FAIL:<code>``
-        returns that code instead of writing, and a URL with no fixture
-        returns 6 (could not resolve host), which is what a download of a host
-        the allowlist should have excluded would look like.
+        Each call logs its arguments, one per line, then `--`. ``FAIL:<code>`` returns
+        that code; a URL with no fixture returns 6 (could not resolve host).
         """
         fixture_dir = tmp_path / "fixtures"
         fixture_dir.mkdir(exist_ok=True)
@@ -1066,26 +1016,10 @@ class UxEvidenceGateHarness:
     def _git_env(tmp_path: Path) -> dict[str, str]:
         """An environment in which git can only see the scratch repository.
 
-        An inherited `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` (set by a
-        hook, a wrapper, or a parent test runner) would make `git init` and
-        every write below land in THAT repository despite `cwd=repo`, so every
-        `GIT_*` location variable is dropped. Global and system config are
-        pointed away too, so a host-wide `commit.gpgsign` or hook path cannot
-        reach the fixture. The global file it points at turns auto maintenance
-        off, since dropping `GIT_*` also drops the suite's own entries.
-
-        `RUNNER_TEMP` is given its own per-case directory for the same reason,
-        and it matters as soon as a step under test keeps anything there. The
-        evidence step reads the PR description through pr-body-snapshot.sh,
-        which caches that read under `$RUNNER_TEMP` BECAUSE a job is exactly
-        the scope one read should serve. On a GitHub runner that variable is
-        set job-wide, so inheriting it makes every case in the shard share one
-        cache: the first case to run leaves a snapshot for `example/repo#7`,
-        and every later case reuses it instead of calling its own `gh` stub --
-        its call counter is never written, and a case that asks the stub to
-        fail sees the step succeed. The failure is invisible off-runner, where
-        `RUNNER_TEMP` is unset and each case falls back to a fresh `mktemp -d`.
-        One case is one job, so one case gets one job temp.
+        Every `GIT_*` is dropped (an inherited `GIT_DIR` would redirect writes) and
+        global/system config is pointed at a file that turns auto maintenance off.
+        Each case gets its own `RUNNER_TEMP`:
+        pr-body-snapshot.sh caches there, and a job-wide one would share snapshots.
         """
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         gitconfig = tmp_path / "gitconfig"

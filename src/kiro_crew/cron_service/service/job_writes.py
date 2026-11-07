@@ -58,6 +58,7 @@ def add_job(
     skip_dates: list[str] | None = None,
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
+    new_chat_per_run: bool = False,
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -72,6 +73,7 @@ def add_job(
     timeout_secs: int = 0,
     auto_pause_after_failures: int | None = None,
     alert_after_failures: int | None = None,
+    person_owner: bool = False,
 ) -> CronJob:
     """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -109,6 +111,7 @@ def add_job(
         skip_dates=skip_dates,
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
+        new_chat_per_run=new_chat_per_run,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,
@@ -124,6 +127,9 @@ def add_job(
         auto_pause_after_failures=auto_pause_after_failures,
         alert_after_failures=alert_after_failures,
     )
+    # Only MCP ``cron_add`` knows this. A key, not a flag: a moved session_key voids it.
+    if person_owner:
+        job.person_owner_key = job.session_key
     self._persist_add_locked(job)
     self._arm_timer()
     logger.info("Added cron job '%s' (%s)", name, job.id)
@@ -337,6 +343,7 @@ async def add_job_async(
     skip_dates: list[str] | None = None,
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
+    new_chat_per_run: bool = False,
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -387,6 +394,7 @@ async def add_job_async(
         skip_dates=skip_dates,
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
+        new_chat_per_run=new_chat_per_run,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,

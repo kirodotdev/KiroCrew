@@ -314,7 +314,8 @@ async def _drain_post_compaction_metadata(
     counts against the kept served window. Returns on the first metadata
     frame carrying a real percentage — a credits-only/empty metadata frame
     is consumed but does not end the drain (the usage frame behind it
-    would be stranded). Gives up quietly at the grace deadline.
+    would be stranded). Gives up quietly at the grace deadline. A cancelled
+    kiro turn reads its billing frame here too (see ``_dispatch_events``).
 
     ``buffered``: when the caller (``wait_for_compaction``) passes its own
     frame buffer, non-metadata frames are appended to it and the CALLER
@@ -368,7 +369,8 @@ async def _drain_post_compaction_metadata(
 def _track_prompt_usage(self: AcpSessionHandle, result: Any) -> None:
     """Fold a PromptResponse's turn-scoped token counts into the stats.
 
-    Mirrors ``AcpClient._track_prompt_usage``: the claude-agent-acp adapter
+    Mirrors ``AcpClient._track_prompt_usage`` less its Copilot branch (Copilot
+    never runs on the shared runtime): the claude-agent-acp adapter
     reports per-turn token counts on the prompt response; kiro-cli's
     response carries only ``stopReason``, so ``parse_prompt_token_usage``
     returns None there and the stats are untouched (harness parity).

@@ -485,6 +485,14 @@ def session_key_from_env_token() -> str:
         token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
         if not token:
             return ""
-        return verify_session_token(token)
+        key = verify_session_token(token)
+        if key:
+            return key
+        # Under an enforced harness's credential mask the trust root is hidden, so the
+        # mapping cannot be verified here. A server holding an agent-socket capability
+        # asks the gateway instead, which resolves the same token's mapping itself.
+        from kiro_crew.agent_ipc_client import capability_session_key
+
+        return capability_session_key()
     except Exception:
         return ""

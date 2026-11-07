@@ -342,6 +342,21 @@ class TestAStoreFromBeforeLocalKeepsItsJobsOnUtc:
         zones = {rec["id"]: rec.get("timezone", "") for rec in saved["jobs"]}
         assert zones == {"cron": "UTC", added.id: ""}
 
+    def test_a_skipped_record_the_save_keeps_is_stamped_too(self, tmp_path) -> None:
+        """It is written under the new version too, so without the stamp a record fixed
+        by hand later would fire in the host's zone instead of UTC."""
+        broken = {"id": "broken", "message": "m", "schedule": dict(_CRON)}  # no "name"
+        _write_store(tmp_path, 2, [_record("cron", _CRON), broken])
+        CronService(base_dir=tmp_path).add_job(name="new", message="m", cron_expr="0 9 * * *")
+        kept = [rec for rec in _saved(tmp_path)["jobs"] if rec["id"] == "broken"]
+        assert kept == [{**broken, "timezone": "UTC"}]
+
+    def test_a_kept_record_with_a_list_id_does_not_fail_the_load(self, tmp_path) -> None:
+        """The stamp's follows-default lookup takes any id a skipped record carries."""
+        broken = {"id": ["x"], "message": "m", "schedule": dict(_CRON)}  # no "name"
+        _write_store(tmp_path, 2, [_record("cron", _CRON), broken])
+        assert [j.id for j in CronService(base_dir=tmp_path).list_jobs(True)] == ["cron"]
+
     def test_a_current_store_is_not_stamped(self, tmp_path) -> None:
         _write_store(tmp_path, 3, [_record("cron", _CRON)])
         assert CronService(base_dir=tmp_path).list_jobs(True)[0].timezone == ""
@@ -408,6 +423,45 @@ class TestAStoreFromBeforeLocalKeepsItsJobsOnUtc:
         svc.add_job(name="later", message="m", cron_expr="0 10 * * *")
         assert _saved(tmp_path)["version"] == 3
         assert key not in _saved(tmp_path)
+
+    def test_a_skipped_record_listed_as_following_the_default_stays_listed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A save while the upgrade waits keeps the listing of a record it could not
+        load, so once the record is fixed by hand the upgrade does not stamp it. An
+        unlisted one stays unlisted, and one with a list id does not fail the save."""
+        from kiro_crew.cron_service import zone_default_migration
+
+        key = zone_default_migration.FOLLOWS_DEFAULT_KEY
+        _config_unreadable(monkeypatch)
+        broken = [
+            {"id": job_id, "message": "m", "schedule": dict(_CRON)}  # no "name"
+            for job_id in ("listed", "older", ["x"])
+        ]
+        document = {"version": 2, "jobs": [_record("cron", _CRON), *broken], key: ["listed"]}
+        (tmp_path / "crons.json").write_text(json.dumps(document), encoding="utf-8")
+        CronService(base_dir=tmp_path).enable_job("cron", enabled=False)
+        saved = _saved(tmp_path)
+        assert saved[key] == ["listed"]
+
+        saved["jobs"][1]["name"] = "listed"
+        saved["jobs"][2]["name"] = "older"
+        (tmp_path / "crons.json").write_text(json.dumps(saved), encoding="utf-8")
+        monkeypatch.setattr(zone_default_migration, "configured_default_zone", lambda: "")
+        zones = {j.id: j.timezone for j in CronService(base_dir=tmp_path).list_jobs(True)}
+        assert zones == {"cron": "UTC", "listed": "", "older": "UTC"}
+
+    def test_a_kept_record_sharing_a_jobs_id_is_listed_once(self) -> None:
+        """A kept record with a loaded job's id must not double the listing."""
+        from kiro_crew.cron_service import zone_default_migration
+
+        key = zone_default_migration.FOLLOWS_DEFAULT_KEY
+        job = _daily_nine("")
+        job.id = "dup"
+        kept = zone_default_migration.store_extra_for_save(
+            {key: ["dup"]}, [job], deferred=True, skipped=({"id": "dup", "message": "m"},)
+        )
+        assert kept[key] == ["dup"]
 
     def test_an_update_that_sets_a_held_jobs_zone_releases_it(
         self, tmp_path, monkeypatch, no_configured_zone

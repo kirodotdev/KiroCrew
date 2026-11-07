@@ -375,6 +375,14 @@ describe('fileMenuItemMatches — declarative when predicate', () => {
     expect(fileMenuItemMatches(row, { path: 'a.md/notes', kind: 'file' })).toBe(false)
   })
 
+  it('reads the extension from the last segment of a Windows gateway path (#27792)', () => {
+    const dotfile = item({ when: { extensions: ['gitignore'], kinds: [] } })
+    expect(fileMenuItemMatches(dotfile, { path: 'C:\\repo\\.gitignore', kind: 'file' })).toBe(false)
+    expect(fileMenuItemMatches(dotfile, { path: '\\\\host\\share\\.gitignore', kind: 'file' })).toBe(false)
+    const ts = item({ when: { extensions: ['ts'], kinds: [] } })
+    expect(fileMenuItemMatches(ts, { path: 'C:\\repo\\a.ts', kind: 'file' })).toBe(true)
+  })
+
   it('ANDs kind and extension', () => {
     const row = item({ when: { extensions: ['md'], kinds: ['file'] } })
     expect(fileMenuItemMatches(row, { path: 'a/b.md', kind: 'file' })).toBe(true)

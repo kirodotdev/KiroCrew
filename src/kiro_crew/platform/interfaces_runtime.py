@@ -41,7 +41,10 @@ class TunnelProvider(Protocol):
 
     Public default = disabled/no-op (the ``tunnel/manager.py`` stub).  The
     companion supplies the internal tunnel supervisor (the Tunnels primitive
-    itself is owned by PartyRock and out of scope).
+    itself is owned by PartyRock and out of scope).  The public composition puts
+    the Kiro relay client (``relay_client.provider.RelayTunnelProvider``) here
+    instead only when ``tunnel.relay_enabled`` is on; a companion's own provider
+    is never replaced by it.
 
     WIRED: the ``tunnel/manager.py`` stub ``TunnelManager`` delegates its
     ``start`` / ``stop`` / ``public_url`` UNCONDITIONALLY to
@@ -439,10 +442,11 @@ class FeedbackTrackerProvider(Protocol):
         Default) leaves today's behaviour byte-for-byte.
 
         *bundle* carries the facts a report wants: ``filename``,
-        ``total_redactions``, ``path_collapses`` and ``provenance`` (release,
-        channel). Never put ``bundle.zip_path`` in the URL: it sits under the
-        data home and leaks the OS login. *note* is the user's free text,
-        untrusted; percent-encode it or leave it out.
+        ``total_redactions``, ``path_collapses`` (host-name replacements
+        included) and ``provenance`` (release, channel). Never put
+        ``bundle.zip_path`` in the URL: it sits under the data home and leaks
+        the OS login. *note* is the user's free text, untrusted; percent-encode
+        it or leave it out.
 
         *prefill* says which surface the link is for. ``True`` is the dashboard,
         which renders the URL from a JSON field no redactor scans, so a long
@@ -456,6 +460,19 @@ class FeedbackTrackerProvider(Protocol):
         while keeping the bundle usable, without a standalone fallback. Any other
         error, a non-string or an empty string degrades to the public link.
         v1 addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+
+class AcceptanceCheckProvider(Protocol):
+    """The edition's checks behind ``kirocrew acceptance-check`` (``edition_check``)."""
+
+    def run_acceptance_check(self, check: str, ref: str) -> int:
+        """Print the JSON report for *check* about *ref* and return the exit code.
+
+        WIRED: the ``acceptance-check`` branch of ``kiro_crew.cli.main``. Exit codes
+        and report: platform-context.md, "Acceptance check command". v1 addition
+        (no ``CONTRACT_VERSION`` bump).
         """
         ...
 

@@ -19,6 +19,7 @@ from typing import Any
 
 from aiohttp import web
 
+import kiro_crew.config.resolution as _resolution
 from kiro_crew import beacon
 from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
@@ -694,6 +695,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # does not adopt it away. A failed ack raises OSError and aborts the
             # write, rather than saving a value the next load would delete.
             ack_explicit_write(path_key, value)
+            # This raw write bypasses save(), which is what drops retired keys;
+            # do it here so the load-time "dropped on the next save" holds.
+            _resolution.drop_retired_section_keys(data)
             return data
 
         try:
@@ -715,9 +719,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # operator's own input being declined (400), not a server failure, and
             # the message -- env-var keys only, never the value -- is the instruction.
             _log_sel("denied", f"{path_key}=write_refused")
-            return web.json_response(
-                {"error": str(exc), "code": "config_write_refused"}, status=400
-            )
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         except _session_environments.ProfileIdCollision as exc:
             # A ``ValueError`` too: the operator's input, refused before any write.
             _log_sel("denied", f"{path_key}=profile_id_collision")

@@ -1000,6 +1000,28 @@ describe('accounts pane', () => {
     expect(screen.queryByTestId('accounts-list')).toBeNull()
   })
 
+  it('Refresh re-probes the keys instead of re-reading the cached snapshot', async () => {
+    // A plain read returns the backend's cached probe snapshot (the stale
+    // payload here); only `refresh` re-probes. The dashboard client never goes
+    // stale on its own, so the test client must not either.
+    const healed = accountsPayload()
+    healed.accounts[1] = {
+      ...healed.accounts[1],
+      health: 'ok',
+      profiles: [{ ...healed.accounts[1].profiles[0], identityOk: true, detail: '' }],
+    }
+    vi.mocked(awsControlApi.accounts).mockImplementation(async (refresh) => (refresh ? healed : accountsPayload()))
+    renderWithProviders(<AwsControlPage />, { queryDefaults: { staleTime: Infinity } })
+    await screen.findByTestId('overview-pane')
+    fireEvent.click(screen.getByTestId('rail-accounts'))
+    await screen.findByTestId('accounts-pane')
+    const health = () => screen.getAllByTestId('health-dot').map((d) => d.getAttribute('data-health'))
+    expect(health()).toEqual(['ok', 'degraded'])
+
+    fireEvent.click(screen.getByTestId('refresh'))
+    await waitFor(() => expect(health()).toEqual(['ok', 'ok']))
+  })
+
   it('keeps the rescue off the pane when a listed account owns the grant', async () => {
     // A grant OWNED by a listed account renders on that account's usage pane,
     // not here — the accounts pane is accounts and nothing else.
@@ -1412,7 +1434,7 @@ describe('add accounts', () => {
     fireEvent.click(within(panel).getByTestId('reconnect-toggle'))
     const notice = await screen.findByTestId('reconnect-error')
     // No draft yet: the hand-off is offered.
-    expect(within(panel).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
 
     fireEvent.click(screen.getByTestId('add-accounts-toggle'))
     const boxes = await screen.findAllByTestId('add-accounts-checkbox')
@@ -1428,7 +1450,7 @@ describe('add accounts', () => {
     fireEvent.click(boxes[0])
     expect(boxes[0]).not.toBeChecked()
     await waitFor(() =>
-      expect(within(panel).getByRole('button', { name: /ask the agent/i })).toBeTruthy(),
+      expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy(),
     )
   })
 })

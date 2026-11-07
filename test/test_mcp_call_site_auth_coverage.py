@@ -74,6 +74,7 @@ _SOURCES = (
     _CORE,
     *sorted((_SRC / "mcp_core_parts").glob("*.py")),
     _SRC / "mcp_secrets.py",
+    _SRC / "kas_connection_bridge.py",
     _SRC / "mcp_dashboard.py",
     _SRC / "mcp_shared.py",
     _SRC / "mcp_shared_policy.py",
@@ -552,6 +553,11 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                             except _TooManyCandidates:
                                 cands = []
                             for cand in cands:
+                                if called == "Request" and "?token=" in cand:
+                                    # A dashboard-token read (``kirocrew status``'s owner
+                                    # read) sends no internal secret: out of scope.
+                                    found = True
+                                    continue
                                 norm = _normalise(cand)
                                 # Anchor at the first ``/api/``, except the app
                                 # reverse proxy ``/apps/{name}/api/{path}``

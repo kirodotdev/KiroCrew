@@ -50,14 +50,16 @@ import SessionActionsMenu from '../components/SessionActionsMenu'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../components/ui/dropdown-menu'
 import type { RootState } from '../store'
+import { confirmAction } from './confirmAction'
 
 function renderList(props: React.ComponentProps<typeof TagManagerList>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={qc}>
       <TagManagerList {...props} />
     </QueryClientProvider>,
   )
+  return { ...view, queryClient: qc }
 }
 
 function renderCoMountedLists() {
@@ -127,28 +129,156 @@ describe('TagManagerList — shared CRUD (both modes)', () => {
   })
 
   it('deletes a tag only after confirm', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm')
     renderList({ mode: 'manage' })
     const del = await screen.findByTestId('tag-delete-t1')
 
-    confirmSpy.mockReturnValueOnce(false)
     fireEvent.click(del)
+    const dialog = await screen.findByRole('dialog', { name: 'Delete tag' })
+    expect(dialog).toHaveTextContent('Delete tag “Alpha”?')
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
     expect(api.deleteChatTag).not.toHaveBeenCalled()
 
-    confirmSpy.mockReturnValueOnce(true)
     fireEvent.click(del)
+    await confirmAction('Delete tag')
     await waitFor(() => expect(api.deleteChatTag).toHaveBeenCalledWith('t1'))
-    confirmSpy.mockRestore()
   })
 
   it('surfaces delete failures through ErrorNotice', async () => {
     vi.mocked(api.deleteChatTag).mockRejectedValueOnce(new Error('Tag could not be deleted.'))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderList({ mode: 'manage' })
     fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    await confirmAction('Delete tag')
     expect(await screen.findByText('Tag could not be deleted.')).toBeInTheDocument()
     expect(screen.getByTestId('tag-crud-mutation-error')).toBeInTheDocument()
-    confirmSpy.mockRestore()
+  })
+
+  it('deletes the captured tag when cached row identity changes during the question', async () => {
+    const fixture = await api.chatTags()
+    vi.mocked(api.chatTags).mockResolvedValueOnce(structuredClone(fixture))
+    const { queryClient, rerender } = renderList({ mode: 'manage' })
+    fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    const dialog = await screen.findByRole('dialog')
+    const tags = queryClient.getQueryData<Array<{ id: string; name: string }>>(['chat-tags'])!
+    await act(async () => {
+      tags[0].id = 'replacement'
+      tags[0].name = 'Replacement'
+      queryClient.setQueryData(['chat-tags'], [...tags, { ...tags[0], id: 't1', name: 'Alpha' }])
+    })
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <TagManagerList mode="manage" />
+      </QueryClientProvider>,
+    )
+    await screen.findByTestId('tag-delete-replacement')
+    expect(dialog).toHaveTextContent('Delete tag “Alpha”?')
+    await confirmAction('Delete tag')
+    await waitFor(() => expect(api.deleteChatTag).toHaveBeenCalledWith('t1'))
+    expect(api.deleteChatTag).not.toHaveBeenCalledWith('replacement')
+  })
+
+  it.each(['manage-instance', 'filter-instance'])(
+    'does not repeat a deletion completed by another list while %s has a question open',
+    async instance => {
+      const fixture = structuredClone(await api.chatTags())
+      vi.mocked(api.chatTags)
+        .mockResolvedValueOnce(fixture)
+        .mockResolvedValueOnce(fixture.filter(tag => tag.id !== 't1'))
+      renderCoMountedLists()
+      const asking = within(screen.getByTestId(instance))
+      const other = within(screen.getByTestId(instance === 'manage-instance' ? 'filter-instance' : 'manage-instance'))
+      fireEvent.click(await asking.findByTestId('tag-delete-t1'))
+      const staleDialog = await screen.findByRole('dialog')
+      fireEvent.click(await other.findByTestId('tag-delete-t1'))
+      await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(2))
+      const otherDialog = screen.getAllByRole('dialog').find(dialog => dialog !== staleDialog)!
+      await act(async () => { fireEvent.click(within(otherDialog).getByRole('button', { name: 'Delete tag' })) })
+      await waitFor(() => expect(api.deleteChatTag).toHaveBeenCalledTimes(1))
+      await waitFor(() => {
+        expect(asking.queryByTestId('tag-row-t1')).toBeNull()
+        expect(other.queryByTestId('tag-row-t1')).toBeNull()
+      })
+      expect(staleDialog).toBeInTheDocument()
+      await act(async () => { fireEvent.click(within(staleDialog).getByRole('button', { name: 'Delete tag' })) })
+      expect(api.deleteChatTag).toHaveBeenCalledTimes(1)
+      expect(api.deleteChatTag).toHaveBeenCalledWith('t1')
+    },
+  )
+
+  it.each(['manage-instance', 'filter-instance'])(
+    'does not repeat another list\'s pending deletion while %s has a question open',
+    async instance => {
+      const pending = deferred<{ ok: boolean }>()
+      vi.mocked(api.deleteChatTag).mockReturnValueOnce(pending.promise)
+      renderCoMountedLists()
+      const asking = within(screen.getByTestId(instance))
+      const other = within(screen.getByTestId(instance === 'manage-instance' ? 'filter-instance' : 'manage-instance'))
+      fireEvent.click(await asking.findByTestId('tag-delete-t1'))
+      const staleDialog = await screen.findByRole('dialog')
+      fireEvent.click(await other.findByTestId('tag-delete-t1'))
+      await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(2))
+      const otherDialog = screen.getAllByRole('dialog').find(dialog => dialog !== staleDialog)!
+      try {
+        await act(async () => { fireEvent.click(within(otherDialog).getByRole('button', { name: 'Delete tag' })) })
+        await waitFor(() => expect(other.getByTestId('tag-delete-t1')).toBeDisabled())
+        expect(asking.getByTestId('tag-row-t1')).toBeInTheDocument()
+        expect(api.deleteChatTag).toHaveBeenCalledWith('t1')
+        await act(async () => { fireEvent.click(within(staleDialog).getByRole('button', { name: 'Delete tag' })) })
+        await waitFor(() => expect(screen.queryAllByRole('dialog')).toHaveLength(0))
+        expect(api.deleteChatTag).toHaveBeenCalledTimes(1)
+      } finally {
+        await act(async () => { pending.resolve({ ok: true }) })
+        await waitFor(() => expect(other.getByTestId('tag-delete-t1')).toBeEnabled())
+      }
+    },
+  )
+
+  it.each(['manage', 'column-filter'] as const)(
+    'does not delete a tag whose store becomes degraded during the question in %s mode',
+    async mode => {
+      const { queryClient } = renderList({ mode })
+      fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+      const dialog = await screen.findByRole('dialog')
+      const tags = queryClient.getQueryData<Awaited<ReturnType<typeof api.chatTags>>>(['chat-tags'])!
+      await act(async () => {
+        queryClient.setQueryData(['chat-tags'], tags.map(tag =>
+          tag.id === 't1' ? { ...tag, agent_store_degraded: true } : tag,
+        ))
+      })
+      await waitFor(() => expect(screen.getByTestId('tag-delete-t1')).toBeDisabled())
+      expect(dialog).toBeInTheDocument()
+      await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Delete tag' })) })
+      await waitFor(() => expect(dialog).not.toBeInTheDocument())
+      expect(api.deleteChatTag).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps the question mounted when the list becomes empty', async () => {
+    const { queryClient } = renderList({ mode: 'manage' })
+    fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    const dialog = await screen.findByRole('dialog')
+    await act(async () => { queryClient.setQueryData(['chat-tags'], []) })
+    await waitFor(() => expect(screen.queryByTestId('tag-row-t1')).toBeNull())
+    expect(dialog).toBeInTheDocument()
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
+    expect(api.deleteChatTag).not.toHaveBeenCalled()
+  })
+
+  it('ignores other delete presses while the question is open and repeat presses while deletion is pending', async () => {
+    const pending = deferred<{ ok: boolean }>()
+    vi.mocked(api.deleteChatTag).mockReturnValueOnce(pending.promise)
+    renderList({ mode: 'manage' })
+    const button = await screen.findByTestId('tag-delete-t1')
+    fireEvent.click(button)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(screen.getByTestId('tag-delete-t2'))
+    expect(screen.getAllByRole('dialog')).toEqual([dialog])
+    expect(dialog).toHaveTextContent('Delete tag “Alpha”?')
+    await confirmAction('Delete tag')
+    await waitFor(() => expect(button).toBeDisabled())
+    fireEvent.click(button)
+    expect(api.deleteChatTag).toHaveBeenCalledTimes(1)
+    await act(async () => { pending.resolve({ ok: true }) })
+    await waitFor(() => expect(button).toBeEnabled())
   })
 
   it('creates a tag on Enter and clears the exact submitted draft after success', async () => {

@@ -242,6 +242,25 @@ export function noteDirPath(
   return slash === -1 ? root : `${root}/${notePath.slice(0, slash)}`
 }
 
+/**
+ * Where an embed target in Obsidian's relative link format (`./a.png`,
+ * `../assets/a.png`) points, as segments under the vault root: read from the
+ * note's folder, which `noteDirPath` builds as the vault root plus the note's
+ * folder. Null when it climbs above the vault root.
+ */
+export function noteRelativeSegments(segments: readonly string[], noteDir?: string, vaultRoot?: string): string[] | null {
+  if (!noteDir || !vaultRoot) return null
+  const out = noteDir.slice(vaultRoot.length).split('/').filter(Boolean)
+  for (const segment of segments) {
+    if (segment === '..') {
+      if (out.pop() === undefined) return null
+    } else if (segment && segment !== '.') {
+      out.push(segment)
+    }
+  }
+  return out
+}
+
 export function shiftListItem(
   text: string,
   pos: number,

@@ -6,17 +6,13 @@
  * rejection's untranslated `deadline exceeded` in every locale, trading a spinner for a
  * worse bug -- which is why the git panel and the knowledge search stay unbounded.
  *
- * Scope is stated as the CONSTANT set, not as a share of the client's `fetch('/api/...`
- * sites: that ratio was the argument for a general bound, but any unrelated edit to the API
- * client moves it, so it cannot be a rule. Scope is the four constants below, each carrying
- * its own rationale; an interim per-endpoint bound is a legal addition while the transport
- * default is pending. The general bound belongs
- * in the shared transport and cannot be blanket -- the long-poll endpoints and the streaming
- * reader must opt out -- and when it lands these constants are RETIRED. Retirement tracked in
- * #11420. The replacement MUST
- * keep rejecting with a `TimeoutError`-named `Error`: `isDeadlineError` and `searchErrorCause`
- * key on that name, so a transport that rejects any other shape silently degrades every
- * cause-keyed notice added here back to the generic "failed" copy.
+ * So a bound is opted into per read, never a transport default: a default would reach the
+ * consumers that render the raw message, and the long-poll endpoints and the streaming reader
+ * must stay unbounded. A read opts in through `withDeadline` or the transport's
+ * `withJournaledDeadline` (which also journals the expiry), with its budget justified where it
+ * is declared; the file reads' budgets are in `api/client/files.ts`. Every bound MUST reject
+ * with a `TimeoutError`-named `Error`: `isDeadlineError` and `searchErrorCause` key on that
+ * name, so any other shape degrades every cause-keyed notice to the generic "failed" copy.
  *
  * RETRY is not uniform and that is deliberate: a listing takes one bounded attempt, since a retry
  * re-enters the bound and doubles it, while the @-menu search alone keeps the shared throttle

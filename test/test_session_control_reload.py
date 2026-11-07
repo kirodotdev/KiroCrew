@@ -250,6 +250,51 @@ def test_attached_subagents_are_refused(tmp_path, monkeypatch, eager):
     _nothing_happened(state, target, before, eager)
 
 
+_RELOAD_BUSY = (
+    "session busy, not reloaded: it has a turn, queued messages or sub-agents in flight. "
+    "Wait until it is idle and retry."
+)
+
+
+@pytest.mark.parametrize(
+    ("detail", "named"),
+    [
+        (
+            {
+                "runs": [{"id": "r1", "state": "stalled"}],
+                "queued": [{"id": "q1", "state": "retry_wait"}],
+                "queued_partial": False,
+            },
+            "Still running or queued: r1 (stalled), q1 (retry_wait).",
+        ),
+        (
+            {"runs": None, "queued": [], "queued_partial": False},
+            "Some sub-agents could not be checked.",
+        ),
+        (
+            {"runs": [], "queued": [{"id": "q1", "state": "queued"}], "queued_partial": True},
+            "Still running or queued: q1 (queued). Some sub-agents could not be checked.",
+        ),
+    ],
+    ids=["named", "unchecked", "partial"],
+)
+def test_a_subagent_refusal_names_what_keeps_the_target_attached(
+    tmp_path, monkeypatch, eager, detail, named
+):
+    """Both busy paths, the verb's own probe and the teardown's 409, name the
+    runs and queued spawns the 409 carries, and say when some could not be checked."""
+    state, caller, _target = _world(tmp_path)
+    body = {"error": "sub-agents are running", "code": "slot_subagents_running", **detail}
+
+    async def _children(*_a, **_kw):
+        return chat_handlers.web.json_response(body, status=409)
+
+    monkeypatch.setattr(chat_handlers, "_subagents_attached_response", _children)
+
+    assert _refused(state, caller).message == f"{_RELOAD_BUSY} {named}"
+    assert sc._reload_route_refusal(409, body).message == f"{_RELOAD_BUSY} {named}"
+
+
 def test_a_turn_starting_inside_the_locks_is_refused(tmp_path, monkeypatch, eager):
     """The busy probe runs again inside the teardown's locks. Mutation guard:
     passing the route's provider-only probe would miss a cold-starting turn."""

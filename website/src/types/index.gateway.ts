@@ -79,6 +79,12 @@ export interface StatusData {
    */
   update_channel_move_pending?: boolean
   update_managed_by?: string
+  /**
+   * The home security policy file's path when its update commands manage
+   * this install, so the policy notice can say where it is. Empty under any
+   * other policy tier, absent on older gateways and on app sockets.
+   */
+  update_policy_file?: string
   update_can_arm?: boolean
   /**
    * What an available update leads to on this install: `install` (with the
@@ -161,6 +167,9 @@ export interface StatusData {
   yolo_duration?: '30m' | '1h' | '6h' | '12h' | '24h' | 'until_shutdown'
   /** Whether enterprise governance currently allows the until_shutdown option. */
   yolo_until_shutdown_permitted?: boolean
+  /** HTTP reply only: whether this account owns the data home's key entries,
+   *  and the gateway's repair line when it does not. Absent on an older gateway. */
+  data_home_access?: { ok: boolean; home: string; foreign: string[]; fix_command: string }
   /** Auto-approve modes forbidden by the `approval_modes` policy scope. Today the
    * scope governs `yolo` only, so this is `['yolo']` or empty; `normal`, `trust`
    * and `trust_reads` are non-deniable and never appear. The approval-mode picker
@@ -335,8 +344,8 @@ export interface SessionStorageCleanup {
  * a single slot, so a second empty is refused with 409 and this same shape rather
  * than queued.
  *
- * `total_bytes` comes from the staged manifests — the same figure the trash row
- * showed — so it is the denominator for `freed_bytes` and never a remeasurement.
+ * `total_bytes` counts what the delete counts in `freed_bytes` (the trash row's
+ * figure plus each batch's manifest), so it is the denominator, never a remeasurement.
  */
 export interface SessionStorageEmptyJob {
   job_id: string

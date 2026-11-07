@@ -32,6 +32,7 @@ const {
   describeLocation,
 } = require("./bundle-location");
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
+const { themeSplashUrl } = require("./theme-splash");
 const {
   fallbackLocalPort,
   isSelectablePort,
@@ -134,6 +135,8 @@ const store = new Store({
     runLocalGateway: true,
     // "background" or "quit". See close-action.js.
     closeAction: "background",
+    // Only false hides it, and only while the close button quits. See tray-icon.js.
+    showTrayIcon: true,
     linuxFrameless: null,
     // Written by gpu-crash-fallback.js when the GPU process dies at startup;
     // read before Chromium initializes on the next launch.
@@ -427,7 +430,9 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
-  // Chromium reads GPU switches during initialization, so the opt-in policy
+  // Chromium reads GPU switches during initialization, so the GPU policy (opt-in
+  // via KIROCREW_DISABLE_GPU / --disable-gpu, auto on a Windows RDP session,
+  // forced on by KIROCREW_DISABLE_GPU=0 / --enable-gpu)
   // must run inside the lock-winner branch and before app ready. Reading the
   // winning process's env/argv also avoids pretending a second-instance argv
   // handoff can repair the renderer that already launched.
@@ -446,7 +451,7 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
-  // Same timing constraint as the opt-in above: a persisted software-rendering
+  // Same timing constraint as the GPU policy above: a persisted software-rendering
   // decision has to reach Chromium before it initializes. Also arms the
   // `child-process-gone` listener that makes that decision, so a GPU process
   // that dies before the dashboard loads relaunches the app once in software
@@ -540,6 +545,7 @@ const gateway = createGatewaySupervisor({
   predictLocalPort: () => fallbackLocalPort(store, glog),
   // The respawned backend can be healthy while this app's own bundle is gone.
   onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
+  currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
 });
 
 // Shared single-use registry of downloads the renderer explicitly asked for.
@@ -748,7 +754,7 @@ app.whenReady().then(async () => {
   // Security and every non-update bridge are installed before the first
   // dashboard or untrusted browser WebContents can be created.
   ipcRegistrar.registerShell();
-  windows.createTray();
+  windows.syncTray();
   const mainWindow = windows.createMainWindow();
 
   // Linux AppImage desktop integration. It creates the first launcher and then

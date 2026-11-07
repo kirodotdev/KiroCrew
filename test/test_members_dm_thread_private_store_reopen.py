@@ -1,11 +1,8 @@
 """Crew Members DM threads: opening and reopening a member thread on a private store.
 
-``POST /api/members/{slug}/thread`` for a member with a private memory store names the
-actual cause of a conflict and never interrupts or reassigns a running turn. A reopen
-whose ownership changes while it reads (member deleted or recreated, store rebound,
-binding or store identity altered) is refused; ``running`` is re-checked after the slot
-lock and after the assignment await; and a failed pin leaves no ghost slot in the
-registry or in a broadcast. Shared fakes live in ``members_dm_thread_helpers.py``.
+A reopen never interrupts a running turn and is refused if ownership changes while it
+reads; a failed pin leaves no ghost slot. Shared fakes live in
+``members_dm_thread_helpers.py``.
 """
 
 from __future__ import annotations
@@ -505,15 +502,9 @@ async def test_private_thread_reopen_rechecks_running_after_assignment(
 ):
     """A turn starting DURING the pin must not be answered by the assignment path.
 
-    ``slot._lock`` does not exclude turn dispatch -- ``api_chat`` reads
-    ``slot.running`` and publishes ``slot.task`` without taking it -- so the
-    window this covers is the ``await`` on the namespaced assignment, not the
-    wait for the lock that
-    :func:`test_private_thread_reopen_rechecks_running_after_slot_lock` covers.
-    The route must notice the turn afterwards and answer through the read-only
-    reopen path, which revalidates CURRENT ownership: with the member's store
-    repointed in that same window, the assignment path's identity-only snapshot
-    would publish and return 200 instead.
+    ``api_chat`` dispatches without ``slot._lock``, so the window is the assignment
+    ``await``. The route must answer through the read-only reopen path, which checks
+    CURRENT ownership; the store is repointed in the same window to prove it.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.dashboard.handlers import agents, members
@@ -600,10 +591,8 @@ async def test_private_thread_reopen_rechecks_running_after_assignment(
 async def test_fresh_private_thread_pin_failure_leaves_no_ghost_slot(tmp_path, monkeypatch, fault):
     """A pin failure on a fresh private-store open leaves no ghost slot.
 
-    The v2 collision guard and ``pin_private_agent_store`` run BEFORE
-    ``get_or_create_slot`` (pin-before-mint).  A refused pin returns without
-    ever creating a slot, so no member-prefixed key enters ``state._slots``
-    and no such key reaches any broadcast.
+    The pin runs before ``get_or_create_slot``, so a refused pin never enters
+    ``state._slots`` or a broadcast.
 
     ``pin_raises``: ``pin_private_agent_store`` raises → route answers 503.
     ``pin_mismatch``: two members share the same slug and the canonical key

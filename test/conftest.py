@@ -537,6 +537,22 @@ def _fresh_update_ownership(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _krb5_keyring_check_done(_floor_monkeypatch):
+    """Mark the once-per-process KEYRING ccache check as already run, for every test.
+
+    Every spawn a test drives reaches ``env.resolve_krb5_ccname``, which runs the
+    check in ``env_krb5_keyring``. Left armed, the first one on a worker would read
+    the HOST's krb5 config, log a WARNING into whichever test is capturing, and flip
+    the module flag for the rest of the run, so the outcome would depend on the host
+    and on test order. Tests of the check
+    itself re-arm it through their own ``monkeypatch``.
+    """
+    from kiro_crew import env_krb5_keyring
+
+    _floor_monkeypatch.setattr(env_krb5_keyring, "_KRB5_KEYRING_CHECKED", True)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_host_unservable_backends(_floor_monkeypatch):
     """Give every test its own copy of the host's KAS-floor verdicts.
 
@@ -584,7 +600,7 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     """
     from kiro_crew.acp import kas_engine_install, kas_route
 
-    _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda: False)
+    _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": False)
     _floor_monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", None)
     _floor_monkeypatch.setattr(
         kas_engine_install,
@@ -608,6 +624,24 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
+
+
+@pytest.fixture(autouse=True)
+def _config_content_check_off_unless_a_test_turns_it_on(_floor_monkeypatch):
+    """Turn the config content check off for tests that do not ask for it.
+
+    The real answer is "on" on a Linux runner with user namespaces and "off" elsewhere,
+    so whether every
+    config read serves the endorsed copy would differ between a Linux and a macOS or
+    Windows run. The provenance tests force the check on with
+    ``monkeypatch.setattr(lp, "enforcement_active", ...)``. The cached host answer is
+    pre-set too, so a gateway boot's ``prime_host_verdict`` never runs a real namespace
+    probe; a test that wants the probe sets ``lp._host_verdict`` back to ``None``.
+    """
+    from kiro_crew.config import loosening_provenance
+
+    _floor_monkeypatch.setattr(loosening_provenance, "enforcement_active", lambda: False)
+    _floor_monkeypatch.setattr(loosening_provenance, "_host_verdict", False)
 
 
 @pytest.fixture
@@ -721,6 +755,7 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
         # (where the fixture is inert) and silently asserting nothing on Windows.
         "test_platform_compat_coverage_filesystem",
         "test_config_rmw_preserves_settings",
+        "test_sel_log_lockdown",
         "test_spawn_audit",
     ):
         yield
@@ -865,7 +900,10 @@ def pytest_configure(config: pytest.Config) -> None:
 # State lives at module level on the controller only: ``pytest_testnodedown``
 # and ``pytest_handlecrashitem`` are controller-side xdist hooks that never
 # fire inside a worker, and ``pytest_internalerror`` only emits when a crash
-# was recorded, so a non-xdist internal error is reported exactly as before.
+# was recorded or a worker finished while still assigned work, so a
+# non-xdist internal error is reported exactly as before.
+
+from conftest_xdist_clean_finish import format_clean_finish_report  # noqa: E402
 
 _crashed_workers: list[tuple[str, str]] = []  # (worker id, error text)
 _crash_victims: list[str] = []  # test nodeids running when their worker died
@@ -935,7 +973,8 @@ def _format_abandoned_run_report(crashes: list[tuple[str, str]], victims: list[s
 
 
 def pytest_internalerror(excrepr, excinfo) -> None:
-    """Replay recorded worker crashes when an INTERNALERROR kills the run.
+    """Replay recorded worker crashes, or name a clean finish with work still
+    assigned, when an INTERNALERROR kills the run.
 
     Written to ``sys.stderr`` directly rather than through the terminal
     reporter: this hook runs on a path where pytest's own reporting machinery
@@ -944,6 +983,9 @@ def pytest_internalerror(excrepr, excinfo) -> None:
     ``INTERNALERROR>`` traceback and exits 3 -- the goal is a diagnosable red,
     not a green.
     """
+    clean_finish = format_clean_finish_report(excinfo)
+    if clean_finish is not None:
+        print(clean_finish, file=sys.stderr, flush=True)
     if not _crashed_workers:
         return
     print(
@@ -1042,6 +1084,30 @@ def _reset_creator_titles():
         yield
     finally:
         _reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_main_spec_episode_globals():
+    """Clear the unreadable-main-spec episode's process globals around each test.
+
+    ``agent._main_spec_unreadable`` holds the rebuild open for a retry and the
+    skip generation bounds the episode's sibling pass. A test that hits the
+    unreadable-spec skip without monkeypatching them would leave the hold open
+    for whichever test runs next on the worker.
+    """
+    import kiro_crew.agent as _agent
+
+    def _clear() -> None:
+        _agent._main_spec_unreadable = False
+        _agent._main_spec_episode_revision = 0
+        _agent._main_spec_skip_generation = None
+        _agent._main_spec_warned.clear()
+
+    _clear()
+    try:
+        yield
+    finally:
+        _clear()
 
 
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
@@ -1519,3 +1585,15 @@ def _drain_dashboard_verify_slot() -> None:
         timeout=dv.RUN_TIMEOUT_SECONDS + 5.0,
         describe=lambda: "dashboard verify slot still locked after test ended",
     )
+
+
+@pytest.fixture
+def held_flag(monkeypatch):
+    """Restore the rebuild's held-spec memo after the test changes it."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_conductor_spec_held", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
+    return agent_mod

@@ -12,6 +12,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.slack import interactions, outbound
 from kiro_crew.slack.format import (
@@ -160,6 +161,8 @@ class TestOneClick:
         sent.assert_called_once()
         assert sent.call_args.args[3] == "Beta"
         assert "[OPTIONS multi-select: Beta]" in sent.call_args.kwargs["action_context"]
+        # The choice is model-authored: it goes to the agent and never runs as a command.
+        assert sent.call_args.kwargs["interpret_commands"] is False
         assert _answers(audit) == [("success", "Beta")]
         # The card is recorded as answered, and settled since its buttons are gone.
         assert outbound._ANSWERED == {("C1", "m1"): True}
@@ -248,16 +251,20 @@ class TestReviewEdges:
         ]
 
     @pytest.mark.asyncio
-    async def test_send_on_a_pre_upgrade_checkbox_card_is_told_it_expired(self, world):
+    async def test_send_on_a_pre_upgrade_checkbox_card_is_told_it_expired(self, world, monkeypatch):
         orch, sent = world
         payload = _card_payload(["A", "B"])
         payload["actions"] = [{"action_id": "options_submit", "type": "button"}]
-        await interactions.dispatch(payload)
-        sent.assert_not_called()
-        assert "expired" in orch.slack.post_ephemeral.call_args.args[2]
-        payload["actions"] = [{"action_id": "options_checkboxes", "type": "checkboxes"}]
-        await interactions.dispatch(payload)
-        assert orch.slack.post_ephemeral.call_count == 1, "ticking a box stays silent"
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await interactions.dispatch(payload)
+            sent.assert_not_called()
+            payload["actions"] = [{"action_id": "options_checkboxes", "type": "checkboxes"}]
+            await interactions.dispatch(payload)
+        # One private notice to the clicker; ticking a box stays silent.
+        [notice] = wire.sent("chat.postEphemeral")
+        assert (notice.get("channel"), notice.get("user")) == ("C1", "U1")
+        assert "expired" in notice.get("text")
 
     def test_a_long_answered_line_keeps_its_time_stamp(self):
         from kiro_crew.slack.format import build_options_answered_blocks

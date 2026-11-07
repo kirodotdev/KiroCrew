@@ -14,7 +14,7 @@ import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
-import ArtifactPanel from '../../components/ArtifactPanel'
+import ArtifactPanel, { type ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
 import PreviewTabBody from '../../components/PreviewTabBody'
@@ -25,13 +25,14 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors, useInstalledApps, panelTabDescriptor } from '../../hooks/panelTabRegistry'
+import { isPermissionRefusal } from '../../api/apiError'
 import AppHost from '../../components/AppHost'
 import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useAppSelector } from '../../store'
 import { mcpAppKey } from '../../store/chatSlice'
@@ -87,7 +88,9 @@ function AppPanelTabBody({ kind, active, slot }: { kind: string; active: boolean
  */
 function AppPanelTabsErrorNotice() {
   const { isError, error } = useInstalledApps()
-  if (!isError) return null
+  // A caller refused the app list (a relay teammate, `relay_apps_teammate`) has no
+  // contributed tabs, and that is the answer rather than a failure (#32031).
+  if (!isError || isPermissionRefusal(error)) return null
   return (
     <div className="absolute left-0 right-0 top-0 z-10 p-4">
       <ErrorNotice message={errMessage(error)} askAgent />
@@ -145,7 +148,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   /** Disk-originated content (file watch / Refresh): the panel routes it here
    *  so the tab's saved baseline moves with the buffer it just replaced, and the
    *  binary verdict of that read moves with both. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
@@ -180,6 +183,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       content={tab.content || ''}
       binary={tab.binary}
       partial={tab.partial}
+      placeholder={tab.placeholder}
       scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
@@ -249,7 +253,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
  * this placeholder and that page ask for costs one GET and yields one answer
  * rather than two racing reads of the same file.
  */
-function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void }) {
+function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void }) {
   const [error, setError] = useState<string | null>(null)
   const qc = useQueryClient()
   // Held in a ref so a new callback identity from the parent's render does not
@@ -271,9 +275,9 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
           staleTime: FILE_READ_STALE_MS,
         })
         if (ac.signal.aborted) return
-        if (r.ok) { applyRef.current(r.text, r.binary, isPartialRead(r)); return }
+        if (r.ok) { applyRef.current(r.text, r.binary, partialReadCause(r)); return }
         if (r.status === 404) {
-          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false)
+          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false, false, true)
           return
         }
         // The same sentence the chip click reports for a failed read: a human
@@ -312,12 +316,12 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
-  /** A file or working-tree diff tab's close guard; see `FileTabBody`. */
-  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
+  /** A file, working-tree diff or artifact tab's close guard; see `FileTabBody`. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | ArtifactPanelHandle | null) => void
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
   onRevealConsumed: () => void
@@ -341,6 +345,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   // `app` kind, its body renders from the cross-slot `allAppTabs` list so a chat
   // switch cannot remount its `AppHost`. The tab loop in `SidePanel.tsx` returns null for both.
   const terminalsPending = usePanelTerminalsPending()
+  const tabId = tab.id
+  const setArtifactRef = useCallback((handle: ArtifactPanelHandle | null) => { onPanelHandle?.(tabId, handle) }, [onPanelHandle, tabId])
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
   // The Preview tab: the local dev-server preview, or the agent's browser big.
@@ -410,6 +416,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
         onClose={onClose}
         onSubmitComments={onSubmitComments}
         connected={connected}
+        ref={setArtifactRef}
       />
     )
   }

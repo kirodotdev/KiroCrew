@@ -38,13 +38,9 @@ gate = _load_gate()
 def test_the_gate_uses_the_renderers_own_folding() -> None:
     """Not a maintained copy -- the renderer's own function, loaded by path.
 
-    The earlier design duplicated the fold regex, which fails in the dangerous
-    direction: a spelling the renderer folds but the gate does not makes a
-    legitimate release-branch rewrite read as a deleted section. Identity is
-    asserted by name and by agreement rather than by ``is``, because the gate
-    loads ``changelog.py`` as its own module object (CI checks the tree out
-    without installing the package), so the two function objects are distinct
-    even though the code is the same.
+    A copied fold regex could drift and make a legal rewrite read as a deletion.
+    Identity is checked by name and agreement, not ``is``: the gate loads
+    ``changelog.py`` as its own module object because CI does not install the package.
     """
     assert gate.fold_version.__name__ == base_version.__name__ == "base_version"
     for spelling in (
@@ -144,11 +140,8 @@ def test_a_duplicate_release_heading_is_a_violation() -> None:
 def test_editing_the_newest_shipped_section_is_a_violation() -> None:
     """There is no "most recent section" exemption, and that is the point.
 
-    An earlier version exempted the newest section at base so a release branch
-    could redraft its own entry. On the default branch the newest section is the
-    LAST SHIPPED release, so that exemption made the section the most users are
-    running the only editable one. Prerelease-versus-bare distinguishes a draft
-    from history; position in the file does not.
+    On the default branch the newest section is the LAST SHIPPED release, so only
+    prerelease-versus-bare marks a draft; position in the file does not.
     """
     base = "# Changelog\n\n## [0.3.0]\n\nreleased\n\n## [0.2.0]\n\nshipped\n\n"
     head = "# Changelog\n\n## [0.3.0]\n\nREWRITTEN\n\n## [0.2.0]\n\nshipped\n\n"
@@ -185,11 +178,8 @@ def test_the_original_incident_shape_is_caught() -> None:
 def test_a_prerelease_heading_cannot_shadow_a_shipped_release() -> None:
     """The third defect class: two headings, one rendered release.
 
-    Adding ``[0.2.0-rc.2]`` beside a shipped ``[0.2.0]`` left the earlier
-    filter-then-compare check reporting the file intact, while the renderer folds
-    both onto 0.2.0 and keeps one body -- so which notes a user sees depended on
-    document order. Caught in BOTH orders, because the harmless-looking order is
-    still a file whose rendered history is order-dependent.
+    The renderer folds ``[0.2.0-rc.2]`` and ``[0.2.0]`` into one body, so the notes
+    shown depend on document order. Caught in BOTH orders.
     """
     base = "# Changelog\n\n## [0.3.0]\n\nr\n\n## [0.2.0]\n\nshipped\n\n"
     for head in (
@@ -211,12 +201,9 @@ def test_a_prerelease_for_an_unshipped_release_is_allowed() -> None:
 def test_resolve_as_rendered_folds_first_wins_like_the_renderer() -> None:
     """The gate must resolve a release the way the renderer displays it.
 
-    ``build_release_list`` uses ``dict.setdefault``, so the FIRST body in document
-    order wins -- which under newest-first ordering is the topmost spelling. This
-    test asserted the opposite for several rounds and stayed green, because every
-    other rule happened to cover the documents in this suite; the gate was merely
-    comparing a section no user is ever shown. So assert the direction explicitly
-    AND against the renderer, which is the only party that cannot be wrong here.
+    ``build_release_list`` uses ``dict.setdefault``, so the FIRST (topmost) body wins.
+    Other rules can mask a wrong direction, so it is asserted explicitly and against
+    the renderer.
     """
     text = "# Changelog\n\n## [0.2.0]\n\ntopmost\n\n## [0.2.0-rc.9]\n\nlower\n\n"
     resolved = gate.resolve_as_rendered(text)["0.2.0"]
@@ -241,11 +228,8 @@ def _narrowed_grammar() -> "gate.Grammar":
 def test_a_narrowed_head_grammar_cannot_shrink_the_protected_set() -> None:
     """The base's grammar decides what the base documents, not the head's.
 
-    A PR may legitimately change ``changelog.py``. If it narrows the heading regex,
-    parsing base history with the narrowed grammar drops those releases out of the
-    protected set — and a deletion in the same PR then passes unseen. That is a
-    silent loss of a section a user already installed, so the base ref's own
-    renderer is the authority on what the base shipped.
+    A change that narrows the heading regex in ``changelog.py`` would drop base
+    releases from the protected set and hide a deletion made alongside it.
     """
     base = "# Changelog\n\n## [0.2.0] — 2026-08-09\n\nkept\n\n## [0.1.2]\n\nshipped\n\n"
     head = "# Changelog\n\n## [0.2.0] — 2026-08-09\n\nkept\n\n"

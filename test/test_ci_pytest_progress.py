@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,7 @@ class TestCIProgress(unittest.TestCase):
                 next(r["selected"] for r in records if r["event"] == "collection_end"), 2
             )
             self.assertGreaterEqual(records[1]["elapsed"], 0)
+            self.assertIs(records[-1]["channel_closed"], False)
         summaries = [
             line[line.index("CI_PROGRESS ") + 12 :]
             for line in result.stdout.splitlines()
@@ -223,6 +225,28 @@ class TestCIProgress(unittest.TestCase):
                 for rows in logs.values()
             )
         )
+
+    def test_worker_whose_channel_closed_records_it_at_session_end(self):
+        # Closing a worker's receive side mid-run is the transport event behind
+        # xdist's clean-finish INTERNALERROR: the worker ends with exit status 0
+        # while still assigned work, and its session_end says its channel closed.
+        (self.root / "test_cut.py").write_text(
+            "import pytest\n"
+            "def test_close(request):\n"
+            "    worker = next(p for p in request.config.pluginmanager.get_plugins()\n"
+            "                  if type(p).__name__ == 'WorkerInteractor')\n"
+            "    worker.channel.gateway._channelfactory._local_close(\n"
+            "        worker.channel.id, sendonly=True)\n"
+            "@pytest.mark.parametrize('n', range(8))\n"
+            "def test_rest(n): pass\n",
+            encoding="utf-8",
+        )
+        result = self.run_pytest("-n1")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("assert not crashitem", result.stdout + result.stderr)
+        (rows,) = self.records().values()
+        self.assertEqual((rows[-1]["event"], rows[-1]["exitstatus"]), ("session_end", 0))
+        self.assertIs(rows[-1]["channel_closed"], True)
 
     def test_nested_runs_share_directory_without_overwriting(self):
         child = self.root / "nested"
@@ -343,10 +367,15 @@ class TestCIProgress(unittest.TestCase):
         self.assertNotIn("PYTEST_ADDOPTS", command)
         self.assertEqual(step["env"]["PYTHONPATH"], "${{ github.workspace }}")
         self.assertIn("-p scripts.ci_pytest_progress", command)
-        self.assertIn('--ci-progress-dir "$RUNNER_TEMP/pytest-progress"', command)
+        self.assertIn('--ci-progress-dir="$RUNNER_TEMP/pytest-progress"', command)
         self.assertIn("--max-worker-restart=0", command)
         self.assertEqual(command.count('"${PROGRESS[@]}"'), 4)
         self.assertEqual(command.count("--timeout=120"), 4)
+        # A hang SIGALRM cannot end still dumps every thread's stack, after
+        # pytest-timeout had its chance; PROGRESS reaches all four invocations.
+        dump_after = re.search(r"PROGRESS=\([^)]*-o faulthandler_timeout=(\d+)", command)
+        self.assertIsNotNone(dump_after, "the Linux shards carry no faulthandler_timeout")
+        self.assertGreater(int(dump_after.group(1)), 120)
         self.assertEqual(command.count('-n "$WORKERS"'), 4)
         self.assertNotIn("-n auto", command)
         self.assertEqual(command.count("-p scripts.ci_file_shards"), 3)

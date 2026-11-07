@@ -259,10 +259,6 @@ def warn_if_not_durable(queue: list[dict[str, Any]], entry_id: str, slot_key: st
     large prompt can be refused at position 3 — so anything that re-implemented
     them here would answer differently from the writer for exactly the entries
     this exists to report.
-
-    Not a receipt field. A caller-visible ``durable`` boolean on the enqueue
-    acknowledgments has no reader, so it is not shipped; the on-screen queue-card
-    marker belongs with its consumer.
     """
     if not entry_id:
         return False
@@ -286,6 +282,13 @@ def warn_if_not_durable(queue: list[dict[str, Any]], entry_id: str, slot_key: st
         len(kept),
     )
     return False
+
+
+def refused_durable_ids(queue: list[dict[str, Any]]) -> set[str]:
+    """The ids of the queued user prompts the durable write will not keep, read off
+    :func:`durable_queue_entries`' own output as :func:`warn_if_not_durable` is."""
+    kept = {entry["id"] for entry in durable_queue_entries(queue)}
+    return {item["id"] for item in queue if _is_durable_queue_entry(item)} - kept
 
 
 def durable_queue_view(queue: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -400,7 +403,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
     from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
-    from kiro_crew.dashboard.chat_utils_injected_rows import STEER_INTENT_META
+    from kiro_crew.dashboard.chat_utils_injected_rows import COMPOSER_SEND_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
@@ -493,9 +496,9 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # drop notice would carry the entry's text there, so an edited stamp
             # would turn a file write into an outbound channel message.
             #
-            # The STEER INTENT mark goes too: it lets an entry drain past the
+            # The COMPOSER SEND mark goes too: it lets an entry drain past the
             # sub-agent hold (``releases_past_subagent_hold``), a path that never
-            # runs the drain's containment sweep. Restored, an act-now steer is
+            # runs the drain's containment sweep. Restored, a composer send is
             # an ordinary card that waits for the user like every other one.
             entry["meta"] = {
                 k: v
@@ -506,7 +509,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
-                    STEER_INTENT_META,
+                    COMPOSER_SEND_META,
                 )
             }
         try:

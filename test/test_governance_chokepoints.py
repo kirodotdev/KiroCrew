@@ -443,6 +443,221 @@ class TestFilesystemEgressAtGate:
         )
         assert allowed.action != TOOL_DENY
 
+    def test_a_reading_label_title_is_judged_on_the_argument_path(self):
+        # A directory listing is titled "Reading listing workspace": a label the
+        # matcher would anchor at this process's working directory, outside the
+        # allow-set. The argument path decides; with none, the title does.
+        ws = self._fs_tree("ws")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [ws, self._fs_tree("ws", "**")]}},
+            }
+        )
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        hooks = HookManager()
+        title = "Reading listing workspace"
+        listing = hooks.on_tool_call(
+            title,
+            session_key="cli_chat",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Directory", "path": ws}]},
+        )
+        assert listing.action != TOOL_DENY
+        titled_only = hooks.on_tool_call(title, session_key="cli_chat")
+        assert titled_only.action == TOOL_DENY
+        assert "'listing workspace' not in allow-set" in titled_only.reason
+
+    def test_a_builtin_naming_no_read_path_keeps_the_reading_title(self):
+        # A built-in judged in its own scopes gets a marker, not a path, when its
+        # arguments name no read target, so the title's pair still meets a deny.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'k')}",
+            tool_kind="read",
+            extra_titles=("fs_read",),
+            own_scopes=("tools", "filesystem.read"),
+        )
+        assert not decision.permitted
+
+    def test_a_relative_argument_path_keeps_the_reading_title(self):
+        # A relative argument is anchored at this process's working directory,
+        # not where the session reads it, so it cannot stand in for a title that
+        # names the denied file.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'note.txt')}",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Line", "path": "note.txt"}]},
+        )
+        assert not decision.permitted
+
+    @pytest.mark.parametrize("spelling", ["~/note.txt", "$PWD/note.txt", "/srv/$PWD/note.txt"])
+    def test_an_expansion_dependent_argument_keeps_the_reading_title(self, spelling):
+        # The matcher expands ``~`` and ``$VAR``; the reading tool may open the
+        # literal spelling, so the two need not name one file.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'note.txt')}",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Line", "path": spelling}]},
+        )
+        assert not decision.permitted
+
+    def test_a_title_naming_a_file_the_arguments_miss_still_refuses(self):
+        # A batch read's Image entry carries ``image_paths``, which the argument
+        # scan does not list; a title naming that denied file keeps its pair.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'k.png')}",
+            tool_kind="read",
+            raw_params={
+                "operations": [
+                    {"mode": "Line", "path": self._fs_tree("ws", "a.ts")},
+                    {"mode": "Image", "image_paths": [self._fs_tree("secrets", "k.png")]},
+                ]
+            },
+        )
+        assert not decision.permitted
+
+    @pytest.mark.parametrize("batched", [True, False])
+    def test_an_image_entry_with_a_decoy_path_keeps_the_reading_title(self, batched):
+        # The scan lists the decoy ``path`` and never ``image_paths``, so the
+        # entry still has an unjudged target and the title's pair stays.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        entry = {
+            "mode": "Image",
+            "path": self._fs_tree("ws", "x.png"),
+            "image_paths": [self._fs_tree("secrets", "k.png")],
+        }
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'k.png')}",
+            tool_kind="read",
+            raw_params={"operations": [entry]} if batched else entry,
+        )
+        assert not decision.permitted
+
+    def test_a_label_title_with_an_unlisted_image_target_is_still_confined(self):
+        # Allow-mode confinement: the label title keeps its pair because the
+        # Image entry's target is not in the scan, so the call stays refused.
+        ws = self._fs_tree("ws")
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [ws, self._fs_tree("ws", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            "Reading listing workspace",
+            tool_kind="read",
+            raw_params={
+                "operations": [
+                    {"mode": "Line", "path": self._fs_tree("ws", "a.ts")},
+                    {"mode": "Image", "image_paths": [self._fs_tree("secrets", "k.png")]},
+                ]
+            },
+        )
+        assert not decision.permitted
+
+    @pytest.mark.skipif(os.name != "nt", reason="%VAR% expansion is Windows path semantics")
+    def test_a_windows_percent_variable_argument_keeps_the_reading_title(self):
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'note.txt')}",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Line", "path": "%USERPROFILE%\\note.txt"}]},
+        )
+        assert not decision.permitted
+
+    def test_a_windows_path_without_a_drive_is_not_anchored(self, monkeypatch):
+        # Python 3.12's ntpath calls "\secrets\note.txt" absolute, but it sits on
+        # the current drive, which the gateway and the session need not share.
+        # The read gate asks the shared anchor check with the drive required.
+        import ntpath
+
+        from kiro_crew.platform import governance, tool_paths
+        from kiro_crew.platform.governance_parts import evaluator
+
+        seen = []
+
+        def _windows_anchor(path, *, require_drive=False):
+            seen.append(require_drive)
+            return tool_paths._is_anchored(path, require_drive=require_drive, pathmod=ntpath)
+
+        monkeypatch.setattr(governance, "_is_anchored", _windows_anchor)
+        assert not evaluator._anchored_read_target("\\secrets\\note.txt")
+        assert not evaluator._anchored_read_target("/secrets/note.txt")
+        assert evaluator._anchored_read_target("C:\\secrets\\note.txt")
+        assert evaluator._anchored_read_target("\\\\server\\share\\note.txt")
+        assert seen and all(seen)
+
     # ── truncated-scan policy on the permit-by-default plane (open-question-2) ──
     #
     # A payload padded past the bounded walk's node/path caps truncates. On this

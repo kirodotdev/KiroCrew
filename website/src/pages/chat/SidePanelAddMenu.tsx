@@ -153,9 +153,10 @@ const AddMenuItem = forwardRef<ElementRef<typeof DropdownMenuItem>, ComponentPro
 
 /** Which `+`-menu entries are offered, given the gates that hide entries:
  *  Terminal is hidden when the feature is disabled server-side,
- *  **Summary is hidden while session summaries are disabled**, and
+ *  **Summary is hidden while session summaries are disabled**,
  *  **Workers is offered only on a Crew Mode root or one of its workers**
- *  (`crewMode`).
+ *  (`crewMode`), and **Workflows is hidden until the chat has a workflow run**
+ *  (`hasWorkflowRuns`): with none, that panel can only say there are none.
  *  The permanently pinned views (Changes / Files / Artifacts) are never listed;
  *  they are always present in the strip.
  *
@@ -178,7 +179,7 @@ const AddMenuItem = forwardRef<ElementRef<typeof DropdownMenuItem>, ComponentPro
  *  bucket would be orphaned by the re-key). Withheld here and from the pinned
  *  block alike — an empty view is worse than no view. */
 export function newMenuSections(
-  opts: { terminalEnabled: boolean; summaryEnabled: boolean; hiddenViews?: ReadonlySet<SidePanelWithholdable>; crewMode?: boolean },
+  opts: { terminalEnabled: boolean; summaryEnabled: boolean; hasWorkflowRuns: boolean; hiddenViews?: ReadonlySet<SidePanelWithholdable>; crewMode?: boolean },
 ): { id: string; items: { kind: ViewKind | 'terminal'; icon: ReactNode }[] }[] {
   return NEW_MENU_GROUPS
     .map(group => ({
@@ -187,6 +188,7 @@ export function newMenuSections(
         (opts.terminalEnabled || item.kind !== 'terminal')
         && (opts.summaryEnabled || item.kind !== 'summary')
         && (!!opts.crewMode || item.kind !== 'workers')
+        && (opts.hasWorkflowRuns || item.kind !== 'workflows')
         && !opts.hiddenViews?.has(item.kind)
         && !(PINNED_VIEWS as string[]).includes(item.kind),
       ),

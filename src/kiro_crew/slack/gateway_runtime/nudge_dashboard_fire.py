@@ -314,36 +314,74 @@ async def _fire_dashboard_nudge(
         visible = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{shown}"
     else:
         visible = tagged
+    # Deferred import for the cycle the steer path documents.
+    from kiro_crew.dashboard import session_deliver
+
+    async def _start_turn() -> MonitorDispatchResult:
+        return await self._start_dashboard_wake_turn(
+            loop, slot, wake_message, tagged, visible, trigger_text, _fired_generation
+        )
+
+    # The session picks idle vs running: an idle slot runs the wake through the
+    # fire's own turn start, whose answer comes back as is; a running one declines.
+    # ``isinstance``, not a compare: the starter's UNAVAILABLE equals NOT_DELIVERED.
+    outcome = await session_deliver.deliver(
+        self.dashboard_state,
+        slot,
+        tagged,
+        session_deliver.automation(loop.cycle_count + 1, loop.id),
+        start_turn=_start_turn,
+    )
+    if isinstance(outcome, MonitorDispatchResult):
+        return _delivery_result(wake_message, outcome)
+    # Turn still active. A work-ledger wake goes INTO that turn rather than
+    # waiting it out: its payload is a line naming the item that moved plus a
+    # line saying where to read it, and a conductor told a worker finished
+    # three minutes after the fact has lost the whole point of an
+    # event-driven watch. Everything else still declines -- queueing a
+    # multi-kilobyte instruction payload behind a turn would stack identical
+    # copies and blow out the context window.
+    if _wake_text and await self._steer_work_ledger_wake(loop, slot, _wake_text):
+        # DISPATCHED, because the news reached a model turn: that is what the
+        # fire exists to do, and the loop must not re-owe a wake it has
+        # delivered. It also charges the cycle, which is the honest direction
+        # for a budget -- a steered wake buys the conductor's attention just
+        # as a fired turn does, so counting it can only leave the loop's
+        # remaining cycles understated, never overspent.
+        return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+    # Next idle-timer tick will schedule again once the turn ends.
+    # Returning False keeps cycle_count accurate (only delivered
+    # nudges count toward max_cycles).
+    logger.info(
+        "AutoNudge skip: slot %s is running (loop %s cycle %d)",
+        slot.key,
+        loop.id,
+        loop.cycle_count,
+    )
+    return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+
+
+async def _start_dashboard_wake_turn(
+    self: GatewayOrchestrator,
+    loop: NudgeLoop,
+    slot: Any,
+    wake_message: str | None,
+    tagged: str,
+    visible: str,
+    trigger_text: str | None,
+    fired_generation: int,
+) -> MonitorDispatchResult:
+    """Start *loop*'s wake turn on idle *slot*: the fire's turn starter.
+
+    ``session_deliver.deliver`` calls it for an idle slot. *tagged* is the
+    prompt, *visible* the nudge row, and *fired_generation* the config
+    generation the fire snapshotted with the message.
+    """
+    from kiro_crew import crew_pause
     from kiro_crew.dashboard.chat import (
         _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
     )
 
-    if slot.running:
-        # Turn still active. A work-ledger wake goes INTO that turn rather than
-        # waiting it out: its payload is a line naming the item that moved plus a
-        # line saying where to read it, and a conductor told a worker finished
-        # three minutes after the fact has lost the whole point of an
-        # event-driven watch. Everything else still declines -- queueing a
-        # multi-kilobyte instruction payload behind a turn would stack identical
-        # copies and blow out the context window.
-        if _wake_text and await self._steer_work_ledger_wake(loop, slot, _wake_text):
-            # DISPATCHED, because the news reached a model turn: that is what the
-            # fire exists to do, and the loop must not re-owe a wake it has
-            # delivered. It also charges the cycle, which is the honest direction
-            # for a budget -- a steered wake buys the conductor's attention just
-            # as a fired turn does, so counting it can only leave the loop's
-            # remaining cycles understated, never overspent.
-            return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
-        # Next idle-timer tick will schedule again once the turn ends.
-        # Returning False keeps cycle_count accurate (only delivered
-        # nudges count toward max_cycles).
-        logger.info(
-            "AutoNudge skip: slot %s is running (loop %s cycle %d)",
-            slot.key,
-            loop.id,
-            loop.cycle_count,
-        )
-        return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
     # Crew/member slot boundary, for EVERY dashboard loop -- prompt loops
     # included, not only the structured/gated ones the completion hook
     # covers below. Such a slot accepts a wake only from a loop its own
@@ -353,13 +391,13 @@ async def _fire_dashboard_nudge(
     # the gate that applies when there is no hook at all.
     if not await self._dashboard_mode_admits(loop, slot):
         await self._audit_fire_refused(loop, slot)
-        return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+        return MonitorDispatchResult.UNAVAILABLE
     # Asked again after the last await before the turn is spawned: a Pause all
     # that landed during the body's ledger read or the admission check holds it.
     # From here to the spawn nothing suspends, and a spawned turn is one Pause
     # all sees running and stops.
     if crew_pause.holds_slot(slot):
-        return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+        return MonitorDispatchResult.BUSY
     # Show nudge as a distinct "nudge" role message in the slot history.
     # The structured meta lets the dashboard render a compact cycle chip
     # instead of echoing the whole instruction payload as a chat bubble.
@@ -390,9 +428,9 @@ async def _fire_dashboard_nudge(
     completion_hook = self._monitor_completion_hook(loop)
     if wake_message is not None and completion_hook is None:
         return MonitorDispatchResult.UNAVAILABLE
+    assert self.dashboard_state is not None and slot is not None
     dashboard_state = self.dashboard_state
     turn_slot = slot
-    assert dashboard_state is not None and turn_slot is not None
 
     def _append_nudge() -> None:
         session_deliver.write_origin_row(turn_slot, visible, wake_origin, extra_meta=monitor_meta)
@@ -491,15 +529,15 @@ async def _fire_dashboard_nudge(
     # ``_dashboard_mode_admits`` already proved the loop self-armed.
     run_kwargs["_directive_self_wake"] = True
     # Scope the structural-terminal verdict this turn may record to THIS loop
-    # and the CONFIG GENERATION it fires under (the snapshot captured with the
-    # message above, before compose_nudge_body's await), so the stop is
+    # and the CONFIG GENERATION it fires under (the snapshot the fire captured
+    # with the message, before compose_nudge_body's await), so the stop is
     # applied via an atomic (id, generation) fence and a stale completion
     # cannot deactivate a loop whose config advanced under the turn.
     run_kwargs["_directive_loop_id"] = loop.id
     # Pass the generation captured when THIS turn fired, for both fire
     # shapes. A plain nudge and a monitor wake_message both snapshot
-    # ``loop.config_generation`` into ``_fired_generation`` above, before the
-    # compose await, so a real generation is always available -- passing 0
+    # ``loop.config_generation`` into the fire's ``_fired_generation``, before
+    # the compose await, so a real generation is always available -- passing 0
     # for the wake_message shape would leave the fence comparing against a
     # generation no revised loop ever holds, so a stale completion of a
     # since-revised loop (A->B->A) could still match and wrongly stop it, and
@@ -507,7 +545,7 @@ async def _fire_dashboard_nudge(
     # The default of 0 on the runner parameter is the floor for a turn that
     # is NOT a self-wake (no loop, so the consumers are guarded off anyway);
     # every self-wake fire passes its true generation here.
-    run_kwargs["_directive_loop_gen"] = _fired_generation
+    run_kwargs["_directive_loop_gen"] = fired_generation
     run_kwargs["_skill_trigger_text"] = trigger_text
     if completion_hook is not None:
         run_kwargs["monitor_completion"] = completion_hook
@@ -581,8 +619,8 @@ async def _fire_dashboard_nudge(
             _settle_admission(MonitorDispatchResult.BUSY)
 
         task.add_done_callback(_settle_unstarted_admission)
-        return _delivery_result(wake_message, await admission)
-    return _delivery_result(wake_message, MonitorDispatchResult.DISPATCHED)
+        return await admission
+    return MonitorDispatchResult.DISPATCHED
 
 
 def _work_ledger_wake_loop(
@@ -657,20 +695,21 @@ async def _steer_work_ledger_wake(
 ) -> bool:
     """Inject *text*, *loop*'s pending wake, into the turn *slot* is running.
 
-    THE FIX for a wake that lands mid-turn. The fire below declines a running
-    slot, and declining is right for a plain nudge -- a multi-kilobyte
-    instruction payload queued behind a turn would stack identical copies and
-    blow out the context window. A work-ledger wake is the opposite shape: a
-    line naming the item that moved plus a line saying where to read it, which
-    is exactly what a steer is for. So rather than hold it until the turn ends,
-    the news goes INTO the turn that is running.
+    THE FIX for a wake that lands mid-turn. ``session_deliver.deliver`` declines
+    the fire's turn on a running slot, and declining is right for a plain nudge
+    -- a multi-kilobyte instruction payload queued behind a turn would stack
+    identical copies and blow out the context window. A work-ledger wake is the
+    opposite shape: a line naming the item that moved plus a line saying where
+    to read it, which is exactly what a steer is for. So rather than hold it
+    until the turn ends, the news goes INTO the turn that is running.
 
     Authorization is the fire's own, unchanged. ``_dashboard_mode_admits`` is
-    checked here because the ordinary path checks it only past the running-slot
-    return, and a steer must not become the way around it. Nothing else is
-    needed: the loop is already authorized to start a WHOLE TURN on this slot
-    with this text, and a steer delivers strictly less -- same session, smaller
-    payload, no new turn -- so it cannot reach anywhere the fire could not.
+    checked here because the ordinary path checks it only in the turn starter,
+    which runs on an idle slot alone, and a steer must not become the way around
+    it. Nothing else is needed: the loop is already authorized to start a WHOLE
+    TURN on this slot with this text, and a steer delivers strictly less -- same
+    session, smaller payload, no new turn -- so it cannot reach anywhere the fire
+    could not.
 
     The containment snapshot is recorded for the REQUEUE. A turn that ends while
     the steer RPC is suspended degrades the text to a queue card, and the drain

@@ -179,6 +179,8 @@ export interface SidebarScope {
   setFolderOfflineNotice: SetState<string>
   newChatError: string
   setNewChatError: SetState<string>
+  prStatusRefreshError: string
+  setPrStatusRefreshError: SetState<string>
   remoteCrewErrorId: string
   remoteCrewError: string
   setRemoteCrewError: SetState<string>
@@ -209,11 +211,14 @@ export interface SidebarScope {
   setCleanupOpen: SetState<boolean>
   folderCleanupOpen: boolean
   setFolderCleanupOpen: SetState<boolean>
+  /** Opens the folder cleanup on one folder's tree (folder ⋮ → "Close sessions and delete…"). */
+  setFolderCleanupRoot: SetState<ChatFolder | null>
   setManageTagsOpen: SetState<boolean>
   broadcastOpen: boolean
   setBroadcastOpen: SetState<boolean>
-  filterSortOpen: boolean
-  setFilterSortOpen: SetState<boolean>
+  /** `'folders'`: opened by the board notice's Show, for the menu's folder list. */
+  filterSortOpen: boolean | 'folders'
+  setFilterSortOpen: SetState<boolean | 'folders'>
   folders: ChatFolder[]
   foldersFailed: boolean
   foldersError: Error | null
@@ -395,6 +400,7 @@ export interface SidebarScope {
   refetchColumns: ReturnType<typeof useBoardColumns>['refetchColumns']
   tagColumnsEnabled: ReturnType<typeof useBoardColumns>['tagColumnsEnabled']
   hideEmptyFolderBody: ReturnType<typeof useBoardColumns>['hideEmptyFolderBody']
+  countSubfolderContents: ReturnType<typeof useBoardColumns>['countSubfolderContents']
   orderedColumns: ReturnType<typeof useBoardColumns>['orderedColumns']
 
   // From `useSidebarResize`

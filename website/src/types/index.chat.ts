@@ -15,6 +15,9 @@ export interface CrewWorkItemFacts {
   /** Epoch ms it is stale from while its worker's turn is not running
    *  (`work_ledger.is_stale`, read by the gateway); `0` for never. */
   stale_at_ms: number
+  /** Its worker's own loop will wake it (`ledger_wake.worker_looping`): idle
+   *  between checks, waiting on CI, still running. Absent from an older gateway. */
+  looping?: boolean
 }
 
 /** A conductor's work ledger in brief (`crew_work` on its slot row). */
@@ -25,6 +28,9 @@ export interface CrewWorkFacts {
   /** The worker each of those items belongs to ("" for a remote or unbound one);
    *  absent from a gateway that predates it. */
   person_workers?: string[]
+  /** The conductor itself holds a live loop (its patrol), which picks a stalled
+   *  item up; absent from a gateway that predates it. */
+  conductor_looping?: boolean
   items: CrewWorkItemFacts[]
 }
 
@@ -280,6 +286,10 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Transcript session key this slot reads and writes, from the backend
    *  `slot_history_key` rule; what the resume endpoint reads. Absent on an older payload. */
   history_key?: string
+  /** Opaque id of the server's slot object, new each time a session is opened
+   *  under this key. A failed close's restore keeps it; a reopen elsewhere does not.
+   *  Absent on an older payload. */
+  incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
@@ -408,6 +418,13 @@ export interface ChatSlot extends TurnIdentityFields {
    * Not a turn: `running` stays false, so sends and queueing are unchanged;
    * only the chat's working indicator reads it. Absent from an older gateway. */
   preparing?: boolean
+  /** What is being prepared, built by the gateway (the warm catch-up names
+   * what it checks and its goal). Empty or absent: the client's own generic
+   * caption. */
+  preparing_text?: string
+  /** The language `preparing_text` is written in (`en`, `zh`, ...). The client
+   * shows the text only when this is its UI language. */
+  preparing_lang?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean
@@ -446,6 +463,9 @@ export interface ChatFolder {
   /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
    *  this folder. Absent = no tags, mirroring the optional `color`. */
   tags?: string[]
+  /** Text put in the composer of every NEW chat created in this folder, unsent.
+   *  This folder only, like `tags`. Absent = an empty composer. */
+  default_prompt?: string
   /** Extra steering directories loaded, in addition to the global and project
    *  steering, for every chat whose folder is in this folder's subtree.
    *  ACCUMULATIVE up the parent_id chain (unlike `project_dir`, which is
@@ -700,6 +720,8 @@ export interface ContentBlock {
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** On a cron result note: the job's `last_result_ts` for the result the note carries. */
+  result_ts?: number
   /** OS-banner collapse tag the gateway stamps on every delivered note
    *  (`native_notification_tag`). The service worker's Web Push banner carries
    *  the same value, so one event shows one banner. Absent on client-made notes. */
@@ -723,10 +745,19 @@ export interface Notification {
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
   group_key?: string; url?: string
   actions?: { id: string; label: string; url?: string }[]
+  /** Names the note within its source: a later note with the same source and
+   *  key replaces it, and `notification_dismiss` removes it. */
+  key?: string
+  /** Server-stamped on a replacement no more urgent than the note it replaced:
+   *  it lands in the bell, but no sound, banner or OS notification announces it. */
+  quiet?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
   member?: { slug: string; name: string }
+  /** The dashboard copy for a note the gateway wrote (`NotificationPayload.i18n`).
+   *  Persisted rows are untrusted: read it through `noteText`. */
+  i18n?: { id: string; params?: Record<string, string | number> }
 }
 
 /** One row from GET /api/notifications/channels. */
@@ -800,6 +831,10 @@ export interface CrewWorker {
   /** Its direct dispatcher by the lineage the server walks (the parent edge,
    *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
   dispatched_by?: string
+  /** Set when remote dispatch placed the worker on another crew: that crew's
+   *  display name (else its instance id). Its `key` names no local session, so
+   *  the row offers no open, steer or approval. Absent on a local worker. */
+  remote_crew?: string
 }
 
 /** One session's recap from records only, no model call

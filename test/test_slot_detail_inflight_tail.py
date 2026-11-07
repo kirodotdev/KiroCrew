@@ -1,16 +1,9 @@
 """A bounded slot-detail fetch counts messages, not stream progress.
 
-``chunk`` is a wire-only role appended once per streamed delta, so a text
-segment still in flight occupies hundreds of rows that render as ONE message.
-Those rows reach ``GET /api/chat/slots/{slot}`` only through the un-flushed
-in-memory tail the bounded branch appends -- they are never persisted -- and
-applying ``limit`` before folding them spends the caller's whole budget inside
-one unfinished message, so the response is a mid-sentence fragment instead of
-the last N messages.
-
-The caller that meets this on every request is a poller watching an agent work:
-mid-response is its normal condition, not an edge case. These tests pin the
-fold that makes one row mean one message before the slice is taken.
+``chunk`` is a wire-only role appended once per streamed delta, so one in-flight
+segment occupies hundreds of rows that render as ONE message. Applying ``limit`` before
+folding them spends the budget inside one unfinished message. A poller watching an
+agent meets this on every request, so these tests pin the fold before the slice.
 """
 
 from __future__ import annotations
@@ -103,12 +96,9 @@ class TestBoundedFetchDuringAnInFlightSegment:
     async def test_the_in_flight_row_carries_the_newest_chunk_seq(self, state: Any) -> None:
         """The snapshot tells the client how far the stream it holds has got.
 
-        The runner stamps each window ``chunk`` row with the same ``seq`` as its
-        wire frame; the fold carries the newest one out as ``seq`` on the
-        ``streaming`` row. The client seeds its replay guard from it, so a live
-        chunk that raced this snapshot (seq at or below it) is dropped instead
-        of being appended a second time -- the duplicated leading fragment seen
-        after a reconnect.
+        The fold carries the newest window ``chunk`` row's ``seq`` onto the
+        ``streaming`` row. The client seeds its replay guard from it, so a live chunk
+        that raced this snapshot is not appended twice after a reconnect.
         """
         slot = _slot_mid_stream(state)
         for i, row in enumerate(m for m in slot.messages if m["role"] == "chunk"):
@@ -154,20 +144,11 @@ class TestUnaffectedShapes:
     async def test_folding_a_disk_resident_wire_row_is_output_equivalent(self, state: Any) -> None:
         """The reduction covers the whole corpus, and that changes no output.
 
-        It cannot be scoped to a trailing slice: ``_append_unflushed_tail``
-        places an owed row at the disk index it belongs to, so owed rows are not
-        a contiguous suffix and a slice would miss the interleaved ones. Both
-        the append and the reduction run in a worker thread, so covering the
-        whole corpus keeps no extra work on the event loop.
-
-        Folding a disk-resident run is therefore harmless rather than merely
-        tolerated: ``_prepare_messages`` folds the same run at render time, so
-        the rendered rows below are identical either way. Persisted history does
-        not actually carry a ``chunk`` row -- ``_build_message_entry_uncached``
-        returns ``None`` for every wire-only role -- so this shape is
-        constructed, not reachable; the assertion pins the equivalence, and
-        ``total`` records that the run now folds before the bound rather than
-        after it.
+        Owed rows sit at their disk index, not in a contiguous suffix, so a trailing
+        slice would miss some; the work runs in a worker thread anyway. Folding a
+        disk-resident run is harmless because ``_prepare_messages`` folds it at render
+        time too. Persisted history never carries a ``chunk`` row, so this shape is
+        constructed; ``total`` shows the run folds before the bound.
         """
         disk = [
             {"role": "assistant", "content": "settled"},
@@ -190,11 +171,8 @@ class TestUnaffectedShapes:
     async def test_a_done_terminator_does_not_shrink_the_page(self, state: Any) -> None:
         """A settled turn leaves a `done` row in the window forever.
 
-        Nothing removes it -- it is appended at turn end and never persisted --
-        so it accumulates one per turn and reaches the slice through the
-        un-flushed tail. Counted as a row it consumes one slot and renders as
-        nothing, so a completed `limit=N` fetch would come back with N-1
-        messages.
+        It is appended at turn end and never persisted, so counted as a row it would
+        make a completed `limit=N` fetch return N-1 messages.
         """
         settled = [{"role": "assistant", "content": f"m{i}"} for i in range(SETTLED)]
         slot = _ChatSlot(key="chat-4")
@@ -210,12 +188,8 @@ class TestUnaffectedShapes:
 class TestResumeDuringAnInFlightSegment:
     """The resume path bounds the same live window by raw row count.
 
-    ``api_chat_slot_resume`` returns the newest 200 rows of the window. Taken
-    before the reduction, an in-flight segment longer than that bound fills it
-    entirely, so the response carries one ``streaming`` row holding only the
-    bound's slice of the reply and drops the text ahead of it -- a worse outcome
-    than the detail handler's, which loses surrounding messages rather than the
-    reply itself.
+    ``api_chat_slot_resume`` returns the newest 200 rows. Taken before the reduction, a
+    longer in-flight segment would fill it and drop the start of the reply itself.
     """
 
     @pytest.mark.asyncio

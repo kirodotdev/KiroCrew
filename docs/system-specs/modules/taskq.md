@@ -366,7 +366,8 @@ run -- write-before-ack, with the write off-loop. The same shape serves every
 other accept path: `continue_conversation_async` (the follow-up watcher
 and `POST /api/spawn/{id}/continue`; the sync `continue_conversation` shares its
 prelude, `_continue_prelude`), the app `SpawnSDK` (`apps/spawn_sdk.py`,
-which awaits `spawn_async` when the manager has it), and the CHANNEL keyword
+which awaits `spawn_async` when the manager has it, and
+`continue_conversation_async` for `ctx.spawn.continue_`), and the CHANNEL keyword
 spawn door -- `spawn <task>` / `bg <task>` from Slack and `/spawn <task>` from
 Telegram, which reach `messaging.commands.spawn_task_reply`. That helper and
 `spawn_command_reply` are `async` for exactly this reason, and
@@ -618,7 +619,9 @@ stop's record and is refused. A release refused
 because the row moved on needs no retry. The
 registration and terminal writes (`taskq_mark`, `taskq_fail`, `taskq_settle`'s
 `finish`) are POSTED to the writer thread through `_post_store_write` /
-`store.run` -- the single worker keeps them in submission order, so
+`store.run`. `taskq_settle` builds the row's `result_ref` inside that posted job
+too, because `agent_dir_for_display` resolves the run directory, a filesystem
+call that must not run on the loop. The single worker keeps them in submission order, so
 `admitted -> starting` (written awaited by the off-loop claimer, posted by the
 inline one) lands before the run's later `running`, and a `starting`
 that did not land at all is replayed by that later mark's own store phase
@@ -667,7 +670,8 @@ loop-apply phase rather than dropping a whole coordinator into a thread:
   possible outcome instead of the loud one it was closed to produce. A refusal
   whose row already holds the state the write asked for lost nothing (another
   write settled it the same way first: a queued stop whose cancel did not land
-  re-posts it ahead of its settle, and the re-posted cancel wins), so that one
+  settles that cancel beside its report (`taskq_settle_unlanded_cancel`), and
+  either may write `cancelled` first), so that one
   is logged at DEBUG. A
   queued stop whose own cancel landed (Stop all, the stage Cancel, a parent-end
   teardown, a single `cancel`) skips the write altogether
@@ -1101,7 +1105,9 @@ Metrics: a lane key is a session key and so never a metric attribute (the
 data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-lane
 `queued` / `running` / `waiting` / `weight`, the scheduler credit, and the
 `CapacityView` (`cap_total`, `roots_cap`, `running`, `child_reserve`,
-`reserve_active`, `waiting_parents`, `lifted_from`). A closed
+`reserve_active`, `waiting_parents`, `lifted_from`). A live run counts once:
+`waiting` when it has released its slot, else `running`. Its resume entry in the
+window (`entry_is_resident_resume`) is not also counted as `queued`. A closed
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to
 the health sampler.
 
@@ -1253,15 +1259,21 @@ and with them the `retry_wait` rows (a start given back before registration,
 or a parked backoff: claimable by the same refill, so refused the same way)
 (`store.queued_rows()`, snapshotted BEFORE the active pass, so a row that pass
 requeues from `admitted` is not read twice; counted in
-`ReconcileReport.queued_examined`, not `examined`) for one thing only: an
+`ReconcileReport.queued_examined`, not `examined`) for two markers only: an
 `artifact_probe` verdict of `REFUSED` (the subagent refusal tombstone,
 `cause="refused"`, [subagent](subagent.md) § Refused-row settle), settled
-`failed`. It never applies a class verdict to a `queued` row, and it does NOT
+`failed`, and one of `STOPPED` (the queued-stop tombstone, `cause="queued_stop"`,
+written when a Stop of a waiting run could not land its cancel), settled
+`cancelled`; a store that refuses either write holds the row out of every claim
+for that state (`hold_until_settled(id, state)`). An `admitted` row carrying the
+queued-stop marker is settled `cancelled` by the active pass, through the same
+verdict. It never applies a class verdict to a `queued` row, and it does NOT
 settle one on a plain `done` / `failed` / `cancelled`: a row comes back to
 `queued` after an earlier attempt (a dependency wake of a parked `retry_wait`
 row, this table's own lost-owner requeue), and that attempt's ending on disk is
 not this row's; the refusal marker is written only for a spawn refused before
-its row was claimed, so it can only be this row's own. A `queued` row whose
+its row was claimed, and the queued-stop marker only for a run stopped before it
+started, so either can only be this row's own. A `queued` row whose
 artifacts say nothing, or record only such an ending, is left as it was. The
 case it closes is a refusal recorded for a row the dispatcher never claimed
 whose own `failed` write was lost before the crash: without the pass the
@@ -1310,11 +1322,11 @@ the record on disk is the identity.
 `WaitLedger` (store-backed, stateless): `enter` (`running → state`, same
 generation -- only correct behind a LANDED `running` write, which is why
 `yield_slot` posts its `enter_wait` onto the same writer thread as the mark
-rather than hoping about timing), `wake` (`→ running`, generation+1, lease
-refreshed -- the
-re-admission fence: a callback from the wait period carries the old generation
-and is `stale_result`), `park` (`→ retry_wait`, the one write that ends the
-residency charge), `fail`, `on_child_terminal`, `cancel_tree` (children first),
+rather than hoping about timing), `wake` (generation+1 -- the re-admission
+fence: a callback from the wait period carries the old generation and is
+`stale_result`; the row lands in `retry_wait`, unleased and claimable at once,
+or with `resident=True` in `running` under a fresh lease), `park`
+(`→ retry_wait`, the one write that ends the residency charge), `fail`, `on_child_terminal`, `cancel_tree` (children first),
 `expire` (deadlines → `failed`), `signal`, `rebuild` (boot: wake parents whose
 awaited children are all terminal, cancel non-terminal children of a terminal
 parent -- `orphaned_children`, fail past deadlines; idempotent). `store.cancel`
@@ -1331,8 +1343,8 @@ half too -- a non-waiting row is refused); `park` and `fail` are the two whose
 refusal half is only reachable through the ledger, since the deadline sweep and
 `on_child_terminal` call them with no generation at all.
 
-**Re-admission never bypasses admission.** A wake writes `running` in the
-store but the run holds NO slot until the pump pops its `_resume_id` entry
+**Re-admission never bypasses admission.** A woken run holds NO slot, and its
+row does not reach `running`, until the pump pops its `_resume_id` entry
 (`admission.request_resume` / `resume_grant`): capacity and the stagger apply,
 so a dependency recovering for 500 waiting trees produces 500 rows eligible
 for re-admission, not 500 simultaneous runtimes. Resume entries sit at the
@@ -1483,7 +1495,9 @@ codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch,
 duck-typed over `urllib`/`aiohttp`/`httpx` error shapes) and `acp_provider`
 (reuses the ACP layer's own throttle / usage-limit / auth / 5xx patterns and
 `_is_transient_raw_error`, defined in `acp.transport_errors` and read through
-`acp.client`, so a third copy cannot drift) — and returns the
+`acp.client`, so a third copy cannot drift; an `AcpError` tagged
+`sign_in_needed` or `auth_required` from its raw frame is `auth_failed` for every
+harness, without reading its wording) — and returns the
 first match, or `None` when the error is not a dependency error at all. An
 exception carrying a pre-attached `dependency_signal` wins outright, and an
 `AcpProcessDied` flagged `ambiguous_delivery` is never a dependency error, whatever

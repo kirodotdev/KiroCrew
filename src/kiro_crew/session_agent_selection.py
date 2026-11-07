@@ -361,3 +361,6 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
         rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
         # Synced: the replacement carries every row of the conversation.
         rewrite_transcript(path, "".join(rows))
+        # Under the lock, as every writer does, so the listing index and this
+        # process's caches re-read the restored line.
+        log._invalidate_cache(session_key)

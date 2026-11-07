@@ -17,8 +17,8 @@ calls. Semantics that make this correct:
   * **Warm reuse** — a *sequential* task reuses an idle worker after a cheap
     clean-slate reset (``provider.new_conversation()`` — fresh ``session/new`` on
     the same live process, skipping spawn + ``initialize``). No cold start on a
-    backend whose provider has one; a backend on its own ``AcpClient`` (claude and
-    the other per-session adapters) has none and is reset by kill and respawn.
+    backend on the shared runtime or in ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``
+    (claude); any other backend on its own ``AcpClient`` is reset by kill and respawn.
   * **Self-healing** — a worker whose process died is retired and replaced.
   * **Bounded** — at most ``max_workers`` live sessions; startup throttled to
     ``max_starting`` concurrent spawns (matches the workflow concurrency cap).
@@ -39,6 +39,7 @@ import time
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
@@ -61,7 +62,9 @@ from kiro_crew.workflows.agent_exec import (
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
     persist_step_usage_row,
+    step_backend_kwargs,
     step_effort_kwargs,
+    step_session_name,
     vet_step_spawn,
 )
 
@@ -192,6 +195,10 @@ class _WorkflowSessionWorker:
         # process (new pid). One shared writer lives in messaging.identity; it
         # is fail-safe by contract, so it can never break the turn.
         await publish_turn_identity(self._sessions, self._key)
+        if self._is_new:
+            # A cold start or a reset's fresh conversation: the first prompt waits
+            # (bounded) for the agent spec's MCP servers, as the cold path does.
+            await wait_for_declared_mcp(self._provider, UNATTENDED_MCP_WAIT_SECS)
         # Honor the pool's per-task timeout: a wedged turn is terminated here
         # instead of holding a _task_sema permit until the run-level ceiling.
         if self._memory_scope is not None:
@@ -229,8 +236,8 @@ class _WorkflowSessionWorker:
 
         Uses ``provider.new_conversation()``, which skips the expensive
         spawn+initialize on a backend served through the shared runtime (kiro, KAS,
-        Codex). A backend on its own ``AcpClient`` (claude and the other per-session
-        adapters) has no such reset and raises ``NotImplementedError``. On that, or
+        Codex) and on claude's own ``AcpClient``. Any other backend on its own
+        ``AcpClient`` has no such reset and raises ``NotImplementedError``. On that, or
         any other failure, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
         (correctness over speed on the fallback path)."""
@@ -294,10 +301,10 @@ class _WorkflowSessionWorker:
     async def _reapply_effort(self) -> None:
         """Push this worker's effort onto the fresh conversation a cheap reset made.
 
-        ``new_conversation`` re-applies the model but not the effort, and a harness
-        that takes effort as a per-session config option (KAS, Codex) pushes it only
-        at cold start, so without this every reuse after the first would run at the
-        backend default. ``change_effort`` answering False means the model takes no
+        ``new_conversation`` re-applies the model but, except on claude, not the
+        effort, and a harness that takes effort as a per-session config option (KAS,
+        Codex) pushes it only at cold start, so without this every reuse after the
+        first would run at the backend default. ``change_effort`` answering False means the model takes no
         effort, which a cold start drops the same way; a raise sends the caller down
         the hard reset, which cold-starts with the override.
         """
@@ -375,8 +382,9 @@ def build_pooled_agent_fn(
     distinct ``(agent, model, cwd, effort)`` identity gets its OWN warm sub-pool (so a
     multi-specialist fan-out still gets warm reuse per specialist, and a worker
     built for one identity never serves a call that asked for another). Calls
-    with no override share the default sub-pool. ``pool.shutdown()`` tears down
-    every sub-pool.
+    with no override share the default sub-pool. A ``backend=`` call skips the pool
+    and runs on a one-shot session of its own. ``pool.shutdown()`` tears down every
+    sub-pool.
     """
     worker_ids = itertools.count()
 
@@ -445,8 +453,8 @@ def build_pooled_agent_fn(
 
     _unpooled = itertools.count()
 
-    async def _run_unpooled(prompt: str, opts: dict) -> Any:
-        named = opts.get("session")
+    async def _run_unpooled(prompt: str, opts: dict, backend_kwargs: dict) -> Any:
+        named = step_session_name(opts)
         key = named if named is not None else f"wf-unpooled:{run_id}:{next(_unpooled)}"
         if memory_scope is not None:
             if named is not None:
@@ -459,6 +467,7 @@ def build_pooled_agent_fn(
             cwd=opts.get("cwd") or cwd,
             extra_env=extra_env,
             **step_effort_kwargs(opts),
+            **backend_kwargs,
         )
         try:
             # Same identity publication as the pooled worker (see
@@ -466,6 +475,8 @@ def build_pooled_agent_fn(
             # and the identity-cap overflow session both run on their own
             # kiro-cli process with no ambient session key.
             await publish_turn_identity(sessions, key)
+            if is_new:
+                await wait_for_declared_mcp(provider, UNATTENDED_MCP_WAIT_SECS)
             if memory_scope is not None:
                 prompt = await memory_scope.prompt(
                     context_builder,
@@ -524,6 +535,7 @@ def build_pooled_agent_fn(
         # The same gates the cold path runs, at the single entry: the pooled
         # leg and the unpooled leg both allocate a child session.
         step_effort_kwargs(opts)
+        backend_kwargs = step_backend_kwargs(opts)
         step_cwd = await vet_step_spawn(
             session_key=session_key,
             agent=opts.get("agent") or default_agent,
@@ -534,13 +546,14 @@ def build_pooled_agent_fn(
             # Launch in the RESOLVED directory and key the warm sub-pool on it, so
             # a worker is never built for an unresolved spelling of a path.
             opts = {**opts, "cwd": step_cwd}
-        if opts.get("session") is not None:
-            return await _run_unpooled(prompt, opts)
+        # Warm workers run the default harness.
+        if opts.get("session") is not None or backend_kwargs:
+            return await _run_unpooled(prompt, opts, backend_kwargs)
         target = _pool_for(
             opts.get("agent"), opts.get("model"), opts.get("cwd"), opts.get("effort")
         )
         if target is None:
-            return await _run_unpooled(prompt, opts)
+            return await _run_unpooled(prompt, opts, backend_kwargs)
         return await target.send(prompt)
 
     pool = _AggregatePool(default_pool, subpools)

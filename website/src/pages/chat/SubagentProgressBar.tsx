@@ -498,7 +498,8 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                             do without a hover. */}
                         {a.label && taskPreview ? <span className="text-muted"> · {taskPreview}</span> : null}
                       </span>
-                      <RowElapsed startedAt={a.startedAt} assumed={a.startedAtAssumed} toolCount={a.toolCount} />
+                      {/* A pending run has not started: a ticking timer would read as running. */}
+                      {a.status !== 'pending' && <RowElapsed startedAt={a.startedAt} assumed={a.startedAtAssumed} toolCount={a.toolCount} />}
                     </span>
                     {isSpawnApprovalGone(a) ? (
                       <span className="text-muted flex items-center gap-1" data-testid="subagent-row-checking">

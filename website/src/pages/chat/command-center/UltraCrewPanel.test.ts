@@ -110,6 +110,14 @@ describe('milestoneState', () => {
     expect(milestoneState(item({ status: 'progress', ...R }), false)).toBe('waiting')
   })
 
+  it('running: an idle worker whose own loop will wake it (waiting on CI)', () => {
+    expect(milestoneState(item({ status: 'progress', looping: true, ...R }), false)).toBe('running')
+    // A report the conductor still owes an answer, or one on the person, keeps its state.
+    expect(milestoneState(item({ status: 'blocked', looping: true, ...R }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'blocked', reason: 'needs_human', looping: true, ...R }), false)).toBe('needs_you')
+    expect(milestoneState(item({ status: 'progress', looping: true }), true)).toBe('needs_you')
+  })
+
   it('quiet: the board stale flag on a chat that is still there, not stuck', () => {
     expect(milestoneState(item({ status: 'progress', stale: true, ...R }), false)).toBe('quiet')
     expect(milestoneState(item({ status: 'progress', stale: true, alive: 'closed' }), false)).toBe('stuck')

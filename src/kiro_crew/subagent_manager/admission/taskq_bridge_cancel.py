@@ -123,7 +123,8 @@ def taskq_cancel_queued(
     parent-end teardown passes False: a row in that
     window may be carrying a decision a person made (a spawn approval is the visible
     case), which a teardown has no standing to revoke on their behalf. Refusing
-    leaves the row to the incarnation that owns it.
+    leaves the row to the incarnation that owns it, which reads the teardown mark
+    and cancels the row instead of starting it (``claim_and_start``).
 
     Race-safe against the drain because the STATE TEST AND THE CANCEL SHARE
     ONE TRANSACTION: ``unstarted`` is both the predicate this code judges the
@@ -145,25 +146,40 @@ def taskq_cancel_queued(
     """
     from kiro_crew import taskq as _taskq
 
-    store = self.taskq_store()
-    if store is None:
-        return None
     try:
-        rec = store.get(agent_id)
-        if rec is None or rec.terminal:
-            return None
-        unstarted = _taskq.CLAIMABLE
-        if allow_admitted:
-            unstarted = unstarted | frozenset({_taskq.ADMITTED})
-            if retained:
-                unstarted = unstarted | frozenset({_taskq.STARTING})
-        if rec.state not in unstarted:
-            return None
-        previous = store.cancel(agent_id, reason="user_stop", only_from=unstarted)
+        return self.taskq_cancel_unstarted(
+            agent_id, allow_admitted=allow_admitted, retained=retained
+        )
     except _taskq.TaskStoreUnavailable:
         _glue_logger.warning("taskq: cancel of %s failed", agent_id, exc_info=True)
         return None
-    if previous is None:
+
+
+def taskq_cancel_unstarted(
+    self: _TaskqBridgeMixin, agent_id: str, *, allow_admitted: bool = True, retained: bool = False
+) -> dict[str, Any] | None:
+    """:meth:`taskq_cancel_queued` with the store's ``TaskStoreUnavailable`` raised, not logged.
+
+    The body both share, so a caller that retries a cancel that did not land
+    (``taskq_settle_unlanded_cancel``) can tell a store that refused the write
+    from one that answered.
+    """
+    from kiro_crew import taskq as _taskq
+
+    store = self.taskq_store()
+    if store is None:
+        return None
+    rec = store.get(agent_id)
+    if rec is None or rec.terminal:
+        return None
+    unstarted = _taskq.CLAIMABLE
+    if allow_admitted:
+        unstarted = unstarted | frozenset({_taskq.ADMITTED})
+        if retained:
+            unstarted = unstarted | frozenset({_taskq.STARTING})
+    if rec.state not in unstarted:
+        return None
+    if store.cancel(agent_id, reason="user_stop", only_from=unstarted) is None:
         return None
     params = dict(rec.params)
     params["_preassigned_id"] = agent_id

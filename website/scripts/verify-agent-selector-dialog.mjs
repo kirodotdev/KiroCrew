@@ -255,8 +255,8 @@ try {
       }
       return false
     },
+    localStorageEntries: { 'mc-lang': 'en' },
   })
-  await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
 
   if (EXPECT === 'broken') {
     const createDialog = await openCreateDialog(page, base)

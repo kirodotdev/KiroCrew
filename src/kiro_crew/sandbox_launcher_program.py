@@ -11,10 +11,11 @@ and every import sits at module level, ahead of the isolation it builds.
 :func:`main` forks. The parent writes the child's identity uid/gid maps and waits; the
 child enters the user and mount namespaces (:func:`enter_namespaces`), then
 :func:`run_child` builds the sandbox through its stages -- among them
-:func:`stage_private_windows`, :func:`seal_readonly`, :func:`mask_sensitive`,
-:func:`apply_carveouts`, :func:`mask_sensitive_files`, :func:`mask_ssh_keys`,
-:func:`scrub_env`, :func:`drop_privileges`, :func:`install_seccomp` and
-:func:`refuse_hardlinked_credentials` -- and ends in :func:`exec_agent`.
+:func:`stage_private_windows`, :func:`pin_seal_parents`, :func:`seal_readonly`,
+:func:`mask_sensitive`, :func:`apply_carveouts`, :func:`mask_sensitive_files`,
+:func:`mask_ssh_keys`, :func:`scrub_env`, :func:`drop_privileges`,
+:func:`install_seccomp` and :func:`refuse_hardlinked_credentials` -- and ends in
+:func:`exec_agent`.
 :func:`run_child` and :func:`place_masks` fix the order. The child keeps the real uid
 and gid: no uid 0, no uid 65534.
 
@@ -143,6 +144,7 @@ class Launch:
         self.private_dirs = plan["private_dirs"]
         self.private_dir_ids = plan["private_dir_ids"]
         self.readonly_dirs = plan["readonly_dirs"]
+        self.parent_pins = plan["parent_pins"]
         self.writable_dirs = plan["writable_dirs"]
         self.sensitive_files = plan["sensitive_files"]
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
@@ -214,6 +216,9 @@ class Launch:
         self.bound_windows = set()
         #: The tmpfs every bind source is created on, or ``None`` for the system tempdir.
         self.tmpfs_src = None
+        #: ``(root_fd, stage, host_root)`` while the stand-ins are created on a tmpfs
+        #: of this namespace's own (:func:`stage_stand_ins_privately`), else ``None``.
+        self.stand_in_stage = None
         #: The pid-tagged prefix of every bind source this launcher creates.
         self.src_prefix = ""
         #: The exposed files' bytes, read before the masks hide their parents.
@@ -318,6 +323,112 @@ def _first_stand_in_root(launch, skip=None):
     return None
 
 
+def _stage_warning(parent, why):
+    sys.stderr.write(
+        "sandbox: WARNING -- could not stage the stand-ins on a private tmpfs (%s); "
+        "they stay in %s, where the host can delete them while this sandbox runs.\n" % (why, parent)
+    )
+
+
+def _covers_device(fd, under_dev):
+    """Whether *fd* sits on a device other than *under_dev*: a fresh mount over it."""
+    return os.fstat(fd).st_dev != under_dev
+
+
+def stage_stand_ins_privately(launch):
+    """Move the stand-in root onto a tmpfs that exists in this mount namespace only.
+
+    The roots :func:`pick_stand_in_root` picks are shared with the host, and the host
+    empties them while a sandbox runs: at a user's last logout systemd-logind removes
+    ``/run/user/$UID`` and, with ``RemoveIPC=yes`` (its default), deletes every
+    ``/dev/shm`` entry the uid owns, directories included. A deleted stand-in takes the
+    private-window mount points inside it along, because removing a directory that is a
+    mount point in another namespace detaches that mount there. The agent then loses
+    its scratch window, ``$TMPDIR`` with it, and every create under it fails ENOENT.
+
+    So one stage directory is made under the chosen root, a tmpfs is mounted on it in
+    this namespace, and every stand-in is created inside it through a descriptor held
+    on the tmpfs root (``/proc/self/fd/<n>``), which no host-side rename or delete
+    re-aims. The host sees one empty directory, which :func:`retire_stand_in_stage`
+    removes once the masks are placed. A tmpfs is a filesystem of its own, so every bind
+    source stays off HOME's filesystem, also when no candidate root qualified. The
+    stage takes the stand-ins' pid-tagged prefix, so the janitor reclaims one a killed
+    launcher leaves. Any failure keeps the host root, which is where the stand-ins lived
+    before this stage existed.
+    """
+    try:
+        stage = _stand_in_mkdtemp(launch)
+    except OSError as exc:
+        _stage_warning(launch.tmpfs_src or tempfile.gettempdir(), exc.strerror)
+        return
+    # Read after the create: a retry moves the stand-in root, and the stage is compared
+    # with the root it was actually made in.
+    parent = os.path.dirname(stage)
+    err = 0
+    try:
+        pin = os.open(stage, _O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
+    except OSError as exc:
+        _stage_warning(parent, exc.strerror)
+        return
+    try:
+        # The device the stage sits on before the mount, read off the pin: the host
+        # root itself can vanish before the comparison, and its name is not re-read.
+        under_dev = os.fstat(pin).st_dev
+        target = ("/proc/self/fd/%d" % pin).encode()
+        if launch.libc.mount(b"tmpfs", target, b"tmpfs", _MS_NOSUID | _MS_NODEV, b"mode=0700") != 0:
+            err = ctypes.get_errno() or -1
+    finally:
+        os.close(pin)
+    root_fd = -1
+    if not err:
+        try:
+            root_fd = os.open(stage, _O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
+        except OSError:
+            pass
+        if root_fd >= 0 and not _covers_device(root_fd, under_dev):
+            os.close(root_fd)
+            root_fd = -1
+    if root_fd < 0:
+        try:
+            os.rmdir(stage)
+        except OSError:
+            pass
+        _stage_warning(parent, "errno %d" % err if err else "the stage was replaced")
+        return
+    launch.stand_in_stage = (root_fd, stage, launch.tmpfs_src)
+    launch.tmpfs_src = "/proc/self/fd/%d" % root_fd
+
+
+def retire_stand_in_stage(launch):
+    """Detach the private stand-in stage and remove its empty host-side directory.
+
+    Runs once every mask is placed; nothing after it creates a stand-in. Each mask
+    bound from the stage holds the tmpfs by itself, so detaching the stage changes
+    nothing the agent sees. It removes the second, writable path to every stand-in and
+    frees the host's empty stage directory. ``tmpfs_src`` goes back to the host root
+    because the descriptor it named is closed here. A stage that will not detach stays
+    mounted with a warning: the stand-ins are still out of the host's reach.
+    """
+    if launch.stand_in_stage is None:
+        return
+    root_fd, stage, host_root = launch.stand_in_stage
+    launch.stand_in_stage = None
+    launch.tmpfs_src = host_root
+    detached = launch.libc.umount2(("/proc/self/fd/%d" % root_fd).encode(), _MNT_DETACH) == 0
+    err = 0 if detached else ctypes.get_errno()
+    os.close(root_fd)
+    if not detached:
+        sys.stderr.write(
+            "sandbox: WARNING -- could not detach the private stand-in stage %s (errno %d)"
+            "; it stays mounted.\n" % (stage, err)
+        )
+        return
+    try:
+        os.rmdir(stage)
+    except OSError:
+        pass
+
+
 #: What a create under the chosen stand-in root fails with once a different directory
 #: stands at that name than the one the probe saw. systemd-logind removes
 #: ``/run/user/$UID`` at a user's last logout and makes it again, ``root:root`` mode
@@ -379,12 +490,13 @@ def _stand_in_mkstemp(launch):
 def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
-    Windows are staged before anything is masked, read-only seals land before the hides
-    placed on top of them, carve-outs after the seals they punch through, the exposed
-    files are restored into their empty masks, and the single files and ``~/.ssh`` are
-    masked last.
+    Windows are staged before anything is masked, the seals' parents are pinned before
+    the seals, read-only seals land before the hides placed on top of them, carve-outs
+    after the seals they punch through, the exposed files are restored into their empty
+    masks, and the single files and ``~/.ssh`` are masked last.
     """
     stage_private_windows(launch)
+    pin_seal_parents(launch)
     seal_readonly(launch)
     mask_sensitive(launch)
     apply_carveouts(launch)
@@ -403,7 +515,9 @@ def run_child(launch, argv):
     pick_stand_in_root(launch)
     check_crew_home_aliases(launch)
     preread_exposed_files(launch)
+    stage_stand_ins_privately(launch)
     place_masks(launch)
+    retire_stand_in_stage(launch)
     confirm_crew_home_aliases(launch)
     scrub_env(launch)
     drop_privileges(launch)
@@ -486,6 +600,7 @@ from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
     seccomp_program,
 )
 from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
+    _hold_seal_parent,
     _mount_private_tmpfs,
     _open_unreadable_stand_in,
     _pin_below_mask,
@@ -498,6 +613,7 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     mask_sensitive,
     mask_sensitive_files,
     mask_ssh_keys,
+    pin_seal_parents,
     preread_exposed_files,
     restore_exposed_files,
     seal_readonly,

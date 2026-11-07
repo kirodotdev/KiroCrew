@@ -12,8 +12,8 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
-``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_bound_workspace_fd``,
+``_child_env_names``, ``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
 ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
 ``_native_skill_projection``, ``_session_queues``, ``_start_launch_name``, ``_tool_search_wire``, ``_wire_mode_id``,
@@ -25,14 +25,20 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew import member_essential_context
-from kiro_crew.acp import runtime_start
+from kiro_crew.acp import kas_engine_features, runtime_start
 from kiro_crew.acp.harness import SessionExtras
+from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
-from kiro_crew.acp.mcp_ref_guard import warn_remote_header_secret_refs, warn_unresolved_server_refs
+from kiro_crew.acp.mcp_ref_guard import (
+    warn_remote_header_secret_refs,
+    warn_unresolved_server_refs,
+    warn_unset_env_placeholders,
+)
 from kiro_crew.acp.runtime_start import _SESSION_NEW_TIMEOUT, _resolve_start_collect_timeout
 from kiro_crew.acp.session_handle import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.session_mcp import (
@@ -362,6 +368,7 @@ async def _kas_custom_agents(
     crew_panel: bool = False,
     session_key: str = "",
     worker_stub_names: frozenset[str] | None = None,
+    session_cwd: str | Path | None = None,
 ) -> SessionExtras:
     """The per-session payload for a wire-registered host, and what built it.
 
@@ -381,7 +388,8 @@ async def _kas_custom_agents(
 
     *worker_stub_names* is :func:`_kas_worker_stub_names`' answer, handed down
     only when it is one (a KAS crewmate worker), so every other host's call is
-    unchanged.
+    unchanged. *session_cwd* is the session's own directory, for a host that reads
+    workspace settings beside the session.
     """
     worker: dict[str, Any] = (
         {} if worker_stub_names is None else {"worker_stub_names": worker_stub_names}
@@ -393,6 +401,8 @@ async def _kas_custom_agents(
         member_dispatch=member_dispatch,
         crew_panel=crew_panel,
         session_key=session_key,
+        engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
+        session_cwd=session_cwd,
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
@@ -680,8 +690,26 @@ async def _mirrored_session_mcp(
 
     projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
+    runtime_ref = weakref.ref(self)
+
+    def _own_root_pid() -> int | None:
+        live_runtime = runtime_ref()
+        if live_runtime is None:
+            return None
+        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
+
+    # An enforced harness's kirocrew-core cannot read the gateway secret through its
+    # credential mask, so its element gets an agent-socket pickup bound to this
+    # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
+    servers = with_ipc_pickups(
+        list(servers) if isinstance(servers, list) else [],
+        backend=self.acp_backend,
+        session_token=stub_token,
+        runtime_pid=_own_root_pid,
+        owner=self,
+    )
     return _MirroredSessionMcp(
-        servers=list(servers) if isinstance(servers, list) else [],
+        servers=servers,
         denied_tools=projection.denied_tools,
         stub_token=stub_token,
         derived_spec_snapshot=projection.derived_spec_snapshot,
@@ -1004,6 +1032,26 @@ def _copy_native_launch_sources(
     handle.native_context_documents.update(self._native_launch_sources)
 
 
+def _spec_limited_to_wire(
+    spec: Any, wire_servers: Any, custom_agents: Any = None, agent_id: str = ""
+) -> dict[str, Any]:
+    """*spec* with only the ``mcpServers`` entries KAS was handed: those the wire
+    array carries, plus those left in the active custom agent's ``mcpServers``."""
+    servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+    if not isinstance(servers, dict):
+        return {}
+    delivered = {
+        entry.get("name")
+        for entry in (wire_servers if isinstance(wire_servers, list) else ())
+        if isinstance(entry, dict)
+    }
+    for agent in custom_agents if isinstance(custom_agents, list) else ():
+        block = agent.get("mcpServers") if isinstance(agent, dict) else None
+        if isinstance(block, dict) and agent.get("id") == agent_id:
+            delivered.update(block)
+    return {"mcpServers": {name: entry for name, entry in servers.items() if name in delivered}}
+
+
 def _guard_unresolved_mcp_refs(
     self: AcpRuntime,
     handle: AcpSessionHandle,
@@ -1055,12 +1103,37 @@ def _guard_unresolved_mcp_refs(
     except Exception:
         logger.debug("remote-header guard: evaluation failed", exc_info=True)
     try:
-        # The same spec names the servers an unattended run waits for, but
-        # only on kiro-cli: it launches the spec's own servers (via --agent)
-        # and reports each one's start. Elsewhere a spec server may be held
-        # back or never report, and every run would wait out the bound.
+        env_refs, env_omitted = warn_unset_env_placeholders(
+            spec,
+            wire_servers,
+            backend=self.acp_backend,
+            agent=agent or "",
+            child_env=self._child_env_names,
+        )
+        if env_refs:
+            handle.mcp_session_report().record_env_placeholder_refs(env_refs, env_omitted)
+    except Exception:
+        logger.debug("env-placeholder guard: evaluation failed", exc_info=True)
+    try:
+        # The same spec names the servers an unattended run waits for. kiro-cli
+        # launches the spec's own servers (via --agent) and reports each one's
+        # start. KAS starts the servers the wire array carries and those the
+        # active custom agent's ``mcpServers`` keeps (a third-party server is
+        # not hoisted on session/new), and reports each in ``_kiro/mcp/status``.
+        # So it waits only for the spec servers one of the two delivered: one
+        # Crew held back from both would never report, and every run would wait
+        # out the bound. Other hosts declare nothing.
         if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
             handle.mcp_session_report().record_declared(spec)
+        elif self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KAS:
+            handle.mcp_session_report().record_declared(
+                _spec_limited_to_wire(
+                    spec,
+                    wire_servers,
+                    getattr(handle, "kas_registered_agents", None),
+                    getattr(handle, "kas_projected_agent", ""),
+                )
+            )
     except Exception:
         logger.debug("declared MCP servers: spec unreadable", exc_info=True)
 

@@ -361,9 +361,10 @@ def read_pinned_session_order(self: DashboardState) -> tuple[list[str], bool] | 
     Returns ``(keys, stored)``: ``stored`` says whether an order file
     exists at all, which an empty ``keys`` cannot tell. A person who
     reordered and then unpinned everything has a stored empty order; one
-    who never reordered has none. Returns ``None`` on a transient
-    ``OSError`` (logged): the order is a display preference, so an
-    unreadable file must not replace a good order with an empty one.
+    with no saved order (no reorder, no first-load seed) has none. Returns
+    ``None`` on a transient ``OSError`` (logged): the order is a display
+    preference, so an unreadable file must not replace a good order with an
+    empty one.
     """
     path = pinned_session_order.store_path(config_dir())
     try:

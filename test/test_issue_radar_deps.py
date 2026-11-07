@@ -1,23 +1,16 @@
 """Tests for Issue Radar's dependency edges + auto-unlock.
 
-Four levels, matching how the six existing signals and the other caches are
-tested:
+Four levels:
 
-  * the ``deps-cache.json`` store — a stale schema reads as a MISS (so the route
-    refetches with the current edge shape rather than serving a graph missing a
-    field), and the native-wins dedup that ``_normalize_deps`` owns;
-  * ``github_client.fetch_dependency_edges`` — that native and inferred edges are
-    both emitted (the store collapses a duplicate pair, native winning), and that
-    same-repo scoping drops a cross-repo cross-reference;
-  * the ``/deps`` HANDLER — validation, the connected gate, cache-first with the
-    TTL, the empty-repo answer, and the GitHub-only guard that gives a non-GitHub
-    key an empty graph instead of an error;
-  * the SEVENTH sweep signal ``SIG_DEP_UNBLOCKED`` — that it fires exactly ONCE
-    when the last blocker closes, stays silent while a blocker remains open, and
-    never fires without a real >0 → 0 transition (fingerprint stability).
+  * the ``deps-cache.json`` store — a stale schema reads as a MISS, and the
+    native-wins dedup in ``_normalize_deps``;
+  * ``github_client.fetch_dependency_edges`` — native and inferred edges, and
+    same-repo scoping;
+  * the ``/deps`` HANDLER — validation, the connected gate, cache-first TTL, and an
+    empty graph (not an error) for a non-GitHub key;
+  * ``SIG_DEP_UNBLOCKED`` — fires exactly ONCE on a real >0 → 0 transition.
 
-Every test patches the ``gh`` layer or scopes the store to ``tmp_path``; no
-subprocess is spawned and the real data home is never touched.
+Every test patches the ``gh`` layer or scopes the store to ``tmp_path``.
 """
 
 import asyncio
@@ -222,16 +215,9 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
         self.assertEqual(store.read_deps_cache(OWNER, REPO, self.root)["edges"], self.NEW)
 
     def test_a_future_stamp_is_persisted_raw_and_reads_maximally_stale(self):
-        # A clock retreat DURING the rebuild hands the write a stamp captured
-        # before the retreat. Two invariants, split across the two layers:
-        # the PERSISTED stamp keeps the raw capture (it is the CAS's ordering
-        # token — clamping it would let a slower pre-retreat rebuild beat this
-        # one), while read_deps_cache returns 0.0 for a beyond-slack stamp —
-        # maximally stale, NOT clamped-to-now: a clamp would pin the age at ~0
-        # on every read for the whole retreat window and the automatic TTL
-        # refresh would never fire; 0.0 makes the very next TTL check refetch,
-        # and that current-epoch write repairs the stamp via the CAS's
-        # fail-open branch.
+        # A clock retreat DURING the rebuild. The PERSISTED stamp stays raw (it is the
+        # CAS's ordering token); the read returns 0.0 for a beyond-slack stamp, not
+        # now, so the next TTL check refetches instead of pinning the age at ~0.
         captured = time.time() + 3600
         store.write_deps_cache(OWNER, REPO, self.NEW, {}, root=self.root, fetched_at=captured)
         raw = json.loads(store.deps_cache_path(OWNER, REPO, self.root).read_text(encoding="utf-8"))
@@ -323,15 +309,10 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
         self.assertEqual(out["fetched_at"], healed_at)
 
     def test_a_sub_slack_retreat_cannot_re_date_an_older_graph_fresh(self):
-        # The same ambiguous quadrant as above, but with a clock retreat
-        # SMALLER than _DEPS_STAMP_FUTURE_SLACK_SEC. The slack exists to
-        # tolerate ordinary clock granularity on a STORED stamp; applying it to
-        # the INCOMING one classified this write as current-epoch, so the
-        # ambiguity branch never fired, the raw comparison honoured the older
-        # sweep's larger stamp, and the read clamped it to "now" — the older
-        # graph replaced the newer one reading FRESH for the whole TTL, which
-        # is the lost update inside a sub-slack retreat window. Any incoming stamp ahead
-        # of the wall clock is therefore treated as ambiguous.
+        # The same ambiguous quadrant, with a retreat SMALLER than
+        # _DEPS_STAMP_FUTURE_SLACK_SEC. The slack applies only to a STORED stamp; any
+        # INCOMING stamp ahead of the wall clock is ambiguous, or the older graph
+        # would read FRESH for the whole TTL.
         post_retreat = time.time()  # the route wrote AFTER the retreat (newer)
         pre_retreat = post_retreat + 2.0  # sweep's capture, < slack ahead of now
         store.write_deps_cache(OWNER, REPO, self.NEW, {}, root=self.root, fetched_at=post_retreat)
@@ -350,18 +331,10 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
         self.assertEqual(out["fetched_at"], healed_at)
 
     def test_an_older_pre_retreat_write_cannot_pass_the_fail_open_branch(self):
-        # The fail-open branch exists for a STORED pre-retreat stamp beaten by a
-        # genuine post-retreat write. Applying the future slack to the INCOMING
-        # side let a second PRE-retreat write in through it: with a retreat
-        # beyond the slack and the two captures less than the slack apart, the
-        # older stamp lands under `now + slack` (so it read as current-epoch)
-        # while the newer one lands above it (so it read as future). The branch
-        # then accepted the OLDER graph over the NEWER one and kept its raw
-        # stamp, which the read clamps to "now" — a stale graph reading fresh
-        # for the full TTL, i.e. the lost update with both writes on the far side
-        # of the retreat. Classifying the incoming side strictly (`stamp <= now`)
-        # is what shuts this quadrant: the older write is not current-epoch,
-        # so it falls to the raw comparison and loses to the larger stored stamp.
+        # The fail-open branch is for a STORED pre-retreat stamp beaten by a real
+        # post-retreat write. Two pre-retreat captures straddling `now + slack` must not
+        # use it: the incoming side is current-epoch only when `stamp <= now`, so the
+        # older write falls to the raw comparison and loses.
         now = time.time()
         newer_pre_retreat = now + 6.0  # beyond the 5s slack → stored reads future
         older_pre_retreat = now + 4.0  # captured 2s EARLIER, but still under now+slack
@@ -1408,11 +1381,8 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
     def _per_test_dirs(self, tmp_path):
         """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-        Neither directory this class writes is one it creates and removes itself. Its
-        background writers (the crew-log eager fold, the radar store's ``mkdir`` on
-        every read) can still touch a directory after the test's own cleanup has
-        removed it, which re-creates it as temp residue. pytest owns ``tmp_path`` and
-        the conftest stops the fold worker before its pins lift.
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
         """
         self._tmp_path = tmp_path
 

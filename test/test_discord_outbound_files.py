@@ -470,16 +470,12 @@ class TestMultipartWire:
 class TestDocumentVerb:
     """The name-preserving document send.
 
-    Separate from ``send_message_with_files`` on purpose: that path's sanitizer
-    is aimed at LLM-authored reference paths and maps every non-raster mime to
-    ``.bin``, so it would deliver ``report.pdf`` as ``report.bin``. These tests
-    pin BOTH halves — the admitted name survives here, and the extraction path's
-    derivation is untouched.
+    ``send_message_with_files`` maps every non-raster mime to ``.bin`` (it sanitizes
+    LLM-authored paths), so ``report.pdf`` would arrive as ``report.bin``.
     """
 
     def test_the_extraction_path_still_derives_the_name(self) -> None:
-        # The guarantee `upload_filename` makes to its existing callers: an
-        # untrusted path, a non-raster mime, `.bin`. Unchanged by this verb.
+        # `upload_filename`: an untrusted path with a non-raster mime becomes `.bin`.
         assert upload_filename(_doc(), 0) == "report.bin"
         fields = _fields({"content": ""}, [_doc()])
         assert json.loads(fields[0][2])["attachments"][0]["filename"] == "report.bin"
@@ -544,11 +540,8 @@ async def _noop_sleep(_seconds: float) -> None:
 class TestDisplayRedactionIsAFloor:
     """Display-form redaction runs on every send, not only the upload path.
 
-    ``TurnDriver`` redacts the LITERAL form of every chunk upstream. The display
-    pass exists for the credential that is invisible until Discord renders the
-    markdown away, so gating it on the upload path left a restricted session, an
-    unset upload root, and every length rotation sending model text that only the
-    literal-form redactor had seen.
+    ``TurnDriver`` redacts only the LITERAL form upstream; the display pass catches a
+    credential that appears once Discord renders the markdown away.
     """
 
     #: A credential split by Markdown that Discord strips when it renders. The
@@ -575,8 +568,7 @@ class TestDisplayRedactionIsAFloor:
 
     @pytest.mark.asyncio
     async def test_a_length_rotated_segment_still_gets_the_display_pass(self) -> None:
-        """Length seals pass ``extract_uploads=False``, which was the widest of
-        the ungated routes: it is reached on any reply long enough to rotate."""
+        """A length seal passes ``extract_uploads=False``; any long reply reaches it."""
         r, cli = _renderer()
         await r.on_text_chunk("y" * (r._limit() + 50) + f"\n\n{self.SPLIT_SECRET}\n")
         await r.on_done()
@@ -593,12 +585,8 @@ class TestDisplayRedactionIsAFloor:
 class TestDeliveryAccountingCountsEverySink:
     """`delivery_failed` answers "the user saw NOTHING", so every sink must report.
 
-    The dispatcher records a turn's outcome from what the provider produced, which
-    says nothing about whether anything arrived; `delivery_failed` is the
-    observable that separates them, and a cron turn acts on it (it re-alerts over
-    Slack and refuses to advance its dedup hash). So a sink that delivers without
-    reporting turns a success into a duplicate alert, and a sink that fails
-    without reporting turns a silent turn into a recorded success.
+    A cron turn acts on it (re-alerts over Slack, holds its dedup hash), so an
+    unreported delivery becomes a duplicate alert and an unreported failure a success.
     """
 
     @pytest.mark.asyncio

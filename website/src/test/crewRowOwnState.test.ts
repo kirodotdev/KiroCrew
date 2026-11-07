@@ -15,6 +15,10 @@ describe('crewRowOwnState — the Ultra Mode row\'s one word', () => {
     expect(crewRowOwnState('crew_stalled', '')?.word).toBe('Stalled')
   })
 
+  it('open work whose workers all wait in their own loop (CI) reads Running', () => {
+    expect(crewRowOwnState('crew_running', '')?.word).toBe('Running')
+  })
+
   it('an ask on the person still reads Needs you', () => {
     expect(crewRowOwnState('loop_waiting', '', false, true)?.word).toBe('Needs you')
   })

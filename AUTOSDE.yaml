@@ -1186,7 +1186,16 @@ custom-rules:
       Allowed (do NOT flag): the count MOVES to the new true value and the
       comment naming the roles moves with it; a slice/region marker is widened so
       an extracted fragment still executes with every name it references defined;
-      the assertion is genuinely re-derived and stated to be stronger.
+      the assertion is genuinely re-derived and stated to be stronger; a
+      `skipif` on a test this diff adds, and on that test alone (not one
+      moved, renamed or split out of an existing test), whose reason names a
+      host capability (an OS, kernel or platform facility, or an external
+      tool at the version the code needs) and whose predicate checks that
+      capability and cannot fire on the subject failing — the guard
+      testing-conventions.md prescribes. A skip on a tool or link the harness
+      can supply instead (a CLI the shell script under test runs, such as
+      `jq`; a link, via `make_dir_link` or `make_escaping_link`) stays
+      flagged: supply it.
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.

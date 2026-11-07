@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2, Save } from 'lucide-react'
 
 import { api } from '../../api/client'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
@@ -25,16 +25,16 @@ import McpToolsPanel from './McpToolsPanel'
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
  *  servers and initial-prompt submenus and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown, memoryMode, onPromote, promoting }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
   /** See SessionActionsMenu: the phone bar's ⋯ menu owns the pop-out rows. */
   omitPopout?: boolean
-  /** Phone single top bar: render the session TITLE inside the trigger, ahead of
-   *  the chevron, so title and menu are one control (one tap target, chevron
-   *  flush after the last character). Absent, the trigger is the bare chevron
-   *  the desktop title row places beside its own rename control. */
+  /** Phone single top bar: render the session TITLE inside the trigger, after
+   *  the chevron as in the desktop header, so title and menu are one control
+   *  (one tap target). Absent, the trigger is the bare chevron the desktop
+   *  title row places beside its own rename control. */
   triggerLabel?: React.ReactNode
   /** Phone only: a first item that opens a sibling session in the on-screen
    *  session's folder. It lives in this menu, not beside it, because the phone
@@ -48,6 +48,12 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
    *  `max-two-buttons-per-row` rule). Absent when split view is off or the session
    *  already belongs to a saved split. */
   onSplitDown?: () => void
+  /** Slot's memory_mode; gates the "Keep this chat" item to incognito/temporary. */
+  memoryMode?: string
+  /** Promotes the ephemeral slot to persistent (confirmation dialog owned by the caller). */
+  onPromote?: () => void
+  /** A keep is in flight; the item is disabled so a double click makes one copy. */
+  promoting?: boolean
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -73,7 +79,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   // Per-tool loaded/deferred state is derived client-side (no endpoint): the
   // full server list carries each server's tool names + disabledTools, and the
   // "loaded this session" set comes from scanning this slot's tool_search
-  // results in the chat store. See deriveLoadedMcpTools for the caveats.
+  // results and MCP tool calls in the chat store. See deriveLoadedMcpTools for
+  // the caveats.
   const { data: fullServers = [] } = useQuery<McpServer[]>({
     queryKey: ['mcp-servers-full'],
     queryFn: () => api.mcpServers(),
@@ -102,9 +109,9 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
              menu's role is appended as sr-only text -- an aria-label would replace
              the title, which on the phone this trigger is the only copy of. */
           <button data-testid="session-title-menu" data-chat-header-focus className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
+            <ChevronDown size={16} className="shrink-0 text-muted" />
             <span className="session-header-title text-[15px] font-semibold truncate min-w-0">{triggerLabel}</span>
             <span className="sr-only">, {i18nT('pages.chatPage.session_options')}</span>
-            <ChevronDown size={16} className="shrink-0 text-muted" />
           </button>
         ) : (
           <button data-chat-header-focus className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
@@ -130,7 +137,17 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
           omitPopout={omitPopout}
           // MCP servers: stateful (lazy fetch gated on the sub's open state), so
           // it stays here as an info slot rather than a generic capability.
+          // "Keep this chat" is likewise threaded in as an info slot rather
+          // than a peer button in the title row: a header row holds at most
+          // two peer action controls (max-two-buttons-per-row), and rename +
+          // regenerate-title already claim both, so a third entry point goes
+          // into this existing overflow menu instead of the row.
           infoSlots={[
+            (memoryMode === 'incognito' || memoryMode === 'temporary') && onPromote && (
+              <DropdownMenuItem key="promote" disabled={promoting} onSelect={() => { onPromote() }}>
+                <Save size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.keep_this_chat')}
+              </DropdownMenuItem>
+            ),
             <DropdownMenuSub key="mcp" onOpenChange={setMcpOpen}>
               <DropdownMenuSubTrigger>
                 <Plug size={13} className="shrink-0 text-muted" />

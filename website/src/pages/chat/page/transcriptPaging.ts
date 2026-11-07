@@ -569,7 +569,7 @@ export function useTranscriptPaging({
   }, [activeSlot, setPinExpanded, setPinned])
 
   // Stable: setRefusedPress never changes, so the steer callback is not rebuilt.
-  const reportSlashRefusal = useCallback((res: { stage?: 'open' | 'turn' | 'agent'; error?: string }) => {
+  const reportSlashRefusal = useCallback((res: { stage?: 'open' | 'turn' | 'agent' | 'fork'; error?: string }) => {
     setRefusedPress(slashRefusal(res))
   }, [setRefusedPress])
   return {

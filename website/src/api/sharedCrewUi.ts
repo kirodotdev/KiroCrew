@@ -248,13 +248,14 @@ export function bylineFor(author: PublicPrincipal | null, selfId: string): Publi
 }
 
 /** The setup paths, in the order the People surface offers them. */
-export const SETUP_PATH_ORDER: readonly SetupPath[] = ['tailscale', 'kiro_login']
+export const SETUP_PATH_ORDER: readonly SetupPath[] = ['tailscale', 'ssm', 'kiro_login']
 
 /** Each setup path's availability; an older gateway that omits them reads as none. */
 export function setupPathStates(capabilities: SharedCrewCapabilities): Record<SetupPath, SetupPathCapability> {
   const raw = capabilities.setup_paths
   return {
     tailscale: raw?.tailscale ?? { state: 'unavailable', reason: 'not_configured' },
+    ssm: raw?.ssm ?? { state: 'unavailable', reason: 'not_configured' },
     kiro_login: raw?.kiro_login ?? { state: 'unavailable', reason: 'not_in_this_build' },
   }
 }

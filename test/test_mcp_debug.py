@@ -884,6 +884,29 @@ class TestTheRouteAuthorizationMatrix:
         request = self._request("/api/debug/gateway", self._state(slot))
         assert _stale_grant_refusal(request, "gateway", "debug.gateway") is not None
 
+    def test_the_shaping_never_runs_when_the_grant_was_withdrawn(self) -> None:
+        """The re-check precedes the route's own shaping, not just its return: a
+        shaping that ran first would touch a payload outside the caller's current
+        grant, which no assertion on the response alone can see."""
+        from kiro_crew.dashboard.handlers.debug import _offload_then_recheck
+
+        slot = self._slot(linked_session_key="slack:C1")
+        request = self._request("/api/debug/gateway", self._state(slot))
+        shaped: list[object] = []
+
+        def _respond(payload: object) -> Any:
+            shaped.append(payload)
+            return None
+
+        got = self._run(
+            lambda r: _offload_then_recheck(
+                r, "gateway", "debug.gateway", lambda: {"host": "wide"}, _respond
+            ),
+            request,
+        )
+        assert got.status == 403
+        assert shaped == []
+
     def test_a_self_narrowed_read_is_not_refused_by_the_recheck(self) -> None:
         """The re-check must mirror the gate: applying the class test where the gate
         did not apply it would refuse the one view a channel-linked session is owed."""
@@ -1293,26 +1316,67 @@ class TestTheRouteAuthorizationShape:
         keys = handlers._refusal_scope_keys(request, "dashboard:chat-owner", "self")
         assert keys == {"dashboard:chat-owner"}
 
-    def test_every_offload_is_followed_by_a_stale_grant_recheck(self) -> None:
-        """Every route that offloads re-asserts authorization before it responds.
+    def test_a_debug_route_can_only_answer_through_the_recheck(self) -> None:
+        """The re-check has one caller, and no debug route suspends anywhere else.
 
-        Authorization is decided before a multi-second offload (git spawn, socket
-        probe), so without a re-check a mirror attaching mid-flight would deliver
-        host-wide state into a session that is publishing by the time it lands.
+        Authorization is decided before a multi-second offload, so a route that
+        answers without re-checking can deliver host-wide state into a session that
+        acquired a mirror mid-read. A scan for the re-check's NAME passes a route that
+        re-checks after shaping its answer, or that suspends by another spelling
+        (``run_in_executor``, an awaited coroutine, ``async with``, ``async for``).
+        So the shape is pinned: only ``_offload_then_recheck`` calls the re-check, and
+        the gate and that helper are the only places a debug route may suspend.
         """
+        import ast
         import inspect
 
         from kiro_crew.dashboard.handlers import debug as handlers
 
-        for name in (
+        tree = ast.parse(inspect.getsource(handlers))
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        ]
+
+        def _calls(node: ast.AST) -> set[str]:
+            names = set()
+            for n in ast.walk(node):
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                    names.add(n.func.id)
+                elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                    names.add(n.func.attr)
+            return names
+
+        rechecking = sorted(f.name for f in functions if "_stale_grant_refusal" in _calls(f))
+        assert rechecking == ["_offload_then_recheck"], rechecking
+
+        allowed = {"_authorize_debug_read", "_offload_then_recheck"}
+        routes = [f for f in functions if "_authorize_debug_read" in _calls(f)]
+        for route in routes:
+            outside = [
+                type(n).__name__ if not isinstance(n, ast.Await) else ast.unparse(n.value)
+                for n in ast.walk(route)
+                if isinstance(n, (ast.AsyncWith, ast.AsyncFor))
+                or (isinstance(n, ast.comprehension) and n.is_async)
+                or (
+                    isinstance(n, ast.Await)
+                    and not (
+                        isinstance(n.value, ast.Call)
+                        and isinstance(n.value.func, ast.Name)
+                        and n.value.func.id in allowed
+                    )
+                )
+            ]
+            assert not outside, f"{route.name} suspends at {outside}, outside the gate and helper"
+        # A control: an empty route set would satisfy the loop above silently.
+        assert sorted(f.name for f in routes if "_offload_then_recheck" in _calls(f)) == [
             "api_debug_gateway",
-            "api_debug_refusals",
-            "api_debug_threads",
             "api_debug_processes",
+            "api_debug_refusals",
             "api_debug_snapshots",
-        ):
-            src = inspect.getsource(getattr(handlers, name))
-            assert "_stale_grant_refusal" in src, name
+            "api_debug_threads",
+        ]
 
     def test_the_per_session_route_is_exempt_from_the_owner_surface_wrapper(self) -> None:
         """Otherwise a member's own ``debug_refusals`` 403s before its own gate runs."""

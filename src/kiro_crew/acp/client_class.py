@@ -30,6 +30,7 @@ from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
 from kiro_crew.acp import client_native_children as _client_native_children
+from kiro_crew.acp import client_new_conversation as _client_new_conversation
 from kiro_crew.acp import client_permissions as _client_permissions
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp import client_spawn_env as _client_spawn_env
@@ -178,10 +179,12 @@ class AcpClient:
         self.memory_mode = "persistent"
         self._acp_backend = acp_backend
         # Claude backend permission mode (Auto-mode / permission-UI parity).
-        # Inert on the kiro-cli path. None = the backend's own default
-        # ("default", i.e. every tool decision is forwarded to the host), which is
-        # what _write_claude_local_settings leaves in place when nothing asked
-        # for a mode.
+        # Inert on the kiro-cli path. None = nothing asked for a mode:
+        # _write_claude_local_settings seeds no defaultMode, so the session starts
+        # in the mode the user's own settings name. With
+        # KIROCREW_CC_PIN_INHERITED_MODE on, _pin_claude_starting_mode then moves a
+        # session carrying Crew's tools that starts in "auto" or
+        # "bypassPermissions" to "default".
         self._permission_mode = permission_mode
         # A Side Chat session that may run read-only tools. On claude it starts
         # with only the read built-ins and no MCP server, and its mode is pinned
@@ -662,6 +665,7 @@ class AcpClient:
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
+        self._child_env_names: frozenset[str] = frozenset()  # set by the launch tail
         self._jsonl_pos: int = 0  # track read position in session JSONL for tool results
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._last_activity: float = time.monotonic()
@@ -1401,6 +1405,7 @@ class AcpClient:
     _next_req_id = _client_transport._next_req_id
     _send_request = _client_transport._send_request
     _write_request_bounded = _client_transport._write_request_bounded
+    _record_sent = _client_transport._record_sent
     _stdin_write_lock = _client_transport._stdin_write_lock
     _write_response_bounded = _client_transport._write_response_bounded
     _send_response = _client_transport._send_response
@@ -1432,6 +1437,8 @@ class AcpClient:
     _fork_session = _client_start._fork_session
     _initialize_session = _client_start._initialize_session
     ensure_ready = _client_start.ensure_ready
+    # A fresh conversation on the live process: ``kiro_crew.acp.client_new_conversation``.
+    new_conversation = _client_new_conversation.new_conversation
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_opencode_shell_permission = _client_turn._defer_opencode_shell_permission
@@ -1472,6 +1479,11 @@ class AcpClient:
     _unanswered_steering_ids = _client_turn_control._unanswered_steering_ids
     _settle_steering_answer = _client_turn_control._settle_steering_answer
     _steer_via_steering_request = _client_turn_control._steer_via_steering_request
+    _held_steers = _client_turn_control._held_steers
+    _release_held_steers = _client_turn_control._release_held_steers
+    _held_steer_writes = _client_turn_control._held_steer_writes
+    _send_held_steers = _client_turn_control._send_held_steers
+    _send_steering_request = _client_turn_control._send_steering_request
     _await_steering_answer = _client_turn_control._await_steering_answer
     _release_accepted_steers = _client_turn_control._release_accepted_steers
     _steer_via_request = _client_turn_control._steer_via_request
@@ -1509,6 +1521,27 @@ class AcpClient:
     # (turn request id, ``<user_message>``-wrapped text) for each steer accepted
     # into the running turn and not yet released by its terminal.
     _steers_accepted: list[tuple[int, str]]
+    # (turn request id, text) for each steer that arrived while a tool call of
+    # the running turn was open, oldest first, until it is sent.
+    _steers_held: list[tuple[int, str]]
+    # The task sending the held steers, or None: the read loop starts it when
+    # the turn's last open tool call ends.
+    _held_steer_task: asyncio.Task[None] | None = None
+    # The text of each held steer of the running or last turn whose write may
+    # have reached the adapter with no answer read, until the next turn starts.
+    _held_steers_unanswered: set[str]
+
+    @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """Held steer texts whose delivery remains unresolved.
+
+        A write in flight, a stalled write (``ambiguous_delivery``), an
+        unanswered request, or ``injected`` after the turn ended may run
+        without being reported consumed. The dashboard's teardown reads this
+        so it requeues such a steer as possibly delivered. Reset when the next
+        turn starts.
+        """
+        return frozenset(getattr(self, "_held_steers_unanswered", ()))
 
     # Monotonic stamp of the last steer handed to the backend, 0.0 when never
     # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's

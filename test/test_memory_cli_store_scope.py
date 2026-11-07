@@ -1,23 +1,10 @@
 """``memory export`` / ``memory import`` reaching a NAMED store, in both directions.
 
-Both verbs shared one open that was hardwired to the default store's path, so a
-named store's rows were unreachable from either end while ``backups``, ``restore``
-and ``carve`` already took ``--store``. The subject here is the three ways a
-store-scoped verb goes wrong:
-
-* **A dropped scope reads the WRONG store.** ``resolve_store_path`` answers the
-  DEFAULT store's file for a name it does not know, so a verb that skips the
-  ownership guard prints the operator's global memory under the heading they
-  typed -- and ``import`` would WRITE there. Every test that claims a scope works
-  therefore plants a row in the other store and asserts it did not move.
-* **A refusal that looks like an empty answer is worse than an error.** A named
-  store's markdown root is under the fenced ``memory_stores/`` subtree, and
-  ``_guarded_entry`` shapes that refusal exactly like a missing file. So
-  ``--include-markdown`` on a named store is refused rather than reported as an
-  empty tree, and the refusal is asserted to write no payload AND no file.
-* **The default store must not move.** An omitted ``--store`` resolves the same
-  path ``VectorMemoryStore()`` derives for itself, so the no-flag behaviour is
-  pinned alongside the new one rather than assumed.
+* ``resolve_store_path`` answers the DEFAULT store's file for an unknown name, so every
+  scope test plants a row in the other store and asserts it did not move.
+* ``_guarded_entry`` shapes a refused markdown read like an empty file, so
+  ``--include-markdown`` on a named store is refused and writes no payload and no file.
+* An omitted ``--store`` must still resolve the default store's path.
 
 Store fixtures follow ``test_memory_v2_facet_read.py``: declare the silos first,
 resolve second, close every connection at teardown.
@@ -76,12 +63,8 @@ def _declare_silos(*names: str) -> None:
 def stores():
     """Open vector stores, and let a test release them before touching the files.
 
-    Each holds a live SQLite connection. On Windows an open handle blocks both
-    ``unlink`` and ``rmtree``, so a test that DELETES a store's database has to
-    close it first -- on POSIX the delete succeeds with the handle open, so the
-    divergence shows up only on the Windows shards. ``close_all`` is what those
-    tests call; teardown calls it too, so a test that fails mid-way still does
-    not leave a handle blocking temp-dir cleanup.
+    On Windows an open SQLite handle blocks ``unlink`` and ``rmtree``, so a test that
+    deletes a store's database calls ``close_all`` first; teardown calls it too.
     """
     opened: list[VectorMemoryStore] = []
 
@@ -196,13 +179,8 @@ class TestExportReadsTheStoreItWasGiven:
 class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
     """Admission runs BEFORE resolution, and that ordering is the whole guard.
 
-    Both resolvers compose a path by shape and check nothing exists, while
-    ``VectorMemoryStore.init`` creates what is missing -- ``make_owner_only_dir``
-    makes the parents, then a fresh empty SQLite file. Resolving first therefore
-    turns a deleted store into an empty one, and ``export`` ships
-    ``{"semantic": [], ...}`` which reads as "this store holds nothing" rather
-    than as a loss. There is no recovery path from that, which is why the refusal
-    is asserted alongside the store NOT being recreated.
+    ``VectorMemoryStore.init`` creates a missing store, so resolving first would turn a
+    deleted store into an empty one that exports as "holds nothing" instead of a loss.
     """
 
     def test_export_refuses_a_declared_store_whose_directory_was_deleted(
@@ -260,12 +238,9 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
     ) -> None:
         """The directory surviving its database is what admission cannot see.
 
-        For a V1 named store ``require_memory_store`` routes through
-        ``_require_legacy_store_files``, which ``return``s on a missing ``memory.db``
-        -- absent evidence is not private-ownership evidence. So this state passes
-        admission, and ``init()`` would write a fresh empty database: the read would
-        both misreport a loss as an empty store and destroy the evidence it was a
-        loss. A read must not create.
+        ``_require_legacy_store_files`` returns on a missing ``memory.db``, so this state
+        passes admission and ``init()`` would write an empty database. A read must not
+        create.
         """
         db_path = resolve_store_path(_ACME)
         assert _semantic_keys(_ACME) == [_ACME_KEY]
@@ -308,14 +283,9 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
 class TestAFailedImportLeavesNoDatabaseBehind:
     """``import`` may create, so its INPUT must be settled before it does.
 
-    The read-refusal guard deliberately excludes ``import`` -- populating a freshly
-    declared store is the whole verb -- but ``store.init()`` creates ``memory.db``
-    the moment it runs. Validating the input afterwards meant a missing or malformed
-    file still left a fresh empty database on a store whose directory had survived
-    while its database had not, and that empty file made a later ``export --store``
-    answer with rows instead of the refusal. A failed import would have silently
-    erased the evidence of a real loss, so every rejected input is asserted here to
-    leave the destination exactly as absent as it was.
+    ``store.init()`` creates ``memory.db`` at once, and an empty file would make a later
+    ``export --store`` answer instead of refusing. Every rejected input must leave the
+    destination absent.
     """
 
     def _deleted_db_store(self) -> Path:
@@ -430,11 +400,8 @@ class TestAFailedImportLeavesNoDatabaseBehind:
     def test_the_checked_collections_are_the_ones_import_memory_iterates(self) -> None:
         """The correspondence, pinned at its source rather than trusted.
 
-        A collection ``_IMPORTED_COLLECTIONS`` misses is one whose bad type raises
-        AFTER the store was created -- exactly the hole the null case above was. So
-        the list is compared against the keys ``import_memory`` actually reads,
-        which is what makes a future third collection fail here instead of silently
-        going unchecked.
+        A collection missing from ``_IMPORTED_COLLECTIONS`` would raise only after the
+        store was created, so the list is compared with the keys ``import_memory`` reads.
         """
         import inspect
         import re
@@ -448,11 +415,8 @@ class TestAFailedImportLeavesNoDatabaseBehind:
 class TestAnUnresolvablePathIsRefusedRatherThanRedirected:
     """The `db_path is None` branch, which no other test reaches.
 
-    ``owned_store_path`` answers ``None`` when a name resolves to something that is
-    not that store's own file -- a symlink redirecting one store's directory at
-    another's, or a store undeclared between admission and resolution. Without the
-    branch the fall-through would open whatever path was composed, so the guard is
-    pinned by forcing the ``None`` rather than left to a race nobody can schedule.
+    ``owned_store_path`` answers ``None`` for a symlinked or just-undeclared store; the
+    ``None`` is forced here because the real race cannot be scheduled.
     """
 
     def test_export_refuses_when_the_path_is_not_the_stores_own(
@@ -478,13 +442,8 @@ class TestAnUnresolvablePathIsRefusedRatherThanRedirected:
 class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
     """``import_memory`` cannot carry a V2 row's attribution, so it must not try.
 
-    It rebuilds every row through ``set_semantic`` and ``write_episodic`` and passes
-    no ``facets=``, while a V2 export reads the CANONICAL relation rather than the
-    compatibility view precisely so the facets come out. A V2 destination would
-    therefore receive rows stripped of scope, surface, crew, session_key and
-    derived_from, with nothing to reconstruct them from -- attribution flattened by
-    an operation reporting success. Nothing that existed is lost by refusing: before
-    ``--store``, ``import`` could only target the default store.
+    It rebuilds rows through ``set_semantic`` and ``write_episodic`` with no ``facets=``,
+    so a V2 destination would get rows stripped of scope, surface, crew and session_key.
     """
 
     def test_a_v2_destination_is_refused_and_receives_nothing(
@@ -492,11 +451,8 @@ class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
     ) -> None:
         """A REAL V2 member store, not a name pattern, is the subject here.
 
-        Built through ``member_memory_helpers.write_member_home``, which lays down
-        the manifest, the ``memory_stores`` record and the owning agent binding that
-        ``require_memory_store`` validates -- so the store both opens as V2 and
-        passes admission, leaving the refusal below as the only thing under test. A
-        version-shaped fake would have skipped, and a skip scores as a pass.
+        ``member_memory_helpers.write_member_home`` makes it open as V2 and pass
+        admission, so the refusal below is the only thing under test.
         """
         from member_memory_helpers import forget_declared_stores, write_member_home
 
@@ -592,12 +548,8 @@ class TestTheMarkdownLayerIsRefusedRatherThanReportedEmpty:
     ) -> None:
         """A refusal must not wear the shape of an empty tree.
 
-        A named store's markdown root is under ``memory_stores/``, a keystone leaf
-        in ``security._CREW_SECRET_LEAVES``. ``markdown_snapshot`` reaches a
-        NON-private store through ``hooks.safe_read_file_bytes_nolink``, which
-        refuses that subtree and answers None, and ``_guarded_entry`` renders that
-        as ``content: ""`` -- identical to a file that is genuinely empty. An
-        operator moving a store would read it as "there was nothing to carry".
+        ``memory_stores/`` is in ``security._CREW_SECRET_LEAVES``, so the read is refused,
+        and ``_guarded_entry`` renders that as ``content: ""``, same as an empty file.
         """
         from kiro_crew.memory_stores import memory_store_dir_for
 
@@ -761,12 +713,9 @@ class TestCarveTakesTheSameAdmission:
 class TestAnImportThatWritesNothingLeavesNoDatabase:
     """The invariant, which is why these are shape-independent.
 
-    The set of payloads that reach ``import_memory`` and write nothing is open-ended:
-    ``[null]``, ``[{}]`` and ``[{"nokey": 1}]`` are all list-shaped and are all
-    skipped by that method's per-entry ``except Exception``. So the property asserted
-    here is the OUTCOME -- an import that creates a named store's database and then
-    writes nothing must leave the store as it found it, because a later read has to
-    keep reporting the loss.
+    Payloads that write nothing are open-ended (the per-entry ``except Exception`` skips
+    them), so the outcome is asserted: an import that writes nothing leaves the store
+    as it found it.
     """
 
     @pytest.mark.parametrize(
@@ -851,11 +800,8 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
     ) -> None:
         """`safe_read_file` re-raises OSError, so the refusal has to catch it.
 
-        The refusal is INJECTED rather than provoked with ``chmod(0o000)``: on Windows
-        ``os.chmod`` only toggles the read-only flag, so the read succeeds there and a
-        permission-based version of this test asserts nothing on that platform. What
-        is under test is the ``except (OSError, ValueError)`` branch, and the contract
-        is the same whichever errno reaches it.
+        The error is injected, not made with ``chmod(0o000)``: on Windows ``os.chmod``
+        only toggles the read-only flag, so the read would succeed there.
         """
         db_path = resolve_store_path(_ACME)
         stores.close_all()
@@ -879,11 +825,8 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
 class TestCreationIsExclusivelyOwned:
     """The removal and the absence check have to be one hold, not two observations.
 
-    Two imports can otherwise each see a named store's database absent, one write
-    rows, and the other's empty-import cleanup remove the populated file while
-    printing success. The lock is what makes that interleaving impossible, and it is
-    invisible to the other tests here -- they pass with it and without it -- so it
-    needs its own assertion.
+    Otherwise one import writes rows and another's empty-import cleanup removes the
+    populated file. The other tests pass without the lock, so it needs its own check.
     """
 
     def _spy(self, monkeypatch) -> list[str]:
@@ -1180,11 +1123,8 @@ _ALICE_CREW = "finance"
 def member_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stores):
     """A REAL V2 member store holding facet-stamped rows, beside a populated default store.
 
-    Built through ``member_memory_helpers.write_member_home``, like the V2 import
-    refusal above, so the store passes admission and opens as V2. The seed handle is
-    closed before the verb runs: one store per file is an invariant, and the verb
-    opens its own. The default store's row is the bystander that a read answered
-    from the wrong file would show.
+    The seed handle is closed before the verb runs (one store per file). The default
+    store's row is the bystander a read from the wrong file would show.
     """
     from member_memory_helpers import forget_declared_stores, write_member_home
 

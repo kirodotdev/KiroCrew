@@ -48,12 +48,13 @@ from kiro_crew.dashboard.state import (
     MAX_SLOTS_PER_CREATOR,
     SlotOrigin,
     _safe_folder_tree,
+    append_and_surface,
     load_window_off_loop,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 # The module's original logger name, which log filters and caplog assertions key on.
 logger = logging.getLogger("kiro_crew.dashboard.session_control")
@@ -725,6 +726,48 @@ async def _recorded_sid_of(state: "DashboardState", slot_key: str) -> str:
     return ""
 
 
+async def _note_in_transcript(state: "DashboardState", slot: "_ChatSlot", text: str) -> None:
+    """One display-only row in *slot*'s transcript saying how it moved. Best-effort.
+
+    A ``notice`` row is never part of a prompt, so *text* states what happened for a
+    person reading the transcript rather than telling the agent anything. Skipped when
+    the slot closed, or another session took its key, before the row could land.
+
+    While *slot* runs a turn the row waits for that turn to end: a row under the turn's
+    open tool or chunk rows would stop the turn's backward scans (the "mark tools done"
+    walk and ``_flush_segment``'s cleanup) before they reach those rows.
+    """
+    try:
+        await load_window_off_loop(slot)
+        if state.get_slot(slot.key) is not slot:
+            return
+        turn = slot.task
+        if turn is not None and not turn.done():
+            turn.add_done_callback(lambda _turn: _note_later(state, slot, text))
+            return
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
+    except Exception as exc:  # the row must never undo a committed move
+        logger.warning("session_control: transcript note for %s not written: %s", slot.key, exc)
+
+
+def _note_later(state: "DashboardState", slot: "_ChatSlot", text: str) -> None:
+    task = asyncio.ensure_future(_note_in_transcript(state, slot, text))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _note_once_landed(
+    state: "DashboardState", slot: "_ChatSlot", landed: "asyncio.Future[bool]", text: str
+) -> None:
+    """Write the row after all when an append the verb stopped waiting for lands later."""
+
+    def _start(future: "asyncio.Future[bool]") -> None:
+        if not future.cancelled() and future.result():
+            _note_later(state, slot, text)
+
+    landed.add_done_callback(_start)
+
+
 async def adopt_target(
     state: "DashboardState",
     *,
@@ -920,9 +963,18 @@ async def adopt_target(
                 previous_parent_sid=previous_parent_sid,
                 on_settled=settled,
             )
+            note = f"This session was adopted: it hangs under {caller_key} now"
+            if previous_parent not in ("", caller_key):
+                note += f", in place of {previous_parent}"
+            note += "."
             # Inside the lock, so the next verb through it reads a tree that already carries
             # this decision -- the append's completion is also what advances the projection.
-            await _tree_append_landed(landed, operation="adoption", target=slot.key)
+            try:
+                await _tree_append_landed(landed, operation="adoption", target=slot.key)
+            except SessionControlError as exc:
+                if exc.code == "tree_write_pending":
+                    _note_once_landed(state, slot, landed, note)
+                raise
     _audit(
         caller_session_key=caller_session_key,
         operation="adopt",
@@ -930,6 +982,7 @@ async def adopt_target(
         outcome="allowed",
         detail={"previous_parent": previous_parent or "none"},
     )
+    await _note_in_transcript(state, slot, note)
     # Slot keys only, and deliberately no title. A title is conversation content -- it
     # is generated from the session's own messages -- so returning one to an LLM caller
     # is an output boundary that would owe a redaction pass, and nothing here needs it:
@@ -1082,8 +1135,18 @@ async def release_target(
                 previous_parent_sid=previous_parent_sid,
                 on_settled=settled,
             )
+            note = f"This session was released: it no longer hangs under {previous_parent}."
+            if releasing_self:
+                # Mid-turn on this very call, and its own tool row already says so; a row
+                # under that open tool row would stop the turn's backward scans.
+                note = ""
             # Inside the lock, for the reason the adoption awaits inside it.
-            await _tree_append_landed(landed, operation="release", target=slot.key)
+            try:
+                await _tree_append_landed(landed, operation="release", target=slot.key)
+            except SessionControlError as exc:
+                if note and exc.code == "tree_write_pending":
+                    _note_once_landed(state, slot, landed, note)
+                raise
     _audit(
         caller_session_key=caller_session_key,
         operation="release",
@@ -1091,6 +1154,8 @@ async def release_target(
         outcome="allowed",
         detail={"previous_parent": previous_parent, "self": releasing_self},
     )
+    if note:
+        await _note_in_transcript(state, slot, note)
     # No title, for the reason the adoption returns none.
     return {
         "target": slot.key,

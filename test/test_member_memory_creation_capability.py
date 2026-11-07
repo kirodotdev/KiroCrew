@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -107,6 +108,49 @@ async def test_private_creation_refuses_degraded_config_but_allows_absent_memory
             assert body["code"] == "member_memory_unavailable"
             assert "configuration is unreadable" in body["error"]
             assert await asyncio.to_thread(_snapshot) == before
+
+
+@pytest.mark.asyncio
+async def test_creation_reports_a_database_error_as_member_memory_unavailable(monkeypatch):
+    import sqlite3
+
+    from kiro_crew import vector_memory
+
+    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
+
+    def refuse(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(vector_memory, "create_member_database", refuse)
+    async with TestClient(TestServer(_app(monkeypatch))) as client:
+        response = await client.post(
+            "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
+        )
+        assert response.status == 409, await response.text()
+        body = await response.json()
+    assert body["code"] == "member_memory_unavailable"
+    assert body["error"] == "disk I/O error"
+    assert "new-member" not in (await asyncio.to_thread(KiroCrewConfig.load)).agents
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="ownership by uid is POSIX only")
+async def test_creation_refuses_a_data_home_another_account_owns(monkeypatch):
+    from kiro_crew import data_home_owner
+
+    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
+    monkeypatch.setattr(data_home_owner, "_usable", lambda path, uid: path.name != "config.json")
+    before = await asyncio.to_thread(_snapshot)
+    async with TestClient(TestServer(_app(monkeypatch))) as client:
+        response = await client.post(
+            "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
+        )
+        assert response.status == 409, await response.text()
+        body = await response.json()
+    assert body["code"] == "data_home_not_owned"
+    assert body["fix_command"].startswith("sudo find ")
+    assert "config.json" in body["error"]
+    assert await asyncio.to_thread(_snapshot) == before
 
 
 @pytest.mark.asyncio

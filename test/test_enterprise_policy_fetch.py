@@ -45,13 +45,15 @@ rules:
     effect: deny
     exclude: ["slack"]
   - id: other-client
-    capability: shell
+    capability: power
     effect: deny
 """
 
 
-def _envelope(policy: str = _POLICY, *, status: str = "ENABLED", digest: str = "") -> bytes:
-    hexdigest = epf.body_digest(policy)
+def _envelope(
+    policy: str = _POLICY, *, status: str = "ENABLED", digest: str = "", configuration=()
+) -> bytes:
+    hexdigest = epf.body_digest(policy, tuple(configuration))
     return json.dumps(
         {
             "enterpriseManagementStatus": status,
@@ -60,7 +62,7 @@ def _envelope(policy: str = _POLICY, *, status: str = "ENABLED", digest: str = "
                 "versionId": "v1:" + hexdigest,
                 "generatedAt": "2026-10-26T00:00:00Z",
             },
-            "body": {"policy": policy, "configuration": []},
+            "body": {"policy": policy, "configuration": list(configuration)},
         }
     ).encode("utf-8")
 
@@ -213,12 +215,12 @@ class TestSuccess:
         cps.reply = json.dumps(
             {
                 "enterpriseManagementStatus": "UNCHANGED",
-                "manifest": {"versionId": first.etag.partition(":")[2]},
+                "manifest": {"versionId": epf.cached_version(first.etag)},
             }
         ).encode()
         second = epf.fetch(_request(first.etag))
         assert second.not_modified and second.etag == first.etag
-        assert cps.payload()["manifestVersionId"] == first.etag.partition(":")[2]
+        assert cps.payload()["manifestVersionId"] == epf.cached_version(first.etag)
 
     def test_another_profiles_cached_version_is_not_sent(self, enterprise, vault, cps, monkeypatch):
         vault()
@@ -234,6 +236,23 @@ class TestSuccess:
         doc = json.loads(epf.fetch(_request()).body)
         assert "channels" not in doc
         assert governance.parse_policy(doc) is not None
+
+    def test_disabled_keeps_the_low_risk_capabilities_and_dev_mode_off(
+        self, enterprise, vault, cps
+    ):
+        """RFC D3: open with the policy silent; dev mode stays off."""
+        vault()
+        cps.reply = json.dumps({"enterpriseManagementStatus": "DISABLED"}).encode()
+        ceiling = governance.parse_policy(json.loads(epf.fetch(_request()).body))
+        for scope in (
+            "capabilities.memory_writes",
+            "capabilities.theme_persona",
+            "capabilities.milestones",
+            "capabilities.decisions_local",
+        ):
+            assert governance.resolve(ceiling, None, scope, "").permitted, scope
+        assert not governance.resolve(ceiling, None, "capabilities.app_dev_mode", "").permitted
+        assert not governance.resolve(ceiling, None, "capabilities.decisions", "").permitted
 
 
 _DISABLED = json.dumps({"enterpriseManagementStatus": "DISABLED"}).encode()
@@ -604,7 +623,7 @@ class TestSwitchDuringASuccessfulFetch:
     def test_a_refresh_refuses_an_unchanged_reply(self, enterprise, vault, cps, monkeypatch):
         vault()
         governance.load_security_policy()
-        version = pd.read_cache().etag.partition(":")[2]
+        version = epf.cached_version(pd.read_cache().etag)
         unchanged = json.dumps(
             {"enterpriseManagementStatus": "UNCHANGED", "manifest": {"versionId": version}}
         ).encode()
@@ -640,6 +659,44 @@ class TestSwitchDuringASuccessfulFetch:
         assert src._source_identity(pd.ENTERPRISE_POLICY_URL, b"{}") != src._source_identity(
             pd.ENTERPRISE_POLICY_URL
         )
+
+    def test_a_copy_another_translation_table_wrote_matches_no_cache(
+        self, enterprise, vault, cps, monkeypatch
+    ):
+        """An upgrade that maps a new rule refetches instead of serving the old copy."""
+        from kiro_crew.platform import enterprise_policy_translate as t
+        from kiro_crew.platform import policy_distribution_source as src
+
+        vault()
+        governance.load_security_policy()
+        body = pd.read_cache().body
+        current = src._source_identity(pd.ENTERPRISE_POLICY_URL, body)
+        assert current == src._source_identity(pd.ENTERPRISE_POLICY_URL)
+        monkeypatch.setattr(t, "TRANSLATION_TAG", "older-table")
+        assert src._source_identity(pd.ENTERPRISE_POLICY_URL) != current
+
+    def test_a_cache_from_an_older_table_is_refetched(self, enterprise, vault, cps, monkeypatch):
+        """End to end: the old copy dropped a memory deny; the boot fetches and applies it."""
+        vault()
+        policy = 'version: "0.1"\nrules:\n  - {capability: memory_writes, effect: deny}\n'
+        cps.reply = _envelope(policy)
+        governance.load_security_policy()
+        cached = pd.read_cache()
+        # What a table without the ``memory_writes`` row wrote and recorded.
+        doc = json.loads(cached.body)
+        doc["capabilities"].pop("memory_writes")
+        scope = epf.document_scope(cached.body)
+        pd.write_cache(
+            json.dumps(doc).encode("utf-8"),
+            source=f"{pd.ENTERPRISE_POLICY_URL}?profile={scope}",
+            etag=cached.etag,
+        )
+        _restart(monkeypatch)
+        before = len(cps.requests)
+        governance.load_security_policy()
+        assert len(cps.requests) == before + 1
+        ceiling = governance.parse_policy(json.loads(pd.read_cache().body))
+        assert not governance.resolve(ceiling, None, "capabilities.memory_writes", "").permitted
 
     def test_oss_sources_are_unchanged(self):
         from kiro_crew.platform import policy_distribution_source as src
@@ -679,21 +736,27 @@ class TestTranslation:
         from kiro_crew.platform import enterprise_policy_translate as t
 
         rules = [
-            {"capability": "messaging_channel", "effect": "deny", "exclude": ["t*"]},
-            {"capability": "messaging_channel", "effect": "deny", "match": ["s*"]},
+            {"capability": "messaging_channel", "effect": "deny", "exclude": ["s*"]},
+            {"capability": "messaging_channel", "effect": "deny", "match": ["sl*"]},
         ]
         with pytest.raises(t.Unrepresentable):
             t.ruleset(rules, "messaging_channel")
 
-    def test_a_lone_deny_match_leaves_the_capability_unnamed(self):
-        """A deny-list would replace the enterprise baseline and open every other channel."""
+    def test_a_denied_glob_that_cannot_meet_an_allowed_glob_is_dropped(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        rules = [
+            {"capability": "messaging_channel", "effect": "deny", "exclude": ["t*"]},
+            {"capability": "messaging_channel", "effect": "deny", "match": ["s*"]},
+        ]
+        assert t.ruleset(rules, "messaging_channel") == {"mode": "allow", "allow": ["t*"]}
+
+    def test_a_lone_deny_match_grants_nothing(self):
+        """Named by a rule, nothing granted: no channel is allowed, not every other one."""
         from kiro_crew.platform import enterprise_policy_translate as t
 
         rules = [{"capability": "messaging_channel", "effect": "deny", "match": ["discord"]}]
-        assert t.ruleset(rules, "messaging_channel") is None
-        assert "channels" not in t.translate(
-            "rules:\n  - {capability: messaging_channel, effect: deny, match: [discord]}\n"
-        )
+        assert t.ruleset(rules, "messaging_channel") == {"mode": "allow", "allow": []}
 
     def test_two_different_globs_are_refused(self):
         from kiro_crew.platform import enterprise_policy_translate as t
@@ -706,7 +769,8 @@ class TestTranslation:
             t.ruleset(rules, "messaging_channel")
 
 
-_FLOOR = ["normal", "trust", "trust_reads"]
+# ``normal`` is the only mode a rule cannot remove (RFC enterprise edition, D9).
+_FLOOR = ["normal"]
 
 
 def _translate(*rules: str) -> dict:
@@ -717,15 +781,20 @@ def _translate(*rules: str) -> dict:
     return t.translate("rules:\n" + "".join(f"  - {r}\n" for r in rules))
 
 
-class TestSwitchRows:
-    """The on/off policy capabilities ``messaging`` and ``cron`` land as ``{"enabled": bool}``."""
+# The on/off policy capabilities. ``memory_writes`` and ``theme_persona`` are open
+# controls (RFC D3): a remote deny must still turn them off.
+_SWITCHES = ["messaging", "cron", "memory_writes", "theme_persona"]
 
-    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+
+class TestSwitchRows:
+    """The on/off policy capabilities land as ``{"enabled": bool}``."""
+
+    @pytest.mark.parametrize("capability", _SWITCHES)
     def test_allow_turns_it_on(self, capability):
         doc = _translate(f"{{capability: {capability}, effect: allow}}")
         assert doc["capabilities"] == {capability: {"enabled": True}}
 
-    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    @pytest.mark.parametrize("capability", _SWITCHES)
     def test_deny_all_turns_it_off(self, capability):
         doc = _translate(
             f"{{capability: {capability}, effect: allow}}",
@@ -733,11 +802,11 @@ class TestSwitchRows:
         )
         assert doc["capabilities"] == {capability: {"enabled": False}}
 
-    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    @pytest.mark.parametrize("capability", _SWITCHES)
     def test_unnamed_keeps_the_baseline(self, capability):
         assert "capabilities" not in _translate("{capability: shell, effect: allow}")
 
-    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    @pytest.mark.parametrize("capability", _SWITCHES)
     def test_ask_reads_as_deny(self, capability):
         doc = _translate(
             f"{{capability: {capability}, effect: allow}}",
@@ -747,7 +816,7 @@ class TestSwitchRows:
 
     @pytest.mark.parametrize("effect", ["allow", "deny"])
     @pytest.mark.parametrize("extra", ["exclude: [x]", "match: [x]", "when: 'client == \"crew\"'"])
-    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    @pytest.mark.parametrize("capability", _SWITCHES)
     def test_an_unknown_shape_turns_it_off(self, capability, extra, effect):
         """The binary grant shape is unconfirmed: a shape not known here turns it off.
 
@@ -759,6 +828,14 @@ class TestSwitchRows:
             f"{{capability: {capability}, effect: {effect}, {extra}}}",
         )
         assert doc["capabilities"] == {capability: {"enabled": False}}
+
+    @pytest.mark.parametrize("capability", ["memory_writes", "theme_persona"])
+    def test_a_remote_deny_closes_an_open_control_in_an_enterprise_build(
+        self, enterprise, capability
+    ):
+        doc = _translate(f"{{capability: {capability}, effect: deny}}")
+        ceiling = governance.parse_policy(doc)
+        assert not governance.resolve(ceiling, None, f"capabilities.{capability}", "").permitted
 
     def test_an_unknown_cron_shape_denies_in_an_enterprise_build(self, enterprise):
         """End to end: an unconditional cron deny beside a conditional allow stays a deny."""
@@ -796,6 +873,60 @@ class TestPermissionModeRow:
     def test_ask_reads_as_deny(self):
         doc = _translate("{capability: permission_mode, effect: ask}")
         assert doc["approval_modes"] == {"mode": "allow", "allow": _FLOOR}
+
+    # The owner's rule as the control plane sends it: the grant, and the ``deny
+    # exclude`` it sends beside every grant (see the translator's module docstring).
+    _OWNER_RULE = (
+        "{id: permission-mode-allow-normal, capability: permission_mode, effect: allow, "
+        'match: ["normal", "trust_reads"]}',
+        '{capability: permission_mode, effect: deny, exclude: ["normal", "trust_reads"]}',
+    )
+
+    def test_an_allow_of_normal_and_trust_reads_leaves_trust_out(self):
+        doc = _translate(*self._OWNER_RULE)
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal", "trust_reads"]}
+
+    def test_the_owner_rule_resolves_trust_denied(self, enterprise):
+        ceiling = governance.parse_policy(_translate(*self._OWNER_RULE))
+        allowed = {
+            m: governance.resolve(ceiling, None, "approval_modes", m).permitted
+            for m in ("normal", "trust_reads", "trust", "yolo")
+        }
+        assert allowed == {"normal": True, "trust_reads": True, "trust": False, "yolo": False}
+
+    def test_a_rule_allowing_all_three_keeps_them(self, enterprise):
+        ceiling = governance.parse_policy(
+            _translate(
+                "{capability: permission_mode, effect: allow, match: [normal, trust_reads, trust]}",
+                "{capability: permission_mode, effect: deny, exclude: [normal, trust_reads, trust]}",
+            )
+        )
+        for m in ("normal", "trust_reads", "trust"):
+            assert governance.resolve(ceiling, None, "approval_modes", m).permitted
+
+    def test_a_deny_match_alone_takes_the_mode_out_of_the_baseline(self, enterprise):
+        doc = _translate("{capability: permission_mode, effect: deny, match: [trust]}")
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal", "trust_reads"]}
+        ceiling = governance.parse_policy(doc)
+        assert not governance.resolve(ceiling, None, "approval_modes", "trust").permitted
+        assert not governance.resolve(ceiling, None, "approval_modes", "yolo").permitted
+
+    def test_a_deny_match_of_normal_alone_keeps_the_floor(self):
+        doc = _translate("{capability: permission_mode, effect: deny, match: [normal, trust]}")
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal", "trust_reads"]}
+
+    def test_a_conditional_allow_does_not_bring_the_baseline_back(self):
+        """A dropped (``when``) grant still names the capability, so it only narrows."""
+        doc = _translate(
+            "{capability: permission_mode, effect: allow, match: [normal], when: {a: b}}"
+        )
+        assert doc["approval_modes"] == {"mode": "allow", "allow": ["normal"]}
+
+    def test_no_rule_keeps_all_three(self, enterprise):
+        ceiling = governance.parse_policy(_translate())
+        for m in ("normal", "trust_reads", "trust"):
+            assert governance.resolve(ceiling, None, "approval_modes", m).permitted
+        assert not governance.resolve(ceiling, None, "approval_modes", "yolo").permitted
 
 
 class TestTranslatedRowsResolve:
@@ -838,6 +969,191 @@ class TestTranslatedRowsResolve:
         assert governance.resolve(ceiling, None, "approval_modes", "yolo").permitted is yolo
         for mode in _FLOOR:
             assert governance.resolve(ceiling, None, "approval_modes", mode).permitted
+
+
+def _setting(value: object, *, raw: bool = False, key: str = "crew_sandbox_min_level") -> dict:
+    """One ``body.configuration`` entry as the control plane sends it: the value as JSON."""
+    return {
+        "key": key,
+        "value": value if raw else json.dumps(value),
+        "source": "profile#" + _ARN,
+        "composeBehavior": "OVERRIDE",
+    }
+
+
+class TestSandboxMinLevel:
+    """``crew_sandbox_min_level`` from ``body.configuration`` (RFC D7): tighten-only."""
+
+    @pytest.mark.parametrize(
+        "value, floor",
+        [("off", None), ("standard", None), ("cc", "cc"), ("strict", "strict")],
+    )
+    def test_each_level(self, value, floor, caplog):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [_setting(value)])
+        assert doc.get("sandbox") == (None if floor is None else {"min_level": floor})
+        assert "sets no sandbox floor" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            _setting("bogus"),
+            _setting("STRICT"),
+            _setting(3),
+            _setting(None),
+            _setting(["cc"]),
+            _setting("cc", raw=True),  # not JSON
+            _setting("", raw=True),
+        ],
+    )
+    def test_an_unknown_value_sets_no_floor_and_warns(self, entry, caplog):
+        """Not a level the organisation picked, so Crew adds no floor of its own."""
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [entry])
+        assert "sandbox" not in doc
+        assert "crew_sandbox_min_level" in caplog.text and "sets no sandbox floor" in caplog.text
+
+    def test_an_unknown_value_beside_a_known_one_keeps_the_known_one(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [_setting("bogus"), _setting("cc")])
+        assert doc["sandbox"] == {"min_level": "cc"}
+
+    def test_absent_keeps_crews_default(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        assert "sandbox" not in t.translate("rules: []\n")
+        assert "sandbox" not in t.translate("rules: []\n", [_setting("strict", key="other")])
+
+    def test_several_entries_take_the_strictest(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        for entries in (
+            [_setting("off"), _setting("strict")],
+            [_setting("strict"), _setting("cc")],
+        ):
+            assert t.translate("rules: []\n", entries)["sandbox"] == {"min_level": "strict"}
+
+    @pytest.mark.parametrize("local", ["off", "auto", "standard", "cc", "strict"])
+    @pytest.mark.parametrize("policy", ["off", "standard", "cc", "strict"])
+    def test_the_stricter_of_local_and_policy_wins(self, enterprise, local, policy):
+        """Policy only raises; a stricter local level is kept; nothing goes below standard."""
+        from kiro_crew import sandbox_tiers
+        from kiro_crew.platform import enterprise_policy_translate as t
+        from kiro_crew.platform.governance import _ORDINAL_SCALES
+
+        ceiling = governance.parse_policy(t.translate("rules: []\n", [_setting(policy)]))
+        governed = governance.resolve_ordinal(ceiling, None, "sandbox.min_level")
+        floor = governed.value if governed is not None else None
+        level = sandbox_tiers._clamp_sandbox_mode_to_floor(local, floor)
+        level = sandbox_tiers._SANDBOX_MODE_ALIASES.get(level, level)
+        scale = _ORDINAL_SCALES["sandbox"]
+        # An enterprise build already reads a local ``off`` as Crew's default.
+        local_level = "standard" if local in ("off", "auto") else local
+        assert level == max(local_level, policy, key=scale.index)
+
+    def test_a_stricter_local_profile_wins_over_the_policy(self, enterprise):
+        from kiro_crew.platform import enterprise_policy_translate as t
+        from kiro_crew.platform.governance import OrdinalControl
+
+        ceiling = governance.parse_policy(t.translate("rules: []\n", [_setting("cc")]))
+
+        class _Profile:
+            def get(self, scope):
+                return OrdinalControl("sandbox", "strict") if scope == "sandbox.min_level" else None
+
+        assert governance.resolve_ordinal(ceiling, _Profile(), "sandbox.min_level").value == (
+            "strict"
+        )
+
+    def test_boot_installs_the_floor_and_the_cache_keeps_it(self, enterprise, vault, cps):
+        vault()
+        cps.reply = _envelope(configuration=[_setting("cc")])
+        ceiling = governance.load_security_policy()
+        assert governance.resolve_ordinal(ceiling, None, "sandbox.min_level").value == "cc"
+        cached = pd.read_cache()
+        assert json.loads(cached.body)["sandbox"] == {"min_level": "cc"}
+        cps.reply = json.dumps(
+            {
+                "enterpriseManagementStatus": "UNCHANGED",
+                "manifest": {"versionId": epf.cached_version(cached.etag)},
+            }
+        ).encode()
+        assert epf.fetch(_request(cached.etag)).not_modified
+
+    def test_an_older_builds_cache_is_not_kept_on_upgrade(self, enterprise, vault, cps):
+        """A cache from a build that ignored the settings has no floor. The upgraded
+        build sends no version, so the service answers in full and the floor applies."""
+        vault()
+        cps.reply = _envelope(configuration=[_setting("strict")])
+        fresh = epf.fetch(_request())
+        scope = fresh.etag.partition(":")[0]
+        old_etag = f"{scope}:{epf.cached_version(fresh.etag)}"  # the pre-revision shape
+        again = epf.fetch(_request(old_etag))
+        assert "manifestVersionId" not in cps.payload()
+        assert not again.not_modified
+        assert json.loads(again.body)["sandbox"] == {"min_level": "strict"}
+        epf.fetch(_request(fresh.etag))
+        assert cps.payload()["manifestVersionId"] == epf.cached_version(fresh.etag)
+
+    def test_the_hash_covers_the_setting(self, enterprise, vault, cps, capsys):
+        vault()
+        envelope = json.loads(_envelope(configuration=[_setting("strict")]))
+        envelope["body"]["configuration"][0]["value"] = json.dumps("off")
+        cps.reply = json.dumps(envelope).encode()
+        assert "does not match its own sha256 hash" in _boot_exit_message(capsys)
+
+    def test_a_reply_with_no_hash_still_applies_the_setting(self, enterprise, vault, cps):
+        vault()
+        cps.reply = json.dumps(
+            {
+                "enterpriseManagementStatus": "ENABLED",
+                "body": {"policy": _POLICY, "configuration": [_setting("strict")]},
+            }
+        ).encode()
+        assert json.loads(epf.fetch(_request()).body)["sandbox"] == {"min_level": "strict"}
+
+    @pytest.mark.parametrize(
+        "configuration",
+        [
+            [{"key": "crew_sandbox_min_level"}],
+            [{"key": "other", "value": 3}, "not an object"],
+            {"not": "a list"},
+            [{"key": "crew_sandbox_min_level", "value": 7}],
+        ],
+    )
+    def test_a_badly_shaped_entry_with_no_hash_sets_no_floor(
+        self, enterprise, vault, cps, configuration
+    ):
+        """As on main: with no hash, entry shapes are not checked, so an entry Crew
+        does not read never refuses a reply, and a bad one for the setting sets no floor."""
+        vault()
+        cps.reply = json.dumps(
+            {
+                "enterpriseManagementStatus": "ENABLED",
+                "body": {"policy": _POLICY, "configuration": configuration},
+            }
+        ).encode()
+        doc = json.loads(epf.fetch(_request()).body)
+        assert "sandbox" not in doc
+        assert doc["channels"]["members"]["allow"] == ["slack"]
+
+    def test_a_badly_shaped_entry_with_a_hash_still_refuses_the_reply(
+        self, enterprise, vault, cps, capsys
+    ):
+        vault()
+        envelope = json.loads(_envelope())
+        envelope["body"]["configuration"] = [{"key": "crew_sandbox_min_level"}]
+        cps.reply = json.dumps(envelope).encode()
+        assert "configuration entries are malformed" in _boot_exit_message(capsys)
+
+    def test_oss_ignores_the_setting(self, vault, cps):
+        vault()
+        cps.reply = _envelope(configuration=[_setting("strict")])
+        assert governance.load_security_policy() is None
+        assert cps.requests == []
 
 
 class TestSignInCommands:

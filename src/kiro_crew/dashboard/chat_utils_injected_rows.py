@@ -231,6 +231,16 @@ SEED_DECLINED_NOTICE_KIND = "seed_declined"
 #: entitlement.
 MODEL_UNENTITLED_KIND = "model_unentitled"
 
+#: Row-level kind for the terminal `error` row that ends a spent retry ladder
+#: on a model the backend refused for capacity or a region rollout ("Model 'X'
+#: is unavailable on the backend right now"). The ladder already re-sent the
+#: turn to that model and the ``agent.fallback_model`` chain found nothing that
+#: served it, so the frontend offers the model picker instead of Resume, and
+#: ``is_turn_interrupted`` reads the row as the turn's settled ending: a Resume
+#: would send the same turn to the same refused model, and each failed new chat
+#: would otherwise sit in the sidebar as an interrupted session.
+MODEL_UNAVAILABLE_KIND = "model_unavailable"
+
 #: Row-level kind for the terminal `error` row an ``AcpAuthRequired`` turn
 #: produces (the agent process reported it is not signed in). Like
 #: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
@@ -466,13 +476,13 @@ STEER_POSSIBLY_DELIVERED_NOTE = (
 )
 
 
-#: Queue-entry meta key: the session's own human sent this message asking it to
-#: act NOW (the composer's Steer), and it reached the queue only because the
-#: running turn could not take it -- the steer was unavailable, or the turn ended
-#: before consuming it. The sub-agent hold releases such an entry like a system
-#: injection: the sender already chose not to wait for the wave, and parking it
-#: behind the children would turn that choice into a Queue they never picked.
-STEER_INTENT_META = "steer_intent"
+#: Queue-entry meta key: the session's own human typed this into the composer
+#: while the main turn was running -- queued by choice, by Jev's ``auto``
+#: decision, or as a steer the turn could not take. The sub-agent hold releases
+#: such an entry like a system injection at that turn's end: Queue means "after
+#: this turn", and background sub-agents are not the turn, so parking the
+#: message behind them would leave the person unable to talk to their session.
+COMPOSER_SEND_META = "composer_send"
 
 #: Queue-entry meta key: this entry is an AUTOMATION steer (a work-ledger wake)
 #: that the running turn ended before taking. Its value is the row's
@@ -486,13 +496,13 @@ def releases_past_subagent_hold(item: dict) -> bool:
     """Whether the sub-agent hold lets *item* drain while children still run.
 
     System injections keep flowing (see :func:`is_system_injection_item`), and so
-    does a human's steer that degraded into a queue entry
-    (:data:`STEER_INTENT_META`). Every other user message waits for the wave.
+    does the session's own human's composer send (:data:`COMPOSER_SEND_META`).
+    A peer's, channel's or app's message waits for the wave.
     """
     if is_system_injection_item(item):
         return True
     meta = item.get("meta")
-    return isinstance(meta, dict) and meta.get(STEER_INTENT_META) is True
+    return isinstance(meta, dict) and meta.get(COMPOSER_SEND_META) is True
 
 
 def carries_attachments(item: dict) -> bool:
@@ -605,14 +615,14 @@ def _dequeue_next_system_message(slot, *, system_only: bool = False) -> tuple:
     sub-agents run for a slot, a tangential user message is held (not drained)
     so it does not start a main turn mid-run, while system injections that must
     keep flowing (sub-agent completions, cron notifications) are still drained,
-    and so is a steer that fell back to the queue
+    and so is the session's own human's composer send
     (:func:`releases_past_subagent_hold`). Returns ``(content, [item])`` for the
     drained item, or ``(None, [])`` when only held (user) messages remain queued.
 
     ``system_only`` narrows that to :func:`is_system_injection_item`, for the
-    conversation-discard hold. The steer exemption is a choice about not waiting
-    for children; it says nothing about WHICH conversation answers, so a steer
-    that degraded into a queue entry must not drain into a conversation the
+    conversation-discard hold. The composer-send exemption is a choice about not
+    waiting for children; it says nothing about WHICH conversation answers, so a
+    composer send waiting in the queue must not drain into a conversation the
     person asked to drop. The successor's own admission consume does not allow
     discards, so nothing downstream would catch it.
 
@@ -620,6 +630,7 @@ def _dequeue_next_system_message(slot, *, system_only: bool = False) -> tuple:
     this path runs no containment sweep, and such a card waits for the user.
     """
     # Local import: slot_queue_repository reaches this module at call time.
+    from kiro_crew.dashboard.queue_edit_hold import edit_held
     from kiro_crew.dashboard.slot_queue_repository import (
         RESTORED_QUEUE_KEY,
         RESTORED_SEND_CHOSEN_KEY,
@@ -628,6 +639,10 @@ def _dequeue_next_system_message(slot, *, system_only: bool = False) -> tuple:
     release = is_system_injection_item if system_only else releases_past_subagent_hold
     for i, item in enumerate(slot._queue):
         if item.get(RESTORED_QUEUE_KEY) and not item.get(RESTORED_SEND_CHOSEN_KEY):
+            continue
+        # A steer that fell back to the queue passes the user hold, but not
+        # while the person has its card's editor open.
+        if edit_held(item):
             continue
         if release(item):
             popped = slot.queue_pop(i)

@@ -30,6 +30,7 @@ import { SecretsPanel } from './settings/SecretsPanel'
 import { ConnectionsPanel } from './settings/ConnectionsPanel'
 import SettingsSearch from './settings/SettingsSearch'
 import { Btn, ContentSkeleton } from '../components/ui'
+import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
 
 /**
@@ -59,6 +60,7 @@ import { SettingsCard } from '../components/settings'
 
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { useConfigPendingCount } from './settings/configPendingQuery'
 import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
@@ -81,7 +83,8 @@ function buildTabs() {
   const GROUP_PREFERENCES = i18nT('settings.groups.preferences')
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
-    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
+    // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
+    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus'] },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
     // The coding-agent switch (and the Kiro sign-in card under it) used to be a
     // Developer-page tab, which the sidebar only shows in Developer Mode. First-run
@@ -253,7 +256,15 @@ export default function SettingsPage() {
     && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
     && (t.key !== 'people' || sharedCrewPreview),
   )
-  const tabs = updateAvailable ? allTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : allTabs
+  // Review nudge: dot on the Security entry while a settings file edited outside
+  // the dashboard waits for Apply or Discard there.
+  const configPending = useConfigPendingCount() > 0
+  const tabs = allTabs.map(t => (
+    t.key === 'about' && updateAvailable ? { ...t, dot: true }
+      : t.key === 'security' && configPending
+        ? { ...t, dot: true, dotLabel: i18nT('pages.settings.securityPanel.configPending.nav_dot') }
+        : t
+  ))
 
   const memorySelection = new URLSearchParams(search)
   const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
@@ -280,6 +291,7 @@ export default function SettingsPage() {
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>
+        <DataHomeOwnerStatusNotice />
         {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
           <div>
             {/* No hand-off: the active Settings panel may hold an unsaved configuration draft. */}

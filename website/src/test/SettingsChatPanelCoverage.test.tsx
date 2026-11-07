@@ -108,6 +108,7 @@ import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -249,6 +250,21 @@ describe('ChatPanel — load failures', () => {
     )
   })
 
+  it("names each failed read's own error under its load-failure notice", async () => {
+    dashboardConfigMock.mockImplementationOnce(() => Promise.reject(new Error('dashboard.json is not valid JSON')))
+    kirocrewConfigMock.mockImplementationOnce(() => Promise.reject(new Error('config.yaml line 3: bad indentation')))
+    wrap()
+    expect(await screen.findByText('dashboard.json is not valid JSON')).toBeInTheDocument()
+    expect(await screen.findByText('config.yaml line 3: bad indentation')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load config.')).toBeInTheDocument()
+  })
+
+  it('keeps the lead alone when the failed read carries no error text', async () => {
+    kirocrewConfigMock.mockImplementationOnce(() => Promise.reject(new Error('')))
+    wrap()
+    expect(await screen.findByText('Failed to load config.')).toBeInTheDocument()
+  })
+
   it('shows one Retry per failed query when both fail', async () => {
     rejectOnce(dashboardConfigMock)
     rejectOnce(kirocrewConfigMock)
@@ -276,14 +292,15 @@ describe('ChatPanel — load failures', () => {
     expect(screen.queryByText('Failed to load config.')).not.toBeInTheDocument()
   })
 
-  it('keeps the generic config banner when /api/models is degraded for a non-auth reason', async () => {
+  it('keeps the generic config banner, with the fetch error under it, when /api/models is degraded for a non-auth reason', async () => {
     // A generic degraded 503 (code model_list_unavailable) is a transient blip,
-    // not an auth wall: the banner stays the generic "Failed to load config." and
-    // never claims a sign-in is needed (fail-safe).
-    const blip = new ApiError(503, 'model list unavailable', JSON.stringify({ error: 'model list timed out', code: 'model_list_unavailable' }))
+    // not an auth wall: the banner leads with the generic "Failed to load config."
+    // and never claims a sign-in is needed (fail-safe).
+    const blip = new ApiError(503, 'model list timed out', JSON.stringify({ error: 'model list timed out', code: 'model_list_unavailable' }))
     modelsMock.mockImplementation(() => Promise.reject(blip) as never)
     wrap()
     expect(await screen.findByText('Failed to load config.')).toBeInTheDocument()
+    expect(await screen.findByText('model list timed out')).toBeInTheDocument()
     expect(screen.queryByText(/kiro-cli login/i)).not.toBeInTheDocument()
   })
 })
@@ -518,6 +535,25 @@ describe('ChatPanel — Messages', () => {
     fireEvent.click(sw)
     await waitFor(() =>
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({ [key]: true })
+    )
+  })
+
+  it('offers Start New Chats in Ultra Mode only with the Ultra Mode preview on, and persists it', async () => {
+    const label = 'Start New Chats in Ultra Mode'
+    const view = wrap('sessions')
+    await settledSwitch('Restore Sessions')
+    expect(screen.queryByRole('switch', { name: label })).not.toBeInTheDocument()
+    view.unmount()
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
+    wrap('sessions')
+    const sw = await settledSwitch(label)
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    // What Ultra Mode does is on the row itself, not only behind the "i" tooltip.
+    const row = document.querySelector('[data-setting-key="dashboard.new_chat_crew_mode"]') as HTMLElement
+    expect(within(row).getByText(/Ultra Mode runs each task in its own chat/)).toBeVisible()
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ new_chat_crew_mode: true })
     )
   })
 

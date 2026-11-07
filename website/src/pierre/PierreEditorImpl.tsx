@@ -17,7 +17,7 @@ import {
   pierreFileOptions,
   pierreThemeType,
 } from './config'
-import { activeWorkerPool, contentCacheKey, PierreShell, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
+import { activeWorkerPool, contentCacheKey, PierreShell, usePierreThemes, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
@@ -113,26 +113,33 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   diffSplit?: boolean
   /** Show unchanged regions in the live-diff surface instead of folding them. */
   diffExpandUnchanged?: boolean
+  /** Live-diff editing only: called with true when this session's live diff
+   *  is over the inline budget and the surface fell back to the plain editor,
+   *  false when it renders the live diff. Called again when the baseline
+   *  changes; never in the plain editor, never on unmount. */
+  onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-}>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, className }, ref) {
+}>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className }, ref) {
   const dark = useIsDark()
+  const themes = usePierreThemes()
   const poolState = usePierreWorkerPool()
   useRegisterEditorSurface()
   const activePool = activeWorkerPool(poolState)
   const pierreActive = activePool !== undefined
   const resolved = useMemo(
-    () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
-    [dark, options],
+    () => pierreFileOptions({ theme: themes, themeType: pierreThemeType(dark), ...options }),
+    [dark, themes, options],
   )
   const resolvedDiff = useMemo(
     () => pierreDiffOptions({
+      theme: themes,
       themeType: pierreThemeType(dark),
       diffStyle: diffSplit ? 'split' : 'unified',
       ...(diffExpandUnchanged == null ? {} : { expandUnchanged: diffExpandUnchanged }),
       ...options,
       unsafeCSS: (options?.unsafeCSS ?? '') + PIERRE_EDIT_CARET_ALIGN_CSS,
     }),
-    [dark, options, diffSplit, diffExpandUnchanged],
+    [dark, themes, options, diffSplit, diffExpandUnchanged],
   )
   const surfaceId = useId()
   const recoveryStatusId = `${surfaceId}-recovery-status`
@@ -270,6 +277,17 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   )
   const renderLiveDiff = diffBase !== undefined
     && isPierreFilePairWithinBudget(baseFile, diffNewFile)
+  // The host reads this verdict to show its own diff view in place of an
+  // editor that dropped the live diff. Layout phase, so the host's re-render
+  // lands before the dropped editor is painted; `baseFile` in the deps
+  // re-reports when the baseline arrives or moves, typing never does.
+  const onLiveDiffDegradedRef = useRef(onLiveDiffDegraded)
+  onLiveDiffDegradedRef.current = onLiveDiffDegraded
+  const liveDiffRequested = diffBase !== undefined
+  useLayoutEffect(() => {
+    if (!liveDiffRequested) return
+    onLiveDiffDegradedRef.current?.(!renderLiveDiff)
+  }, [liveDiffRequested, renderLiveDiff, baseFile])
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)

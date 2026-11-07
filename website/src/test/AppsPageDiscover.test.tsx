@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 // --- Mocks -----------------------------------------------------------------
@@ -62,18 +64,20 @@ const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
 function renderPage(path = '/apps') {
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/apps" element={<AppsPage />} />
-          {/* Static segment BEFORE the detail param route, mirroring App.tsx's
-              route order: /apps/library must never fall through to a
-              /apps/:name-style catch-all. */}
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/apps" element={<AppsPage />} />
+            {/* Static segment BEFORE the detail param route, mirroring App.tsx's
+                route order: /apps/library must never fall through to a
+                /apps/:name-style catch-all. */}
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

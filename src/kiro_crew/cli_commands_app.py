@@ -798,7 +798,10 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
         if include_ui:
-            print(f"   cd {app_dir}/ui && npm install && npm run build")
+            # One command per line: Windows PowerShell 5.1 rejects `&&`.
+            print(f"   cd {app_dir}/ui")
+            print("   npm install")
+            print("   npm run build")
         print(f"   kirocrew app install {app_dir}")
 
     else:

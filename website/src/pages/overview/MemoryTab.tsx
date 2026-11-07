@@ -34,6 +34,7 @@ import SortableHeader from '../../components/SortableHeader'
 
 import { i18nT } from '../../i18n/t'
 import { compareText, fmtDateTimeNumeric } from '../../i18n/format'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /** `POST /api/memory/consolidate`'s code for a target the memory modes promise
  *  leaves no durable trace (a Temporary or Incognito session). "Summarize now"
@@ -165,7 +166,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
   return <>
     <MemoryStoreCard store={store} onStoreChange={choose} compact={!!store} />
     {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} /> : <Card>
-      {stores.isPending ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
+      {stores.isPending && !queryReadFailed(stores) ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
         <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
         <div className="min-w-0 flex-1 space-y-2">
           <p className="text-[13px] text-muted">{i18nT('memoryV2.identity_loading')}</p>
@@ -176,7 +177,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
         <CardTitle>{i18nT('memoryV2.identity_unavailable')}</CardTitle>
         <MemoryScopeNotice error={stores.error} />
         <div className="flex flex-wrap gap-2">
-          <Btn className="min-h-11" disabled={stores.isFetching} onClick={() => void stores.refetch()}>{i18nT('memoryV2.retry_identity')}</Btn>
+          <Btn className="min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={stores.isFetching || undefined} onClick={() => { if (!stores.isFetching) void stores.refetch() }}>{i18nT('memoryV2.retry_identity')}</Btn>
           <Btn className="min-h-11" onClick={() => {
             const destination = selected?.owner_member
               ? `/capabilities?tab=crews&crew=${encodeURIComponent(selected.owner_member)}`
@@ -205,8 +206,6 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const [recordDirty, setRecordDirty] = useState(false)
   const [recordsOpen, setRecordsOpen] = useState(false)
   const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
-  const dirty = recordDirty || Object.values(docDirty).some(Boolean)
-  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   /** The memory store every store-aware card on this page reads, ON THE WIRE.
    *
    *  `''` means no store is NAMED, which the gateway resolves to the global store —
@@ -244,6 +243,11 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   // even after a Save has consumed `settingsTouched`.
   const settingsEdited = useRef({ idle: false, days: false })
   const [settingsSaving, setSettingsSaving] = useState(false)
+  // `settingsTouched` as render state: an edited box not yet saved.
+  const [settingsUnsaved, setSettingsUnsaved] = useState(false)
+  // Typed but not yet added or saved: leaving drops these too.
+  const dirty = recordDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
   const [migrated, setMigrated] = useState(false)
   const [vectorActive, setVectorActive] = useState(false)
@@ -521,6 +525,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       return
     }
     setSettingsSaving(false)
+    // An edit made while the request was in flight is still unsaved.
+    setSettingsUnsaved(settingsTouched.current.idle || settingsTouched.current.days)
     setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000)
   }
   const addLesson = async () => {
@@ -570,12 +576,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
           <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
-          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={IDLE_HOURS_MIN} max={IDLE_HOURS_MAX} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => { settingsTouched.current.idle = true; settingsEdited.current.idle = true; setIdleHours(Number(e.target.value)) }} />
+          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={IDLE_HOURS_MIN} max={IDLE_HOURS_MAX} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => { settingsTouched.current.idle = true; settingsEdited.current.idle = true; setSettingsUnsaved(true); setIdleHours(Number(e.target.value)) }} />
         </label>
         {!migrated && (
           <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
             <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
-            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={MAX_DAYS_MIN} max={MAX_DAYS_MAX} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => { settingsTouched.current.days = true; settingsEdited.current.days = true; setMaxDays(Number(e.target.value)) }} />
+            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={MAX_DAYS_MIN} max={MAX_DAYS_MAX} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => { settingsTouched.current.days = true; settingsEdited.current.days = true; setSettingsUnsaved(true); setMaxDays(Number(e.target.value)) }} />
           </label>
         )}
         <Btn onClick={saveSettings} disabled={settingsSaving}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>

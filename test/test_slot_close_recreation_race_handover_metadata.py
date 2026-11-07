@@ -1,10 +1,8 @@
 """What a slot-close hand-over leaves to the metadata line's own writer.
 
-The rows-only drain keeps every slot-owned field the replacement published (the title
-with its provenance and refresh mark, folder, pin, attribution, dismissed source links,
-the closed flag), scoped by the line's ``tab_id``; and a close whose replacement shares
-no transcript still archives the original's own file. The close-vs-recreate guards
-themselves live in ``test_slot_close_recreation_race.py``; the shared fakes in
+The rows-only drain keeps the slot-owned fields the replacement published, scoped by
+the line's ``tab_id``. Close-vs-recreate guards live in
+``test_slot_close_recreation_race.py``; shared fakes in
 ``slot_close_recreation_race_helpers.py``.
 """
 
@@ -33,24 +31,12 @@ from kiro_crew.dashboard import chat_handlers as handlers
 from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.testing.wait import await_until, finished
 
-# --------------------------------------------------------------------------- #
-# what the hand-over must NOT cost: the replacement's own metadata
-# --------------------------------------------------------------------------- #
+# the hand-over keeps the replacement's own metadata
 #
-# The rows and the metadata line have different owners on a shared transcript.
-# ``_save_slot_to_history`` is otherwise authoritative for SLOT_OWNED_META_KEYS and
-# REBUILDS that line from whichever slot it is handed, so a default save here would
-# revert a title, folder, tag set or pin the REPLACEMENT already published — and for
-# a tab nobody types in again, revert it for good, so the next restart resurrects the
-# dismissed tab's name and filing. The drain therefore writes ``rows_only``: it moves
-# the rows and keeps the on-disk value for every slot-owned field, retaining only the
-# close flags so the open-shaped erase still happens.
-#
-# The deferral is wider than the owned set, because the rebuild also writes fields
-# that DESCRIBE an owned one without being owned themselves. A title's provenance and
-# refresh budget travel WITH the title, so deferring the title while keeping those
-# commits a line matching neither slot — separately valid halves, undetectable
-# downstream — which is why the pairing is asserted below and not just the title.
+# ``_save_slot_to_history`` rebuilds SLOT_OWNED_META_KEYS from the slot it is handed,
+# which would revert what the replacement published. ``rows_only`` moves the rows and
+# keeps on-disk slot-owned fields. A title's provenance and refresh budget travel with
+# the title, so the pairing is asserted, not just the title.
 
 
 @pytest.mark.asyncio
@@ -128,11 +114,8 @@ async def test_delete_handover_keeps_the_original_metadata_when_nobody_replaced_
 ) -> None:
     """Deferring to disk must not become erasing: a blank replacement inherits.
 
-    A recreate that has published nothing has no metadata to protect, and the line
-    on disk is the ORIGINAL's own — a real title and filing for the conversation
-    both slots now share. Re-deriving the line from the blank replacement would
-    clear them, which is the opposite failure and just as silent. Writing rows
-    while leaving the line alone is what gets both cases right at once.
+    The line on disk is the original's; re-deriving it from the blank replacement
+    would clear its title and filing.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
@@ -165,11 +148,8 @@ async def test_delete_handover_keeps_the_original_metadata_when_nobody_replaced_
 def _leave_an_acknowledged_edit(slot, *, title: str, folder: str) -> None:
     """Apply a metadata edit the way every mutation route leaves it: in memory only.
 
-    ``PATCH .../color``, the tag and pin routes and the auto-titler all mutate the
-    slot, mark it ``_dirty`` and answer the caller; the durable write is the next
-    periodic flush's. That flush iterates ``state._slots``, so this shape is exactly
-    what a pop makes unreachable — the user has been told the rename landed and the
-    only object that knows it is about to be dropped.
+    The routes mark the slot ``_dirty`` and leave the write to the periodic flush,
+    which walks ``state._slots`` and so never reaches a popped slot.
     """
     slot.title = title
     slot._titled = True
@@ -182,15 +162,9 @@ def _leave_an_acknowledged_edit(slot, *, title: str, folder: str) -> None:
 async def test_delete_handover_persists_the_original_uncommitted_metadata(tmp_path) -> None:
     """Deferring to disk must not become discarding the drain's own pending edit.
 
-    The line on disk here is the ORIGINAL's own, so there is nobody else's state on
-    it to protect, and the edit the original is carrying has no other route to disk:
-    the periodic flush walks ``state._slots`` and this slot is out of it for good.
-    Deferring to disk on that line would answer 200 while silently discarding a
-    rename, re-file and pin the user watched land.
-
-    Metadata-only on purpose — the publish above commits the window, so ``_dirty``
-    is the sole reason the drain runs at all. That keeps this test about the
-    metadata half rather than riding on the row half's write.
+    The line is the original's own and the popped slot has no other route to disk.
+    Metadata-only on purpose: the window is committed, so ``_dirty`` alone makes the
+    drain run.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
@@ -232,12 +206,8 @@ async def test_delete_handover_prefers_the_replacement_line_over_its_own_pending
 ) -> None:
     """The polarity: a line ANOTHER slot published still outranks the drain's edit.
 
-    The two losses are not symmetric, so the tie is not broken in the drain's
-    favour. The original's edit was never committed; the replacement's WAS, and for
-    a tab nobody types in again nothing rewrites it — so rebuilding here would
-    revert a published title and filing for good, while deferring costs an
-    uncommitted one. Pinned beside the test above because a fix that simply stopped
-    deferring would satisfy that one and silently undo the restraint.
+    The replacement's edit was committed and the original's was not, so deferring
+    costs less. Pinned beside the test above, which never deferring would satisfy.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
@@ -277,14 +247,9 @@ async def test_delete_handover_keeps_the_replacement_authorization_attribution(
 ) -> None:
     """The drain must not re-attribute a live holder's session to the dismissed tab.
 
-    ``created_by`` and ``origin`` are not facts about the conversation, they are
-    attributes of the SLOT, and each is meaningless apart from a field the drain
-    already defers: session-control's member ownership boundary reads ``created_by``
-    beside ``mode``, and ``origin`` decides ``slots:user`` visibility and the
-    unattended approval window beside ``app``. Carrying the original's forward would
-    commit a line naming an owner who never opened this session and a slot kind its
-    holder never had — and for a replacement nobody types in again, no later save
-    corrects it, so the next restart hands that pairing to the authorization checks.
+    ``created_by`` (read beside ``mode``) and ``origin`` (read beside ``app``) feed
+    authorization checks, so carrying the original's forward would name the wrong
+    owner after a restart.
     """
     state = _make_state(tmp_path)
     original = await _slot_with_committed_and_uncommitted_rows(state)
@@ -333,12 +298,8 @@ async def test_delete_handover_keeps_the_replacement_authorization_attribution(
 async def test_rows_only_defers_by_the_line_tab_id_not_by_the_flag_alone(tmp_path) -> None:
     """``rows_only`` is scoped at the save, by the one per-writer mark the line has.
 
-    ``tab_id`` is minted per slot OBJECT and stamped by every save, so it is what
-    separates "this line is somebody else's" from "this line is mine". Driven
-    directly rather than through a race so the discriminator is the only variable:
-    the same call, the same slot and the same flag, answered two ways by the id on
-    the line. It is itself deferred, so a deferring write leaves the other writer's
-    id in place and the next drain defers again rather than flipping.
+    ``tab_id`` is minted per slot object; driven directly so it is the only variable.
+    It is itself deferred, so the next drain defers again rather than flipping.
     """
     state = _make_state(tmp_path)
     slot = await _slot_with_committed_and_uncommitted_rows(state)
@@ -376,14 +337,10 @@ async def test_rows_only_defers_by_the_line_tab_id_not_by_the_flag_alone(tmp_pat
 
 @pytest.mark.asyncio
 async def test_rows_only_defers_dismissed_source_links_to_another_writer(tmp_path) -> None:
-    """A rows-only handover must not overwrite another live slot's source-link
-    dismissals.
+    """A rows-only handover keeps another live slot's source-link dismissals.
 
-    ``dismissed_source_links`` is SLOT_OWNED, so it is in ROWS_ONLY_DEFERRED: a
-    save that persists THIS slot's messages onto a transcript another live slot
-    published must carry the on-disk dismissed set back verbatim, not clobber it
-    with this slot's own. Without the fix a popped alias holding dismissal A would
-    erase the replacement slot's dismissal B on a rows-only handover.
+    ``dismissed_source_links`` is in ROWS_ONLY_DEFERRED, so a popped alias holding
+    dismissal A must not erase the replacement's dismissal B.
     """
     state = _make_state(tmp_path)
     slot = await _slot_with_committed_and_uncommitted_rows(state)
@@ -414,11 +371,8 @@ async def test_rows_only_defers_dismissed_source_links_to_another_writer(tmp_pat
 async def test_handover_rows_only_write_still_creates_a_first_metadata_line(tmp_path) -> None:
     """With no line on disk yet there is nobody to defer to, so the slot's own wins.
 
-    ``rows_only`` protects ANOTHER writer's fields; a transcript with no metadata
-    line has none, and preserving an absent line would publish a row-bearing
-    transcript with no title, folder or memory mode at all. So the flag is ignored
-    in that case and the drain writes the original's own line — pinned because the
-    hand-over is reachable before a slot's first committed save.
+    Keeping an absent line would leave rows with no title, folder or memory mode.
+    The hand-over is reachable before a slot's first committed save.
     """
     state = _make_state(tmp_path)
     original = state.get_or_create_slot(NAME)
@@ -612,12 +566,8 @@ async def _original_with_a_published_line_and_an_uncommitted_tail(state):
 async def test_delete_handover_keeps_a_dismissal_the_replacement_committed(tmp_path) -> None:
     """``closed`` on the replacement's line is ITS dismissal, so the drain defers it.
 
-    Open-shaped is not the same as un-closing. The drain and the replacement's own
-    close race for the transcript lock, so the dismissal can land first — and both
-    slots are popped by then, so erasing it resurfaces a tab the user put away with
-    nothing left to re-archive it. This is the mistake the resume route's
-    ``only_if_closed_before`` boundary exists to avoid one layer down, and a
-    rows-only save has no such boundary to reason with.
+    The replacement's close can win the lock first; with both slots popped, erasing
+    it would resurface the tab (compare the resume route's ``only_if_closed_before``).
     """
     state = _make_state(tmp_path)
     original = await _original_with_a_published_line_and_an_uncommitted_tail(state)
@@ -660,11 +610,8 @@ async def test_delete_handover_keeps_a_dismissal_the_replacement_committed(tmp_p
 async def test_delete_handover_erases_a_stale_closed_flag_on_its_own_line(tmp_path) -> None:
     """On a line THIS slot published, the open-shaped drain still clears ``closed``.
 
-    The deferral is scoped by the line's ``tab_id``, so a replacement that has
-    published nothing leaves the ORIGINAL's own line on disk — where there is no
-    other holder's dismissal to lose. The ordinary rebuild runs there, and a key that
-    now has a live holder reads open instead of staying archived under a tab the user
-    is looking at.
+    A replacement that published nothing leaves the original's line, with no other
+    dismissal to lose, so the ordinary rebuild runs and the live key reads open.
     """
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot(NAME)
@@ -709,21 +656,12 @@ async def test_delete_handover_erases_a_stale_closed_flag_on_its_own_line(tmp_pa
     ]
 
 
-# --------------------------------------------------------------------------- #
 # a replacement that shares NO transcript takes no archive
-# --------------------------------------------------------------------------- #
 #
-# Slot identity is not transcript ownership. A channel-, cron- or workflow-born tab
-# keeps its conversation under its ``linked_session_key``, while a replacement minted
-# by a plain ``get_or_create_slot(name)`` — the shape POST /api/chat and the
-# session_close verb take — is unbound and keeps its own under ``dashboard:{name}``.
-# Yielding the archive on that pair costs the user their dismissal: the linked
-# transcript keeps no ``closed`` flag, ``channel_slots._close_stands`` reads an absent
-# flag as "never dismissed", and the reconcile pass surfaces the tab again.
-#
-# So the archive is gated on the FILE and only the key-scoped steps yield: the save
-# runs on the original's own transcript, while the replacement keeps its slot and its
-# session.
+# A linked tab's transcript is its ``linked_session_key``; a plain
+# ``get_or_create_slot(name)`` replacement writes ``dashboard:{name}``. Skipping the
+# archive there leaves no ``closed`` flag and ``channel_slots._close_stands`` resurfaces
+# the tab, so the archive is gated on the file.
 
 
 async def _linked_slot_with_a_tail(state, linked: str, name: str = NAME):

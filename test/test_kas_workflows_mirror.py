@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import pytest
 
@@ -15,6 +16,8 @@ from kiro_crew.kas_workflows.mirror import (
     MAX_REASON_CHARS,
     MAX_TERMINAL_RUNS,
     RunMirror,
+    _bounded_record,
+    _Budget,
 )
 
 _TREE = [
@@ -713,6 +716,25 @@ def test_ids_sessions_models_and_list_rows_are_cut_like_any_kas_text() -> None:
     listed = mirror._runs["wf_2"]
     assert listed.name == "y" * MAX_REASON_CHARS
     assert listed.created_at == "y" * MAX_REASON_CHARS
+
+
+@dataclass(frozen=True)
+class _Leaf:
+    text: str
+
+
+@dataclass(frozen=True)
+class _Row:
+    entries: tuple[object, ...]
+
+
+def test_a_record_tuple_cuts_its_strings_recurses_into_records_and_keeps_the_rest() -> None:
+    """Each tuple entry is bounded by its kind: a record recursively, a string cut, else kept."""
+    long = "z" * (MAX_REASON_CHARS * 2)
+    budget = _Budget()
+    row = _bounded_record(_Row(entries=(long, _Leaf(text=long), 7, None)), budget)
+    assert row.entries == ("z" * MAX_REASON_CHARS, _Leaf(text="z" * MAX_REASON_CHARS), 7, None)
+    assert budget.dropped == 2
 
 
 def test_wide_lists_and_plans_are_capped_as_a_whole() -> None:

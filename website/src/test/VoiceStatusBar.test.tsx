@@ -115,9 +115,9 @@ describe('VoiceStatusBar', () => {
   it('keeps the notice plain text when there is no action, or the label is not in the text', () => {
     const { rerender } = render(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Dictation added to your message', tone: 'ok' }} />)
     expect(screen.queryByRole('button')).toBeNull()
-    rerender(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use in another chat', tone: 'muted', action: { label: 'kirocrew', onClick: vi.fn() } }} />)
+    rerender(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use elsewhere', tone: 'muted', action: { label: 'kirocrew', onClick: vi.fn() } }} />)
     expect(screen.queryByRole('button')).toBeNull()
-    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use in another chat')
+    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use elsewhere')
   })
 
   it('offers Retry plus one menu holding Save recording and Discard, with Discard as the dismissal', () => {

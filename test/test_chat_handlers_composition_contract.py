@@ -529,6 +529,7 @@ _OWNER_MODULES = frozenset(
         "agent_switch",
         "app_admission",
         "chat_send",
+        "conductor_close",
         "continue_turn",
         "followup_card",
         "handover_drain",
@@ -536,6 +537,7 @@ _OWNER_MODULES = frozenset(
         "project_lists",
         "prompt_queue",
         "resume",
+        "resume_window",
         "session_relaunch",
         "slot_approval",
         "slot_create",
@@ -635,11 +637,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "resume": (
         (
-            "_reconcile_slot_window",
-            "async function",
-            "(state: 'DashboardState', slot: \"'_ChatSlot'\") -> 'None'",
-        ),
-        (
             "_resume_session_identity",
             "function",
             "(state: 'DashboardState', history_key: 'str') -> 'str'",
@@ -672,6 +669,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "resume_slot_from_history",
             "async function",
             "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
+        ),
+    ),
+    "resume_window": (
+        (
+            "_reconcile_slot_window",
+            "async function",
+            "(state: 'DashboardState', slot: \"'_ChatSlot'\") -> 'None'",
         ),
     ),
     "slot_repair": (
@@ -796,7 +800,7 @@ slot_model | api_chat_slot_model | async function | (request: 'web.Request') -> 
 slot_model | api_chat_slots_model | async function | (request: 'web.Request') -> 'web.Response'
 slot_note | _discard_held_note | function | (slot: '_ChatSlot', note: 'dict[str, object]') -> 'None'
 slot_note | _note_delivered_live | function | (slot: '_ChatSlot', note: 'dict[str, object]') -> 'bool'
-slot_note | _persist_deferred_note_hold | async function | (state: 'DashboardState', slot: '_ChatSlot', note: 'dict[str, object]', authorized_history_key: 'str') -> 'web.Response | None'
+slot_note | _persist_deferred_note_hold | async function | (state: 'DashboardState', slot: '_ChatSlot', note: 'dict[str, object]', authorized_history_key: 'str', source_key: 'str | None' = None, source_expected_keys: 'tuple[str, ...] | None' = None, source_expected_created_at: 'str | None' = None, source_check: 'Callable[[], bool] | None' = None, target_expected_keys: 'tuple[str, ...] | None' = None) -> 'web.Response | None'
 slot_note | _note_already_durable | async function | (conversation_log: 'object', authorized_history_key: 'str', note: 'dict[str, object]') -> 'bool'
 slot_note | api_chat_slot_note | async function | (request: 'web.Request') -> 'web.Response'
 slot_settings | _autocompact_txn_lock | function | (history_key: 'str') -> 'asyncio.Lock'

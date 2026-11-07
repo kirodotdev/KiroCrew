@@ -40,12 +40,9 @@ from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
-#: Default summary cap. What it decides is ROOM: ``truncate_summary`` spends that
-#: room on links before prose, newest first, so the default holds a summary's
-#: outcome line plus as many whole links as the budget allows — one link always,
-#: several only while the budget lasts. An operator who wants a run's NARRATION
-#: kept, or every link of a run that produced many, raises
-#: ``cron_history.cron_summary_cap`` — see the cap tests for what that buys.
+#: Default summary cap. ``truncate_summary`` spends it on whole links first,
+#: newest first, then on the outcome line. To keep a run's narration or every
+#: link, raise ``cron_history.cron_summary_cap``.
 _SUMMARY_CAP = 200
 _TRACE_CAP = 50 * 1024  # 50KB
 _MAX_RECORDS_PER_JOB = 100
@@ -77,15 +74,12 @@ def _sandbox_confined() -> bool:
 #: A URL run, stopped only at whitespace and at the characters that cannot
 #: appear in one. Which trailing characters actually belong to the address is
 #: decided by ``_trim_url``, because a bracket can be either. The scheme is
-#: matched case-insensitively: a scheme is case-insensitive per RFC 3986, and a
-#: summary that shouts ``HTTPS://…`` otherwise holds a link this treats as prose
-#: and is free to cut in half.
+#: case-insensitive per RFC 3986, so ``HTTPS://…`` is still a link, not prose.
 _URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 
 #: Trailing characters that close a sentence rather than an address. Only these
-#: two: real addresses end in ``!`` (``…/wiki/Yahoo!``), in ``?`` (an empty
-#: query), and in ``:`` or ``;`` inside a path segment, so trimming those
-#: rewrites a live link into a dead one — the opposite of the point.
+#: two: real addresses can end in ``!`` (``…/wiki/Yahoo!``), ``?``, ``:`` or
+#: ``;``, and trimming those turns a live link into a dead one.
 _SENTENCE_ENDERS = ".,"
 
 #: Closing bracket -> its opener, for deciding whether the bracket is the URL's
@@ -99,13 +93,10 @@ _CUT_MARKER = "..."
 def truncate_summary(text: str, cap: int) -> str:
     """Cut ``text`` to ``cap`` characters without dropping what makes it findable.
 
-    The summary is the only SHORT, INDEXED record of a cron run — the trace is
-    capped separately (50 KB) and is not in the index — so the summary is what a
-    later session searches. A blind ``text[:cap]`` keeps a summary's opening and
-    throws away its conclusion, which is exactly where the outcome and the URL of
-    whatever the run produced both sit: a run that opens a pull request records
-    the link at the end, so a cut that drops the end leaves nothing findable and
-    the next session re-derives the same pull request.
+    The summary is the only short, indexed record of a cron run (the trace is
+    not in the index), so it is what a later session searches. A blind
+    ``text[:cap]`` drops the end, which is where a run states its outcome and
+    the URL of what it produced.
 
     What survives, in this order:
 
@@ -119,12 +110,9 @@ def truncate_summary(text: str, cap: int) -> str:
     4. the end of the final non-blank line, where a run states how it finished.
 
     A URL is written once: the head stops before any copy the kept URLs or the
-    outcome fragment already carry, so one fact never spends the budget twice.
-    Input at or under the cap is returned unchanged, and the result never
-    exceeds the cap, which makes the function a fixed point: applying it to its
-    own output returns that output. When the URLs alone cannot fit, the ones
-    that do are kept newest first, since the link a run has just produced is
-    the one a later run needs.
+    outcome fragment already carry. Input at or under the cap is returned
+    unchanged and the result never exceeds the cap, so the function is a fixed
+    point on its own output.
     """
     if cap <= len(_CUT_MARKER):
         # Nothing structured fits in a budget this small; the cap still holds.
@@ -132,25 +120,13 @@ def truncate_summary(text: str, cap: int) -> str:
     if len(text) <= cap:
         return text
 
-    # URLs claim room FIRST, newest first, whole or not at all. Sizing the
-    # outcome fragment before them lets half the cap go to prose and drop a link
-    # that would have fitted, and a link is the fact the fragment cannot replace.
-    #
-    # "Newest" is a URL's LAST appearance, not its first: a link mentioned early
-    # and again in the closing line is the run's freshest fact, and ranking it by
-    # the early mention hands its room to a link the run cared about less.
-    #
-    # A separator is charged only when something already precedes the link, so a
-    # URL that exactly fills the remaining room is kept rather than dropped for a
-    # newline it does not need.
+    # URLs claim room before the outcome fragment: sized the other way, prose
+    # can take half the cap and drop a link that would have fitted.
     candidates = _newest_first(text)
     links, used = _fit_links(candidates, cap - len(_CUT_MARKER) - 1)
 
-    # The marker is charged first, EXCEPT when charging it would leave the record
-    # with no link at all: a URL that fits the cap on its own must reach the
-    # index, and "something was removed" is worth less than the address it would
-    # evict. Only that case drops the marker — whenever a link already fits
-    # beside it, the cut stays marked.
+    # The marker is charged first, except when it would leave no link at all:
+    # a URL that fits the cap on its own is worth more than the marker.
     marked = True
     if not links:
         wider, wider_used = _fit_links(candidates, cap)
@@ -163,12 +139,8 @@ def truncate_summary(text: str, cap: int) -> str:
     spent = used + (len(_CUT_MARKER) + 1 if marked else 0)
     tail = _outcome_tail(text, min(cap // 2, cap - spent - (1 if links else 0)))
 
-    # A link the surviving fragment already carries needs no line of its own.
-    # Membership is decided against the URLs the fragment HOLDS, never by
-    # substring: one link's whole address is often a prefix of another's
-    # (``…/pull/28`` inside ``…/pull/2836``), and a substring test drops the
-    # shorter one as already present when it is nowhere in the result. Dropping
-    # a link here only shortens the result, so the cap still holds.
+    # A link the fragment already carries needs no line of its own. Compare
+    # URLs, not substrings: ``…/pull/28`` is a prefix of ``…/pull/2836``.
     if tail:
         tail_urls = set(_unique_urls(tail))
         links = [u for u in links if u not in tail_urls]
@@ -179,12 +151,9 @@ def truncate_summary(text: str, cap: int) -> str:
     head_room = cap - len(body) - marker_cost - 1
     head = _head_before(text, head_room).rstrip() if head_room > 0 else ""
 
-    # One rule for where a URL lands: the body holds it, and the head stops at
-    # the first one it reaches. A second copy buys nothing and spends the budget
-    # twice on one fact. There is no case to distinguish: a URL whole inside the
-    # head is always one the body carries too, because the head budget is the
-    # link budget minus one, so a URL the links step had no room for cannot fit
-    # in the head either. Trimming only shortens the head, so the cap holds.
+    # The body holds every URL, so the head stops at the first one it reaches.
+    # A URL whole inside the head is always in the body too: the head budget is
+    # the link budget minus one.
     if head:
         head_urls = _url_spans(head)
         if head_urls:
@@ -201,9 +170,8 @@ def truncate_summary(text: str, cap: int) -> str:
 def _fit_links(candidates: list[str], budget: int) -> tuple[list[str], int]:
     """As many whole URLs as ``budget`` holds, in the order given, plus the spend.
 
-    A separator is charged only when something already precedes the link, so a URL
-    that exactly fills the budget is kept rather than dropped for a newline it does
-    not need. The returned spend is the length of the joined result.
+    A separator is charged only when something already precedes the link, so a
+    URL that exactly fills the budget is kept.
     """
     kept: list[str] = []
     used = 0
@@ -260,20 +228,12 @@ def _trim_url(url: str) -> str:
 
     A link written mid-sentence collects the full stop after it, and a link in
     parentheses collects the closing one. A bracket is only prose when it is
-    UNMATCHED inside the run — ``.../Foo_(bar)`` closes its own group and keeps
-    it, while ``(https://host/p)`` does not and loses it. Trimming a balanced
-    bracket stores a dead link, which is the thing this function exists to
-    avoid.
+    UNMATCHED inside the run: ``.../Foo_(bar)`` keeps its bracket, while
+    ``(https://host/p)`` loses it.
 
-    Only a TRAILING run is considered, so punctuation inside an address is never
-    touched: ``…/a.b,c:d/`` survives whole. And only ``.`` and ``,`` count as
-    prose there, because an address really can end in ``!`` or ``?``; a wider set
-    turns ``…/wiki/Yahoo!`` into a dead link, which is the failure this function
-    exists to prevent.
-
-    The scan is bounded by the scheme rather than by emptiness: ``https://`` is
-    never trimmable, so a bare ``http://a`` is returned as it stands and the
-    string can never be run down to nothing.
+    Only a trailing run is considered, so ``…/a.b,c:d/`` survives whole, and
+    only ``.`` and ``,`` count as prose (see ``_SENTENCE_ENDERS``). The scan
+    stops at the scheme, so a bare ``http://a`` is returned as it stands.
     """
     while len(url) > len("https://"):
         last = url[-1]
@@ -332,22 +292,15 @@ def _head_before(text: str, limit: int) -> str:
 def _trim_file(path: Path, max_records: int) -> None:
     """Keep only the newest *max_records* lines of the JSONL at *path*.
 
-    Writes through a temp then an atomic replace, so a reader — which takes no
-    lock — sees either the whole old file or the whole new one, never a
-    half-written one. A no-op at or below the cap, so an append under the limit
-    pays one read and no rewrite.
+    Writes a temp file then replaces atomically, so a lock-free reader sees the
+    whole old file or the whole new one. A no-op at or below the cap.
 
-    The replace goes through :func:`replace_with_retry` because a lock-free
-    reader holding the destination open makes ``os.replace`` raise a Windows
-    sharing violation (``PermissionError``/``EACCES``); left to propagate that
-    would reach ``_degrade`` and disable history for a transient reader overlap.
-    The helper retries the Windows window and is a plain ``os.replace`` on
-    POSIX; it runs in the ``asyncio.to_thread`` worker with no loop of its own,
-    so the retry engages.
+    :func:`replace_with_retry` rides out the Windows sharing violation
+    (``EACCES``) a reader holding the file open causes; otherwise ``_degrade``
+    would disable history over a transient overlap.
 
-    The caller MUST hold the store lock: this reads the file and republishes it
-    whole, so an unlocked interleaving with an append drops the record that
-    landed between the read and the replace.
+    The caller MUST hold the store lock, or an append between the read and the
+    replace is lost.
     """
     if max_records <= 0 or not path.exists():
         return
@@ -381,6 +334,30 @@ def _raw_lines(path: Path) -> list[bytes]:
     bytes yields the same records.
     """
     return path.read_bytes().strip().splitlines()
+
+
+# The text fields the dashboard redacts with string scanners before serving a run.
+_SERVED_TEXT_FIELDS = ("summary", "error", "trace")
+
+
+def _served_row(line: bytes) -> dict[str, Any] | None:
+    """*line* as a run the history routes can serve, or ``None`` to skip it.
+
+    Read paths only. A row whose ``summary``, ``error`` or ``trace`` is present
+    but not a string (a hand edit, a foreign writer) is skipped like a line
+    that is not JSON: the routes redact those fields with string scanners, so
+    one such row turned the whole history page into a 500. The rewrite paths
+    keep parsing with :func:`parse_json_object_line`, so no such row is dropped
+    from disk.
+    """
+    row = parse_json_object_line(line)
+    if row is None:
+        return None
+    for name in _SERVED_TEXT_FIELDS:
+        value = row.get(name)
+        if value is not None and not isinstance(value, str):
+            return None
+    return row
 
 
 @dataclass
@@ -549,22 +526,12 @@ class CronHistoryStore:
     def _probe_usable(self) -> bool:
         """True when the syscalls this store's own paths depend on all work.
 
-        Opening the lock file is NOT sufficient evidence that a store whose
-        mkdir was refused is usable. The read and rotate paths go through
-        ``Path.exists()`` (an ``os.stat``) and ``Path.glob()`` (a directory
-        scan), and pathlib RE-RAISES EPERM out of both rather than reporting
-        False — ``_ignore_error`` covers ENOENT/ENOTDIR/EBADF/ELOOP, not
-        EPERM. A probe that only opened the lock file therefore reported a
-        stat-denied directory as usable, and ``rotate_all()`` — awaited
-        unguarded by ``CronService.start()`` — then raised straight back out
-        of service startup, which is the failure this class exists to prevent.
-
-        So require the two capabilities that discriminate: stat the directory
-        and open the lock file. Both are O(1) and fail fast. Enumerating the
-        directory is deliberately NOT part of the probe — its cost grows with
-        the number of jobs, and ``_degrade()`` already turns a directory-scan
-        failure at runtime into disabled history rather than a raise, so
-        proving ``glob()`` works up front buys nothing.
+        Opening the lock file alone is not enough: the read and rotate paths
+        call ``Path.exists()``, and pathlib re-raises EPERM from it rather than
+        returning False, which would raise out of ``CronService.start()``. So
+        stat the directory and open the lock file, both O(1). A directory scan
+        is left out: its cost grows with the job count, and ``_degrade()``
+        already handles a scan failure at runtime.
         """
         try:
             os.stat(self._dir)
@@ -577,16 +544,10 @@ class CronHistoryStore:
     def _degrade(self, operation: str, exc: OSError) -> None:
         """Handle a runtime failure. Never raises.
 
-        Only a DENIAL disables the store. A denial is a standing condition — the
-        sandbox profile that refused us will refuse us for this process's whole
-        life — so continuing to attempt writes just logs the same error per run.
-
-        Every other ``OSError`` is treated as transient and costs ONE record:
-        a full disk, an fd exhaustion, or a transient I/O error clears on its
-        own, and disabling history for the process's remaining lifetime over a
-        momentary ENOSPC would lose every subsequent run's record for no reason
-        — strictly worse than the pre-existing behaviour, where each call site
-        caught its own failure and the next run wrote normally.
+        Only a DENIAL disables the store: it holds for the process's whole life,
+        so retrying only logs the same error per run. Every other ``OSError``
+        (full disk, fd exhaustion, transient I/O) costs ONE record and the store
+        stays enabled, because those clear on their own.
         """
         if exc.errno in _DENIAL_ERRNOS:
             if self._enabled:
@@ -639,18 +600,10 @@ class CronHistoryStore:
 
     async def append(self, record: CronRunRecord) -> None:
         """Write record to job file and index."""
-        # Cap fields
-        # The ONE truncation site for a summary: the cron service's run, timeout and
-        # cancel recorders all hand the whole text over uncut, so the
-        # configured cap and the keep-the-facts rule apply once, here. A
-        # caller that pre-slices defeats both.
-        #
-        # One boundary this does not reach: a command cron's failure path caps
-        # the JOB FIELD it writes (``job.last_error = err_str[:200]`` in
-        # slack/gateway_runtime/cron_exec.py), which is a registry-size decision about crons.json,
-        # not a decision about this record. The recorder still passes that field
-        # over whole, so such a summary is simply as long as the field it came
-        # from. Lifting that cap belongs to whoever owns the registry's size.
+        # The ONE truncation site for a summary: callers hand the text over
+        # uncut, so the configured cap and the keep-the-links rule apply here.
+        # A command cron's failure summary comes from ``job.last_error``, which
+        # slack/gateway_runtime/cron_exec.py already caps at 200 for crons.json.
         record.summary = truncate_summary(record.summary, self._summary_cap)
         if len(record.trace) > self._trace_cap:
             record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
@@ -674,19 +627,12 @@ class CronHistoryStore:
                 json.dumps(record.to_dict(include_trace=False)),
                 opener=owner_only_opener,
             )
-            # The caps are enforced on the write path, not only by ``rotate_all``.
-            # That runs once per process, from ``CronService.start``, so it bounds
-            # the history a gateway INHERITS, never the history the gateway itself
-            # writes — and a long-lived gateway is where the growth happens. Every
-            # read (``get_job_history``, ``get_all_history``, ``get_run_detail``)
-            # loads its whole file, so an unbounded index also makes each dashboard
-            # request cost more as the process ages. The trim runs under the lock
-            # this method already holds, so it adds no second critical section.
+            # Trim on every write: ``rotate_all`` runs once at start, so it never
+            # bounds what a long-lived gateway writes, and every read loads its
+            # whole file.
             #
-            # Guard the per-job trim against the index path: a job whose id is
-            # ``_index`` resolves ``job_path`` onto ``_index.jsonl``, and trimming
-            # that at the smaller per-job cap would silently truncate the global
-            # index. ``_rotate_all_sync`` carries the same skip.
+            # A job id of ``_index`` resolves onto ``_index.jsonl``; skip the
+            # per-job trim there so the smaller cap never truncates the index.
             if job_path != self._index_path:
                 _trim_file(job_path, self._max_records_per_job)
             _trim_file(self._index_path, self._max_index_records)
@@ -717,7 +663,7 @@ class CronHistoryStore:
             lines = _raw_lines(job_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
+        records = [row for line in lines if (row := _served_row(line)) is not None]
         total = len(records)
         records.reverse()
         results = records[offset : offset + limit]
@@ -748,7 +694,7 @@ class CronHistoryStore:
             lines = _raw_lines(self._index_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
+        records = [row for line in lines if (row := _served_row(line)) is not None]
         if job_id:
             records = [row for row in records if row.get("job_id") == job_id]
         total = len(records)
@@ -774,7 +720,7 @@ class CronHistoryStore:
         except FileNotFoundError:
             return None
         for line in lines:
-            row = parse_json_object_line(line)
+            row = _served_row(line)
             if row is not None and row.get("run_id") == run_id:
                 return row
         return None

@@ -44,6 +44,7 @@ import {
   waitForMeasurePass,
   autoShareCandidates,
   reloadChats,
+  settleSkipped,
   waitingForApproval,
 } from './mcpManagementModel'
 import {
@@ -244,8 +245,12 @@ export function McpManagement({
         return
       }
       const ready = res.ready?.length ?? 0
-      // Every install failing must not read as "already up to date".
-      const failed = Object.values(res.resolved ?? {}).filter(state => state === 'error').length
+      // Every install failing must not read as "already up to date". The
+      // backend reports a failed install as 'unresolved' and an install that
+      // raised as 'error'; both are failures.
+      const failed = Object.values(res.resolved ?? {}).filter(
+        state => state === 'error' || state === 'unresolved',
+      ).length
       if (failed > 0) {
         setResolveError(
           ready > 0
@@ -354,17 +359,19 @@ export function McpManagement({
       const failed: string[] = []
       let shared = 0
       let restart = false
+      let inEffect: string[] | undefined
       for (const { name, expected } of auto) {
         try {
           const w = await api.mcpGatewaySetStub(name, true, expected, true)
           if (w.stubbed?.includes(name)) shared++
           else skippedNames.push(name)
           if (w.restart_required) restart = true
+          if (Array.isArray(w.stub_servers)) inEffect = w.stub_servers
         } catch {
           failed.push(name)
         }
       }
-      return { pingOk: res.ping_ok, shared, skippedNames, failed, restart }
+      return { pingOk: res.ping_ok, shared, skippedNames: settleSkipped(skippedNames, inEffect).skipped, failed, restart }
     },
     onSuccess: r => {
       invalidate()
@@ -400,15 +407,17 @@ export function McpManagement({
     },
   })
 
-  // Rows the measurement pass would act on, including an older gateway's row
-  // with no verdict and a handshake that did not reproduce (re-measured every pass).
+  // Rows the measurement pass would act on. The gateway decides (`measure_due`);
+  // an older gateway's row falls back to the verdict: none at all, unknown, or a
+  // handshake that did not reproduce (re-measured every pass).
   const unmeasuredCount = useMemo(
     () =>
       servers.filter(
         s =>
-          !s.recommendation ||
-          s.recommendation.strength === 'unknown' ||
-          s.recommendation.reasons.some(r => r.code === 'handshake_not_reproducible'),
+          s.measure_due ??
+          (!s.recommendation ||
+            s.recommendation.strength === 'unknown' ||
+            s.recommendation.reasons.some(r => r.code === 'handshake_not_reproducible')),
       ).length,
     [servers],
   )
@@ -490,28 +499,28 @@ export function McpManagement({
   const enableAll = useMutation({
     mutationFn: async (plan: Array<{ name: string; expected: string }>) => {
       let shared = 0
-      let skipped = 0
       const failed: string[] = []
       let restart = false
       // What the writes themselves report, not the status read before them:
       // another tab may have turned sharing on in between.
       let sharingOn = !!status?.enabled
       const skippedNames: string[] = []
+      let inEffect: string[] | undefined
       for (const { name, expected } of plan) {
         try {
           const res = await api.mcpGatewaySetStub(name, true, expected, true)
           if (res.stubbed?.includes(name)) shared++
-          else {
-            skipped++
-            skippedNames.push(name)
-          }
+          else skippedNames.push(name)
           if (res.restart_required) restart = true
           if (typeof res.sharing_on === 'boolean') sharingOn = res.sharing_on
+          if (Array.isArray(res.stub_servers)) inEffect = res.stub_servers
         } catch {
           failed.push(name)
         }
       }
-      return { shared, skipped, skippedNames, failed, restart, sharingOn }
+      const settled = settleSkipped(skippedNames, inEffect)
+      shared += settled.stubbed.length
+      return { shared, skippedNames: settled.skipped, failed, restart, sharingOn }
     },
     onSuccess: r => {
       invalidate()
@@ -526,7 +535,7 @@ export function McpManagement({
               : 'pages.mcpManagement.enable_all_review_result_marked',
             { count: r.shared },
           ),
-          ...(r.skipped > 0
+          ...(r.skippedNames.length > 0
             ? [i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.skippedNames.join(', ') })]
             : []),
         ].join(' '),

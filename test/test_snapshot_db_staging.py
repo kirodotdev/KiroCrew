@@ -312,13 +312,9 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A component root removed under the copy reaches a decision, not a traceback.
 
-        `open_dir_pinned` re-raises every `OSError` but `ELOOP`/`ENOTDIR`, and
-        `snapshot_main`'s handlers around `_build_snapshot` do not catch `OSError`, so a
-        root lost to a concurrent removal must not escape as `FileNotFoundError`. The root
-        is removed for real, so the exception is the one the OS produces.
-
-        Both outcomes must stay OPPOSITE: a DECLARED database is a hard failure, while one
-        the tree walk merely found is recorded and rides as bytes.
+        `snapshot_main` does not catch `OSError`, so a removed root must not escape as
+        `FileNotFoundError`. A DECLARED database is a hard failure; one the tree walk merely
+        found is recorded and rides as bytes.
         """
         gone = tmp_path / "gone"
         gone.mkdir()
@@ -430,12 +426,9 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A readable database whose COPY fails must raise too.
 
-        Distinct from the corrupt case: this file IS a valid database, so the probe
-        succeeds and only `backup()` fails. Degrading it would ship a database without the
-        `-wal` this module strips -- torn, inside an archive reporting success.
-
-        Injected by shimming the module's own `sqlite3` reference rather than patching
-        `sqlite3.Connection.backup`, which is an immutable type.
+        The probe succeeds and only `backup()` fails; degrading would ship a torn database
+        without its `-wal`. The module's `sqlite3` is shimmed because
+        `sqlite3.Connection.backup` is an immutable type.
         """
 
         class _FailingBackup:
@@ -470,12 +463,9 @@ class TestASourceThatCannotBeVerifiedIsRefusedAndRecorded:
     ) -> None:
         """The check-to-use window on the core path, made deterministic.
 
-        The staging loop screens `memory.db` through its held descriptor and then hands the
-        NAME to SQLite, which resolves it again. The swap is injected between those two
-        resolutions -- immediately after the screen returns -- which is precisely the
-        window an attacker with write access to the data home has. Without the helper's own
-        chain check the second resolution lands on the victim and its rows ride the bundle
-        under the name `memory.db`.
+        The loop screens `memory.db` by descriptor, then SQLite resolves the NAME again; the
+        swap is injected right after the screen. Without the helper's own chain check the
+        victim's rows would ride the bundle as `memory.db`.
         """
         victim = tmp_path / "someone-elses.db"
         with closing(sqlite3.connect(str(victim))) as c:

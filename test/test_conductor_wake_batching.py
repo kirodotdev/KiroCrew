@@ -350,12 +350,9 @@ def test_the_default_window_stays_on_the_seconds_scale():
 def test_a_report_after_the_armed_tick_was_cancelled_opens_its_own_window(tmp_path, monkeypatch):
     """A cancelled timer closes the window, even though the push mark survives the cancel.
 
-    ``_cancel_timer`` retires the task and drops the wake and floor-tick claims, but not
-    the push mark -- and a user message in the watched session cancels exactly that way.
-    If the mark alone opened the window, every report arriving before that user's turn
-    ended would join a window nothing will ever close, arm nothing, and wait out the
-    loop's whole cadence. The timer table is what settles it: the cancel POPS the task,
-    so the next report finds no armed tick and arms one of its own.
+    A user message cancels via ``_cancel_timer``, which keeps the push mark; if the mark
+    opened the window, later reports would wait the whole cadence. The cancel pops the
+    timer, so the next report arms its own tick.
     """
     first = _bind(WORKER)
     second = _bind(WORKER_B)

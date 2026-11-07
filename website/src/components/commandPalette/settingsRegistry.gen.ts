@@ -1220,6 +1220,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.include-subfolder-contents-in-folder-counts",
+    "label": "Include Subfolder Contents in Folder Counts",
+    "labelKey": "pages.settings.chatPanel.folder_count_includes_subfolders",
+    "hint": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.jump-to-the-bottom-when-you-send",
     "label": "Jump to the bottom when you send",
     "labelKey": "pages.settings.chatPanel.scroll_on_send",
@@ -1332,6 +1344,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.optimize-before-sending",
+    "label": "Optimize Before Sending",
+    "labelKey": "pages.settings.chatPanel.optimize_before_sending",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.pin-summary-in-side-panel",
     "label": "Pin Summary in Side Panel",
     "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",
@@ -1381,6 +1404,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.preferred-reply-language",
+    "label": "Preferred Reply Language",
+    "labelKey": "pages.settings.chatPanel.preferred_language",
+    "hint": "Code, commit messages and PR text keep the project's own language.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.prevent-sleep-while-running",
     "label": "Prevent sleep while running",
     "labelKey": "pages.settings.chatPanel.prevent_sleep_while_running",
@@ -1409,6 +1444,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.quick-send",
     "label": "Quick Send",
     "labelKey": "pages.settings.chatPanel.quick_send",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.recall-sent-messages-with-arrow-keys",
+    "label": "Recall Sent Messages with Arrow Keys",
+    "labelKey": "pages.settings.chatPanel.arrow_key_prompt_history",
+    "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.require-a-second-escape-to-stop-the-turn",
+    "label": "Require a second Escape to stop the turn",
+    "labelKey": "pages.settings.chatPanel.double_escape_to_stop",
+    "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -1621,6 +1680,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sessions"
     }
+  },
+  {
+    "id": "chat.start-new-chats-in-ultra-mode",
+    "label": "Start New Chats in Ultra Mode",
+    "labelKey": "pages.settings.chatPanel.new_chat_crew_mode",
+    "description": "Ultra Mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
+    "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.new_chat_crew_mode"
   },
   {
     "id": "chat.style-markdown-while-typing",
@@ -2265,6 +2338,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.completion.enabled"
   },
   {
+    "id": "display.copy-on-select",
+    "label": "Copy on select",
+    "labelKey": "pages.settings.displayPanel.terminal_copy_on_select",
+    "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
+  },
+  {
     "id": "display.cursor-style",
     "label": "Cursor style",
     "labelKey": "pages.settings.displayPanel.terminal_cursor_style",
@@ -2519,6 +2604,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "terminal"
     },
     "configKey": "dashboard.terminal.reuse_current"
+  },
+  {
+    "id": "display.show-tray-icon",
+    "label": "Show tray icon",
+    "labelKey": "pages.settings.displayPanel.show_tray_icon",
+    "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.show-tray-icon"
   },
   {
     "id": "display.show-unread-dot-on-session-cards",
@@ -2903,6 +3001,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "label": "Redact credentials in files the dashboard opens for you",
     "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
+  },
+  {
+    "id": "security.config-pending",
+    "labelKey": "pages.settings.securityPanel.configPending.nav_dot",
+    "tab": "security",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "section": "posture"
+    },
+    "settingId": "security.config-pending",
+    "label": "Settings files changed outside {{productName}}",
+    "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
   },
   {
     "id": "security.trust-every-third-party-app",

@@ -90,14 +90,9 @@ ENFORCED = {
     # everywhere -- so the flag decides whether a widget appears, not whether the
     # user can answer.
     "rich_blocks",
-    # Gates whether an unreadable inbound message is answered. A channel
-    # declaring False cannot reach messaging.attachments.ingest, so it has no
-    # IngestResult to carry a rejection and the sender would be left unable to
-    # tell a refused attachment from a broken bot -- the defect that module
-    # exists to prevent. feishu/transport.py::receive reads it and replies with
-    # attachments.channel_reads_no_attachments, after every deny gate and after
-    # the dedup window so a redelivery cannot answer twice. A channel declaring
-    # True is untouched: its attachments go through ingest as before.
+    # Gates whether inbound attachments are ingested at all:
+    # teams/transport_dispatch.py downloads an activity's files only while it
+    # is True.
     "files_inbound",
 }
 
@@ -319,17 +314,29 @@ class TestCorrectedDeclarations:
         assert WEBEX_CAPABILITIES.reactions is False
         assert WEBEX_CAPABILITIES.streaming is False
 
+    def test_feishu_declares_the_inbound_files_it_reads(self) -> None:
+        # feishu/transport_dispatch.py downloads a message's files after every
+        # gate and hands them to the shared ingest.
+        from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+
+        assert FEISHU_CAPABILITIES.files_inbound is True
+
     def test_the_file_directions_are_declared_separately(self) -> None:
         # One boolean was undecidable: the two directions land per channel and in
         # different changes, so a gate reading a single `files` flag got the wrong
         # answer for one of them.
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+        from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
         assert DISCORD_CAPABILITIES.files_inbound is True
         assert DISCORD_CAPABILITIES.files_outbound is True
         assert SLACK_CAPABILITIES.files_inbound is True
         assert SLACK_CAPABILITIES.files_outbound is True
+        # Feishu sends an answer's local images (client.send_image_reply) and
+        # reads inbound attachments (transport_dispatch._ingest).
+        assert FEISHU_CAPABILITIES.files_inbound is True
+        assert FEISHU_CAPABILITIES.files_outbound is True
 
     def test_max_buttons_declares_totals_the_renderers_ship(self) -> None:
         # The field is TOTAL choices, not a per-row layout number. The old

@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, cleanup, fireEvent } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // Stub the heavy panels — we are testing the tab roster, not panel internals.
@@ -85,12 +85,18 @@ beforeEach(() => {
   localStorage.removeItem(PREVIEW_SESSION_ENVIRONMENTS)
 })
 
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="loc">{loc.pathname + loc.search}</div>
+}
+
 function renderAt(route: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[route]}>
         <SettingsPage />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>
   )
@@ -227,6 +233,12 @@ describe('SettingsPage tabs', () => {
   it('remaps legacy ?tab=slack to the channels tab with slack selected', async () => {
     renderAt('/settings?tab=slack')
     expect(await screen.findByTestId('slack-panel')).toBeInTheDocument()
+  })
+
+  it('leaves the Overview memory drill-in when the rail picks Overview', () => {
+    renderAt('/settings?view=memory&store=team&focus=lessons')
+    fireEvent.click(screen.getByRole('button', { name: 'Overview' }))
+    expect(screen.getByTestId('loc').textContent).toBe('/settings')
   })
 
   it('remaps legacy ?tab=wecom to the channels tab with wecom selected', async () => {

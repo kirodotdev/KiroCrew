@@ -13,13 +13,14 @@
  *  (`showsTeamAttribution`), never on a personal Crew or one that cannot
  *  attribute sessions. A Crew whose mode cannot be read
  *  shows the error where the control would be, and no bylines. */
-import { useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Users } from 'lucide-react'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Skeleton } from '../../components/ui'
 import { capabilityUsable, isUnknownPrincipal, principalName, sharedAccessConfigured, sharedCrewPreviewOn, someoneJoined } from '../../api/sharedCrewUi'
 import type { CreatorFilter as CreatorFilterValue } from '../../api/sharedCrew'
+import { isPermissionRefusal } from '../../api/apiError'
 import { creatorDisplay, effectiveMode, loadCreatorFilter, normalizeCreatorFilter, saveCreatorFilter, showsTeamAttribution, type CrewMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useSharedCrewSessionsPage } from '../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../i18n/t'
@@ -79,8 +80,13 @@ function listMode(
 }
 
 /** A read failed and has not succeeded since. A retry without cached data
- *  stays visibly failed while pending, rather than blinking out the notice. */
-function queryReadFailed(q: { isError: boolean; isPending: boolean; errorUpdateCount: number }): boolean {
+ *  stays visibly failed while pending, rather than blinking out the notice.
+ *  A permission refusal is not a failure: the mode and People reads answer 403
+ *  `owner_only` to a caller who is not the owner (a relay teammate), and a
+ *  "Try again" there can never succeed, so neither the bar nor a notice shows
+ *  for it (#32031). */
+function queryReadFailed(q: { isError: boolean; isPending: boolean; errorUpdateCount: number; error: unknown }): boolean {
+  if (isPermissionRefusal(q.error)) return false
   return q.isError || (q.isPending && q.errorUpdateCount > 0)
 }
 
@@ -169,6 +175,21 @@ export function CreatorFilteredSessions({ creator, q, connected, onOpen, onClear
   const page = useSharedCrewSessionsPage(normalizeCreatorFilter(creator), q.trim(), cursor, true)
   const data = page.data
   const unavailable = page.isSuccess && data === null
+  // Back leaves the DOM on the first page and More on the last, taking keyboard
+  // focus with it. Once the new page has landed, focus the paging button that
+  // was pressed, or the one that is left, unless focus has moved elsewhere.
+  const backRef = useRef<HTMLButtonElement>(null)
+  const moreRef = useRef<HTMLButtonElement>(null)
+  const [pagedBy, setPagedBy] = useState<'back' | 'more' | null>(null)
+  useEffect(() => {
+    if (pagedBy === null || page.isFetching) return
+    setPagedBy(null)
+    const [pressed, other] = pagedBy === 'back' ? [backRef, moreRef] : [moreRef, backRef]
+    const active = document.activeElement
+    const lost = active === null || active === document.body
+    if (!lost && active !== pressed.current) return
+    ;(pressed.current ?? other.current)?.focus()
+  }, [pagedBy, page.isFetching, data])
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 pt-[var(--list-dock-h,0.5rem)]" data-testid="creator-filtered-sessions" aria-busy={page.isFetching}>
       {page.isLoading && (
@@ -229,10 +250,10 @@ export function CreatorFilteredSessions({ creator, q, connected, onOpen, onClear
           )}
           <div className="flex gap-2 pt-1">
             {cursors.length > 1 && (
-              <Btn onClick={() => setCursors(c => c.slice(0, -1))}>{i18nT('sharedCrew.page_previous')}</Btn>
+              <Btn ref={backRef} onClick={() => { setPagedBy('back'); setCursors(c => c.slice(0, -1)) }}>{i18nT('sharedCrew.page_previous')}</Btn>
             )}
             {data.next_cursor && (
-              <Btn onClick={() => setCursors(c => [...c, data.next_cursor])}>{i18nT('sharedCrew.page_next')}</Btn>
+              <Btn ref={moreRef} onClick={() => { setPagedBy('more'); setCursors(c => [...c, data.next_cursor]) }}>{i18nT('sharedCrew.page_next')}</Btn>
             )}
           </div>
         </>

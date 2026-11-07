@@ -13,6 +13,7 @@ import { api } from '../api/client';
 import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
 import { Badge } from '../components/ui';
 import ErrorNotice from '../components/ErrorNotice';
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -194,8 +195,12 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
           {tab === 'tasks' && !isPlanning && (
             <>
               <span className="mx-1 text-muted">·</span>
-              <button onClick={() => setView('dag')} className={tabCls(view === 'dag')}>{i18nT('pages.projectDetailPage.dag')}</button>
-              <button onClick={() => setView('phased')} className={tabCls(view === 'phased')}>{i18nT('pages.projectDetailPage.phased')}</button>
+              {/* One-of-two layout of the same task list: a radio group, so the
+                  chosen layout is announced and not shown by colour alone. */}
+              <RadioChipGroup className="flex gap-1 items-center" ariaLabel={i18nT('pages.projectDetailPage.layout_label')}>
+                <button type="button" {...radioChip(view === 'dag')} onClick={() => setView('dag')} className={tabCls(view === 'dag')}>{i18nT('pages.projectDetailPage.dag')}</button>
+                <button type="button" {...radioChip(view === 'phased')} onClick={() => setView('phased')} className={tabCls(view === 'phased')}>{i18nT('pages.projectDetailPage.phased')}</button>
+              </RadioChipGroup>
             </>
           )}
           <div className="flex-1" />
@@ -228,9 +233,11 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             </Badge>
           )}
           {!isPlanning && (run.task_details || []).length > 0 && (
+            /* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+               order and drops a keyboard user's focus to the page while it runs. */
             <button
-              onClick={() => exportMutation.mutate()}
-              disabled={exportMutation.isPending}
+              onClick={() => { if (!exportMutation.isPending) exportMutation.mutate() }}
+              aria-disabled={exportMutation.isPending || undefined}
               title={i18nT('pages.projectDetailPage.export_this_plan_as_a_yaml_workflow_re_importabl')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded border border-border text-muted cursor-pointer transition-all hover:text-accent hover:border-accent ${exportMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
             >

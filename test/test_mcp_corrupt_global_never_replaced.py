@@ -233,7 +233,26 @@ async def test_put_refuses_a_file_that_cannot_be_read(sandbox: SimpleNamespace) 
     resp = await _put()
 
     assert resp.status == 500
-    assert _payload(resp)["code"] == "config_corrupt"
+    assert _payload(resp)["code"] == "config_unreadable"
+    assert sandbox.global_json.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_a_file_that_cannot_be_read_as_unreadable(
+    sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read failure is not reported as a parse failure, and nothing is discovered."""
+    import kiro_crew.mcp_discovery as disc
+
+    calls: list[None] = []
+    monkeypatch.setattr(disc, "sync_discovered_servers", lambda: calls.append(None) or [])
+    sandbox.global_json.mkdir()
+
+    resp = await mcp_mod.api_mcp_sync(_request(None))
+
+    assert resp.status == 500
+    assert _payload(resp) == {"error": "cannot read global mcp.json", "code": "config_unreadable"}
+    assert calls == []
     assert sandbox.global_json.is_dir()
 
 

@@ -80,6 +80,11 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     )
     _redacted = queued_text_for_display(content, user_origin=_user_origin)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
+    # A cancelled entry whose editor was open took its hold with it, so the
+    # entries it held may run now.
+    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
+
+    release_and_drain(state, slot, _entry)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",
@@ -160,6 +165,11 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     if _edit_attachments:
         frame["meta"] = _edit_attachments
     state.broadcast_ws("queue_edit", frame)
+    # The edit is stored, so the hold its open editor placed can go: a turn
+    # that ended while the person typed starts now, with these words.
+    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
+
+    release_and_drain(state, slot, entry)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",

@@ -148,6 +148,26 @@ VERBOSITY_LEVELS: tuple[str, ...] = ("default", "concise", "answer_only")
 LEGACY_VERBOSITY_ALIASES: dict[str, str] = {"ultra": "answer_only"}
 
 
+#: The ``dashboard.preferred_language`` codes a writer may store, each with the
+#: English name the reply rule spells out. The codes are the dashboard's own UI
+#: languages (``website/src/i18n/languages.ts``) so the picker can reuse their
+#: endonyms; ``""`` (auto) is not listed here and means "the user's language".
+PREFERRED_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "zh-CN": "Simplified Chinese",
+    "hi": "Hindi",
+    "es": "Spanish",
+    "fr": "French",
+    "bn": "Bengali",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "de": "German",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "it": "Italian",
+}
+
+
 @overload
 def normalize_verbosity(raw: str) -> str: ...
 
@@ -470,6 +490,16 @@ class DashboardConfig:
             enum=["persistent", "incognito", "temporary"],
         ),
     )
+    new_chat_crew_mode: bool = field(
+        default=False,
+        metadata=_meta(
+            "Start new chats in Ultra Mode",
+            "Open each new dashboard chat with Ultra Mode already on. It can "
+            "still be turned off before the first message. Applies only where "
+            "Ultra Mode is offered: a Persistent chat on the default agent, "
+            "with the Ultra Mode preview on.",
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(
@@ -516,6 +546,21 @@ class DashboardConfig:
             "irreversible-action confirmations always appear but stay brief, "
             "and ordered multi-step instructions stay complete.",
             enum=list(VERBOSITY_LEVELS),
+        ),
+    )
+    preferred_language: str = field(
+        default="",
+        metadata=_meta(
+            "Preferred Reply Language",
+            "Language the agent replies in, as one of the dashboard's language "
+            "codes (e.g. 'zh-CN'). Empty (the default) replies in the language "
+            "of the user's message. A set language holds even when a message "
+            "mixes languages, until the user asks for another one in chat. "
+            "Code, commands and identifiers stay as they are, and text written "
+            "for other readers (commit messages, PR text, code comments, public "
+            "posts) keeps the project's own language. Separate from 'language', "
+            "which sets only the dashboard UI.",
+            enum=["", *PREFERRED_LANGUAGES],
         ),
     )
     link_previews: bool = field(

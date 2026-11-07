@@ -565,6 +565,17 @@ class WhatsAppConfig:
             tags=["whatsapp"],
         ),
     )
+    auto_reply_to_voice: bool = field(
+        default=False,
+        metadata=_meta(
+            "Reply to Voice Notes by Voice",
+            "Answer a voice note with a voice note as well as the text, spoken "
+            "with the voice_reply settings. Needs voice_reply.provider 'polly', "
+            "which writes the Ogg/Opus a WhatsApp voice note plays; other "
+            "providers are skipped. Off by default: Polly is a billed AWS service.",
+            tags=["whatsapp"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         # Shared normalization: clamp both thresholds and guarantee soft <= hard

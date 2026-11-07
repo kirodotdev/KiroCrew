@@ -123,5 +123,8 @@ class TestKiroCliStillMirrorsTheFileItReads:
         assert provider._resolve_effort() == "max"
 
     def test_kiro_cli_writes_its_own_level(self, tmp_path):
-        _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+        provider = _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+        # Construction writes nothing; start() runs this writer before the spawn.
+        assert not _overlay(tmp_path).exists()
+        assert provider._apply_effort_overlay() is True
         assert _read_cli_overlay(tmp_path) == {MODEL: "low"}

@@ -10,16 +10,16 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_approval_instances``, ``_approval_stopped``, ``_buffers``, ``_chunk_seq``,
 ``_closing``, ``_compacting``, ``_coordinator_approvals``, ``_cycle_reached_provider``,
 ``_dashboard_card_exempt``, ``_dashboard_card_identity``, ``_deferred_notes``,
-``_dropped_note_ids``, ``_file_changes``, ``_git_repo_touch_overflow``,
-``_git_repo_touch_pending``, ``_git_repo_touch_terminal``, ``_git_repo_walk_pending``,
-``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
+``_dropped_note_ids``, ``_embed_question_polled_at``, ``_file_changes``,
+``_git_repo_touch_overflow``, ``_git_repo_touch_pending``, ``_git_repo_touch_terminal``,
+``_git_repo_walk_pending``, ``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
 ``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
 ``_has_reader_flag``,
 ``_hook_continuation_depth``, ``_last_enqueue_ts``, ``_last_turn_auth_required``,
 ``_last_turn_awaiting_permission``, ``_last_turn_children_announced``,
 ``_linked_session_busy``, ``_lock``,
 ``_member_approval_seeded``, ``_on_card_event``, ``_on_message``,
-``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_pending_consumers``,
+``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_preparing_texts``, ``_pending_consumers``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
@@ -29,7 +29,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
-``_turn_reply_mids``, ``_unstarted_generation``, ``_wake_starting_task``,
+``_turn_reply_mids``, ``_turns_started``, ``_unstarted_generation``, ``_wake_starting_task``,
 ``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
 ``event``,
 ``linked_session_key``, ``segment_message_id``, ``segment_raw_text``,
@@ -51,7 +51,7 @@ import traceback
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple
 
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
 from kiro_crew.dashboard.slot_queue_repository import EMPTY_QUEUE_SIGNATURE, SlotQueueRepository
@@ -144,6 +144,29 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
 # An arrival over this is refused, not admitted by evicting a seated entry
 # the caller already holds a 200 for.
 _MAX_PENDING_CONTEXT = 50
+# Process-local replay guards outlive their queue seats: a stamped guard still
+# answers a hydration that read the hold before the stamp, and an unstamped one
+# holds back every twin until the write lands. Bound the registry independently
+# of slot count, and evict the stamped ones first (_register_consumed_merge_contexts).
+_MAX_CONSUMED_MERGE_CARDS = 512
+# Live entries one source may hold in that queue. Shared by the /context and
+# /note admission checks and by the turn that takes its session's note
+# context from another slot, so one prompt is bounded as one queue is.
+_MAX_CONTEXT_PER_SOURCE = 10
+
+
+class _ConsumedMergeCard(NamedTuple):
+    """One merge card's process-local replay guard.
+
+    ``transcript`` is the key the card was consumed on, matched by file.
+    ``stamped`` says its durable ``consumed`` stamp has been proven, which makes
+    the guard the cheaper one to evict: it then only answers a hydration that
+    read the hold before the stamp, where an unstamped guard is the whole
+    protection until the write lands.
+    """
+
+    transcript: str
+    stamped: bool = False
 
 
 def context_entry_expired(entry: dict, now: float) -> bool:
@@ -235,6 +258,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # (``chat_turn.queue_cycle._hand_off_unstarted_turn``). -1: none, since a
     # published ``task`` is generation 1 or later.
     self._unstarted_generation = -1
+    # How many turns have passed every dispatch gate (``_turn_dispatch_gates``),
+    # so a reader can tell whether one ran since it looked (Resume all).
+    self._turns_started = 0
     # The turn a structured monitor wake started, until the runner accepts it
     # and the wake's ``nudge`` row is written. Until then the transcript cannot
     # say who opened the running turn, so the projection's ``wake_starting``
@@ -372,6 +398,8 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # slot cannot clear each other's indicator. Not a turn and not persisted:
     # the work it marks dies with the gateway process.
     self._preparing_count = 0
+    # Each open span's (caption, language), newest last (empty: the client's own).
+    self._preparing_texts = []
     # Monotonic time of the last cooperative Stop this slot DECLINED because
     # its session was compacting; 0.0 when none. Kept apart from
     # ``_stop_state`` on purpose: that machine is read by the queue drain as
@@ -423,11 +451,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # completion. See ``take_pending_subagent_deliveries``.
     self._subagent_delivery_pending = {}
     self._pending_context = []
+    self._inflight_merge_contexts = []
     self._deferred_notes = []
-    # Note ids dropped at the flush's rebind seam. A dropped
-    # note has no delivery obligation left, but its durable entry may only
-    # be retired by a save — the ids recorded here are how the next full
-    # save knows to retire entries whose rows will never exist.
+    # Note ids whose remaining delivery obligation ended without a row-based
+    # retirement: rebind drops and committed plain notes restored from disk.
+    # The next full save removes their durable hold entries unconditionally.
     self._dropped_note_ids = set()
     # Regenerate feature: variants pending attachment to next finalized assistant message
     self._pending_variants = []
@@ -527,6 +555,8 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # "the agent is done and asked you something", and which entries a user
     # message may retire.
     self._question_pending = {}
+    # When an app embed last polled the cards above (``note_embed_poll``); None until then.
+    self._embed_question_polled_at = None
 
 
 def begin_close(self: _ChatSlot) -> None:
@@ -597,10 +627,11 @@ def purge_chunks(self: _ChatSlot) -> int:
 def has_pending_context_seat(self: _ChatSlot) -> bool:
     """True if one more entry fits the queue's seat ceiling.
 
-    Counts live entries plus each held note's context half, because the
-    deferred-note flush promotes that half into this same queue -- without the
-    reservation a later arrival takes the seat the flush needs and the note's
-    context is lost after its 200.
+    Counts live entries, each held note's context half, and each merge-card
+    context a running turn has taken (``_inflight_merge_contexts``), because the
+    deferred-note flush promotes that half into this same queue and a turn that
+    does not land puts its merge cards back at the front -- without the
+    reservation a later arrival takes a seat one of them needs.
     """
     now = time.time()
     seats = sum(1 for e in self._pending_context if not context_entry_expired(e, now))
@@ -608,6 +639,9 @@ def has_pending_context_seat(self: _ChatSlot) -> bool:
         ctx = note.get("context")
         if isinstance(ctx, dict) and not context_entry_expired(ctx, now):
             seats += 1
+    seats += sum(
+        1 for entry in self._inflight_merge_contexts if not context_entry_expired(entry, now)
+    )
     return seats + 1 <= _MAX_PENDING_CONTEXT
 
 

@@ -610,13 +610,39 @@ def test_non_pinned_verdict_returns_before_any_candidate_inspection(
         (pdir / "extra.txt").write_text("planted\n", encoding="utf-8")
     monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
 
-    def unexpected_inspection(*args, **kwargs):
+    _real_scandir = os.scandir
+    _real_lstat = os.lstat
+
+    def _guarded_lstat(path, *args, **kwargs):
+        # Pass through calls that are not under the candidate directory --
+        # coverage.py resolves source-file paths via os.lstat during its
+        # _should_trace callback on the first entry into _pending_scripts_verdict
+        # in this xdist worker.  Those calls land on paths outside pdir (e.g.
+        # the CodeBuild runner root) and are not candidate inspection.
+        try:
+            p = os.fspath(path)
+        except TypeError:
+            p = str(path)
+        if not p.startswith(os.fspath(pdir)):
+            return _real_lstat(path, *args, **kwargs)
+        pytest.fail("non-pinned verdict attempted candidate inspection")
+
+    def _guarded_scandir(path, *args, **kwargs):
+        try:
+            p = os.fspath(path)
+        except TypeError:
+            p = str(path)
+        if not p.startswith(os.fspath(pdir)):
+            return _real_scandir(path, *args, **kwargs)
+        pytest.fail("non-pinned verdict attempted candidate inspection")
+
+    def _unexpected_is_link(*args, **kwargs):
         pytest.fail("non-pinned verdict attempted candidate inspection")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(os, "scandir", unexpected_inspection)
-        scoped.setattr(os, "lstat", unexpected_inspection)
-        scoped.setattr(skills_mod, "is_link_or_junction", unexpected_inspection)
+        scoped.setattr(os, "scandir", _guarded_scandir)
+        scoped.setattr(os, "lstat", _guarded_lstat)
+        scoped.setattr(skills_mod, "is_link_or_junction", _unexpected_is_link)
         assert loader._pending_scripts_verdict(pdir) is None
 
 

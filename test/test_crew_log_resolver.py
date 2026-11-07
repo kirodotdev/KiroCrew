@@ -1187,3 +1187,91 @@ def test_the_origin_map_is_bounded_by_uptime_not_by_the_number_of_live_turns():
     assert len(emit._child_origin) == emit._MAX_CHILD_ORIGINS
     assert emit.open_child_origin("a0") == ("", 0), "the oldest is evicted first"
     assert emit.open_child_origin(f"a{emit._MAX_CHILD_ORIGINS + 49}") == (SESSION, 1)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "closer"), [("completed", "subagent/completed"), ("failed", "subagent/failed")]
+)
+def test_the_terminal_closer_names_the_session_the_child_ran_in(outcome, closer):
+    """A reader finds the child's own transcript from the closer, after result.txt is gone.
+
+    The run's ``_session_id`` is the session its last attempt ran in; the closer is the
+    first entry written after that session exists (``subagent/spawned`` is written at
+    admission, before the child has one).
+    """
+    from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+    _open_session()
+    emit.remember_child_origin("ab12", SESSION, 3)
+    assert emit.open_child_origin("ab12") == (SESSION, 3)
+    info = SimpleNamespace(
+        id="ab12", elapsed=0.5, outcome=outcome, error=None, credits=0.0, _session_id="child-sid-1"
+    )
+    TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
+    assert_drained()
+    assert [d.get("child_sid") for d in _of(closer)] == ["child-sid-1"]
+
+
+def test_a_child_that_never_got_a_session_closes_without_a_child_sid():
+    from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+    _open_session()
+    emit.remember_child_origin("ab12", SESSION, 3)
+    assert emit.open_child_origin("ab12") == (SESSION, 3)
+    info = SimpleNamespace(id="ab12", elapsed=0.5, outcome="failed", error="boom", credits=0.0)
+    TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
+    assert_drained()
+    (data,) = _of("subagent/failed")
+    assert "child_sid" not in data
+
+
+def test_a_recovery_that_never_got_a_session_keeps_the_earlier_attempt_s_child_sid():
+    """A cancel-recovery attempt that fails before acquiring clears ``_session_id``; the
+    closer must still name the session the child last ran in."""
+    from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+    _open_session()
+    emit.remember_child_origin("ab12", SESSION, 3)
+    assert emit.open_child_origin("ab12") == (SESSION, 3)
+    info = SimpleNamespace(
+        id="ab12",
+        elapsed=0.5,
+        outcome="failed",
+        error="boom",
+        credits=0.0,
+        _session_id="",
+        _last_session_id="first-attempt-sid",
+    )
+    TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
+    assert_drained()
+    (data,) = _of("subagent/failed")
+    assert data["child_sid"] == "first-attempt-sid"
+
+
+@pytest.mark.parametrize(
+    ("current", "earlier", "kept"),
+    [("attempt-1", "", "attempt-1"), ("", "attempt-1", "attempt-1"), ("", "", "")],
+)
+def test_each_attempt_remembers_the_last_session_before_clearing(current, earlier, kept):
+    """``_run_inner_impl`` clears the cleanup identity first; the last session id survives."""
+    import asyncio
+
+    import kiro_crew.subagent as facade
+    from kiro_crew.subagent_manager.run import RunEventCoordinator
+
+    info = SimpleNamespace(_session_id=current, _last_session_id=earlier)
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(*_a, **_k):
+        raise _Stop
+
+    # Stop right after the identity reset: the first statement that reads the time.
+    # The bound ``*_impl`` runs on the facade's globals, so its ``time`` is patched there.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(facade, "time", SimpleNamespace(time=_stop, monotonic=_stop))
+        with pytest.raises(_Stop):
+            asyncio.run(RunEventCoordinator._run_inner_impl(SimpleNamespace(), info, "k", None))
+    assert info._session_id == ""
+    assert info._last_session_id == kept

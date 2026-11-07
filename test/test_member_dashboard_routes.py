@@ -1,10 +1,8 @@
 """The crewmate dynamic dashboard HTTP routes (CONTRACT-v3 parts 4, 7 and "adopt").
 
-The property worth guarding hardest is the one the sibling member routes already guard
-and this surface adds a write to: WHICH crewmate's dashboard a request reaches is
-decided from the slug plus the exact crew name, and a slug two crews share reaches
-nobody's. An instance is one directory per slug, so serving a shared slug -- with an
-editor -- would let two crewmates overwrite each other's dashboard.
+The crewmate a request reaches is decided from the slug plus the exact crew name, and a
+slug two crews share reaches nobody's: an instance is one directory per slug, so serving
+a shared slug would let two crewmates overwrite each other's dashboard.
 """
 
 from __future__ import annotations
@@ -67,14 +65,9 @@ def _manifest(**over):
 def _env(tmp_path, _floor_monkeypatch):
     """One fixture template, an isolated home, and the member checks stubbed.
 
-    The member-identity checks are the SIBLING routes' and are tested there; what is
-    stubbed is config loading, not the checks themselves -- ``_member_names_for_slug``
-    still runs, so the shared-slug refusal below is the real code path.
-
-    Patches through ``_floor_monkeypatch`` rather than the shared ``monkeypatch``
-    (D11): an isolation patch on the test-owned undo stack is lifted by any test body
-    that calls ``monkeypatch.undo()``, which would hand the rest of that test the real
-    config loader and the real owner gate.
+    Only config loading is stubbed; ``_member_names_for_slug`` still runs. Uses
+    ``_floor_monkeypatch`` (D11) so a test calling ``monkeypatch.undo()`` cannot lift
+    the isolation and reach the real config loader and owner gate.
     """
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     builtin = tmp_path / "builtin" / "fixture-board"
@@ -107,16 +100,10 @@ async def _none(*_a, **_k):
 async def _client(state=None):
     """A started client that always closes.
 
-    An ``async with`` helper rather than an ``@pytest.fixture``, by this repo's
-    convention (see ``agent_panel_routes_helpers._client``): the pinned pytest-asyncio
-    does not collect async-generator fixtures declared with plain ``@pytest.fixture``.
-
-    Closing is not tidiness. A ``TestClient`` owns an aiohttp session AND a listening
-    socket, so a returned-but-never-closed client leaks two descriptors per test and,
-    on a loaded runner, fails UNRELATED tests with EMFILE.
-
-    *state* stands in for the gateway's ``DashboardState`` where a case needs one;
-    without it the app carries none, as every other case here reads it.
+    An ``async with`` helper because the pinned pytest-asyncio does not collect
+    async-generator fixtures. An unclosed client leaks a session and a socket, and on a
+    loaded runner fails unrelated tests with EMFILE. *state* stands in for
+    ``DashboardState`` where a case needs one.
     """
     app = web.Application()
     if state is not None:
@@ -137,9 +124,7 @@ def _q(path: str, **extra) -> str:
     return f"/api/members/{SLUG}/dashboard{path}?{query}"
 
 
-# --------------------------------------------------------------------------
 # the read the frame does
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -158,13 +143,9 @@ async def test_a_crewmate_with_no_dashboard_answers_the_empty_state_not_a_404():
 async def test_an_empty_record_with_no_default_is_not_composed(caplog):
     """Nothing to compose, so nothing is attempted -- and nothing is logged.
 
-    This fixture registers one built-in and it is not ``DEFAULT_TEMPLATE_ID``, so
-    ``default_instance`` answers None: the ordinary state of a build whose registry
-    carries the loader and no default page. An empty record carries ``manifest={}``,
-    which ``parse_manifest`` refuses, so composing it logged a warning WITH a
-    traceback for a crewmate that has simply adopted nothing -- on every poll and
-    every projection frame. The frame's own empty state is the answer here and it
-    needs no html.
+    The fixture's one built-in is not ``DEFAULT_TEMPLATE_ID``, so ``default_instance`` is
+    None. Composing the empty ``manifest={}`` would log a traceback on every poll for a
+    crewmate that adopted nothing.
     """
     import logging
 
@@ -320,9 +301,7 @@ async def test_a_preview_read_the_store_refuses_answers_in_the_stores_words(monk
         assert (await resp.json())["code"] == "dashboard_failed"
 
 
-# --------------------------------------------------------------------------
 # adopt, edit, rollback
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -387,15 +366,9 @@ async def test_a_live_dashboard_comes_back_with_its_values_filled_in(monkeypatch
 def test_no_worker_session_key_survives_the_render_mask():
     """The page is served by a route with NO owner check.
 
-    The conductor ledger's rule is that no reader but the conductor sees a session
-    key, and a template decides for itself which fold reaches its page and how deep
-    it walks into it -- so the mask is recursive and keyed on the FIELD NAME rather
-    than on one fold's item shape. A mask written against the shape that exists today
-    covers the template adopted today and not the one adopted tomorrow.
-
-    A ``bind`` event's whole text IS the key, so emptying the item field alone leaves
-    it on the page inside the event log while a per-row check passes. The line stays,
-    because its ``kind`` and ``ts`` are when dispatch happened.
+    Only the conductor may see a session key, and a template picks which folds it walks,
+    so the mask is recursive and keyed on the field name. A ``bind`` event's text IS the
+    key, so it is emptied too; the line stays for its ``kind`` and ``ts``.
     """
     key = "chat-9-worker"
     value = {
@@ -524,13 +497,8 @@ def test_work_items_say_orphaned_when_the_board_main_chat_is_closed():
 def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
     """Every string here is AGENT-AUTHORED and nothing before this read inspects it.
 
-    A fold value is whatever a conductor wrote into the crew log, so a
-    `session_ledger_record(goal=...)` carrying a pasted key is rendered by any template
-    binding that fold. Dropping the one field known to be a secret says nothing about
-    prose that happens to contain one.
-
-    Mapping KEYS too: an artifact name is a free string the agent chose and reaches the
-    browser the same way its value does.
+    A `session_ledger_record(goal=...)` carrying a pasted key reaches any template
+    binding that fold. Mapping keys are scrubbed too: an artifact name is agent-chosen.
     """
     # ASSEMBLED at runtime, never written out whole. The internal-content scan reads
     # this change's own diff, so a credential-shaped literal added here is a finding
@@ -629,9 +597,7 @@ async def test_a_page_whose_values_cannot_be_read_still_answers_without_them(mon
     assert resp.status == 200 and body["state"] == "live" and "rendered_html" not in body
 
 
-# --------------------------------------------------------------------------
 # the boundaries, asserted structurally
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -725,12 +691,8 @@ async def test_a_non_owner_cannot_read_a_crewmates_values():
 async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
     """The boot path binds these routes DEFERRED, so the paths are written twice.
 
-    The same property ``test_agent_panel_routes_allocation`` pins, for the same reason: the boot
-    path may not import an optional subsystem before the socket binds, so it restates
-    each path against ``server._deferred`` -- and a restated path can drift. A route
-    renamed here and not there would 404 in the gateway while every test above passed.
-
-    Compares the two SETS, so a route added to either side has to be added to both.
+    Boot may not import this subsystem before the socket binds, so it restates each path
+    against ``server._deferred``. Comparing the two sets catches drift on either side.
     """
     import inspect
 
@@ -775,12 +737,9 @@ _REAL_WRITE_SESSION = routes._write_session
 def test_the_history_session_is_the_newest_by_SUCCESSION_not_by_the_clock(monkeypatch):
     """A change's history entry belongs to the LIVE session, chosen causally.
 
-    A unit's ``createdAt`` is stamped once and never rewritten, so a clock that steps
-    backward between two units of one slot lists the retired unit last. Reading the
-    newest off that listing would attribute every later change to a session that is
-    already over. Driven through the succession helper, which returns the chain order,
-    and asserted against the opposite clock order so a fallthrough to the header
-    listing fails this case rather than passing it.
+    A clock that steps backward lists the retired unit last by ``createdAt``. The clock
+    order here is the opposite of the chain order, so a fallthrough to the header
+    listing fails this case.
     """
     from kiro_crew.crew_log import projection as crew_log
 
@@ -880,12 +839,8 @@ class TestTheSlugChecks:
 def test_a_credential_in_a_page_is_redacted_before_it_reaches_the_reader():
     """The page goes through the same scrub as the values filled into it.
 
-    Only a template that shipped with the product can become a page, and that is a
-    claim about the repository rather than about the bytes on this disk: a hand-edited
-    template directory, or an instance record written under an older gateway, arrives
-    here having passed a parity check, which says nothing about a credential pasted
-    into a heading. `_page_safe` covers only the resolved values, never the page around
-    them.
+    A hand-edited template directory or an older instance record can carry a credential
+    in a heading; `_page_safe` covers only the resolved values, not the page around them.
     """
     # ASSEMBLED at runtime for the reason the fold-value case above gives: a
     # credential-shaped literal in the diff is a finding against the PR whatever the
@@ -1246,24 +1201,12 @@ def test_the_raw_body_is_scrubbed_beside_the_composed_page():
 
 
 class TestOneCrewmateResolvesToOneSlug:
-    """THE POD BUG on a freshly created crewmate whose roster key carries case.
+    """A crewmate whose roster key carries case (``Atlas``) resolves to one slug.
 
-    A crewmate was created as ``Atlas``. Its own session's ``dashboard_write``
-    returned success and recorded no mistake, yet the instance stayed at version 0
-    and the tab rendered "Nothing needs you, and nothing has been spent" over a
-    session that had spent 0.63 credits. Opening the tab as ``?member=atlas``
-    answered "not on the roster".
-
-    One cause, two symptoms. The roster is keyed by the display name somebody typed,
-    and every per-member path comes off that key's ``member_id``. A caller holding
-    ``atlas`` missed the key, read no ``member_id``, and fell through to
-    ``slug_for_name("atlas")`` -- so the write (resolved from the session, which
-    carries ``Atlas``) and the read (resolved from the query string) addressed two
-    different directories. Both succeeded. Neither saw the other.
-
-    These run against the REAL ``members`` helpers, not the module fixture's stubs:
-    the fixture replaces ``member_slug`` with a constant, which is precisely the
-    function that was wrong.
+    The roster is keyed by the typed display name; a caller holding ``atlas`` that missed
+    the key would fall through to ``slug_for_name("atlas")``, so the write and the read
+    would address two directories. Runs the REAL ``members`` helpers, since the module
+    fixture stubs ``member_slug``.
     """
 
     @staticmethod
@@ -1350,15 +1293,9 @@ class TestOneCrewmateResolvesToOneSlug:
 class TestTheExecutedPageComesFromTheCatalog:
     """The record is WRITABLE, so it cannot be the thing that vouches for itself.
 
-    `members/<slug>/dashboard/instance.json` holds the page AND the `source` label.
-    Gating the render on that label asked the file to vouch for its own contents:
-    anything that could append a `<script>` to the stored page could leave
-    `"source": "builtin"` sitting beside it, and this is the step that hands the
-    crewmate's task titles, summaries and costs to whatever runs.
-
-    So the record's `template_id` is read and the BYTES are read from the catalog --
-    a directory in this repository. The stored copy stays on disk, because a rollback
-    reads it and it is what the crewmate copied; nothing executes it.
+    Anything that could append a `<script>` to `instance.json` could also leave
+    `"source": "builtin"` beside it. So only `template_id` is read from the record and the
+    bytes come from the catalog; the stored copy stays for rollback and never executes.
     """
 
     # The module's own `_env` fixture already builds `fixture-board` into a scratch
@@ -1484,25 +1421,11 @@ class TestAStoredPageCannotBeEdited:
 
 
 class TestAStagedPageReachesOnlyItsOwnersPreview:
-    """WHERE A STAGED PAGE CAN BE SEEN, enumerated from the source rather than claimed.
+    """A staged page, which carries real fold values, is served only to its owner.
 
-    A staged page is bytes nobody has applied. It carries this crewmate's fold values
-    exactly as the applied page does, and it is written beside the record without moving
-    the version -- so the question that matters is not whether staging is safe but
-    whether a staged page can be SERVED anywhere except to the one person entitled to
-    look at it and say yes.
-
-    Three facts answer it, and each is read off the modules rather than restated:
-
-    1. there is exactly ONE place staged bytes are turned into a record to render, and
-       it sits behind the same owner gate as the applied read;
-    2. every route that emits a page is owner-gated, so there is no second door;
-    3. the link handed back by the staging call is that same owner-gated read, not a
-       route of its own and not a capability token.
-
-    Source-level on purpose. A behavioural test proves one request was refused; what is
-    worth guarding here is that no OTHER caller exists, which is a property of the call
-    graph and is exactly what a later edit breaks silently.
+    Read off the source: ONE place renders staged bytes, behind the owner gate; every
+    page route is owner-gated; the staging link is that same read. Source-level because
+    the property is that no other caller exists in the call graph.
     """
 
     def _source(self, module) -> str:
@@ -1594,13 +1517,10 @@ class TestAStagedPageReachesOnlyItsOwnersPreview:
         assert "_preview_record" not in source
 
     def test_the_preview_link_is_the_owner_gated_read(self) -> None:
-        """Not a route of its own and not a capability token: a second door would be a
-        second place to get the gate right, and a token would be a second credential
-        for data its holder can already read.
+        """The preview link is the owner-gated read, not a new route or capability token.
 
-        The link is the PAGE with this crewmate open and its Dashboard tab on the
-        staged read, named by the exact crew name -- slugification is lossy, so the
-        page and the read it makes both refuse a slug alone.
+        It names the exact crew name, because slugification is lossy and both the page
+        and its read refuse a slug alone.
         """
         from urllib.parse import parse_qs, urlparse
 
@@ -1632,13 +1552,10 @@ class TestAStagedPageReachesOnlyItsOwnersPreview:
         assert "render_package_page" not in source
 
     def test_the_preview_branch_is_reached_before_any_binding_is_resolved(self) -> None:
-        """THE CONVERSE, and the half that is easy to lose: a preview must reach the
-        staged page rather than some other page.
+        """A preview must reach the staged page, so its branch runs before any binding.
 
-        The tab's preview link carries no `dashboard=`, so a binding resolved before
-        this branch would serve the live PACKAGE page to a person deciding whether to
-        apply a staged one. Pinned as an ORDER, because an order is what a later edit
-        undoes without changing any single line's meaning.
+        The preview link carries no `dashboard=`, so resolving a binding first would serve
+        the live package page. Pinned as a source order.
         """
         from kiro_crew.dashboard.handlers import member_dashboard
 
@@ -1678,9 +1595,7 @@ class TestAStagedPageReachesOnlyItsOwnersPreview:
         assert emitters == {"dashboard/handlers/member_dashboard.py": 3}, emitters
 
 
-# --------------------------------------------------------------------------
 # the STAGED composed page: read back for a look, and nothing installed
-# --------------------------------------------------------------------------
 
 
 def _package(**over) -> dict:
@@ -1749,9 +1664,7 @@ class TestTheStagedComposedPage:
         assert "manifest" in body
 
 
-# --------------------------------------------------------------------------
 # when the person last spoke in the page's chat
-# --------------------------------------------------------------------------
 
 #: One instant: the person's reply. Every case states it in UTC and writes it the way
 #: a chat row or the stored stamp carries it.

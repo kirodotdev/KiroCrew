@@ -26,6 +26,7 @@ from kiro_crew.platform.context import (
     set_context,
 )
 from kiro_crew.platform.defaults import (
+    DefaultAcceptanceCheckProvider,
     DefaultAgentCatalogProvider,
     DefaultAgentExecutableResolver,
     DefaultAgentIdentityProvider,
@@ -73,7 +74,7 @@ from kiro_crew.platform.security_authority import PolicyAuthority, assert_securi
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.platform.interfaces import TelemetryProvider
+    from kiro_crew.platform.interfaces import TelemetryProvider, TunnelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,25 @@ def _reset_boot_state() -> None:
         _BOOTED = False
 
 
+def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
+    """The tunnel slot's provider in the public composition.
+
+    The no-op :class:`DefaultTunnelProvider`, unless ``tunnel.relay_enabled`` turns
+    on the Kiro relay client. A companion composes its own context and its own
+    provider, so it never reaches this choice. The relay client is imported only
+    when the setting is on, so a process composing the defaults with the relay off,
+    a short-lived hook among them, never loads it.
+    """
+    from kiro_crew.edition_locks import relay_selected
+
+    if not relay_selected(cfg):
+        return DefaultTunnelProvider()
+    from kiro_crew.relay_client.provider import public_tunnel_provider
+
+    provider: "TunnelProvider" = public_tunnel_provider(cfg)
+    return provider
+
+
 def build_default_context(
     cfg: "KiroCrewConfig", *, profile: str = PROFILE_STANDALONE
 ) -> PlatformContext:
@@ -270,7 +290,7 @@ def build_default_context(
         package_manager=DefaultPackageManager(),
         knowledge=DefaultKnowledgeProvider(),
         memory_files=DefaultMemoryFilesProvider(),
-        tunnel=DefaultTunnelProvider(),
+        tunnel=_public_tunnel_provider(cfg),
         telemetry=DefaultTelemetryProvider(),
         dashboard=DefaultDashboardContributor(),
         jail=DefaultJailProvider(),
@@ -280,6 +300,7 @@ def build_default_context(
         feedback=DefaultFeedbackTrackerProvider(),
         browser_credentials=DefaultBrowserCredentialProvider(),
         speech=DefaultSpeechProviderRegistry(),
+        acceptance_checks=DefaultAcceptanceCheckProvider(),
         feature_apps=(),
         governance=governance,
     )

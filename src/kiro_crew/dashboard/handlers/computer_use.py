@@ -32,11 +32,12 @@ all enforced BEFORE the POST, in
 field bounds, and the OWNER-only rebroadcast. See :func:`api_computer_use_frame`.
 
 Blocking work is offloaded: the keystone/config reads and the governance profile
-walk touch the filesystem, the permission probe SHELLS OUT to
-``kirocrew computer doctor --json`` rather than calling ctypes in-process (a
-ctypes fault is not catchable in Python and would take the whole gateway — every
-chat session, the cron scheduler, the Slack socket — down with it), and the
-dispatch itself performs accessibility calls that block for tens of milliseconds.
+walk touch the filesystem, the permission probe SPAWNS
+``python -m kiro_crew.computer_use.permission_probe`` rather than calling ctypes
+in-process (a ctypes fault is not catchable in Python and would take the whole
+gateway down with it: every chat session, the cron scheduler, the Slack socket),
+and the dispatch itself performs accessibility calls that block for tens of
+milliseconds.
 None of it may run on the event loop.
 
 Two DIFFERENT pools, and the split matters: the config reads/writes use the default
@@ -57,6 +58,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.computer_use import enable_state
 from kiro_crew.computer_use import overlay as cursor_overlay
 from kiro_crew.computer_use.screencast import (
@@ -81,7 +83,12 @@ from kiro_crew.computer_use.types import (
     PolicyConfig,
     PolicyStateError,
 )
-from kiro_crew.config.loader import computer_use_state_path, read_config_text
+from kiro_crew.config import loosening_provenance
+from kiro_crew.config.loader import (
+    PendingEditBlocksSave,
+    computer_use_state_path,
+    read_endorsed_config_text,
+)
 from kiro_crew.edition_locks import LOCKED_BY_POLICY
 from kiro_crew.executors import subprocess_executor
 
@@ -93,14 +100,16 @@ OP_CONFIG_SAVE = "computer_use.config_save"
 OP_INVOKE = "computer_use.invoke"
 OP_FRAME = "computer_use.frame"
 
-# The permission probe is a short-lived child running ``kirocrew computer doctor
-# --json``. Fixed argv, no shell, no agent-steerable input.
-DOCTOR_SUBCOMMAND = "computer"
-DOCTOR_ARGS: tuple[str, ...] = ("doctor", "--json")
-# Seconds to wait for it. The probe is two framework calls; anything slower means
-# a stalled TCC daemon, and the Settings page must render regardless — the rows
-# are advisory, so "unknown" is a fine answer and far better than a hung request.
-DOCTOR_TIMEOUT_SECS = 5.0
+# The permission probe is a short-lived child running the module named below under
+# the gateway's own interpreter. Fixed argv, no shell, no agent-steerable input. Not
+# ``kirocrew computer doctor --json``: starting the whole CLI alone can outlast the
+# timeout below. See the module's docstring.
+PERMISSION_PROBE_MODULE = "kiro_crew.computer_use.permission_probe"
+# Seconds to wait for it. The child imports the driver seam and makes two framework
+# calls; anything slower means a stalled TCC daemon, and the Settings page must
+# render regardless: the rows are advisory, so "unknown" is a fine answer and far
+# better than a hung request.
+PROBE_TIMEOUT_SECS = 5.0
 
 #: Platforms whose driver has a permission probe worth spawning a child for.
 #: Membership rather than an inequality, so a platform that gains a driver opts IN
@@ -234,7 +243,7 @@ def _permission_block(state: str) -> dict[str, str]:
 
 
 def _normalize_permissions(raw: object) -> dict[str, str]:
-    """Coerce the doctor's JSON into the payload's permission block.
+    """Coerce the probe child's JSON into the payload's permission block.
 
     Tolerant by construction: the probe is a separate process whose exact output
     shape must not be a hard dependency of the Settings page rendering. Accepts
@@ -259,13 +268,19 @@ def _normalize_permissions(raw: object) -> dict[str, str]:
 async def _probe_permissions(platform_id: str) -> dict[str, str]:
     """Probe the platform's capture/automation permissions OUT OF PROCESS.
 
-    Shells ``kirocrew computer doctor --json`` instead of calling the frameworks
-    here, and that is the whole point: a missing ctypes ``argtypes`` is a SIGSEGV,
-    not an exception, and in the gateway that
+    Spawns ``python -m kiro_crew.computer_use.permission_probe`` instead of calling
+    the frameworks here, and that is the whole point: a missing ctypes ``argtypes``
+    is a SIGSEGV, not an exception, and in the gateway that
     would take down every chat session, the cron scheduler, the Slack socket and
     the dashboard WebSocket at once. In a short-lived child the blast radius is a
     permission row that reads ``unknown``. The argument applies with MORE force to
     the Windows driver, whose whole surface is manual COM vtable dispatch.
+
+    The child is that module and not ``kirocrew computer doctor --json``, although
+    both ask the same ``probe_permissions``: the CLI's own start-up, plus the
+    doctor's agent-spec projection, can take longer than :data:`PROBE_TIMEOUT_SECS`
+    on a busy host, and a timed-out probe reads ``unknown`` on a host that holds
+    both grants.
 
     Runs for every platform that has a DRIVER, asking the backend rather than naming
     an OS — the same seam ``_payload`` reads. Gating this on macOS made
@@ -282,13 +297,10 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
     if platform_id not in _PROBEABLE_PLATFORMS:
         return _permission_block(PERMISSION_UNSUPPORTED)
 
-    # Reuses the resolver the managed MCP servers use, so the probe runs the SAME
-    # install as the gateway (and falls back to ``<interpreter> -m kiro_crew``
-    # when no console script is on PATH — the systemd-user-service case).
-    from kiro_crew.agent import _kirocrew_mcp_invocation
-
-    exe, prefix = _kirocrew_mcp_invocation(DOCTOR_SUBCOMMAND)
-    argv = [exe, *prefix, *DOCTOR_ARGS]
+    # The gateway's own interpreter, so the probe runs the SAME install as the
+    # gateway with no PATH lookup; ``-P`` keeps the spawn directory off
+    # ``sys.path`` so nothing there can shadow the module.
+    argv = platform_compat.isolated_python_argv("-P", "-m", PERMISSION_PROBE_MODULE)
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -296,7 +308,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=DOCTOR_TIMEOUT_SECS)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT_SECS)
     except (asyncio.TimeoutError, TimeoutError):
         # BOTH, deliberately. On Python 3.11+ these are the same class, but on 3.10
         # — which CI still gates on — ``asyncio.TimeoutError`` is a distinct class
@@ -307,7 +319,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
         # Kill the child before giving up: leaving a stalled probe running would
         # accumulate one process per Settings poll (the panel polls every 5s while
         # a grant is missing).
-        logger.debug("computer-use permission probe timed out after %ss", DOCTOR_TIMEOUT_SECS)
+        logger.debug("computer-use permission probe timed out after %ss", PROBE_TIMEOUT_SECS)
         if proc is not None:
             try:
                 proc.kill()
@@ -328,13 +340,17 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
 
 def _read_state_strict() -> dict:
     """Read the keystone for a MUTATION: raise on corrupt, ``{}`` when absent."""
-    path = computer_use_state_path()
-    if not path.exists():
-        return {}
     try:
-        raw = path.read_text(encoding="utf-8")
+        # Mutate what load_state enforces, not a tampered file: where the namespace
+        # sandbox seals this keystone, a direct in-sandbox rewrite or delete reads as
+        # the gateway-endorsed copy, so this save cannot re-endorse it.
+        raw = loosening_provenance.reconciled_bytes(
+            loosening_provenance.LEAF_COMPUTER_USE, computer_use_state_path()
+        )
     except OSError as exc:
         raise StateCorruptError(str(exc)) from exc
+    if raw is None:
+        return {}
     try:
         loaded = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -452,6 +468,46 @@ def _coerce_app_patterns(raw: object) -> "list[str] | None":
     return out
 
 
+class KeystoneFieldRefused(Exception):
+    """A keystone field the PUT would refuse: ``(resource, error, code, status)``."""
+
+    def __init__(self, resource: str, error: str, code: str, status: int = 400) -> None:
+        super().__init__(error)
+        self.resource, self.error, self.code, self.status = resource, error, code, status
+
+
+def keystone_patch(body: dict) -> dict[str, Any]:
+    """The keystone fields of *body*, validated as the PUT stores them. Synchronous.
+
+    The one validation of ``enabled`` / ``allowed_apps`` / ``extra_denied_apps``:
+    the PUT runs it on its body, and the Settings review of a hand-edited
+    ``computer_use.json`` (Settings > Security) runs it on the edited keys, so an
+    edit cannot store what the PUT refuses. Raises :class:`KeystoneFieldRefused`.
+    """
+    patch: dict[str, Any] = {}
+    if "enabled" in body:
+        if not isinstance(body["enabled"], bool):
+            raise KeystoneFieldRefused(
+                "enabled=bad_type", "enabled must be a boolean", "invalid_field_type"
+            )
+        if body["enabled"] and enable_state.locked_by_policy(audit_tool="computer_use_enable"):
+            raise KeystoneFieldRefused("enabled=locked", LOCKED_BY_POLICY, "locked_by_policy", 409)
+        patch[STATE_KEY_ENABLED] = body["enabled"]
+    for key in _APP_LIST_KEYS:
+        if key not in body:
+            continue
+        patterns = _coerce_app_patterns(body[key])
+        if patterns is None:
+            raise KeystoneFieldRefused(
+                f"{key}=invalid",
+                f"{key} must be a list of at most {MAX_APP_PATTERNS} strings, "
+                f"each at most {MAX_APP_PATTERN_LEN} characters",
+                "invalid_app_patterns",
+            )
+        patch[key] = patterns
+    return patch
+
+
 def _read_config_strict() -> dict:
     """Read ``config.json`` for a MUTATION: raise on corrupt, ``{}`` when absent.
 
@@ -462,10 +518,12 @@ def _read_config_strict() -> dict:
     from kiro_crew.config.loader import config_path
 
     path: Path = config_path()
-    if not path.exists():
-        return {}
     try:
-        data = json.loads(read_config_text(path))
+        # The precheck sees what update_config_locked's read will: the load's view,
+        # with no exists() check first, so a deleted file serves its endorsed copy.
+        data = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        return {}  # neither the file nor an endorsed copy
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise StateCorruptError(f"config.json is not readable as a JSON object: {exc}") from exc
     if not isinstance(data, dict):
@@ -484,7 +542,14 @@ def _assert_writable() -> None:
     It is not a transaction — two separate files cannot be updated atomically
     without a rewrite of both writers — but it removes the only failure the writes
     realistically have, which is a file that cannot be parsed.
+
+    A file pending owner review refuses here too, before either writer runs, so a
+    refused mixed save never leaves the limits half applied.
     """
+    from kiro_crew.config.loader import config_path
+
+    for path in (computer_use_state_path(), config_path()):
+        loosening_provenance.refuse_save_if_pending(loosening_provenance.leaf_for(path))
     _read_state_strict()
     _read_config_strict()
 
@@ -544,6 +609,36 @@ async def api_computer_use_config_get(request: web.Request) -> web.Response:
 
 
 # ── PUT ──
+
+
+async def _refresh_app_agents() -> None:
+    """Rewrite every enabled app's agent configs after an enable flip. Never raises.
+
+    App agents copy the same gated ``kirocrew-computer`` entry as the host spec. Each
+    app is rewritten under its ``app_lifecycle_lock``, so an update, disable or
+    uninstall in flight is never interleaved, and outside the config lock, which is
+    taken inside that lock elsewhere. The keystone is read live under each app's lock
+    and every enable flip runs its own pass, so overlapping saves still end on the
+    final setting. A failure leaves that app on its old server set until the next
+    gateway start.
+    """
+    from kiro_crew.apps import bridges
+    from kiro_crew.apps.manager import app_lifecycle_lock
+
+    try:
+        apps = await asyncio.to_thread(bridges.list_apps)
+    except Exception:
+        logger.warning("app agent refresh skipped: cannot list apps", exc_info=True)
+        return
+    for info in apps:
+        name = info.get("name") or ""
+        if not name or not info.get("enabled"):
+            continue
+        try:
+            async with app_lifecycle_lock(name):
+                await asyncio.to_thread(bridges.refresh_app_agents_if_enabled, name)
+        except Exception:
+            logger.warning("app agent refresh failed for %s", name, exc_info=True)
 
 
 async def api_computer_use_config_save(request: web.Request) -> web.Response:
@@ -617,41 +712,12 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         )
 
     # ── Validate EVERYTHING before writing anything ──
-    state_patch: dict[str, Any] = {}
-    if "enabled" in body:
-        if not isinstance(body["enabled"], bool):
-            _audit(
-                request, operation=OP_CONFIG_SAVE, outcome="denied", resources="enabled=bad_type"
-            )
-            return web.json_response(
-                {"error": "enabled must be a boolean", "code": "invalid_field_type"},
-                status=400,
-            )
-        if body["enabled"] and await _off_loop(
-            lambda: enable_state.locked_by_policy(audit_tool="computer_use_enable")
-        ):
-            _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources="enabled=locked")
-            return web.json_response(
-                {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
-            )
-        state_patch[STATE_KEY_ENABLED] = body["enabled"]
-    for key in _APP_LIST_KEYS:
-        if key not in body:
-            continue
-        patterns = _coerce_app_patterns(body[key])
-        if patterns is None:
-            _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources=f"{key}=invalid")
-            return web.json_response(
-                {
-                    "error": (
-                        f"{key} must be a list of at most {MAX_APP_PATTERNS} strings, "
-                        f"each at most {MAX_APP_PATTERN_LEN} characters"
-                    ),
-                    "code": "invalid_app_patterns",
-                },
-                status=400,
-            )
-        state_patch[key] = patterns
+    try:
+        # Off the loop: the enable check resolves the governance ceiling from disk.
+        state_patch = await _off_loop(lambda: keystone_patch(body))
+    except KeystoneFieldRefused as exc:
+        _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources=exc.resource)
+        return web.json_response({"error": exc.error, "code": exc.code}, status=exc.status)
 
     limits_patch: dict[str, Any] = {}
     for key, (low, high) in _INT_LIMITS.items():
@@ -731,6 +797,15 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
                 await _off_loop(lambda: _write_limits(limits_patch))
             if state_patch:
                 await _off_loop(lambda: _write_state(state_patch))
+        except PendingEditBlocksSave as exc:
+            _audit(
+                request,
+                operation=OP_CONFIG_SAVE,
+                outcome="denied",
+                resources="file_pending_review",
+                error=exc.leaf,
+            )
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         except StateCorruptError as exc:
             _audit(
                 request,
@@ -769,14 +844,6 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         resources = f"enabled={state_patch[STATE_KEY_ENABLED]} {resources}"
     _audit(request, operation=OP_CONFIG_SAVE, outcome="ok", resources=resources)
 
-    # Flipping the ENABLE changes the shim's tool surface, and kiro-cli caches
-    # ``tools/list`` for the LIFETIME of a session — ACP has no
-    # ``tools/list_changed`` notification to push the new set. Without this, a user
-    # who enables computer use sees "0 tools" in the chat they are sitting in and
-    # concludes the feature is broken; the tools only appear in some later session.
-    # So reset sessions exactly the way ``POST /api/mcp/sync`` does when MCP
-    # routing changes — same primitive, same reason.
-    #
     # Only on the ENABLE key, and only when it actually changed: the budget knobs
     # are read per call and need no restart, and re-saving the same value must not
     # tear down the user's session.
@@ -784,55 +851,76 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     # None when the enable did not change, so no rebuild ran to report on.
     spec_rewritten: bool | None = None
     if STATE_KEY_ENABLED in state_patch and state_patch[STATE_KEY_ENABLED] != enabled_before:
-        # REBUILD THE AGENT SPEC FIRST. The enable is also a spec-emission gate
-        # (``agent._computer_use_spec_gate``): while it is off the server is not in
-        # ``mcpServers`` at all, so no backend is spawned. A reset alone would
-        # therefore restart every session into the SAME spec that omits the server
-        # — the tools would not appear until the next gateway start. Rebuilding
-        # here holds the user-visible contract: enable, sessions restart, tools
-        # are there.
-        #
-        # UNDER THE CONFIG LOCK, reacquired: the rebuild READS the keystone and
-        # WRITES the spec, so leaving it outside would let two overlapping PUTs
-        # interleave — an enable's slower rebuild could land its spec after a
-        # later disable's, leaving a spec that mounts (and spawns) the server the
-        # keystone now forbids. Holding the lock makes read-decide-write atomic
-        # against every keystone writer, so the rebuild that finishes last is the
-        # one that read the final state. The write block above has already exited
-        # its own acquisition, and ``rebuild_agent_config`` never takes this lock,
-        # so this cannot self-deadlock.
-        #
-        # A rebuild that fails or declines to write must not fail the SAVE: the
-        # write already landed and was audited. The response says the spec was
-        # not rewritten; the tool surface then appears on the next gateway start.
-        #
-        # ``rebuild_agent_spec`` resolves ``kiro_crew.agent`` at CALL time, so that
-        # module is the single place a test can substitute the rebuild, and the
-        # test guard that keeps the suite from rewriting the operator's real
-        # ``~/.kiro/agents`` reaches this call site.
-        # Pinned by ``test_patching_the_agent_module_REACHES_the_handler``.
-        from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
-
-        async with _get_config_lock():
-            spec_rewritten = await asyncio.to_thread(
-                rebuild_agent_spec, "computer-use enable change"
-            )
-
-        from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
-
-        try:
-            sessions_reset = await _reset_all_sessions(request)
-        except Exception:
-            # The write already landed and was audited; a restart failure must not
-            # report the SAVE as failed. Worst case: the new tool surface appears
-            # on the next cold session.
-            logger.exception("computer-use enable saved, but session reset failed")
+        spec_rewritten, sessions_reset = await apply_enable_change(request)
 
     payload = await _full_payload()
     payload["sessions_reset"] = sessions_reset
     if spec_rewritten is not None:
         payload["agent_spec_rewritten"] = spec_rewritten
     return web.json_response(payload)
+
+
+async def apply_enable_change(request: web.Request) -> tuple[bool, int]:
+    """Rebuild the agent spec, then reset sessions, after the enable changed.
+
+    ``(spec_rewritten, sessions_reset)``. Call it after the write's own config-lock
+    hold has ended: it takes that lock again. Every writer of the enable calls it on
+    a real transition: this PUT and the Settings Apply of a pending
+    ``computer_use.json`` edit.
+
+    Flipping the ENABLE changes the shim's tool surface, and kiro-cli caches
+    ``tools/list`` for the LIFETIME of a session — ACP has no
+    ``tools/list_changed`` notification to push the new set. Without this, a user
+    who enables computer use sees "0 tools" in the chat they are sitting in and
+    concludes the feature is broken; the tools only appear in some later session.
+    So reset sessions exactly the way ``POST /api/mcp/sync`` does when MCP
+    routing changes — same primitive, same reason.
+    """
+    # REBUILD THE AGENT SPEC FIRST. The enable is also a spec-emission gate
+    # (``agent._computer_use_spec_gate``): while it is off the server is not in
+    # ``mcpServers`` at all, so no backend is spawned. A reset alone would
+    # therefore restart every session into the SAME spec that omits the server
+    # — the tools would not appear until the next gateway start. Rebuilding
+    # here holds the user-visible contract: enable, sessions restart, tools
+    # are there.
+    #
+    # UNDER THE CONFIG LOCK, reacquired: the rebuild READS the keystone and
+    # WRITES the spec, so leaving it outside would let two overlapping PUTs
+    # interleave — an enable's slower rebuild could land its spec after a
+    # later disable's, leaving a spec that mounts (and spawns) the server the
+    # keystone now forbids. Holding the lock makes read-decide-write atomic
+    # against every keystone writer, so the rebuild that finishes last is the
+    # one that read the final state. The caller's write has already exited
+    # its own acquisition, and ``rebuild_agent_config`` never takes this lock,
+    # so this cannot self-deadlock.
+    #
+    # A rebuild that fails or declines to write must not fail the SAVE: the
+    # write already landed and was audited. The response says the spec was
+    # not rewritten; the tool surface then appears on the next gateway start.
+    #
+    # ``rebuild_agent_spec`` resolves ``kiro_crew.agent`` at CALL time, so that
+    # module is the single place a test can substitute the rebuild, and the
+    # test guard that keeps the suite from rewriting the operator's real
+    # ``~/.kiro/agents`` reaches this call site.
+    # Pinned by ``test_patching_the_agent_module_REACHES_the_handler``.
+    from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+    async with _get_config_lock():
+        spec_rewritten = await asyncio.to_thread(rebuild_agent_spec, "computer-use enable change")
+    await _refresh_app_agents()
+
+    from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
+
+    sessions_reset = 0
+    try:
+        sessions_reset = await _reset_all_sessions(request)
+    except Exception:
+        # The write already landed and was audited; a restart failure must not
+        # report the SAVE as failed. Worst case: the new tool surface appears
+        # on the next cold session.
+        logger.exception("computer-use enable saved, but session reset failed")
+    return spec_rewritten, sessions_reset
 
 
 # ── POST /api/computer-use/invoke — the thin shim's loopback leg ──
@@ -1044,9 +1132,9 @@ async def api_computer_use_frame(request: web.Request) -> web.Response:
     all-clients set, and a live view of the operator's desktop must not cross that
     boundary. Awaited rather than fire-and-forget so the reply reflects delivery.
     """
-    from kiro_crew.dashboard.origin import is_loopback
+    from kiro_crew.dashboard.origin import is_loopback, is_ssm_request
 
-    if not is_loopback(request.remote or ""):
+    if is_ssm_request(request) or not is_loopback(request.remote or ""):
         _audit(
             request,
             operation=OP_FRAME,
@@ -1098,9 +1186,11 @@ async def api_computer_use_frame(request: web.Request) -> web.Response:
 
 
 __all__ = [
+    "KeystoneFieldRefused",
     "StateCorruptError",
     "api_computer_use_config_get",
     "api_computer_use_config_save",
     "api_computer_use_frame",
     "api_computer_use_invoke",
+    "keystone_patch",
 ]

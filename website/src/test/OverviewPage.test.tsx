@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { screen, fireEvent, act } from '@testing-library/react'
+import { i18next } from '../i18n/all'
 import { renderWithProviders, createTestStore } from './helpers'
 import OverviewPage from '../pages/OverviewPage'
 import { KIRO_SIGN_IN_BACKEND } from '../pages/developer/kiroSignInLink'
@@ -220,5 +221,35 @@ describe('OverviewPage — mission control', () => {
     expect(screen.queryByTestId('kiro-sign-in-moved')).not.toBeInTheDocument()
     expect(screen.queryByText(/sign-in moved/i)).not.toBeInTheDocument()
     expect(api.kasLoginStatus).not.toHaveBeenCalled()
+  })
+})
+
+// The Memory card line was five catalog fragments glued around two raw
+// numbers, so every language kept English word order and "1 days" (#32430).
+describe('OverviewPage — Memory card line', () => {
+  afterEach(async () => {
+    await act(async () => { await i18next.changeLanguage('en') })
+  })
+
+  it('reads as one sentence with a plural day count', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 2, history_max_days: 1, migrated: false })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('Summarizes chats into memory after 2h idle · keeps 1 day of history')).toBeInTheDocument()
+  })
+
+  it('reads as one sentence once semantic memory is on', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: true })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('Summarizes chats into memory after 3h idle · semantic memory active')).toBeInTheDocument()
+  })
+
+  it('follows the word order of the language, not English', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    const { api } = await import('../api/client')
+    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: false })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('3 時間使われないとチャットをメモリに要約 · 90 日分の履歴を保持')).toBeInTheDocument()
   })
 })

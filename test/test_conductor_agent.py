@@ -99,13 +99,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
     def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
         """A patrol round outlives a turn, so the loop must own the turn boundary.
 
-        An in-turn ``wait`` + re-poll loop spends the turn budget on latency and
-        dies at the turn cap mid-round, which loses the loop. Three halves of the
-        contract are pinned: ``monitor_start`` arms the round, ``wait`` is the
-        single-round fallback for a refused arm rather than the primary
-        mechanism, and the conductor knows the tool it needs to stop the loop it
-        armed. Whitespace is normalised so re-wrapping the prompt cannot fail
-        this for a formatting reason.
+        An in-turn ``wait`` loop dies at the turn cap mid-round; ``wait`` is only the
+        fallback for a refused arm. Whitespace is normalised so re-wrapping cannot fail it.
         """
         data = self._install(tmp_path, monkeypatch)
         prompt = " ".join(data["prompt"].split())
@@ -117,15 +112,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
     def test_prompt_names_the_tools_it_expects_to_be_used(self, tmp_path, monkeypatch):
         """The charter mounts whole servers, so the prompt must name what it wants.
 
-        ``@kirocrew-core`` puts 74 registered tools in front of this agent. Naming
-        only the session-control ones left the rest unaddressed, which is how a
-        conductor talks itself into running a work item in its own turn. Both
-        directions are pinned: the tools the four jobs need, and the four that
-        would end-run the no-write property by executing the work here.
-
-        Those four are also the reason the core grant is per-verb rather than
-        server-wide — the prompt PROHIBITS them, so a blanket auto-approve
-        contradicted the charter it shipped with.
+        Pins both the tools the four jobs need and the four that would run the work
+        here; those four are why the core grant is per-verb, not server-wide.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         for named in (
@@ -398,15 +386,10 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "autoApprove" not in data["mcpServers"]["kirocrew-work"]
 
     def test_the_work_mount_lands_on_all_four_surfaces(self, tmp_path, monkeypatch):
-        """A mount is four separate facts, and only three of them are visible.
+        """A mount is four separate facts: tools, mcpServers, allowedTools, rules[].match.
 
-        ``tools`` mounts the server, ``mcpServers`` gives it a command to launch,
-        ``allowedTools`` decides which verbs skip the approval prompt, and
-        ``permissions.rules[].match`` is what the KAS backend reads INSTEAD of
-        ``allowedTools``. The last one is the one that silently survives an
-        incomplete edit: a spec can look correctly mounted on kiro-cli while the
-        KAS projection grants nothing, and every patrol cycle then stalls on an
-        approval nobody is there to give.
+        KAS reads ``permissions.rules[].match`` instead of ``allowedTools``; missing it
+        grants nothing there, and every patrol cycle stalls on an unanswered approval.
         """
         data = self._install(tmp_path, monkeypatch)
         assert "@kirocrew-work" in data["tools"]
@@ -616,14 +599,10 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "goal-ledger-conductor" not in prompt
 
     def test_skill_body_matches_the_prompt_on_the_load_bearing_rules(self, tmp_path, monkeypatch):
-        """The prompt is the summary and the skill is the procedure; a disagreement
-        between them is resolved nondeterministically by whichever the model weighs
-        more. These four are the rules that make this flow what it is.
+        """Prompt and skill must agree on the load-bearing rules, or the model picks one.
 
-        The read-first rule is asserted on BOTH sides, because that is the one a
-        wake can contradict: a wake carries a pointer to the ledger rather than a
-        copy of it, so a surface telling the conductor a turn may arrive holding the
-        board has it act on a one-line notification as if it were the state.
+        Read-first is checked on both sides: a wake carries a pointer to the ledger,
+        not the board, so neither may say a turn arrives holding the board.
         """
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
@@ -640,14 +619,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
     def test_prompt_and_skill_name_the_template_dispatch_for_a_shadowed_worker(
         self, tmp_path, monkeypatch
     ):
-        """On installs where an older agent sync enrolled ``kirocrew-worker`` as a crew
-        member with private memory, a conductor running as a crew member on the
-        shared store (or a child a parent conductor created) is refused
-        ``memory_delegation_denied`` for every leaf dispatch. Left unsaid, the
-        conductor invents a remedy that does not exist (a memory-store setting), so
-        both the summary and the procedure name the real one -- ``agent_kind:
-        "template"`` -- as the way EVERY worker is dispatched, not as a retry after
-        the refusal, and say the binding is not a setting.
+        """Where ``kirocrew-worker`` is enrolled as a member with private memory, a
+        member dispatch is refused ``memory_delegation_denied``. Both texts name
+        ``agent_kind: "template"`` for every dispatch and say no setting changes it.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
@@ -766,6 +740,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
+            "@kirocrew-work/accept_eval",
+            "@kirocrew-work/patrol_budget",
         ]
 
     def test_kas_permissions_are_derived_from_the_filtered_grants(self, tmp_path, monkeypatch):
@@ -804,6 +780,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "kirocrew-dashboard/session_status",
         ]
         work_resources = [
+            "kirocrew-work/accept_eval",
+            "kirocrew-work/patrol_budget",
             "kirocrew-work/work_brief",
             "kirocrew-work/work_ledger_read",
             "kirocrew-work/work_ledger_rebuild",
@@ -958,6 +936,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
+            "@kirocrew-work/accept_eval",
+            "@kirocrew-work/patrol_budget",
         ]
 
     def test_skill_gates_the_plan_once_instead_of_interrogating(self):
@@ -987,18 +967,15 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Reads and creates do not prompt" in text
         assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
-        assert "accept_eval.py` invocation" in text
+        # The checks run as granted tools; only their shell fallback prompts.
+        assert "`accept_eval` and `patrol_budget` tools" in text
+        assert "each such call blocks on one approval" in text
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
         """One record per item, in the one place the evaluator batch reads.
 
-        Encoding items into ``session_ledger`` ``artifacts`` as well would give
-        two records that can disagree, and the ledger is the one
-        ``work_ledger_read`` returns and the Crew page will render. The codec
-        that squeezed an item into a 2000-character ``artifacts`` value under an
-        entry cap belongs to a conductor with no item store, so the skill must
-        not send a reader to it. Pinned as a doc ratchet because the
-        instruction, not the code, is what would drift.
+        Items also encoded into ``session_ledger`` artifacts would be a second record
+        that can disagree with the one ``work_ledger_read`` returns.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         assert "Do not encode items into `session_ledger` artifacts" in text
@@ -1232,13 +1209,8 @@ class TestAcceptEvaluator:
     def test_file_rejects_a_non_boolean_exists(self, tmp_path):
         """``bool()`` coercion would read ``{"exists": "false"}`` as ``True``.
 
-        The reported shape: an acceptance assembled from text carries string
-        booleans, and a truthy ``"false"`` silently inverts an absence check
-        into a presence check — the evaluator reports ``pass`` for exactly the
-        state the spec asked to reject. ``1``/``0`` are rejected too, on
-        purpose: the ``pr`` guard already refuses ``bool`` as an ``int``, so
-        accepting ``int`` as a ``bool`` here would contradict the sibling
-        field. A malformed spec gets a loud ``error``, never a coerced verdict.
+        A truthy ``"false"`` turns an absence check into a presence check. ``1``/``0``
+        are refused too, matching the ``pr`` guard that refuses ``bool`` as ``int``.
         """
         mod = _load_evaluator()
         present = tmp_path / "made"
@@ -1353,15 +1325,10 @@ class TestDraftPullRequest:
         assert seen[1][:4] == ["gh", "pr", "view", "123"]
 
     def test_a_draft_whose_checks_are_still_running_is_refused_too(self, monkeypatch):
-        """The deliberate scope, pinned so it reads as a decision.
+        """A stateless evaluator cannot tell a draft-gated pending from running CI.
 
-        A stateless evaluator cannot tell "pending because a readiness check is
-        gated on the draft flag" (never resolves) from "pending because CI is
-        still running" (resolves), and this returns the same ``refused`` for
-        both. The ground is the spec, not a prediction about CI: a draft is the
-        author's own "not ready for review", so an unfinished check run on one
-        is a person's turn. "Mark it ready for review" is bounded and owed
-        anyway; waiting is the reported defect.
+        Both read ``refused``: a draft is the author's "not ready", so an unfinished
+        check on one is a person's turn, not something to wait out.
         """
         mod = _load_evaluator()
         seen = self._wire(
@@ -1462,14 +1429,8 @@ class TestDraftPullRequest:
     def test_the_skill_prose_names_the_verdict_this_evaluator_returns(self, monkeypatch):
         """Doc ratchet: ``SKILL.md`` and this script must agree on a pending draft.
 
-        The conductor acts on the prose, not on the code, so a doc naming the
-        wrong verdict is the same defect as a wrong return - and every
-        behavioural test in this class is blind to it, because none of them read
-        the doc.
-
-        So derive the word by RUNNING the evaluator, then hold the shipped file's
-        draft sentences to it. A rewording that keeps the fact passes; one that
-        promises a pending wait, or claims a draft cannot pass, fails.
+        The conductor acts on the prose, so the verdict word comes from RUNNING the
+        evaluator and the skill's draft sentences are held to it.
         """
         mod = _load_evaluator()
         self._wire(mod, monkeypatch, [(8, "still running", ""), (0, "true", "")])

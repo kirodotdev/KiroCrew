@@ -6,6 +6,7 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 """
 
 import argparse
+import io
 import json
 import os
 import socket
@@ -157,6 +158,60 @@ class TestStatus:
         assert "running" in out
         assert "token auth" in out
 
+    def test_status_reads_the_stats_as_the_owner_on_a_token_auth_gateway(self, monkeypatch, capsys):
+        """A refused bare read is retried with a minted owner token through the peer proof."""
+        import kiro_crew.cli_server as cs
+
+        answers = [{"token": "tok"}, {"gateway_rss_mb": 241, "watchdog_rss_max_mb": 4096}]
+        sent = []
+
+        def _proven(req, port, timeout, *, operation):
+            sent.append((req.full_url, req.get_header("X-local-secret"), operation))
+            return io.BytesIO(json.dumps(answers.pop(0)).encode())
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _proven)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            cs._status(self._make_args())
+        out = capsys.readouterr().out
+        assert "  Memory:      241 MiB rss, session ceiling 4096 MiB" in out
+        assert "token auth" not in out
+        assert sent == [
+            ("http://127.0.0.1:5476/api/token/local?ttl=1m", "s3cret", "gateway_token"),
+            ("http://127.0.0.1:5476/api/status?token=tok", None, "gateway_status"),
+        ]
+
+    @pytest.mark.parametrize("refusal", ["http-403", "peer-refused"])
+    def test_status_keeps_the_token_auth_line_when_the_owner_sign_in_is_refused(
+        self, monkeypatch, capsys, refusal
+    ):
+        """An agent's shell or an unproven peer gets no stats, and the command still exits 0."""
+        import kiro_crew.cli_server as cs
+        from kiro_crew.cli_server_peer import _GatewayPeerRefused
+
+        def _refuse(req, port, timeout, *, operation):
+            if refusal == "peer-refused":
+                raise _GatewayPeerRefused("not this install's gateway")
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _refuse)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            assert cs._status(self._make_args()) is None
+        out = capsys.readouterr().out
+        assert "Kiro Crew gateway is running (token auth enabled)." in out
+        assert "Memory:" not in out
+
     def test_status_other_http_error(self, capsys):
         """Non-auth HTTP errors should report gateway as running with code."""
         from kiro_crew.cli_server import _status
@@ -269,14 +324,9 @@ class TestStatus:
 class TestStatusAgainstAClosedPort:
     """``kirocrew status`` against a port nothing listens on, with a REAL probe.
 
-    ``_status`` dials with a 3 s deadline through ``loopback_urlopen`` and routes
-    its failure through the shared ``loopback_http.deadline_expired`` classifier,
-    which reads a ``URLError`` wrapping a ``TimeoutError`` as busy. A closed
-    loopback port must refuse well inside that 3 s deadline so the command says
-    not running, not busy. On native Windows a closed-port connect SYN-retries
-    (~2 s) before ``WSAECONNREFUSED``; this test runs the real probe on every
-    platform, so the Windows CI shards show whether that refusal lands before the
-    3 s deadline or is misread as busy.
+    A closed port must refuse inside ``_status``'s 3 s deadline, or
+    ``loopback_http.deadline_expired`` reads it as busy. Windows SYN-retries ~2 s before
+    ``WSAECONNREFUSED``, so the real probe runs on every platform.
     """
 
     def _closed_port(self) -> int:
@@ -704,11 +754,8 @@ class TestCliLoopbackAddress:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    The CLI helpers in ``cli_commands_gateway_api.py`` attach the per-session IPC secret
-    on every ``/api/spawn`` call. Without it the call gets a 403, which
-    reads ``"gateway not running"`` when ``dashboard.url`` is
-    a non-loopback host (token_auth_middleware then requires either
-    a session cookie or the secret header on every request).
+    Without it a non-loopback ``dashboard.url`` makes token_auth_middleware answer 403,
+    which reads as ``"gateway not running"``.
     """
 
     def test_internal_secret_reads_local_secret_file(self, tmp_path, monkeypatch):

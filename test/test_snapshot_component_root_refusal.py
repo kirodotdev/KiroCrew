@@ -70,15 +70,9 @@ class TestARootResolvingToTheHomeItselfIsRefused:
         """Containment is necessary and not sufficient.
 
         A link to another subtree inside the home passes containment — it resolves to a
-        strict descendant — while changing WHICH tree is archived. Since bundles are
-        uploaded, that ships the link's target under the name of the component that was
-        asked for. An earlier revision of this file asserted the opposite, on the
-        reasoning that "the predicate is containment, not is-this-a-link". That was
-        wrong: containment answers whether a read can escape the home, not whether this
-        is the tree the component declared, and only the second question stops a
-        redirect. Nothing legitimate is lost -- a link aimed at a bigger disk points
-        OUTSIDE the home and containment already refuses it, so the only links
-        containment ever admitted were in-home redirects, which have no honest use.
+        strict descendant -- while changing WHICH tree is archived and uploaded under the
+        component's name. Nothing legitimate is lost: a link to a bigger disk points
+        OUTSIDE the home and containment already refuses it.
         """
         other = home / "workspace" / "elsewhere"
         other.mkdir(parents=True)

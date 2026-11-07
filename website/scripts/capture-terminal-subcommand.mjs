@@ -151,18 +151,20 @@ async function stubPty(page) {
 }
 
 async function openTerminal(page, base, theme) {
-  await stubDashboardApi(page, { slots, theme: theme.base })
+  await stubDashboardApi(page, {
+    slots, theme: theme.base,
+    localStorageEntries: {
+      'mc-color-theme': theme.attr,
+      'mc-privacy-notice-v1': '1',
+      'mc-nav': '1',
+    },
+  })
   logPageProblems(page)
   await stubPty(page)
   await page.route('**/api/terminal/complete', async route => {
     const body = JSON.parse(route.request().postData() || '{}')
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(answer(body)) })
   })
-  await page.addInitScript(t => {
-    localStorage.setItem('mc-color-theme', t)
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-nav', '1')
-  }, theme.attr)
 
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForFunction(

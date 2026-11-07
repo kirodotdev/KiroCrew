@@ -176,9 +176,8 @@ export default [
       // that ignores every theme token and blocks the whole renderer thread.
       // The dashboard owns these decisions in-app: destructive choices go
       // through useConfirm() / ConfirmDialog, errors and acknowledgements
-      // through the in-app notice and status surfaces. The window-qualified
-      // forms (`window.confirm`) reach the same globals, so no-restricted-
-      // properties pairs with no-restricted-globals to cover both spellings.
+      // through the in-app notice and status surfaces. Qualified calls bypass
+      // no-restricted-globals, so no-restricted-properties covers them.
       //
       // 'error', not 'warn': like the native-<select> gate above this is a gate
       // on a set that only shrinks, so it stays out of the --max-warnings budget
@@ -195,8 +194,14 @@ export default [
       ],
       'no-restricted-properties': ['error',
         { object: 'window', property: 'confirm', message: 'No window.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'globalThis', property: 'confirm', message: 'No globalThis.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'self', property: 'confirm', message: 'No self.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
         { object: 'window', property: 'alert', message: 'No window.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'globalThis', property: 'alert', message: 'No globalThis.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'self', property: 'alert', message: 'No self.alert() — route through the in-app notice or status surface. See issue #15662.' },
         { object: 'window', property: 'prompt', message: 'No window.prompt() — use the native text-entry dialog. See issue #15662.' },
+        { object: 'globalThis', property: 'prompt', message: 'No globalThis.prompt() — use the native text-entry dialog. See issue #15662.' },
+        { object: 'self', property: 'prompt', message: 'No self.prompt() — use the native text-entry dialog. See issue #15662.' },
       ],
       // A native <select> renders an OS-drawn popup: it ignores every theme
       // token, cannot be styled per row, and looks nothing like the rest of the
@@ -232,9 +237,6 @@ export default [
       'src/apps/meetings/MeetingsPage.tsx',
       'src/apps/papyrus/PapyrusPage.tsx',
       'src/apps/papyrus/ProjectList.tsx',
-      'src/components/RestartButton.tsx',
-      'src/components/TagManagerList.tsx',
-      'src/components/WebAppArtifactCard.tsx',
       'src/components/themeEditor.tsx',
       'src/hooks/useSessionActions.ts',
       'src/pages/ArtifactDetailPage.tsx',
@@ -250,10 +252,7 @@ export default [
       'src/pages/overview/AgentTemplatesTab.tsx',
       'src/pages/overview/KiroCrewCfgTab.tsx',
       'src/pages/overview/MemoryTab.tsx',
-      'src/pages/overview/PortabilityTab.tsx',
       'src/pages/overview/PromptsTab.tsx',
-      'src/pages/overview/SkillsTab.tsx',
-      'src/pages/overview/SteeringTab.tsx',
       'src/utils/popoutController.ts',
     ],
     rules: {

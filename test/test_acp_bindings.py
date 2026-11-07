@@ -40,12 +40,15 @@ from kiro_crew.providers.acp import AcpProvider
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_acp_bindings")
 
-SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_class_only_scan_can_fail",
+)
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "2c65337d97d7", "acp"),
+    "__init__": ("function", False, "b3474a02a08c", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -104,6 +107,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_valid_effort_levels": ("function", False, "6806e867af4e", "acp"),
     "harness_compact_verb_advertised": ("property", False, "a6632a57e602", "acp"),
     "harness_managed_compaction_backend": ("property", False, "f21e39ec5ffb", "acp"),
+    "harness_pin": ("property", False, "bb418bb7ece8", "acp"),
     "has_active_turn": ("function", False, "a6632a57e602", "acp"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "acp"),
     "is_acp_runtime_backend": ("property", False, "a6632a57e602", "acp"),
@@ -122,6 +126,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_session_sharing_eligible": ("property", False, "a6632a57e602", "acp"),
     "kas_active_mode_id": ("property", False, "bb418bb7ece8", "acp"),
     "kas_auto_approved_capabilities": ("property", False, "45debfdb1d02", "acp"),
+    "kas_command_call": ("function", True, "0c8766b65545", "acp"),
     "kas_projected_agent": ("property", False, "bb418bb7ece8", "acp"),
     "kas_registered_agents": ("property", False, "908b88c4efab", "acp"),
     "last_compaction_transient": ("property", False, "a6632a57e602", "acp"),
@@ -299,11 +304,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", acp_provider._ACP_PROVIDER_OWNERS)

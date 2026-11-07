@@ -11,6 +11,7 @@ import type { ErrorReport } from '../../utils/errorReport'
 import type { AgentSwitchNotice } from '../../utils/agentSwitchFeedback'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
 import type { ParkedThinking } from './thinking'
+import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** Per-slot activity-panel open/closed state, persisted to localStorage so the
  *  panel's open/closed choice survives a full page reload — keeping it
@@ -62,8 +63,9 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 export type EndedTurn = { gen: string; turn: number }
-/** One prompt this tab submitted: the bubble text and the send's own id. */
-export type SendAttempt = { text: string; sendId: string }
+/** One prompt this tab submitted: the bubble text, the send's own id and the
+ *  paste blocks its tokens name. */
+export type SendAttempt = { text: string; sendId: string; pastes?: PasteBlock[] }
 /** Retention bound for `ChatState.sendAttempts`, per slot. */
 export const SEND_ATTEMPTS_PER_SLOT_MAX = 50
 
@@ -236,14 +238,15 @@ export interface ChatState {
    *  the tab that resume replaced. `leaveSplit` marks a resume whose caller
    *  asked the chat page to leave Split View once it takes the view. */
   lastResumeActivation?: { requestId: string; replaced: string | null; leaveSplit?: boolean } | null
-  /** The last session the user OPENED by a gesture, set when that open's
-   *  transcript load lands (`switchSlot.fulfilled` for a switch marked
-   *  `gesture`, which only user-initiated opens set; see `SwitchSlotArg`). `seq` counts the opens,
-   *  so opening the same session again is a new value. A restore, an
-   *  automatic move or a failed load never sets it. Read by
-   *  `useAckCronNotesInView`: opening a cron run's chat is what marks its bell
-   *  note read (#23564). */
-  userOpen?: { key: string; seq: number }
+  /** The last session the user OPENED by a gesture, set when that open starts
+   *  (`switchSlot.pending` for a switch marked `gesture`, which only
+   *  user-initiated opens set; see `SwitchSlotArg`). `landed` turns true when
+   *  its transcript load lands (`switchSlot.fulfilled`); a failed or
+   *  superseded load never sets it. `seq` counts the opens, so opening the
+   *  same session again is a new value. A restore or an automatic move never
+   *  sets it. Read by `useAckCronNotesInView`: opening a cron run's chat is
+   *  what marks its bell note read (#23564). */
+  userOpen?: { key: string; seq: number; landed: boolean }
   /** Forks started in this window that will open their child when they
    *  succeed and `forkMayOpen` allows it. Creates are tracked by
    *  `foregroundCreateId`. While either is pending, the chat page does not

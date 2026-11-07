@@ -47,6 +47,12 @@ from kiro_crew.session_map import SessionMap
 # The reach check parses the test trees; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_map_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_class_only_scan_can_fail",
+    "the_field_scan_counts_every_read_and_write_shape",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
+)
+
 _FACADE = "kiro_crew.session_map"
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
@@ -68,6 +74,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_rebuild_thread_index": ("function", False, "b60c5fea256e", "session_map_links"),
     "_remove_entry": ("function", False, "27b949e9015d", "session_map"),
     "_repair_or_remove_stale": ("function", False, "958babeb61c8", "session_map"),
+    "_reread_after_failed_load": ("function", True, "b60c5fea256e", "session_map_store"),
     "_resolve_alias": ("function", False, "6fa4015b9565", "session_map"),
     "_restore_dirty": ("function", False, "b60c5fea256e", "session_map_store"),
     "_save": ("function", False, "b60c5fea256e", "session_map_store"),
@@ -133,6 +140,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "sid_unlanded_pending": ("function", False, "1eda252b53bd", "session_map"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "session_map_links"),
     "stamp_privacy_headers": ("function", True, "fa6cfecd5574", "session_map"),
+    "writes_refused": ("function", False, "a6632a57e602", "session_map_store"),
 }
 
 #: Every module-level name the facade bound before the split, dunders aside, and the
@@ -317,13 +325,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    node = tree.body[0]
-    assert isinstance(node, ast.FunctionDef)
-    assert sorted(_class_only_constructs(node)) == ["__class__", "__hidden", "super()"]
-
-
 @pytest.mark.parametrize("owner", facade._OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     tree = _tree(sys.modules[owner])
@@ -457,18 +458,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    node = tree.body[0]
-    assert isinstance(node, ast.FunctionDef)
-    assert _fields([node]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:
@@ -638,14 +627,3 @@ def test_both_patch_readers_see_the_facade() -> None:
     )
     assert _patched_in(dotted) == {"sel"}
     assert _patched_in(chained) == {"config_dir"}
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve()
-    assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)

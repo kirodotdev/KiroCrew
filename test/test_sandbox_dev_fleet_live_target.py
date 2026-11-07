@@ -109,9 +109,7 @@ class TestNoBackendGetsThePointerBack:
             assert _crew_path(prefix, sandbox._LIVE_TARGET_LEAF) in hidden
 
     def test_the_isolated_startup_stays_scoped_to_md_notebook(self) -> None:
-        """The ``-I`` rider the carve-out needed is gone with it: dev-fleet owns no
-        hidden leaf, and the isolated start is keyed on md-notebook alone. (Its
-        ``bound_port`` host grant names the bound-port deferral, not a carve-out.)"""
+        """dev-fleet owns no hidden leaf; the isolated start is keyed on md-notebook alone."""
         import kiro_crew.apps.backend  # noqa: F401 -- the source read below
 
         source = inspect.getsource(sys.modules["kiro_crew.apps.backend"])

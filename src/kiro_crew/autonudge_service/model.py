@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 #: a cap would bring back a watch with nothing to watch.
 MONITOR_TERMINAL_REASON = "monitor_terminal"
 
+#: How often a sleeping ungated loop, or a held loop, reads its pull request
+#: (``subject_reads``); the reconciler rescues a held loop at the same cadence.
+SUBJECT_READ_SECS = 300.0
+
 #: ``stopped_reason`` for a loop whose own kill switch fired: the stop file at
 #: ``stop_sentinel_path`` existed when the timer woke. The file is how the agent
 #: declares a ``{{STOP_FILE}}`` goal reached, so the record is KEPT and deactivated
@@ -328,10 +332,9 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
 #    nothing would ever re-arm it.
 #
 # Membership does NOT assert deliverability: ``chat_runner._resolve_channel_target``
-# decides that and refuses with a logged reason. So ``whatsapp`` (no transport) and
-# ``feishu`` (``supports_proactive_send=False``) are still listed, since an unlisted
-# key would silently stop being re-armed. Nor is it an arming permission; that is
-# ``binding_key_for``.
+# decides that and refuses with a logged reason. So ``whatsapp`` (no transport) is
+# still listed, since an unlisted key would silently stop being re-armed. Nor is it
+# an arming permission; that is ``binding_key_for``.
 _CHANNEL_KEY_PREFIXES = (
     "slack:",
     "discord:",

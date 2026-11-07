@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
+from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.atomic_write import atomic_write
@@ -361,7 +362,7 @@ def _read_installed(name: str, *, manifest: AppManifest | None = None) -> Instal
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         meta = InstalledApp.from_dict(data)
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         logger.warning("Failed to read %s: %s", meta_path, exc)
         return None
     if _session_approval_consent_unrecorded(name, data, manifest=manifest):
@@ -489,6 +490,16 @@ def _write_installed(
         meta_path = app_dir(name) / INSTALLED_META_FILENAME
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(meta_path, json.dumps(body, indent=2) + "\n")
+        # REVOKE-ONLY: drop any host-exec grant whenever a write leaves the app
+        # disabled, so no disable path (disable, widen-until-consent, update) can leave
+        # a stale grant that still starts a pod. Deliberately never GRANTS here: this
+        # chokepoint runs on the boot re-registration of builtins, which reads back
+        # ``installed.json`` -- a file a sandboxed shell can forge -- so minting from
+        # ``enabled`` here would let a forged record plus a restart produce a real
+        # grant. The grant is written only from the owner-authenticated ``enable_app``.
+        # No-op when no grant exists. See ``apps.host_exec_grants``.
+        if not credential_free_meta.enabled:
+            revoke_host_exec(name)
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
@@ -536,7 +547,7 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Failed to read %s: %s", path, exc)
         return {family: [] for family in STAGED_GRANT_FAMILIES}
     try:

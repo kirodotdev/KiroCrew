@@ -52,10 +52,6 @@ class HostGrants:
     #: ``RLIMIT_PROFILE_TOOL``: it is the ANCESTOR of real build workloads (vite,
     #: pip) that a 1024-descriptor hard cap starves.
     build_rlimit: bool = False
-    #: Hand this app's backend the port the gateway ACTUALLY bound
-    #: (``KIROCREW_BOUND_PORT``). ``start_dashboard`` reserves the port and exports
-    #: the value before the one boot wave, so the spawn finds it set.
-    bound_port: bool = False
     #: Operator-set variables forwarded to EVERY app backend's environment, which
     #: ``minimal_env()`` would otherwise strip. Exact names.
     backend_env_names: tuple[str, ...] = ()
@@ -74,9 +70,9 @@ class HostGrants:
 
 
 _TUPLE_FIELDS = frozenset(
-    f.name for f in fields(HostGrants) if f.name not in {"app", "build_rlimit", "bound_port"}
+    f.name for f in fields(HostGrants) if f.name not in {"app", "build_rlimit"}
 )
-_BOOL_FIELDS = frozenset({"build_rlimit", "bound_port"})
+_BOOL_FIELDS = frozenset({"build_rlimit"})
 
 
 def _installed_name(package: str) -> str:
@@ -139,11 +135,6 @@ def builtin_host_grants() -> tuple[HostGrants, ...]:
 def build_rlimit_apps() -> frozenset[str]:
     """Apps whose backend spawns with the BUILD rlimit profile."""
     return frozenset(g.app for g in builtin_host_grants() if g.build_rlimit)
-
-
-def bound_port_apps() -> frozenset[str]:
-    """Apps whose backend receives ``KIROCREW_BOUND_PORT`` at spawn."""
-    return frozenset(g.app for g in builtin_host_grants() if g.bound_port)
 
 
 def backend_env_names() -> tuple[str, ...]:

@@ -34,13 +34,13 @@ class TestRequeueSuppression:
 
 
 class TestConsumePendingReset:
-    async def _drain_retry(self, slot_key: str) -> None:
+    async def _drain_retry(self, state, slot_key: str) -> None:
         """Cancel and await the slot's pending-reset retry task, if armed.
 
         The decline paths arm a real background task; leaving it pending when
         the test's loop closes emits 'Task was destroyed but it is pending'.
         """
-        entry = chat_runner._pending_reset_retries.pop(slot_key, None)
+        entry = state._pending_reset_retries.pop(slot_key, None)
         if entry is not None:
             entry[1].cancel()
             try:
@@ -97,7 +97,7 @@ class TestConsumePendingReset:
         assert torn_down is False
         assert slot._pending_reset_history_key == "slack:123.456"
         assert slot.model_withheld is True
-        await self._drain_retry(slot.key)
+        await self._drain_retry(state, slot.key)
 
     @pytest.mark.asyncio
     async def test_busy_decline_arms_a_retry_that_lands_the_reset(self, tmp_path, monkeypatch):
@@ -117,7 +117,7 @@ class TestConsumePendingReset:
         assert torn_down is False
         assert slot._pending_reset_history_key == "slack:123.456"
 
-        task = chat_runner._pending_reset_retries.get(slot.key)
+        task = state._pending_reset_retries.get(slot.key)
         assert task is not None
         assert task[0] is slot
         await await_until(task[1])
@@ -141,7 +141,7 @@ class TestConsumePendingReset:
             await asyncio.sleep(30)
 
         stale_task = asyncio.get_running_loop().create_task(_sleep_forever())
-        chat_runner._pending_reset_retries[old_owner.key] = (old_owner, stale_task)
+        state._pending_reset_retries[old_owner.key] = (old_owner, stale_task)
 
         replacement = _slot()  # same key, different object
         replacement.linked_session_key = "slack:123.456"
@@ -150,7 +150,7 @@ class TestConsumePendingReset:
         state.sessions.reset = AsyncMock(side_effect=[False, True])
 
         await chat_runner._consume_pending_reset(state, replacement, allow_discard=False)
-        entry = chat_runner._pending_reset_retries.get(replacement.key)
+        entry = state._pending_reset_retries.get(replacement.key)
         assert entry is not None
         assert entry[0] is replacement
         await await_until(entry[1])
@@ -162,6 +162,36 @@ class TestConsumePendingReset:
             await stale_task
         except asyncio.CancelledError:
             pass
+
+    @pytest.mark.asyncio
+    async def test_each_gateway_keeps_its_own_retry_under_one_slot_key(self, tmp_path, monkeypatch):
+        # Two gateway states in one process can each hold a slot under the same
+        # key. The second arm must not displace the first: waking the first
+        # state's retry lands its reset and leaves the second's armed.
+        monkeypatch.setattr(
+            chat_runner,
+            "_PENDING_RESET_RETRY_DELAY_SECS",
+            3600.0,  # flake-ok: an hour-long tick, so only the wake can land a retry here
+        )
+        pairs = []
+        for name in ("a", "b"):
+            state, slot = _state(tmp_path / name), _slot()
+            state._slots[slot.key] = slot
+            slot._pending_reset_history_key = "dashboard:chat-cov-1"
+            state.sessions.reset = AsyncMock(return_value=True)
+            chat_runner._arm_pending_reset_retry(state, slot)
+            pairs.append((state, slot))
+        (first, first_slot), (second, second_slot) = pairs
+        first_task = first._pending_reset_retries[first_slot.key][1]
+
+        chat_runner._wake_pending_reset_retry(first, first_slot)
+        await await_until(first_task)
+
+        assert first_slot._pending_reset_history_key is None
+        assert second_slot._pending_reset_history_key == "dashboard:chat-cov-1"
+        owner, task = second._pending_reset_retries[second_slot.key]
+        assert owner is second_slot and not task.done()
+        await self._drain_retry(second, second_slot.key)
 
     @pytest.mark.asyncio
     async def test_no_teardown_leaves_the_flag_armed(self, tmp_path):
@@ -179,7 +209,7 @@ class TestConsumePendingReset:
 
         assert torn_down is False
         assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
-        await self._drain_retry(slot.key)
+        await self._drain_retry(state, slot.key)
 
     @pytest.mark.asyncio
     async def test_a_rebind_re_arms_the_current_key_and_does_not_reset_the_stale_one(
@@ -203,7 +233,7 @@ class TestConsumePendingReset:
         # A was never reset; the flag re-points at the slot's current session.
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key == "slack:B.new"
-        await self._drain_retry(slot.key)
+        await self._drain_retry(state, slot.key)
 
     @pytest.mark.asyncio
     async def test_attached_subagents_defer_the_pending_reset(self, tmp_path):
@@ -221,7 +251,7 @@ class TestConsumePendingReset:
         assert torn_down is False
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
-        await self._drain_retry(slot.key)
+        await self._drain_retry(state, slot.key)
 
     @pytest.mark.asyncio
     async def test_a_key_queued_during_the_await_is_not_clobbered(self, tmp_path):
@@ -598,7 +628,7 @@ class TestConsumePendingDiscardWaitsForSubagents:
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
         assert torn_down is False
-        _entry = chat_runner._pending_reset_retries.pop(slot.key, None)
+        _entry = state._pending_reset_retries.pop(slot.key, None)
         if _entry is not None:
             _entry[1].cancel()
             try:
@@ -624,7 +654,7 @@ class TestConsumePendingDiscardWaitsForSubagents:
         assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
         assert slot._pending_discard_conversation_key == "dashboard:chat-cov-1"
         assert torn_down is False
-        _entry = chat_runner._pending_reset_retries.pop(slot.key, None)
+        _entry = state._pending_reset_retries.pop(slot.key, None)
         if _entry is not None:
             _entry[1].cancel()
             try:

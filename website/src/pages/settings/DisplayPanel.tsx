@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -29,6 +29,7 @@ import {
   setTerminalFontFamily,
   setTerminalFontSize,
   setTerminalCursorStyle,
+  setTerminalCopyOnSelect,
   DEFAULT_TERMINAL_FONT_SIZE,
   TERMINAL_CURSOR_STYLES,
 } from '../../hooks/useTerminalFont'
@@ -46,9 +47,11 @@ import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
+import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../../lib/electron'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -91,6 +94,9 @@ const INTENSITY_LABEL_KEYS = {
   intense: 'pages.settings.displayPanel.intensity_intense',
 } as const satisfies Record<IntensityName, string>
 
+/** Why the tray icon switch is locked on, which the switch's description points at. */
+const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
@@ -125,6 +131,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
+  const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -496,6 +503,34 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Phase for the install status indicator: fetching (api.installTheme in
   // flight) → applying (auto-selecting the freshly installed theme).
   const [installPhase, setInstallPhase] = useState<'fetching' | 'applying' | null>(null)
+  // Something to install: a chosen zip, or a typed/picked location.
+  const installReady = installType === 'upload' ? !!installFile : !!installValue.trim()
+
+  // Browse… for a local theme folder. Only the desktop shell can open the
+  // OS-native folder chooser (a browser tab cannot read real paths), so the
+  // button shows only once the shell confirms a pick can work on this machine.
+  // The chosen folder just fills the field: it is validated by the same
+  // install call as a typed path, and the user still presses Install.
+  const [nativePickReady, setNativePickReady] = useState(false)
+  const [nativePickBusy, setNativePickBusy] = useState(false)
+  useEffect(() => {
+    if (installType !== 'local' || !hasNativeFolderPicker()) return
+    let live = true
+    canPickFolderNatively().then(ok => { if (live) setNativePickReady(ok) })
+    return () => { live = false }
+  }, [installType])
+  const browseThemeFolder = async () => {
+    if (nativePickBusy || installBusy) return
+    setNativePickBusy(true)
+    setInstallError(null)
+    try {
+      const result = await pickFolderNatively()
+      if (result.status === 'picked') setInstallValue(result.path)
+      else if (result.status === 'failed') setInstallError(i18nT('pages.settings.displayPanel.browse_theme_folder_failed'))
+    } finally {
+      setNativePickBusy(false)
+    }
+  }
 
   const handleInstall = async () => {
     const v = installValue.trim()
@@ -672,7 +707,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main
-          window's dashboard (useCloseAction), local or remote gateway. */}
+          window's dashboard (useCloseAction, useTrayIcon), local or remote
+          gateway. */}
       {closeActionSupported && (
         <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
           <SettingsCard>
@@ -688,6 +724,30 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 `installValue` further down this panel. The switch already
                 shows the unchanged value, so toggling again is the retry. */}
             {closeActionFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+            {trayIconSupported && (
+              <SettingsToggle
+                settingId="display.show-tray-icon"
+                label={i18nT('pages.settings.displayPanel.show_tray_icon')}
+                hint={i18nT('pages.settings.displayPanel.show_tray_icon_desc')}
+                checked={trayIcon.show}
+                disabled={trayIconPending || !trayIcon.canHide}
+                describedBy={trayIcon.canHide ? undefined : TRAY_ICON_LOCKED_NOTE_ID}
+                onChange={setTrayIcon}
+              />
+            )}
+            {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
+            {trayIconSupported && !trayIcon.canHide && (
+              <p id={TRAY_ICON_LOCKED_NOTE_ID} className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.show_tray_icon_locked')}
+              </p>
+            )}
+            {/* No hand-off, for the same drafts as the close row above. */}
+            {trayIconFailed && (
               <ErrorNotice
                 variant="inline"
                 message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
@@ -844,6 +904,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                     : i18nT('pages.settings.displayPanel.terminal_cursor_style_underline'),
             }))}
             onChange={v => setTerminalCursorStyle(v as (typeof TERMINAL_CURSOR_STYLES)[number])}
+          />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_copy_on_select')}
+            hint={i18nT('pages.settings.displayPanel.terminal_copy_on_select_desc')}
+            checked={termFont.copyOnSelect}
+            onChange={setTerminalCopyOnSelect}
           />
           {/* Free text with commit-on-blur, mirroring the font field above: the
               gateway host's installed shells cannot be enumerated from the
@@ -1098,13 +1164,24 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                   placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
                   className="min-w-0" />
               )}
-              <button onClick={handleInstall}
-                disabled={installBusy || (installType === 'upload' ? !installFile : !installValue.trim())}
+              {installType === 'local' && nativePickReady && (
+                <Btn type="button" onClick={browseThemeFolder} disabled={nativePickBusy || installBusy}
+                  className="shrink-0 whitespace-nowrap px-3 py-2 text-sm">
+                  <FolderOpen size={14} aria-hidden="true" />
+                  {i18nT('pages.settings.displayPanel.browse_theme_folder')}
+                </Btn>
+              )}
+              {/* Install turns primary once there is something to install (a
+                  typed or picked path, or a chosen zip), so the next step after
+                  Browse… reads as the action to take rather than a faint label. */}
+              <Btn onClick={handleInstall}
+                disabled={installBusy || !installReady}
+                primary={installReady}
                 aria-live="polite"
-                className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
+                className="shrink-0 px-3 py-2 text-sm">
                 {installBusy && <StatusSpinner />}
                 {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
-              </button>
+              </Btn>
             </div>
             {/* No hand-off: installValue (the GitHub URL / local path just typed)
                 or the picked .zip is still in place on failure — the user corrects
@@ -1127,13 +1204,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           discards the draft unconditionally: on an untouched form both
           accidental exits still work (Escape is the capability the issue asks
           for), and once a name or a colour has been entered only the explicit
-          exits — the header close button and the panel's own Cancel — close it. */}
+          exits — the header close button and the panel's own Cancel — close it.
+          It is also held while the delete confirmation is open above it, so the
+          Escape that cancels that confirmation does not close the editor too. */}
       <Modal
         open={editor.editorOpen}
         onClose={editor.closeEditor}
         title={editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')}
         maxWidth={672}
-        guardAccidentalDismiss={editor.isDirty}
+        guardAccidentalDismiss={editor.isDirty || editor.confirmingDelete}
       >
         <ThemeEditorPanel editor={editor} />
       </Modal>
