@@ -6,9 +6,10 @@
 # nothing, and the fake backend never calls a notifying tool. Other scenarios
 # DO write notifications -- every crewmate DM reply posts one -- so
 # `fresh_target` runs this before any of them, and the popover's empty state
-# ("No notifications" / "Activity will appear here") and the page's zero
-# counters hold on every night; reading writes nothing, so a retry reads the
-# same. The backlog
+# ("No notifications", with no second line) and the page's zero counters hold
+# on every night; reading writes nothing, so a retry reads the same. The
+# popover paints no panel of its own: its one card holds the heading, the
+# search box and "Open inbox", and the empty state floats below it. The backlog
 # record names the `empty` seed; the lane boots `rich`, and on this surface the
 # two are the same because neither carries a note. Two clicks and a wait keep
 # the surviving screenshots to the popover, the page and the settled page, so
@@ -27,13 +28,13 @@ preconditions:
   start_url: /chat
   fresh_target: true
 steps:
-  - You are on the chat page. In the top bar, near the right edge, find the small bell icon (it carries no number badge) and click it once. A panel slides in from the right with the heading "Notifications".
-  - Read the panel. It says "No notifications" with "Activity will appear here" beneath. At the panel's bottom right click the link reading "Open inbox".
+  - You are on the chat page. In the top bar, near the right edge, find the small bell icon (it carries no number badge) and click it once. A panel slides in along the right edge. It has no background of its own; at its top is one floating card holding the heading "Notifications", a search box and, at that card's bottom right, a link reading "Open inbox".
+  - Read the panel. Below the card, directly over the lightly blurred page, a faint bell icon sits above the words "No notifications", with no second line. Click the "Open inbox" link at the bottom right of the card.
   - Wait a second for the page to load.
 expectations:
   - The main area shows the Notifications page, headed "Notifications" with "All agent activity, cron results, webhooks, and approvals" beneath it, and the bell panel has closed.
   - A row of counters near the top reads "Total" 0, "Unread" 0, "Cron" 0, "Hooks" 0 and "Heartbeat" 0.
-  - An "Activity Feed" card reads "No notifications" with "Activity will appear here" beneath, and lists no items; beside it a card reads "Select a notification".
+  - An "Activity Feed" card reads "No notifications" and lists no items; beside it a card reads "Select a notification".
   - In the screenshot taken right after you clicked the bell, the panel was open with the heading "Notifications" and read "No notifications".
   - No red error banner is visible and no text is clipped or overlapping.
 max_steps: 6
