@@ -12,7 +12,7 @@ import type { McpApplyChange, McpServer } from '../../types'
 import { Badge, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
-import { findReport } from '../../utils/errorReport'
+import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import McpTab from '../overview/McpTab'
@@ -665,7 +665,24 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   })
 
   const relayReturnAddress = async (provider: ConnectionProvider, returnAddress: string) => run(provider, 'relay', async () => {
-    await api.mcpOAuthRelay(provider.slug, returnAddress)
+    try {
+      await api.mcpOAuthRelay(provider.slug, returnAddress)
+    } catch (error) {
+      // A spent approval can never take this address. Resolve rather than
+      // throw: the card clears its field only on a resolved relay.
+      if (error instanceof ApiError && parseErrorCode(error.body) === 'approval_superseded') {
+        setFeedback(current => ({
+          ...current,
+          [provider.slug]: {
+            kind: 'error',
+            text: t('pages.connectionsPage.approval_superseded'),
+            report: findReport(error.message),
+          },
+        }))
+        return
+      }
+      throw error
+    }
     setFeedback(current => ({
       ...current,
       [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.return_address_delivered') },

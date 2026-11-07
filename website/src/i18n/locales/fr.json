@@ -14891,6 +14891,7 @@
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
+      "approval_superseded": "Cette autorisation n’est plus active. Annulez, puis reconnectez-vous pour en lancer une nouvelle.",
       "before_you_connect": "Avant la connexion",
       "before_you_disconnect": "Avant la déconnexion",
       "cancel": "Annuler",

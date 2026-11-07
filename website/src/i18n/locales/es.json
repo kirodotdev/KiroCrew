@@ -14891,6 +14891,7 @@
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
+      "approval_superseded": "Esta aprobación ya no está activa. Cancela y vuelve a conectar para empezar una nueva.",
       "before_you_connect": "Antes de conectar",
       "before_you_disconnect": "Antes de desconectar",
       "cancel": "Cancelar",
