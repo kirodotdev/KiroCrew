@@ -11988,6 +11988,7 @@
       "live": "লাইভ",
       "load_more": "আরও লোড করো",
       "load_more_artifacts": "আরও {{provider}} আর্টিফ্যাক্ট লোড করো",
+      "loading_more_artifacts": "আরও {{provider}} আর্টিফ্যাক্ট লোড হচ্ছে…",
       "loading": "লোড হচ্ছে…",
       "masonry_preview_gallery": "ম্যাসনরি প্রিভিউ গ্যালারি",
       "more_ways_to_add_an_artifact": "আর্টিফ্যাক্ট যোগ করার আরও উপায়",

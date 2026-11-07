@@ -11727,6 +11727,7 @@
       "live": "ライブ",
       "load_more": "もっと読み込む",
       "load_more_artifacts": "{{provider}} のアーティファクトをさらに読み込む",
+      "loading_more_artifacts": "{{provider}} のアーティファクトをさらに読み込み中…",
       "loading": "読み込み中…",
       "masonry_preview_gallery": "レンガ造りプレビューギャラリー",
       "more_ways_to_add_an_artifact": "アーティファクトを追加するその他の方法",
