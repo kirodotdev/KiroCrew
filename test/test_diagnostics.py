@@ -327,6 +327,36 @@ def test_collapse_skips_root_and_single_segment_and_respects_boundary(monkeypatc
     assert out == f"{longer}:/usr/bin" and n == 0, out
 
 
+def test_collapse_keeps_a_dotted_or_accented_sibling_login(monkeypatch):
+    """A shorter home does not cut down a sibling login that goes on past it.
+
+    ``jo.doe`` and an accented ``jo`` login both continue the ``jo`` segment, so
+    neither may become ``~.doe`` or ``~`` plus the accent; a dot that ends the
+    sentence still collapses.
+    """
+    parent = "/" + "home"  # assembled so no literal home path is on a line
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(f"{parent}/jo")))
+    dotted = f"{parent}/jo.doe/log"
+    accented = f"{parent}/jo\u00e9/log"
+    out, n = diagnostics._collapse_home_prefixes(f"{dotted} {accented} at {parent}/jo.")
+    assert out == f"{dotted} {accented} at ~.", out
+    assert n == 1
+
+
+def test_collapse_covers_the_resolved_spelling_of_a_linked_home(tmp_path, monkeypatch):
+    """A home reached through a link collapses where a frame wrote it resolved too."""
+    real = tmp_path / "real-home"
+    real.mkdir()
+    link = tmp_path / "linked-home"
+    make_dir_link(link, real)
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: link))
+    monkeypatch.setattr(diagnostics, "config_dir", lambda: link / ".kiro" / "crew")
+    resolved = os.path.realpath(link)
+    out, n = diagnostics._collapse_home_prefixes(f"{link}{os.sep}a.log {resolved}{os.sep}b.log")
+    assert out == f"~{os.sep}a.log ~{os.sep}b.log", out
+    assert n == 2
+
+
 def test_nested_data_home_keeps_relative_tail(tmp_path, monkeypatch):
     """Ruling 3: a data home nested under home collapses to ``~/.kiro/crew/...``.
 
