@@ -16,11 +16,24 @@ import { api } from '../api/client'
 
 vi.mock('../api/client', async (orig) => {
   const actual = await orig<typeof import('../api/client')>()
-  return { ...actual, api: { ...actual.api, wakatimeStats: vi.fn(), wakatimeExportDownload: vi.fn() } }
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      wakatimeStats: vi.fn(),
+      wakatimeExportDownload: vi.fn(),
+      wakatimeOauthStatus: vi.fn(),
+      wakatimeOauthAuthorize: vi.fn(),
+      wakatimeOauthDisconnect: vi.fn(),
+    },
+  }
 })
 
 const wakatimeStats = api.wakatimeStats as unknown as ReturnType<typeof vi.fn>
 const wakatimeExportDownload = api.wakatimeExportDownload as unknown as ReturnType<typeof vi.fn>
+const wakatimeOauthStatus = api.wakatimeOauthStatus as unknown as ReturnType<typeof vi.fn>
+const wakatimeOauthAuthorize = api.wakatimeOauthAuthorize as unknown as ReturnType<typeof vi.fn>
+const wakatimeOauthDisconnect = api.wakatimeOauthDisconnect as unknown as ReturnType<typeof vi.fn>
 
 function mount() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -36,6 +49,12 @@ function mount() {
 beforeEach(() => {
   wakatimeStats.mockReset()
   wakatimeExportDownload.mockReset()
+  wakatimeOauthStatus.mockReset()
+  wakatimeOauthAuthorize.mockReset()
+  wakatimeOauthDisconnect.mockReset()
+  // Default: an unconnected, unconfigured OAuth app, so the stats-focused tests
+  // render without the Connect button needing per-test setup.
+  wakatimeOauthStatus.mockResolvedValue({ connected: false, client_configured: false })
 })
 afterEach(() => cleanup())
 
@@ -148,19 +167,44 @@ describe('WakaTimeTab', () => {
     await waitFor(() => expect(wakatimeStats).toHaveBeenCalledWith('last_30_days'))
   })
 
-  it('surfaces an export failure in place instead of navigating away', async () => {
+  it('offers Connect with WakaTime and navigates to the authorize URL', async () => {
+    wakatimeStats.mockResolvedValue({ configured: false })
+    wakatimeOauthStatus.mockResolvedValue({ connected: false, client_configured: true })
+    wakatimeOauthAuthorize.mockResolvedValue({ authorize_url: 'https://wakatime.com/oauth/authorize?x=1' })
+    const assign = vi.fn()
+    const original = window.location
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign } })
+    try {
+      mount()
+      const btn = await screen.findByRole('button', { name: /connect with wakatime/i })
+      fireEvent.click(btn)
+      await waitFor(() => expect(assign).toHaveBeenCalledWith('https://wakatime.com/oauth/authorize?x=1'))
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: original })
+    }
+  })
+
+  it('shows the setup hint instead of Connect when the OAuth app is not configured', async () => {
+    wakatimeStats.mockResolvedValue({ configured: false })
+    wakatimeOauthStatus.mockResolvedValue({ connected: false, client_configured: false })
+    mount()
+    await screen.findByText(/connect wakatime/i)
+    expect(await screen.findByText(/Set wakatime.oauth_client_id in config.json/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /connect with wakatime/i })).not.toBeInTheDocument()
+  })
+
+  it('shows Disconnect when connected and clears tokens on click', async () => {
     wakatimeStats.mockResolvedValue({
       configured: true,
       range: 'last_7_days',
       stats: { total_seconds: 3600, daily_average: 1800, languages: [{ name: 'Python', total_seconds: 3600 }], projects: [] },
     })
-    wakatimeExportDownload.mockRejectedValue(new Error('WakaTime returned 502 (upstream_unavailable)'))
+    wakatimeOauthStatus.mockResolvedValue({ connected: true, client_configured: true })
+    wakatimeOauthDisconnect.mockResolvedValue({ disconnected: true })
     mount()
     await screen.findByText('Python')
-    fireEvent.click(screen.getByRole('button', { name: /export hours \(csv\)/i }))
-    // The failure renders through ErrorNotice; the message reaches the user
-    // rather than the browser navigating to the raw error body.
-    expect(await screen.findByText(/502 \(upstream_unavailable\)/i)).toBeInTheDocument()
-    expect(wakatimeExportDownload).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'csv')
+    const btn = await screen.findByRole('button', { name: /^disconnect$/i })
+    fireEvent.click(btn)
+    await waitFor(() => expect(wakatimeOauthDisconnect).toHaveBeenCalled())
   })
 })
