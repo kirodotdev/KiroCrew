@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
@@ -11,6 +11,8 @@ vi.mock('../../api/client', () => ({
     connectionsOAuthClients: vi.fn(),
     connectionsOAuthClientSave: vi.fn(),
     connectionsOAuthClientDelete: vi.fn(),
+    kirocrewConfig: vi.fn(),
+    patchConfig: vi.fn(),
   },
 }))
 
@@ -28,6 +30,8 @@ type Mock = ReturnType<typeof vi.fn>
 const listMock = api.connectionsOAuthClients as unknown as Mock
 const saveMock = api.connectionsOAuthClientSave as unknown as Mock
 const deleteMock = api.connectionsOAuthClientDelete as unknown as Mock
+const configMock = api.kirocrewConfig as unknown as Mock
+const patchMock = api.patchConfig as unknown as Mock
 const copyMock = copyToClipboard as unknown as Mock
 
 const GITHUB_REDIRECT = 'http://127.0.0.1:48101/callback'
@@ -88,8 +92,24 @@ beforeEach(() => {
   listMock.mockReset()
   saveMock.mockReset().mockResolvedValue({ ok: true, client: github({ client_id: 'abc', client_id_source: 'config' }) })
   deleteMock.mockReset().mockResolvedValue({ ok: true, client: github() })
+  // No sign-in key in the body: the MCP sign-ins section stays out of the way.
+  configMock.mockReset().mockResolvedValue({})
+  patchMock.mockReset().mockResolvedValue({ ok: true })
   copyMock.mockClear()
+  // The section reads GET /api/config/schema with a bare fetch: which harnesses
+  // this build offers, and that the key is boot-only (the restart pill).
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      entries: [
+        { path: 'agent.acp_backend', type: 'enum', enumValues: ['kas', 'kiro'] },
+        { path: 'agent.kas_persist_mcp_sign_in', type: 'bool', requiresRestart: true },
+      ],
+    }),
+  })) as unknown as typeof fetch)
 })
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('ConnectionsPanel — one card per pre-registered provider', () => {
   it('renders a card per client with its configured state and settings anchor', async () => {
@@ -322,6 +342,20 @@ describe('ConnectionsPanel — read-only mount', () => {
     expect(within(gh).queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument()
     expect(within(gh).getByLabelText('Client ID')).toBeDisabled()
     expect(within(gh).queryByLabelText('Client secret')).not.toBeInTheDocument()
+  })
+})
+
+describe('ConnectionsPanel — remembering MCP sign-ins (#26891)', () => {
+  it('shows the stored value and saves a flip through the config PATCH', async () => {
+    configMock.mockResolvedValue({ agent: { acp_backend: 'kas', kas_persist_mcp_sign_in: false } })
+    await mount()
+
+    const toggle = await screen.findByRole('switch', { name: 'Remember MCP sign-ins across sessions' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(await screen.findByTestId('restart-required-badge')).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith('agent.kas_persist_mcp_sign_in', true))
   })
 })
 

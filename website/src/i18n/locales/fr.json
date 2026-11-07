@@ -20913,6 +20913,11 @@
         "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
       },
       "connectionsPanel": {
+        "sign_ins_title": "Connexions MCP",
+        "remember_sign_ins": "Mémoriser les connexions MCP entre les sessions",
+        "remember_sign_ins_hint": "Utilisé par le backend Kiro Agent. {{productName}} conserve la connexion de chaque serveur MCP distant dans un coffre chiffré du répertoire de données, pour que chaque session, sous-agent et cron de cette passerelle, y compris ceux d’un collaborateur de la Crew partagée, la réutilise jusqu’à son expiration ou sa révocation. Ce n’est pas le coffre Secrets, et l’agent ne peut pas le lire. Désactivé, chaque nouvelle session te demande de te reconnecter.",
+        "remember_sign_ins_save_failed": "Impossible d’enregistrer le réglage des connexions MCP.",
+        "remember_sign_ins_load_failed": "Impossible de charger le réglage des connexions MCP.",
         "title": "Applications OAuth pour Connexions",
         "intro": "Certains fournisseurs refusent d’enregistrer automatiquement un client OAuth. Pour chacun ci-dessous, suivez son guide de configuration pour enregistrer une app dans la console du fournisseur, collez-y exactement l’URI de redirection affichée ici, puis saisissez l’ID client et le secret de l’app. Les valeurs définies par variables d’environnement remplacent ce qui est enregistré ici.",
         "loading": "Chargement…",
