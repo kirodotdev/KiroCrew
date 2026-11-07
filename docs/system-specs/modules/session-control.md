@@ -900,7 +900,7 @@ and skip the target guard while keeping the creator gates.
 **What the child gets on top of the human fork**, applied by a `stamp` callback
 `fork_slot` runs on the child before its birth save, so it lands in the same
 metadata line as the transcript and is on disk before the slot is broadcast (no
-second persistence window; a failed save withdraws the whole child): `title` (a final, user-origin name; else the fork's `↳ Fork of <parent>`, which the background `refresh_forked_title` pass renames from the latest person-typed question when the parent's title was auto),
+second persistence window; a failed save withdraws the whole child): `title` (a final, user-origin name; else the fork's `↳ Fork of <parent>`, which `refresh_forked_title` renames from the first message a person sends the child when the parent's title was auto),
 `folder_id` (else the parent's folder, which the human fork inherits; an
 unknown folder refuses the whole fork before any copy, confirmed read-only under
 the folder-store lock like `create_session`, and the Model-B un-hide runs only

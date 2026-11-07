@@ -12,6 +12,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_retry_at``, ``_eager_spawn_task``, ``_effort_pick_gen``, ``_fork_lock``,
+``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
@@ -276,6 +277,11 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._title_task = None
     # Records a chat_done retry that arrived during the on-send attempt.
     self._title_retry_pending = False
+    # True once this fork child's title pass from its first person-typed
+    # message has started (chat_title_fork.fork_title_pending), so a SKIP or a
+    # failed generation is not retried on every later message. Never
+    # persisted: a restart allows one more pass while the born name stands.
+    self._fork_title_spent = False
     # Excludes concurrent session-summary generations for this slot. A
     # summary pass outlives the turn that triggered it, so a fast follow-up
     # turn would otherwise start a second pass over the same transcript.
