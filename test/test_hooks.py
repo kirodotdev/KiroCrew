@@ -590,6 +590,8 @@ class TestHookGateKwargs:
         "spec_shell_allowlist": "spec_shell_allowlist",
         "spec_write_allowlist": "spec_write_allowlist",
         "spec_write_cwd": "spec_write_cwd",
+        "spec_shell_readonly": "spec_shell_readonly",
+        "spec_granted_paths": "spec_granted_paths",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -620,6 +622,8 @@ class TestHookGateKwargs:
             spec_shell_allowlist=("git log",),
             spec_write_allowlist=("/w/out",),
             spec_write_cwd="/w",
+            spec_shell_readonly=True,
+            spec_granted_paths=("/w/out/**",),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -641,6 +645,8 @@ class TestHookGateKwargs:
             "spec_shell_allowlist": ("git log",),
             "spec_write_allowlist": ("/w/out",),
             "spec_write_cwd": "/w",
+            "spec_shell_readonly": True,
+            "spec_granted_paths": ("/w/out/**",),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -675,6 +681,8 @@ class TestHookGateKwargs:
             "spec_shell_allowlist": None,
             "spec_write_allowlist": None,
             "spec_write_cwd": "",
+            "spec_shell_readonly": False,
+            "spec_granted_paths": (),
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -776,6 +784,8 @@ class TestHookGateKwargs:
         probe.spec_shell_allowlist = ("<spec_shell_allowlist>",)
         probe.spec_write_allowlist = ("<spec_write_allowlist>",)
         probe.spec_write_cwd = "<spec_write_cwd>"
+        probe.spec_shell_readonly = True
+        probe.spec_granted_paths = ("<spec_granted_paths>",)
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -801,6 +811,7 @@ class TestHookGateKwargs:
                 "mcp_identity_trusted",
                 "mcp_identity_unreadable",
                 "kas_builtin_ids",
+                "spec_shell_readonly",
             ):
                 assert got[kwarg] is True
             elif kwarg == "spec_granted_builtins":
@@ -809,6 +820,7 @@ class TestHookGateKwargs:
                 "spec_granted_commands",
                 "spec_shell_allowlist",
                 "spec_write_allowlist",
+                "spec_granted_paths",
             ):
                 assert got[kwarg] == (f"<{attr}>",)
             else:

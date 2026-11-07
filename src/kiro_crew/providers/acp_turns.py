@@ -106,6 +106,12 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # spec-write-allowlist row reads this.
         spec_write_allowlist=e.spec_write_allowlist,
         spec_write_cwd=e.spec_write_cwd,
+        # Dropping this would refuse a read-only command an `autoAllowReadonly`
+        # spec runs under `denyByDefault`: the spec-shell-allowlist row reads it.
+        spec_shell_readonly=e.spec_shell_readonly,
+        # Dropping this would leave every allowedPaths write prompting: the
+        # gate's spec-builtin-grant row reads it.
+        spec_granted_paths=e.spec_granted_paths,
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,

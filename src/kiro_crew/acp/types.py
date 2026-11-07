@@ -1182,6 +1182,17 @@ class AcpEvent:
     #: resolves it against its workspace root. ``""`` elsewhere: a
     #: relative target is then not covered.
     spec_write_cwd: str = ""
+    #: spec_shell_readonly: on the same requests, whether the agent's spec sets
+    #: ``autoAllowReadonly: true`` beside ``denyByDefault``
+    #: (``AcpSessionHandle.kas_spec_shell_readonly``). The gate's
+    #: ``spec-shell-allowlist`` tier then lets a read-only command past, for the
+    #: read-only tier to answer. ``False`` everywhere else, which lifts nothing.
+    spec_shell_readonly: bool = False
+    #: spec_granted_paths: on the same requests, the agent's write ``allowedPaths``
+    #: as absolute globs (``AcpSessionHandle.kas_crew_answered_paths``). The
+    #: ``spec-builtin-grant`` tier approves a file write every target of which one
+    #: covers. Empty everywhere else, which grants nothing.
+    spec_granted_paths: tuple[str, ...] = ()
     #: native_child_call: a permission request a native KAS sub-agent made under
     #: this session's own id, told apart by the tool-call id its
     #: ``agentSubtaskId`` frame recorded (``_is_native_child_call``), or one
