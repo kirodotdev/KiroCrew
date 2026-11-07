@@ -103,12 +103,14 @@ def _serialize_runs(self: TaskRunner) -> str:
                     # so a restored run pointed at a worktree while every
                     # field that says which worktree it is -- and whether git
                     # coordination is even on -- came back at its default.
-                    # git_coord reads all six after a restart.
+                    # git_coord reads all eight after a restart.
                     "branch_name": run.branch_name,
                     "base_branch": run.base_branch,
                     "worktree_path": run.worktree_path,
                     "repo_root": run.repo_root,
                     "git_enabled": run.git_enabled,
+                    "owns_task_dir": run.owns_task_dir,
+                    "git_in_place": run.git_in_place,
                     "commit_hashes": run.commit_hashes,
                     # Produced once by `_extract_lesson` during the run and
                     # NOT recomputable: the lesson text is separately
@@ -149,6 +151,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                             "resume_hint": t.resume_hint or "",
                             "superseded": t.superseded,
                             "verification": t.verification,
+                            "diff_reviewed": t.diff_reviewed,
                         }
                         for t in run.tasks
                     ],
@@ -337,6 +340,7 @@ def _load_runs(self: TaskRunner) -> None:
                     resume_hint=t.get("resume_hint", ""),
                     superseded=t.get("superseded", False) is True,
                     verification=str(t.get("verification", "")),
+                    diff_reviewed=bool(t.get("diff_reviewed", False)),
                     attempts=t.get("attempts", 1),
                     depends_on=t.get("depends_on", []),
                     requires_approval=t.get("requires_approval", False),
@@ -372,6 +376,8 @@ def _load_runs(self: TaskRunner) -> None:
                 # coordination" behaviour instead of committing into a path
                 # that is not identified.
                 git_enabled=bool(item.get("git_enabled", bool(_worktree_path))),
+                owns_task_dir=bool(item.get("owns_task_dir", False)),
+                git_in_place=bool(item.get("git_in_place", False)),
                 commit_hashes=list(item.get("commit_hashes", [])),
                 lessons_learned=list(item.get("lessons_learned", [])),
                 original_input=item.get("original_input", ""),
