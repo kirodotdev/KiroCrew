@@ -1719,10 +1719,11 @@ class AcpPromptStats:
         A turn that recorded exactly one reading more than it metered calls
         leaves out its first reading: that is the frame a session sends when it
         opens, which arrives ahead of the first call and measures no call. Any
-        other mismatch keeps every reading, and so does a turn that ended before
-        its metering frame arrived (a cancelled first turn then counts the
-        session-open reading). A turn that compacts mid-way records kiro-cli's
-        post-compaction report like a call's reading, so its sum is approximate.
+        other mismatch keeps every reading, and so does a turn whose metering
+        frame never arrived (a cancelled first turn whose frame missed the
+        bounded read after its answer then counts the session-open reading). A
+        turn that compacts mid-way records kiro-cli's post-compaction report
+        like a call's reading, so its sum is approximate.
         """
         context_sum = self.call_context_sum
         readings = self.call_readings
