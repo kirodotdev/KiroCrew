@@ -5,6 +5,7 @@ cleanup sweep.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
         _teardown_drain_basis,
         _unblock_pending_waits,
         body_int,
+        close_in_flight,
         deny_app_slot_access,
         effective_session_key,
         logger,
@@ -416,11 +418,14 @@ async def close_slot(
     handed up the manager line here (a no-op unless ``agent.session_manager_chain``).
     The idle sweep passes ``hand_back=False``: an idle archive keeps them on it.
     """
-    try:
-        await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
-    finally:
-        if state.get_slot(name) is slot:
-            slot.cancel_close()
+    # Published across the whole frame, restore included: a concurrent vocabulary delete
+    # must be able to strip this object while it is out of ``_slots``.
+    with close_in_flight(state, name, slot):
+        try:
+            await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
+        finally:
+            if state.get_slot(name) is slot:
+                slot.cancel_close()
     if hand_back and state.get_slot(name) is not slot:
         from kiro_crew.dashboard.session_control import hand_back_on_close
 
@@ -1307,7 +1312,9 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # every save this iteration dispatches. Closed on every exit of the
         # iteration, ``continue`` included.
         _teardown_basis = SlotRegistry.open_takeover_basis(state, name)
+        _close_registration = contextlib.ExitStack()
         try:
+            _close_registration.enter_context(close_in_flight(state, name, removed))
             # Same tombstone as the single-tab close: the archive pass must not
             # race a concurrent channel reconcile into resurrecting the slot. Its
             # instant is persisted as closed_at for the same teardown-window
@@ -1576,6 +1583,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 _resettle_restricted_key(state, name)
         finally:
             SlotRegistry.close_takeover_basis(state, _teardown_basis)
+            _close_registration.close()
         # Re-check identity ONE more time, and KEY-scoped here rather than
         # transcript-scoped: `_history_key_for(name)` is the session an unbound
         # replacement runs on, so a recreate landing between the save above and here
