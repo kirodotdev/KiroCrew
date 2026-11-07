@@ -560,7 +560,14 @@ connects through Crew's bridge, which sends the headers in cleartext, unless
 not run either, and the notice names it. With
 `agent.mcp_registry_mode` on, Crew withholds every server it did not author, and the
 notice names them; it also names Crew's own servers, which KAS drops when the Kiro
-profile is registry-governed, since KAS then runs only the admin's registry servers. And
+profile is registry-governed, since KAS then runs only the admin's registry servers.
+When the engine announces that it accepts registry pointers, Crew instead sends a
+`"type": "registry"` entry of yours as a pointer that keeps its `command` and `args` but
+not its `env` (Crew's own servers are sent as before);
+when the engine announces
+that it keeps a server's `oauth` block, Crew sends its `clientId`, `redirectUri`,
+`clientMetadataUrl` and `oauthScopes`, never its `clientSecret`. Both happen on their own,
+with nothing to set. And
 `KIROCREW_HOME` survives for Crew's own managed servers,
 because it pins the data home — but only as a literal containing no `${`, since
 KAS would expand a reference under that name too. That recorded pin is also

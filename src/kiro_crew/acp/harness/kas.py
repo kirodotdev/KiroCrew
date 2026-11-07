@@ -861,6 +861,7 @@ class KasHarness(MembershipHarness):
         crew_panel: bool = False,
         session_key: str = "",
         worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1039,6 +1040,7 @@ class KasHarness(MembershipHarness):
                 skill_scope_rules=scope_rules,
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
+                engine_features=engine_features,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
