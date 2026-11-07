@@ -113,23 +113,37 @@ def test_the_flag_is_off_unless_config_says_true(monkeypatch):
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(loader, "read_config_for_update", lambda: {})
     assert crew_oauth.enabled() is False
-    monkeypatch.setattr(
-        loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": "yes"}}
-    )
-    assert crew_oauth.enabled() is False
-    monkeypatch.setattr(
-        loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": True}}
-    )
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: _PREVIEW_ON)
     assert crew_oauth.enabled() is True
     assert crew_oauth.manages("asana") is False
+
+
+_PREVIEW_ON = {"dashboard": {"feature_previews": {"crew_oauth": True}}}
+
+
+@pytest.mark.parametrize(
+    "doc, on",
+    [
+        (_PREVIEW_ON, True),
+        ({"dashboard": {"feature_previews": {"crew_oauth": False}}}, False),
+        ({"dashboard": {"feature_previews": {"crew_oauth": "yes"}}}, False),
+        ({"dashboard": ["not", "an", "object"]}, False),
+        # A hand-edited ``connections.crew_oauth`` turns nothing on.
+        ({"connections": {"crew_oauth": True}}, False),
+    ],
+)
+def test_only_the_feature_preview_turns_it_on(monkeypatch, doc, on):
+    import kiro_crew.config.loader as loader
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: doc)
+    assert crew_oauth.enabled() is on
 
 
 def test_windows_reads_the_flag_as_off(monkeypatch):
     import kiro_crew.config.loader as loader
 
-    monkeypatch.setattr(
-        loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": True}}
-    )
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: _PREVIEW_ON)
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     assert crew_oauth.enabled() is False
 

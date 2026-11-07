@@ -2163,6 +2163,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.github-sign-in-by-kiro-crew",
+    "label": "GitHub sign-in by Kiro Crew",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_oauth",
+    "description": "After you connect GitHub once, Kiro Agent chats get GitHub access: your profile, orgs and public repos. Disconnect on the Connections page takes it away.",
+    "hint": "Preview. Kiro Crew signs in to GitHub itself and gives it to Kiro Agent chats. More chat engines later. Not on Windows.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.jev-api-key",
     "label": "Jev API key",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",

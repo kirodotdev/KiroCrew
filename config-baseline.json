@@ -9505,6 +9505,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.crew_oauth",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_oauth",
+      "help": "Turn on the 'crew_oauth' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.explore",
       "kind": "core",
       "type": "boolean",

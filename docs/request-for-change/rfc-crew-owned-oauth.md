@@ -361,7 +361,7 @@ Without reuse, add roughly: new encrypted store (~600), transport attestation an
 | Phase | Scope | Size (code / tests) | Flag |
 |---|---|---|---|
 | 0 | Docs: amend `mcp-oauth-ownership.md`, the invariant in `docs/system-specs/modules/connections.md`, this RFC accepted. Optional: send KAS the 5-line fix (alt. a) | docs only | — |
-| 1 MVP | GitHub, KAS only, POSIX only. C1-C5 + KAS part of C6 + minimal C7 | ~900-1,300 / ~1,100-1,600 | `connections.crew_oauth: false` default; per-provider allowlist |
+| 1 MVP | GitHub, KAS only, POSIX only. C1-C5 + KAS part of C6 + minimal C7 | ~900-1,300 / ~1,100-1,600 | `dashboard.feature_previews.crew_oauth` (Settings > Feature previews), off by default; per-provider allowlist |
 | 2 | Asana + six Google (offline params, agentic-client runbook note), refresh background pass | +150-250 / +200-300 | same flag |
 | 3 | All other harnesses (session array, copilot file), disconnect revoke for all, retire v2 mint | +250-450 / +300-500 | flag on by default after security sign-off |
 | 4 (optional) | DCR providers via Crew; per-member tokens; Windows named pipe | not sized | separate decision |

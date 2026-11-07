@@ -1264,6 +1264,14 @@
       "hint": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
     },
     {
+      "id": "developer.github-sign-in-by-kiro-crew",
+      "label": "GitHub sign-in by Kiro Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
+      "description": "After you connect GitHub once, Kiro Agent chats get GitHub access: your profile, orgs and public repos. Disconnect on the Connections page takes it away.",
+      "hint": "Preview. Kiro Crew signs in to GitHub itself and gives it to Kiro Agent chats. More chat engines later. Not on Windows."
+    },
+    {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
