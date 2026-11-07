@@ -198,7 +198,8 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
     # released AS the caller recorded at grant time — unless another
     # still-routed stub shares that same caller for the URI (two stubs
     # claimed to one session hold ONE per-caller grant upstream;
-    # releasing on the first detach would kill the survivor's updates).
+    # releasing on the first detach would kill the survivor's updates),
+    # or ``_hold_identity_release`` otherwise holds it.
     # Without a release the server keeps firing updates nobody will
     # receive, each landing in the deny-by-default drop and unfairly
     # recording a hazard against the server for a gap that is ours.
@@ -214,21 +215,19 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
         departed_keys = [key for key in self._grant_callers if key[1] == stub_uuid]
         for uri, _stub in departed_keys:
             grant_caller = self._grant_callers.pop((uri, stub_uuid))
-            shared = any(
-                other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
-                for other in self._resource_subscriptions.get(uri, set())
-            )
-            if not shared:
+            if not self._hold_identity_release(uri, grant_caller):
                 identity_releases.append((uri, grant_caller))
         for uri in emptied:
             del self._resource_subscriptions[uri]
             if not any(u == uri for u, _c in identity_releases):
-                # Routed grant with no recorded caller (identity server,
-                # grant predates tracking or replay went unrecorded): a
-                # bare release would be adjudicated as the wrong
-                # principal, so the lease is knowingly RETAINED — mark
-                # it orphaned so its updates are dropped without
-                # charging a hazard to a blameless server.
+                # A release held for a same-caller subscribe in flight,
+                # or a routed grant with no recorded caller (identity
+                # server, grant predates tracking or replay went
+                # unrecorded; a bare release would be adjudicated as the
+                # wrong principal, so the lease is knowingly RETAINED):
+                # the lease stays live upstream, so mark it orphaned so
+                # its updates are dropped without charging a hazard to a
+                # blameless server.
                 while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
                     self._orphaned_leases.pop()
                 self._orphaned_leases.add(uri)

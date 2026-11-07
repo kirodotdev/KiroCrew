@@ -1,15 +1,16 @@
-"""How a client's cancel is tracked, and whom a final unsubscribe's identity release is left to.
+"""How a client's cancel is tracked, and whom an identity release is left to.
 
 These tests pin the cancel branch of ``Backend.forward_from_stub`` and the identity release hold of
 the lease broker. A cancelled tool call stays pending and marked, so the hard wedge ceiling skips
 it while the two-condition rule still counts it. A cancelled ``resources/subscribe`` or
 ``resources/unsubscribe`` is not forwarded: the server answers it, and the verdict settles the lease
-under the stub that sent it. On an identity-capable server a final unsubscribe leaves its release to
-a same-caller subscribe still in flight, or to a routed stub of that caller
-(``_hold_identity_release``): the subscribe inherits the release (``release_owed``), a grant that
-routes a stub discharges it, and any other verdict sends it as the caller unless the rule still
-holds, whichever of several subscribes answers first and also when the subscribe was retracted or
-its stub detached. The shared fixture and helpers live in
+under the stub that sent it. On an identity-capable server a final unsubscribe, a detach, an
+eviction and the release sentinel's grant each leave their release to a same-caller subscribe still
+in flight, or to a routed stub of that caller (``_hold_identity_release``): the subscribe inherits
+the release (``release_owed``), a grant that routes a stub discharges it, and any other verdict
+sends it as the caller unless the rule still holds, whichever of several subscribes answers first
+and also when the subscribe was retracted or its stub detached; a stub of another caller holds
+none of it. The shared fixture and helpers live in
 ``mcp_gateway_backend_coverage_helpers.py``, and ``test_mcp_gateway_backend_coverage.py`` keeps the
 rest of ``forward_from_stub``.
 """
@@ -247,10 +248,11 @@ class TestForwardFromStubCancel:
 
 
 class TestIdentityReleaseHold:
-    """``_hold_identity_release``: whom a final unsubscribe's upstream release is left to.
+    """``_hold_identity_release``: whom an identity release is left to.
 
-    On an identity-capable server the release is held while another stub of the caller is routed
-    for the URI or a same-caller subscribe is in flight. That subscribe inherits it, a grant that
+    On an identity-capable server a final unsubscribe, a detach, an eviction and the release
+    sentinel's grant hold the release while another stub of the caller is routed for the URI or a
+    same-caller subscribe is in flight. That subscribe inherits it, a grant that
     routes a stub discharges it, and any other verdict sends it unless the rule still holds.
     """
 
@@ -586,3 +588,207 @@ class TestIdentityReleaseHold:
         assert uri not in backend._orphaned_leases
         await backend._route_backend_line(_line(update))
         assert recorded == [backend_mod.hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("departure", ["detach", "evict", "unsubscribe"])
+    async def test_another_callers_departure_keeps_a_held_release_free_of_hazards(
+        self, departure: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B's departure leaves A's held subscription without routing, but not a hazard."""
+        recorded: list[str] = []
+
+        def _capture(name: str, code: str, identity: Any) -> bool:
+            recorded.append(code)
+            return True
+
+        monkeypatch.setattr(backend_mod.hazards, "record_observed", _capture)
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        inbox1 = await backend.attach_stub("s1")
+        inboxb = await backend.attach_stub("sb")
+        inbox2 = await backend.attach_stub("s2")
+        # Keep hazard recording enabled even when both holders detach.
+        observer = await backend.attach_stub("observer")
+        caller_a = CallerContext(session_key="dashboard:aaa")
+        caller_b = CallerContext(session_key="dashboard:bbb")
+        uri = "file:///watched.txt"
+        for stub, req_id, caller in (("s1", 1, caller_a), ("sb", 5, caller_b)):
+            await backend.forward_from_stub(
+                stub,
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "resources/subscribe",
+                    "params": {"uri": uri},
+                },
+                caller=caller,
+            )
+            await _settle_lease(backend)
+        await _drain(inbox1)
+        await _drain(inboxb)
+        await backend.forward_from_stub(
+            "s2",
+            {"jsonrpc": "2.0", "id": 9, "method": "resources/subscribe", "params": {"uri": uri}},
+            caller=caller_a,
+        )
+        await backend.detach_stub("s1")
+        assert _releases(backend) == []
+        if departure == "detach":
+            await backend.detach_stub("sb")
+        elif departure == "evict":
+            assert await backend.evict_stub_subscriptions("sb") == 1
+        else:
+            await backend.forward_from_stub(
+                "sb",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "resources/unsubscribe",
+                    "params": {"uri": uri},
+                },
+                caller=caller_b,
+            )
+            assert _releases(backend)[0]["id"] == _fid_of(backend, "sb")
+        assert len(_releases(backend)) == 1
+        assert _releases(backend)[0]["params"]["_meta"][CALLER_META_KEY]["sessionKey"] == (
+            "dashboard:bbb"
+        )
+        await _answer(backend, _releases(backend)[0]["id"])
+        if departure == "unsubscribe":
+            assert await _drain(inboxb) == {"jsonrpc": "2.0", "id": 6, "result": {}}
+        assert backend._pending_requests[_fid_of(backend, "s2")].release_owed
+        assert backend.refcount > 1
+        update = {"method": "notifications/resources/updated", "params": {"uri": uri}}
+        await backend._route_backend_line(_line(update))
+        assert recorded == []
+        assert backend._resource_subscriptions == {}
+        assert inbox2.empty() and inboxb.empty() and observer.empty()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", [False, True], ids=["granted", "refused"])
+    @pytest.mark.parametrize("departure", ["detach", "evict"])
+    async def test_a_departing_holder_leaves_its_release_to_a_same_caller_subscribe(
+        self, departure: str, refused: bool
+    ) -> None:
+        """s1 holds a URI as caller A and s2's subscribe as A is in flight when
+        s1 detaches, or a warm-pool claim evicts its subscriptions. Releasing
+        A's subscription then would revoke the grant s2 is about to get, so the
+        release is left to s2's verdict: a grant needs none, a refusal sends
+        exactly one, as A."""
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        inbox1 = await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        caller_a = CallerContext(session_key="dashboard:aaa")
+        uri = "file:///watched.txt"
+        for stub, req_id in (("s1", 1), ("s2", 9)):
+            await backend.forward_from_stub(
+                stub,
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "resources/subscribe",
+                    "params": {"uri": uri},
+                },
+                caller=caller_a,
+            )
+            if stub == "s1":
+                await _settle_lease(backend)
+                await _drain(inbox1)
+        if departure == "detach":
+            await backend.detach_stub("s1")
+        else:
+            assert await backend.evict_stub_subscriptions("s1") == 1
+        assert _releases(backend) == []
+        await _answer(backend, _fid_of(backend, "s2"), refuse=refused)
+        assert ("error" in await _drain(inbox2)) is refused
+        if refused:
+            assert len(_releases(backend)) == 1
+            assert _releases(backend)[0]["params"]["_meta"][CALLER_META_KEY]["sessionKey"] == (
+                "dashboard:aaa"
+            )
+            assert backend._resource_subscriptions == {}
+        else:
+            assert _releases(backend) == []
+            assert backend._resource_subscriptions == {uri: {"s2"}}
+            assert backend._grant_callers == {(uri, "s2"): caller_a}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", [False, True], ids=["granted", "refused"])
+    async def test_a_sentinel_grant_leaves_its_release_to_a_same_caller_subscribe(
+        self, refused: bool
+    ) -> None:
+        """s1's subscribe as caller A is in flight when s1 detaches, so the
+        release sentinel owns it; s2 then subscribes as A. The server grants
+        s1's subscribe first, and releasing A's subscription then would revoke
+        the grant s2 is about to get. The release is left to s2's verdict: a
+        grant needs none, a refusal sends exactly one, as A. Meanwhile A's
+        subscription is live with nobody routed, so the URI is orphan-marked."""
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        caller_a = CallerContext(session_key="dashboard:aaa")
+        uri = "file:///watched.txt"
+        await backend.forward_from_stub(
+            "s1",
+            {"jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": {"uri": uri}},
+            caller=caller_a,
+        )
+        await backend.detach_stub("s1")
+        await backend.forward_from_stub(
+            "s2",
+            {"jsonrpc": "2.0", "id": 9, "method": "resources/subscribe", "params": {"uri": uri}},
+            caller=caller_a,
+        )
+        await _answer(backend, _fid_of(backend, backend_mod._RELEASE_STUB_SENTINEL, origin="s1"))
+        assert _releases(backend) == []
+        assert uri in backend._orphaned_leases
+        await _answer(backend, _fid_of(backend, "s2"), refuse=refused)
+        assert ("error" in await _drain(inbox2)) is refused
+        if refused:
+            assert len(_releases(backend)) == 1
+            assert _releases(backend)[0]["params"]["_meta"][CALLER_META_KEY]["sessionKey"] == (
+                "dashboard:aaa"
+            )
+            assert backend._resource_subscriptions == {}
+        else:
+            assert _releases(backend) == []
+            assert backend._resource_subscriptions == {uri: {"s2"}}
+            assert backend._grant_callers == {(uri, "s2"): caller_a}
+
+    @pytest.mark.asyncio
+    async def test_a_sentinel_grant_releases_as_its_caller_beside_another_callers_stub(
+        self,
+    ) -> None:
+        """sb holds a URI as caller B, and s1's subscribe as caller A is in
+        flight when s1 detaches. The server's grant of s1's subscribe gives A a
+        subscription nobody wants, and sb's routing does not hold it: sb's
+        subscription is B's. The sentinel releases it as A."""
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        await backend.attach_stub("s1")
+        inboxb = await backend.attach_stub("sb")
+        caller_a = CallerContext(session_key="dashboard:aaa")
+        caller_b = CallerContext(session_key="dashboard:bbb")
+        uri = "file:///watched.txt"
+        await backend.forward_from_stub(
+            "sb",
+            {"jsonrpc": "2.0", "id": 5, "method": "resources/subscribe", "params": {"uri": uri}},
+            caller=caller_b,
+        )
+        await _settle_lease(backend)
+        await _drain(inboxb)
+        await backend.forward_from_stub(
+            "s1",
+            {"jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": {"uri": uri}},
+            caller=caller_a,
+        )
+        await backend.detach_stub("s1")
+        await _answer(backend, _fid_of(backend, backend_mod._RELEASE_STUB_SENTINEL, origin="s1"))
+        assert len(_releases(backend)) == 1
+        assert _releases(backend)[0]["params"]["_meta"][CALLER_META_KEY]["sessionKey"] == (
+            "dashboard:aaa"
+        )
+        assert backend._resource_subscriptions == {uri: {"sb"}}
+        assert backend._grant_callers == {(uri, "sb"): caller_b}
