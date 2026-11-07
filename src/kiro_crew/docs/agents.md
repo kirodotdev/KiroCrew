@@ -183,7 +183,27 @@ What the Skills section shows:
 | `src/kiro_crew/config/prompt.md` | Shipped system prompt. A development project can override it with `agents/prompt.md`. |
 | `~/.kiro/crew/agent.json` | Optional user overrides merged on top of defaults. |
 | `~/.kiro/crew/prompt.md` | Optional user prompt override, which takes priority over the shipped prompt. It must be UTF-8: a file that is unreadable, misencoded (for example UTF-16 from PowerShell redirection) or refused falls back to the shipped prompt with a gateway WARNING. |
-| `~/.kiro/agents/kirocrew.json` | Installed generated agent configuration. |
+| `~/.kiro/agents/kirocrew.json` | Installed generated agent configuration. Rebuilt on every gateway start; not the place to add an MCP server. |
+
+## MCP Servers on the Default Agent
+
+Kiro Crew rebuilds `kirocrew.json` on every gateway start from the shipped
+defaults, `~/.kiro/crew/agent.json`, and every MCP source it reads: the Kiro
+global `~/.kiro/settings/mcp.json`, the dashboard's own server list
+(`~/.kiro/crew/mcp.json`), installed apps, and edition-provided servers. It
+copies those servers into the spec itself, so the spec pins `includeMcpJson`
+off.
+
+To add, turn on or turn off an MCP server, use **Customize → Connections → MCP
+Servers** (`/capabilities?tab=mcp&view=mcp-servers`). An agent asked to do it
+opens that page with `find_ui` or a guide, or offers an MCP card through
+`propose_change`. It does not tell you to hand-edit `kirocrew.json` or run
+`jq`/`sed` on it.
+
+If a server's tools are missing from sessions, check that tab first. A server
+whose program is not found on this computer is dropped from the spec at the
+rebuild, and the gateway log names it (`Dropping MCP server ...: command not
+found`).
 
 ## Reinstalling Agent Config
 

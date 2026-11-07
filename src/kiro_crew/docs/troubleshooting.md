@@ -207,17 +207,27 @@ features do not depend on the pod service manager.
 
 ### MCP tools not working
 
+Start at **Customize → Connections → MCP Servers**
+(`/capabilities?tab=mcp&view=mcp-servers`): it shows whether each server is on
+and answering, and it is where a server is added or turned on. Kiro Crew
+rebuilds `~/.kiro/agents/kirocrew.json` from your MCP sources on every gateway
+start, so do not add a server by editing that file. A server whose program is
+not found on this computer is dropped at the rebuild; the gateway log names it
+(`Dropping MCP server ...: command not found`).
+
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but
 it deliberately does not blanket-auto-approve `kirocrew-computer` or other
 opt-in servers. It cannot auto-add a missing `mcpServers` entry, because the
 command path is install-specific. If tools still fail:
 
-1. Check `~/.kiro/agents/kirocrew.json` for `kirocrew-core` and
+1. Read (do not edit) `~/.kiro/agents/kirocrew.json` for `kirocrew-core` and
    `kirocrew-cron` under `mcpServers`, plus `kirocrew-computer` only when
    Computer Use is enabled and supported; check for matching `@`-prefixed
    entries under `tools`
-2. Check `~/.kiro/settings/mcp.json` for globally configured servers
+2. Check that your own server is listed and on under **Customize →
+   Connections → MCP Servers**, which also lists the servers in
+   `~/.kiro/settings/mcp.json`
 3. Re-run `kirocrew setup --agent-only`
 
 The doctor also runs a live handshake probe against each managed server and
