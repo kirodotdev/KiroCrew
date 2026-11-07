@@ -38,7 +38,7 @@ import {
 } from '../lib/wireValues'
 import { fmtList } from '../../../i18n/format'
 import { useIssueRadar } from '../context'
-import { providerTerms, isGitlab, repoScopeKey } from '../lib/links'
+import { providerTerms, isGitlab, repoScopeKey, reviewVerdicts } from '../lib/links'
 import type { BulkPrAction } from '../api'
 
 import { i18nT } from '../../../i18n/t'
@@ -75,6 +75,8 @@ export default function PrBulkBar() {
   // See PrActionsBar: GitLab cannot arm a deferred merge safely, so the client
   // refuses it and these two buttons would only ever error there.
   const canArmAutoMerge = !isGitlab(active)
+  // Azure DevOps records no approve review, so a bulk approve could only fail there.
+  const canApprove = reviewVerdicts(active).approve
   // Chunked on the SERVER's published cap: a selection larger than one request may
   // hold was a flat 400 with nothing applied.
   const bulk = useBulkPrAction(active, prBulkMax)
@@ -418,18 +420,20 @@ export default function PrBulkBar() {
           is shown — offering an action over zero rows would be a dead button. */}
       {count === 0 ? null : !pending ? (
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-          <Btn
-            onClick={() => start('approve')}
-            // Disabled, not hidden, when a selected row has no head commit: the button
-            // moving would make the whole row jump, and the tooltip can say why.
-            disabled={bulk.busy || !canBulkApprove}
-            title={canBulkApprove
-              ? i18nT('apps.issueRadar.components.prBulkBar.approve_hint', { subject: terms.changeRequestPlural })
-              : i18nT('apps.issueRadar.components.prBulkBar.approve_needs_commit')}
-          >
-            {bulk.busy ? <Loader2 className="lucide-inline animate-spin" /> : <Check className="lucide-inline" />}
-            {i18nT('apps.issueRadar.components.prBulkBar.approve')}
-          </Btn>
+          {canApprove && (
+            <Btn
+              onClick={() => start('approve')}
+              // Disabled, not hidden, when a selected row has no head commit: the button
+              // moving would make the whole row jump, and the tooltip can say why.
+              disabled={bulk.busy || !canBulkApprove}
+              title={canBulkApprove
+                ? i18nT('apps.issueRadar.components.prBulkBar.approve_hint', { subject: terms.changeRequestPlural })
+                : i18nT('apps.issueRadar.components.prBulkBar.approve_needs_commit')}
+            >
+              {bulk.busy ? <Loader2 className="lucide-inline animate-spin" /> : <Check className="lucide-inline" />}
+              {i18nT('apps.issueRadar.components.prBulkBar.approve')}
+            </Btn>
+          )}
           <Btn
             onClick={() => start('comment')}
             disabled={bulk.busy}
