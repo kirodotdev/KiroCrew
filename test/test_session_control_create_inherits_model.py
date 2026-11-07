@@ -485,6 +485,24 @@ class TestNonCrewmateCaller:
         assert child.reasoning_effort == ""
         assert "inherited" not in created
 
+    def test_a_slot_with_no_record_is_no_crewmate_whatever_its_agent(self, tmp_path, monkeypatch):
+        """A slot's agent name is not an attested identity: only a record names a crewmate."""
+        from kiro_crew.execution_context import read_session_execution
+
+        state, caller = _crewmate_caller(
+            tmp_path, monkeypatch, model="claude-opus-4.6", reasoning_effort="max"
+        )
+        legacy = state.get_or_create_slot("chat-legacy", workspace=caller.workspace)
+        legacy.agent = _MEMBER
+        assert read_session_execution(slot_history_key(legacy)) is None
+
+        created = _create(state, legacy)
+
+        child = state.get_slot(created["target"])
+        assert child.model == ""
+        assert child.reasoning_effort == ""
+        assert "inherited" not in created
+
     def test_an_explicit_effort_pins_the_level_on_its_own(self, tmp_path):
         state = _make_state(tmp_path)
         caller = state.get_or_create_slot("chat-1")

@@ -325,7 +325,7 @@ async def create_session(
 
         # The conductor test the worker hand-off below uses, off the loop: it
         # reads the config and may rescan the installed agents inline.
-        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_slot, caller_execution)
+        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_execution)
         try:
             folder_id, project_folder_id = await mate_home_filing(
                 state, caller_execution, folder_id, conductor=conductor
@@ -380,18 +380,8 @@ async def create_session(
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
 
     own_worker = agent_kind in ("", "template") and await asyncio.to_thread(
-        _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
+        _hands_off_to_own_worker, caller_execution, agent.strip(), agent_kind
     )
-    if own_worker and caller_execution is None:
-        # A conductor slot with no execution record (one from before records)
-        # names its crewmate by slot agent only. The worker's identity and store
-        # come from the record, so without one the child would be the worker on
-        # the shared store with no crewmate, which no turn of it can run.
-        raise SessionControlError(
-            "this chat has no memory record, so its Bot's worker cannot be "
-            "opened from it; open a new chat with the Bot",
-            code="conductor_record_missing",
-        )
     if own_worker:
         agent, agent_kind = MATE_WORKER_AGENT, "template"
     agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
@@ -516,7 +506,7 @@ async def create_session(
         agent_workspace != workspace
         and agent.strip()
         and bindings.selection_kind == "template"
-        and _caller_member_workspace(cfg, caller_slot, caller_execution) == workspace
+        and _caller_member_workspace(cfg, caller_execution) == workspace
     ):
         agent_workspace = workspace
     if agent_workspace != workspace:
@@ -587,7 +577,7 @@ async def create_session(
     effort_is_crewmates_own = False
     child_is_crewmate = bool(agent.strip()) and bindings.selection_kind == "member"
     if (not model.strip() or not reasoning_effort) and not child_is_crewmate:
-        crewmate = _dispatching_crewmate(cfg, caller_slot, caller_execution)
+        crewmate = _dispatching_crewmate(cfg, caller_execution)
         if crewmate is not None:
             worker_model, worker_effort = worker_session_defaults(crewmate)
             explicit_worker_effort = coerce_effort(crewmate.worker_reasoning_effort)
@@ -1607,21 +1597,20 @@ def _inherited_pin_foreign_to_child(
 
 
 def _dispatching_crewmate(
-    cfg: KiroCrewConfig, caller_slot: Any, caller_execution: ExecutionContext | None
+    cfg: KiroCrewConfig, caller_execution: ExecutionContext | None
 ) -> KiroCrewAgentConfig | None:
-    """The ``config.agents`` record of the crewmate ``caller_slot`` runs as, or ``None``.
+    """The ``config.agents`` record of the crewmate the caller runs as, or ``None``.
 
-    The caller's protected execution record is the first word: a ``member``
+    Read from the caller's protected execution record alone: a ``member``
     selection names the crewmate by its persisted id (which survives a rename)
     or, for a member that never got one, by its selection name AND its own
     template. A caller whose record is a TEMPLATE is not a crewmate -- a worker
     a crewmate dispatched keeps that crewmate's store but runs as the template,
     and its own children must not re-inherit a profile it does not carry; the
     id-less member's worker keeps ``member`` as its selection, so there the
-    template is what tells it apart. A caller with no record at
-    all (a slot from before records were written) falls back to the slot's
-    agent name, which is how :func:`resolve_crew_identity` reads the same slot
-    for every other surface.
+    template is what tells it apart. A caller with no record is no crewmate:
+    its slot's agent name is metadata a later write can change, not an
+    attested identity.
 
     Read-only: a lookup miss is ``None``, never a refusal, because inheriting a
     model is a convenience and a missing record simply leaves the default.
@@ -1648,8 +1637,7 @@ def _dispatching_crewmate(
         ) != member_template_id(record):
             return None
         return record
-    agent_name = getattr(caller_slot, "agent", "") or ""
-    return cfg.agents.get(agent_name) if agent_name else None
+    return None
 
 
 def _inherited_project_dir(raw: str, workspace: str) -> str:
@@ -1667,7 +1655,7 @@ def _inherited_project_dir(raw: str, workspace: str) -> str:
     return default_project_dir(workspace)
 
 
-def _conducts_for_a_worker(caller_slot: Any, caller_execution: ExecutionContext | None) -> bool:
+def _conducts_for_a_worker(caller_execution: ExecutionContext | None) -> bool:
     """Whether the caller is a crewmate's own chat running on the mate conductor.
 
     That chat hands its work to the crewmate's worker (``kiro_crew.mate_worker``).
@@ -1681,14 +1669,14 @@ def _conducts_for_a_worker(caller_slot: Any, caller_execution: ExecutionContext 
 
     try:
         cfg = KiroCrewConfig.load()
-        crewmate = _dispatching_crewmate(cfg, caller_slot, caller_execution)
+        crewmate = _dispatching_crewmate(cfg, caller_execution)
         return crewmate is not None and member_template_id(crewmate) == MATE_CONDUCTOR_AGENT
     except Exception:  # noqa: BLE001 - "not a conductor" is the conservative answer
         return False
 
 
 def _hands_off_to_own_worker(
-    caller_slot: Any, caller_execution: ExecutionContext | None, requested: str, agent_kind: str
+    caller_execution: ExecutionContext | None, requested: str, agent_kind: str
 ) -> bool:
     """Whether this ``session_create`` opens the calling crewmate's own worker.
 
@@ -1700,13 +1688,13 @@ def _hands_off_to_own_worker(
     a name nothing resolves -- is the crewmate's worker. False for every caller
     that is not a conductor. Blocking config read; callers run it off the loop.
     """
-    if not _conducts_for_a_worker(caller_slot, caller_execution):
+    if not _conducts_for_a_worker(caller_execution):
         return False
     if agent_kind == "template" or not requested:
         return True
     try:
         cfg = KiroCrewConfig.load()
-        own = _dispatching_crewmate(cfg, caller_slot, caller_execution)
+        own = _dispatching_crewmate(cfg, caller_execution)
     except Exception:  # noqa: BLE001 - unreadable config: keep the named resolution
         return False
     named = cfg.agents.get(requested)
@@ -1714,9 +1702,9 @@ def _hands_off_to_own_worker(
 
 
 def _caller_member_workspace(
-    cfg: KiroCrewConfig, caller_slot: Any, caller_execution: ExecutionContext | None
+    cfg: KiroCrewConfig, caller_execution: ExecutionContext | None
 ) -> str | None:
-    """The declared workspace of the crew member ``caller_slot`` runs as, or ``None``.
+    """The declared workspace of the crew member the caller runs as, or ``None``.
 
     The workspace an explicit TEMPLATE child inherits from its creator. A record
     is required: the template arm of ``create_session`` binds the child to the
@@ -1728,7 +1716,7 @@ def _caller_member_workspace(
     """
     if caller_execution is None:
         return None
-    crewmate = _dispatching_crewmate(cfg, caller_slot, caller_execution) or _store_s_crewmate(
+    crewmate = _dispatching_crewmate(cfg, caller_execution) or _store_s_crewmate(
         cfg, caller_execution
     )
     if crewmate is None:
