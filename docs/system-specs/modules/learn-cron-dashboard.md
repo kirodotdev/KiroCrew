@@ -3356,8 +3356,11 @@ own key because the drain copies entry meta onto the user row, and a row's
 
 **An open queue editor holds the queue.** Opening a card's editor posts
 `{"editing": true}` to `/api/chat/slots/{slot}/queue/{queue_id}/editing`, which
-stamps the in-memory entry with `_edit_hold_until` (`queue_edit_hold`, 300 s,
-never persisted). While any entry is held, `_start_next_queued_turn` treats the
+stamps the in-memory entry with `_edit_hold_until` (`queue_edit_hold`, 90 s,
+never persisted). While the editor stays open, `QueueStack` re-posts
+`{"editing": true}` every 30 s, which re-arms the deadline, so a long edit keeps
+its hold and a tab closed or killed mid-edit stalls the queue for 90 s at most.
+While any entry is held, `_start_next_queued_turn` treats the
 user entries the way the sub-agent hold does (`hold_users`): they stay queued and
 system injections still drain, and `_dequeue_next_system_message` skips the held
 entry itself, so a requeued steer whose card is open waits too. A turn that ends

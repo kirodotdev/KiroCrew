@@ -293,6 +293,9 @@ const EXPANDED_GAP = 4
 const SCALE_STEP = 0.04
 const HIDDEN_EXTRA_SCALE = 0.02
 const OVERLAP = 11 // overlap to fuse with input area below
+// A third of the server's 90 s hold (`EDIT_HOLD_SECONDS`): a background tab's
+// timers can slip to once a minute, which still lands inside the hold.
+const EDIT_HOLD_RENEW_MS = 30_000
 
 const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 }
 
@@ -462,8 +465,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
    *  tokens the edit kept, in token order (empty when it kept none), for the
    *  row to carry on. Absent when the entry had none to begin with. */
   onEdit?: (queueId: string, content: string, pastes?: PasteBlock[]) => void
-  /** The editor opened (`true`) or closed without a save (`false`), so the host
-   *  can hold the entry meanwhile. A save goes through `onEdit` alone: a release
+  /** The editor opened or is still open (`true`, repeated every 30 s to renew
+   *  the hold) or closed without a save (`false`), so the host can hold the
+   *  entry meanwhile. A save goes through `onEdit` alone: a release
    *  sent beside it could reach the server first and drain the old words. */
   onEditOpen?: (queueId: string, open: boolean) => void
   onEditDraft?: (queueId: string, content: string | undefined) => void
@@ -526,6 +530,15 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   useEffect(() => () => {
     if (openEditRef.current) onEditOpenRef.current?.(openEditRef.current, false)
   }, [])
+  // The hold lapses on its own deadline, so an editor left open renews it; a
+  // closed or killed tab stops renewing and the queue moves on soon after.
+  useEffect(() => {
+    if (!editingId) return
+    const timer = setInterval(() => {
+      if (openEditRef.current === editingId) onEditOpenRef.current?.(editingId, true)
+    }, EDIT_HOLD_RENEW_MS)
+    return () => clearInterval(timer)
+  }, [editingId])
   const openEdit = (queueId: string) => {
     if (openEditRef.current && openEditRef.current !== queueId) onEditOpen?.(openEditRef.current, false)
     openEditRef.current = queueId
