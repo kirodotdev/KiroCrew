@@ -95,7 +95,7 @@
       "silent": true,
       "persistent_session": false,
       "enabled": false,
-      "message": "Follow the reconcile SOP at ~/.kiro/crew/skills/ops-mission-control/sops/reconcile.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to reconcile and this must cost nothing. Otherwise GET /api/apps/ops-mission-control/signals, then resolve any open incident whose signal is no longer firing (POST /incident/transition); recording the transition updates the incident's Slack message itself. Cap at 10 incidents per run. If nothing changed, produce NO output."
+      "script": "reconcile_cron.py:run"
     },
     {
       "name": "rotation-check",

@@ -10,7 +10,7 @@ slice of the surface:
   accessor for the Slack client, the surface's logger and the seam types.
 - ``board`` — the read-only projections the dashboard polls to paint the board: ``/state``,
   ``/handover``, ``/incidents``, ``/incident``, ``/signals``, ``/providers``, ``/rotation``.
-- ``lifecycle`` — incident lifecycle writes: ``/incident/transition``, ``/incident/claim``
+- ``lifecycle`` — incident lifecycle writes: ``/incident/transition``, ``/incident/claim``, ``/reconcile``
   and ``/dispatch``.
 - ``actions`` — provider-write authority: ``/incident/action``, the propose loop
   (``/incident/propose``, ``/incident/proposal/decide`` and its ``/proposals`` queue) and the

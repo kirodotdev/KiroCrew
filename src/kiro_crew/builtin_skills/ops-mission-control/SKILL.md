@@ -43,8 +43,8 @@ ops_mission_control_api(method="POST", path="/incident/transition",
                         body_json='{"id": "INV-42", "status": "resolved"}')
 ```
 
-The whole agent surface is fourteen calls: GET `/state` `/signals` `/incidents`
-`/handover` `/rotation` `/ledger` `/ledger/contradictions`, and POST `/dispatch`
+The whole agent surface is fifteen calls: GET `/state` `/signals` `/incidents`
+`/handover` `/rotation` `/ledger` `/ledger/contradictions`, and POST `/dispatch` `/reconcile`
 `/incident/transition` `/incident/claim` `/incident/action` `/rotation/arm`
 `/ledger` `/ledger/hygiene`. Anything else — `/incident/propose`, `/proposals`,
 `/providers*`, `/settings`, `/webhook`, a bare `/incident` — is refused, because

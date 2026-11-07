@@ -57,6 +57,7 @@ OPS_MISSION_CONTROL_ALLOWED_CALLS: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/ledger"),
         ("GET", "/ledger/contradictions"),
         ("POST", "/dispatch"),
+        ("POST", "/reconcile"),
         ("POST", "/incident/transition"),
         ("POST", "/incident/claim"),
         ("POST", "/incident/action"),

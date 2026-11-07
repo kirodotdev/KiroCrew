@@ -1043,6 +1043,8 @@ class TestSkillDelivery(unittest.TestCase):
         prefix = "~/.kiro/crew/skills/ops-mission-control/sops/"
         for cron in manifest.crons:
             with self.subTest(cron=cron.name):
+                if cron.script:
+                    continue
                 self.assertIn(prefix, cron.message)
                 # The referenced file must exist in the packaged tree.
                 referenced = cron.message.split(prefix, 1)[1].split(".md", 1)[0] + ".md"

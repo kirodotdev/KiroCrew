@@ -369,6 +369,7 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/apps/ops-mission-control/rotation",
         "/api/apps/ops-mission-control/ledger",
         "/api/apps/ops-mission-control/dispatch",
+        "/api/apps/ops-mission-control/reconcile",
         "/api/apps/ops-mission-control/incident/transition",
         "/api/apps/ops-mission-control/incident/claim",
         "/api/apps/ops-mission-control/incident/action",

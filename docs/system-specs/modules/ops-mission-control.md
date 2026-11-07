@@ -123,9 +123,9 @@ indistinguishable from "someone silenced it".
   by construction — no second predicate for a future edit to forget. A label would leave
   `state == firing` and force `run_cycle` to grow a label-reading condition, which is the
   *every adapter reimplements the filter privately* failure moved into core.
-- `/signals` splits buckets BY STATE, and the reconcile SOP is written against those
-  buckets. A label cannot produce a bucket, so a parked signal would keep arriving inside
-  `firing` and reconcile would keep treating it as live work.
+- `/signals` splits buckets BY STATE, and `/reconcile` uses the same signal states.
+  A label cannot produce a bucket, so a parked signal would keep arriving inside
+  `firing` and reconciliation would keep treating it as live work.
 - `unknown` means "we could not read the state"; `suppressed` means "we read it and a human
   parked it". Collapsing the two is the defect, not the fix.
 
@@ -624,8 +624,8 @@ answers replaces it. Freezing it would be the absence-is-evidence bug in a new p
 
 **Absence is not evidence, restated at a second boundary.**
 `dispatch.verify_pending_actions` refuses to reach any verdict for a source whose
-`poll_health` entry is missing or `ok: false` — the same rule `reconcile.md` Pass 1 step 3
-states for resolving on absence. Here it is worse than a wrong board row: reading a failed
+`poll_health` entry is missing or `ok: false` — the same rule `/reconcile` enforces
+for resolving on absence. Here it is worse than a wrong board row: reading a failed
 poll as "the fix landed" would feed a **false positive** into the ledger's track record,
 making a fix that never worked look proven.
 
@@ -913,7 +913,9 @@ companion. The core never imports a companion and never branches on edition.
 ### Fan-out resilience
 
 `poll_all` runs configured sources concurrently with a per-source timeout and
-returns `(signals, errors)`. One unreachable provider yields a per-source error
+returns `(signals, errors)`. `poll_with_health` returns the same poll's health as a
+third value for automatic reconciliation; the last-health cache may include a
+source disabled since its previous poll. One unreachable provider yields a per-source error
 entry, never an exception — the heartbeat must survive a dead provider.
 
 ### Absence is not evidence (`registry.poll_health`)
@@ -930,9 +932,9 @@ Two mechanisms, both in `registry`:
 - **`poll_health()`** — per source, whether the LAST poll attempt succeeded, with the
   reason and timestamp. A source **absent** from the map has not been polled and must be
   treated as "cannot conclude", not as healthy. Surfaced at `/signals` alongside
-  `all_sources_healthy`; `reconcile.md` requires consulting it before resolving on
-  absence, and resolving directly only for signals in the `cleared` list (an explicit
-  provider `ok` is positive evidence rather than an inference).
+  `all_sources_healthy`. The `/reconcile` route uses the health returned with its own
+  poll to decide automatic resolution, rather than asking an agent to compare the
+  full `/signals` response against the incident index.
 - **`poll_health()[src]["snapshot"]`** — whether that successful poll was a COMPLETE
   picture, i.e. whether absence from it is evidence at all. `ok` answers "did we look";
   this answers "did we see everything", and for one source they differ. Read off
@@ -950,7 +952,7 @@ Two mechanisms, both in `registry`:
   resolve held") with the fault untouched — the same class as resolving on a failed poll, reached
   through a **successful** one, which the `ok` guard cannot catch. Both consumers gate on
   it: `verify_pending_actions` returns `unknown` (open, so a later cycle retries) and
-  `reconcile.md` Pass 1 step 3 requires `snapshot != false` on top of `ok`. Rendered on the
+  `/reconcile` requires `snapshot is true` on top of `ok`. Rendered on the
   Signals source row and qualified into the "every source answered" banner, because that
   banner is the line an operator reads before trusting a quiet board.
 - **An adapter must RAISE on a fault, never return a short list.** `poll_all` records a
@@ -992,15 +994,15 @@ Two mechanisms, both in `registry`:
 A related boundary: `/signals` returns every signal regardless of state under `signals`,
 while `dispatch.run_cycle` claims only firing ones. The webhook can emit `ok`, so the route
 also exposes a state-filtered `firing` list (and `unclaimed` is derived from it), or an already-recovered signal would appear as
-apparent work in the very list reconcile reads as "still firing".
+apparent work in the list the dashboard reads as "still firing".
 
 `/signals` carries a **third** bucket, `suppressed` (contract 1b) — the third reason a
 signal can be absent from `firing`, and neither of the other two: it did not clear, and we
 did look. It must not be resolved on absence (nothing was fixed) and must not be folded into
 `cleared` (which asserts recovery). The raw `signals` key is unchanged for compatibility,
 which is exactly why the bucket is required: a UI counting `signals` under a column headed
-"Firing" would render "3 firing" above an empty queue with no explanation. `reconcile.md`
-Pass 1 step 5 states the rule for the agent side.
+"Firing" would render "3 firing" above an empty queue with no explanation. `/reconcile`
+holds an incident when the same signal is suppressed.
 
 `gather_evidence` passes every body through `security.redact` **and**
 `secrets.redact_tokens` centrally, so an adapter author cannot leak a credential
@@ -2185,7 +2187,8 @@ adding a rejection without classifying it fails CI.
 | `on_shift` | `RotationSource.on_shift()` | `POST /rotation/arm` | `ops-mission-control/dispatch` (2m), `.../reconcile` (15m) |
 | `primary` | `rotation.is_primary()`, enforced in `POST /ledger/hygiene` (409 `not_primary`) | nothing (ships enabled) | `ops-mission-control/ledger-hygiene` (daily 03:17) |
 
-`reconcile` is on `on_shift`, not `always`: it POSTs `incident/transition` and edits Slack
+`reconcile` is on `on_shift`, not `always`: it POSTs `/reconcile`, whose app-owned
+provider-evidence decision transitions eligible incidents and edits Slack
 messages, so on a team every instance would race to resolve the same incidents. The
 "Armed by" column is load-bearing — only one tier is scheduler-armed, and the other two are
 gated elsewhere or not at all.
@@ -2213,7 +2216,7 @@ and `ledger-hygiene` (`primary`), each with an explicit step-0 guard (`configure
 git ledger sync, the vector-index import, and closed-incident pruning, so a paused one would
 leave all three dead in production. `reconcile` and `dispatch` are `on_shift` crons
 (`rotation.TIER_CRONS`): they ship paused (`enabled: false`) and `POST /rotation/arm` arms them,
-because `reconcile` POSTs `incident/transition` and edits the incident's Slack message, and on
+because `reconcile` POSTs `/reconcile`, which edits incident state and Slack, and on
 a team every armed instance would race to do the same. Two tests pin the rule generically —
 every non-`on_shift` cron must ship enabled, and every *enabled* cron must carry the cheap
 exit — rather than naming one job.
@@ -2804,10 +2807,18 @@ existing installs only on a disable/enable cycle — correct (it must not silent
 un-pause a cron an operator paused), but it means this fix helps new installs and
 re-enables, not a running one.
 
-The four SOPs are declared as crons in `app.json`, so the enable-time bridge
+The four jobs are declared in `app.json`, so the enable-time bridge
 (`bridges._register_crons` → `register_app_crons_with_service`) promotes them into
 the running scheduler. All are `silent: true` and `persistent_session: false` (a poller must
 not accumulate session context).
+
+`reconcile` runs the bundled `reconcile_cron.py:run` script. The script calls the
+compact `/reconcile` route through the app's MCP tool and skips an unchanged tick;
+it does not start an agent turn. A running message-based reconcile job must be
+recreated by disabling and re-enabling the app after this manifest change:
+`script` is a create-only cron field, and manifest resync reports the pending
+change rather than silently changing an existing job's execution type. Re-arm
+the on-shift tier through `/rotation/arm` after re-enabling.
 
 **The two gates that carry work ship PAUSED; the two that only observe or arm ship live.**
 `reconcile` is on the `on_shift` tier, not `always`: on an ungated tier every instance would
@@ -2817,7 +2828,7 @@ generated from `rotation.TIER_CRONS` + `app.json` and a test asserts it stays in
 | Cron | Cadence | Tier | Ships |
 |---|---|---|---|
 | `dispatch` | 120s | on_shift | paused — it claims and acts, so it must not fire before a provider is configured |
-| `reconcile` | 900s | **on_shift** | paused — it POSTs `incident/transition` and edits Slack, so exactly ONE instance may correct the shared board |
+| `reconcile` | 900s | **on_shift** | paused — its script POSTs `/reconcile`, which transitions eligible incidents and edits Slack, so exactly ONE instance may correct the shared board |
 | `rotation-check` | 300s | always | **live** — it is what re-arms the gated tiers, so on a gated tier an off-shift instance could never recover |
 | `ledger-hygiene` | `17 3 * * *` | primary | **live** — nightly, primary-gated, and 409s on a non-leader |
 
@@ -2929,7 +2940,7 @@ review time, not to simulate the platform.
 - `.../backend/routes.py` — the HTTP surface's composition root: `register_routes(app)` with
   every full path, the `_require_enabled` gate, `_audit`, the `_safe_outbound` redaction floor
   (the registered sink for the ledger write), `_index_ledger_safely`, a handler for each of the
-  nineteen routes whose projection calls a seam (the other six register the projection
+  twenty routes whose projection calls a seam (the other six register the projection
   itself), three signature-preserving adapters, and re-exports of every other name `routes.py`
   defined. It must stay this plain module at this path: `app.json`, the package `__init__`, the
   security posture registry and the SOP→route scanner all address it.
@@ -2941,7 +2952,7 @@ review time, not to simulate the platform.
     `/incidents`, `/incident`, `/signals`, `/providers`, `/rotation`, with
     `canonical_slot_key`, `_slot_state` and `_ledger_sync_status`;
   - `lifecycle.py` — incident lifecycle writes: `/incident/transition`, `/incident/claim`,
-    `/dispatch`;
+    `/dispatch`, and evidence-bound `/reconcile`;
   - `actions.py` — provider-write authority: `/incident/action`, the propose loop and its
     `/proposals` queue, the `_Authorized` permit, `_authorize`, `_execute_authorized`,
     `_sink_refuses`, `_execute_stored_proposal` and `_schedule_verification`;

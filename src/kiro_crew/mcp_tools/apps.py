@@ -145,7 +145,7 @@ def schemas() -> list[dict[str, Any]]:
                         "description": (
                             "API path relative to /api/apps/ops-mission-control. "
                             "GET: /state /signals /incidents /handover /rotation "
-                            "/ledger /ledger/contradictions. POST: /dispatch "
+                            "/ledger /ledger/contradictions. POST: /dispatch /reconcile "
                             "/incident/transition /incident/claim /incident/action "
                             "/rotation/arm /ledger /ledger/hygiene."
                         ),

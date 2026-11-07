@@ -193,9 +193,18 @@ class OpsProviderRegistry:
         timeout_secs: float = DEFAULT_POLL_TIMEOUT_SECS,
         limit: int = DEFAULT_POLL_LIMIT,
     ) -> tuple[list[Signal], dict[str, str]]:
+        signals, errors, _ = await self.poll_with_health(timeout_secs=timeout_secs, limit=limit)
+        return signals, errors
+
+    async def poll_with_health(
+        self,
+        *,
+        timeout_secs: float = DEFAULT_POLL_TIMEOUT_SECS,
+        limit: int = DEFAULT_POLL_LIMIT,
+    ) -> tuple[list[Signal], dict[str, str], dict[str, dict[str, Any]]]:
         """Poll every configured signal source concurrently.
 
-        Returns ``(signals, errors)``. One unreachable provider must never stall
+        Returns ``(signals, errors, cycle_health)``. One unreachable provider must never stall
         the heartbeat or suppress the others, so each source gets its own timeout
         and its failure is reported rather than raised.
 
@@ -215,7 +224,7 @@ class OpsProviderRegistry:
             lambda: [s for s in self._signal_sources.values() if self._safe_configured(s)]
         )
         if not sources:
-            return [], {}
+            return [], {}, {}
 
         now = time.monotonic()
 
@@ -286,16 +295,17 @@ class OpsProviderRegistry:
 
         signals: list[Signal] = []
         errors: dict[str, str] = {}
+        cycle_health: dict[str, dict[str, Any]] = {}
         for source_id, outcome in results:
             if isinstance(outcome, str):
                 errors[source_id] = outcome
-                self._poll_health[source_id] = {"ok": False, "detail": outcome, "at": utc_now_iso()}
+                cycle_health[source_id] = {"ok": False, "detail": outcome, "at": utc_now_iso()}
             else:
                 truncated = isinstance(outcome, TruncatedSignals)
                 signals.extend(outcome)
                 # A success clears any backoff: the provider is answering again.
                 self._backoff_until.pop(source_id, None)
-                self._poll_health[source_id] = {
+                cycle_health[source_id] = {
                     "ok": True,
                     "detail": (
                         f"returned more than {limit} signals; showing the first {limit}"
@@ -314,7 +324,8 @@ class OpsProviderRegistry:
                     # it.
                     "snapshot": self._is_snapshot(source_id) and not truncated,
                 }
-        return signals, errors
+        self._poll_health.update(cycle_health)
+        return signals, errors, cycle_health
 
     def _is_snapshot(self, source_id: str) -> bool:
         """Whether absence from this source's successful poll is evidence of recovery.

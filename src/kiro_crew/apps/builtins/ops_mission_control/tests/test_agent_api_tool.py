@@ -45,6 +45,7 @@ class TestAllowlist(unittest.TestCase):
                     ("GET", "/ledger"),
                     ("GET", "/ledger/contradictions"),
                     ("POST", "/dispatch"),
+                    ("POST", "/reconcile"),
                     ("POST", "/incident/transition"),
                     ("POST", "/incident/claim"),
                     ("POST", "/incident/action"),

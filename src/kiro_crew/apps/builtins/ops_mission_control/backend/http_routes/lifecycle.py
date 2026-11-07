@@ -1,4 +1,4 @@
-"""Incident lifecycle writes: ``/incident/transition``, ``/incident/claim``, ``/dispatch``.
+"""Incident lifecycle writes: ``/incident/transition``, ``/incident/claim``, ``/dispatch``, ``/reconcile``.
 
 The manual claim and the dispatch cycle are the two places a claim becomes durable, so both
 attach the ledger's matches, broker the provider's evidence and publish to the pin board; a
@@ -17,6 +17,7 @@ from aiohttp import web
 from kiro_crew.apps.builtins.ops_mission_control.backend import (
     dispatch,
     notify_out,
+    reconcile,
     rotation,
     slack_out,
     store,
@@ -33,8 +34,52 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     CLAIMED_BY_OPERATOR,
     STATE_FIRING,
     STATUS_NEEDS_HUMAN,
+    STATUS_RESOLVED,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook as webhook_mod
+
+
+async def _handle_reconcile(
+    request: web.Request, *, get_registry: RegistryLookup, _audit: AuditWriter
+) -> web.StreamResponse:
+    registry = get_registry()
+    signals, errors, cycle_health = await registry.poll_with_health()
+    try:
+        index = await asyncio.to_thread(store.read_index)
+    except (json.JSONDecodeError, OSError) as exc:
+        return _store_read_refusal(exc, code="reconcile_index")
+
+    resolved: list[dict[str, str]] = []
+    client = _slack_client(request)
+    for incident in sorted(index.values(), key=lambda item: (item.claimed_at, item.incident_id)):
+        if len(resolved) >= reconcile.MAX_RECONCILE_INCIDENTS:
+            break
+        evidence = reconcile.resolution_evidence(incident, signals, errors, cycle_health)
+        if not evidence:
+            continue
+        resolution = (
+            "Provider explicitly reported the signal cleared."
+            if evidence == reconcile.EVIDENCE_EXPLICIT_CLEAR
+            else "Signal absent from a complete successful provider snapshot."
+        )
+        if not incident.diagnosis:
+            resolution += " Cleared without diagnosis; may recur."
+        try:
+            updated = await asyncio.to_thread(
+                store.transition, incident.incident_id, STATUS_RESOLVED, resolution=resolution
+            )
+        except (json.JSONDecodeError, OSError) as exc:
+            return _store_read_refusal(exc, code="reconcile_index")
+        except (KeyError, ValueError):
+            continue
+        _audit("incident_transition", f"{incident.incident_id}->{STATUS_RESOLVED}", "success")
+        await slack_out.publish(updated, client)
+        await slack_out.post_detail(updated, resolution, client)
+        resolved.append({"id": incident.incident_id, "evidence": evidence})
+
+    return web.json_response(
+        {"changed": bool(resolved), "resolved": resolved, "error_sources": sorted(errors)}
+    )
 
 
 async def _handle_transition(

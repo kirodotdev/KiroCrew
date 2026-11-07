@@ -293,6 +293,12 @@ async def _handle_transition(request: web.Request) -> web.StreamResponse:
     )
 
 
+async def _handle_reconcile(request: web.Request) -> web.StreamResponse:
+    return await lifecycle_routes._handle_reconcile(
+        request, get_registry=get_registry, _audit=_audit
+    )
+
+
 async def _handle_claim(request: web.Request) -> web.StreamResponse:
     return await lifecycle_routes._handle_claim(request, get_registry=get_registry, _audit=_audit)
 
@@ -408,6 +414,7 @@ def register_routes(app: web.Application) -> None:
     add.add_get(f"{_BASE}/incidents", _require_enabled(_handle_incidents))
     add.add_get(f"{_BASE}/incident", _require_enabled(_handle_incident))
     add.add_post(f"{_BASE}/incident/transition", _require_enabled(_handle_transition))
+    add.add_post(f"{_BASE}/reconcile", _require_enabled(_handle_reconcile))
     add.add_post(f"{_BASE}/incident/claim", _require_enabled(_handle_claim))
     add.add_post(f"{_BASE}/incident/action", _require_enabled(_handle_action))
     # The propose loop: draft -> queue -> decide. Separate routes because they have
