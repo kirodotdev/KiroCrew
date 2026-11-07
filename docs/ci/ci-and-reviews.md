@@ -4850,9 +4850,12 @@ is `workflow_run`-triggered, so it is barred from the trigger allowlist and its
 payload could not resolve a pull request anyway. The evaluation therefore reads
 check-runs at whatever state the triggering lane's event found them in, and a rerun
 whose fresh "Open check-run" row lands after that read still shows its OLD completed
-verdict until the next event. `pr-readiness-sweep.yml` mode 2 closes that within one
-sweep tick (~5 minutes, plus the 180-second publish lag) on the check evidence. The `WR_NAME = "Fork $cname"` branch in the evaluate
-step was written for this race and has never been reachable; its comment records that.
+verdict until the next evaluation. Before any `success` the publish step re-reads
+those rows, so a stale success also needs the row to land after that second read. At
+the latest the stale verdict lasts until the rerun's own completion: that is check
+evidence newer than the verdict, so `pr-readiness-sweep.yml` re-fires the recompute
+within one sweep tick (~5 minutes), mode 2 for a stale failure and mode 4 for a stale
+success the rerun turns red. That window is the accepted bound on this race.
 CodeQL is
 the single ineligible lane, reported as a non-blocking "Not eligible" note rather
 than a blocker. Readiness therefore says the same thing on a fork as anywhere else: the
