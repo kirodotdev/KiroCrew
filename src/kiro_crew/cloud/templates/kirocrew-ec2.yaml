@@ -521,7 +521,9 @@ Resources:
       # "systemd unit": a system-level unit so the gateway survives reboots
       #   and runs as ec2-user. The registry records DashboardPort as the
       #   instance's remote_port, so the gateway must listen on exactly this
-      #   parameter -- hence the KIROCREW_PORT Environment line.
+      #   parameter -- hence the KIROCREW_PORT Environment line. LimitCORE=0:
+      #   AL2023 pipes cores to systemd-coredump, so a crash would otherwise
+      #   hold the gateway's exit, and its restart, for up to 5 minutes.
       # Editing hazard: the whole UserData is ONE CloudFormation !Sub, so any
       #   dollar-brace token in the script -- even inside a bash comment -- is
       #   parsed as a Sub variable and breaks change-set creation. Use plain
@@ -758,6 +760,7 @@ Resources:
           ExecStart=$KIROCREW_BIN gateway
           Restart=on-failure
           RestartSec=10
+          LimitCORE=0
           WorkingDirectory=$RUN_HOME
           Environment=HOME=$RUN_HOME
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin

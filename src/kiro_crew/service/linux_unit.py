@@ -386,6 +386,10 @@ def render_unit(*, user_scope: bool = False) -> str:
         # agent-launched builds and other FD-hungry work survive regardless
         # of the host default.
         "LimitNOFILE=65536\n"
+        # No core file: with core_pattern piped to systemd-coredump, a crashed
+        # multi-GB gateway cannot exit, or restart, until its core has streamed,
+        # which can take that service's whole 5-minute cap.
+        "LimitCORE=0\n"
         f"{env_lines}"
         "\n"
         "[Install]\n"

@@ -848,13 +848,16 @@ The unit template is written once by `pod install`, so a machine keeps whatever 
 installed. On `pod up`, the pod CLI re-renders it when the installed unit is one this
 build will not boot:
 
-1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on either of two
+1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on any of three
    triggers:
    - the baked `ExecStart` binary no longer exists — `unit.unit_exec_ok(cfg)` reads the
      unit file and checks `os.access(exe, os.X_OK)` on the baked path (typically the
      worktree it resolved into was pruned)
    - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
      currently `ExecStopPost=` — see the pod module's teardown section)
+   - the unit lacks a directive this build requires (`unit._REQUIRED_DIRECTIVES`,
+     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal, and
+     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
