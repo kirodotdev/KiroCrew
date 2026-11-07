@@ -7,6 +7,7 @@ import base64
 import errno
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -389,6 +390,10 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # looks like a pinned setting and silently does nothing
             # (kirodotdev/KiroCrew#9909: `config set --local memory.enabled false`).
             _refuse_unknown_key(key, parsed, overlay=use_local)
+            model_error = _extraction_model_error(key, parsed)
+            if model_error:
+                print(f"❌ {key}: {model_error}", file=sys.stderr)
+                sys.exit(1)
             if use_local:
                 p = config_local_path()
 
@@ -1065,6 +1070,32 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
         return f"expected {entry.type}, got boolean"
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
+    return None
+
+
+def _extraction_model_error(key: str, value: object) -> str | None:
+    """Why Settings would refuse this write of ``knowledge.extraction_model``, or None.
+
+    The installer copies that id into the knowledge agent's spec as written, so
+    ``config set`` holds it to the Settings PATCH spec's length bound and pattern,
+    whether it is set by its dotted key or inside a ``knowledge`` object
+    (kirodotdev/KiroCrew#30336). The other model pins keep taking any id: one no
+    catalog claims, such as a regional Bedrock profile, reaches the wire unchanged.
+    """
+    if key == "knowledge" and isinstance(value, dict):
+        value = value.get("extraction_model")
+    elif key != "knowledge.extraction_model":
+        return None
+    if not isinstance(value, str):
+        return None
+    # Deferred: it loads the whole dashboard handlers package, which only this key pays for.
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    spec = _EDITABLE_CONFIG["knowledge.extraction_model"]
+    if len(value) > spec["max_len"]:
+        return f"must be at most {spec['max_len']} characters"
+    if not re.fullmatch(spec["pattern"], value):
+        return f"{value!r} is not a model id Settings accepts (a bare id, or provider/model)"
     return None
 
 
