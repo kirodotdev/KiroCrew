@@ -153,7 +153,11 @@ installed against:
   argument after the script are left as written. The rewrite applies only when the
   operand resolves (links followed) to an existing file inside the app root; an
   absolute path, or a relative one that is not such a file, is left as written. A
-  relative path in `command` itself is still never rewritten.
+  relative path in `command` itself is still never rewritten. This is also the only
+  stdio shape a former built-in's repository may declare and still be adopted in
+  place of the built-in, and then only for servers the built-in declared, with no
+  `autoApprove` tool the built-in did not have and no `env` entry it did not set
+  with the same value.
 - The host CLI name `kirocrew` is pinned to the running gateway before any of
   the above applies.
 
