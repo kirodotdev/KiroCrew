@@ -68,6 +68,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
+        # only caller is `notifications/bridge.py`, the registered sink that hands
+        # the copy to a transport.
+        "notifications/bridge_egress.py",
         # Selects which redaction the OTLP host audit rows go through in a
         # process with no platform context (`_policy_redactor` returns the
         # companion's), and calls none itself. The rows are written by the SEL,
