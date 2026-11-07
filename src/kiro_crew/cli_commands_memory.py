@@ -325,11 +325,14 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             print("Current memory and backups are unchanged.")
             return
         source = Path(chosen) if chosen else memory_backup.newest_backup(target_store)
+        # A restore that finds no backup raises ValueError, which `_memory_cmd`
+        # reports as one line on stderr with exit 1.
         if source is None:
-            # Raised so the surrounding command reports a restore that found nothing
-            # as a failure.
-            raise FileNotFoundError(f"no backup found for memory store {target_store!r}")
-        restored = memory_backup.restore_from_backup(source, target_store)
+            raise ValueError(f"no backup found for memory store {target_store!r}")
+        try:
+            restored = memory_backup.restore_from_backup(source, target_store)
+        except FileNotFoundError as exc:
+            raise ValueError(str(exc)) from exc
         print(f"Staged restore for {target_store!r} from {source.name}.")
         print("Restart the gateway to activate it. Current memory is unchanged.")
         if is_member_store(restored):
