@@ -48,6 +48,7 @@ from kiro_crew.acp.runtime_models import (
     resolve_pin_spelling_on,
 )
 from kiro_crew.acp.structured_error_data import provider_data_text, structured_data_prose
+from kiro_crew.acp.transport_framing import OVERSIZE_REPLY_DATA
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -1432,6 +1433,11 @@ def _format_acp_error_worded(
     being raised to the dashboard / Slack / CLI surfaces.
     """
     worded = True
+    if isinstance(error, dict) and error.get("data") == OVERSIZE_REPLY_DATA:
+        # Crew's own stand-in for a reply it dropped as oversize: its message is
+        # already the one sentence a user should read (the byte counts are in the
+        # reader's log line), so it is shown as it is.
+        return str(error.get("message", "") or ""), True
     if isinstance(error, dict):
         data = provider_data_text(error)  # a structured `data` reads its prose from `message`
         prose = structured_data_prose(error)

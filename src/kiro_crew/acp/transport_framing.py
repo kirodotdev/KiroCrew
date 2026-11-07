@@ -39,6 +39,11 @@ _OVERSIZE_DRAIN_MAX_BYTES = 16 * _STDOUT_BUFFER_LIMIT  # 160MB
 #: JSON-RPC envelope's ``id``, which kiro-cli writes ahead of its ``result``.
 _OVERSIZE_HEAD_BYTES = 4096
 
+#: The ``data`` of the error reply the runtime hands a session in place of a chat
+#: prompt reply it dropped as oversize. ``transport_errors`` shows that error's
+#: ``message`` as it is, so the user reads one plain sentence, not the raw frame.
+OVERSIZE_REPLY_DATA = "kirocrew:oversize-reply-dropped"
+
 
 class OversizeLineUnrecoverable(Exception):
     """An oversize stdout line exceeded the drain budget without terminating."""
