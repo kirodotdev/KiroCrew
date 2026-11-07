@@ -124,6 +124,7 @@ DECLARED_SITES = frozenset(
         ("dashboard/chat_tag_grants.py", "_store_dir"),
         ("dashboard/file_api/uploads.py", "api_directory_upload._write"),
         ("dashboard/handlers/__init__.py", "_prompt_dir_entry"),
+        ("dashboard/handlers/codex_usage.py", "_newest_rollouts"),
         ("dashboard/handlers/discover.py", "api_skills_discover_install._write_bundle"),
         ("dashboard/handlers/prompts_authoring.py", "_api_prompt_write._apply_locked"),
         ("dashboard/handlers/prompts_authoring.py", "_api_user_prompt_detail._read"),

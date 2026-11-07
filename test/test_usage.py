@@ -492,7 +492,9 @@ async def _get_settled_usage(client: TestClient) -> tuple[int, dict]:
 
 class TestApiKiroUsage:
     @pytest.fixture(autouse=True)
-    def _reset_cache(self):
+    def _reset_cache(self, _floor_monkeypatch, tmp_path):
+        # The route also reads Codex's rollout logs; keep it off the host's own.
+        _floor_monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
         usage_mod._CACHE = {}
         usage_mod._CACHE_TS = 0.0
         usage_mod._SESSIONS_CACHE = None

@@ -66,6 +66,17 @@ moves while bonus drains, so its pace reads near zero), less than a day of the c
 has run, or the report is loading or still `refreshing`. A failed read renders an
 `ErrorNotice` with the hand-off instead.
 
+`/api/usage/kiro` also carries `codex`: Codex's 5-hour and weekly usage windows,
+read from the newest `rate_limits` block in the tails of the most recently written
+`rollout-*.jsonl` logs under the gateway's `CODEX_HOME/sessions/`
+(`dashboard/handlers/codex_usage.py`). `five_hour` is the block's `primary` window
+and `weekly` its `secondary`, each `{used_percent, resets_at, window_minutes,
+stale}`; `stale` is true once `resets_at` has passed, so an old percent is not shown
+as current. `captured_at` is the line's timestamp and `source_mtime` the log's
+modification time. With no logs, or none holding a block, `codex` is `null`. Only
+`rollout-*.jsonl` files are opened and a link at that name is refused, so `auth.json`
+is not read.
+
 The Overview usage summary and Usage report share a per-provider browser-memory
 cache for the dashboard lifetime. Opening either view shows the last successful
 report immediately. Data is fresh for five minutes; an older report refreshes
