@@ -248,7 +248,7 @@ export default function Workspace() {
                 : (
                   <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
                     <GitPullRequest size={26} strokeWidth={1.5} className="opacity-50" />
-                    <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_a')} {terms.changeRequestTitle} {i18nT('apps.issueRadar.workspace.to_see_its_details')}</div>
+                    <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_subject_to_see_details', { subject: terms.changeRequestTitle })}</div>
                   </div>
                 )}
             </div>
@@ -294,10 +294,9 @@ export default function Workspace() {
                 // the same way everywhere in this app.
                 <div className="flex-1 flex flex-col items-center justify-center text-muted gap-2">
                   <Users size={26} strokeWidth={1.5} className="opacity-50" />
-                  {/* Assembled the same way the PR pane assembles its own
-                      placeholder, so the two read identically and the noun comes
-                      from the crews catalog rather than being spelled here. */}
-                  <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_a')} {i18nT('apps.issueRadar.views.crews.group_crew')} {i18nT('apps.issueRadar.workspace.to_see_its_details')}</div>
+                  {/* Its own whole sentence, not the PR pane's `{subject}` frame:
+                      the noun's gender decides the article (une équipe, eine Crew). */}
+                  <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_crew_to_see_details')}</div>
                 </div>
               )}
             </div>

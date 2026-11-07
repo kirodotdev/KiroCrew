@@ -3168,10 +3168,10 @@
         "clear_filters": "ফিল্টার সাফ করুন",
         "resize_list": "তালিকার আকার বদলান",
         "resize_sidebar": "সাইডবারের আকার বদলান",
-        "select_a": "বেছে নিন একটি",
+        "select_subject_to_see_details": "বিবরণ দেখতে একটি {{subject}} বেছে নাও।",
+        "select_crew_to_see_details": "বিবরণ দেখতে একটি ক্রু বেছে নাও।",
         "selected_change_hidden_by_filters": "নির্বাচিত {{subject}} সক্রিয় ফিল্টার দ্বারা লুকানো রয়েছে।",
         "selected_issue_hidden_by_filters": "নির্বাচিত ইস্যুটি সক্রিয় ফিল্টার দ্বারা লুকানো রয়েছে।",
-        "to_see_its_details": "— এর বিবরণ দেখতে।",
         "select_an_issue_to_see_its_details": "বিবরণ দেখতে একটি ইস্যু বেছে নিন।",
         "select_a_work_item_to_see_its_details": "বিশদ দেখতে একটি ওয়ার্ক আইটেম নির্বাচন করুন।"
       }

@@ -1840,8 +1840,8 @@
       "workspace": {
         "resize_list": "Resize list",
         "resize_sidebar": "Resize sidebar",
-        "select_a": "Select a",
-        "to_see_its_details": "to see its details.",
+        "select_subject_to_see_details": "Select a {{subject}} to see its details.",
+        "select_crew_to_see_details": "Select a Crew to see its details.",
         "select_an_issue_to_see_its_details": "Select an issue to see its details."
       },
       "api": {
