@@ -32,11 +32,12 @@ all enforced BEFORE the POST, in
 field bounds, and the OWNER-only rebroadcast. See :func:`api_computer_use_frame`.
 
 Blocking work is offloaded: the keystone/config reads and the governance profile
-walk touch the filesystem, the permission probe SHELLS OUT to
-``kirocrew computer doctor --json`` rather than calling ctypes in-process (a
-ctypes fault is not catchable in Python and would take the whole gateway — every
-chat session, the cron scheduler, the Slack socket — down with it), and the
-dispatch itself performs accessibility calls that block for tens of milliseconds.
+walk touch the filesystem, the permission probe SPAWNS
+``python -m kiro_crew.computer_use.permission_probe`` rather than calling ctypes
+in-process (a ctypes fault is not catchable in Python and would take the whole
+gateway down with it: every chat session, the cron scheduler, the Slack socket),
+and the dispatch itself performs accessibility calls that block for tens of
+milliseconds.
 None of it may run on the event loop.
 
 Two DIFFERENT pools, and the split matters: the config reads/writes use the default
@@ -57,6 +58,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.computer_use import enable_state
 from kiro_crew.computer_use import overlay as cursor_overlay
 from kiro_crew.computer_use.screencast import (
@@ -93,14 +95,16 @@ OP_CONFIG_SAVE = "computer_use.config_save"
 OP_INVOKE = "computer_use.invoke"
 OP_FRAME = "computer_use.frame"
 
-# The permission probe is a short-lived child running ``kirocrew computer doctor
-# --json``. Fixed argv, no shell, no agent-steerable input.
-DOCTOR_SUBCOMMAND = "computer"
-DOCTOR_ARGS: tuple[str, ...] = ("doctor", "--json")
-# Seconds to wait for it. The probe is two framework calls; anything slower means
-# a stalled TCC daemon, and the Settings page must render regardless — the rows
-# are advisory, so "unknown" is a fine answer and far better than a hung request.
-DOCTOR_TIMEOUT_SECS = 5.0
+# The permission probe is a short-lived child running the module named below under
+# the gateway's own interpreter. Fixed argv, no shell, no agent-steerable input. Not
+# ``kirocrew computer doctor --json``: starting the whole CLI alone can outlast the
+# timeout below. See the module's docstring.
+PERMISSION_PROBE_MODULE = "kiro_crew.computer_use.permission_probe"
+# Seconds to wait for it. The child imports the driver seam and makes two framework
+# calls; anything slower means a stalled TCC daemon, and the Settings page must
+# render regardless: the rows are advisory, so "unknown" is a fine answer and far
+# better than a hung request.
+PROBE_TIMEOUT_SECS = 5.0
 
 #: Platforms whose driver has a permission probe worth spawning a child for.
 #: Membership rather than an inequality, so a platform that gains a driver opts IN
@@ -234,7 +238,7 @@ def _permission_block(state: str) -> dict[str, str]:
 
 
 def _normalize_permissions(raw: object) -> dict[str, str]:
-    """Coerce the doctor's JSON into the payload's permission block.
+    """Coerce the probe child's JSON into the payload's permission block.
 
     Tolerant by construction: the probe is a separate process whose exact output
     shape must not be a hard dependency of the Settings page rendering. Accepts
@@ -259,13 +263,19 @@ def _normalize_permissions(raw: object) -> dict[str, str]:
 async def _probe_permissions(platform_id: str) -> dict[str, str]:
     """Probe the platform's capture/automation permissions OUT OF PROCESS.
 
-    Shells ``kirocrew computer doctor --json`` instead of calling the frameworks
-    here, and that is the whole point: a missing ctypes ``argtypes`` is a SIGSEGV,
-    not an exception, and in the gateway that
+    Spawns ``python -m kiro_crew.computer_use.permission_probe`` instead of calling
+    the frameworks here, and that is the whole point: a missing ctypes ``argtypes``
+    is a SIGSEGV, not an exception, and in the gateway that
     would take down every chat session, the cron scheduler, the Slack socket and
     the dashboard WebSocket at once. In a short-lived child the blast radius is a
     permission row that reads ``unknown``. The argument applies with MORE force to
     the Windows driver, whose whole surface is manual COM vtable dispatch.
+
+    The child is that module and not ``kirocrew computer doctor --json``, although
+    both ask the same ``probe_permissions``: the CLI's own start-up, plus the
+    doctor's agent-spec projection, can take longer than :data:`PROBE_TIMEOUT_SECS`
+    on a busy host, and a timed-out probe reads ``unknown`` on a host that holds
+    both grants.
 
     Runs for every platform that has a DRIVER, asking the backend rather than naming
     an OS — the same seam ``_payload`` reads. Gating this on macOS made
@@ -282,13 +292,10 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
     if platform_id not in _PROBEABLE_PLATFORMS:
         return _permission_block(PERMISSION_UNSUPPORTED)
 
-    # Reuses the resolver the managed MCP servers use, so the probe runs the SAME
-    # install as the gateway (and falls back to ``<interpreter> -m kiro_crew``
-    # when no console script is on PATH — the systemd-user-service case).
-    from kiro_crew.agent import _kirocrew_mcp_invocation
-
-    exe, prefix = _kirocrew_mcp_invocation(DOCTOR_SUBCOMMAND)
-    argv = [exe, *prefix, *DOCTOR_ARGS]
+    # The gateway's own interpreter, so the probe runs the SAME install as the
+    # gateway with no PATH lookup; ``-P`` keeps the spawn directory off
+    # ``sys.path`` so nothing there can shadow the module.
+    argv = platform_compat.isolated_python_argv("-P", "-m", PERMISSION_PROBE_MODULE)
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -296,7 +303,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=DOCTOR_TIMEOUT_SECS)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT_SECS)
     except (asyncio.TimeoutError, TimeoutError):
         # BOTH, deliberately. On Python 3.11+ these are the same class, but on 3.10
         # — which CI still gates on — ``asyncio.TimeoutError`` is a distinct class
@@ -307,7 +314,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
         # Kill the child before giving up: leaving a stalled probe running would
         # accumulate one process per Settings poll (the panel polls every 5s while
         # a grant is missing).
-        logger.debug("computer-use permission probe timed out after %ss", DOCTOR_TIMEOUT_SECS)
+        logger.debug("computer-use permission probe timed out after %ss", PROBE_TIMEOUT_SECS)
         if proc is not None:
             try:
                 proc.kill()

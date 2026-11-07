@@ -5130,7 +5130,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Invoke path needs Electron and OS accessibility permissions. | Off by default; ComputerUsePanel.tsx; live view component mounted in App.tsx. | Permission probe shells out to 'kirocrew computer doctor'; on Linux reports unsupported/unknown. | Linux backend is a typed UnsupportedBackend; the spec says when `supported` is false the panel renders the reason and no toggle."
+        "notes": "Invoke path needs Electron and OS accessibility permissions. | Off by default; ComputerUsePanel.tsx; live view component mounted in App.tsx. | Permission probe spawns 'python -m kiro_crew.computer_use.permission_probe'; on Linux reports unsupported/unknown. | Linux backend is a typed UnsupportedBackend; the spec says when `supported` is false the panel renders the reason and no toggle."
       },
       "runnable": "nightly",
       "estimated_steps": 2,

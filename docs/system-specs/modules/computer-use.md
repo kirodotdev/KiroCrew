@@ -572,9 +572,17 @@ screenshot_jpeg_quality, cursor_motion, cursor_motion_supported, allowed_apps,
 extra_denied_apps, policy_error, permissions{accessibility,
 screen_recording, responsible_hint}, limits{field: [min, max]}}`.
 
-- `permissions` comes from shelling `kirocrew computer doctor --json`
+- `permissions` comes from a short-lived child,
+  `<gateway interpreter> [-s] -P -m kiro_crew.computer_use.permission_probe`
   (`asyncio.create_subprocess_exec`, fixed argv, 5s timeout, one
-  `test_spawn_audit.BENIGN_SPAWNS` entry). Degrades to `unknown` on timeout,
+  `test_spawn_audit.BENIGN_SPAWNS` entry), which prints the driver's
+  `probe_permissions()` block as one JSON object. It is not
+  `kirocrew computer doctor --json`, which asks the same driver: the CLI's start-up
+  plus the doctor's agent-spec projection measure 3.5s warm and over 11s on a cold
+  file cache on macOS, so on a busy host that probe outlasts the timeout and both
+  rows read "Could not check" while both grants are held. The child imports only the driver
+  seam (about half a second), and `test_computer_use_permission_probe.py` fails if
+  it loads `kiro_crew.cli` or `kiro_crew.agent`. Degrades to `unknown` on timeout,
   non-zero exit or unparseable output, and reports `unsupported` when the current
   platform has no probe; macOS and Windows both probe. A timed-out child is killed —
   the panel polls every 5s while a
@@ -2276,10 +2284,11 @@ is parked off-screen at `-32000, -32000`, so the capture SUCCEEDS over a uniform
 buffer and the blank-frame gate rejects it with no cause anyone can report. The
 tree is still returned — the UIA tree of a minimized window reads perfectly well.
 
-`kirocrew computer doctor --json` is what the gateway shells for the Settings
-permission rows — a short-lived subprocess, deliberately NOT an in-gateway ctypes
-call, so a native fault cannot take the gateway (and with it cron, Slack and the
-dashboard WS) down.
+The gateway reads the Settings permission rows from a short-lived child,
+`python -m kiro_crew.computer_use.permission_probe`, deliberately NOT an
+in-gateway ctypes call, so a native fault cannot take the gateway (and with it
+cron, Slack and the dashboard WS) down. `kirocrew computer doctor --json` reports
+the same `probe_permissions()` answer, but is too slow to start for that budget.
 
 ### An app's own popups are not addressable surfaces
 
@@ -2453,9 +2462,7 @@ and restart, or use the Kiro CLI backend), and it is absent once the running gat
 routes the server: `gateway_routed_names()`, the saved routing and a stub in the
 overlay built at the gateway's start, the answer the MCP tab gives. On every other
 backend the line names only the Kiro CLI backend, routed or not. The projection's
-own withhold warnings are silenced for this one question: no session runs in it,
-and the Settings panel repeats the `--json` probe every few seconds while a
-permission is missing.
+own withhold warnings are silenced for this one question: no session runs in it.
 
 ### `call` is a harness, not an eleventh tool
 
@@ -2727,6 +2734,7 @@ computer use.
 | `computer_use/overlay.py` | Gateway-side overlay SUPERVISOR: the `cursor_motion` opt-in, child lifecycle, motion commands. Never raises, never blocks the loop |
 | `computer_use/overlay_proc.py` | The AppKit overlay CHILD (`python -m …overlay_proc`). Its OWN ctypes surface — out of process on purpose; `NSWindowSharingNone` keeps it out of screenshots |
 | `computer_use/permissions.py` | Advisory TCC probe + `responsible_hint` |
+| `computer_use/permission_probe.py` | The Settings panel's permission-probe CHILD (`python -m …permission_probe`): the driver's `probe_permissions()` as one JSON line, without the CLI's start-up |
 | `computer_use/macos_driver.py` | `MacOSBackend` glue |
 | `computer_use/cli.py` | `kirocrew computer doctor [--json] \| apps \| call` |
 | `mcp_computer.py` | The thin stdio shim (`kirocrew mcp-computer`) |
