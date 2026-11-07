@@ -88,11 +88,8 @@ class TestRunMarker:
     def test_run_dir_lockdown_is_the_directory_helper(self, tmp_path, monkeypatch):
         """``run/`` holds the gateway's credential, pid and launcher marker.
 
-        A bare ``os.chmod(0o700)`` is a silent no-op on Windows, so the
-        directory and everything created inside it keep the inherited DACL.
-        The tightening must go through ``platform_compat.restrict_dir_to_owner``,
-        whose Windows grants carry ``(OI)(CI)`` and so also cover the ``.pid``
-        and ``.bin`` sidecars, which ``atomic_write(mode=0o600)`` cannot.
+        ``os.chmod(0o700)`` is a no-op on Windows; ``platform_compat.restrict_dir_to_owner``
+        grants ``(OI)(CI)``, which also covers the ``.pid`` and ``.bin`` sidecars.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew import platform_compat
@@ -132,40 +129,24 @@ class TestRunMarkerSidecarReadRetry:
     """A sidecar reader must not fold a transient Windows sharing violation into
     ``""`` / ``None``.
 
-    The markers are published with ``mkstemp`` + ``os.replace``
-    (``write_marker``). On Windows a reader that lands in the ``os.replace``
-    window raises ``PermissionError`` (``WinError 32``). The old plain
-    ``read_text`` folded that into ``""`` -- indistinguishable from a genuinely
-    absent marker, so a caller checking whether a gateway runs on a port got a
-    silent FALSE NEGATIVE. Every reader now goes through
-    ``atomic_write.read_bytes_with_retry``, which retries that bounded window.
+    On Windows a read inside the ``os.replace`` window raises ``WinError 32``; folding
+    that to ``""`` would report a running gateway as absent. Every reader goes through
+    ``atomic_write.read_bytes_with_retry``.
 
-    ``read_sharing_violation`` patches ``Path.read_bytes`` and so covers the
-    uncapped readers (``read_secret`` / ``read_launcher`` via ``_read_sidecar``).
-    The capped readers (``read_pid`` and the ``.start`` sidecar) pass
-    ``max_bytes`` and so read through ``_read_bytes``; those are faulted by
-    patching ``atomic_write._read_bytes``, the single chokepoint both branches of
-    the helper call. POSIX permits the read, so this fault only reproduces on the
-    simulator here and on a real Windows host -- it is skipped on this Linux
-    worker's live filesystem, which is why the simulator exists. Not run on a
-    real Windows host.
+    ``read_sharing_violation`` patches ``Path.read_bytes`` (uncapped readers); the
+    capped readers (``read_pid``, ``.start``) are faulted at ``atomic_write._read_bytes``.
+    POSIX permits the read, so the fault exists only in the simulator.
     """
 
     @pytest.fixture(autouse=True)
     def _no_backoff_sleep(self, _floor_monkeypatch):
         """Keep the bounded retry instant; attempt COUNT is what matters here.
 
-        Only the simulator tests belong under this fixture. The real-file
-        concurrency test lives in ``TestRunMarkerSidecarConcurrentRewrite``
-        below, OUTSIDE it, because there the attempts must be spaced in time:
-        with the sleep zeroed the whole budget fits inside one writer syscall.
+        The real-file race lives in ``TestRunMarkerSidecarConcurrentRewrite``, outside
+        this fixture, because with the sleep zeroed the budget fits in one writer syscall.
 
-        Patches through ``_floor_monkeypatch`` (the isolation floor's own
-        ``MonkeyPatch``), not the shared ``monkeypatch``: an autouse fixture that
-        used the shared instance would be lifted by any test here that called
-        ``monkeypatch.undo()`` mid-body, silently restoring the real backoff
-        sleep for the rest of that test (D11 / semgrep
-        ``kirocrew.test-autouse-shared-monkeypatch``).
+        Uses ``_floor_monkeypatch``: a mid-body ``monkeypatch.undo()`` would lift the
+        shared one (semgrep ``kirocrew.test-autouse-shared-monkeypatch``).
         """
         from kiro_crew import atomic_write as aw
 
@@ -222,23 +203,8 @@ class TestRunMarkerSidecarReadRetry:
     ):
         """A window that outlasts the ENTIRE retry budget still folds to None.
 
-        Deterministic coverage of the budget's far edge, complementing the
-        shorter-window simulator test above (two faults then a success). This one
-        faults every one of the ``_REPLACE_MAX_ATTEMPTS``
-        reads, so the reader runs out of attempts and ``read_launcher`` folds the
-        final ``PermissionError`` to ``""`` -> ``None``.
-
-        It takes no time (the autouse ``_no_backoff_sleep`` zeroes the backoff,
-        so faulting the whole budget is instant), with no dependence on a live
-        filesystem's sharing-violation timing. The budget
-        is finite by design (a window that stays open forever MUST eventually be
-        given up on), so a reader that meets a window outlasting the whole budget
-        folds -- which is what this test pins. This and the shorter-window
-        simulator test are the owners of the Windows sharing-violation fold;
-        ``TestRunMarkerSidecarConcurrentRewrite`` is a separate real-file race
-        that reads a sidecar a writer rewrites and asserts the torn-value
-        invariant on every platform -- it permits the fold rather than
-        reproducing it deterministically.
+        All ``_REPLACE_MAX_ATTEMPTS`` reads fault, so ``read_launcher`` folds the final
+        ``PermissionError`` to ``None``. The budget is finite by design.
         """
         from windows_sim import read_sharing_violation
 
@@ -333,91 +299,23 @@ class TestRunMarkerSidecarReadRetry:
 class TestRunMarkerSidecarConcurrentRewrite:
     """Real files, real threads: each read overlaps at most ONE in-flight write.
 
-    Deliberately NOT a member of ``TestRunMarkerSidecarReadRetry``. That class's
-    autouse fixture zeroes ``_REPLACE_BACKOFF_SECONDS`` because its simulator
-    tests count attempts; here the real 50 ms backoff MUST stay in force, because
-    it is the product behaviour under test. On Windows the writer's ``os.replace``
-    (``MoveFileEx`` superseding the target) runs with the GIL released, and a read
-    that opens the file inside that one syscall raises WinError 32; the 10 x 50 ms
-    read-retry budget is what rides that single window out so the read still
-    returns the value a writer published rather than folding to a false ``None``.
+    Kept outside ``TestRunMarkerSidecarReadRetry`` so the real 50 ms backoff stays in
+    force: it is what rides out the Windows ``WinError 32`` window of one replace.
 
-    So the handoff below is a strict three-way lock-step that bounds each read
-    to AT MOST ONE completed replace. Each round: the reader releases the
-    writer (``about_to_read``) and reads ``read_launcher`` concurrently, so the
-    read overlaps that round's single in-flight rename; the writer performs
-    exactly one ``atomic_write`` and acknowledges it (``published``); the reader
-    asserts that acknowledgement arrived before advancing (``read_done`` then
-    gates the writer out of the round). Every ``threading.Event`` is cleared by
-    its consumer so a signal is always fresh and never coalesces across rounds.
-
-    The writer's acknowledgement is what makes the race real rather than vacuous.
-    Without it a reader could set and clear its own signals ``rounds`` times while
-    the writer lagged or never ran, and every read would pass against the seeded
-    value -- a green test that proves nothing. The reader instead asserts
-    ``published`` each round, and the test asserts at the end that the writer
-    completed exactly ``rounds`` replaces, so a writer that publishes nothing
-    fails loudly.
-
-    A read therefore overlaps at most one live replace (so a torn or empty value
-    is catchable, which a settled-file read could never catch), and the
-    contention window per read is bounded to a SINGLE replace, which fits inside
-    the real retry budget -- unlike a back-to-back tight loop, which could chain
-    several replace windows into one read and legitimately exhaust the budget.
-    That bounded, acknowledged overlap is what lets the assertion stay strict:
-    ``got in values`` (never ``None``).
+    A three-way lock-step (``about_to_read``, ``published``, ``read_done``) bounds each
+    read to one replace, so ``got in values`` can stay strict; a tight loop could chain
+    several windows and exhaust the budget. Each ``threading.Event`` is cleared by its
+    consumer so signals never coalesce across rounds.
     """
 
     def test_each_read_overlaps_one_acknowledged_replace_without_tearing(
         self, tmp_path, monkeypatch
     ):
-        """The issue's own reproduction, on real files, with the real backoff.
+        """Every read returns a value some writer published: never torn, never ``None``.
 
-        Each round is a strict three-way lock-step. The reader signals
-        ``about_to_read`` and immediately calls ``read_launcher`` while the writer
-        -- released by that same signal -- performs exactly ONE ``atomic_write``
-        (mkstemp + ``os.replace``) of the next value and then sets ``published``.
-        The reader asserts ``published`` arrived, clears it, and only then signals
-        ``read_done`` to let the writer wait for the next round. So every read
-        overlaps at most one live replace: the window a read can land in is a
-        single rename, which fits inside the real 10 x 50 ms retry budget.
-
-        The invariant asserted holds on EVERY platform and is strict:
-
-            assert got in values
-
-        A read that returns anything must return a value SOME writer published --
-        never a torn or empty value (atomicity: ``os.replace`` is all-or-nothing,
-        and the retry rides out the Windows sharing-violation window of the one
-        replace it overlaps), and never ``None`` (a false absence). This is why
-        the real backoff stays in force: a regression that shrank or removed the
-        50 ms spacing would let the overlapped Windows read exhaust the budget and
-        fold to ``None``, which this assertion would then catch -- whereas with
-        the backoff zeroed (the simulator fixture) even a single replace window
-        can outlast the whole budget, so zeroing it here would make the test
-        unable to tell the product's spacing from its absence.
-
-        The writer's acknowledgement is asserted so the race is never vacuous.
-        The reader asserts ``published`` each round, and the end of the test
-        asserts the writer completed exactly ``rounds`` replaces (``publishes ==
-        rounds``). A writer that lags or never runs therefore fails the test
-        instead of leaving ``got in values`` to pass against the seeded value.
-
-        The launcher-marker sidecar stands in for the whole sidecar family here:
-        the read-retry chokepoint (``read_bytes_with_retry``) is shared by every
-        reader, so the overlap invariant is identical whichever sidecar is
-        exercised. ``read_secret`` has its own deterministic coverage.
-
-        The Windows sharing-violation FOLD (a window that outlasts the whole
-        budget) is owned deterministically by the simulator tests in
-        ``TestRunMarkerSidecarReadRetry``; an uncoordinated real-file race cannot
-        pin that far edge on every platform, so it is not asserted here. This
-        test owns the complementary real-file guarantee: a bounded single-replace
-        overlap, acknowledged by the writer, is ridden out, never torn, never a
-        false absence.
-
-        The writer's failure is surfaced, not swallowed: a writer that dies would
-        otherwise leave a stable file every later read passes against vacuously.
+        ``publishes == rounds`` and the surfaced writer error keep the race from passing
+        vacuously against the seeded value. The launcher sidecar stands in for all
+        sidecars, since ``read_bytes_with_retry`` is shared.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.atomic_write import atomic_write
@@ -496,11 +394,9 @@ class TestRunMarkerSidecarConcurrentRewrite:
 class TestRunMarkerDiscovery:
     """``marker_ports`` — filename-only discovery.
 
-    This backs ``cli_server.resolve_client_port``'s zero-config fallback, so the
-    contract under test is: filename-only parsing and no directory creation.
-    Deciding whether a discovered port is *trustworthy* is deliberately NOT this
-    module's job (a listener is not proof of identity) — see
-    ``TestResolveClientPortRunMarker`` for the ownership gate.
+    Backs ``cli_server.resolve_client_port``'s fallback: no directory creation. Trust
+    in a port is checked in ``TestResolveClientPortRunMarker`` (a listener is not
+    proof of identity).
     """
 
     def _marker(self, home, name: str) -> None:
@@ -617,13 +513,10 @@ class TestRunMarkerDiscovery:
     def test_the_pid_body_still_parses_under_the_reader_shipped_on_main(
         self, tmp_path, monkeypatch
     ):
-        """The whole point of splitting the record out of the pid file.
+        """The pid file holds only digits, so an older client's reader still parses it.
 
-        ``read_pid`` as shipped on ``origin/main`` is ``_read_sidecar(port,
-        ".pid")`` -- the WHOLE file, stripped -- gated on ``isdigit()``. This
-        asserts the body a live ``write_marker`` produces against exactly that
-        reader, so a second line can never be reintroduced without a red test.
-        An older client venv sharing this data home is the caller that breaks.
+        That reader takes the WHOLE ``.pid`` file, stripped, gated on ``isdigit()``; a
+        second line would break an older client venv sharing this data home.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.instances import run_marker
