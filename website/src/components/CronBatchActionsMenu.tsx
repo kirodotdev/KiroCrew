@@ -61,6 +61,7 @@ export default function CronBatchActionsMenu({
           onPointerDown={layer.rememberOpener}
           onKeyDown={layer.rememberOpener}
           aria-label={i18nT('pages.schedulePage.batchActions.actions_for_selected')}
+          {...uiLocation('schedule.batch-actions')}
           title={i18nT('pages.schedulePage.batchActions.actions_for_selected')}
         >
           <span className="flex items-center gap-1.5"><MoreHorizontal size={14} /> {i18nT('pages.schedulePage.actions')}</span>
