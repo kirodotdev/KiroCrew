@@ -212,6 +212,22 @@ def _bump_icon_epoch(folder_id: str) -> None:
     _CHAT_FOLDER_ICON_EPOCHS[folder_id] = _CHAT_FOLDER_ICON_EPOCHS.get(folder_id, 0) + 1
 
 
+def _prune_icon_tasks_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop icon tasks bound to a loop other than the running one.
+
+    These registries outlive their loop (an embedded gateway restart, or a test
+    loop per test). A task whose loop was torn down never runs its done callback,
+    so its pending entry would stay: cancelling it would schedule onto that loop
+    and raise, and every preview for its folder would answer ``icon_busy``.
+    """
+    _CHAT_FOLDER_ICON_TASKS.difference_update(
+        {t for t in _CHAT_FOLDER_ICON_TASKS if t.get_loop() is not loop}
+    )
+    for folder_id, task in list(_CHAT_FOLDER_PENDING_ICON_TASKS.items()):
+        if task.get_loop() is not loop:
+            del _CHAT_FOLDER_PENDING_ICON_TASKS[folder_id]
+
+
 def _spawn_chat_folder_icon_task(
     state: DashboardState,
     folder_id: str,
@@ -277,6 +293,7 @@ def _spawn_chat_folder_icon_task(
         except Exception:  # noqa: BLE001 — best-effort background task
             logger.debug("chat folder icon generation failed for %s", folder_id, exc_info=True)
 
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     task = asyncio.ensure_future(_run())
     _CHAT_FOLDER_ICON_TASKS.add(task)
     # Coalesce per folder: cancel any pending generation for this folder and

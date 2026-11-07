@@ -1315,6 +1315,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _folder_icon_lock,
         _is_single_emoji,
         _is_valid_folder_color,
+        _prune_icon_tasks_from_other_loops,
         _spawn_chat_folder_icon_task,
         generate_emoji_for_name,
         icon_preview_avoid,
