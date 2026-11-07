@@ -31,6 +31,9 @@ on:
       - Fast Gate
       - Build
       - Code Review
+      # Blocking: the title, body and commit-count checks. Runs on
+      # `pull_request` with `edited`, so a description edit re-judges it.
+      - PR Hygiene
       # Blocking: a PR that declares no triaged issue reds it. Runs on
       # `pull_request` for every PR, forks included, so its payload carries
       # the PR head like Code Review's does.
@@ -328,10 +331,10 @@ jobs:
       # The same-repo workflow-run lanes of the verdict step's spec list, read
       # by the publish step's pre-success re-check.
       MONITORED_LANES: >-
-        ci.yml fast-gate.yml build.yml code-review.yml issue-gate.yml
-        internal-content-scan-gate.yml claude-review.yml codex-review.yml
-        design-review.yml ux-review.yml first-principles-review.yml
-        security-scope-review.yml
+        ci.yml fast-gate.yml build.yml code-review.yml pr-hygiene.yml
+        issue-gate.yml internal-content-scan-gate.yml claude-review.yml
+        codex-review.yml design-review.yml ux-review.yml
+        first-principles-review.yml security-scope-review.yml
       # Old check-run name -> current name for the fork lanes #16238 renamed,
       # read by the publish step's fork re-check (the one read that binds a row
       # by name). Why and how: docs/ci/ci-and-reviews.md. Remove once no open
@@ -1063,9 +1066,11 @@ jobs:
             )
           fi
 
-          # Code Review and the AI reviewers trigger on `pull_request` with no
-          # base-branch filter, so they run on every PR regardless of base.
+          # Code Review, PR Hygiene and the AI reviewers trigger on
+          # `pull_request` with no base-branch filter, so they run on every PR
+          # regardless of base.
           workflow_specs+=("code-review.yml|Code Review")
+          workflow_specs+=("pr-hygiene.yml|PR Hygiene")
           # Issue Gate runs on `pull_request` with no base filter and needs
           # only a read token, so it runs on every PR too, forks and stacked
           # PRs included. It is enrolled HERE, not as a second branch-protection
@@ -1303,7 +1308,7 @@ jobs:
 
           # The monitored workflows whose `pull_request` trigger lists `edited`.
           # test_pr_readiness_evaluate.py pins this list to those triggers.
-          edited_lanes=" code-review.yml codex-review.yml issue-gate.yml "
+          edited_lanes=" code-review.yml codex-review.yml issue-gate.yml pr-hygiene.yml "
 
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
