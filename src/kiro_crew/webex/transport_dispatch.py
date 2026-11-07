@@ -349,10 +349,6 @@ class WebexDispatcher:
         the stack without bound. The outer loop owns the pumping.
         """
         assert self.client is not None, "WebexDispatcher.client must be set"
-        # Inbound channels-governance gate (off-loop) — recheck per message so a
-        # host-profile deny added after connect stops dispatch without a restart
-        # (the startup gate only blocks CONNECTING). Silently drop on deny.
-        permitted = await inbound_permitted("webex")
         email = inbound.person_email
         room_id = inbound.room_id
         text = inbound.text
@@ -372,6 +368,31 @@ class WebexDispatcher:
         ):
             return
 
+        # ── @mention strip ──
+        # In a group space Webex only delivers messages that @mention the bot, and
+        # it does NOT strip the mention from the text. Left in, every group turn
+        # would start with the bot's own name as if the user had typed it — and
+        # every path that READS the text would see it: this runs ahead of the
+        # governance gate, the approval intercept and the command parse because
+        # "@Kiro /stop" is a stop, "@Kiro 1" is an approval answer and "@Kiro /new"
+        # is a command, and matching any of them against the raw text fails in
+        # exactly the room where the mention is mandatory.
+        if inbound.room_type != ROOM_DIRECT:
+            text = strip_bot_mention(text, self._bot_name())
+            inbound = replace(inbound, text=text)
+
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny. Only a
+        # typed message this dispatcher acts on as /stop claims the pure-cancel
+        # exemption; a card press is never one.
+        cmd = parse_command(text) if interpret_commands and inbound.card_inputs is None else None
+        permitted = await inbound_permitted(
+            "webex",
+            text=text if cmd == "stop" else "",
+            has_attachments=bool(inbound.file_urls),
+        )
+
         # ── Card press intercept ──
         # A press is not a message: it carries no text, so every path below would
         # read it as empty. Routed first, and by INDEX/nonce rather than by any
@@ -379,19 +400,6 @@ class WebexDispatcher:
         if inbound.card_inputs is not None:
             await self._handle_card_press(inbound, permitted=permitted)
             return
-
-        # ── @mention strip ──
-        # In a group space Webex only delivers messages that @mention the bot, and
-        # it does NOT strip the mention from the text. Left in, every group turn
-        # would start with the bot's own name as if the user had typed it — and
-        # every path that READS the text would see it: this runs ahead of the
-        # approval intercept and the command parse because "@Kiro 1" is an
-        # approval answer and "@Kiro /new" is a command, and matching either
-        # against the raw text fails in exactly the room where the mention is
-        # mandatory.
-        if inbound.room_type != ROOM_DIRECT:
-            text = strip_bot_mention(text, self._bot_name())
-            inbound = replace(inbound, text=text)
 
         # ── Approval reply intercept ──
         # Ahead of everything else, because the session semaphore is held for the
@@ -421,7 +429,6 @@ class WebexDispatcher:
                     "e.g. `/queue also check the logs`.",
                 )
                 return
-            cmd = parse_command(text)
             if cmd == "new":
                 self._conv.bump_gen(route)
                 saved = await reserve_new_generation(

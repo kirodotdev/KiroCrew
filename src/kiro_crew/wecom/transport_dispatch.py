@@ -81,6 +81,7 @@ from kiro_crew.start_priority import person_priority
 from kiro_crew.wecom.attachments import process_wecom_attachments
 from kiro_crew.wecom.commands import (
     ConversationState,
+    _after_leading_mention,
     build_help_text,
     build_override_usage,
     is_bare_mid_turn_override,
@@ -187,11 +188,6 @@ class WeComDispatcher:
     async def handle_message(self, inbound: "WeComInbound") -> None:
         """Drive one authorized inbound WeCom message through TurnDriver."""
         assert self.client is not None, "WeComDispatcher.client must be set"
-        # Inbound channels-governance gate (off-loop) — recheck per message so a
-        # host-profile deny added after connect stops dispatch without a restart
-        # (the startup gate only blocks CONNECTING). Silently drop on deny.
-        if not await inbound_permitted("wecom"):
-            return
         userid = inbound.userid
         text = inbound.text
         original_text = text
@@ -210,15 +206,23 @@ class WeComDispatcher:
             route=inbound_route,
         ):
             return
-        logger.info("WeCom inbound from %s: %d chars", userid, len(text or ""))
-
-        # ── Command intercept (no LLM session needed) ──
         # An attachment makes this message CONTENT, never a command: every branch
         # below RETURNS without ingesting, and a WeCom media URL lives ~5 minutes, so
         # a photo captioned "/new" would silently lose the picture.
         # ``parse_mid_turn_override`` stays live because it only strips a prefix.
         has_media = bool(inbound.attachments)
         cmd = None if has_media else parse_command(text)
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny. Only a
+        # message this dispatcher acts on as /stop claims the pure-cancel exemption,
+        # judged past the group mention exactly as ``parse_command`` judged it.
+        gate_text = (_after_leading_mention(text.strip()) or text) if cmd == "stop" else ""
+        if not await inbound_permitted("wecom", text=gate_text):
+            return
+        logger.info("WeCom inbound from %s: %d chars", userid, len(text or ""))
+
+        # ── Command intercept (no LLM session needed) ──
         if cmd == "new":
             self._conv.bump_gen(userid)
             saved = await reserve_new_generation(

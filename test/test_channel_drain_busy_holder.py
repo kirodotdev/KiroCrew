@@ -183,7 +183,7 @@ def _teams(monkeypatch) -> tuple[Any, ...]:
     async def _fake_drive(turn, **kw):
         turns.append(turn.user_text)
 
-    async def _permitted(_c):
+    async def _permitted(_c, **_kw):
         return True
 
     monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)

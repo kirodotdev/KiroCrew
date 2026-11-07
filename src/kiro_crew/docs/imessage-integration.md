@@ -108,6 +108,7 @@ Commands, sent as an ordinary message:
 |---|---|
 | `/new` (or `/start`) | Start a fresh conversation |
 | `/compact` | Compress the conversation's context |
+| `/stop` (or `/cancel`) | Stop the reply that is running |
 | `/help` | List these commands |
 
 ## Settings reference
