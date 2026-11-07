@@ -133,7 +133,7 @@ describe('PortabilityTab template warnings', () => {
     render(<PortabilityTab />)
     fireEvent.click(screen.getByRole('button', { name: /download export/i }))
     const warning = await screen.findByTestId('portability-export-warning')
-    expect(warning.textContent).toContain('reviewer, writer, 3 more')
+    expect(warning.textContent).toContain('reviewer, writer, and 3 more')
     expect(warning.textContent).not.toContain('+3')
     expect(screen.getByText('Download started.')).toBeTruthy()
   })
@@ -353,7 +353,7 @@ describe('PortabilityTab restoring browser settings', () => {
     expect(screen.getByTestId('portability-import-refused').textContent)
       .toContain('Some items could not be imported and were left unchanged: ui-prefs.')
     expect(keptLine.textContent).toBe(
-      "This install kept its own agent and gateway settings, local settings overrides, notification settings. "
+      "This install kept its own agent and gateway settings, local settings overrides, and notification settings. "
       + "To use the archive's instead, change Merge to Replace next to Choose file, then import again. "
       + "Replace backs up this install first, then overwrites its settings with the archive's.",
     )

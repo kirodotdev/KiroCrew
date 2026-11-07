@@ -193,7 +193,7 @@ describe('PrivacyPanel metric-recording switch', () => {
     await screen.findByRole('switch', { name: LABEL })
     expect(
       await screen.findByText(
-        'Collectors: ops, edition-product (included by this build; turning off Record metrics stops it too)',
+        'Collectors: ops and edition-product (included by this build; turning off Record metrics stops it too)',
       ),
     ).toBeInTheDocument()
   })
@@ -223,7 +223,7 @@ describe('PrivacyPanel metric-recording switch', () => {
     })
     await screen.findByRole('switch', { name: LABEL })
     expect(
-      await screen.findByText('Collectors: Your collector (config.json), ops'),
+      await screen.findByText('Collectors: Your collector (config.json) and ops'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/telemetry\.otlp_endpoint/)).not.toBeInTheDocument()
   })
