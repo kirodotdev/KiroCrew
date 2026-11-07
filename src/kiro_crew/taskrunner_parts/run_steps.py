@@ -274,9 +274,17 @@ async def _execute_single_task(
             task.error = f"the durable queue refused the step: {exc}"
             task.finished_at = time.time()
             return False
-    if handle is not None and not await handle.running_async(
-        {"index": task.index, "title": task.title[:120]}
-    ):
+    marked = True
+    if handle is not None:
+        try:
+            marked = await handle.running_async({"index": task.index, "title": task.title[:120]})
+        except asyncio.CancelledError:
+            # Synchronous, like the body's cancel arm below, which is not
+            # reached yet: the handle already holds the lane slot and the row's
+            # lease, and nothing else would give them back.
+            handle.cancel("step cancelled")
+            raise
+    if handle is not None and not marked:
         # PERSIST BEFORE PUBLISH: ``admit`` committed ``starting`` under this
         # generation one statement ago, so a refused ``starting -> running``
         # is a newer owner or a store outage, never a forbidden edge. The
@@ -291,13 +299,15 @@ async def _execute_single_task(
         task.finished_at = time.time()
         await handle.fail_async(task.error)
         return False
-    if service is not None and run.workflow_run_id:
-        try:
-            await service.step(run.workflow_run_id, task.index, task.title, status="running")
-        except Exception:
-            logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
     success = False
     try:
+        if service is not None and run.workflow_run_id:
+            # Inside the try, so a cancel landing during this publication ends
+            # the step's row and frees its slot like one landing in the body.
+            try:
+                await service.step(run.workflow_run_id, task.index, task.title, status="running")
+            except Exception:
+                logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
         success = await execute_single_task(
             run=run,
             task=task,

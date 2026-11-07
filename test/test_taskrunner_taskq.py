@@ -28,6 +28,7 @@ from kiro_crew.taskq.dependency import KIND_RATE_LIMITED, SIGNAL_ATTR, Dependenc
 from kiro_crew.taskq.reconcile import reconcile_on_boot
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
+from kiro_crew.testing.wait import await_until
 
 _STALL_EVIDENCE = "verdict=unknown; idle_secs=5400; tool=execute_bash; evidence=no result frame"
 
@@ -327,6 +328,88 @@ async def test_a_step_cancelled_while_waiting_for_a_slot_leaves_no_queued_row(
     assert store.oldest_wait_secs(kind=m.KIND_TASKRUNNER_STEP) == 0.0
     adm.lane.release()
     assert adm.lane.running == 0 and adm.lane.waiting == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["running mark", "start publication"])
+async def test_a_step_cancelled_before_its_body_starts_frees_its_slot(
+    tmp_path: Path, store: TaskStore, clock: Clock, monkeypatch, held
+) -> None:
+    """``admit`` has handed the step its slot, and the cancel lands before the
+    body's own cancel arm: while the ``running`` mark is written, or while the
+    workflow view is told the step started. The handle holds the lane slot and
+    the row's lease in both places, so the step ends its row and gives the slot
+    back instead of leaving the lane one slot short for the life of the
+    gateway."""
+    adm = _admission(store, clock, cap=1)
+    provider = _provider(lambda n, msg: _done())
+    runner = _runner(tmp_path, provider, adm)
+    step = Step(index=1, title="held", description="d")
+    run = _run(tmp_path, step)
+    runner._runs["r1"] = run
+    reached, hold = asyncio.Event(), asyncio.Event()
+    if held == "running mark":
+        real_running = r.Admitted.running_async
+
+        async def _mark_then_hold(self, progress=None):
+            ok = await real_running(self, progress)
+            reached.set()
+            await hold.wait()  # the cancel lands here
+            return ok
+
+        monkeypatch.setattr(r.Admitted, "running_async", _mark_then_hold)
+    else:
+
+        async def _publish_then_hold(*args, **kwargs):
+            if kwargs.get("status") == "running":
+                reached.set()
+                await hold.wait()  # the cancel lands here
+
+        runner._workflow_service = MagicMock(step=_publish_then_hold)
+        run.workflow_run_id = "wf-1"
+
+    step_task = asyncio.create_task(runner._execute_single_task(run, step))
+    await await_until(reached)
+    step_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await step_task
+
+    row = store.get("taskrunner:r1:task1")
+    assert row.state == m.CANCELLED and row.lease_owner is None
+    assert not provider.calls
+    assert adm.lane.running == 0 and adm.lane.waiting == 0
+
+
+@pytest.mark.asyncio
+async def test_a_run_cancelled_during_its_running_mark_ends_its_row(
+    tmp_path: Path, store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """The run's container row has the same gap: ``_taskq_begin_run`` holds its
+    handle but has not put it in ``_run_handles`` yet, so ``_taskq_end_run``
+    would find nothing to settle. The row ends ``cancelled`` instead of staying
+    leased to this incarnation until the next boot."""
+    adm = _admission(store, clock, cap=1)
+    runner = _runner(tmp_path, _provider(lambda n, msg: _done()), adm)
+    run = _run(tmp_path, Step(index=1, title="never", description="d"))
+    real_running = r.Admitted.running_async
+    reached, hold = asyncio.Event(), asyncio.Event()
+
+    async def _mark_then_hold(self, progress=None):
+        ok = await real_running(self, progress)
+        reached.set()
+        await hold.wait()  # the cancel lands here
+        return ok
+
+    monkeypatch.setattr(r.Admitted, "running_async", _mark_then_hold)
+    begin = asyncio.create_task(runner._taskq_begin_run(run))
+    await await_until(reached)
+    begin.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await begin
+
+    assert not runner._run_handles
+    row = store.get("taskrunner:r1")
+    assert row.state == m.CANCELLED and row.lease_owner is None
 
 
 @pytest.mark.asyncio
