@@ -163,7 +163,8 @@ as `HelperError` with Harness's own one-line message; `HarnessNotInstalled` and
 brings browser, relay, daemon and worker up in `ensure()` (serialised: a second
 caller waits for the first), reports `status()` (`installed`, `version`,
 `wanted_version`, `browser {kind, headless}`, `connection`
-`connected|waiting_allow|disconnected|error`, `detail`, `agent_tabs`, `chromium`),
+`connected|waiting_allow|disconnected|error`, `detail`, `agent_tabs`, `chromium`
+`{version, platform, build, present, executable}`),
 and stops all of it in `stop()`. `waiting_allow` has no deadline because the
 connection is what keeps Chrome's Allow sheet on screen. The gateway stops the
 supervisor on shutdown and before an in-place restart's exec
@@ -181,6 +182,29 @@ auto-install (see the driver section).
 | Chrome's `RemoteDebuggingAllowed` policy is off | Kiro's Chromium | none |
 
 A snap-packaged Chromium is skipped: snap confinement breaks the debugging port.
+
+**Old libcups: the headless shell.** The full Chrome for Testing build links
+`libcups.so.2` and binds every symbol at load, so on a Linux host whose libcups
+lacks `ippValidateAttributes`, `cupsFindDestDefault`, `cupsFindDestSupported` or
+`cupsUserAgent` (Amazon Linux 2: cups-libs 1.6.3) it exits 127 before it opens
+the debugging pipe. There `chromium.wanted_build` picks the same version's
+`chrome-headless-shell` (the `{build}` in both download URLs), which links no
+libcups, and keeps it in `chromium/154.0.8037.0-headless-shell/` beside the full
+build's directory. Everything that reads or fetches Kiro's Chromium goes through
+that one answer: `chromium_state` (so on such a host a full build already on
+disk reads as not downloaded, and the startup auto-install fetches the shell),
+`download_chromium`, and therefore the executable the supervisor launches, with
+the same flags. The shell has no window, so on such a host Kiro's Chromium is
+always headless: `supervisor._choose` reports a `kiro_chromium` choice as
+headless even when a display and a windowed pin would otherwise give it one, so
+status, the live card and the startup warm never offer a window it cannot show. `libcups.py` decides from the filesystem alone: the first
+native 64-bit `libcups.so.2` in the linker's system directories (never
+`LD_LIBRARY_PATH`), its ELF dynamic symbol table parsed in Python. It launches
+nothing, so `install_state` and the status poll still launch nothing, and it
+needs no binutils. No libcups found, or none readable, is no evidence and keeps
+the full build; macOS and Windows always get the full build. A version bump
+re-reads `libcups.REQUIRED_SYMBOLS` from the new build's
+`nm -D --undefined-only`.
 On macOS and Linux Kiro's Chromium speaks CDP over `--remote-debugging-pipe`
 (fds 3 and 4, moved into place by `/bin/sh` before `exec`), so it opens no port
 at all; Python cannot hand a Windows child fds 3 and 4, so there it keeps an
