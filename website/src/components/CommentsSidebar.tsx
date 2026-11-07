@@ -268,8 +268,13 @@ export function CommentRow({
       ) : (
         <div className={bodyClass}>{body}</div>
       )}
-      {/* actions — always visible, comfortable touch targets */}
-      <div className="flex items-center gap-1 mt-1.5 px-0.5" style={isEditing ? { display: 'none' } : undefined}>
+      {/* actions — always visible, comfortable touch targets. The row wraps:
+          in the 360px thread popover on a phone, five actions do not fit on
+          one line, and the popover's overflow-hidden would clip the last.
+          Delete stays in the left-to-right flow (no ml-auto): pushed to the
+          right edge on a wrapped line, it sat alone above the reply card and
+          read as the reply's Delete. */}
+      <div className="flex flex-wrap items-center gap-1 mt-1.5 px-0.5" style={isEditing ? { display: 'none' } : undefined}>
         <button
           type="button"
           onClick={() => onReply(comment)}
@@ -315,7 +320,7 @@ export function CommentRow({
         <button
           type="button"
           onClick={() => onDelete(comment)}
-          className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-danger-text hover:bg-danger-subtle bg-transparent border-none cursor-pointer transition-colors ml-auto"
+          className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-danger-text hover:bg-danger-subtle bg-transparent border-none cursor-pointer transition-colors"
           title={i18nT('components.commentsSidebar.delete')}
           style={(restrictActions || hideDeleteEff) ? { display: 'none' } : undefined}
         ><X size={13} /> {i18nT('components.commentsSidebar.delete')}</button>
