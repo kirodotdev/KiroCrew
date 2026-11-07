@@ -3988,7 +3988,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "The code signs you in automatically and expires in about {{minutes}} minutes.",
       "copy_failed_select_the_link_and_copy_it_manually": "Copy failed — select the link and copy it manually.",
       "could_not_create_a_link_try_again": "Could not create a link — try again.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "This session is tied to this device, so a code made here could only sign in this same device. To sign in another device, open Phone access on the computer the dashboard runs on, through its local address."
     },
     "pendingQuestionCard": {
       "answer_failed": "Couldn’t send your answer. The agent is still waiting, so try again.",

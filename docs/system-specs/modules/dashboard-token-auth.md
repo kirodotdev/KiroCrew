@@ -250,6 +250,9 @@ differently:
   that has `require_peer` but no signed `peer_key` fails closed and requires one
   new QR scan. Any child mobile/QR link minted by a peer-bound session carries
   the same `require_peer` + `peer_key` pair, so delegation cannot widen it.
+  When that key is not login-scoped (`ts:login:`), the phone-access QR refuses
+  the mint instead (`403 caller_device_bound`): its child could sign in only the
+  device already showing it. A login-scoped key still mints.
 
 `require_peer` is no longer exclusive to the QR shape. An **ordinary** session
 whose `?token=` exchange resolved a daemon-verified allowed peer also opens its
