@@ -15042,6 +15042,7 @@
       "needs_configuration": "Requer configuração",
       "needs_configuration_help": "{{provider}} precisa de uma configuração única. \"Configurar app OAuth\" abre uma página de definições guiada; nada muda até você salvar lá, e você pode removê-la depois. Ela orienta o registro de um app no {{provider}} e a inserção do client ID e do secret.",
       "backend_oauth_caveat": "O Connect é concluído mesmo assim, e o login do {{provider}} fica salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login, então as ferramentas podem não funcionar neles.",
+      "stored_sign_in_no_server": "Você já entrou no {{provider}} nesta máquina, mas o {{productName}} ainda não está configurado para usá-lo, por isso ele não aparece como conectado. Conectar faz a configuração e usa esse login salvo quando possível, mas ainda pode pedir que você entre de novo.",
       "chat_use_label": "Nos chats",
       "chat_use_lacks_oauth": "Salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login.",
       "chat_use_kas_sign_in": "Os chats entram por conta própria: digite {{word}} uma vez em um chat.",
