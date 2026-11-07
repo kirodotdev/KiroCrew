@@ -297,6 +297,30 @@ def persist_inline_images(
     return out
 
 
+def store_image_file(
+    source: str, *, sessions_dir: Path, stem: str, budget: ImageBudget
+) -> str | None:
+    """``![image](...)`` naming a stored copy of the picture at *source*, or ``None``.
+
+    For a picture the gateway downloaded for a message, which no markup names yet.
+    Same copy contract and *budget* as :func:`persist_inline_images`; ``None`` for
+    anything that would leave a reference alone.
+    """
+    if budget.copies_left <= 0:
+        return None
+    budget.copies_left -= 1
+    try:
+        result = _store_one(source, attachments_dir(sessions_dir, stem), budget)
+    except Exception:
+        logger.debug("chat-attachments: could not preserve an ingested image", exc_info=True)
+        return None
+    if result is None:
+        return None
+    stored, consumed = result
+    budget.bytes_left -= consumed
+    return f"![image]({_encode_destination(stored, angle_wrapped=False)})"
+
+
 #: The digest prefix a stored attachment's basename carries.
 _STORED_NAME_RE = re.compile(rf"^[0-9a-f]{{{_DIGEST_CHARS}}}-(.+)$")
 

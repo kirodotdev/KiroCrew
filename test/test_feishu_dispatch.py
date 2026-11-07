@@ -6,6 +6,7 @@ import base64
 import contextlib
 import dataclasses
 import inspect
+import json
 import os
 from types import SimpleNamespace
 
@@ -229,7 +230,7 @@ class FakeConvLog:
         self.agents: list[str | None] = []
         self.titles: dict[str, str] = {}
 
-    def append(self, key, role, text, *, agent=None, mid=None) -> None:
+    def append(self, key, role, text, *, agent=None, mid=None, ingested_images=()) -> None:
         self.appended.append((key, role, text))
         self.agents.append(agent)
 
@@ -1341,6 +1342,35 @@ class TestInboundFiles:
         assert "is saved in the folder" in user_text
         assert not os.path.exists(saved)  # removed when the turn ended
         assert any(content == "a cat" for _, content in client.replies)
+
+    @pytest.mark.asyncio
+    async def test_a_picture_still_shows_after_the_turn(self, tmp_path) -> None:
+        """The row names a copy kept with the session, not the temp file the turn deletes.
+
+        A path the user typed is theirs: it stays as written and is not copied.
+        """
+        from kiro_crew.chat_attachments import attachments_dir
+        from kiro_crew.history import ConversationLog
+
+        typed = tmp_path / "mine.png"
+        typed.write_bytes(b"\x89PNG\r\n\x1a\n")
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="a cat"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        log = ConversationLog(base_dir=tmp_path / "sessions")
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), FakeClient(), conv_log=log)
+        inbound = dataclasses.replace(_image_inbound(), text=f"![mine]({typed})")
+
+        await d.handle_message(inbound)
+
+        path = log._path(d._session_key(d._route(inbound)))
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        user_text = next(row["content"] for row in rows if row.get("role") == "user")
+        store = attachments_dir(path.parent, path.stem)
+        assert store.is_dir(), user_text
+        (stored,) = store.iterdir()
+        stored_dest = str(stored).replace(os.sep, "/")
+        assert user_text.splitlines() == [f"![mine]({typed})", f"![image]({stored_dest})"]
 
     @pytest.mark.asyncio
     async def test_a_governance_deny_fetches_nothing(self, monkeypatch) -> None:
