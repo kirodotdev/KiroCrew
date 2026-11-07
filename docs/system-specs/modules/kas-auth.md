@@ -198,7 +198,15 @@ loop until expiry.
 
 Every request on the shared auth session is bounded by an explicit `ClientTimeout`
 (`total=30s`, `connect=10s`). aiohttp's own default is five minutes, which on a
-black-holed route holds a poll far past its own cadence.
+black-holed route holds a poll far past its own cadence. Each request also passes
+`proxy=resolve_proxy(url)` from `kiro_crew.http_proxy` — the `HTTPS_PROXY`, then
+`HTTP_PROXY`, variable, with the destination's `NO_PROXY` bypass applied (a
+`host:port` entry matches the URL's effective port, not just the bare host) — so
+the sign-in and refresh calls still reach their issuer on a proxy-only network,
+while
+the session itself keeps `trust_env` off and never attaches `~/.netrc` credentials.
+`kirocrew kas login` names the configured proxy in its unreachable-service and
+lost-contact errors, so a dead proxy is not misreported as the service being down.
 
 ### Social (Google / GitHub)
 

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from kiro_crew.auth.login.endpoints import USER_AGENT
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,9 @@ async def list_available_profiles(
     """
     headers = cps_headers(_TARGET, access_token)
     url = control_plane_url(region)
-    async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
+    async with session.post(
+        url, json={"maxResults": _MAX_RESULTS}, headers=headers, proxy=resolve_proxy(url)
+    ) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise ControlPlaneError(
