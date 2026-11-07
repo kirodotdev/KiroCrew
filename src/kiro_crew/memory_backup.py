@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
@@ -45,9 +46,12 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
+    MEMBER_BACKUPS_DIR_NAME,
     MEMORY_DB_FILE,
     STORE_BACKUP_DIR_NAME,
     active_store_names,
+    is_lock_write_refusal,
+    memory_stores_root,
     named_store_of_db,
     owned_store_path,
     resolve_store_path,
@@ -124,6 +128,28 @@ def snapshot_time(backup: Path) -> datetime:
         stamp = current.group(1)
     pattern = _STAMP_FORMAT if len(stamp) == 16 else _CURRENT_STAMP_FORMAT
     return datetime.strptime(stamp, pattern).replace(tzinfo=timezone.utc)
+
+
+def _sandboxed_backup_hint(exc: BaseException | None) -> str | None:
+    """The operator-facing reason a member backup was refused inside the agent sandbox.
+
+    Member backups live in ``memory_stores``, which is read-only to sandboxed code
+    (``sandbox._CREW_READONLY_LEAVES``). Decided from the failure, as
+    ``cli_config._sandboxed_config_write_hint`` is: a refused write naming a path under
+    the member-backups directory. ``None`` otherwise.
+    """
+    if not isinstance(exc, OSError) or not is_lock_write_refusal(exc):
+        return None
+    if not isinstance(exc.filename, (str, bytes, os.PathLike)):
+        return None
+    sealed = memory_stores_root().resolve() / MEMBER_BACKUPS_DIR_NAME
+    if not Path(os.path.realpath(os.fsdecode(exc.filename))).is_relative_to(sealed):
+        return None
+    return (
+        "member stores are read-only inside the agent sandbox: back up from the "
+        "dashboard or from your own terminal. Outside the sandbox, check the "
+        f"permissions of {sealed}"
+    )
 
 
 def _read_only_uri(path: Path) -> str:
@@ -402,9 +428,14 @@ def back_up_all_stores(
             if should_stop is not None and should_stop():
                 break
             result["pruned"] += prune_backups(path, keep, now=stamp)
-        except MemoryBackupFailed:
+        except MemoryBackupFailed as exc:
             result["failed"] += 1
-            logger.warning("memory backup failed for %s", path, exc_info=True)
+            hint = _sandboxed_backup_hint(exc.__cause__)
+            if hint is not None:
+                # One line the operator can act on; a traceback reads like a broken install.
+                logger.warning("memory backup of %s not taken: %s (%s)", path, hint, exc.__cause__)
+            else:
+                logger.warning("memory backup failed for %s", path, exc_info=True)
         except Exception:
             result["failed"] += 1
             logger.warning("memory backup pass failed for %s", path, exc_info=True)
