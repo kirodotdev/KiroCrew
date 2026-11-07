@@ -147,9 +147,11 @@ jobs:
           # that exists. Mirrors the gh_retry convention pr-readiness.yml adopted
           # for the same single-shot failure mode (#2753). stderr is deliberately
           # NOT discarded any more, so a failing query says why.
+          # api.github.com, though allowlisted, can refuse connections here for
+          # about a minute, so the backoff below outlasts that.
           gh_read() {
             local attempt rc=1 out
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5 6; do
               if out="$("$@")"; then
                 printf '%s' "$out"
                 return 0
@@ -159,7 +161,7 @@ jobs:
                 # else branch -- that would report a failed query as success.
                 rc=$?
               fi
-              if [ "$attempt" -lt 3 ]; then
+              if [ "$attempt" -lt 6 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
                 sleep $((attempt * 5))
               fi
@@ -185,7 +187,7 @@ jobs:
                            and .head.ref == $ref
                            and .head.sha == $sha)]
               ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 6 attempts; see the errors above"
             exit 1
           fi
           candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
@@ -214,7 +216,7 @@ jobs:
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 6 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
