@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -666,6 +667,33 @@ class TestBranches:
         response = await routes._handle_branches(_request())
         assert _json_of(response)["branches"] == ["origin/main", "origin/dev"]
         assert seen == [os.path.realpath("/scratch/repo")]
+
+    async def test_a_branch_retired_upstream_is_not_offered(
+        self, data_root: Path, tmp_path: Path
+    ) -> None:
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], check=True, capture_output=True, cwd=tmp_path)
+
+        bare = tmp_path / "remote.git"
+        seed = tmp_path / "seed"
+        clone = tmp_path / "clone"
+        git("init", "-q", "--bare", "--initial-branch=master", str(bare))
+        git("init", "-q", "--initial-branch=master", str(seed))
+        (seed / "f.txt").write_text("hi")
+        git("-C", str(seed), "add", "f.txt")
+        git("-C", str(seed), "-c", "user.email=a@b.c", "-c", "user.name=t", "commit", "-qm", "s")
+        git("-C", str(seed), "push", "-q", str(bare), "master", "master:main")
+        git("clone", "-q", str(bare), str(clone))
+        clone_setup._disable_push(clone)
+        # Upstream makes `main` the default and deletes `master` after the clone was taken.
+        git("-C", str(bare), "symbolic-ref", "HEAD", "refs/heads/main")
+        git("-C", str(bare), "branch", "-D", "master")
+        _config(data_root, clone=str(clone), origin_url=str(bare))
+
+        response = await routes._handle_branches(_request())
+
+        assert response.status == 200
+        assert _json_of(response)["branches"] == ["main"]
 
 
 # ── pull-request status ──────────────────────────────────────────────────────
