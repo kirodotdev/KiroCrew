@@ -10381,6 +10381,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row",
         "folder_count_includes_subfolders": "Include Subfolder Contents in Folder Counts",
         "folder_count_includes_subfolders_description": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds",
+        "hide_empty_folders": "Hide Empty Folders",
+        "hide_empty_folders_description": "In List view, folders with no open sessions stay hidden until a session is created or moved into them, and show while you drag a session",
         "full_titles_on_scroll": "Show Full Titles While Scrolling",
         "full_titles_on_scroll_description": "While you scroll the session list, cut-off titles show in full",
         "session_title_lines": "Title Lines on Session Cards",

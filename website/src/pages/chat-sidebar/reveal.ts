@@ -379,7 +379,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // they asked to see this folder now, not to stop hiding it -- so a persisted
     // write would answer a question they did not ask, and could not be undone from
     // the row it reveals.
-    setRevealForcedVisible(chain)
+    setRevealForcedVisible(prev => new Set([...prev, ...chain]))
     // Expand the folder and every collapsed ancestor. The folder ITSELF opening is
     // part of the destination here: landing on a folder means seeing what is in it.
     expandFolderAncestors(folderId)

@@ -17880,6 +17880,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "チャットのないフォルダーは 2 行ではなく 1 行になり、新しいチャットのボタンはフォルダーの行に移ります",
         "folder_count_includes_subfolders": "フォルダーの件数にサブフォルダーの中身を含める",
         "folder_count_includes_subfolders_description": "フォルダーの件数にサブフォルダー内のすべてが加算され、折りたたんだフォルダーでも中にどれだけあるかがわかります",
+        "hide_empty_folders": "空のフォルダーを非表示にする",
+        "hide_empty_folders_description": "一覧表示では、開いているセッションのないフォルダーは、フォルダー内にセッションを作成または移動するまで非表示になり、セッションのドラッグ中は表示されます",
         "full_titles_on_scroll": "スクロール中にタイトル全体を表示",
         "full_titles_on_scroll_description": "セッションリストをスクロールしている間、サイドバーで切れたタイトルを全文表示します",
         "session_title_lines": "セッションカードのタイトル行数",
