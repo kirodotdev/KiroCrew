@@ -146,7 +146,10 @@ def _interactive_approval(
         # (AcpEvent) return a genuine bool; anything else (e.g. a mock
         # or a foreign event type) must not accidentally enter the
         # restricted path on a truthy non-bool.
-        _child_lf = getattr(event, "child_low_fidelity", False) is True
+        # A call the gate kept for a person (``AcpEvent.needs_person``) takes the
+        # same restricted path: only the human prompt may approve it.
+        _needs_person = getattr(event, "needs_person", False) is True
+        _child_lf = getattr(event, "child_low_fidelity", False) is True or _needs_person
         # Hoisted grant-eligibility — see
         # AcpEvent.child_unconditional_grant_eligible for which shortcuts
         # below may honor it (per-source auto-approve, --approval yolo,
@@ -158,8 +161,8 @@ def _interactive_approval(
         # it may not have; the property is only reached for a genuinely
         # low-fidelity event, with the same strict ``is True`` rationale
         # as ``_child_lf``.
-        _child_grant_eligible = (not _child_lf) or (
-            getattr(event, "child_unconditional_grant_eligible", False) is True
+        _child_grant_eligible = not _needs_person and (
+            (not _child_lf) or (getattr(event, "child_unconditional_grant_eligible", False) is True)
         )
         # A tool request's id is the backend's JSON-RPC id, counted per connection,
         # so two runtimes ask with the same one (each sub-agent's first is ``1``).
@@ -422,9 +425,7 @@ def _interactive_approval(
                 from kiro_crew import crew_mode
 
                 if crew_mode.APPROVAL_ROUTING_LIVE:
-                    from kiro_crew.dashboard.session_control_parts.crew_filing import (
-                        _frame_parents,
-                    )
+                    from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
 
                     _crew_member = bool(
                         crew_mode.live_stamps(
@@ -663,6 +664,14 @@ async def _heartbeat_approval(
             critical=critical,
         )
 
+    if getattr(event, "needs_person", False) is True:
+        # The gate kept this call for a person (a spec deny Crew cannot check),
+        # and a heartbeat has no person to ask: refused, never auto-approved.
+        try:
+            _audit("denied", reason="needs_person")
+        except Exception:
+            logger.warning("SEL audit failed on heartbeat needs-person deny path", exc_info=True)
+        return False
     if _is_heartbeat_safe_tool(event):
         # A shell command passed on its text; the program names in it still
         # resolve through a PATH that can lead with agent-writable directories,

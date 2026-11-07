@@ -486,6 +486,19 @@ class TestHeartbeatApproval:
         )
 
     @pytest.mark.asyncio
+    async def test_a_call_kept_for_a_person_is_refused(self, orchestrator, monkeypatch) -> None:
+        """A heartbeat has no person to ask, so a call the gate kept for one
+        (``needs_person``) is refused even when the tool is allowlisted."""
+        sel_mock = MagicMock()
+        monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
+        event = _builtin("fs_read", title="Read")
+        event.needs_person = True
+        assert await orchestrator._heartbeat_approval(event) is False
+        kwargs = sel_mock.log_tool_invocation.call_args.kwargs
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["metadata"]["reason"] == "needs_person"
+
+    @pytest.mark.asyncio
     async def test_trusted_deny_keeps_the_trusted_label(self, orchestrator, monkeypatch) -> None:
         """A trusted identity is the judged input on the deny path too."""
         sel_mock = MagicMock()

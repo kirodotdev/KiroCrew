@@ -153,10 +153,35 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
     refused ``permissions`` block, because it is what keeps the agent's granted
     shell and file tools asking.
     """
-    notice = (
-        f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
-        "receive, so they have no effect in this session."
+    from kiro_crew.platform.spec_shell_denylist import (
+        DENY_ENFORCED_PREFIX,
+        DENY_UNREADABLE_PREFIX,
     )
+
+    enforced = [k[len(DENY_ENFORCED_PREFIX) :] for k in keys if k.startswith(DENY_ENFORCED_PREFIX)]
+    unreadable = [
+        k[len(DENY_UNREADABLE_PREFIX) :] for k in keys if k.startswith(DENY_UNREADABLE_PREFIX)
+    ]
+    keys = [k for k in keys if not k.startswith((DENY_ENFORCED_PREFIX, DENY_UNREADABLE_PREFIX))]
+    parts: list[str] = []
+    if keys:
+        parts.append(
+            f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
+            "receive, so they have no effect in this session."
+        )
+    if enforced:
+        parts.append(
+            f"ℹ️ This backend does not receive agent {agent}'s deniedCommands "
+            f"{', '.join(repr(e) for e in enforced)}. Kiro Crew enforces them itself: "
+            "a matching command is refused."
+        )
+    if unreadable:
+        parts.append(
+            f"⚠️ Kiro Crew cannot check agent {agent}'s deniedCommands "
+            f"{', '.join(repr(e) for e in unreadable)}, so every shell command of this "
+            "agent asks for your approval, and none runs unattended."
+        )
+    notice = " ".join(parts)
     servers = oauth_servers_in(keys)
     if servers:
         noun = "server" if len(servers) == 1 else "servers"
@@ -661,6 +686,14 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 # passed only when there are any (``deny_override``).
                 **_deny_waiver_kwargs(turn),
             )
+        if tool_result.human_only:
+            # Only a person may answer this call (a spec deny Crew cannot
+            # check): it asks instead of being refused, and every auto-approve
+            # rung below is skipped, as for a child request with no security
+            # context, so it reaches the card.
+            tool_result = tool_result.for_person()
+            _child_low_fidelity = True
+            _child_grant_eligible = False
         if tool_result.action == TOOL_DENY:
             # Surface WHY: carry the deny reason into the pill so
             # the user sees "Blocked by security policy: ..." rather

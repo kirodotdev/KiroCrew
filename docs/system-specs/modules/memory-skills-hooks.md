@@ -6401,6 +6401,7 @@ deny blocked:
 | `search-target` | deny | the operator's own rules against a file search's synthesized scope target |
 | `governance` | deny_policy | the ceiling ∩ active profile (`_governance_denial`) |
 | `spec-shell-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.shell.denyByDefault`: its own shell call whose command no usable `allowedCommands` entry matches whole (`ToolCall.spec_shell_allowlist`) |
+| `spec-shell-denylist` | deny_policy | a KAS agent spec's `toolsSettings.shell.deniedCommands`: its own shell call an entry matches whole against the command or any chained piece; when an entry cannot be evaluated, or its match times out, it returns a person-only policy deny (`human_only`) that a consumer able to prompt a person turns into an ask (`ToolCall.spec_shell_denylist`) |
 | `spec-write-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.fs_write.fallbackAction: "deny"`: its own file write with a target no usable `allowedPaths` entry covers, as written or symlink-resolved (`ToolCall.spec_write_allowlist`) |
 | `app-own-server` | grant | a builtin app agent calling its own declared MCP server |
 | `operator-grants` | grant | the operator's `auto_approve_tools` patterns, unless a `confirm_tools` pattern names the call or the list is unknown |

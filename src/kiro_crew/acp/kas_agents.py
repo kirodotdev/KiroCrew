@@ -85,6 +85,7 @@ from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_ANSWERED_WRITES_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
+    CREW_SHELL_DENYLIST_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
     HOOK_GATEABLE_CAPABILITIES,
     _entry_crew_answered,
@@ -139,6 +140,7 @@ from kiro_crew.mcp_oauth_projection import (
     withhold_oauth,
 )
 from kiro_crew.platform.governance import may_grant_builtin_at_gate_now, may_skip_gate_now
+from kiro_crew.platform.spec_shell_denylist import spec_denied_commands
 from kiro_crew.platform.tool_names import (
     canonical_kiro_cli_tool_name,
     expand_kiro_cli_tool_exclusions,
@@ -267,7 +269,10 @@ def spec_keys_without_carrier(
     tools_settings, dropped = canonical_tools_settings(tools_settings)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
     _, not_carried = tools_settings_to_permissions(tools_settings)
-    lost.extend(f"toolsSettings.{path}" for path in not_carried)
+    from kiro_crew.acp.kas_shell_denylist import denylist_notice_keys
+
+    for path in denylist_notice_keys(tools_settings, not_carried):
+        lost.append(path if path.startswith("deniedCommands-") else f"toolsSettings.{path}")
     if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
         lost.append("permissions")
     lost.extend(
@@ -1195,6 +1200,10 @@ def to_client_custom_agent(
     )
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
+    # Every `deniedCommands` entry, carried or not: the gate enforces them itself.
+    shell_denylist = spec_denied_commands(tools_settings)
+    if shell_denylist is not None:
+        out[CREW_SHELL_DENYLIST_KEY] = shell_denylist
     # `toolsSettings.fs_write.fallbackAction: "deny"`: the only paths the write
     # tool may touch, as the spec wrote them. Recorded whatever the ceiling says,
     # like the shell's; the gate refuses every other write of this agent

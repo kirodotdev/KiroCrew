@@ -769,6 +769,11 @@ class KasHarness(MembershipHarness):
         handle.kas_spec_shell_allowlist = kas_agents_mod.projected_shell_allowlist(
             custom_agents, active_agent
         )
+        # The spec's `deniedCommands`, all of them: the gate refuses what they name
+        # (`spec-shell-denylist` tier), whether or not KAS received a rule.
+        from kiro_crew.acp.kas_shell_denylist import projected_shell_denylist
+
+        handle.kas_spec_shell_denylist = projected_shell_denylist(custom_agents, active_agent)
         # A `fallbackAction: "deny"` spec's write allowlist, anchored at the
         # session's own directory: the gate refuses every other file write of this
         # agent (`spec-write-allowlist` tier).

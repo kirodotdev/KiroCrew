@@ -588,6 +588,7 @@ class TestHookGateKwargs:
         "spec_granted_builtins": "spec_granted_builtins",
         "spec_granted_commands": "spec_granted_commands",
         "spec_shell_allowlist": "spec_shell_allowlist",
+        "spec_shell_denylist": "spec_shell_denylist",
         "spec_write_allowlist": "spec_write_allowlist",
         "spec_write_cwd": "spec_write_cwd",
         "harness_builtin_tool": "harness_builtin_tool",
@@ -618,6 +619,7 @@ class TestHookGateKwargs:
             spec_granted_builtins=frozenset({"execute_bash"}),
             spec_granted_commands=("git status",),
             spec_shell_allowlist=("git log",),
+            spec_shell_denylist=("git push.*",),
             spec_write_allowlist=("/w/out",),
             spec_write_cwd="/w",
             harness_builtin_tool="web_fetch",
@@ -639,6 +641,7 @@ class TestHookGateKwargs:
             "spec_granted_builtins": frozenset({"execute_bash"}),
             "spec_granted_commands": ("git status",),
             "spec_shell_allowlist": ("git log",),
+            "spec_shell_denylist": ("git push.*",),
             "spec_write_allowlist": ("/w/out",),
             "spec_write_cwd": "/w",
             "harness_builtin_tool": "web_fetch",
@@ -673,6 +676,7 @@ class TestHookGateKwargs:
             "spec_granted_builtins": frozenset(),
             "spec_granted_commands": (),
             "spec_shell_allowlist": None,
+            "spec_shell_denylist": None,
             "spec_write_allowlist": None,
             "spec_write_cwd": "",
             "harness_builtin_tool": "",
@@ -774,6 +778,7 @@ class TestHookGateKwargs:
         probe.spec_granted_builtins = frozenset({"<spec_granted_builtins>"})
         probe.spec_granted_commands = ("<spec_granted_commands>",)
         probe.spec_shell_allowlist = ("<spec_shell_allowlist>",)
+        probe.spec_shell_denylist = ("<spec_shell_denylist>",)
         probe.spec_write_allowlist = ("<spec_write_allowlist>",)
         probe.spec_write_cwd = "<spec_write_cwd>"
         call = ToolCall.from_event(probe)
@@ -808,6 +813,7 @@ class TestHookGateKwargs:
             elif kwarg in (
                 "spec_granted_commands",
                 "spec_shell_allowlist",
+                "spec_shell_denylist",
                 "spec_write_allowlist",
             ):
                 assert got[kwarg] == (f"<{attr}>",)

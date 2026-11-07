@@ -681,6 +681,12 @@ async def _resolve_permission(
             # grants — its approver is the card they skip.
             classifier_only=policy == ToolApprovalPolicy.READ_ONLY,
         )
+        if tool_result.human_only and on_tool_approval is not None:
+            # Only a person may approve this call (a spec deny Crew cannot
+            # check): the approver callback asks one. With no callback it stays
+            # the policy deny below.
+            event.needs_person = True
+            tool_result = tool_result.for_person()
         if tool_result.action == TOOL_DENY:
             # A hook deny is either a hard security check or the governance
             # ceiling. Only the former says the attempt itself was the problem,

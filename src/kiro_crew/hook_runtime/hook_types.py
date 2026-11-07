@@ -92,6 +92,13 @@ class ToolHookResult:
     #: both alike. The action alone cannot say which branch produced it, and a
     #: result built outside the factory stays unproven (False) — fail-closed.
     read_only: bool = False
+    #: True on a call only a PERSON may approve (:meth:`ask_human`). The result
+    #: is a policy TOOL_DENY, so every consumer that does not read this field
+    #: refuses the call. A consumer that can show the person a prompt reads it,
+    #: takes :meth:`for_person`, and skips every auto-approve rung. Set by the
+    #: ``spec-shell-denylist`` row when a spec's ``deniedCommands`` entry cannot
+    #: be checked.
+    human_only: bool = False
     #: The ``GATE_TIERS`` row that decided, stamped by ``HookManager.judge`` -- the
     #: per-target rule's name for a per-target tier (``"sensitive-bash"``, the same
     #: name the denial differential reports). ``""`` when no tier decided (the
@@ -145,6 +152,29 @@ class ToolHookResult:
         answering the prompt; it decides nothing."""
         ToolHookResult._count(TOOL_ALLOW, False)
         return ToolHookResult(action=TOOL_ALLOW, reason=note)
+
+    @staticmethod
+    def ask_human(note: str) -> ToolHookResult:
+        """Only a person may approve the call (:attr:`human_only`).
+
+        A policy deny, so a consumer with no person to ask refuses it without
+        knowing this field; one that can ask reads :meth:`for_person` instead.
+        """
+        ToolHookResult._count(TOOL_DENY, False)
+        return ToolHookResult(action=TOOL_DENY, reason=note, security_deny=False, human_only=True)
+
+    def for_person(self) -> ToolHookResult:
+        """This result as a consumer that prompts a person reads it.
+
+        An :meth:`ask_human` result becomes a plain ask that keeps
+        :attr:`human_only`; any other result is returned unchanged. The caller
+        must then skip every auto-approve rung.
+        """
+        if not self.human_only:
+            return self
+        return ToolHookResult(
+            action=TOOL_ALLOW, reason=self.reason, human_only=True, tier=self.tier
+        )
 
     @staticmethod
     def auto_approve(*, identity_grant: bool = False, read_only: bool = False) -> ToolHookResult:

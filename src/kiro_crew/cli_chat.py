@@ -43,10 +43,7 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
-from kiro_crew.permission_floor import (
-    OUTCOME_PENDING_APPROVAL,
-    OUTCOME_REJECTED_TRANSPORT_FLOOR,
-)
+from kiro_crew.permission_floor import OUTCOME_PENDING_APPROVAL, OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -1083,6 +1080,7 @@ async def _answer_permission(
             # they travel here although the spec's grants do not: dropping them
             # would let an answered prompt run what the spec refuses.
             spec_shell_allowlist=getattr(event, "spec_shell_allowlist", None),
+            spec_shell_denylist=getattr(event, "spec_shell_denylist", None),
             spec_write_allowlist=getattr(event, "spec_write_allowlist", None),
             spec_write_cwd=getattr(event, "spec_write_cwd", "") or "",
         )

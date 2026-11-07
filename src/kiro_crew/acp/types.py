@@ -9,10 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # The ``_session/steering`` readers, re-exported for existing importers.
-from kiro_crew.acp.steering_wire import (  # noqa: F401
-    steering_advertised,
-    steering_outcome,
-)
+from kiro_crew.acp.steering_wire import steering_advertised, steering_outcome  # noqa: F401
 
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
@@ -928,10 +925,7 @@ def _command_from_tool_params(params: dict) -> str | None:
             # verbatim: a value whose repr still holds the real bytes stays
             # scannable. Imported here rather than at module scope because
             # ``_dispatch`` imports THIS module.
-            from kiro_crew.acp._dispatch import (
-                UNSERIALISABLE_SIBLING_VALUE,
-                _dumps_degraded,
-            )
+            from kiro_crew.acp._dispatch import UNSERIALISABLE_SIBLING_VALUE, _dumps_degraded
 
             rendered = _dumps_degraded(parameters, sort_keys=True)
             # A refusal leaves a placeholder where the payload was, and the
@@ -1161,6 +1155,17 @@ class AcpEvent:
     #: A restriction: the gate's ``spec-shell-allowlist`` tier refuses every other
     #: shell call.
     spec_shell_allowlist: tuple[str, ...] | None = None
+    #: spec_shell_denylist: on the same requests, the agent's
+    #: ``toolsSettings.shell.deniedCommands`` as written
+    #: (``AcpSessionHandle.kas_spec_shell_denylist``); ``None`` when it sets none.
+    #: A restriction: the gate's ``spec-shell-denylist`` tier refuses a shell call
+    #: one names, and every shell call when one cannot be read.
+    spec_shell_denylist: tuple[Any, ...] | None = None
+    #: needs_person: set by the shared tool approver when the gate kept this call
+    #: for a person (``ToolHookResult.human_only``). An approver callback treats it
+    #: like a low-fidelity child request: no trust, YOLO or per-source shortcut
+    #: answers it, only a person does.
+    needs_person: bool = False
     #: spec_write_allowlist: on the same requests, the only paths the agent's write
     #: tool may touch when its spec sets ``toolsSettings.fs_write.fallbackAction:
     #: "deny"``, as absolute globs (``AcpSessionHandle.kas_spec_write_allowlist`` on

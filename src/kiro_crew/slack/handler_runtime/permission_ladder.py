@@ -187,6 +187,9 @@ async def _answer_permission_request(
     _agent = turn._agent
     answer = turn.answer
     task = turn.task
+    # True when the gate kept this call for a person (a spec deny Crew cannot
+    # check): it asks, and no auto-approve rung below may answer it.
+    needs_person = False
     # Check tool hooks for auto-approve
     if context_builder:
         tool_result = await run_in_tool_gate_pool(
@@ -197,6 +200,9 @@ async def _answer_permission_request(
             agent=_agent or "",
             **hook_gate_kwargs(event),
         )
+        if tool_result.human_only:
+            needs_person = True
+            tool_result = tool_result.for_person()
         if tool_result.action == TOOL_AUTO_APPROVE:
             # The hook granted this by NAME (its `auto_approve_tools`
             # globs, or the read-only allowlist). Honour it only
@@ -283,7 +289,7 @@ async def _answer_permission_request(
             return False
 
     # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
-    if _should_auto_approve_spawn(context_builder, event):
+    if not needs_person and _should_auto_approve_spawn(context_builder, event):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
@@ -309,7 +315,7 @@ async def _answer_permission_request(
         )
         return False
 
-    if approval_mode == APPROVAL_AUTO:
+    if approval_mode == APPROVAL_AUTO and not needs_person:
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
@@ -337,7 +343,7 @@ async def _answer_permission_request(
 
     # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve
     _yolo_now = is_yolo_mode()
-    if _yolo_now or session_key in _trusted_sessions:
+    if not needs_person and (_yolo_now or session_key in _trusted_sessions):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
             _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
