@@ -21,9 +21,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.llm_helpers")
 
 
-# ── JSON Parsing ──
-
-
 _JSON_DECODER = json.JSONDecoder()
 
 
@@ -34,25 +31,16 @@ def _extract_json_of_type(
 ) -> dict | list | None:
     """Extract the first top-level JSON value of *expected_type* embedded in prose.
 
-    Scans successive ``{`` (dict) or ``[`` (list) offsets and uses the stdlib
-    ``raw_decode`` to parse a complete JSON value at each — this validates the
-    full JSON grammar and correctly handles nesting and string escapes. Returns
-    the first value that matches *expected_type*, or None.
+    Tries the stdlib ``raw_decode`` at each successive ``{`` / ``[`` offset, so
+    a stray brace in the preamble (``"use {placeholder}: {\\"a\\": 1}"``) does
+    not stop the scan. Only TOP-LEVEL values count: a ``{`` inside an earlier
+    ``[ ... ]`` is consumed by that array's decode.
 
-    Scanning successive offsets (rather than committing to the first delimiter)
-    is what makes this robust to a stray structural brace in the prose preamble
-    (e.g. ``"use {placeholder}: {\\"a\\": 1}"``). Only TOP-LEVEL matches count: a
-    ``{`` nested inside an earlier-starting ``[ ... ]`` is consumed by that
-    array's decode, so a dict request never digs a nested object out of a
-    surrounding array.
-
-    When *prefer* is given, a preferred value is returned only when the choice
-    is UNAMBIGUOUS: all preferred matches in the text must be equal (a model
-    restating the same payload twice is not ambiguity). Two or more DIFFERENT
-    preferred matches return None — the caller cannot know which one is the
-    real payload, and guessing (e.g. executing a worked example that precedes
-    the actual plan) is worse than failing. When no preferred match exists,
-    the first type-matching value is returned as a fallback.
+    With *prefer*, a preferred value is returned only when UNAMBIGUOUS: all
+    preferred matches must be equal (a restated payload is fine). Different
+    preferred matches return None, because guessing (say, running a worked
+    example that precedes the real plan) is worse than failing. With no
+    preferred match, the first value of the type is returned.
     """
     preferred: list[dict | list] = []
     fallback: dict | list | None = None
@@ -60,30 +48,19 @@ def _extract_json_of_type(
     n = len(text)
     while i < n:
         ch = text[i]
-        # Only attempt a decode at a JSON container start. Scanning BOTH
-        # delimiters in positional order (not just the expected one) is what
-        # prevents digging a nested object out of a surrounding array: a
-        # leading "[ ... ]" is decoded as a list, found to be the wrong type,
-        # and skipped past in full — so a dict request on "[1, {\\"a\\":2}]"
-        # returns None rather than the inner {"a":2}.
+        # Decode at BOTH delimiters in positional order: a leading "[ ... ]" is
+        # decoded, found the wrong type and skipped in full, so a dict request
+        # on "[1, {\\"a\\":2}]" returns None rather than the inner {"a":2}.
         if ch not in "{[":
             i += 1
             continue
         try:
             data, end = _JSON_DECODER.raw_decode(text, i)
         except RecursionError:
-            # Adversarially deep nesting (e.g. "[" * 100_000 in prose): the
-            # stdlib decoder recurses per nesting level and overflows long
-            # before any structural bound. This text is untrusted model output,
-            # and callers handle only JSONDecodeError (parse_json's ValueError
-            # contract, the spine extractor's never-raises contract) — so the
-            # error must not escape. Fail the WHOLE scan closed: a truncated
-            # scan cannot certify a preferred match as unambiguous, so keeping
-            # candidates collected before the bomb would let a worked example
-            # launder past the ambiguity refusal.
-            # Callers already have recovery paths for None (schema retry loop,
-            # the spine's forcing re-emit); salvaging a prefix of a reply that
-            # contains a nesting bomb is not worth defeating them.
+            # Deep nesting ("[" * 100_000) overflows the decoder, and callers
+            # handle only JSONDecodeError. Fail the WHOLE scan closed: a truncated
+            # scan cannot prove a preferred match unambiguous. Callers recover
+            # from None.
             return None
         except json.JSONDecodeError:
             i += 1
@@ -108,11 +85,11 @@ def _extract_json_of_type(
 def _parse_llm(text: str, expected_type: type) -> dict | list | None:
     """Parse JSON from LLM output, tolerating fences and surrounding prose.
 
-    Background turns (e.g. memory consolidation) run on a shared lite session.
-    On the Claude Code backend that session is not tool/persona-scoped the way
-    kiro's no-tools lite agent is, so the model may wrap the JSON in prose. To
-    keep consolidation from silently no-opping, fall back to extracting the
-    first top-level JSON value of the expected type when a strict parse fails.
+    Background turns (e.g. memory consolidation) run on a shared lite session,
+    which on the Claude Code backend is not persona-scoped like kiro's no-tools
+    lite agent, so the model may wrap the JSON in prose. When a strict parse
+    fails, extract the first top-level value of the type so consolidation does
+    not silently no-op.
     """
     text = text.strip()
     if not text:
@@ -125,8 +102,6 @@ def _parse_llm(text: str, expected_type: type) -> dict | list | None:
             return data  # type: ignore[return-value]
         return None
     except json.JSONDecodeError:
-        # Fallback: extract the first top-level JSON value of the expected type
-        # embedded in prose (scans successive delimiters, validates via stdlib).
         result = _extract_json_of_type(text, expected_type)
         if result is None:
             # The reply can quote the user's chat or a secret from it, so the
@@ -149,9 +124,6 @@ def parse_llm_json_list(text: str) -> list | None:
     return _parse_llm(text, list)  # type: ignore[return-value]
 
 
-# ── Conversation History Helpers ──
-
-
 def save_conversation_turn(
     log: ConversationLog,
     key: str,
@@ -163,10 +135,8 @@ def save_conversation_turn(
 ) -> None:
     """Save a user+assistant conversation turn to the history log.
 
-    Consolidates the repeated pattern of appending user and assistant
-    messages with provenance tracking.  When *agent* is supplied it is
-    recorded in the session metadata on file creation so that
-    ``/kirocrew sessions`` displays the correct agent name.
+    *agent*, when given, is recorded in the session metadata on file creation
+    so ``/kirocrew sessions`` shows the right agent name.
     """
     log.append(
         key,
@@ -197,43 +167,21 @@ async def save_conversation_turn_off_loop(
 ) -> str | None:
     """Save a turn without blocking (or fail-fast-dropping on) the event loop.
 
-    Returns the ``ts`` of the row this turn ended on, read back INSIDE the atomic
-    hold so it is this turn's own row and not some later writer's. A caller that
-    stamps something with "how far the conversation had got" needs that value, and
-    re-reading the tail afterwards is not the same thing: the permit for this
-    session is released before the caller gets here, so a queued second turn can
-    land its rows in between and the re-read would return ITS position. Taking the
-    value under the lock we already hold costs nothing and removes the window
-    rather than narrowing it.
+    Returns the ``ts`` of this turn's last row, read INSIDE the atomic hold; a
+    re-read afterwards could see a queued second turn's row instead.
 
-    :func:`save_conversation_turn` makes TWO ``ConversationLog.append`` calls, and
-    append acquires a cross-process flock and writes to disk -- ~12 ms each on a
-    large transcript. Called directly from an ``async def`` that is worse than
-    slow: on a running loop ``_locked`` makes a single NON-blocking acquire and
-    raises :class:`~kiro_crew.history.HistoryLockTimeout` on any concurrent
-    holder, and most callers swallow that, so the durable copy was dropped
-    exactly when another writer was active. Off the loop the same primitive takes
-    the patient poll-to-deadline path instead.
+    On a running loop ``_locked`` makes one NON-blocking acquire and raises
+    :class:`~kiro_crew.history.HistoryLockTimeout` on any concurrent holder,
+    dropping the durable copy; off the loop it polls to its deadline. Every async
+    caller goes through here so a new call site cannot forget the offload.
 
-    This is the single choke point for every async caller, so the offload cannot
-    be forgotten at a new call site and the ten Slack sites do not each restate
-    it.
+    Unlike :func:`~kiro_crew.history.append_off_loop`, this **awaits** the write:
+    callers read the transcript back next (a dashboard refresh, consolidation).
 
-    Unlike :func:`~kiro_crew.history.append_off_loop`, this **awaits** the write
-    rather than firing it at the executor and returning. That difference is
-    deliberate: callers here go on to refresh a dashboard tab or hand the session
-    to consolidation, both of which read the transcript back, so the turn has to
-    be on disk before the caller continues. ``append_off_loop`` has no such
-    reader and can afford to be fire-and-forget.
-
-    The whole turn is written under one :meth:`~kiro_crew.history.ConversationLog.atomic_appends`
-    hold. ``append`` locks per ROW, so without it two concurrent turns for the
-    same session could interleave into ``user_A, user_B, assistant_A,
-    assistant_B`` -- turns that do not pair up, which no timestamp ordering can
-    repair because each row's ``ts`` is individually correct. On the loop that was
-    impossible (a synchronous caller never yields between its two appends), so the
-    hazard is introduced BY offloading and has to be closed here rather than
-    inherited.
+    The whole turn is written under one
+    :meth:`~kiro_crew.history.ConversationLog.atomic_appends` hold. ``append``
+    locks per ROW, so two concurrent turns could otherwise interleave into
+    ``user_A, user_B, assistant_A, assistant_B``, which no ``ts`` sort repairs.
     """
 
     def _write() -> str | None:
@@ -248,9 +196,7 @@ async def save_conversation_turn_off_loop(
                 agent=agent,
             )
             # Reentrant for the same key on the same thread (see
-            # ``atomic_appends``), so this reuses the hold rather than
-            # deadlocking on it -- and reading it here rather than after the
-            # hold is released is the whole point.
+            # ``atomic_appends``), so this reuses the hold, not deadlocks.
             return log.last_row_ts(key)
 
     return await asyncio.to_thread(_write)

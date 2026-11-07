@@ -102,40 +102,29 @@ async def run_bg_oneliner(
     served by that same model) must set it; ordinary best-effort callers
     (title/nav/folder generation) keep the default lenient behavior.
 
-    Consolidates the identical "acquire a ``_bg`` session -> best-effort pin the
-    cheap model -> drive the event loop -> ``destroy()`` in ``finally``" skeleton
-    that was copied across title, link-label, folder-icon, and session-summary
-    generation. The task is tool-free by contract: permission requests are
-    rejected and **always** SEL-logged as ``denied`` — every permission decision
-    must be audited (``backend-security-controls``). Callers may override
-    ``sel_source`` to attribute the denial to their feature; callers that omit it
-    are audited under the generic ``"bg_oneliner"`` source rather than silently
-    dropping the SEL event.
+    Acquires a ``_bg`` session, best-effort pins the cheap model, drives the
+    event loop and ``destroy()``s the session in ``finally``. The task is
+    tool-free by contract: permission requests are rejected and **always**
+    SEL-logged as ``denied`` (``backend-security-controls``), under
+    ``sel_source`` or the default ``"bg_oneliner"``.
 
-    ``crew_log_kind`` and ``crew_log_session_key`` name what this call is and which
-    session it is charged to, and BOTH are required for it to reach that session's
-    crew log. Most callers are not charged to any one session -- a tip, a folder icon,
-    a cron label -- so the default is to write nothing rather than attribute shared
-    work to whichever session happened to trigger it.
+    ``crew_log_kind`` and ``crew_log_session_key`` are BOTH required to write to
+    that session's crew log. Most callers (a tip, a folder icon, a cron label)
+    are shared work, so the default writes nothing rather than charge whichever
+    session triggered it.
 
-    Errors propagate to the caller (the ``_bg`` session is still ``destroy()``-ed
-    in ``finally``): callers that want best-effort "" fallback wrap the call
-    themselves, while callers that surface the failure (title/nav) get it
-    unchanged. ``sessions`` is duck-typed (a ``SessionManager``-like object
-    exposing ``get_bg_session()``) rather than statically imported, so this
-    low-level helper stays free of a dashboard/session import cycle.
+    Errors propagate; callers that want a best-effort "" wrap the call. ``sessions``
+    is duck-typed (anything with ``get_bg_session()``) to avoid a
+    dashboard/session import cycle.
 
     ``max_output_bytes`` bounds accumulated UTF-8 text before concatenation;
     ``retry_rejected_model=False`` disables the extra reactive model call for a
     caller that accounts each attempt against a hard call budget. Neither changes
     the configured-model resolution or the default behavior of other callers.
     """
-    # Pinned before the acquisition below, not in the teardown that writes it: a
-    # slot reset, switch or compaction gives the successor a new ACP session id,
-    # and a teardown-time lookup would file this spend under a session that never
-    # incurred it. The acquisition is itself a suspension point -- it can take the
-    # background runtime lock and start a runtime -- so resolving after it is
-    # already late enough to name the successor.
+    # Pinned before the acquisition, which is itself a suspension point: a slot
+    # reset, switch or compaction meanwhile gives the successor a new ACP session
+    # id, and a later lookup would charge this spend to it.
     _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     # NOT under ``timeout``: the acquisition can be the shared ``_bg`` runtime's own
     # (re)spawn, run inline under its lock, and a cancelled one is killed with
@@ -161,15 +150,11 @@ async def run_bg_oneliner(
         text = ""
         output_bytes = 0
         set_model = getattr(session, "set_model", None)
-        # Pass the caller's preference (often the governed "auto") to set_model,
-        # which resolves it against the session's advertised model list at the
-        # wire chokepoint (AcpSessionHandle.set_model -> resolve_usable_model):
-        # a hardcoded/unentitled id, or "auto" on a partition that does not serve
-        # it, is swapped for the first advertised model instead of
-        # reaching the wire and failing mid-prompt with Invalid model ID.
-        # Best-effort: a failed override falls back to the default — unless
-        # strict_model, where running on any other model would make the
-        # result meaningless (see docstring), so the failure propagates.
+        # set_model resolves the preference (often "auto") against the advertised
+        # list (AcpSessionHandle.set_model -> resolve_usable_model), so an
+        # unentitled id or an unserved "auto" becomes the first advertised model
+        # instead of failing mid-prompt with Invalid model ID. A failed override
+        # falls back to the default, except under strict_model.
         if model_to_use and set_model is not None:
             try:
                 await set_model(model_to_use)
@@ -181,14 +166,9 @@ async def run_bg_oneliner(
                 )
             else:
                 if strict_model:
-                    # POST-CONDITION, not just no-exception: the substitute-style
-                    # set_model seam can silently inherit the session default
-                    # when the requested id is absent from the advertised set
-                    # (resolve_usable_model returns "" → no-op, no raise). A
-                    # strict caller (the poisoned-conversation canary) must
-                    # never run on any other model — verify the session now
-                    # SERVES the requested id and refuse otherwise. Unreadable
-                    # served model ⇒ cannot verify ⇒ refuse.
+                    # set_model can no-op without raising when the id is not
+                    # advertised (resolve_usable_model returns ""), so verify the
+                    # session SERVES the requested id. Unreadable means refuse.
                     served = str(getattr(session, "served_model", "") or "").strip()
                     if served != model_to_use:
                         raise RuntimeError(
@@ -201,13 +181,10 @@ async def run_bg_oneliner(
             raise RuntimeError(
                 "run_bg_oneliner(strict_model=True) requires a session with set_model()"
             )
-        # A one-liner's prompt is text ABOUT a session (a summary, a title, a
-        # label), so any image path in it is quoted history, not an attachment.
-        # Inlined, every still-readable file became an image block: a session
-        # summary carried one per pasted screenshot, and a text-only background
-        # model rejected the whole request on each pass. So the turn goes out
-        # text-only, which holds for every shape a caller composes; the scrub
-        # only tidies the text, swapping a reference it can read for the marker.
+        # A one-liner's prompt is text ABOUT a session, so an image path in it is
+        # quoted history, not an attachment. Inlining it would send image blocks
+        # that a text-only background model rejects, so the turn goes out
+        # text-only; the scrub only swaps a readable reference for the marker.
         async for event in session.prompt(strip_image_refs(prompt), allow_image=False):
             if event.kind == EVENT_TEXT_CHUNK:
                 if max_output_bytes is not None:
@@ -216,13 +193,9 @@ async def run_bg_oneliner(
                         raise ValueError("background response exceeded its output budget")
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:
-                # Audit the denial BEFORE rejecting: every permission decision
-                # must be SEL-logged (backend-security-controls), and a
-                # reject_tool transport failure must NOT skip the audit.
-                # ``sel_source`` carries a non-empty default so callers that
-                # don't attribute a feature still produce an audit record.
-                # The audit raises: a deny whose row cannot be written is not
-                # answered on the wire, so it never proceeds unaudited.
+                # Audit BEFORE rejecting (backend-security-controls), so a
+                # reject_tool transport failure cannot skip it. The audit raises:
+                # a deny whose row cannot be written is not answered on the wire.
                 _sel().log_tool_invocation(
                     session_key=sel_session_key,
                     tool_name=getattr(event, "title", "unknown") or "unknown",
@@ -239,10 +212,9 @@ async def run_bg_oneliner(
                 )
                 await session.reject_tool(event.request_id)
             elif event.kind == EVENT_TOOL_CALL:
-                # Tool-free by contract, but an AUTO-APPROVED tool arrives with no
-                # permission request to reject — audit it so no invocation escapes
-                # the SEL log (backend-security-controls; mirrors the cron/
-                # contradiction bg path this helper subsumes).
+                # An AUTO-APPROVED tool arrives with no permission request to
+                # reject; audit it so no invocation escapes the SEL log
+                # (backend-security-controls).
                 _sel().log_tool_invocation(
                     session_key=sel_session_key,
                     tool_name=getattr(event, "title", "unknown") or "unknown",
@@ -267,13 +239,10 @@ async def run_bg_oneliner(
         try:
             return await _run(model)
         except AcpError as exc:
-            # Reactive fallback: the model was rejected mid-prompt — e.g. "auto"
-            # on a partition that does not serve it, or any id the
-            # account cannot run. The advertised list can't be used
-            # to gate "auto" statically (it is a sentinel, never advertised), so
-            # this is the layer that turns your spec's "else the first available
-            # model" into action: retry ONCE with the first advertised model that
-            # is neither the rejected id nor "auto". Only fires when the raise-time
+            # The model was rejected mid-prompt (an unserved "auto", or an id the
+            # account cannot run). "auto" is never advertised, so it cannot be
+            # gated up front: retry ONCE with the first advertised model that is
+            # neither the rejected id nor "auto", only when the raise-time
             # classifier tagged a rejected model AND named an advertised set.
             rejected = getattr(exc, "rejected_model", None)
             advertised = getattr(exc, "advertised", None) or []
@@ -293,39 +262,26 @@ async def run_bg_oneliner(
         raise
     finally:
         # Account BEFORE destroy(): the turn's billing lives on the session this
-        # tears down. Every caller of this helper — titles, link labels, folder
-        # icons, session summaries, tips, the canary — reaches the provider
-        # through here and none of them recorded spend of their own, so the
-        # bill moved while the usage store stayed empty. Recording at this one
-        # point covers all of them and a new caller cannot forget to.
-        # The inner finally is load-bearing: persisting is an await, and
-        # CancelledError is a BaseException that no `except Exception` catches,
-        # so without it a cancellation landing on that await would skip
-        # destroy() and leak the session's runtime.
+        # tears down. Every one-liner caller records spend here, so none can
+        # forget to. The inner finally matters: CancelledError on the persist
+        # await is a BaseException, and would otherwise skip destroy() and leak
+        # the session's runtime.
         try:
             try:
-                # Imported here rather than at module scope because the usage
-                # module's own import chain reaches back into this one -- history
-                # and several dashboard handlers import ToolApprovalPolicy /
-                # run_bg_oneliner from here -- so a module-scope import raises
-                # ImportError against a partially initialized llm_helpers. It
-                # also pulls ~600 modules that every consumer of this low-level
-                # module would otherwise pay for at boot.
+                # Lazy: the usage module's import chain reaches back into this
+                # one (a module-scope import fails on a partially initialized
+                # llm_helpers), and it pulls ~600 modules at boot.
                 from kiro_crew.dashboard.handlers.usage import persist_token_record_async
 
                 usage = provider_last_turn_usage(session, since=stats_before)
-                # One shared predicate across every persist gate: a claude-seam
-                # turn recovered through the live-stats path can bill cost or
-                # cache tokens with zero credits AND zero fresh token counts;
-                # a gate testing only the kiro dimensions silently drops it.
+                # The shared predicate: a claude-seam turn can bill cost or cache
+                # tokens with zero credits AND zero fresh tokens, which a gate on
+                # the kiro dimensions alone would drop.
                 if usage_has_billing(usage):
                     _served = str(getattr(session, "served_model", "") or "").strip()
                     _elapsed_ms = int((time.monotonic() - turn_started) * 1000)
-                    # Same numbers, second destination: the usage store answers
-                    # "what did the account spend", the owning session's ledger
-                    # answers "what was spent on THIS session's behalf". A caller
-                    # that names neither a kind nor an owner is work not charged to
-                    # any one session (tips, a cron label) and writes nothing.
+                    # The usage store records account spend; the owner's crew log
+                    # records spend on THIS session's behalf (nothing when unowned).
                     _record_background_crew_log(
                         _crew_log_owner,
                         crew_log_kind,
@@ -336,11 +292,9 @@ async def run_bg_oneliner(
                     )
                     await persist_token_record_async(
                         sel_session_key,
-                        # The model the session SERVED, never the one requested: a
-                        # rejected preference is replaced by the reactive fallback
-                        # above, so recording the request would bill the spend to a
-                        # model that did not run. An unreadable served model falls
-                        # through to model_source rather than naming a guess.
+                        # The SERVED model, never the requested one, which the
+                        # fallback may have replaced. An unreadable served model
+                        # falls through to model_source rather than a guess.
                         _served,
                         usage,
                         _provider_label(session),
@@ -354,10 +308,9 @@ async def run_bg_oneliner(
         finally:
             await session.destroy()
             # A provider-backed handle appended this turn to the ONE shared ``_bg``
-            # conversation; ``destroy()`` only released its semaphore. Without the
-            # recycle no criterion bounds that conversation for one-liner traffic,
-            # so it grows until the provider refuses it as too long. A runtime
-            # handle's session was ephemeral and carries no marker: unchanged.
+            # conversation and ``destroy()`` only released its semaphore; without
+            # the recycle that conversation grows until the provider refuses it.
+            # A runtime handle's session is ephemeral and carries no marker.
             if getattr(session, "shares_background_conversation", False) is True:
                 try:
                     await sessions.recycle_background(context_overflowed=overflowed)
@@ -368,18 +321,13 @@ async def run_bg_oneliner(
 def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, crew_log_kind: str) -> str:
     """The crew log unit a background call is charged to, resolved BEFORE the call.
 
-    Resolution has to happen here rather than in the teardown that writes the
-    entry, and the reason is the resolver's own contract: it answers which unit a
-    slot's work is landing in NOW. A slot can be reset, switched, or compacted
-    while the model call is in flight, and the successor cold-starts a new ACP
-    session id -- so a teardown-time lookup would hand this call's spend to a
-    session that did not incur it, silently, in an append-only file. Reading it
-    before the call pins the unit that was current when the work was ordered.
+    The resolver answers which unit a slot's work lands in NOW. A slot can be
+    reset, switched or compacted while the call is in flight, and the successor
+    has a new ACP session id, so a teardown-time lookup would charge this spend
+    to a session that did not incur it, in an append-only file.
 
-    Answers ``""`` when the caller named no owner or no kind, which is most of
-    them: a background call is shared infrastructure by default, and picking a
-    session for a tip or a cron label would put someone else's cost in a user's
-    log. Also ``""`` when the flag is off or the owner cannot be resolved.
+    Answers ``""`` when the caller named no owner or no kind (shared work, the
+    default), when the flag is off, or when the owner cannot be resolved.
     """
     if not crew_log_session_key or not crew_log_kind:
         return ""
@@ -389,10 +337,9 @@ def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, crew_lo
 
         if not crew_log_emit.enabled():
             return ""
-        # The session manager the caller already holds is the resolver's only input
-        # here, and it is enough: a background call runs BETWEEN the owner's turns,
-        # where the owning slot holds no live ACP client and the registry is the
-        # authoritative source anyway.
+        # The session manager is enough: a background call runs BETWEEN the
+        # owner's turns, when the slot holds no live ACP client and the registry
+        # is authoritative.
         return unit_for_session_key(sessions, crew_log_session_key)
     except Exception:
         logger.debug(
@@ -415,21 +362,14 @@ def _record_background_crew_log(
     """File one background model call in the crew log of the session it served.
 
     ``owner_sid`` is the unit :func:`_background_crew_log_owner` pinned before the
-    call, never a key resolved here -- see that function for why the timing is the
-    whole point. An empty value means "do not write", which covers an unnamed
-    caller, a disabled flag and an unresolvable owner alike.
+    call, never one resolved here. Empty means "do not write".
 
-    Both background entry points -- the one-liner and the shared-session context
-    manager -- reach this from the same place in their teardown: after the turn's
-    usage has been snapshotted and the same ``usage_has_billing`` gate the usage
-    store uses has passed. So the two agree on WHETHER a call is billable, which is
-    the judgement that would otherwise drift. They do not agree on persistence: the
-    usage store writes on its own path and can fail there, and this entry is queued
-    for a writer that can drop it at a ceiling, so either side can be missing a call
-    the other recorded.
+    Both background entry points call this after the same ``usage_has_billing``
+    gate the usage store uses, so they agree on WHETHER a call is billable. Either
+    side can still miss a call the other recorded: the usage store can fail on its
+    own path, and this entry's writer can drop it at a ceiling.
 
-    Best-effort, like the accounting beside it. This is describing spend, not
-    controlling it, and it must never be why a background task raises.
+    Best-effort: it describes spend, and must never make a background task raise.
     """
     if not owner_sid or not crew_log_kind:
         return
@@ -567,26 +507,17 @@ async def background_turn(
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
-    Every background caller needs the same three steps around its prompt: acquire
-    its persistent session (which takes its per-session semaphore), release that
-    semaphore in a ``finally`` or the next caller deadlocks on it, and recycle the
-    session afterwards. Callers that hand-rolled those steps had no reason to also
-    record what the turn cost, so background spend reached the provider's bill
-    without ever reaching the usage store — invisible on the dashboard even though
-    the account balance moved. Recording here makes it structural: a turn taken
-    through this manager is accounted for, and a new background caller cannot
-    forget to.
+    Acquires the persistent session (taking its per-session semaphore), releases
+    that semaphore in a ``finally`` so the next caller cannot deadlock, recycles
+    the session, and records the turn's spend in the usage store, so every turn
+    taken through this manager is accounted for.
 
-    ``task`` labels the work in the ``surface`` dimension as ``bg:<task>`` so spend
-    is attributable per background job instead of pooling into one anonymous
-    bucket. Keep it a short fixed label — never per-session text, which would make
-    the dimension unbounded.
+    ``task`` becomes the ``surface`` dimension ``bg:<task>``. Keep it a short
+    fixed label: per-session text would make the dimension unbounded.
 
-    ``agent`` is forwarded to ``get_or_create`` ONLY when a caller supplies it:
-    the key decides which session is returned, but the agent decides what the
-    session is created AS, so injecting a default here would silently change that
-    for callers that deliberately pass none. The recorded row still names the
-    background agent so the dimension is never blank.
+    ``agent`` is forwarded to ``get_or_create`` ONLY when supplied: it decides
+    what the session is created AS, so a default here would change that for
+    callers that pass none. The recorded row still names the background agent.
 
     ``fresh_conversation`` ends the turn's conversation before the permit is
     released, so the next caller on the key starts from an empty context (see
@@ -601,11 +532,8 @@ async def background_turn(
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
     key = session_key or BACKGROUND_KEY
-    # Pinned before the first suspension point for the same reason the other
-    # background helper does it: the owning slot can be reset or recycled while
-    # this turn runs, and its successor is a different ledger unit. Everything the
-    # resolver reads is a parameter, so it does not need the session this function
-    # is about to acquire.
+    # Pinned before the first suspension point: the owning slot can be reset or
+    # recycled while this turn runs, and its successor is a different ledger unit.
     _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     if memory_store:
         from uuid import uuid4
