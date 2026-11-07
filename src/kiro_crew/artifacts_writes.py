@@ -112,16 +112,12 @@ def create(
     source_path = _validate_source_path(source_path)
     source_root = _validate_source_path(source_root, "source_root") if source_path else ""
     # Infer the kind when the caller didn't pin one (explicit kind always
-    # wins). Validated content is needed for the inline content sniff, so
-    # this runs after _validate_content.
+    # wins). Runs after _validate_content because the sniff reads the content.
     #
-    # A document created BLANK is the one case inference cannot help with —
-    # there is nothing to sniff — and it is exactly what the library's "New
-    # artifact" action creates. Default it to markdown (the editable prose
-    # default) and record that the kind was auto-assigned, so the first real
-    # content write can settle it into json / svg (see
-    # :func:`detect_editor_kind`). A caller that pinned a kind, or supplied
-    # real content or a source_path, has a genuine signal and is left alone.
+    # A BLANK document, which the library's "New artifact" action creates, has
+    # nothing to sniff. Default it to markdown and mark the kind auto-assigned, so
+    # the first real content write can settle it into json / svg (see
+    # :func:`detect_editor_kind`).
     kind_auto = kind is None and not source_path and not content.strip()
     if kind_auto:
         kind = "markdown"
@@ -173,9 +169,8 @@ def create(
             webapp_metadata=webapp_metadata,
             slug_collided_with=collided_with,
         )
-        # Lifecycle: emit `created` event. New artifacts are tagged
-        # `events_backfilled=True` because their history starts here —
-        # there is nothing pre-existing to synthesize.
+        # New artifacts get `events_backfilled=True`: their history starts here,
+        # so there is nothing earlier to synthesize.
         self._append_event(
             art,
             type="created",
@@ -188,16 +183,13 @@ def create(
             art.content_token = None
         logger.info("artifact created: slug=%s name=%s kind=%s", slug, name, kind)
     self._fire_change("upsert", slug)
-    # After the write, so a failed create contributes nothing. ``kind`` and
-    # ``source`` are the values ``_validate_kind`` / ``_validate_source``
-    # already restrict to closed sets, and ``kind_auto`` says whether the
-    # kind was inferred rather than pinned by the caller.
+    # After the write, so a failed create counts nothing. ``_validate_kind`` and
+    # ``_validate_source`` restrict ``kind`` and ``source`` to closed sets.
     emit_counter(
         ARTIFACTS_CREATED,
         {"kind": kind, "source": source, "kind_auto": bool(kind_auto)},
     )
-    # The "first widget" milestone, counted after the write like the counter
-    # above. Best-effort and off the loop; it never raises.
+    # The "first widget" milestone. Best-effort and off the loop; never raises.
     milestones.record("widgets")
     return art
 
@@ -220,12 +212,10 @@ def create_image(
 ) -> Artifact:
     """Persist a raster image as a first-class ``kind="image"`` artifact.
 
-    The bytes are stored in an ``asset.<ext>`` sidecar next to ``meta.json``;
-    ``current.html`` stays empty (image artifacts carry no text body). This
-    keeps the text store untouched — the same three-file directory shape,
-    the same slug/version/event machinery — with the bytes riding alongside
-    as an extra file that :meth:`delete`'s whole-directory ``_rmtree`` cleans
-    up for free.
+    The bytes go in an ``asset.<ext>`` sidecar next to ``meta.json``;
+    ``current.html`` stays empty. The directory shape and the slug/version/event
+    machinery are the text store's own, and :meth:`delete`'s whole-directory
+    ``_rmtree`` removes the sidecar too.
 
     ``mime`` must be one of the raster allowlist (:data:`_IMAGE_MIME_EXT`:
     png / jpeg / webp / gif). SVG is intentionally rejected — it is markup,
@@ -302,11 +292,9 @@ def create_image(
         try:
             self._write_image_artifact(art, data)
         except Exception:
-            # A half-written directory still reserves the slug, and the slug
-            # is deterministic — so every retry would raise
-            # ArtifactAlreadyExistsError and the image would be lost for
-            # good. Roll the reservation back, then let the caller see the
-            # real failure.
+            # A half-written directory still reserves the deterministic slug, so
+            # every retry would raise ArtifactAlreadyExistsError. Roll the
+            # reservation back, then re-raise the real failure.
             try:
                 self._rmtree(self._artifact_dir(slug))
             except Exception:  # pragma: no cover — cleanup is best-effort
@@ -446,16 +434,12 @@ def update(
                     f"artifact {slug!r} changed since it was read; refetch and re-base",
                     current_token=art.content_token,
                 )
-        # AND THE CALLER'S OWN COMPARE-AND-SET IS A SEPARATE QUESTION, asked of
-        # every kind including this one.
-        #
-        # The fence above asks whether the write names the record it is landing
-        # on, and a request-driven caller can always answer it with its own fresh
-        # read. ``expected_token`` asks something else: whether the record still
-        # holds what THAT client last saw. Satisfying the first and skipping the
-        # second let an owner's stale tab overwrite a newer layout with no
-        # conflict reported -- an agent and an open tab editing one dashboard is
-        # the ordinary case for this feature. So both run, independently.
+        # The caller's own compare-and-set is a separate check, run for every kind.
+        # The fence above asks whether the write names the record it lands on, which
+        # a caller can always answer with a fresh read. ``expected_token`` asks
+        # whether the record still holds what THAT client last saw, so a stale tab
+        # cannot overwrite a newer layout unreported (an agent and an open tab often
+        # edit one dashboard). Both run, independently.
         if expected_token is not None and not live_pointer and content is not None:
             self._ensure_content_token_locked(art)
             assert art.content_token is not None
@@ -465,8 +449,8 @@ def update(
                     current_token=art.content_token,
                 )
         changed_content = False
-        # True when this call READ art.content off source_path (snapshot path),
-        # which makes writing it back unsafe -- see the snapshot branch below.
+        # True when this call READ art.content off source_path (snapshot path), so
+        # it must not be written back; see the snapshot branch below.
         snapshot_derived = False
         name_changed = False
         kind_changed = False
@@ -483,15 +467,13 @@ def update(
             name_changed = new_name != art.name
             art.name = new_name
         if kind is not None:
-            # Render kind may change on a pull (a widget's upstream bytes
-            # are an already-wrapped document → ``html``). A kind change
-            # alone does not bump the version; the per-version kind is
-            # recorded in the snapshot branch below when content changes.
+            # Render kind may change on a pull (a widget's upstream bytes are an
+            # already-wrapped document → ``html``). A kind change alone does not
+            # bump the version; the snapshot branch records the per-version kind.
             new_kind = _validate_kind(kind)
             kind_changed = new_kind != art.kind
             art.kind = new_kind
-            # An explicit kind is the caller's decision — stop re-detecting
-            # from content on subsequent saves.
+            # An explicit kind stops re-detection from content on later saves.
             art.kind_auto = False
         if webapp_metadata is not None:
             art.webapp_metadata = webapp_metadata
@@ -536,14 +518,11 @@ def update(
                 # also disarms the explicit-Snapshot path below, which would
                 # otherwise re-version the live package unchanged.
                 snapshot = False
-                # Disarming that path removes a SECOND thing it does: it is
-                # also where a snapshot-only update loads the live bytes off
-                # disk. A caller that asked for a snapshot and got a
-                # meta-only record back reads ``art.content`` as empty, and
-                # an auto-sync publisher then uploads that emptiness over a
-                # live dashboard and records the push as a success. So the
-                # package is loaded here instead: the caller gets the bytes
-                # it asked for, and the version count still does not move.
+                # That path is also where a snapshot-only update loads the live
+                # bytes, so load them here. Otherwise a caller that asked for a
+                # snapshot reads ``art.content`` as empty, and an auto-sync
+                # publisher uploads that emptiness over a live dashboard. The
+                # version count still does not move.
                 art.content = self._read_text(self._artifact_dir(slug) / "current.html")
             else:
                 stored_package = self._read_text(self._artifact_dir(slug) / "current.html")
@@ -553,34 +532,21 @@ def update(
                     content = _dashboard.canonical_package_content(content)
                 art.content = content
                 snapshot = _dashboard.layout_changed(stored_package, content)
-        # EVENT TYPE VALIDATED HERE, which is the FIRST point it can be: the
-        # effective ``snapshot`` flag is settled by the line above (a dashboard
-        # layout change forces it on) and nothing has been written yet.
-        #
-        # A REJECTED REQUEST MUST CHANGE NOTHING, and that is what fixes this spot.
-        # Everything downstream writes: the content token rotates, ``current.html``
-        # is replaced, the comment anchors are rescanned. A refusal raised from
-        # inside the version block further down therefore answers 400 for a write
-        # that has already landed, and landed with no version entry naming it. So
-        # the check belongs ahead of all three, not merely ahead of the version
-        # bump it guards.
-        #
-        # OUTSIDE the snapshot block on purpose, so the check does not depend on
-        # whether this particular write happens to version. An event type that is
-        # not a real lifecycle event is refused on every update, which is the
-        # honest answer to a caller naming one. ``None`` is not an event: it means
-        # "decide from the actor" and passes through.
+        # Validate ``event_type`` here: the effective ``snapshot`` flag is settled
+        # (a dashboard layout change forces it on) and nothing is written yet. A
+        # rejected request must change nothing, and everything below writes (the
+        # content token, ``current.html``, the comment anchors), so a refusal from
+        # the version block would answer 400 for a write that already landed.
+        # Checked on every update, not only versioned ones. ``None`` means "decide
+        # from the actor" and passes through.
         if event_type is not None and event_type not in _records.ALLOWED_EVENT_TYPES:
             raise ArtifactValidationError(
                 f"invalid event type {event_type!r}: "
                 f"must be one of {sorted(_records.ALLOWED_EVENT_TYPES)}"
             )
-        # FROM_VERSION VALIDATED HERE TOO, for the same reason: a refusal must
-        # land before the first write. It names the version a revert copied
-        # from, so it must be a real one: an int (never a bool, which is an int
-        # subclass) in 1..the version this record holds now. Anything else
-        # would put "Reverted to v999" on the timeline for a version that
-        # never existed.
+        # ``from_version`` is checked before the first write too. It names the
+        # version a revert copied from, so it must be an int (never a bool) in
+        # 1..art.version, or the timeline would show "Reverted to v999".
         if from_version is not None and (
             isinstance(from_version, bool)
             or not isinstance(from_version, int)
@@ -599,14 +565,10 @@ def update(
             )
         art.updated_at = _now_iso()
 
-        # Snapshot of current live state (no new content provided).
-        # the user can click Snapshot at any time
-        # to capture the live state — including after silent saves OR
-        # after the source file changed externally for file-backed
-        # artifacts. We read live content the same way get() does and
-        # then fall through to the changed_content branch below, which
-        # handles writing current.html, source_path, and the version
-        # snapshot uniformly.
+        # Snapshot with no new content: capture the live state (after silent saves,
+        # or after a file-backed source changed outside). Read it the way get()
+        # does, then fall through to the changed_content branch, which writes
+        # current.html, source_path and the version snapshot.
         if snapshot and not changed_content:
             # A copy owns its bytes: re-reading the original here would
             # overwrite the user's edits with the source file's content.
@@ -622,30 +584,22 @@ def update(
             else:
                 art.content = self._read_text(self._artifact_dir(slug) / "current.html")
             changed_content = True  # treat as a change for the snapshot path
-            # This content came FROM disk, so mirroring it back is at best a
-            # no-op -- and at worst DATA LOSS: the live read is bounded at
-            # MAX_CONTENT_BYTES, so a source file larger than that yields a
-            # PREFIX, and writing the prefix back would truncate the user's
-            # file. A snapshot is a read operation; it must never write out.
+            # This content came FROM disk, so never mirror it back: the live read
+            # is bounded at MAX_CONTENT_BYTES, so a larger source yields a PREFIX,
+            # and writing that back would truncate the user's file.
             snapshot_derived = True
 
         if changed_content:
-            # Always update the live state — current.html for chat-backed
-            # artifacts, plus source_path on disk for file-backed (so
-            # MarkdownPanel and the artifact viewer stay in sync).
-            # Use art.content (not the local ``content`` arg) because the
-            # snapshot-without-content path sets art.content from disk
-            # without populating ``content``.
+            # Update the live state: current.html, plus source_path for file-backed
+            # artifacts (so MarkdownPanel and the artifact viewer stay in sync).
+            # Use art.content, not ``content``: the snapshot path sets art.content
+            # from disk without setting ``content``.
             live_content = art.content or ""
-            # Settle an auto-assigned kind now that there is something to
-            # look at. A document created blank starts as markdown; the
-            # first save that makes it recognizably JSON or SVG re-types it
-            # so it gets the right renderer. Detection only ever returns an
-            # editable kind and returns None for anything unrecognized, so
-            # this can neither strand the user's editor nor flap the kind
-            # back on a mid-edit syntax error. An explicit ``kind`` on this
-            # call already cleared ``kind_auto`` above, so a pinned artifact
-            # is never touched here.
+            # Settle an auto-assigned kind: the first save that makes a blank
+            # document recognizably JSON or SVG re-types it for the right renderer.
+            # Detection returns only an editable kind, or None, so it can neither
+            # strand the editor nor flap on a mid-edit syntax error. An explicit
+            # ``kind`` on this call already cleared ``kind_auto``.
             if art.kind_auto:
                 detected = detect_editor_kind(live_content)
                 if detected and detected != art.kind:
@@ -686,35 +640,20 @@ def update(
                         art.source_path,
                     )
                     art.source_copy_only = True
-            # Content changed — re-validate comment anchors so threads
-            # whose quoted text is missing from the content get flagged as orphaned
-            # (and restored if the text comes back, e.g. on a revert).
-            # Every content write funnels through here: agent iterations,
-            # dashboard saves, reverts, and upstream pulls.
+            # Re-validate comment anchors: a thread whose quoted text is gone is
+            # flagged orphaned, and restored if the text comes back (e.g. a revert).
+            # Every content write passes through here.
             self._rescan_comment_anchors_locked(slug, live_content)
 
             if snapshot:
-                # ``event_type`` is validated far earlier, ahead of this write's
-                # first side effect. See the check beside the snapshot flag: it
-                # must run before the content token and ``current.html``, both of
-                # which this block is downstream of.
-                # Bump version + capture the new state under
-                # versions/v{N}.html so it's preserved in history.
+                # ``event_type`` was validated before this write's first side effect.
                 art.version += 1
                 self._snapshot_version(slug, art.version, prev)
-                # Record the render kind for this version so a later revert
-                # restores the correct render-mode (widget vs html).
-                #
-                # A ``reverted`` save sends only content + ``from_version`` (no
-                # ``kind``), so ``art.kind`` is still the CURRENT kind (e.g.
-                # ``html`` after an upstream pull). Restore the kind recorded
-                # for the version being reverted to, so the line above holds:
-                # a pre-pull widget snapshot comes back as a widget, not raw
-                # inner HTML, and the new version records that kind too.
-                #
-                # A dashboard or webapp kind is never restored or left this way:
-                # their write gates above ran against the current kind, so a
-                # revert into or out of one would skip them.
+                # The per-version render kind lets a revert restore widget vs html.
+                # A ``reverted`` save carries no ``kind``, so restore the one
+                # recorded for ``from_version``. A dashboard or webapp kind is
+                # never restored or left this way: their write gates above ran
+                # against the current kind, so a revert would skip them.
                 if event_type == "reverted" and from_version is not None:
                     _reverted_kind = art.version_kinds.get(str(from_version))
                     _gated = {_dashboard.DASHBOARD_KIND, "webapp"}
@@ -725,9 +664,8 @@ def update(
                     ):
                         art.kind = _reverted_kind
                 art.version_kinds[str(art.version)] = art.kind
-                # Lifecycle event. Caller-specified event_type wins
-                # (revert flow uses 'reverted'); otherwise actor-based
-                # default: agent → iterated, user → edited.
+                # Caller's event_type wins (revert uses 'reverted'); otherwise
+                # agent → iterated, user → edited.
                 if event_type is not None:
                     resolved_event_type = event_type
                 elif actor == "agent":
@@ -743,10 +681,8 @@ def update(
                     from_version=from_version,
                 )
 
-        # Keep version_kinds bounded in lockstep with version-file pruning
-        # (we only ever ADD on snapshot; trim stale keys for pruned
-        # versions so meta.json doesn't grow unbounded on long-lived
-        # artifacts).
+        # Trim version_kinds keys of pruned versions, in step with version-file
+        # pruning, so meta.json stays bounded on long-lived artifacts.
         if len(art.version_kinds) > MAX_VERSIONS:
             cutoff = art.version - MAX_VERSIONS
             art.version_kinds = {
@@ -765,15 +701,11 @@ def update(
         )
         fire_upsert = changed_content or kind_changed
         fire_rename = name_changed and not fire_upsert
-    # A content change is worth re-ingesting; a metadata-only rename just
-    # refreshes the KB group label (no chunk churn). Description/tag-only
-    # updates fire nothing. Fire outside the lock so the listener may call
-    # get().
-    #
-    # A KIND change fires too, even with identical content: Knowledge
-    # eligibility is keyed on kind, so switching markdown → svg has to be
-    # reconciled or the obsolete chunks stay searchable. The listener owns
-    # that decision (re-ingest or remove); the store only reports the change.
+    # A content or KIND change re-ingests (Knowledge eligibility is keyed on kind,
+    # so markdown → svg must not leave obsolete chunks searchable; the listener
+    # decides re-ingest or remove). A rename only refreshes the KB group label;
+    # description/tag edits fire nothing. Fired outside the lock so the listener
+    # may call get().
     if fire_upsert:
         self._fire_change("upsert", slug)
     elif fire_rename:
@@ -797,13 +729,10 @@ def settle_blank(
     delete the empty shell they abandoned. This decides which, and acts, in a
     SINGLE lock acquisition.
 
-    That atomicity is the whole point. Deciding client-side means reading the
-    artifact, then acting on it, with a window in between — and a save landing
-    in that window from a popout window or an agent gets overwritten or
-    deleted. No amount of re-reading closes it, because the gap is between the
-    read and the write, not inside the read. :meth:`prune_auto_widgets` faces
-    the identical hazard and resolves it the same way: re-check and act without
-    letting go of the lock.
+    Deciding client-side leaves a window between the read and the write, and a
+    save landing there from a popout window or an agent gets overwritten or
+    deleted. :meth:`prune_auto_widgets` resolves the same hazard the same way:
+    re-check and act without letting go of the lock.
 
     "Untouched" means untouched on every axis the record can report:
 
@@ -878,11 +807,9 @@ def _write_settled_draft(self: ArtifactStore, art: Artifact, draft: str) -> None
     art.content_token = self._rotate_content_token_locked(art.slug)
     self._write_text(self._artifact_dir(art.slug) / "current.html", draft)
     art.content = draft
-    # A settled draft is this document's first content, so it gets the same
-    # kind detection an ordinary save would have applied. Without this, typing
-    # JSON into a blank and navigating away stored it as markdown and rendered
-    # it with the wrong viewer. Gated on ``kind_auto`` so a kind the user picked
-    # explicitly still wins.
+    # A settled draft is the first content, so it gets an ordinary save's kind
+    # detection (JSON typed into a blank must not render as markdown). Gated on
+    # ``kind_auto`` so a kind the user picked explicitly wins.
     if art.kind_auto:
         detected = detect_editor_kind(draft)
         if detected and detected != art.kind:
