@@ -19242,6 +19242,7 @@
         "none": "(없음)",
         "not_a_valid_id": "‘{{name}}’은(는) 유효한 ID가 아닙니다",
         "not_connected": "연결되지 않음",
+        "owner_id_missing": "소유자가 설정될 때까지 Slack은 꺼진 상태로 유지됩니다. 아래에서 소유자 Slack 멤버 ID(KIROCREW_OWNER_ID)를 추가하세요.",
         "owner_slack_member_id": "소유자 Slack 멤버 ID",
         "paste_slack_app_token_xapp": "Slack 앱 토큰 붙여 넣기(xapp-…)",
         "paste_slack_bot_token_xoxb": "Slack 봇 토큰 붙여 넣기(xoxb-…)",

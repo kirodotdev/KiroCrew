@@ -20736,6 +20736,7 @@
         "none": "(нет)",
         "not_a_valid_id": "«{{name}}» — некорректный ID",
         "not_connected": "Не подключено",
+        "owner_id_missing": "Slack выключен, пока не задан владелец. Добавь ниже ID участника Slack владельца (KIROCREW_OWNER_ID).",
         "owner_slack_member_id": "ID участника Slack (владелец)",
         "paste_slack_app_token_xapp": "Вставьте токен приложения Slack (xapp-…)",
         "paste_slack_bot_token_xoxb": "Вставьте токен бота Slack (xoxb-…)",

@@ -20238,6 +20238,7 @@
         "none": "(nessuno)",
         "not_a_valid_id": "«{{name}}» non è un ID valido",
         "not_connected": "Non connesso",
+        "owner_id_missing": "Slack resta disattivato finché non viene impostato un proprietario. Aggiungi qui sotto l’ID membro Slack del proprietario (KIROCREW_OWNER_ID).",
         "owner_slack_member_id": "ID membro Slack del proprietario",
         "paste_slack_app_token_xapp": "Incolla il token dell'app Slack (xapp-…)",
         "paste_slack_bot_token_xoxb": "Incolla il token del bot Slack (xoxb-…)",
