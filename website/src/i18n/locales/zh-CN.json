@@ -14397,6 +14397,11 @@
       "error_title": "无法读取该看板"
     },
     "devFleetPage": {
+      "create_release_worktree": "发布工作树",
+      "create_release_worktree_hint": "在最新稳定版创建工作树",
+      "creating_release_worktree": "正在创建…",
+      "release_worktree_created": "已在 {{version}} 创建 {{name}}",
+      "release_worktree_failed": "无法创建发布工作树",
       "actions": "操作",
       "applies_the_last_pull_build_the_dashboard_will_b": "应用最近一次“拉取+构建”的结果。仪表板会短暂断开并自动重连。",
       "backend_unavailable": "后端不可用",

@@ -15161,6 +15161,11 @@
       "error_title": "Impossible de lire ce tableau"
     },
     "devFleetPage": {
+      "create_release_worktree": "Worktree de version",
+      "create_release_worktree_hint": "Créer un worktree sur la dernière version stable",
+      "creating_release_worktree": "Création…",
+      "release_worktree_created": "{{name}} créé sur {{version}}",
+      "release_worktree_failed": "Impossible de créer le worktree de la version",
       "actions": "Actions",
       "applies_the_last_pull_build_the_dashboard_will_b": "Applique le dernier Pull+Build. Le tableau de bord se déconnecte brièvement puis se reconnecte de lui-même.",
       "backend_unavailable": "Backend indisponible",

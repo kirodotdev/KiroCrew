@@ -14397,6 +14397,11 @@
       "error_title": "이 보드를 읽을 수 없습니다"
     },
     "devFleetPage": {
+      "create_release_worktree": "릴리스 워크트리",
+      "create_release_worktree_hint": "최신 안정 릴리스에 워크트리 생성",
+      "creating_release_worktree": "생성 중…",
+      "release_worktree_created": "{{version}}에 {{name}} 생성됨",
+      "release_worktree_failed": "릴리스 워크트리를 생성할 수 없습니다",
       "actions": "작업",
       "applies_the_last_pull_build_the_dashboard_will_b": "마지막 Pull+Build를 적용합니다. 대시보드는 잠시 연결이 끊긴 뒤 자동으로 다시 연결됩니다.",
       "backend_unavailable": "백엔드를 사용할 수 없음",

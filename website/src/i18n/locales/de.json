@@ -14779,6 +14779,11 @@
       "error_title": "Diese Übersicht konnte nicht gelesen werden"
     },
     "devFleetPage": {
+      "create_release_worktree": "Release-Worktree",
+      "create_release_worktree_hint": "Einen Worktree auf dem neuesten stabilen Release erstellen",
+      "creating_release_worktree": "Wird erstellt…",
+      "release_worktree_created": "{{name}} auf {{version}} erstellt",
+      "release_worktree_failed": "Release-Worktree konnte nicht erstellt werden",
       "actions": "Aktionen",
       "applies_the_last_pull_build_the_dashboard_will_b": "Wendet den letzten Pull+Build an. Das Dashboard trennt sich kurz und verbindet sich von selbst wieder.",
       "backend_unavailable": "Backend nicht verfügbar",

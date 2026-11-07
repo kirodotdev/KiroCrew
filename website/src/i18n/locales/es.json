@@ -15161,6 +15161,11 @@
       "error_title": "No se pudo leer este tablero"
     },
     "devFleetPage": {
+      "create_release_worktree": "Worktree de versión",
+      "create_release_worktree_hint": "Crear un worktree en la versión estable más reciente",
+      "creating_release_worktree": "Creando…",
+      "release_worktree_created": "Se creó {{name}} en {{version}}",
+      "release_worktree_failed": "No se pudo crear el worktree de la versión",
       "actions": "Acciones",
       "applies_the_last_pull_build_the_dashboard_will_b": "Aplica el último Pull+Compilar. El panel se desconectará brevemente y se volverá a conectar por su cuenta.",
       "backend_unavailable": "Backend no disponible",

@@ -15161,6 +15161,11 @@
       "error_title": "Impossibile leggere questa bacheca"
     },
     "devFleetPage": {
+      "create_release_worktree": "Worktree di versione",
+      "create_release_worktree_hint": "Crea un worktree sull'ultima versione stabile",
+      "creating_release_worktree": "Creazione…",
+      "release_worktree_created": "{{name}} creato su {{version}}",
+      "release_worktree_failed": "Impossibile creare il worktree della versione",
       "actions": "Azioni",
       "applies_the_last_pull_build_the_dashboard_will_b": "Applica l'ultimo Pull+Build. La dashboard si disconnetterà brevemente e si riconnetterà da sola.",
       "backend_unavailable": "Backend non disponibile",
