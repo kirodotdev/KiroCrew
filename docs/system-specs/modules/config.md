@@ -4438,7 +4438,9 @@ own arguments (`session_directive.py::deferred_call_arguments`, also used by the
 session-directive digest and the workspace-call gate), so a KAS deferred call
 keeps its purpose.
 `website/src/utils/toolPurpose.ts` is the frontend mirror of the key match, used by the
-pending-approval preview and the Mochi approval bubble.
+pending-approval preview and by the Mochi approval bubble for a permission row
+that carries no `tool_purpose` (the bubble prefers that gateway-read field, which
+sees through the envelope).
 
 Three properties are load-bearing:
 
