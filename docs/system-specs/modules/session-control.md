@@ -53,7 +53,17 @@ plus a same-key reopen); nothing is appended and a retry acts on the current
 session. Release waives the self-target refusal (`allow_self=True`), since a
 session releasing itself reaches no peer, and refuses 409 `already_root` or 403
 `not_parent`. Both wait until the tree append is durable before answering, so a
-takeover that never reached the disk is refused rather than reported. Neither
+takeover that never reached the disk is refused rather than reported. Once it
+lands, each writes one display-only `notice` row in the target's transcript, as
+a handoff does, after the lock and the fence are released: adopt names the
+caller and the parent it replaced (that clause omitted when there was no other
+parent), release names the parent it left. A verb that answered
+`tree_write_pending` still writes the row, in the background, if that append
+lands later. While the target runs a turn the row waits for that turn to end,
+since a row under its open tool or chunk rows would stop the turn's backward
+scans. The row is skipped when the target closed or another session took
+its key first, and when a session releases itself (it is mid-turn on that call,
+and its tool row records it). Neither
 verb is in the conductor or member grant sets (`_CONDUCTOR_DASHBOARD_GRANTS`,
 `_MEMBER_DASHBOARD_GRANTS`), and both are in `CHANNEL_AGENT_BLOCKED_TOOLS`.
 
@@ -2747,7 +2757,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
-  `session_adopt` and `session_release`, and the tree-mutation lock and append fence.
+  `session_adopt` and `session_release`, the tree-mutation lock and append fence, and
+  the transcript notice adopt, release and handoff write.
 - `src/kiro_crew/dashboard/session_control_parts/session_handoff.py`: `session_handoff`
   and the hand-back when a manager closes.
 - `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and

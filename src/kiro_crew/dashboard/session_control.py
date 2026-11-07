@@ -229,7 +229,6 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _HANDOFF_LOCK,
         _manages_up_the_line,
         _move_tree_edge,
-        _note_in_transcript,
         hand_back_on_close,
         handoff_target,
     )
@@ -325,6 +324,9 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _fork_refusal,
         _freshest_sid,
         _live_sid_of,
+        _note_in_transcript,
+        _note_later,
+        _note_once_landed,
         _note_pending_edge,
         _reaches_through_pending,
         _recorded_sid_of,
