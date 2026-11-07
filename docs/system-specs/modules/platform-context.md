@@ -909,7 +909,10 @@ Wired sites:
   `installed_context()` (declared in `PEEK_CALLERS`) with the same degrade
   contract as `exempt_exact_hosts`: no context, a pre-method adapter, an
   exception or a member without a path all mean MORE redaction. The display
-  redaction memo folds the prefix set into its key. Public default:
+  redaction memo reads the prefix set once per render and hands that one snapshot
+  to its key and to pass 4 (`redact_credentials(..., token_param_prefixes=...)`,
+  the nested scan of a diagram's source included), so a cached entry is always
+  judged under the set its key names. Public default:
   `frozenset()`; never sourced from `config.json`.
   The set is read via `installed_context()`, so a process with no installed
   context takes that same empty set WITHOUT resolving one: resolving would load

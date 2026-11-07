@@ -703,7 +703,16 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
 #: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
 #: (55 lines; the rest fit in the headroom main had left). Re-measured.
-_PACKAGE_LINE_BUDGET = 34_845
+#: Raised by 10, from 34,845, to the package's measured size on main: the headroom the
+#: 55 above were counted against was spent by the linear-time credential scans that
+#: merged before them, so main landed over budget. No code changes; nothing is relaxed.
+#: Re-measured.
+#: Raised by 39, from 34,855, for pass 4's prefix snapshot: ``redact_credentials`` takes
+#: an optional ``token_param_prefixes`` that replaces pass 4's live read, the diagram scan
+#: (``_document_link_spans``, ``_plantuml_verdict``) hands it to its nested call, and
+#: ``_well_formed_token_param_prefixes`` is the one shape gate the live read and a
+#: snapshot share. No rule, pattern or pass changed. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_894
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
