@@ -32,7 +32,6 @@ def _settle(monkeypatch: pytest.MonkeyPatch, answers: list[dict]) -> list[tuple[
     monkeypatch.setattr(mcp_core, "sel", MagicMock())
     step = _SubAgentsStep(
         sa_ids=["a1"],
-        sa_deferred=set(),
         sa_errors=[],
         parent_session="dashboard:owner",
         max_wait=60,
