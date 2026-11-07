@@ -281,6 +281,19 @@ class TestApiTerminalWs:
         assert registry == {"old": fresh, "busy": busy}
 
     @pytest.mark.asyncio
+    async def test_a_refused_open_ends_the_displaced_shell_once_the_panel_is_off(self):
+        # The panel was switched off while the probe waited, and the switch-off
+        # could not see the shell this open had displaced: it ends, not goes back.
+        old, busy, registry, req, patches = self._at_the_cap(OSError("no such directory"))
+        off = patch.object(terminal, "_read_terminal_config", return_value={"enabled": False})
+        with patches[0], patches[1], patches[2], patches[3], patches[4], off:
+            with patches[5] as end_evicted:
+                await terminal.api_terminal_ws(req)
+        end_evicted.assert_awaited_once()
+        assert end_evicted.await_args.args[1][:2] == ("old", old)
+        assert registry == {"busy": busy}
+
+    @pytest.mark.asyncio
     async def test_an_open_that_goes_ahead_ends_the_displaced_shell_before_spawning(self):
         # The directory resolves, so the displaced shell ends ahead of the new
         # shell's spawn. The spawn then fails only to stop before the read loop.
