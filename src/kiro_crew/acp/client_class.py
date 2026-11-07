@@ -30,6 +30,7 @@ from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
 from kiro_crew.acp import client_native_children as _client_native_children
+from kiro_crew.acp import client_new_conversation as _client_new_conversation
 from kiro_crew.acp import client_permissions as _client_permissions
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp import client_spawn_env as _client_spawn_env
@@ -1436,6 +1437,8 @@ class AcpClient:
     _fork_session = _client_start._fork_session
     _initialize_session = _client_start._initialize_session
     ensure_ready = _client_start.ensure_ready
+    # A fresh conversation on the live process: ``kiro_crew.acp.client_new_conversation``.
+    new_conversation = _client_new_conversation.new_conversation
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_opencode_shell_permission = _client_turn._defer_opencode_shell_permission

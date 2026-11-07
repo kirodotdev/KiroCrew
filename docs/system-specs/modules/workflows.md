@@ -179,10 +179,11 @@ passes nothing and the session resolves its effort as before. Effort applies
 when the step's session starts: the pooled adapter keys its warm sub-pools on
 `(agent, model, cwd, effort)` so a reused worker always runs at the effort the
 call asked for, and a named `session=` chain keeps the effort its first step
-started it with. A warm reuse's `new_conversation()` re-applies the model but
-not the effort, and a harness that takes effort as a per-session config option
-(KAS, Codex) pushes it only at cold start, so the worker pushes its effort again
-through `provider.change_effort` after each cheap reset; a push that raises takes
+started it with. A warm reuse's `new_conversation()` re-applies the model but,
+except on claude, not the effort, and a harness that takes effort as a
+per-session config option (KAS, Codex) pushes it only at cold start, so the
+worker pushes its effort again through `provider.change_effort` after each
+cheap reset; a push that raises takes
 the hard-reset fallback, which cold-starts with the override. There is no
 run-level effort default.
 
@@ -1421,10 +1422,12 @@ never spawns `kiro-cli` in tests. Two production adapters:
   worker after `provider.new_conversation()` (a fresh `session/new` on the live
   process, skipping spawn and initialize), falling back to a hard
   `SessionManager.reset` if that is unavailable or fails, so a reused worker can
-  never carry prior-task context forward. Only a backend on the shared runtime
-  (kiro, KAS, Codex) has the cheap reset; one on its own `AcpClient` (claude and
-  the other per-session adapters) raises `NotImplementedError` naming the backend,
-  and its reuse is the hard reset, logged at INFO as a cold start. Dead workers are retired and replaced.
+  never carry prior-task context forward. A backend on the shared runtime (kiro,
+  KAS, Codex) has the cheap reset, and so does claude's own `AcpClient`
+  (`ACP_BACKENDS_CLIENT_NEW_CONVERSATION`, see claude-code-provider "A fresh
+  conversation on the live adapter"); any other backend on its own `AcpClient`
+  raises `NotImplementedError` naming the backend, and its reuse is the hard reset,
+  logged at INFO as a cold start. Dead workers are retired and replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker. So does a `backend=` call: every
   warm worker runs the default harness, so it runs on a one-shot unpooled session.
