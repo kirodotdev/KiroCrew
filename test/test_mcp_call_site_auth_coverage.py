@@ -552,6 +552,11 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                             except _TooManyCandidates:
                                 cands = []
                             for cand in cands:
+                                if called == "Request" and "?token=" in cand:
+                                    # A dashboard-token read (``kirocrew status``'s owner
+                                    # read) sends no internal secret: out of scope.
+                                    found = True
+                                    continue
                                 norm = _normalise(cand)
                                 # Anchor at the first ``/api/``, except the app
                                 # reverse proxy ``/apps/{name}/api/{path}``

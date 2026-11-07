@@ -3187,10 +3187,24 @@ per-session tree ceiling the cleanup watchdog recycles at
 published by `/api/status` for this line; `kirocrew doctor` prints the same two
 readings at the top of its Memory Pressure section, on every platform.
 
+`/api/status` takes only a dashboard token, so a token-auth gateway refuses the
+first, credential-less read with `401`/`403`. `kirocrew status` then signs in the
+way `kirocrew token` does: it mints a one-minute owner token from
+`/api/token/local` with the local secret and reads `/api/status` with it, both
+through `_owner_verified_secret_urlopen`, the peer-proven transport. When that
+fails for any reason (no local secret, a peer that cannot be proven, a caller the
+gateway does not verify as the local owner such as an agent's shell, or a timeout
+on either request) it prints `Kiro Crew gateway is running (token auth enabled).`
+and no stats. Each such read mints one token, and so takes
+one of the gateway's bounded pending-link slots (`MAX_CONCURRENT_NONCES`) as
+`kirocrew token` does: polling it often enough to keep them all filled with its
+one-minute tokens can push out a sign-in link that has not been opened yet. A
+liveness check that needs no stats reads the token-exempt `/api/health`.
+
 It exits 1 when nothing answers the resolved port (a refused connection,
 printed as "not running"), so a script or health check can gate on `$?`
 without parsing stdout. It exits 0 whenever a gateway answers: the stats
-view, a token-auth `401`/`403`, another HTTP error, a busy timeout or an
+view, a failed owner sign-in, another HTTP error, a busy timeout or an
 unexpected body.
 
 ## App Dev Mode
