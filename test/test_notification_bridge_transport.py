@@ -50,10 +50,19 @@ def _telegram(owners: list[str]) -> tuple[Any, AsyncMock]:
     return TelegramTransport(client, allowed_user_ids=[int(o) for o in owners]), client.send_message
 
 
+def _webex(owners: list[str]) -> tuple[Any, AsyncMock]:
+    from kiro_crew.webex.transport import WebexTransport
+
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value="m-1")
+    return WebexTransport(client, allowed_emails=owners), client.send_message
+
+
 #: transport id -> (build the real transport with these owners, one owner id).
 _TRANSPORTS: dict[str, tuple[Callable[[list[str]], tuple[Any, AsyncMock]], str]] = {
     "discord": (_discord, "424242424242424242"),
     "telegram": (_telegram, "123"),
+    "webex": (_webex, "owner@example.invalid"),
 }
 
 
