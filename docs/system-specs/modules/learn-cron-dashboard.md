@@ -1722,7 +1722,11 @@ The Developer → Config MCP Tool Search toggle saves `agent.tool_search` as a
 boolean through `PATCH /api/config/kirocrew`. The config watcher refreshes the
 defaults used by new sessions.
 
-Office text previews use `doc_parser.extract_text`. For PPTX, slide order and
+Office text previews use `doc_parser.extract_text`. For DOCX that text is the
+structured preview's walk (`doc_blocks`) flattened by `doc_blocks.docx_text`: one
+line per paragraph, heading and list item, and one per non-empty table cell, so the
+two formats read a document the same way. The text keeps its own whole-unit soft
+budget (`max_chars`) and has no element or column ceiling. For PPTX, slide order and
 `Slide N` labels come from `ppt/presentation.xml`'s `p:sldIdLst`, resolved through
 its internal slide relationships. ZIP filenames do not determine presentation
 positions. Blank or unresolved slides retain their positions, unreferenced slide
