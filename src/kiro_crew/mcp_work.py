@@ -6,6 +6,10 @@ happened by reading their transcripts. These five tools replace that inference
 with a record: a worker writes a schema-bounded status against the ONE work item
 it was bound to, and the conductor reads that record as data.
 
+Two more tools, ``accept_eval`` and ``patrol_budget`` (:data:`CHECK_TOOLS`), run
+the goal-conductor skill's bundled checks in-process so a verify cycle needs no
+shell; they read nothing from the ledger and write nothing to it.
+
 Why this is a store and not a message. ``session_send`` would let a worker push a
 line into the conductor's session, and it is withheld from workers for a reason
 that does not weaken with care: the text becomes the conductor's next prompt,
@@ -57,9 +61,15 @@ binding.
 
 from __future__ import annotations
 
+import copy
+import functools
+import importlib.util
 import json
 import logging
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 from urllib.parse import urlencode
 
@@ -98,7 +108,16 @@ SUMMARY_CAP: int = next(
     f.max_len for f in MCP_WORK_SCHEMAS["work_report"].fields if f.name == "summary"
 )
 
-WORK_TOOLS: tuple[str, ...] = WORKER_TOOLS + CONDUCTOR_TOOLS
+#: The conductor's two fixed checks: goal-conductor's bundled ``accept_eval.py``
+#: and ``patrol_budget.py``, IMPORTED and called in-process with typed arguments.
+#: They exist so a verify cycle needs no ``execute_bash``, whose grant cannot be
+#: narrowed to one script. Neither takes a command, a path to run or a shell
+#: string: ``accept_eval`` takes the ``accept_batch`` document (whose kinds build
+#: their own argv, and which refuses ``cmd``), ``patrol_budget`` takes numbers and
+#: the budget line. Neither touches the ledger.
+CHECK_TOOLS: tuple[str, ...] = ("accept_eval", "patrol_budget")
+
+WORK_TOOLS: tuple[str, ...] = WORKER_TOOLS + CONDUCTOR_TOOLS + CHECK_TOOLS
 
 _BRIEF_PATH = "/api/work-ledger/brief"
 _REPORT_PATH = "/api/work-ledger/report"
@@ -353,6 +372,11 @@ def _tool_definitions(remote_dispatch: bool = False) -> list[dict[str, Any]]:
 
 def _base_tool_definitions() -> list[dict[str, Any]]:
     """The tool surface with the remote-dispatch preview off."""
+    return _ledger_tool_definitions() + copy.deepcopy(_CHECK_TOOL_DEFINITIONS)
+
+
+def _ledger_tool_definitions() -> list[dict[str, Any]]:
+    """The worker and conductor ledger tools."""
     return [
         {
             "name": "work_brief",
@@ -681,6 +705,167 @@ def _base_tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
+_PATROL_INT = {"type": "integer"}
+
+#: The two fixed checks' definitions, appended after the ledger tools.
+_CHECK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "name": "accept_eval",
+        "description": (
+            "Run the goal-conductor acceptance evaluator (scripts/accept_eval.py) on "
+            "an accept_batch document and return its results JSON: one "
+            "{id, verdict, evidence} per item, verdict pass|fail|pending|refused|"
+            "error. Pass the accept_batch from a full work_ledger_read as the "
+            "arguments, after keeping only the entries whose status is done. Same "
+            "kinds and refusals as the script: pr_checks, pr_merged, file, "
+            "human_approval, edition_check; a 'cmd' kind is refused. No argument "
+            "names a command or a path to run. Read-only: record each verdict with "
+            "work_ledger_record action=verdict in a later step."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "maxItems": 256,
+                    "items": {"type": "object"},
+                    "description": (
+                        'The accept_batch items: [{"id": "it_...", "accept": '
+                        '{"kind": "pr_checks", "pr": 123, "repo": "owner/name"}, '
+                        '"status": "done"}].'
+                    ),
+                }
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "name": "patrol_budget",
+        "description": (
+            "Run the goal-conductor patrol budget check (scripts/patrol_budget.py) "
+            "and return its JSON plus 'exit', the script's exit code. mode=check "
+            "takes interval_secs, max_cycles, max_runtime_secs (run before "
+            "monitor_start / a bound-changing monitor_update; exit 0 ok, 20 use "
+            "'suggest', 21 runtime too short). mode=renew takes line (the "
+            "[patrol budget: ...] line verbatim), base_cycles, base_runtime_secs, "
+            "open_items (run only on a '10% or less left' cycle; exit 0 pass "
+            "'monitor_update' to monitor_update, 10 not yet, 20 no open items, "
+            "30 renewal cap reached, 2 no figures in line). Pure arithmetic: "
+            "runs nothing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["check", "renew"]},
+                "interval_secs": _PATROL_INT,
+                "max_cycles": _PATROL_INT,
+                "max_runtime_secs": _PATROL_INT,
+                "line": {"type": "string", "description": "renew: the budget line."},
+                "base_cycles": _PATROL_INT,
+                "base_runtime_secs": _PATROL_INT,
+                "open_items": _PATROL_INT,
+            },
+            "required": ["mode"],
+        },
+    },
+]
+
+
+@functools.lru_cache(maxsize=None)
+def _skill_script(name: str) -> ModuleType:
+    """Import one of goal-conductor's bundled scripts from the PACKAGED skill.
+
+    Loaded by file location because the skill directory is not a package, and from
+    the install's own ``builtin_skills`` tree (never a user skills root), so the
+    code run is the code shipped. No ``__pycache__`` is left beside it.
+    """
+    from kiro_crew.skills import _BUILTIN_SKILLS_DIR
+
+    path = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "scripts" / f"{name}.py"
+    # Not under ``kiro_crew.``: the script is a stdlib-only skill file, not
+    # package code, and coverage's ``--cov=kiro_crew`` matches by module name.
+    spec = importlib.util.spec_from_file_location(f"_goal_conductor_{name}", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - a broken install
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+def _screen_file_item(item: Any) -> tuple[Any, dict[str, str] | None]:
+    """A ``file`` item with its path screened, or the ``refused`` result in its place.
+
+    The evaluator stats a ``file`` path as given. Run as an auto-approved tool,
+    nobody reads that path first, so it goes through the same screen the
+    dashboard's file I/O uses before anything probes it: a sensitive path or an
+    untrusted UNC share (whose probe would open an SMB connection on Windows) is
+    refused, and the evaluator stats only the canonical path.
+    """
+    accept = item.get("accept") if isinstance(item, dict) else None
+    if not isinstance(accept, dict) or accept.get("kind") != "file":
+        return item, None
+    path = accept.get("path")
+    if not isinstance(path, str) or not path:
+        return item, None  # the evaluator's own "needs a path" error
+    from kiro_crew import hooks
+
+    canonical = hooks.validate_file_path(path)
+    if canonical is None:
+        refused = {
+            "id": str(item.get("id", "")),
+            "verdict": "refused",
+            "evidence": "this path is not one the evaluator may check (a sensitive "
+            "path or an untrusted network share); name a path in the workspace",
+        }
+        return None, refused
+    return {**item, "accept": {**accept, "path": canonical}}, None
+
+
+def _accept_eval(args: dict[str, Any]) -> str:
+    screened = [_screen_file_item(item) for item in args["items"]]
+    document, code = _skill_script("accept_eval").evaluate_document(
+        {"items": [item for item, refused in screened if refused is None]}
+    )
+    if code == 0:
+        evaluated = iter(document["results"])
+        document = {
+            "results": [
+                refused if refused is not None else next(evaluated) for _, refused in screened
+            ]
+        }
+    # Evidence quotes gh / edition output, so it is redacted like every reply here.
+    return redact(json.dumps(document, indent=2, ensure_ascii=False))
+
+
+#: What each ``patrol_budget`` mode needs, as the script's argparse requires it.
+_PATROL_MODE_FIELDS: dict[str, tuple[str, ...]] = {
+    "check": ("interval_secs", "max_cycles", "max_runtime_secs"),
+    "renew": ("line", "base_cycles", "base_runtime_secs", "open_items"),
+}
+
+
+def _patrol_budget(args: dict[str, Any]) -> str:
+    missing = [f for f in _PATROL_MODE_FIELDS[args["mode"]] if args.get(f) is None]
+    if missing:
+        return f"Error: patrol_budget mode={args['mode']} needs {', '.join(missing)}"
+    pb = _skill_script("patrol_budget")
+    if args["mode"] == "check":
+        result, code = pb.check(args["interval_secs"], args["max_cycles"], args["max_runtime_secs"])
+    else:
+        budget = pb.parse_line(args["line"])
+        if budget:
+            result, code = pb.renew(
+                budget, args["base_cycles"], args["base_runtime_secs"], args["open_items"]
+            )
+        else:
+            result, code = {"action": "error", "why": "no budget figures found in line"}, 2
+    return json.dumps({"exit": code, **result}, sort_keys=True)
+
+
 def _list_tools() -> list[dict[str, Any]]:
     """The tool surface, unconditionally.
 
@@ -734,6 +919,21 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     caller_key, strict_err = _strict_caller()
     if not caller_key:
         return strict_err
+
+    if name in CHECK_TOOLS:
+        # Auto-approved, so the channel block (matched on a permission prompt)
+        # never runs for them. Admission is the gateway's ledger gate instead: the
+        # channel, restricted-session and unknown-session refusals every ledger
+        # route applies. A caller with no ledger has no batch to evaluate.
+        resp = _get(f"{_READ_PATH}?compact=true", session_key=caller_key)
+        if resp.get("error"):
+            return _refusal(f"{name} runs only for a session that holds a work ledger", resp)
+
+    if name == "accept_eval":
+        return _accept_eval(args)
+
+    if name == "patrol_budget":
+        return _patrol_budget(args)
 
     if name == "work_brief":
         resp = _get(_BRIEF_PATH, session_key=caller_key)

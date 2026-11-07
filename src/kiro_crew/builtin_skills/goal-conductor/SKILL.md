@@ -25,12 +25,14 @@ all** — not `fs_write`, and not `code` either, which governance classes as a
 filesystem write because it writes files and can shell out. `grep`, `glob` and
 `web_search` are unmounted as well; `fs_read` and `web_fetch` are what you read
 the world with. That is deliberate. If a task needs a file written, it is a work
-item, not something you do. `execute_bash` IS granted, for exactly two purposes:
-running the acceptance evaluator this skill bundles
+item, not something you do. The acceptance evaluator this skill bundles
 (`scripts/accept_eval.py`) and its patrol budget script
-(`scripts/patrol_budget.py`). It is deliberately kept out of `allowedTools`, so
-every call prompts for approval — see "Known limits" for what that costs per
-patrol cycle.
+(`scripts/patrol_budget.py`) run as two `kirocrew-work` tools,
+`kirocrew-work::accept_eval` and `kirocrew-work::patrol_budget`. They import the
+same scripts, take typed arguments (no command, path to run or shell string),
+and are auto-approved, so a verify cycle never waits on a click. `execute_bash`
+is still mounted as their fallback only, for a spec without those tools; it is
+deliberately kept out of `allowedTools`, so every shell call prompts.
 
 ## What is a work item
 
@@ -313,11 +315,11 @@ without it, fix that FIRST, before anything else that cycle, with
 **The interval is 300 to 900 seconds**, never outside that band, whatever the
 round is waiting on. Take the runtime from the operator's time budget, or 86,400
 seconds when none is set. **The bounds come from the script, not from you:**
-
-```bash
-python3 <this skill's dir>/scripts/patrol_budget.py check \
-  --interval-secs <I> --max-cycles <C> --max-runtime-secs <R>
-```
+call `patrol_budget` with `mode="check"`, `interval_secs=<I>`,
+`max_cycles=<C>`, `max_runtime_secs=<R>`. It returns the script's JSON with
+its exit code as `exit`. (Fallback without the tool, one approval each:
+`python3 <this skill's dir>/scripts/patrol_budget.py check --interval-secs <I>
+--max-cycles <C> --max-runtime-secs <R>`.)
 
 Exit 0 means arm with those numbers. Exit 20 means arm with the `suggest` block
 it prints instead: an interval outside 300..900 is clamped into it, a long
@@ -326,7 +328,7 @@ its runtime, while work is still live, and an interval longer than 10% of the
 runtime lets the loop expire without one cycle in the renewal window. The
 script never raises the user's runtime: it only shortens the interval, down to
 300. Exit 21 means even 300 does not fit (a runtime under 3000 seconds): do not
-ask. Run the check again with `--max-runtime-secs 3000`, the shortest runtime a
+ask. Run the check again with `max_runtime_secs=3000`, the shortest runtime a
 patrol can hold, arm with what it passes, and tell the user you raised the
 runtime to 3000 seconds. Run the same check
 before any `monitor_update` that changes a bound. Record the bounds you armed
@@ -337,15 +339,12 @@ artifacts: renewal reads it back.
 second line, `[patrol budget: cycle N/M, Xs/Rs runtime left]`. Once the cap is
 spent the loop deactivates and you never get the turn you would renew in. When
 10% or less of either budget is left the line ends `; 10% or less left`. On that cycle,
-and only then (the script prompts for approval like any shell call), pass the
-line verbatim. The 10% margin is the time a person has to approve that prompt;
-if nobody does, the loop ends at its cap as it would have without renewal.
-
-```bash
-python3 <this skill's dir>/scripts/patrol_budget.py renew \
-  --line '<the [patrol budget: ...] line>' \
-  --base-cycles <C> --base-runtime-secs <R> --open-items <items not terminal>
-```
+and only then, call `patrol_budget` with `mode="renew"`, `line=<the
+[patrol budget: ...] line, verbatim>`, `base_cycles=<C>`,
+`base_runtime_secs=<R>` and `open_items=<items not terminal>`. Its `exit` is
+the script's exit code below. (The shell fallback, `patrol_budget.py renew
+--line ... --base-cycles ... --base-runtime-secs ... --open-items ...`, prompts
+for approval; the 10% margin is the time a person has to approve it.)
 
 | exit | what you do |
 |---|---|
@@ -418,14 +417,10 @@ Each cycle:
    transcript and judging, and never by believing the claim.** Take the
    `accept_batch` from a full `work_ledger_read` (no `compact`), **keep only the entries
    whose item is currently `status: done`** — each entry carries that status, so
-   the filter is a read of the document you already have — and pipe that filtered
-   document through a **quoted heredoc**:
-
-   ```bash
-   python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
-   <the accept_batch document, with every non-done entry removed>
-   ACCEPT_BATCH
-   ```
+   the filter is a read of the document you already have — and pass that filtered
+   document to the `accept_eval` tool as its arguments
+   (`{"items": [<the done entries>]}`). It returns the evaluator's own
+   `{"results": [...]}` document, runs nothing you name, and does not prompt.
 
    **The filter is yours to apply, and it is not optional.** `accept_batch` is
    composed from every open item whose `acceptance` is concrete, whatever its
@@ -439,7 +434,16 @@ Each cycle:
    recording it with `action=verdict` then `action=close` closes the item under
    the worker. A `done` is the worker saying the world-state now means what the
    condition says; only then is the evaluator's answer an acceptance. Never pipe
-   the unfiltered document.
+   the unfiltered document, and never pass it to the tool.
+
+   **Only without the `accept_eval` tool**, pipe the same filtered document
+   through the script with a **quoted heredoc** (one approval per call):
+
+   ```bash
+   python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
+   <the accept_batch document, with every non-done entry removed>
+   ACCEPT_BATCH
+   ```
 
    **The heredoc is load-bearing, not style.** `acceptance` holds text you built
    from ingested content — an issue title, a file path a worker named — and a
@@ -456,8 +460,8 @@ Each cycle:
    install that path does not exist and every evaluator call would fail before
    patrol ever ran.
 
-   Evaluate **every `done` item in ONE call** — each invocation costs one
-   approval prompt — then, in a later step once it has printed, record each
+   Evaluate **every `done` item in ONE call** — a shell fallback call costs one
+   approval prompt — then, in a later step once it has returned, record each
    answer with `work_ledger_record` `action=verdict` (with `fails` when you are
    counting retries).
 
@@ -515,7 +519,7 @@ Each cycle:
    that stops bare after its tool calls keeps the empty-response recovery.
 
 **Shell exists for the two bundled scripts, not for work.** `execute_bash` is
-granted so patrol can run `accept_eval.py` and `patrol_budget.py`. Running a work item's build, test, or fix
+mounted only as the fallback for the `accept_eval` and `patrol_budget` tools. Running a work item's build, test, or fix
 yourself through it is the boundary violation this skill exists to prevent — if
 you need a command run to MAKE something true, that is a work item; the evaluator
 only CHECKS what is already true.
@@ -891,7 +895,8 @@ what the composer renders:
   call. `monitor_start` is served by
   `kirocrew-core` (`kirocrew-core::monitor_start`); the three ledger verbs are
   `kirocrew-work::work_ledger_read`, `kirocrew-work::work_ledger_record` and
-  `kirocrew-work::work_ledger_rebuild`.
+  `kirocrew-work::work_ledger_rebuild`, and the two checks are
+  `kirocrew-work::accept_eval` and `kirocrew-work::patrol_budget`.
 - **`work_brief` and `work_report` answer `not_bound` to a ROOT conductor.**
   They are the worker half of the same server, and with no parent there is
   nothing for them to read. A second-level ledger conductor IS bound as a worker
@@ -918,7 +923,7 @@ what the composer renders:
 - **Reads and creates do not prompt; anything that touches another session does.**
   Auto-approved by name: `session_create`, `session_read_message`,
   `session_status`, `work_ledger_read`, `work_ledger_record`,
-  `work_ledger_rebuild`, `work_brief` — so a patrol cycle that wakes on a nudge
+  `work_ledger_rebuild`, `work_brief`, `accept_eval`, `patrol_budget` — so a patrol cycle that wakes on a nudge
   with nobody at the keyboard never blocks. The `@kirocrew-core` verbs are
   granted by name too, and only these: `monitor_start`, `monitor_update`,
   `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
@@ -936,11 +941,10 @@ what the composer renders:
   question you answer, and one if you ever stop an item. `session_close` sits on
   the same footing — it writes to a session that is not yours, even though it
   archives rather than deletes — so budget one approval per child you close out.
-  `execute_bash` also still prompts, so **each patrol cycle that verifies
-  anything blocks on one approval for the `accept_eval.py` invocation**. Size
-  the nudge interval for that, and batch. `patrol_budget.py` prompts the same
-  way, which is why it runs once at arm time and then only on
-  `10% or less left` cycles. On a host with a governance ceiling
+  `execute_bash` still prompts, which is why verifying goes through the
+  `accept_eval` and `patrol_budget` tools: run the scripts by shell only when
+  those tools are missing, and then each such call blocks on one approval.
+  On a host with a governance ceiling
   even the granted verbs prompt; if you see approvals where this says you
   should not, that is why.
 - **`session_send` reports delivery, not completion.** `started: true` means the
@@ -960,9 +964,10 @@ what the composer renders:
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
 - **Shell is for the two bundled scripts only, and the evaluator runs no
-  command you name.** `execute_bash` exists so patrol can run `accept_eval.py`
-  and `patrol_budget.py`; every call is
-  audit-logged and every call prompts. The evaluator accepts **no command, argv
+  command you name.** `execute_bash` exists only as the fallback for the
+  `accept_eval` and `patrol_budget` tools; every shell call is
+  audit-logged and every one prompts. The tools take the same typed input as
+  the scripts and nothing else. The evaluator accepts **no command, argv
   array, or shell string from a spec** — it builds every argv it runs from a
   fixed template, so `pr_checks` becomes `gh pr checks <n>`, `pr_merged`
   becomes `gh pr view <n> --repo <owner/name> --json state`, `edition_check`

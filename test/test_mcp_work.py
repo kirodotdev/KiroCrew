@@ -46,6 +46,8 @@ def test_all_four_tools_are_advertised_to_every_caller():
         "work_ledger_read",
         "work_ledger_record",
         "work_ledger_rebuild",
+        "accept_eval",
+        "patrol_budget",
     }
 
 
@@ -205,7 +207,9 @@ def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
         "work_ledger_rebuild",
         "work_ledger_record",
     )
-    assert mcp_work.WORK_TOOLS == mcp_work.WORKER_TOOLS + mcp_work.CONDUCTOR_TOOLS
+    assert mcp_work.WORK_TOOLS == (
+        mcp_work.WORKER_TOOLS + mcp_work.CONDUCTOR_TOOLS + mcp_work.CHECK_TOOLS
+    )
 
 
 # ── identity: strict, and never the /proc walk ────────────────────────────
