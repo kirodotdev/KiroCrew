@@ -16,6 +16,12 @@
  * `preTaskExecution` and `postTaskExecution` and excludes the file and manual
  * ones, so those four are stored for the record rather than for an imminent run.
  *
+ * EVERY authorable event, with nothing withheld. One name was held back while
+ * nothing fired it, because choosing it bought a label and not a trigger; the
+ * dashboard's tag writers fire it now, so this list and the store's vocabulary are
+ * the same set again. `test_hook_events_kas_triggers.py` pins it against
+ * `HOOK_EVENTS_ALL` in order, so neither side can drift alone.
+ *
  * The order is the order the picker offers, and the order `EVENT_ORDER` sorts the
  * PROVIDER hooks table by. The script-hook table sorts its own rows through
  * `hookComparators.event`, a locale collator, so reordering this list does not
@@ -27,6 +33,7 @@ export const EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'Stop',
+  'SessionLaneChanged',
   'PreTaskExecution',
   'PostTaskExecution',
   'FileCreated',

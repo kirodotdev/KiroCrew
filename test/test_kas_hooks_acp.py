@@ -125,10 +125,26 @@ class TestTriggerSpellings:
     def test_crew_event_resolves_to_the_acp_spelling(self, event: str, trigger: str):
         assert _hook(event=event).acp_trigger == trigger
 
-    def test_the_map_holds_exactly_the_stores_event_vocabulary(self):
-        # The store refuses any other event on create and skips it on load, so a
-        # key for another spelling could not be reached by a stored hook.
-        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS)
+    def test_the_map_holds_every_fired_event_kiro_cli_has_a_trigger_for(self):
+        """Every dispatchable event with an ACP counterpart, and only those.
+
+        The store refuses any other event on create and skips it on load, so a key
+        for another spelling could not be reached by a stored hook.
+
+        ``SessionLaneChanged`` is dispatchable here and deliberately absent from the
+        map: a board lane is not a kiro-cli lifecycle moment, the event is outside
+        that closed enum on purpose, and a key for it would offer a trigger the
+        agent cannot ask for. Asserted as a derived difference rather than a literal
+        set, so a NEW turn-lifecycle event still has to be added to the map.
+        """
+        # Body-scope import, as the sibling gates in this tree use: naming it in
+        # the module block puts this change's only new import beside another, and
+        # two additions to one import region conflict on every rebase.
+        from kiro_crew.hooks import HOOK_EVENT_SESSION_LANE_CHANGED
+
+        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS) - {
+            HOOK_EVENT_SESSION_LANE_CHANGED
+        }
 
     @pytest.mark.parametrize("trigger", ["preTaskExecution", "postTaskExecution"])
     def test_a_trigger_with_no_crew_event_answers_empty(self, trigger: str):

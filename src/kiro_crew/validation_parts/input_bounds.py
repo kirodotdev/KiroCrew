@@ -196,7 +196,8 @@ ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 # Every event a script hook may be authored against: the five the gateway fires,
 # plus the six a Kiro Agent session owns, which are stored and fired by no event
 # (``hooks.HOOK_EVENTS_KAS_ONLY``, whose header says which of the six a Kiro
-# Agent even asks for and why Test still runs one). Spelled
+# Agent even asks for and why Test still runs one), plus ``SessionLaneChanged``,
+# which the dashboard's tag writers fire. Spelled
 # out rather than imported from ``kiro_crew.hooks``, which imports this module --
 # ``test_hook_validation_parity`` pins the two sets equal, so a member added
 # there and forgotten here fails a test instead of silently refusing the new
@@ -214,6 +215,7 @@ ALLOWED_HOOK_EVENTS = frozenset(
         "FileEdited",
         "FileDeleted",
         "UserTriggered",
+        "SessionLaneChanged",
     }
 )
 

@@ -49,6 +49,7 @@ const EVENT_STYLE: Record<string, string> = {
   FileEdited: 'bg-ok-subtle text-ok-text border-ok/30',
   FileDeleted: 'bg-warn-subtle text-warn-text border-warn/30',
   UserTriggered: 'bg-accent/15 text-accent border-accent/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
@@ -57,6 +58,7 @@ const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   PreTaskExecution: 'aim', PostTaskExecution: 'aim',
   FileCreated: 'ok', FileEdited: 'ok', FileDeleted: 'warn',
   UserTriggered: 'ok',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
