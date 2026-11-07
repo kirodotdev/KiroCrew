@@ -13,7 +13,7 @@ Orchestrator fields written: ``_configured_host``, ``_dashboard_port``,
 ``_dashboard_runner``, ``_feature_video_task``, ``_local_only``, ``_marker_write_task``,
 ``_member_reconcile_task``, ``_memory_startup``, ``_persistence_watchdog_task``,
 ``_profile_watch_task``, ``_session_environments_ready``, ``_sign_in_refresher_task``,
-``_update_check_task``, ``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
+``_skills_sync_task``, ``_update_check_task``, ``channel_history``, ``consolidator``, ``conv_log``, ``ctx_builder``,
 ``dashboard_state``, ``sessions``, ``slack``, ``task_runner``, ``vector_memory``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     import time
     import uuid
     import webbrowser
+    from pathlib import Path
 
     from kiro_crew.slack.gateway import (
         _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
@@ -304,15 +305,18 @@ async def _init_services(self: GatewayOrchestrator) -> None:
 
     register_pre_exec_stop("Skill-usage ledger", skill_usage.flush_all_before_exec)
 
-    async def _sync_builtin_skills() -> None:
+    async def _sync_builtin_skills() -> list[tuple[str, Path]]:
         try:
-            await asyncio.to_thread(skills.sync_builtins)
+            return await asyncio.to_thread(skills.sync_builtins)
         except Exception:
             logger.warning("builtin-skill sync failed", exc_info=True)
+            return []
 
     _skills_sync_task = asyncio.create_task(_sync_builtin_skills())
     self._background_tasks.add(_skills_sync_task)
     _skills_sync_task.add_done_callback(self._background_tasks.discard)
+    # The dashboard starts later and tells the user about any skill this set aside.
+    self._skills_sync_task = _skills_sync_task
     # Opt-out state comes from the keystone denied_commands.json (agent-
     # unwritable), not config.json's hooks section.
     hooks = HookManager(hooks_config_from_config_dict(self._cfg.hooks))
@@ -688,6 +692,26 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         from kiro_crew import kiro_on_kas_notice
 
         kiro_on_kas_notice.schedule(self.dashboard_state, _KAS_CLI_FLOOR_TASK)
+    sync_task = getattr(self, "_skills_sync_task", None)
+    if self.dashboard_state and sync_task is not None:
+        state = self.dashboard_state
+
+        async def _notify_set_aside_skills(synced: asyncio.Task[list[tuple[str, Path]]]) -> None:
+            # The sync moves a user skill that shares a builtin's name to a hidden
+            # folder; the bell is the only place the user would learn of it.
+            for name, path in await synced:
+                state.notify(
+                    "skills",
+                    f'Your copy of the skill "{name}" was set aside',
+                    f'It did not match the built-in skill "{name}", so the built-in '
+                    f"version took that name. Your copy was moved to {path} and is no "
+                    "longer loaded. To use it again, rename that folder to a name no "
+                    "built-in skill uses, without the leading dot.",
+                )
+
+        task = asyncio.create_task(_notify_set_aside_skills(sync_task))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
 
 async def _init_api_server(self: GatewayOrchestrator) -> None:
