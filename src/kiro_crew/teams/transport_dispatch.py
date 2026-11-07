@@ -999,6 +999,11 @@ class TeamsDispatcher:
         # queue mode, a /queue override, or steer unavailable.
         if not await self._enqueue_with_receipt(session_key, inbound, text):
             await (rerun() if rerun is not None else self.handle_message(inbound))
+        else:
+            # A turn Teams did not start ends without draining this queue.
+            drain_when_free(
+                channel=_CHANNEL, session_key=session_key, is_busy=self.sessions.is_busy
+            )
 
     # ── Adaptive Card clicks ───────────────────────────────────────────────
 
