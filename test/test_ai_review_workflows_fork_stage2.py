@@ -6,6 +6,7 @@ protected check name.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -24,6 +25,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _stub_path,
     _workflow,
+    _write_stub,
 )
 
 FORK_STAGE2_WORKFLOW_RUN_LANES = FORK_REVIEW_LANES + ("fork-internal-content-scan.yml",)
@@ -36,6 +38,9 @@ EXACT_IDENTITY_REVIEW_LANES = (
 # The lanes whose resolver tells an obsolete head (the fork branch moved on)
 # apart from a lagging open-PR listing: every exact-identity review lane.
 OBSOLETE_HEAD_LANES = EXACT_IDENTITY_REVIEW_LANES
+# A shell function, not a PATH stub: Git for Windows' bash.exe puts its own
+# usr/bin ahead of PATH, so a stub named `sleep` never runs there.
+_RECORD_SLEEPS = 'sleep() { printf \'%s\\n\' "$1" >> "$SLEEPS"; }\n'
 
 
 def _render_trusted_event_group(template: str, event: dict) -> str:
@@ -208,10 +213,7 @@ class TestForkStage2ExactHeadIdentity:
             "exit 9\n",
             encoding="utf-8",
         )
-        sleep = tmp_path / "sleep"
-        sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         gh.chmod(0o755)
-        sleep.chmod(0o755)
         output = tmp_path / "github-output"
         output.touch()
 
@@ -222,7 +224,8 @@ class TestForkStage2ExactHeadIdentity:
                 "-o",
                 "pipefail",
                 "-c",
-                _step_script(
+                _RECORD_SLEEPS
+                + _step_script(
                     _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
                 ),
             ],
@@ -240,6 +243,7 @@ class TestForkStage2ExactHeadIdentity:
                     "WR_HEAD_REF": self._REF if ref is None else ref,
                     "PAGES": str(pages_file),
                     "CALLS": str(calls),
+                    "SLEEPS": str(tmp_path / "sleeps"),
                     "LIST_RC": str(list_rc),
                     "BASE_SHA": self._BASE,
                     "BRANCH_TIP": branch_tip or "",
@@ -301,6 +305,19 @@ class TestForkStage2ExactHeadIdentity:
         assert result.returncode != 0, _proc_log(result)
         assert "query itself failed" in result.stdout + result.stderr
         assert "superseded or closed" not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", FORK_STAGE2_WORKFLOW_RUN_LANES)
+    def test_a_refused_read_is_retried_for_75_seconds(self, lane: str, tmp_path: Path) -> None:
+        # An allowlisted api.github.com can refuse connections for about a
+        # minute, so the resolver backs off past that before the lane gives up.
+        result = self._run_review_resolver(tmp_path, lane, [[]], list_rc=7)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "failed on all 6 attempts" in result.stdout + result.stderr
+        calls = (tmp_path / "gh-calls").read_text(encoding="utf-8").splitlines()
+        assert sum("pulls?state=open" in call for call in calls) == 6, calls
+        sleeps = (tmp_path / "sleeps").read_text(encoding="utf-8").split()
+        assert sleeps == ["5", "10", "15", "20", "25"]
 
     @pytest.mark.parametrize("lane", OBSOLETE_HEAD_LANES)
     def test_zero_match_on_a_moved_branch_is_obsolete_not_red(
@@ -545,6 +562,49 @@ class TestForkLaneFinalizeRetries:
             flat = _flat(_workflow(lane))
             assert "for attempt in 1 2; do" in flat, lane
             assert "sleep 5" in flat, f"{lane}: retry has no backoff"
+
+
+def test_a_scope_check_run_that_never_posts_reds_the_job(tmp_path: Path) -> None:
+    # A missing Security Scope Review row strands PR Readiness, so the publish
+    # POST backs off past a minute-long refusal and then fails the job.
+    bash = _bash()
+    if bash is None:
+        pytest.skip("the publish step is Bash; skip where Bash is absent")
+    sleeps = tmp_path / "sleeps"
+    _write_stub(tmp_path / "gh", "exit 1\n")
+    step = _step_script(_workflow("fork-security-scope-review.yml"), "Publish check-run")
+    env = {
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+        "REPO": "o/r",
+        "HEAD": "c" * 40,
+        "PR": "7",
+        "WR_RUN_ID": "11",
+        "WR_RUN_ATTEMPT": "1",
+        "CONCLUSION": "success",
+        "TITLE": "no confirmed rows",
+        "REMEDY": "",
+        "SETTLED": "yes",
+        "FOLD_RC": "",
+        "BODY": str(tmp_path / "absent.md"),
+        "HUMAN_OVERRIDE": "false",
+        "SCRUB_OUTCOME": "success",
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_RUN_ID": "42",
+        "SLEEPS": str(sleeps),
+    }
+    result = subprocess.run(
+        [bash, "-e", _script_file(tmp_path, _RECORD_SLEEPS + step)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env=_child_env(env),
+    )
+
+    assert result.returncode == 1, _proc_log(result)
+    assert "::error::could not publish the check-run" in result.stdout, _proc_log(result)
+    assert sleeps.read_text(encoding="utf-8").split() == ["5", "10", "15", "20", "25"]
 
 
 # (lane file, check-run name, external_id prefix, finalize step name)

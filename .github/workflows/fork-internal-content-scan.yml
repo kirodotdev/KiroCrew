@@ -106,16 +106,18 @@ jobs:
           # Bounded retry: a single-shot `gh api` aborts on a transient TLS/5xx
           # and this lane would then report "no such PR" -- the wrong cause, on a
           # PR that exists. Same convention as the other fork lanes.
+          # api.github.com, though allowlisted, can refuse connections here for
+          # about a minute, so the backoff below outlasts that.
           gh_read() {
             local attempt rc=1 out
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5 6; do
               if out="$("$@")"; then
                 printf '%s' "$out"
                 return 0
               else
                 rc=$?
               fi
-              if [ "$attempt" -lt 3 ]; then
+              if [ "$attempt" -lt 6 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
                 sleep $((attempt * 5))
               fi
@@ -140,7 +142,7 @@ jobs:
           # privileged.
           if ! rows="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
                         --jq '.[] | [.number, .head.sha, .head.repo.full_name // "", .head.ref] | @tsv')"; then
-            echo "::error::could not list open PRs; the query itself failed on all 3 attempts"
+            echo "::error::could not list open PRs; the query itself failed on all 6 attempts"
             exit 1
           fi
           matches=""
