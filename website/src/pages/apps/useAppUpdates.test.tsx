@@ -297,6 +297,48 @@ describe('useAppUpdates — Update All', () => {
     expect(announce).toHaveBeenCalledTimes(1)
   })
 
+  it('names an app that needs trust with its reason instead of a bare failure', async () => {
+    // Shape per TrustAppModal's errorCode reader: top-level string `code`.
+    const trustError = Object.assign(new Error('app execution denied'), {
+      code: 'app_execution_denied',
+    })
+    apiUpdateApp
+      .mockRejectedValueOnce(trustError)
+      .mockResolvedValueOnce(undefined)
+    const { result, setError, setSuccess, announce } = setup()
+
+    await act(async () => { await result.current.updateAll() })
+
+    const notice = setError.mock.lastCall?.[0] as string
+    // The trust-blocked app must be surfaced as needing trust, NOT silently
+    // dropped into the generic "failed to update" list with no reason.
+    expect(notice).toContain('pages.appsPage.update_needs_trust')
+    expect(notice).toContain('"name":"Notes"')
+    expect(notice).not.toContain('pages.appsPage.failed_to_update')
+    // The app that updated cleanly still announced.
+    expect(announce).toHaveBeenCalledTimes(1)
+    expect(setSuccess).not.toHaveBeenCalled()
+  })
+
+  it('separates a trust block from a real failure in the same batch', async () => {
+    const trustError = Object.assign(new Error('app execution denied'), {
+      code: 'app_execution_denied',
+    })
+    apiUpdateApp
+      .mockRejectedValueOnce(trustError)
+      .mockRejectedValueOnce(new Error('disk full'))
+    const { result, setError } = setup()
+
+    await act(async () => { await result.current.updateAll() })
+
+    const notice = setError.mock.lastCall?.[0] as string
+    // Notes needs trust; Docs is a genuine failure — each gets its own line.
+    expect(notice).toContain('pages.appsPage.update_needs_trust')
+    expect(notice).toContain('"name":"Notes"')
+    expect(notice).toContain('pages.appsPage.failed_to_update')
+    expect(notice).toContain('"names":"Docs"')
+  })
+
   it('reports failures and consent together after a mixed result', async () => {
     apiUpdateApp
       .mockRejectedValueOnce(new Error('nope'))

@@ -11873,6 +11873,7 @@
       "installed_app_find_in_library_and_enable": "{{name}} installé. Activez-le dans la Bibliothèque.",
       "synced_from_its_source_directory": "{{name}} synchronisée depuis son répertoire source.",
       "updated_from_the_registry": "{{name}} mise à jour depuis le registre.",
+      "update_needs_trust": "{{name}} a besoin de ta confiance pour se mettre à jour. Utilise son propre bouton Mettre à jour pour vérifier l’autorisation et l’accorder.",
       "updated_needs_session_approval_consent": "{{name}} est désactivée, car elle demande maintenant à contrôler tes chats. Vérifie l’autorisation dans les détails de l’application, puis active-la.",
       "refresh_store": "Actualiser la boutique",
       "refreshing_store": "Actualisation de la boutique…"

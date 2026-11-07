@@ -11873,6 +11873,7 @@
       "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo en la Biblioteca.",
       "synced_from_its_source_directory": "Se sincronizó {{name}} desde su directorio de origen.",
       "updated_from_the_registry": "Se actualizó {{name}} desde el registro.",
+      "update_needs_trust": "{{name}} necesita tu confianza para actualizarse. Usa su propio botón Actualizar para revisar el permiso y concederla.",
       "updated_needs_session_approval_consent": "{{name}} está desactivada porque ahora pide controlar tus chats. Revisa el permiso en los detalles de la aplicación y actívala.",
       "refresh_store": "Actualizar la tienda",
       "refreshing_store": "Actualizando la tienda…"

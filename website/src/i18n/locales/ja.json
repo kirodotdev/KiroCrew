@@ -11361,6 +11361,7 @@
       "synced_from_its_source_directory": "{{name}} をソースディレクトリから同期しました。",
       "updated_app_other": "{{count}} アプリを更新しました。",
       "updated_from_the_registry": "{{name}} をレジストリから更新しました。",
+      "update_needs_trust": "{{name}} の更新には信頼が必要です。アプリ自身の「更新」ボタンから権限を確認し、信頼を付与してください。",
       "updated_needs_session_approval_consent": "{{name}} は新たにチャットの制御を要求するため、無効になっています。アプリの詳細で権限を確認し、有効にしてください。",
       "refresh_store": "ストアを更新",
       "refreshing_store": "ストアを更新中…"

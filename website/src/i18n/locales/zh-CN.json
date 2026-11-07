@@ -11361,6 +11361,7 @@
       "synced_from_its_source_directory": "已从源目录同步 {{name}}。",
       "updated_app_other": "已更新 {{count}} 个应用。",
       "updated_from_the_registry": "已从注册表更新 {{name}}。",
+      "update_needs_trust": "{{name}} 需要信任才能更新。请使用它自己的“更新”按钮查看权限并授予信任。",
       "updated_needs_session_approval_consent": "{{name}} 已被禁用，因为它新增了控制你对话的请求。请在应用详情中查看该权限，然后启用它。",
       "refresh_store": "刷新商店",
       "refreshing_store": "正在刷新商店…"
