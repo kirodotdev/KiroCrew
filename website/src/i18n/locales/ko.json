@@ -6616,7 +6616,7 @@
       "that_request_already_timed_out_and_was_denied": "해당 {{source}} 요청은 이미 시간이 초과되어 거부되었습니다 — 작업은 더 이상 대기하지 않습니다. 기록은 승인 피드에서 확인하세요.",
       "total": "합계",
       "dictation_added": "받아쓴 내용을 메시지에 추가했습니다",
-      "mic_in_use_elsewhere": "다른 채팅에서 마이크 사용 중",
+      "mic_in_use_elsewhere": "다른 곳에서 마이크 사용 중",
       "mic_in_use_in": "‘{{chat}}’에서 마이크 사용 중",
       "type_label": "입력으로 전환",
       "transcribing": "받아쓰는 중…",

@@ -6798,7 +6798,7 @@
       "that_request_already_timed_out_and_was_denied": "Diese Anfrage von {{source}} ist bereits abgelaufen und wurde abgelehnt — der Job wartet nicht mehr. Den Eintrag findest du im Genehmigungs-Feed.",
       "total": "Gesamt",
       "dictation_added": "Diktat zur Nachricht hinzugefügt",
-      "mic_in_use_elsewhere": "Mikrofon wird in einem anderen Chat verwendet",
+      "mic_in_use_elsewhere": "Mikrofon wird anderswo verwendet",
       "mic_in_use_in": "Mikrofon wird in „{{chat}}“ verwendet",
       "type_label": "Stattdessen tippen",
       "transcribing": "Wird transkribiert…",

@@ -2247,7 +2247,7 @@
       "stop_the_current_response_to_switch_agents": "Stop the current response to switch agents",
       "switch_not_confirmed": "Switch not confirmed yet — it will apply if the connection recovers.",
       "dictation_added": "Dictation added to your message",
-      "mic_in_use_elsewhere": "Microphone in use in another chat",
+      "mic_in_use_elsewhere": "Microphone in use elsewhere",
       "mic_in_use_in": "Microphone in use in “{{chat}}”",
       "type_label": "Type instead",
       "that_approval_expired_the_turn_it_belonged_to_is": "This approval request expired because the associated turn is no longer awaiting approval.",
