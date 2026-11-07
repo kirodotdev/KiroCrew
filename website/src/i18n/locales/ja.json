@@ -11758,6 +11758,7 @@
       "promote_slug_taken_open": "「{{slug}}」を開く",
       "promote_slug_taken_open_older": "以前の「{{taken}}」を開く",
       "published": "公開済み（{{visibility}}）",
+      "published_on_provider": "{{provider}} に公開済み（{{visibility}}）",
       "published_sync_issue": "公開中（同期の問題）",
       "published_rolling_out": "公開済み — まだ展開中",
       "published_distribution_disabled": "公開済み — 配信ネットワーク無効",
