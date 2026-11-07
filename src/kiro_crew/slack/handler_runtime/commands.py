@@ -226,8 +226,10 @@ async def _bang_yolo(
     elif len(parts) >= 2 and parts[1].lower() == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep
         # that filesystem I/O off the event loop.
-        result = await asyncio.to_thread(safety_override().renew, "slack")
-        if result.renewed:
+        # ``gateway --approval yolo``'s grant is the dashboard's only: not Slack's to renew.
+        so = safety_override()
+        result = None if so.is_cli_launch is True else await asyncio.to_thread(so.renew, "slack")
+        if result is not None and result.renewed:
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.yolo_mode",

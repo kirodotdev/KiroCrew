@@ -730,6 +730,7 @@ async def start_dashboard(
     kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    approval_mode: str | None = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
     # Channels retain this same runner on the gateway, independently of state.
@@ -1480,7 +1481,7 @@ async def start_dashboard(
     # ``stat`` walk of the profiles dir. We are inside ``async def start_dashboard``,
     # so running it inline stalls the gateway's loop, and on slow storage it stalls
     # the heartbeat with it.
-    await asyncio.to_thread(_apply_startup_yolo, state, cfg)
+    await asyncio.to_thread(_apply_startup_yolo, state, cfg, approval_mode)
 
     # Wire safety override expiry notifications
     def _on_override_expired(source: str) -> None:
