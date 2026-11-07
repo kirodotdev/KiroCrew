@@ -223,7 +223,7 @@ BASE_SURFACE: dict[str, str] = {
     "_mcp_server_emission_eligible": "callable _mcp_server_emission_eligible(name: 'str', spec: 'object', *, gated_off: \"'frozenset[str] | None'\" = None) -> 'bool'",
     "_mcp_spec_gate_open": "callable _mcp_spec_gate_open(name: 'str', spec: 'dict') -> 'bool'",
     "_merge_kiro_hooks": "callable _merge_kiro_hooks(hooks: 'dict', user_hooks: 'dict') -> 'dict'",
-    "_merge_source_owned": "callable _merge_source_owned(mcps: 'dict', name: 'str', spec: 'dict', *, stale: 'set[str]') -> 'None'",
+    "_merge_source_owned": "callable _merge_source_owned(mcps: 'dict', name: 'str', spec: 'dict', *, stale: 'set[str]', replaced: 'dict[str, dict]') -> 'None'",
     "_migrations_dir": "callable _migrations_dir() -> 'Path'",
     "_norm_mcp_spec": "callable _norm_mcp_spec(spec: 'Any') -> 'Any'",
     "_normalize_mcp_server_keys": "callable _normalize_mcp_server_keys(config: 'dict', *, reserved_keys: 'Collection[str]' = (), removed_grants: 'list[str] | None' = None) -> 'dict[str, str]'",

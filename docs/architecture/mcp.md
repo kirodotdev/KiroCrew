@@ -89,16 +89,19 @@ kirocrew`). Onto that base:
    instead of losing to the value the first rebuild froze. Every other key on the
    entry is the user's and survives by omission, `autoApprove` included.
    Reconciling retires the name, so a lower-priority scope cannot reconcile it
-   again. `command`/`url` and `headers` are NOT reconciled — see the fallback's
-   as-a-unit rule below. `args` and `env` ARE, but only onto an entry whose
-   command names the same program the source declares (the discovery module's
-   `_commands_diverged`, which reads the entry's resolved `/…/bin/npx` as the
-   source's bare `npx`): the two are written for one program, so a source that
-   kept its command and added an `env` variable or an argument later must reach
-   the server it already runs, while a source that switched programs keeps the
-   entry's old command/args/env pairing whole rather than lending its new env to
-   the old command. The unit is projected, not merged: a key the source dropped
-   is removed.
+   again. `url` and `headers` are NOT reconciled — see the fallback's as-a-unit
+   rule below. A stdio entry's `command`, `args` and `env` ARE, as one unit: the
+   three are written for one program. A source naming the program the entry
+   already runs (the discovery module's `_commands_diverged`, which reads the
+   entry's resolved `/…/bin/npx` as the source's bare `npx`) keeps the resolved
+   command and hands over its `args` and `env`, so a variable added later reaches
+   the server. A source that switched programs has its command written too, and
+   the unit it replaced becomes the LAST resolution candidate: a new command that
+   does not resolve on this host keeps the old command with its own `args`/`env`
+   and logs a warning, instead of dropping the server. Two kinds of entry are not
+   switched: one carrying a provenance record (an agent-only declaration), and one
+   whose command the `~/.kiro/crew/mcp.json` store declares, which step 4 writes as
+   before. The unit is projected, not merged: a key the source dropped is removed.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
@@ -115,7 +118,8 @@ overwritten by a stale global entry.
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
 same server's spec from the other sources in priority order (kirocrew, then
-kiro-global, then provider-global) before dropping it. When it falls back to a
+kiro-global, then provider-global, then the unit a switched source replaced in
+step 2) before dropping it. When it falls back to a
 different source it adopts that source's `command`, `args` and `env` **as a
 unit**, so one source's command is never paired with another's arguments.
 Resolution, the dashboard probe, and the `env.PATH` written into the agent
