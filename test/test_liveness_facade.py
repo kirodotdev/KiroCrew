@@ -2,8 +2,8 @@
 
 ``liveness.py`` keeps the oracle (:class:`~kiro_crew.acp.liveness.LivenessOracle`) and the
 offloaded-consult guard, and re-exports every name its sibling owners define:
-``liveness_evidence``, ``liveness_proc``, ``liveness_command``, ``liveness_interactive``
-and ``liveness_tool_state``. It is a plain facade, with no module ``__getattr__`` and no
+``liveness_evidence``, ``liveness_proc``, ``liveness_command``, ``liveness_interactive``,
+``liveness_tool_state`` and ``liveness_cleanup``. It is a plain facade, with no module ``__getattr__`` and no
 mirror, so a patch through it rebinds the facade's own global. The oracle reads that
 global, so such a patch reaches what it reached in the one module exactly when no owner
 reads the patched name as a global of its own. These tests pin that from the patches the
@@ -40,6 +40,7 @@ OWNERS = (
     "kiro_crew.acp.liveness_command",
     "kiro_crew.acp.liveness_interactive",
     "kiro_crew.acp.liveness_tool_state",
+    "kiro_crew.acp.liveness_cleanup",
 )
 #: Names the test trees are known to patch through the facade, both read by the oracle:
 #: the boot-clock converter and the darwin backend selector. The scan must find them, so a
