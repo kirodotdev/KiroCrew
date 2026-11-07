@@ -19127,6 +19127,15 @@
         "failed_to_load": "Não foi possível carregar as configurações de Bot.",
         "retry": "Tentar de novo"
       },
+      "sessionControlSection": {
+        "title": "Controle de sessões",
+        "session_control_tools": "Permitir que agentes controlem suas outras sessões",
+        "session_control_tools_desc": "Quando desligado, os agentes não podem mais abrir, enviar mensagens, parar ou fechar suas outras sessões. A mudança vale na hora, inclusive em sessões em andamento.",
+        "session_control_tools_hint": "Quando ligado, um agente com as ferramentas do painel pode abrir sessões e ler, enviar mensagens, parar ou fechar suas outras sessões neste workspace. Desligar não para nenhuma das suas sessões, e seus Bots e seu Conductor continuam conduzindo as sessões que iniciaram.",
+        "failed_to_save": "Não foi possível salvar a configuração de controle de sessões. Tente novamente.",
+        "failed_to_load": "Não foi possível carregar a configuração de controle de sessões.",
+        "retry": "Tentar de novo"
+      },
       "developerPanel": {
         "developer_tools": "Ferramentas de desenvolvedor",
         "feature_previews": "Prévias de recursos",

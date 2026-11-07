@@ -19127,6 +19127,15 @@
         "failed_to_load": "Impossibile caricare le impostazioni dei Bot.",
         "retry": "Riprova"
       },
+      "sessionControlSection": {
+        "title": "Controllo delle sessioni",
+        "session_control_tools": "Consenti agli agenti di controllare le tue altre sessioni",
+        "session_control_tools_desc": "Se disattivato, gli agenti non possono più aprire, inviare messaggi, fermare o chiudere le tue altre sessioni. La modifica vale subito, anche nelle sessioni in corso.",
+        "session_control_tools_hint": "Se attivato, un agente con gli strumenti della dashboard può aprire sessioni e leggere, inviare messaggi, fermare o chiudere le tue altre sessioni in questo workspace. Disattivarlo non ferma nessuna delle tue sessioni, e i tuoi Bot e il tuo Conductor continuano a guidare le sessioni che hanno avviato.",
+        "failed_to_save": "Impossibile salvare l'impostazione del controllo delle sessioni. Riprova.",
+        "failed_to_load": "Impossibile caricare l'impostazione del controllo delle sessioni.",
+        "retry": "Riprova"
+      },
       "developerPanel": {
         "developer_tools": "Strumenti per sviluppatori",
         "feature_previews": "Anteprime delle funzionalità",

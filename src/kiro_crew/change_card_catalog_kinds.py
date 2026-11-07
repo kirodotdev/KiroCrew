@@ -178,6 +178,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "agent.sandbox": ("strict", "auto", "off"),
     "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
     "agent.sandbox_allow_no_isolation": (False, True),
+    # On, an agent that mounts the kirocrew-dashboard server may open, read,
+    # message, stop and close the person's other sessions.
+    "agent.session_control": (False, True),
     "dashboard.tailscale.enabled": (False, True),
     "dashboard.tailscale.trust_identity": (False, True),
     "dashboard.tailscale.bind_refresh_chains": (True, False),

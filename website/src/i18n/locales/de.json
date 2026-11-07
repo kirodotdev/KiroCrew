@@ -18655,6 +18655,15 @@
         "failed_to_load": "Die Bot-Einstellungen konnten nicht geladen werden.",
         "retry": "Erneut versuchen"
       },
+      "sessionControlSection": {
+        "title": "Sitzungssteuerung",
+        "session_control_tools": "Agenten deine anderen Sitzungen steuern lassen",
+        "session_control_tools_desc": "Wenn aus, können Agenten deine anderen Sitzungen nicht mehr öffnen, ihnen Nachrichten senden, sie stoppen oder schließen. Eine Änderung gilt sofort, auch für laufende Sitzungen.",
+        "session_control_tools_hint": "Wenn an, kann ein Agent mit den Dashboard-Tools Sitzungen öffnen und deine anderen Sitzungen in diesem Workspace lesen, ihnen Nachrichten senden, sie stoppen oder schließen. Ausschalten stoppt keine deiner Sitzungen, und deine Bots und dein Conductor steuern weiter die Sitzungen, die sie selbst gestartet haben.",
+        "failed_to_save": "Die Einstellung zur Sitzungssteuerung konnte nicht gespeichert werden. Versuch es noch einmal.",
+        "failed_to_load": "Die Einstellung zur Sitzungssteuerung konnte nicht geladen werden.",
+        "retry": "Erneut versuchen"
+      },
       "developerPanel": {
         "developer_tools": "Entwicklerwerkzeuge",
         "feature_previews": "Funktionsvorschauen",

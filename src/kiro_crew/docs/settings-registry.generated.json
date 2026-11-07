@@ -1271,6 +1271,15 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.let-agents-control-your-other-sessions",
+      "label": "Let agents control your other sessions",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=key%3Aagent.session_control",
+      "description": "When off, agents can no longer open, message, stop or close your other sessions. A change applies at once, even to sessions already running.",
+      "hint": "When on, an agent with the dashboard tools can open sessions, and read, message, stop or close your other sessions in this workspace. Turning it off stops none of your sessions, and your Bots and Conductor can still drive the sessions they started.",
+      "configKey": "agent.session_control"
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

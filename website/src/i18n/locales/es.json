@@ -19127,6 +19127,15 @@
         "failed_to_load": "No se pudieron cargar los ajustes de Bot.",
         "retry": "Reintentar"
       },
+      "sessionControlSection": {
+        "title": "Control de sesiones",
+        "session_control_tools": "Permitir que los agentes controlen tus otras sesiones",
+        "session_control_tools_desc": "Si está desactivado, los agentes ya no pueden abrir, enviar mensajes, detener ni cerrar tus otras sesiones. El cambio se aplica al instante, también en las sesiones en curso.",
+        "session_control_tools_hint": "Si está activado, un agente con las herramientas del panel puede abrir sesiones y leer, enviar mensajes, detener o cerrar tus otras sesiones en este espacio de trabajo. Desactivarlo no detiene ninguna de tus sesiones, y tus Bots y tu Conductor siguen manejando las sesiones que iniciaron.",
+        "failed_to_save": "No se pudo guardar el ajuste de control de sesiones. Inténtalo de nuevo.",
+        "failed_to_load": "No se pudo cargar el ajuste de control de sesiones.",
+        "retry": "Reintentar"
+      },
       "developerPanel": {
         "developer_tools": "Herramientas de desarrollo",
         "feature_previews": "Vistas previas de funciones",
