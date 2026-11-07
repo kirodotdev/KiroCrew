@@ -25,7 +25,11 @@ import copy
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew.cron_service.execution import apply_run_record, pause_changed_since_start
+from kiro_crew.cron_service.execution import (
+    apply_run_record,
+    pause_at_current_limit,
+    pause_changed_since_start,
+)
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.settlement import (
     TerminalSettlementPending,
@@ -114,13 +118,16 @@ def _apply_to_current_schedule(target: CronJob, record: CronJob) -> None:
     """``apply_run_record``, except that a schedule edited since the fire keeps its pause state.
 
     The fired one-shot's park is the old schedule's, so a ``target`` another writer
-    made recurring takes the run's result and generation but not the park.
+    made recurring takes the run's result and generation but not the park. The
+    stored limit decides the pause a failed run causes (:func:`pause_at_current_limit`).
     """
     enabled, user_paused = target.enabled, target.user_paused
     apply_run_record(target, record)
     if target.schedule != record.schedule:
         target.user_paused = user_paused
         target.enabled = enabled and not target.auto_paused
+    # After the restore, so a pause the stored limit lifts re-enables the job.
+    pause_at_current_limit(target, record)
 
 
 def _release_held_run_record(self: CronService, record: CronJob) -> None:
