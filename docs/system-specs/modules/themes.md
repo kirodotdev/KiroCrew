@@ -302,6 +302,14 @@ dashboard load into header-only round trips.
   persona off and no grant; when it refuses the grant, the persona is saved as
   off, since chat sends only a stored grant.
 
+  A registered theme whose branding declares `overlays` (see *One theme, one
+  picker row* below) has one part, **Overlays**, on the same record keyed by
+  its slug, so light and dark share it, as does an installed pack of that slug,
+  which is never in the picker beside it. Like an overlays-only pack it shows
+  them without asking, and the Experience section lists Overlays alone for it;
+  turned off, the shell unmounts those overlays (`App.tsx`). Its top-bar
+  elements and its own CSS are not part of it.
+
   **Consent gate (what it actually guarantees — and what it does not).** The
   persona grant is a separate key, `mc-theme-consent-<slug>`, holding
   `sha256(persona_text)` of the text the user saw and checked. It is written only
@@ -376,7 +384,7 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona) as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint
