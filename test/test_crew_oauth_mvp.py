@@ -124,14 +124,14 @@ def test_the_flag_is_off_unless_config_says_true(monkeypatch):
     assert crew_oauth.manages("asana") is False
 
 
-def test_windows_reads_the_flag_as_off(monkeypatch):
+def test_windows_reads_the_flag_like_posix(monkeypatch):
     import kiro_crew.config.loader as loader
 
     monkeypatch.setattr(
         loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": True}}
     )
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    assert crew_oauth.enabled() is False
+    assert crew_oauth.enabled() is True
 
 
 # --- KAS projection ---------------------------------------------------------
@@ -578,14 +578,19 @@ def test_the_launcher_runs_the_gateway_bridge_on_posix(home, monkeypatch):
     assert done.value.code == 0 and ran[0]["connection"] == "github"
 
 
-def test_the_launcher_refuses_a_connection_on_windows(home, monkeypatch, capsys):
+def test_the_launcher_runs_the_gateway_bridge_on_windows(home, monkeypatch):
     argv = _connection_snapshot(home, monkeypatch)
+    ran: list[dict] = []
+    import kiro_crew.kas_connection_bridge as bridge_mod
+
+    monkeypatch.setattr(
+        bridge_mod, "run_connection_bridge", lambda doc, server: ran.append(doc) or 0
+    )
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     monkeypatch.setattr(kas_env_shim.os, "name", "nt")
     with pytest.raises(SystemExit) as done:
         kas_env_shim.main(argv)
-    assert done.value.code == 78
-    assert "Unix socket" in capsys.readouterr().err
+    assert done.value.code == 0 and ran[0]["connection"] == "github"
 
 
 # --- custody, warm process, gate edges --------------------------------------

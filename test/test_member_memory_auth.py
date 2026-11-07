@@ -1,5 +1,6 @@
 """Ordinary authentication stays independent of canonical memory routing."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -343,11 +344,45 @@ class _Transport:
         return self._extra[name]
 
 
+def _peer_owned_by(monkeypatch, uid, sid):
+    monkeypatch.setattr(auth.platform_compat, "process_owner_uid", lambda _pid: uid)
+    monkeypatch.setattr(auth.platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+    monkeypatch.setattr(auth.platform_compat, "process_owner_sid", lambda _pid: sid)
+
+
+@pytest.mark.parametrize("posix", [True, False])
+def test_a_tcp_peer_run_by_another_account_names_no_pid(monkeypatch, posix):
+    """The TCP arm has the Unix arm's same-user check: uid on POSIX, SID on Windows."""
+    from kiro_crew.dashboard import token_auth
+
+    monkeypatch.setattr(token_auth, "_unix_request_socket", lambda _request: None)
+    monkeypatch.setattr(auth.platform_compat, "IS_POSIX", posix)
+    monkeypatch.setattr(auth.platform_compat, "get_tcp_peer_pid", Mock(return_value=123))
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda _pid: "start-id")
+    me = os.getuid() if hasattr(os, "getuid") else 0
+    monkeypatch.setattr(auth.os, "getuid", lambda: me, raising=False)
+
+    def peer():
+        server, client = ("127.0.0.1", 1234), ("127.0.0.1", 5678)
+        return auth._request_peer_pid(SimpleNamespace(transport=_Transport(server, client)))
+
+    _peer_owned_by(monkeypatch, me, "S-1-5-21-me")
+    assert peer() == 123
+    if posix:
+        _peer_owned_by(monkeypatch, me + 1, "S-1-5-21-me")
+    else:
+        _peer_owned_by(monkeypatch, me, "S-1-5-21-other")
+    assert peer() is None
+    _peer_owned_by(monkeypatch, None, None)  # ownership unreadable
+    assert peer() is None
+
+
 @pytest.mark.parametrize("pid", [123, True, None])
 def test_owner_bootstrap_uses_exact_tcp_pair_and_valid_process_identity(monkeypatch, pid):
     from kiro_crew.dashboard import token_auth
 
     monkeypatch.setattr(token_auth, "_unix_request_socket", lambda _request: None)
+    _peer_owned_by(monkeypatch, os.getuid() if hasattr(os, "getuid") else None, "S-1-5-21-me")
     server, client = ("::1", 1234, 0, 0), ("::1", 5678, 0, 0)
     transport = _Transport(server, client)
     resolve = Mock(return_value=pid)
@@ -367,6 +402,7 @@ def test_owner_bootstrap_resolves_a_tcp_caller_once_per_connection(monkeypatch):
     from kiro_crew.dashboard import token_auth
 
     monkeypatch.setattr(token_auth, "_unix_request_socket", lambda _request: None)
+    _peer_owned_by(monkeypatch, os.getuid() if hasattr(os, "getuid") else None, "S-1-5-21-me")
     server, client = ("127.0.0.1", 1234), ("127.0.0.1", 5678)
     resolve = Mock(return_value=123)
     start_ids = {123: "start-a"}

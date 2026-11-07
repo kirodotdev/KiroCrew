@@ -21045,7 +21045,6 @@
       "custom_title": "カスタムシークレット",
       "custom_description": "MCP サーバーと .env 設定用の暗号化されたキーです。secret://YOUR_KEY として参照します。値がチャットに表示されることはありません。",
       "custom_authorize": "メンバーチャットのエージェントがシークレットを使って承認済みの API を 1 つ呼び出せるようにするには、エージェントに {{server}} を付与してから、シェルまたはターミナルページで下のコマンドを実行します。",
-      "custom_authorize_windows": "カスタムシークレットを使って API を呼び出す機能は、Windows ではまだ利用できません。",
       "custom_empty": "カスタムシークレットはまだ保存されていません。追加すると、MCP サーバーから secret://YOUR_KEY として参照できます。",
       "managed_config_error": "$KIROCREW_HOME/config.json（既定: ~/.kiro/crew/config.json）を読み取れなかったため、一部の自動認証情報が非表示です。",
       "managed_name_hint": "ここに保存すると、自動認証情報セクションの {{name}} が更新されます。 — {{productName}}",
