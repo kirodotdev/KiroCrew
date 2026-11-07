@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.browser_harness import HARNESS_VERSION, chromium
+from kiro_crew.browser_harness import HARNESS_VERSION, build_deps, chromium
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -318,11 +318,18 @@ def _install_harness(
     python = venv_python(prefix)
     # Without the gateway's pip the venv must carry its own: a venv left by an
     # earlier ``--without-pip`` run has none, so it is rebuilt.
-    if (
+    rebuild = (
         not state.python
         or state.version != HARNESS_VERSION
         or (not gateway_pip and not _venv_has_pip(prefix))
-    ):
+    )
+    # Before anything is cleared: a host that cannot build the locked pillow is
+    # refused with the missing pieces named, and a working install stays as it is.
+    if rebuild or not _venv_has_locked_pillow(prefix):
+        refused = build_deps.refusal_for_this_host()
+        if refused is not None:
+            raise InstallError(STAGE_PREPARING, refused)
+    if rebuild:
         # The marker goes first: a rebuild that fails part-way must read as
         # "not installed", never as a finished install of a venv now cleared.
         (prefix / MARKER_FILE).unlink(missing_ok=True)
@@ -362,6 +369,17 @@ def _venv_has_pip(prefix: Path) -> bool:
     """Whether the venv under *prefix* holds its own ``pip`` package (no spawn)."""
     venv = venv_dir(prefix)
     pattern = "Lib/site-packages/pip" if IS_WINDOWS else "lib/python*/site-packages/pip"
+    try:
+        return any(p.is_dir() for p in venv.glob(pattern))
+    except OSError:
+        return False
+
+
+def _venv_has_locked_pillow(prefix: Path) -> bool:
+    """Whether the venv already holds the locked pillow, so pip has nothing to build (no spawn)."""
+    venv = venv_dir(prefix)
+    site = "Lib/site-packages" if IS_WINDOWS else "lib/python*/site-packages"
+    pattern = f"{site}/[Pp]illow-{build_deps.LOCKED_PILLOW}.dist-info"
     try:
         return any(p.is_dir() for p in venv.glob(pattern))
     except OSError:
