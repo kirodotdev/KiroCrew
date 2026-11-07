@@ -40,11 +40,16 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Final, Literal
 
 from kiro_crew.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
+
+#: The expiry a publish asks for: whole days, ``None`` for no expiry, or
+#: :data:`PROVIDER_DEFAULT_EXPIRY` for the destination's own default.
+PROVIDER_DEFAULT_EXPIRY: Final = "default"
+ExpiryRequest = int | None | Literal["default"]
 
 # Neutral registry key used as the default provider name. The public edition
 # ships an EMPTY registry, so ``get_provider`` always raises
@@ -115,7 +120,8 @@ class SharingModel:
     #: "none" means org-wide-readable with no per-principal grant list.
     principal_kind: str = "alias"
     supports_roles: bool = True
-    #: Sharing has a time dimension (TTL).
+    #: Sharing has a time dimension (TTL). Descriptive only: the Publish panel
+    #: offers an expiry choice from ``expiration_choices_days``, never from this flag.
     supports_expiration: bool = False
     #: Can KiroCrew set sharing via the provider API? When False the UI shows an
     #: "out of band" link instead of grant controls (web-UI-only sharing).
@@ -123,6 +129,51 @@ class SharingModel:
     #: Where the user manages sharing when not ``programmable`` (may contain a
     #: ``{docId}``/``{external_id}`` placeholder the UI substitutes).
     out_of_band_url: str = ""
+    #: Expiry periods, in days, a user may pick on a first publish, ascending.
+    #: Empty means the destination offers no choice and a publish naming an expiry
+    #: is refused. A provider that declares choices receives the period as
+    #: ``publish(..., expires_in_days=...)``.
+    expiration_choices_days: tuple[int, ...] = ()
+    #: Whether "no expiry" may be picked alongside ``expiration_choices_days``.
+    allows_no_expiration: bool = False
+    #: The preselected period: one of ``expiration_choices_days``, or ``None`` for
+    #: "no expiry", which needs ``allows_no_expiration``.
+    default_expiration_days: int | None = None
+
+    def __post_init__(self) -> None:
+        choices = self.expiration_choices_days
+        if any(isinstance(d, bool) or not isinstance(d, int) or d <= 0 for d in choices):
+            raise ValueError("expiration_choices_days must hold positive whole days")
+        if list(choices) != sorted(set(choices)):
+            raise ValueError("expiration_choices_days must be ascending with no repeats")
+        default = self.default_expiration_days
+        if not choices:
+            if self.allows_no_expiration or default is not None:
+                raise ValueError("an expiry default needs expiration_choices_days")
+        elif default is None and not self.allows_no_expiration:
+            raise ValueError("default_expiration_days is required without allows_no_expiration")
+        elif default is not None and default not in choices:
+            raise ValueError("default_expiration_days must be one of expiration_choices_days")
+
+    @property
+    def offers_expiration_choice(self) -> bool:
+        return bool(self.expiration_choices_days)
+
+    def resolve_expiration(self, requested: "ExpiryRequest") -> int | None:
+        """The period a first publish applies for ``requested``.
+
+        Raises ``ValueError`` for a period this destination did not declare. Call it
+        only when :attr:`offers_expiration_choice` is true.
+        """
+        if requested == PROVIDER_DEFAULT_EXPIRY:
+            return self.default_expiration_days
+        if requested is None:
+            if self.allows_no_expiration:
+                return None
+            raise ValueError("this destination does not offer 'no expiry'")
+        if requested in self.expiration_choices_days:
+            return int(requested)
+        raise ValueError(f"expires_in_days must be one of {list(self.expiration_choices_days)}")
 
 
 @dataclass
@@ -298,6 +349,9 @@ class PublishResult:
     # always moves with ``notice``: a result carrying ``notice`` text carries a code, and
     # an empty ``notice`` carries an empty code.
     notice_code: str = ""
+    # ISO-8601 time the destination removes the publication, when it reports one. Left
+    # empty, the core computes it from the period it asked for.
+    expires_at: str = ""
 
 
 @dataclass
@@ -395,7 +449,12 @@ class PublishProvider(ABC):
         visibility: str,
         shared_with: list[str],
     ) -> PublishResult:
-        """Create a new destination artifact. Raises ``PublishError`` on failure."""
+        """Create a new destination artifact. Raises ``PublishError`` on failure.
+
+        A provider whose sharing model declares ``expiration_choices_days`` must also
+        accept ``expires_in_days: int | None`` (``None`` = no expiry). It is passed
+        only to such a provider, so one that declares no choices keeps this signature.
+        """
 
     @abstractmethod
     async def push_version(

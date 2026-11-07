@@ -354,6 +354,7 @@ def parse_publication(raw_pub: Any) -> "ArtifactPublication | None":
         notice=str(raw_pub.get("notice") or ""),
         notice_code=str(raw_pub.get("notice_code") or ""),
         last_synced_remote_hash=str(raw_pub.get("last_synced_remote_hash") or ""),
+        expires_at=str(raw_pub.get("expires_at") or ""),
     )
 
 

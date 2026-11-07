@@ -8790,6 +8790,9 @@
       "do_not_publish_anything": "Non pubblicare nulla che non metteresti su internet aperto.",
       "exposure_window_persistent": "Questo link resterà pubblico finché non richiami o distruggi il deployment.",
       "exposure_window_persistent_withdrawable": "Questo link resta pubblico finché la copia pubblicata non viene ritirata. Eliminare l'artefatto richiede tale ritiro.",
+      "exposure_window_provider_expiry_many": "Questo link resterà pubblico per {{count}} giorni, poi la destinazione lo rimuoverà.",
+      "exposure_window_provider_expiry_one": "Questo link resterà pubblico per {{count}} giorno, poi la destinazione lo rimuoverà.",
+      "exposure_window_provider_expiry_other": "Questo link resterà pubblico per {{count}} giorni, poi la destinazione lo rimuoverà.",
       "exposure_window_ttl_many": "Questo link resterà pubblico per {{count}} ore, poi verrà eliminato automaticamente.",
       "exposure_window_ttl_one": "Questo link resterà pubblico per {{count}} ora, poi verrà eliminato automaticamente.",
       "exposure_window_ttl_other": "Questo link resterà pubblico per {{count}} ore, poi verrà eliminato automaticamente.",
@@ -8846,6 +8849,11 @@
       "visibility": "Visibilità",
       "visibility_private": "Privato (solo tu)",
       "visibility_public": "Pubblico (chiunque abbia il link)",
+      "expiry": "Scade",
+      "expiry_after_days_many": "Dopo {{count}} giorni",
+      "expiry_after_days_one": "Dopo {{count}} giorno",
+      "expiry_after_days_other": "Dopo {{count}} giorni",
+      "expiry_never": "Mai",
       "public_exposure_warning": "Chiunque abbia il link pubblicato può visualizzare questo contenuto. Viene servito su Internet pubblico senza autenticazione."
     },
     "pullRequestPanel": {

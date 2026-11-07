@@ -8790,6 +8790,9 @@
       "do_not_publish_anything": "No publiques nada que no pondrías en la internet abierta.",
       "exposure_window_persistent": "Este enlace seguirá siendo público hasta que retires o destruyas el despliegue.",
       "exposure_window_persistent_withdrawable": "Este enlace permanece público hasta que se retire la copia publicada. Eliminar el artefacto solicita esa retirada.",
+      "exposure_window_provider_expiry_many": "Este enlace será público durante {{count}} días y luego el destino lo eliminará.",
+      "exposure_window_provider_expiry_one": "Este enlace será público durante {{count}} día y luego el destino lo eliminará.",
+      "exposure_window_provider_expiry_other": "Este enlace será público durante {{count}} días y luego el destino lo eliminará.",
       "exposure_window_ttl_many": "Este enlace será público durante {{count}} horas y luego se eliminará automáticamente.",
       "exposure_window_ttl_one": "Este enlace será público durante {{count}} hora y luego se eliminará automáticamente.",
       "exposure_window_ttl_other": "Este enlace será público durante {{count}} horas y luego se eliminará automáticamente.",
@@ -8846,6 +8849,11 @@
       "visibility": "Visibilidad",
       "visibility_private": "Privado (solo tú)",
       "visibility_public": "Público (cualquiera con el enlace)",
+      "expiry": "Caduca",
+      "expiry_after_days_many": "Tras {{count}} días",
+      "expiry_after_days_one": "Tras {{count}} día",
+      "expiry_after_days_other": "Tras {{count}} días",
+      "expiry_never": "Nunca",
       "public_exposure_warning": "Cualquiera con el enlace publicado puede ver este contenido. Se sirve en la Internet pública sin autenticación."
     },
     "pullRequestPanel": {

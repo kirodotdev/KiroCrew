@@ -9000,6 +9000,10 @@
       "do_not_publish_anything": "Не публикуйте то, что вы не разместили бы в открытом интернете.",
       "exposure_window_persistent": "Ссылка останется публичной, пока вы не отзовёте или не удалите развёртывание.",
       "exposure_window_persistent_withdrawable": "Эта ссылка остаётся публичной, пока опубликованная копия не будет отозвана. Удаление артефакта запрашивает этот отзыв.",
+      "exposure_window_provider_expiry_few": "Ссылка будет публичной {{count}} дня, затем сервис публикации её удалит.",
+      "exposure_window_provider_expiry_many": "Ссылка будет публичной {{count}} дней, затем сервис публикации её удалит.",
+      "exposure_window_provider_expiry_one": "Ссылка будет публичной {{count}} день, затем сервис публикации её удалит.",
+      "exposure_window_provider_expiry_other": "Ссылка будет публичной {{count}} дня, затем сервис публикации её удалит.",
       "exposure_window_ttl_few": "Ссылка будет публичной {{count}} часа, затем будет удалена автоматически.",
       "exposure_window_ttl_many": "Ссылка будет публичной {{count}} часов, затем будет удалена автоматически.",
       "exposure_window_ttl_one": "Ссылка будет публичной {{count}} час, затем будет удалена автоматически.",
@@ -9058,6 +9062,12 @@
       "visibility": "Видимость",
       "visibility_private": "Приватно (только ты)",
       "visibility_public": "Публично (все, у кого есть ссылка)",
+      "expiry": "Срок действия",
+      "expiry_after_days_few": "Через {{count}} дня",
+      "expiry_after_days_many": "Через {{count}} дней",
+      "expiry_after_days_one": "Через {{count}} день",
+      "expiry_after_days_other": "Через {{count}} дня",
+      "expiry_never": "Бессрочно",
       "public_exposure_warning": "Любой, у кого есть опубликованная ссылка, может просмотреть этот контент. Он доступен в общедоступном интернете без аутентификации."
     },
     "pullRequestPanel": {
