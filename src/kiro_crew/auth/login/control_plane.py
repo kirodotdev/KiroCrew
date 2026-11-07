@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from kiro_crew.auth.login.endpoints import USER_AGENT
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,9 @@ async def _list_profiles_at(
     Raises ControlPlaneError on any non-200 or malformed body.
     """
     headers = cps_headers(_TARGET, access_token)
-    async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
+    async with session.post(
+        url, json={"maxResults": _MAX_RESULTS}, headers=headers, proxy=resolve_proxy(url)
+    ) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise ControlPlaneError(

@@ -1,6 +1,6 @@
 """Shared explicit proxy selection, independent of host proxy settings."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -29,10 +29,8 @@ def test_proxy_priority(monkeypatch, proxies, expected, scheme):
     assert http_proxy.resolve_proxy(f"{scheme}://updates.example:8443/feed") == expected
 
     if expected:
-        assert [c.args for c in bypass.call_args_list] == [
-            ("updates.example",),
-            ("updates.example:8443",),
-        ]
+        # Bare host first, then the host qualified with the URL's effective port.
+        assert bypass.call_args_list == [call("updates.example"), call("updates.example:8443")]
     else:
         bypass.assert_not_called()
 
@@ -69,6 +67,8 @@ def test_environment_bypass(monkeypatch, no_proxy, expected):
 
 def test_proxy_settings_are_read_per_call(monkeypatch):
     proxies = MagicMock(side_effect=[{"https": _HTTPS_PROXY}, {"http": _HTTP_PROXY}])
+    # First resolve: neither bare host nor host:port bypasses. Second: the bare
+    # host bypasses, so the port-qualified check is short-circuited away.
     bypass = MagicMock(side_effect=[False, False, True])
     monkeypatch.setattr(http_proxy.urllib.request, "getproxies", proxies)
     monkeypatch.setattr(http_proxy.urllib.request, "proxy_bypass", bypass)

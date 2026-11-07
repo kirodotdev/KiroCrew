@@ -70,6 +70,28 @@ POLL_INTERVAL_SECS = 5.0
 _PROVIDERS = ("builder_id", "idc", "google", "github")
 
 
+def _configured_proxy_note(provider: str, region: str) -> str:
+    """Name the proxy the sign-in requests go through, when the environment sets one.
+
+    A device login dials the issuer's host directly unless a proxy is configured, so on
+    a proxy-only network an unreachable-service error otherwise reads as the service
+    being down. A host on ``NO_PROXY`` is bypassed and gets no note. Imports stay
+    function-local like the rest of this module's auth imports.
+    """
+    from kiro_crew.auth.login.endpoints import BUILDER_ID_REGION, oidc_url, social_service_url
+    from kiro_crew.http_proxy import resolve_proxy
+
+    base = (
+        oidc_url(region or BUILDER_ID_REGION)
+        if provider in ("builder_id", "idc")
+        else social_service_url()
+    )
+    proxy = resolve_proxy(base)
+    if not proxy:
+        return ""
+    return f"; the request goes through your configured proxy ({proxy}) -- check it is reachable"
+
+
 def add_kas_login_parsers(sub: Any) -> None:
     """Attach ``login`` / ``whoami`` / ``logout`` / ``route`` to the ``kas`` subparsers."""
     login = sub.add_parser(
@@ -247,7 +269,8 @@ async def _run_device_login(
             print(f"❌ the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
             return 1
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            print(f"❌ could not reach the sign-in service: {exc}", file=sys.stderr)
+            note = _configured_proxy_note(provider, region)
+            print(f"❌ could not reach the sign-in service: {exc}{note}", file=sys.stderr)
             return 1
         # Line-buffered on purpose: the cloud sign-in reads these two lines out of
         # a log this process writes under nohup, where stdout is block-buffered.
@@ -265,7 +288,8 @@ async def _run_device_login(
                 # the outage is real, and the user gets a line, not a traceback.
                 print(
                     f"❌ lost contact with the sign-in service while waiting for approval: "
-                    f"{exc}; nothing was stored. Run the command again.",
+                    f"{exc}{_configured_proxy_note(provider, region)}; "
+                    "nothing was stored. Run the command again.",
                     file=sys.stderr,
                 )
                 return 1
