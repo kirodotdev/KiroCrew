@@ -324,19 +324,12 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
         else:
             out.pop("quote", None)
     if "banner" in out:
-        # A transcript line is attacker-writable, so the send handler's cap is
-        # re-applied here: an over-cap or non-text label is dropped and the row
-        # falls back to its full content.
-        from kiro_crew.constants import MAX_BANNER_CHARS
+        # A transcript line is attacker-writable: a rejected label falls back to the full content.
+        from kiro_crew.dashboard.chat_delivery import banner_meta
 
-        shown = out["banner"]
-        if (
-            role != "user"
-            or not isinstance(shown, str)
-            or not shown.strip()
-            or len(shown) > MAX_BANNER_CHARS
-        ):
-            out.pop("banner")
+        shown = banner_meta(out) if role == "user" else {}
+        out.pop("banner")
+        out.update(shown)
     return out
 
 
