@@ -25,6 +25,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors, useInstalledApps, panelTabDescriptor } from '../../hooks/panelTabRegistry'
+import { isPermissionRefusal } from '../../api/apiError'
 import AppHost from '../../components/AppHost'
 import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -87,7 +88,9 @@ function AppPanelTabBody({ kind, active, slot }: { kind: string; active: boolean
  */
 function AppPanelTabsErrorNotice() {
   const { isError, error } = useInstalledApps()
-  if (!isError) return null
+  // A caller refused the app list (a relay teammate, `relay_apps_teammate`) has no
+  // contributed tabs, and that is the answer rather than a failure (#32031).
+  if (!isError || isPermissionRefusal(error)) return null
   return (
     <div className="absolute left-0 right-0 top-0 z-10 p-4">
       <ErrorNotice message={errMessage(error)} askAgent />

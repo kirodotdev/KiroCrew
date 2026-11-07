@@ -78,6 +78,36 @@ export const apiErrorCode = (e: unknown): string =>
 export const isAppNotEnabledError = (e: unknown): boolean => apiErrorCode(e) === 'app_not_enabled'
 
 /**
+ * Refusal codes that mean "this caller is not permitted", not "the call failed":
+ * the relay's refusal of the app surface to a teammate (`relay_apps_teammate`,
+ * `kiro_relay/limits.py`) and an owner-only route's 403 (`owner_only`,
+ * `handlers/_shared_access.py`). Asking again cannot change either answer.
+ */
+const PERMISSION_REFUSAL_CODES: ReadonlySet<string> = new Set(['owner_only', 'relay_apps_teammate'])
+
+/**
+ * True for a 403 whose `code` is one of {@link PERMISSION_REFUSAL_CODES}: a
+ * deliberate "not for you" that a reader shows neutrally or answers by hiding
+ * its control, never as a red failure with a retry.
+ *
+ * Narrow on purpose. A session-expiry 403 (`authRequired`) is excluded, since a
+ * refreshed cookie does recover it; so is any 403 with another code, a 5xx and a
+ * network rejection, all of which stay errors. Duck-typed on `status`, `body`
+ * and `authRequired` like {@link isNotFoundError}, so a suite that rejects with
+ * `Object.assign(new Error(), { status, body })` is read the same way.
+ */
+export const isPermissionRefusal = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) return false
+  const { status, body, authRequired } = e as { status?: unknown; body?: unknown; authRequired?: unknown }
+  if (status !== 403 || authRequired === true || typeof body !== 'string') return false
+  return PERMISSION_REFUSAL_CODES.has(errorBodyCode(body))
+}
+
+/** {@link isPermissionRefusal} for the relay's teammate refusal of the app surface alone. */
+export const isRelayAppsRefusal = (e: unknown): boolean =>
+  isPermissionRefusal(e) && errorBodyCode((e as { body: string }).body) === 'relay_apps_teammate'
+
+/**
  * The `code` a raw refusal body names, or `''`. The body-level half of
  * {@link apiErrorCode}, for readers that run before an ApiError exists --
  * `friendlyErrText` builds the ApiError's message from the raw body.

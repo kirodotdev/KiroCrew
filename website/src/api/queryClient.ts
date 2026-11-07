@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { isEdgeChallengeError } from './apiError'
+import { isEdgeChallengeError, isPermissionRefusal } from './apiError'
 
 /**
  * True when the error is an HTTP 429 (edge/proxy rate limit). When the
@@ -35,9 +35,12 @@ export const isDeadlineError = (error: unknown): boolean =>
  * settles at ~31s once the single retry and its backoff are counted.
  */
 export const retryPolicy = (failureCount: number, error: unknown): boolean =>
-  // The gateway's own 403 is deliberately absent: there the one retry is what makes
-  // a refreshed cookie recover invisibly.
+  // The gateway's session-expiry 403 is deliberately absent: there the one retry is
+  // what makes a refreshed cookie recover invisibly. A permission refusal
+  // (`owner_only`, `relay_apps_teammate`) is not that 403 and gives the same answer
+  // on every ask, so it is never retried.
   isEdgeChallengeError(error) ? false
+    : isPermissionRefusal(error) ? false
     : isDeadlineError(error) ? false
       : isThrottleError(error) ? failureCount < 4 : failureCount < 1
 
