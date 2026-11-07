@@ -17,6 +17,7 @@ import secrets
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -530,7 +531,7 @@ def read_work_item(slot_key: str, item_id: str, *, strict: bool = False) -> Work
 
 
 def list_work_items(slot_key: str) -> list[WorkItem]:
-    """Every readable item, oldest first.
+    """Every readable item, oldest first by the instant of ``created_at``.
 
     DERIVED by listing the items directory rather than read from an index, so there
     is no third writer over a file both parties care about, and therefore no index
@@ -551,7 +552,18 @@ def list_work_items(slot_key: str) -> list[WorkItem]:
         item = read_work_item(slot_key, entry.stem)
         if item is not None:
             items.append(item)
-    items.sort(key=lambda it: (it.created_at, it.item_id))
+
+    def created_instant(item: WorkItem) -> datetime:
+        # ``created_at`` carries the local offset at write time, so across a DST
+        # change or a timezone move two stamps sort lexically in the wrong order.
+        # Order by the instant instead. A stamp without an offset is read as local
+        # time, and one that does not parse sorts ahead of every real one.
+        try:
+            return datetime.fromisoformat(item.created_at).astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    items.sort(key=lambda it: (created_instant(it), it.item_id))
     return items
 
 
