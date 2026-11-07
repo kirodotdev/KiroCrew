@@ -413,8 +413,17 @@ def peek() -> list[Signal]:
 
     So consumption is now tied to the thing that makes a signal durable — an incident owning
     it — via ``ack()``. Reads are free.
+
+    The copy is taken under ``_queue_lock``. Readers decide on ORDER — the last entry for an
+    id is its most recent delivery, which is what the push-only resolve guard and the
+    dispatch cleared-event resolve read — and ``ack`` rotates the deque one popleft/append at
+    a time, so a copy taken mid-rotation (the manual-claim route acks from a worker thread)
+    can show a kept ``ok`` entry behind a later ``firing`` one. Lock order: the resolve guard
+    calls this while holding the dispatch index lock, and nothing that holds
+    ``_queue_lock`` ever takes the index lock, so the nesting cannot deadlock.
     """
-    return list(_queue)
+    with _queue_lock:
+        return list(_queue)
 
 
 def ack(signal_ids: set[str]) -> int:

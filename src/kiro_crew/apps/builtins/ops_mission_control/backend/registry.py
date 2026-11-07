@@ -327,6 +327,21 @@ class OpsProviderRegistry:
         src = self._signal_sources.get(source_id)
         return bool(getattr(src, "is_snapshot", DEFAULT_IS_SNAPSHOT))
 
+    def is_snapshot_source(self, source_id: str) -> bool:
+        """Whether ``source_id`` is a REGISTERED source that declares itself a snapshot.
+
+        The resolve guard and the dispatch cleared-event resolve read this, not
+        ``_is_snapshot``. That one answers True for an id with no registered source, which is
+        harmless for ``poll_all`` (it only asks about sources it just polled) but would let an
+        incident whose adapter is not loaded -- a companion whose install failed, or a source
+        removed from config -- pass as a snapshot source and be resolved on absence. Here an
+        unknown id counts as push-only, so its automated resolve needs a cleared event, which
+        is the safe direction.
+        """
+        if source_id not in self._signal_sources:
+            return False
+        return self._is_snapshot(source_id)
+
     def _note_backoff(self, source_id: str, exc: BaseException) -> None:
         """Arm a backoff window for a source that just failed.
 

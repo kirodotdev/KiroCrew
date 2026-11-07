@@ -289,7 +289,7 @@ async def _handle_rotation(request: web.Request) -> web.StreamResponse:
 
 async def _handle_transition(request: web.Request) -> web.StreamResponse:
     return await lifecycle_routes._handle_transition(
-        request, _audit=_audit, _safe_outbound=_safe_outbound
+        request, get_registry=get_registry, _audit=_audit, _safe_outbound=_safe_outbound
     )
 
 
