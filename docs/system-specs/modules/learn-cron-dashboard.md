@@ -5633,6 +5633,10 @@ confirms; see [security.md](security.md) § Dashboard File Download.
 Every stored name receives a UUID prefix, and the handler attributes accepted and
 rejected requests through SEL. Binary formats with reliable signatures are
 validated by content before publication under their destination path.
+An Apple iWork name (`.key`, `.pages`, `.numbers`) stays refused, since nothing
+here reads that closed format, but the 400 `unsupported_file_type` error from
+both `POST /api/upload/file` and `POST /api/directory-upload` names the
+File > Export To copy (PowerPoint, Word, Excel or PDF) that does upload.
 
 The composer can cancel uploads: while any upload request is in flight, a Cancel
 control replaces the attach control, and pressing it aborts every in-flight
