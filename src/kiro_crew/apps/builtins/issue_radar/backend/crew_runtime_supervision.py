@@ -27,6 +27,7 @@ from . import crew_model, crew_store, provider, store
 from .crew_runtime_prompt import compose_turn_prompt_async
 from .crew_runtime_session import (
     APP_NAME,
+    OWN_LOOP_GAPS,
     _autonudge_instance,
     _call_if_present,
     _current_crew,
@@ -35,6 +36,7 @@ from .crew_runtime_session import (
     _slot_key,
     _turn_model_items,
     autoapprove_scope,
+    crew_loop_gap,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
@@ -392,6 +394,13 @@ async def _wake_crew_body(
             reason or "signal",
         )
         return False
+    # A turn that started during the awaits above makes this wake a drop, not a
+    # queued prompt: a queued wake would run outside the consumption bookkeeping
+    # that a carried mention ask relies on, and the sweep would ask it again.
+    # Nothing awaits from here to the dispatch, so the check holds there.
+    if getattr(slot, "running", False):
+        logger.info("issue-radar crew %s: mid-turn at dispatch, wake dropped", crew.get("id"))
+        return False
     # The model this turn runs on, from the ledger read above and the record just
     # re-read. Synchronous, and nothing awaits between it and the dispatch, so no
     # other turn can start on the slot in between.
@@ -742,6 +751,8 @@ async def watchdog_cycle(
                     await _pause_stood_down_crew(svc, loop, owner, repo, crew, root)
                 elif not loop.active:
                     await svc.update(loop.id, active=True)
+                if not _stood_down(loop):
+                    await _retime_loop(svc, loop, owner, repo, crew, root)
         # The model the next idle-timer turn runs on: the loop fires on its own
         # clock, and this pass is what keeps the slot's model in step with the
         # ledger between wakes. A triage turn that moved an item into an acting
@@ -796,6 +807,38 @@ _STAND_DOWN_REASONS = frozenset({CONSECUTIVE_FAILURE_REASON, SESSION_START_FAILU
 
 def _stood_down(loop: Any) -> bool:
     return not loop.active and getattr(loop, "stopped_reason", "") in _STAND_DOWN_REASONS
+
+
+async def _retime_loop(
+    svc: Any,
+    loop: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None,
+) -> None:
+    """Move the crew's loop to the gap its items call for (:func:`crew_loop_gap`).
+
+    Only a loop on one of this app's own gaps (:data:`OWN_LOOP_GAPS`) is moved, and
+    only when the gap changed, so a steady crew costs no loop write. Any other
+    interval was set by an operator and is kept. The write carries a precondition the
+    service re-takes under its mutation lock, so an interval an operator sets after
+    this read is kept as well.
+
+    shortcut: an operator who sets exactly one of :data:`OWN_LOOP_GAPS` is moved like
+    an app-armed loop; telling them apart needs a record of who wrote the interval,
+    worth adding if operators pin crews at those values.
+    """
+    captured = getattr(loop, "idle_secs", None)
+    if captured not in OWN_LOOP_GAPS:
+        return
+    idle = await crew_loop_gap(owner, repo, crew, root)
+    if idle != captured:
+        await svc.update(
+            loop.id,
+            idle_secs=idle,
+            precondition=lambda live: getattr(live, "idle_secs", None) == captured,
+        )
 
 
 #: The pause reason a stood-down crew carries. The crew page shows it beside Resume,
