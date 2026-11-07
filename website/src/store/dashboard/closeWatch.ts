@@ -10,7 +10,7 @@ type CloseNotice = ChatState['closeRefused']
 
 export interface CloseWatchState {
   /** Closes that ended with no verdict, by the deadline after which a re-listing is no longer theirs. */
-  closeWatch?: Record<string, { title: string | null; until: number }>
+  closeWatch?: Record<string, { title: string | null; until: number; incarnation?: string }>
   /** A watched session a server list put back. Newer than any chat notice, so shown first. */
   closeRestored?: CloseNotice
   durablyRemoved?: Record<string, true>
@@ -30,7 +30,16 @@ const slotKeyOfHistoryKey = (key: string): string => {
   return slot
 }
 
-export const watchCloseOutcome = createAction<{ key: string; title: string | null }>('dashboard/watchCloseOutcome')
+/** Whether a listed row is the session this tab tried to close, not one reopened under its key.
+ *  The failed close's restore puts the same server slot back, so its `incarnation` matches;
+ *  a reopen in another tab or device builds a new one. Without both ids (an older
+ *  gateway) the key alone decides. A gateway restart inside the watch also rebuilds
+ *  the slot with a new id, so a close that really failed across a restart goes
+ *  unreported: the notice fires in fewer cases than before, never in more. */
+export const isClosedIncarnation = (closed: string | undefined, row: ChatSlot): boolean =>
+  !closed || !row.incarnation || row.incarnation === closed
+
+export const watchCloseOutcome = createAction<{ key: string; title: string | null; incarnation?: string }>('dashboard/watchCloseOutcome')
 
 export const isCloseWatchAction = (action: UnknownAction): boolean =>
   action.type === watchCloseOutcome.type || action.type === 'chat/setCloseRefused'
@@ -39,10 +48,10 @@ export const isCloseWatchAction = (action: UnknownAction): boolean =>
 /** Runs after the slice's own reducer, so `slots` is the reconciled list with close holds applied. */
 export function closeWatchReducer(state: CloseWatchState & { slots: ChatSlot[] }, action: UnknownAction): void {
   if (watchCloseOutcome.match(action)) {
-    const { key, title } = action.payload
+    const { key, title, incarnation } = action.payload
     if (isUnsafeKey(key) || state.durablyRemoved?.[key]) return
     state.closeWatch ??= {}
-    state.closeWatch[key] = { title, until: Date.now() + CLOSE_RESTORE_WATCH_MS }
+    state.closeWatch[key] = { title, until: Date.now() + CLOSE_RESTORE_WATCH_MS, incarnation }
     return
   }
   if (action.type === 'chat/setCloseRefused') {
@@ -71,12 +80,16 @@ export function closeWatchReducer(state: CloseWatchState & { slots: ChatSlot[] }
   if (!watch) return
   const now = Date.now()
   for (const key of Object.keys(watch)) {
-    const { title, until } = watch[key]
-    if (now >= until) delete watch[key]
-    else if (state.slots.some(s => s.key === key)) {
+    const { title, until, incarnation } = watch[key]
+    if (now >= until) {
       delete watch[key]
-      state.closeRestored = { key, title, reason: 'failed' }
+      continue
     }
+    const row = state.slots.find(s => s.key === key)
+    if (!row) continue
+    delete watch[key]
+    // A session reopened elsewhere means the close went through: end the watch quietly.
+    if (isClosedIncarnation(incarnation, row)) state.closeRestored = { key, title, reason: 'failed' }
   }
 }
 
