@@ -156,7 +156,7 @@ describe('sanitizeCredentials: glued credentials', () => {
     // the test timeout.
     const n = 40_000
     const texts = [
-      `x eyJfake.a.${'eyJ'.repeat(n)} y`,
+      `x ${JWS_HEADER}.a.${'eyJ'.repeat(n)} y`,
       `x SessionToken=''${'eyJ'.repeat(n)} y`,
       `x SessionToken=''${'https://h:p'.repeat(n)} y`,
       `x aws_session_token=${'https://h:p'.repeat(n)} y`,
@@ -183,7 +183,7 @@ describe('sanitizeCredentials: each credential kind on its own', () => {
     ['an OpenSSH key header', OPENSSH_HEADER, '[REDACTED]'],
     ['a Slack token', `t ${SLACK} ok`, 't [REDACTED] ok'],
     ['a Slack token with the shortest body', `t ${XOXB}1234567890 ok`, 't [REDACTED] ok'],
-    ['a JWT with empty later segments', `t ${EYJ}a.. ok`, 't [REDACTED] ok'],
+    ['a JWT with empty later segments', `t ${JWS_HEADER}.. ok`, 't [REDACTED] ok'],
     ['a link token with the shortest payload', `t ${EYJ}${'a'.repeat(96)}.${'b'.repeat(43)} ok`, 't [REDACTED] ok'],
     ['a JWS', `t ${JWS} ok`, 't [REDACTED] ok'],
     ['a JWE with an empty key segment', `t ${JWE} ok`, 't [REDACTED] ok'],
