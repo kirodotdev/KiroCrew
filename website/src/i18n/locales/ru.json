@@ -16805,6 +16805,10 @@
       "installed_apps": "Установленные приложения"
     },
     "logsPage": {
+      "level_debug": "Отладка",
+      "level_info": "Инфо",
+      "level_warning": "Предупреждение",
+      "level_error": "Ошибка",
       "filter_logs": "Фильтр журналов",
       "filter_logs_2": "Фильтр журналов...",
       "latest_first": "Новые: сверху",

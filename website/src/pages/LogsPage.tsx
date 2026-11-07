@@ -10,6 +10,14 @@ import { LAYOUT } from '../components/layout'
 
 import { i18nT } from '../i18n/t'
 const LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const
+// The chip text, by level. Literal keys so the catalog gates see each one; the
+// level value sent to the backend stays the constant.
+const LEVEL_LABEL: Record<(typeof LEVELS)[number], () => string> = {
+  DEBUG: () => i18nT('pages.logsPage.level_debug'),
+  INFO: () => i18nT('pages.logsPage.level_info'),
+  WARNING: () => i18nT('pages.logsPage.level_warning'),
+  ERROR: () => i18nT('pages.logsPage.level_error'),
+}
 
 /** The thrown value's own sentence — the api client rejects with an `ApiError`,
  *  so this is the backend's message; anything else is stringified rather than
@@ -136,7 +144,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
             and not shown by colour alone. */}
         <RadioChipGroup className={`flex flex-wrap items-center ${compact ? 'gap-1' : 'gap-1.5'}`} ariaLabelledBy={levelLabelId}>
           {LEVELS.map(l => (
-            <button key={l} type="button" {...radioChip(currentLevel === l)} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
+            <button key={l} type="button" {...radioChip(currentLevel === l)} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{LEVEL_LABEL[l]()}</button>
           ))}
         </RadioChipGroup>
         {/* A log panel holds no draft, so both failures offer the hand-off. */}

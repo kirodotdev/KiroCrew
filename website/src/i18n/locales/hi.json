@@ -15989,6 +15989,10 @@
       "installed_apps": "इंस्टॉल किए गए ऐप"
     },
     "logsPage": {
+      "level_debug": "डीबग",
+      "level_info": "जानकारी",
+      "level_warning": "चेतावनी",
+      "level_error": "त्रुटि",
       "filter_logs": "लॉग फ़िल्टर करें",
       "filter_logs_2": "लॉग फ़िल्टर करें...",
       "latest_first": "नवीनतम: पहले",
