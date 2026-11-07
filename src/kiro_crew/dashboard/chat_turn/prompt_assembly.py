@@ -5,9 +5,9 @@ The prompt phase ``_turn_build_prompt`` runs the steps in order and makes the
 ContextBuilder call; each step reads what it is handed and returns what it adds. The
 context-composition record is written in ``_turn_dispatch_gates``, once the gates pass.
 When the turn ends, ``_turn_settle_debts`` settles what it owed its prompts: the replay,
-the re-injection flag, the skill bodies and the first-turn history debt. Ahead of a cold
-start's session-start build, ``_prewarm_startup_query`` starts the first message's embedding
-and memory reads on the recall pool.
+the re-injection flag, the skill bodies, the first-turn history debt and the drained
+sub-agent notices. Ahead of a cold start's session-start build, ``_prewarm_startup_query``
+starts the first message's embedding and memory reads on the recall pool.
 """
 
 from __future__ import annotations
@@ -760,13 +760,17 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 turn._interrupted_turn_preamble = _interrupted_turn_preamble
         logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
         # Drain any pending subagent delivery failures so the LLM knows
-        # about timed-out results and can read them from disk.
+        # about timed-out results and can read them from disk. Settled or put
+        # back in _turn_settle_debts; a notice the message already carries (a
+        # verbatim replay) is not prepended twice.
         if slot._pending_subagent_failures:
             failures = slot._pending_subagent_failures[:]
             slot._pending_subagent_failures.clear()
-            settle_drained_subagent_notices(state, slot, failures)
-            message = "\n\n".join(failures) + "\n\n" + message
-            turn.message = message
+            turn._drained_subagent_notices = failures
+            fresh = [notice for notice in failures if notice not in message]
+            if fresh:
+                message = "\n\n".join(fresh) + "\n\n" + message
+                turn.message = message
         # Save raw user message before context/persona prepend for Slack
         # mirror — avoids leaking injected context to the linked thread.
         _user_msg_for_mirror = message
@@ -1104,7 +1108,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
 
 
 async def _turn_settle_debts(turn: _ChatTurn) -> None:
-    """Settle the turn's prompt debts: replay, re-injection, skill bodies, first-turn history."""
+    """Settle the turn's prompt debts.
+
+    The replay, re-injection, skill bodies, first-turn history and drained sub-agent notices.
+    """
     _replay_accepted_this_turn = turn._replay_accepted_this_turn
     _responsive_recovery = turn._responsive_recovery
     _responsive_turn = turn._responsive_turn
@@ -1124,6 +1131,13 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     if turn._admission_slot is not None and not turn._admission_slot.handed_off:
         turn._admission_slot.release()
         turn._admission_slot = None
+    # Settle only notices the model consumed; otherwise requeue them at the
+    # front, still owed, so they are announced again rather than lost.
+    if turn._drained_subagent_notices:
+        if turn._consumed_reported:
+            settle_drained_subagent_notices(state, turn.slot, turn._drained_subagent_notices)
+        else:
+            turn.slot._pending_subagent_failures[:0] = turn._drained_subagent_notices
     # Replay settlement belongs on the one path every turn exit crosses.
     # A clean, non-synthetic landed end_turn is the only ordinary terminal
     # whose fresh native transcript is durable enough to replace the prior

@@ -167,30 +167,25 @@ async def test_a_drained_notice_settles_the_tombstone_and_is_not_announced_again
     assert await _next_start_announcements(monkeypatch) == []
 
 
-@pytest.mark.asyncio
-async def test_the_parent_turn_settles_the_notice_it_drains(monkeypatch, tmp_path):
-    """The drain is wired into the parent's next turn.
+async def _parent_with_a_queued_notice(monkeypatch, tmp_path, agent_id: str, stream):  # type: ignore[no-untyped-def]
+    """A real ``DashboardState`` whose chat slot holds *agent_id*'s owed notice.
 
-    ``_run_chat`` runs for real on a ``DashboardState``; only the model is a
-    stand-in, which records the message it is handed. The turn hands the queued
-    notice to the model and settles the run's tombstone, so the next start does
-    not announce the run again.
+    Only the model is a stand-in: *stream* is what it answers each prompt with.
+    Returns the state, the slot and the queued notice texts.
     """
-    from chat_test_helpers import _make_state, drain_background_tasks
+    from chat_test_helpers import _make_state
 
     from kiro_crew import subagent_persistence as sp
     from kiro_crew.context import ContextBuilder
-    from kiro_crew.dashboard.chat import _run_chat
     from kiro_crew.memory import MemoryStore
-    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
     from kiro_crew.skills import SkillsLoader
     from kiro_crew.subagent import SubagentDelivery
 
-    info = _finished_run("injW001")
+    info = _finished_run(agent_id)
     queued: list[str] = []
     manager = _giving_up_manager(queued)
     await _report(manager, info)
-    assert len(queued) == 1 and sp.read_tombstone("injW001") is None
+    assert len(queued) == 1 and sp.read_tombstone(agent_id) is None
 
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
@@ -205,16 +200,9 @@ async def test_the_parent_turn_settles_the_notice_it_drains(monkeypatch, tmp_pat
     state._hook_store = None
     state._yolo = False
     state.subagents = manager
-    handed: list[str] = []
-
-    async def _stream(message):  # type: ignore[no-untyped-def]
-        handed.append(message)
-        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="noted")
-        yield LLMEvent(kind=EVENT_COMPLETE)
-
     model = MagicMock()
-    model.stream = _stream
-    model.stream_command = _stream
+    model.stream = stream
+    model.stream_command = stream
     model.context_usage_pct = MagicMock(return_value=1.0)
     state.sessions.get_or_create = AsyncMock(return_value=(model, True, False))
     slot = state.get_or_create_slot("chat-7")
@@ -224,6 +212,34 @@ async def test_the_parent_turn_settles_the_notice_it_drains(monkeypatch, tmp_pat
     slot.note_pending_subagent_delivery(
         queued[0], [SubagentDelivery(info.id, info.elapsed, info.credits)]
     )
+    return state, slot, queued
+
+
+@pytest.mark.asyncio
+async def test_the_parent_turn_settles_the_notice_it_drains(monkeypatch, tmp_path):
+    """The drain is wired into the parent's next turn.
+
+    ``_run_chat`` runs for real on a ``DashboardState``; only the model is a
+    stand-in, which records the message it is handed. The turn hands the queued
+    notice to the model and settles the run's tombstone, so the next start does
+    not announce the run again.
+    """
+    from chat_test_helpers import drain_background_tasks
+
+    from kiro_crew import subagent_persistence as sp
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    handed: list[str] = []
+
+    async def _stream(message):  # type: ignore[no-untyped-def]
+        handed.append(message)
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="noted")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    state, slot, queued = await _parent_with_a_queued_notice(
+        monkeypatch, tmp_path, "injW001", _stream
+    )
 
     await asyncio.wait_for(_run_chat(state, slot, "what came back?"), timeout=_HANG_CEILING_SECS)
     await drain_background_tasks(state)
@@ -232,6 +248,65 @@ async def test_the_parent_turn_settles_the_notice_it_drains(monkeypatch, tmp_pat
     assert (sp.read_tombstone("injW001") or {}).get(
         "cause"
     ) == "delivered", "the parent's turn drained the notice without settling its tombstone"
+    assert not slot.owes_subagent_delivery(queued)
+    assert await _next_start_announcements(monkeypatch) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["error", "process_died", "empty"])
+async def test_a_turn_that_ends_before_the_model_reads_the_notice_leaves_it_owed(
+    monkeypatch, tmp_path, ending
+):
+    """The notice is settled by the prompt the model consumes, never by an earlier one.
+
+    The first prompt fails before the model sends any event (a plain error ends the
+    turn on an error card and the user asks again; a process death replays the same
+    prompt by itself), or the model's first answer is empty, which takes its
+    consumption back and replays the prompt. Each time the first turn settles nothing
+    and puts the notice back still owed, so a restart at that point would announce
+    the run. The next prompt carries the notice exactly once and its consumption
+    settles it.
+    """
+    from chat_test_helpers import drain_background_tasks
+
+    from kiro_crew import subagent_persistence as sp
+    from kiro_crew.acp.client import AcpProcessDied
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    handed: list[str] = []
+    debt_at_second_prompt: list[tuple[bool, object]] = []
+
+    async def _stream(message):  # type: ignore[no-untyped-def]
+        handed.append(message)
+        if len(handed) == 1:
+            if ending != "empty":
+                raise (AcpProcessDied if ending == "process_died" else RuntimeError)("died")
+        else:
+            debt_at_second_prompt.append(
+                (slot.owes_subagent_delivery(queued), sp.read_tombstone("injF001"))
+            )
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="noted")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    state, slot, queued = await _parent_with_a_queued_notice(
+        monkeypatch, tmp_path, "injF001", _stream
+    )
+    # The error arm records the failure on the session manager.
+    state.sessions.record_failure = AsyncMock()
+
+    await asyncio.wait_for(_run_chat(state, slot, "what came back?"), timeout=_HANG_CEILING_SECS)
+    if ending == "error":
+        await asyncio.wait_for(_run_chat(state, slot, "again?"), timeout=_HANG_CEILING_SECS)
+    elif slot.task is not None:
+        await asyncio.wait_for(slot.task, timeout=_HANG_CEILING_SECS)
+    await drain_background_tasks(state)
+
+    assert len(handed) == 2, handed
+    assert debt_at_second_prompt == [(True, None)], "the first turn settled an unread notice"
+    assert handed[1].count(queued[0]) == 1, handed[1]
+    assert slot._pending_subagent_failures == []
+    assert (sp.read_tombstone("injF001") or {}).get("cause") == "delivered"
     assert not slot.owes_subagent_delivery(queued)
     assert await _next_start_announcements(monkeypatch) == []
 
