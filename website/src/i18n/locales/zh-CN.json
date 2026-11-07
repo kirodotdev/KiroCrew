@@ -14147,6 +14147,7 @@
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
+      "approval_superseded": "此授权已失效。请先取消，再重新连接以开始新的授权。",
       "before_you_connect": "连接前",
       "before_you_disconnect": "断开前",
       "cancel": "取消",

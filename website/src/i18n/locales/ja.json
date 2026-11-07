@@ -14147,6 +14147,7 @@
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
+      "approval_superseded": "この承認は無効になりました。キャンセルしてから、もう一度接続して新しい承認を始めてください。",
       "before_you_connect": "接続する前に",
       "before_you_disconnect": "切断する前に",
       "cancel": "キャンセル",

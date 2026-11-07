@@ -74,6 +74,7 @@ import {
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
+import { ApiError } from '../api/client'
 import { renderWithProviders } from './helpers'
 
 beforeEach(() => {
@@ -547,6 +548,27 @@ describe('relaying the loopback return address', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Action failed: relay refused')
     expect(relayInput()).toHaveValue('http://127.0.0.1:4321/?code=one-time')
+  })
+
+  it('names the card\'s own next step when the approval behind the address is spent', async () => {
+    const message = 'the approval this return address belongs to is no longer live'
+    mcpServers.mockResolvedValue(waiting)
+    mcpOAuthRelay.mockRejectedValue(
+      new ApiError(409, message, JSON.stringify({ error: message, code: 'approval_superseded' })),
+    )
+    mount()
+    const input = await waitFor(relayInput)
+
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:4321/?code=one-time' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('This approval is no longer active. Cancel, then connect again to start a new one.')
+    expect(alert).not.toHaveTextContent('Action failed')
+    expect(alert).not.toHaveTextContent(message)
+    // The Cancel the message names is on the card, and the spent address is gone.
+    expect(within(card('notion')).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    expect(relayInput()).toHaveValue('')
   })
 
   it('cannot be submitted while empty, and shows the sending label in flight', async () => {
