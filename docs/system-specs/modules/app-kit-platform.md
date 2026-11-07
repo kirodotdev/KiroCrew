@@ -739,9 +739,9 @@ never another scanner. An app that core never calls, as with Auto-Improvement, n
 seam: its gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
 "Repository boundary").
 Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
-that still name it, chiefly its three agent tools, which the data-only
-`apps.builtin_agent_tools` seam cannot carry (`issue-radar.md`, "Repository
-boundary").
+that still name it, chiefly its three agent tools, which still run in the core until the
+app serves them through the manifest `agentTools` seam (section 30.1; `issue-radar.md`,
+"Repository boundary").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -6000,67 +6000,128 @@ under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 name the package are a pinned list that may only shrink (see `aws-control.md`,
 "Repository boundary"). Its scans are the shared `test/core_app_independence.py`.
 
-### 30.1 A built-in's agent tool is the built-in's own data
+### 30.1 An app's agent tools are declared in its manifest and served by the app
 
-Some built-ins hand their agent work whose progress it must post back to one of the
-app's own backend routes. The agent cannot call that route itself: the gateway's app
-reverse proxy (`/apps/<app>/api/<route>`) needs a dashboard credential no agent session
-holds. The `kirocrew-core` MCP server holds the gateway's internal secret, so the tool
-runs there, and the gateway admits that one route to internal-secret callers.
+Some apps hand their agent work whose progress it must post back to the app. The agent
+cannot call the app itself: the app's routes need a dashboard credential no agent session
+holds. Ruling 2 of #26967 (comment 6713005850) settled where such a tool runs: app code
+never runs in the `kirocrew-core` MCP server, which holds the gateway's internal secret;
+app tools are MCP tools the app registers and serves from its own process.
 
-`kiro_crew/apps/builtin_agent_tools.py` is the seam. Any directory under
-`apps/builtins/` may ship an `agent_tools.py` holding one `AGENT_TOOLS` mapping of plain
-data: the app's installed name and its tools, each with a name, the model-facing
-description and `inputSchema`, the string fields a call is validated by, the route below
-`/apps/<app>/api`, which query parameters and body keys the arguments fill, the fixed
-body keys and the answer's length cap. The loader finds the files on disk, imports each
-once per process and caches the result. Three core tables read it, and none names an
-app:
+**The declaration.** An app's `app.json` may carry an `agentTools` block: one `route`
+below the app's own API, and up to 16 `tools`, each with a `name`, the model-facing
+`description`, an optional one-line `title`, the `inputSchema` and an optional
+`maxResultChars` (default 20,000, at most 60,000). `apps/manifest_agent_tools.py` owns
+the rules, and `AppManifest.validate` refuses an install that breaks one:
 
-| Reader | What it builds |
+- a tool name begins with the app's name, `-` read as `_`, and `_` (`design_tweak_`),
+  so an app names tools in its own namespace only;
+- the route is a plain lowercase path such as `agent-tools`: no scheme, host, query,
+  leading `/` or `..`;
+- an `inputSchema` uses only the subset the core enforces: `string` (with `enum` and
+  `maxLength`, default and ceiling 65,536), `integer` and `number` (with `minimum` and
+  `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, default and
+  ceiling 256, item `maxLength`); `additionalProperties` may only be false, and
+  `required` names declared arguments. A bool is refused where an integer is declared,
+  as an argument or as an array item.
+
+The block is in `signing_payload` (a description is text every agent reads as an
+instruction, and the route decides where calls go), in `to_dict` and in the built-in
+discovery conversion, so a built-in's persisted `app.json` keeps it.
+
+**Which apps are read: first-party only.** The tools are listed under `kirocrew-core`,
+and the default agent's `allowedTools` grants `@kirocrew-core` as a whole server
+(`config/defaults.json`), so a call to a tool listed there is auto-approved with no
+permission prompt. Ruling 2 places the tool's code in the app; it does not give a
+third-party app core's auto-approval. So `apps/app_agent_tools.py` reads the block of an
+app only when it is first party, `execution.builtin_app_names()` (a shipped manifest
+declares the name AND the builtin owns the installed slot), and reads it from that
+shipped `app.json` (`execution.shipped_builtin_app_root`), never from the data-home copy.
+An installed or registry app's `agentTools` block, and a built-in's once its wheel copy
+is released by adoption, lists nothing: it still validates and installs, and the app can
+ship its own `mcpServers` entry, whose calls are approved one by one
+(`register_app_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
+path that asks before each call (a server of its own outside `allowedTools`, or a
+per-tool approval); that is a maintainer's decision, not this seam's.
+
+**The readers.** The scan stats `<apps dir>/<name>/app.json` for every installed app and
+caches on each file's mtime and size and on the first-party set. It keeps a tool only
+when the app's whole block validates, and drops a name two apps both declare. Nothing
+in it names an app:
+
+| Reader | What it does |
 |---|---|
-| `mcp_tools/apps.py` | the descriptor in `schemas()`, the `TOOL_APPS` row that hides it while the app is off, and `HANDLERS[name]` = `builtin_agent_tool` |
-| `validation_parts/server_registries.py` | the `MCP_CORE_SCHEMAS` row, one `FieldSpec(name, str, ...)` per declared field |
-| `dashboard/server_internal_paths.py` | `/apps/<app>/api<route>` in `_MIXED_INTERNAL_API_PATHS` |
+| `mcp_tools/app_tools.py`, the last domain of `kirocrew-core` | `schemas()` names every tool a shipped first-party manifest declares, installed, released by adoption or neither (`app_agent_tools.shipped_tools`, read once per process with no release check, so this names-only build reads no config). It is the names-only build an app agent's deny universe reads, and that universe is fixed when the agent is materialized, so a tool is withheld from a scoped agent before its app is installed. `advertised()` lists the installed first-party apps' tools in `tools/list`, minus a readably disabled app's (the `apps.advertised` rule). Every name in `schemas()` is answered by one core handler, `app_agent_tool`, which refuses a tool no installed first-party app declares without posting |
+| `mcp_core._validate_args` | checks a call against the declared schema through the field engine every core tool uses (`app_tools.tool_schema`): strings sanitized and bounded, enums held, an undeclared argument refused |
+| `dashboard/handlers/app_agent_tools.py`, `POST /api/app-tools/call` | decides the call (below) |
 
-`builtin_agent_tool` is the one handler. It sends a required argument as its query
-parameter always and an optional one only when non-empty, URL-quoted with `safe=''`. It
-copies the declared body arguments that are non-empty after the fixed keys, posts
-through `mcp_core._post`, redacts the answer and cuts it at the cap. A declaration
-therefore chooses data and runs no code in the process that holds the secret. The load
-raises `ValueError` on a malformed row, never skips it: `app` must be the directory's
-installed name, a tool name must begin with the package name and `_`, a route must be a
-plain path, the `inputSchema` must advertise exactly the declared fields and mark exactly
-the required ones, and every forwarded argument must be declared. With no built-in
-declaring a tool, every reader adds nothing.
+A name any other `kirocrew-core` domain declares is never an app's: the domain drops it,
+so a core tool keeps its name, its schema and its handler.
 
-Only shipped package directories are read, so a declaration is reviewed in this
-repository; an installed or registry app cannot declare one. Design Tweak's
-`design_tweak_update_thread` is the one declared tool.
+**The call.** `app_agent_tool` posts `{"tool", "arguments"}` to `POST /api/app-tools/call`,
+one fixed core route in `_STRICT_INTERNAL_API_PATHS`. Its handler re-asserts
+`internal_auth`, takes the app from the manifest that declares the tool (never from the
+request), checks that the arguments are exactly what validating them against the
+declaration returns (so the bytes forwarded are the bytes checked), and refuses a
+disabled app. It then hands the request to the dispatcher that already serves that app:
+the signed reverse proxy for a process-backed app (`/apps/<app>/api/<route>`, principal
+`agent-tool`, the gateway's own credentials stripped, handed the body the handler
+already read: `request.can_read_body` is False once a payload is at EOF), or the route registry for an app
+whose routes run in the gateway (`/api/apps/<app>/<route>`, a route the app registered
+through `RouteRegistry` and never a core route; a built-in that still mounts its routes
+on the gateway router directly is not reached this way). The app's answer is relayed unchanged; `app_agent_tool` redacts
+it and then cuts it at the tool's `maxResultChars`, so a cut never splits a credential.
+No app route is admitted to internal-secret callers, so the one path in is the declared
+route, with declared arguments.
 
-`test/test_builtin_agent_tools.py` pins the seam with synthetic declarations: empty by
-default, every reader fed from the one load, the handler's URL, body and capped answer,
-and each malformed row. `test_mcp_call_site_auth_coverage.py` resolves the handler's
-call site to every declared URL, so the internal-path grant check still covers it.
-`test/test_core_design_tweak_decoupling.py` is Design Tweak's gate, on the shared
-`test/core_app_independence.py` scans: no core module or script imports the app, and the
-only core strings naming it are the security-posture redaction rows for its three
-backend modules, which leave with those files. The UI half is
-`website/src/apps/design-tweak/designTweakBoundary.test.ts`: only `builtinRegistry.ts`
-imports the app's directory, and the app's tests live in it.
+| Refusal | Code |
+|---|---|
+| no `internal_auth` | 403 `loopback_only` |
+| a body other than exactly `{tool, arguments}` | 400 `invalid_json` |
+| a tool no first-party app declares | 404 `unknown_tool` |
+| arguments outside the declaration, or not in validated form | 400 `invalid_arguments` |
+| the declaring app is not enabled | 403 `app_not_enabled` |
 
-Ops Mission Control's `ops_mission_control_api` is not a declared tool: it is a GET/POST
-dispatcher over an allowlist of the app's `/api/apps/ops-mission-control` routes, with a
-query, a JSON body and a per-operation channel deny, and this seam carries one POST route
-under the app proxy. The tool therefore stays core (`mcp_tools/apps.py`, its validation
-row, its internal paths and its `channel.py` deny), unchanged for users, until an
-app-contributed tool seam can carry it under the same name and permission key.
-`test/test_core_ops_mission_control_decoupling.py` is that app's gate, on the shared
-scans: no core module or script imports it, and the core strings still naming it (that
-tool, the `webhooks` source id, the sandbox leaf tables, the security-posture rows, its
-packaged skill id and two docs-lint rows) are a pinned list that may only shrink (see
-`ops-mission-control.md`, "Repository boundary"). The UI half is
-`website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts`.
+**One core table still names tools one by one.** The display-title table
+(`data/mcp_tool_titles.json`) is read by the chat's tool-call label on both sides, and
+a remote session's whole-`@kirocrew-core` grant is expanded per tool from it
+(`acp/runtime_remote_workspace._without_local_only_grants`), where every row is
+reviewed remote-safe or local-only. A declared tool with no row there shows its
+humanized name in the chat and is not granted to a remote session by a whole-server
+grant; its descriptor still carries its own `title`.
+
+**Level.** The seam is App Kit seam level 2 (`APP_SDK_LEVEL`). A host below it reads
+`agentTools` as an unknown key, so an app that declares tools installs there without
+them.
+
+Design Tweak's `design_tweak_update_thread` is the one shipped tool on the seam: its
+`app.json` declares it, with the description and schema it always had plus each string's
+`maxLength` (200, 200, 2,048), and its backend serves `POST /api/agent-tools` as the same
+`/thread` write the tool always made. Its row in the title table stays, so its chat label
+and its remote-session grant are unchanged; the row leaves with the app. `test/test_app_agent_tools.py` pins the seam with
+synthetic apps, including every way a call beyond the declaration is refused before it
+reaches the app; `src/kiro_crew/apps/builtins/design_tweak/tests/test_agent_api_tool.py`
+pins Design Tweak's declaration and route. `test/test_core_design_tweak_decoupling.py`
+is Design Tweak's gate, on the shared `test/core_app_independence.py` scans: no core
+module or script imports the app, and the only core strings naming it are the
+security-posture redaction rows for its three backend modules, which leave with those
+files. The UI half is `website/src/apps/design-tweak/designTweakBoundary.test.ts`.
+
+Ops Mission Control's `ops_mission_control_api` and Issue Radar's three tools still run
+in the core (`mcp_tools/apps.py`, their validation rows, their internal paths and the
+`channel.py` deny), unchanged for users. They move onto this seam when each app serves
+its own route: for Ops Mission Control the GET/POST dispatcher over its allowlist and
+the per-operation channel deny; for Issue Radar the three tools, the
+strictly-identified crew session the crew tools resolve, and the `radar` crew-log fold.
+`test/test_core_ops_mission_control_decoupling.py` and
+`test/test_core_issue_radar_decoupling.py` pin those rows (see `ops-mission-control.md`
+and `issue-radar.md`, "Repository boundary").
+
+Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`,
+`apps/app_agent_tools.py`, `mcp_tools/app_tools.py`, `mcp_tools/__init__.py`,
+`mcp_core.py` (`_validate_args`), `dashboard/handlers/app_agent_tools.py`,
+`dashboard/server_runtime/mcp_routes.py`, `dashboard/server_internal_paths.py`,
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`.
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 

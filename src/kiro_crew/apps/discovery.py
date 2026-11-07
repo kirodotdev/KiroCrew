@@ -72,6 +72,9 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     desktop_d = manifest.desktop.to_dict()
     if desktop_d:
         d["desktop"] = desktop_d
+    agent_tools_d = manifest.agentTools.to_dict()
+    if agent_tools_d:
+        d["agentTools"] = agent_tools_d
 
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers

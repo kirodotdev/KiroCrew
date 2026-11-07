@@ -3,14 +3,13 @@
 Which paths only internal processes may call (loopback plus ``X-Internal-Secret``),
 which the browser may also call, and the constants the deny-audit, CSRF and audit
 layers read with them. Pure data (a shipped built-in app's exact strict paths, read
-from its host grants, and its agent tools' proxy paths are data too):
+from its host grants, are data too):
 ``kiro_crew.dashboard.server`` imports every name here and is the only module that
 does, so the server's binding is the one its owners read and the one a test rebinds.
 """
 
 from __future__ import annotations
 
-from kiro_crew.apps.builtin_agent_tools import internal_paths as _builtin_agent_tool_paths
 from kiro_crew.apps.builtin_host_grants import (
     strict_internal_paths as _builtin_strict_internal_paths,
 )
@@ -39,6 +38,11 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # Its quick-ask poll: the parked ``ask`` op asks whether the person answered.
         # Only an outcome word comes back; the answer itself is the owner's route.
         "/api/browser/ask/poll",
+        # The forwarding leg of a tool an installed app declares in its manifest
+        # (``apps.app_agent_tools``): the ``kirocrew-core`` server posts the call, the
+        # handler re-asserts ``internal_auth`` and hands it to the declaring app's own
+        # route. One fixed core path for every app, so no app route is admitted here.
+        "/api/app-tools/call",
         # External terminal grant redemption. Its only caller is the desktop
         # shell's main process, loopback + internal-secret; the browser holds
         # the grant but must never redeem it, so
@@ -414,12 +418,4 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/skills/-/discover/preview",
         "/v1/chat/completions",  # OpenAI-compat API
     }
-    # The one app-proxy route each tool a shipped built-in declares posts to
-    # (``apps.builtin_agent_tools``): ``/apps/<app>/api/<route>``, the gateway's reverse
-    # proxy to that app's own backend process, NOT ``/api/apps/...``. The seam derives
-    # each path from the tool's own route under its own app's namespace, so a built-in
-    # cannot admit a core route or another app's. Each entry still admits its children
-    # here; the app's backend matches its route exactly, so a child path 404s there.
-    # Mixed rather than strict because the app's own page posts there with its cookie.
-    | _builtin_agent_tool_paths()
 )

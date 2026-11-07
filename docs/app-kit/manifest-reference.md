@@ -234,6 +234,58 @@ server should treat a missing label as "unknown session":
 The server's `command`, `args` and `env` are exactly what it would have started
 with without the label.
 
+### `agentTools` — MCP tools your app serves
+
+An app can give agents tools of its own without shipping an MCP server: declare them
+here, and serve every call from one route of your own API. The gateway lists each tool
+in its `kirocrew-core` MCP server under the name you give it, checks every call against
+your schema, and posts the call to your route. Your code runs where it already runs
+(your backend process, or your `backend.routes` in the gateway); none of it runs in the
+MCP server. Needs App Kit seam level 2 (`ctx.sdk_level >= 2`); an older host ignores
+the block and installs the app without the tools.
+
+Today the gateway lists the tools of first-party apps only (the apps that ship with
+Kiro Crew). `kirocrew-core` is auto-approved as a whole server, and a third-party
+app's tools do not get that approval, so an installed or registry app's block
+validates and installs but lists nothing yet. Until it does, ship an MCP server of your
+own (`mcpServers`); the user approves each of its calls.
+
+```json
+"agentTools": {
+  "route": "agent-tools",
+  "tools": [
+    {
+      "name": "my_app_note",
+      "title": "Post a note",
+      "description": "Post one progress note to an item.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "item_id": {"type": "string", "maxLength": 64},
+          "status": {"type": "string", "enum": ["done"]}
+        },
+        "required": ["item_id"]
+      },
+      "maxResultChars": 20000
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `route` | string | The route that serves every call, below your app's API: a process backend receives `POST /api/<route>` through the signed app proxy; `backend.routes` receive `POST /<route>`. Lowercase segments only; no leading `/`, query, host or `..` |
+| `tools[].name` | string | Must begin with your app's name with `-` read as `_`, then `_` (app `my-app`: `my_app_...`). A name a built-in core tool already has is never yours |
+| `tools[].description` | string | What the model reads, up to 4,000 characters |
+| `tools[].title` | string | Optional one-line display title, up to 80 characters |
+| `tools[].inputSchema` | object | An object schema using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
+| `tools[].maxResultChars` | number | Where your answer is cut after redaction, 1 to 60,000; default 20,000 |
+
+Your route receives `{"tool": "<name>", "arguments": {...}}` holding only arguments your
+schema allows, and its JSON answer goes back to the agent, redacted. At most 16 tools per
+app. The tools are listed only while your app is enabled, and a call to a disabled app is
+refused.
+
 ## Scheduling
 
 ### `crons` — Cron Job Definitions

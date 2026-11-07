@@ -227,14 +227,10 @@ _FACADE_DEF_HOMES: dict[str, tuple[str, ...]] = {
 }
 _FACADE_DEF_HOME = {name: stem for stem, names in _FACADE_DEF_HOMES.items() for name in names}
 
-#: The only imports a data module may bind beside its values: the readers of what a
-#: shipped built-in app declares (its agent tools and its host grants), each folded
-#: into a value at import.
+#: The only imports a data module may bind beside its values: the reader of what a
+#: shipped built-in app declares (its host grants), folded into a value at import.
 _DATA_MODULE_SOURCES: dict[str, tuple[str, ...]] = {
-    "kiro_crew.dashboard.server_internal_paths": (
-        "_builtin_agent_tool_paths",
-        "_builtin_strict_internal_paths",
-    ),
+    "kiro_crew.dashboard.server_internal_paths": ("_builtin_strict_internal_paths",),
 }
 
 #: The pure-data modules beside the server, by dotted name, and every name each binds.

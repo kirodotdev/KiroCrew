@@ -112,8 +112,8 @@ _PROXY_HOP_HEADERS = frozenset(
 # X-KiroCrew-Proxy HMAC (injected below), never via user cookies or the
 # gateway's own internal-auth headers. The internal-auth set (X-Internal-Secret,
 # X-Session-Token, X-Session-Key, X-Internal-Caller) is stripped because a
-# credentialed internal caller — a tool a built-in app declares for its agent
-# (``apps.builtin_agent_tools``) reaches its backend through this proxy — would
+# credentialed internal caller — a tool an app declares in its manifest
+# (``apps.app_agent_tools``) reaches its backend through this proxy — would
 # otherwise hand the gateway-wide secret (which opens every strict internal route)
 # to an app subprocess that also serves content from the user's own projects. The HMAC is
 # all the backend needs to trust a proxied request, so dropping the rest is a
@@ -237,12 +237,19 @@ def _proxy_principal(request: web.Request) -> tuple[str, str]:
     return PRINCIPAL_NONE, ""
 
 
-async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
+async def handle_app_api_proxy(
+    request: web.Request, *, read_body: bytes | None = None
+) -> web.StreamResponse:
     """Reverse proxy: /apps/{name}/api/{path} → app backend.
 
     Allows dashboard app UIs to call their own backend through the gateway
     (same-origin), avoiding CORS issues. The gateway authenticates the
     request and forwards it to the app's backend.
+
+    *read_body* is the body of a request a gateway handler already read before
+    handing it on: once the payload is at EOF ``request.can_read_body`` is False,
+    so without it the backend would receive no body under the client's
+    ``Content-Length``.
     """
     name = request.match_info["name"]
     path = request.match_info.get("path", "")
@@ -339,7 +346,10 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
 
     # Read request body first so the HMAC can bind it (integrity: prevents
     # a MITM/compromised path from swapping the body under a valid signature).
-    body = await request.read() if request.can_read_body else None
+    if read_body is not None:
+        body: bytes | None = read_body
+    else:
+        body = await request.read() if request.can_read_body else None
 
     # Sign the proxy request with the app's secret so the backend can
     # verify it came from the gateway. Works on loopback and remote.
