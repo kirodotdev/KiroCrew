@@ -1,6 +1,6 @@
 """Audits of what the agent has stored, and of what it may store.
 
-:func:`scan_history` reads recent conversation history for suspicious shell
+:func:`scan_history` reads the newest session transcript rows for suspicious shell
 commands (:func:`audit_bash_command`, matched against ``SUSPICIOUS_BASH_PATTERNS``).
 :func:`scan_memory` screens every declared memory store -- its durable rows, their
 recorded history and the store's lessons file -- for prompt-injection content, and
@@ -25,6 +25,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib as _hashlib
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
@@ -60,44 +61,150 @@ def audit_bash_command(command: str) -> str | None:
     return None
 
 
-def scan_history(history_dir: Path, last_n: int = 100) -> list[dict]:
-    """Scan recent conversation history for suspicious tool usage.
+#: How much of a flagged command a history finding carries.
+_HISTORY_SNIPPET_CHARS = 200
 
-    Returns list of findings: [{file, line, tool, command, warning}]
+
+#: ACP tool kinds that never run a shell command. Any other kind -- ``execute``,
+#: ``other`` (which ``use_aws`` reports) or none at all -- still goes through the
+#: gate's own extractor, so only text that cannot be a command is left out.
+_NON_SHELL_TOOL_KINDS = frozenset(
+    {"read", "edit", "delete", "move", "search", "think", "fetch", "switch_mode"}
+)
+
+
+def _transcript_tail_rows(path: Path, max_rows: int, mtime: float) -> list[tuple]:
+    """The newest *max_rows* calls or messages of *path* as ``(epoch, warning, snippet)``.
+
+    One tool call is up to three ``role="tool"`` rows sharing a ``tool_call_id``,
+    so those fold into one entry (keeping the first warning seen) rather than each
+    taking a slot. A later row of the call moves the entry to the tail and takes
+    its time, so a call approved after newer rows still counts as recent. Each row
+    is audited as it is read and only its warning and a bounded snippet are kept,
+    keyed by a fixed-size digest of its call id, so memory stays bounded whatever
+    the file holds.
+    """
+    from kiro_crew.jsonl_util import bounded_records
+
+    # Insertion-ordered: the first key is the least recently seen entry.
+    rows: dict[object, list] = {}
+    with open(path, "rb") as handle:
+        for position, line in enumerate(bounded_records(handle, path, label="security-audit")):
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict) or entry.get("_type") == "metadata":
+                continue
+            command = _row_shell_command(entry)
+            warning = audit_bash_command(command) if command else None
+            snippet = command[:_HISTORY_SNIPPET_CHARS] if command and warning else ""
+            key: object = _row_call_key(entry) or position
+            held = rows.pop(key, None)
+            if held is not None and held[1]:
+                warning, snippet = held[1], held[2]
+            rows[key] = [_row_epoch(entry, mtime), warning, snippet]
+            if len(rows) > max_rows:
+                del rows[next(iter(rows))]
+    return [(epoch, warning, snippet) for epoch, warning, snippet in rows.values()]
+
+
+def _row_call_key(entry: dict) -> str:
+    """A fixed-size digest of a tool row's ``meta.tool_call_id``, or ``""``."""
+    if entry.get("role") != "tool":
+        return ""
+    meta = entry.get("meta")
+    call_id = meta.get("tool_call_id") if isinstance(meta, dict) else None
+    if not isinstance(call_id, str) or not call_id:
+        return ""
+    return _hashlib.sha256(call_id.encode("utf-8", "replace")).hexdigest()
+
+
+def _row_shell_command(entry: dict) -> str | None:
+    """An assistant row's text, or the shell command in a tool row's ``meta.input``."""
+    role = entry.get("role")
+    if role == "assistant":
+        content = entry.get("content")
+        return content if isinstance(content, str) else None
+    if role != "tool":
+        return None
+    meta = entry.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    kind = meta.get("kind")
+    if isinstance(kind, str) and kind in _NON_SHELL_TOOL_KINDS:
+        return None
+    tool_input = meta.get("input")
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except json.JSONDecodeError:  # a cut-off input of a shell-capable kind is its text
+            return tool_input
+    from kiro_crew.agent_sdk import shell_command_from_tool_params  # the gate's, use_aws too
+
+    return shell_command_from_tool_params(tool_input) if isinstance(tool_input, dict) else None
+
+
+def _row_epoch(entry: dict, fallback: float) -> float:
+    """When *entry* was written: its ``ts``, or *fallback* (its file's mtime)."""
+    stamp = entry.get("ts", "")
+    try:
+        # Naive is local time (as ``history_schema`` sorts); a missing, non-text,
+        # empty or year-0001/9999 stamp falls back.
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError, OverflowError, OSError):
+        return fallback
+
+
+def _unreadable_transcript_finding(path: Path, exc: Exception) -> dict:
+    warning = f"Could not read this transcript, so it was not audited: {exc}"
+    return {"file": path.name, "warning": warning, "snippet": ""}
+
+
+def scan_history(sessions_dir: Path, last_n: int = 100) -> tuple[list[dict], int]:
+    """Audit the newest *last_n* rows across ``sessions_dir/*.jsonl``, by row ``ts``.
+
+    Every file contributes its tail: mtime is no upper bound on ``ts``
+    (``monotonic_transcript_ts`` can stamp ahead). Returns ``(findings,
+    rows_scanned)``; an unreadable file is a finding, and 0 rows means nothing
+    was read, so neither is reported clean.
     """
     findings: list[dict] = []
-    if not history_dir.is_dir():
-        return findings
+    if not sessions_dir.is_dir():
+        return findings, 0
 
-    files = sorted(history_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    checked = 0
-    for f in files:
+    stamped: list[tuple[float, Path]] = []
+    for path in sessions_dir.glob("*.jsonl"):
         try:
-            for line in f.read_text().splitlines():
-                if checked >= last_n:
-                    return findings
-                checked += 1
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                content = entry.get("content", "")
-                role = entry.get("role", "")
-                if role != "assistant" or not isinstance(content, str):
-                    continue
-                # Check for bash commands in tool calls
-                warning = audit_bash_command(content)
-                if warning:
-                    findings.append(
-                        {
-                            "file": f.name,
-                            "warning": warning,
-                            "snippet": content[:200],
-                        }
-                    )
-        except OSError:
+            stamped.append((path.stat().st_mtime, path))
+        except FileNotFoundError:
+            continue  # removed since the listing: gone, not unreadable
+        except OSError as exc:
+            findings.append(_unreadable_transcript_finding(path, exc))
+    stamped.sort(key=lambda item: item[0], reverse=True)
+
+    # (epoch, file order, row order, file name, warning, snippet), newest last_n.
+    kept: list[tuple] = []
+    for file_order, (mtime, path) in enumerate(stamped):
+        try:
+            rows = _transcript_tail_rows(path, last_n, mtime)
+        except FileNotFoundError:
             continue
-    return findings
+        except (OSError, ValueError, RecursionError) as exc:  # parser limits too
+            findings.append(_unreadable_transcript_finding(path, exc))
+            continue
+        kept.extend(
+            (epoch, file_order, row_order, path.name, warning, snippet)
+            for row_order, (epoch, warning, snippet) in enumerate(rows)
+        )
+        # Newest first; ties keep newer files and later rows ahead, deterministically.
+        kept.sort(key=lambda item: (-item[0], item[1], -item[2]))
+        del kept[last_n:]
+
+    for _epoch, _file_order, _row_order, name, warning, snippet in kept:
+        if warning:
+            findings.append({"file": name, "warning": warning, "snippet": snippet})
+    return findings, len(kept)
 
 
 #: How many episodic rows one store contributes to an injection audit. Newest
