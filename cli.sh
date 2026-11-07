@@ -1384,9 +1384,9 @@ echo "  kirocrew gateway            # start the dashboard now (http://localhost:
 echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
 echo "  kirocrew --help             # everything else"
 echo ""
-echo "Need a non-default port (e.g. 5476 is already taken)? Set it at install time;"
-echo "it is baked into the service unit:"
-echo "  KIROCREW_PORT=5477 kirocrew service install"
+echo "Need a non-default port (e.g. 5476 is already taken)?"
+echo "  kirocrew gateway --port 5477                  # for a foreground run"
+echo "  KIROCREW_PORT=5477 kirocrew service install   # for the service (baked into its unit)"
 
 # A re-run installs into the same tree a running gateway was loaded from, so
 # that gateway keeps its already-imported old modules while every later import

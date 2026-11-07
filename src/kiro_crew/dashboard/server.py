@@ -173,6 +173,7 @@ from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
     FOREIGN_HOLDER,
     HEALTHY_PEER,
     NO_HOLDER,
+    RECLAIM_FAILED,
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
@@ -281,6 +282,8 @@ from kiro_crew.dashboard.server_runtime.listener import (  # noqa: F401
     _export_bound_port,
     _export_reserved_bind_evidence,
     _holds_every_loopback_family,
+    _log_port_still_in_use,
+    _port_wait_message,
     _register_unix_socket_cleanup,
     _remove_stale_unix_socket,
     _reserve_dashboard_port,
