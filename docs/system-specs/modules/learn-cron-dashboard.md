@@ -173,6 +173,22 @@ arguments and inherited instance environment, and owns rebuilding version-specif
 imports. See [platform-context](platform-context.md#gateway-restart-launcher) for
 the CPP contract. Update authorization and command-provider precedence are unchanged.
 
+**A planned restart resumes the chats it cuts** (`dashboard/restart_resume.py`).
+Each planned restart (`_restart_gateway`, the gateway's update restart
+`_restart_after_update_claimed`, and the Slack `/kirocrew restart`) calls
+`record_running_slots` right before `close_all()`: it writes the names of the
+slots carrying a turn-in-flight marker to `<data home>/resume-after-restart.json`
+(off-loop, 5 s bound, a failure logged); with no running chat it removes an
+earlier file instead, so a record never outlives the restart that wrote it.
+The next dashboard boot, once ready, reads and deletes that file before acting,
+so it tries once and never loops. A file older than 30 minutes belongs to a
+restart that never ran and resumes nothing. Otherwise the boot resumes only those chats through
+`chat_resume_all.start_resume_all(only=...)` with `crew_mode=True`: the same
+`RESUME_ALL_MAX_RUNNING` bound, memory-preparation wait and per-slot refusals
+(pending approval, queued message, running sub-agents) as the Resume-all button,
+and one `resume_all_done` frame. A crash writes no file, so its chats keep the
+interruption row and the manual Resume, as before. Errors are logged, never raised.
+
 ## Self-Learning (`learn.py`)
 
 Global Memory V1 retains the background LLM contradiction sweep after a

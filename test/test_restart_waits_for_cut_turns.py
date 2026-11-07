@@ -157,6 +157,31 @@ async def test_a_restart_waits_for_the_turn_it_cut_before_it_ends(
 
 @_RESTARTS
 @pytest.mark.asyncio
+async def test_a_planned_restart_records_the_chats_it_cuts_before_close_all(
+    run, ends_with, monkeypatch, _first_save_skipped
+):
+    """Only the slot with a turn in flight; the idle one is left to its owner."""
+    from kiro_crew.dashboard import restart_resume
+
+    monkeypatch.setattr(
+        "kiro_crew.gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS", 0.2, raising=False
+    )
+    restart = _Restart()
+    restart.state._slots["s1"]._turn_in_flight_generation = 3
+    restart.state._slots["idle"] = SimpleNamespace(task=None, _turn_in_flight_generation=0)
+    monkeypatch.setattr(
+        restart_resume, "write_intent", lambda names: restart.order.append(f"record {names}")
+    )
+    try:
+        await asyncio.wait_for(run(restart, monkeypatch), timeout=30)
+        assert restart.order[:2] == ["record ['s1']", "close_all"], restart.order
+        assert restart.order[-1] == ends_with, restart.order
+    finally:
+        restart.turn.cancel()
+
+
+@_RESTARTS
+@pytest.mark.asyncio
 async def test_a_restart_never_cancels_or_outwaits_a_hung_turn(
     run, ends_with, monkeypatch, _first_save_skipped
 ):
