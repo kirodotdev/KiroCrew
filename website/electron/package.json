@@ -214,6 +214,7 @@
       "local-token.js",
       "local-gateway.js",
       "close-action.js",
+      "tray-icon.js",
       "wsl-detection.js",
       "mochi-session-token.js",
       "window-state.js",

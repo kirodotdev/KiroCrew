@@ -134,6 +134,8 @@ const store = new Store({
     runLocalGateway: true,
     // "background" or "quit". See close-action.js.
     closeAction: "background",
+    // Only false hides it, and only while the close button quits. See tray-icon.js.
+    showTrayIcon: true,
     linuxFrameless: null,
     // Written by gpu-crash-fallback.js when the GPU process dies at startup;
     // read before Chromium initializes on the next launch.
@@ -748,7 +750,7 @@ app.whenReady().then(async () => {
   // Security and every non-update bridge are installed before the first
   // dashboard or untrusted browser WebContents can be created.
   ipcRegistrar.registerShell();
-  windows.createTray();
+  windows.syncTray();
   const mainWindow = windows.createMainWindow();
 
   // Linux AppImage desktop integration. It creates the first launcher and then

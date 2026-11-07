@@ -1316,7 +1316,10 @@ it).
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close, or quits through the same path as the Quit
   menu item when the user chose that (`closeAction` in the app's own config,
-  decided by [`close-action.js`](../../website/electron/close-action.js)); the composition root delegates quit-time
+  decided by [`close-action.js`](../../website/electron/close-action.js)), and
+  creates or removes the tray icon to match `showTrayIcon` (decided by
+  [`tray-icon.js`](../../website/electron/tray-icon.js), which keeps the icon on
+  Windows and Linux while the close button hides the window); the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
   signal escalation contract. On POSIX,
   [`gateway-stop.js`](../../website/electron/gateway-stop.js) lists the child's
