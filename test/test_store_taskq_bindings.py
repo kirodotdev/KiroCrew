@@ -111,7 +111,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "finish": ("function", "8a4938b244d9", "store"),
     "get": ("function", "c698159610c8", "store_reads"),
     "held_until_settled": ("function", "6806e867af4e", "store"),
-    "hold_until_settled": ("function", "2b842e351101", "store"),
+    "hold_until_settled": ("function", "c8c5ef45db8d", "store"),
     "incarnation": ("property", "bb418bb7ece8", "store"),
     "insert_if_absent": ("function", "b306bf988231", "store"),
     "is_open": ("property", "a6632a57e602", "store"),

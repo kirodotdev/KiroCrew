@@ -357,6 +357,8 @@ class TerminalCoordinator(ManagerComponent):
         then; ``False`` when the claim went to another path, which reports, and
         this task returns without a word (its caller disowns it from
         ``_report_owners`` before releasing it, so its exit latches nothing).
+        A single Stop of a queued run passes one too: it resolves once the
+        row's unlanded cancel is durably settled (``_report_queued_stop``).
 
         The two call sites (reap vs. ``_run``'s ``finally``) differ only in the
         injection-timeout reason string, the log ``source`` prefix, and whether

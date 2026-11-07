@@ -99,9 +99,10 @@ def _report_queued_stop(
     row_settled: bool = False,
     error: str = "",
     report_owed: bool = False,
+    gate: "asyncio.Future[bool] | None" = None,
 ) -> "asyncio.Task[bool] | None":
     return self._cancellation._report_queued_stop_impl(
-        params, row_settled=row_settled, error=error, report_owed=report_owed
+        params, row_settled=row_settled, error=error, report_owed=report_owed, gate=gate
     )
 
 

@@ -713,7 +713,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_release_slot": ("method", "(self, info: 'SubagentInfo') -> 'bool'"),
     "_report_queued_stop": (
         "method",
-        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False) -> \"'asyncio.Task[bool] | None'\"",
+        "(self, params: 'dict', *, row_settled: 'bool' = False, error: 'str' = '', report_owed: 'bool' = False, gate: \"'asyncio.Future[bool] | None'\" = None) -> \"'asyncio.Task[bool] | None'\"",
     ),
     "_report_terminal": (
         "async method",

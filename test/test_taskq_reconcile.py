@@ -541,6 +541,33 @@ def _reopen_refusing(path: Path, clock: Clock, **refuse: set[str]) -> "_Refusing
     return _RefusingStore(path, clock=clock, network_fs=False, refuse=refuse).open()
 
 
+def test_a_stopped_recovering_row_the_store_will_not_cancel_is_held_out_of_claims(
+    tmp_path: Path, clock: Clock
+) -> None:
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("stopped", side_effect_class=model.SIDE_EFFECT_IDEMPOTENT_KEY)])
+    g = s.claim("stopped").generation
+    s.transition("stopped", model.STARTING, generation=g)
+    s.transition("stopped", model.RUNNING, generation=g)
+    s.close()
+    s = _crash_and_reopen(path, clock)
+    reconcile_on_boot(s)
+    assert s.state_of("stopped") == model.RECOVERING
+    s.close()
+    clock.t += 3600  # past the recovery backoff: claimable on its own
+    s = _reopen_refusing(path, clock, cancel={"stopped"})
+    try:
+        report = reconcile_on_boot(s, artifact_probe=lambda r: "stopped")
+        assert report.held == 1 and len(report.errors) == 1, report
+        # The hold's own retry lands the stop, so the claim finds nothing to run.
+        assert s.claim("stopped") is None
+        assert s.state_of("stopped") == model.CANCELLED
+        assert s.held_until_settled() == []
+    finally:
+        s.close()
+
+
 def test_expire_returns_the_rows_it_failed_even_when_a_later_row_is_refused(
     tmp_path: Path, clock: Clock
 ) -> None:
