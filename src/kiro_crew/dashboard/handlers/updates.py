@@ -157,6 +157,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import config_path  # noqa: F401
     from kiro_crew.config.loader import overlay_pins  # noqa: F401
     from kiro_crew.config.loader import update_config_locked  # noqa: F401
+    from kiro_crew.dashboard import restart_resume  # noqa: F401
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
     from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes  # noqa: F401

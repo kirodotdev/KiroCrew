@@ -612,6 +612,10 @@ async def _handle_restart(
             )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
+    # A planned restart: the turns close_all() cuts resume on the next boot.
+    from kiro_crew.dashboard import restart_resume
+
+    await restart_resume.record_running_slots(orch.dashboard_state)
     try:
         if orch.sessions:
             # Bound the cleanup: a session close can hang waiting on a remote

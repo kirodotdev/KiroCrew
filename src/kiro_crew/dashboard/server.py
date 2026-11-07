@@ -1605,6 +1605,10 @@ async def start_dashboard(
     # Tells the NEXT boot that this instance got the whole startup battery
     # away, so a stall from here on does not implicate the battery.
     _dispatch_healthy_boot_marker(state)
+    # Chats a planned in-app restart cut off resume once the loop is serving.
+    from kiro_crew.dashboard.restart_resume import schedule_resume_after_restart
+
+    schedule_resume_after_restart(state)
 
     return runner, state
 
