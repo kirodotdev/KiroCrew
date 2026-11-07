@@ -75,11 +75,14 @@ def _configured_proxy_note(provider: str, region: str) -> str:
 
     A device login dials the issuer's host directly unless a proxy is configured, so on
     a proxy-only network an unreachable-service error otherwise reads as the service
-    being down. A host on ``NO_PROXY`` is bypassed and gets no note. Imports stay
-    function-local like the rest of this module's auth imports.
+    being down. A host on ``NO_PROXY`` is bypassed and gets no note. The proxy URL is
+    redacted before it is printed, so an authenticated proxy's ``user:password@``
+    never reaches stderr or a captured login log. Imports stay function-local like
+    the rest of this module's auth imports.
     """
     from kiro_crew.auth.login.endpoints import BUILDER_ID_REGION, oidc_url, social_service_url
     from kiro_crew.http_proxy import resolve_proxy
+    from kiro_crew.platform import redact_log_via_context
 
     base = (
         oidc_url(region or BUILDER_ID_REGION)
@@ -89,7 +92,8 @@ def _configured_proxy_note(provider: str, region: str) -> str:
     proxy = resolve_proxy(base)
     if not proxy:
         return ""
-    return f"; the request goes through your configured proxy ({proxy}) -- check it is reachable"
+    shown = redact_log_via_context(proxy)
+    return f"; the request goes through your configured proxy ({shown}) -- check it is reachable"
 
 
 def add_kas_login_parsers(sub: Any) -> None:

@@ -122,7 +122,7 @@ _CASES: dict[str, tuple[str, dict]] = {
     ),
     "control-plane": (
         control_plane_url(_REGION),
-        {"profiles": []},
+        {"profiles": [{"arn": "arn:aws:profile/x", "profileName": "x"}]},
     ),
     "refresh-social": (
         f"{social_service_url()}/refreshToken",
@@ -201,6 +201,26 @@ async def test_auth_request_uses_the_env_proxy(monkeypatch, transport, site, pro
 
 
 @pytest.mark.asyncio
+async def test_every_control_plane_host_asked_goes_through_the_proxy(monkeypatch, transport):
+    """The profile lookup falls through to the other control plane over the proxy too."""
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": _HTTPS_PROXY})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", MagicMock(return_value=False))
+    request, _ = transport
+    request.side_effect = [
+        _resp({"profiles": []}),
+        _resp({"profiles": [{"arn": "arn:aws:profile/x", "profileName": "x"}]}),
+    ]
+
+    async with aiohttp.ClientSession() as session:
+        await control_plane.list_available_profiles("at", region=_REGION, session=session)
+
+    assert request.await_count == 2
+    assert request.await_args_list[0].args[1] == control_plane_url(_REGION)
+    assert request.await_args_list[1].args[1] != control_plane_url(_REGION)
+    assert [c.kwargs.get("proxy") for c in request.await_args_list] == [_HTTPS_PROXY] * 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("site", "no_proxy", "expected"),
     [
@@ -243,8 +263,7 @@ async def test_port_qualified_no_proxy_bypasses_a_custom_idp_port(monkeypatch, t
     """``NO_PROXY=host:port`` bypasses an IdP endpoint on a non-443 port.
 
     Enterprise IdP endpoints are operator-configured, so the shared resolver
-    checks the effective port alongside the bare host -- the finding the GPT 6.1
-    lane upheld on #31732.
+    checks the effective port alongside the bare host.
     """
     for name in ("http_proxy", "https_proxy", "no_proxy", "all_proxy"):
         monkeypatch.delenv(name, raising=False)
@@ -276,8 +295,8 @@ async def test_port_qualified_no_proxy_bypasses_a_custom_idp_port(monkeypatch, t
 async def test_service_begin_and_poll_go_through_the_proxy(monkeypatch, transport, tmp_path):
     """The full `kas login` path: the service's own shared session carries proxy=.
 
-    Zedmor's repro in #20185 was this end-to-end flow -- begin_device plus the
-    approval poll -- timing out on a proxy-only host.
+    begin_device plus the approval poll is the end-to-end flow that times out on a
+    proxy-only host when either request dials the issuer directly.
     """
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": _HTTPS_PROXY})
     monkeypatch.setattr(urllib.request, "proxy_bypass", MagicMock(return_value=False))
@@ -338,3 +357,15 @@ def test_unreachable_message_stays_quiet_when_bypassed(monkeypatch):
     monkeypatch.setattr(urllib.request, "proxy_bypass", MagicMock(return_value=True))
 
     assert cli_kas_login._configured_proxy_note("google", "") == ""
+
+
+def test_unreachable_message_redacts_proxy_credentials(monkeypatch):
+    """An authenticated proxy's password never reaches the printed error line."""
+    authed = "http://alice:s3cretPw@proxy.corp.example:3128"
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": authed})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", MagicMock(return_value=False))
+
+    note = cli_kas_login._configured_proxy_note("google", "")
+
+    assert "s3cretPw" not in note
+    assert "proxy.corp.example:3128" in note
