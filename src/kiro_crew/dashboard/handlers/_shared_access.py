@@ -230,6 +230,8 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
             carried["boot"] = boot
         if str(data.get("no_refresh", "")) == "1":
             carried["no_refresh"] = "1"
+        if str(data.get("owner_mint", "")) == "1":
+            carried["owner_mint"] = "1"
         if str(data.get("require_peer", "")) == "1":
             carried["require_peer"] = "1"
             # Middleware refuses a claimless require_peer cookie, so the

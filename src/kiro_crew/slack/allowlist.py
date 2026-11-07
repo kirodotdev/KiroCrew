@@ -30,9 +30,10 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, generate_token
+from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
 from kiro_crew.dashboard.urls import slack_tunnel_opt_in, tunnel_origin_if_opted_in
 from kiro_crew.sel import sel
-from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel
+from kiro_crew.slack.handler import is_allowed_user, is_owner, is_tracked_channel
 from kiro_crew.tunnel import get_tunnel_url, publish_disabled
 
 if TYPE_CHECKING:
@@ -216,7 +217,15 @@ async def send_dashboard_link(
     local_only = is_local_only(configured_host, True)
     host = resolve_dashboard_host(local_only, configured_host)
 
-    token = generate_token(user_id, session_ttl)
+    # The owner's own link carries the owner-mint claim, so the session can be
+    # told to sign in again once the owner id changes. Ownership is the owner id
+    # the gateway loaded into the Slack handler, not the process environment,
+    # which a container entrypoint scrubs. Allowlisted users' links stay
+    # unmarked and keep the generic denial.
+    minted_for_owner = is_owner(user_id)
+    token = generate_token(
+        user_id, session_ttl, extra=owner_mint_extra() if minted_for_owner else None
+    )
 
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
     # (default false until tunnel mechanism is scaled for general use). An
