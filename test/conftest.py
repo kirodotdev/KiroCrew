@@ -882,7 +882,10 @@ def pytest_configure(config: pytest.Config) -> None:
 # State lives at module level on the controller only: ``pytest_testnodedown``
 # and ``pytest_handlecrashitem`` are controller-side xdist hooks that never
 # fire inside a worker, and ``pytest_internalerror`` only emits when a crash
-# was recorded, so a non-xdist internal error is reported exactly as before.
+# was recorded or a worker finished while still assigned work, so a
+# non-xdist internal error is reported exactly as before.
+
+from conftest_xdist_clean_finish import format_clean_finish_report  # noqa: E402
 
 _crashed_workers: list[tuple[str, str]] = []  # (worker id, error text)
 _crash_victims: list[str] = []  # test nodeids running when their worker died
@@ -952,7 +955,8 @@ def _format_abandoned_run_report(crashes: list[tuple[str, str]], victims: list[s
 
 
 def pytest_internalerror(excrepr, excinfo) -> None:
-    """Replay recorded worker crashes when an INTERNALERROR kills the run.
+    """Replay recorded worker crashes, or name a clean finish with work still
+    assigned, when an INTERNALERROR kills the run.
 
     Written to ``sys.stderr`` directly rather than through the terminal
     reporter: this hook runs on a path where pytest's own reporting machinery
@@ -961,6 +965,9 @@ def pytest_internalerror(excrepr, excinfo) -> None:
     ``INTERNALERROR>`` traceback and exits 3 -- the goal is a diagnosable red,
     not a green.
     """
+    clean_finish = format_clean_finish_report(excinfo)
+    if clean_finish is not None:
+        print(clean_finish, file=sys.stderr, flush=True)
     if not _crashed_workers:
         return
     print(
