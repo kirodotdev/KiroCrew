@@ -1,7 +1,7 @@
 """Update-feed proxy selection without outbound network access."""
 
 import urllib.request
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import aiohttp
 import pytest
@@ -67,7 +67,8 @@ async def test_feed_proxy_selection(monkeypatch, feed_transport, proxies, expect
     assert sessions[0].trust_env is False
     assert sessions[0].closed
     if expected:
-        bypass.assert_called_once_with("updates.example")
+        # Bare host first, then the host qualified with the URL's effective port.
+        assert bypass.call_args_list == [call("updates.example"), call("updates.example:443")]
     else:
         bypass.assert_not_called()
 

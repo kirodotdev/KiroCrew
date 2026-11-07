@@ -51,7 +51,7 @@ class _FakeSession:
         self._responses = list(responses)
         self.calls: list[tuple[str, dict]] = []
 
-    def post(self, url, *, json=None, data=None, headers=None):  # noqa: A002
+    def post(self, url, *, json=None, data=None, headers=None, proxy=None):  # noqa: A002
         self.calls.append((url, json if json is not None else (data or {})))
         return self._responses.pop(0)
 
@@ -429,7 +429,7 @@ async def test_concurrent_ensure_fresh_serializes_single_flight(tmp_path: Path):
         pass
 
     class _CountingSession:
-        def post(self, url, *, json=None, data=None, headers=None):  # noqa: A002
+        def post(self, url, *, json=None, data=None, headers=None, proxy=None):  # noqa: A002
             calls["n"] += 1
             return _CountingResp(
                 200,
