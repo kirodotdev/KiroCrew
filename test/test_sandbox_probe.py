@@ -357,6 +357,8 @@ class TestProbeSplitSequence:
         """
         read_fd, write_fd = pipe_fds
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", errno.ENOSPC)))
+        # ENOSPC now reaches the cap reader; keep this test off the host's own knob.
+        monkeypatch.setattr(sb, "_read_max_user_namespaces", lambda: None)
 
         ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
@@ -642,6 +644,239 @@ class TestProbeSplitSequence:
         )
 
         assert sb._probe_child_thread_count() == 0
+
+
+class TestMaxUserNamespacesRead:
+    """The cap reader yields 0 only from a readable Linux file that holds 0.
+
+    Unmarked, so it runs on every platform: each case pins ``sys.platform`` and
+    points the reader at a tmp file, so none of them reads the host's own knob.
+    """
+
+    @staticmethod
+    def _knob(monkeypatch, tmp_path, content: bytes) -> Path:
+        knob = tmp_path / "max_user_namespaces"
+        knob.write_bytes(content)
+        monkeypatch.setattr(sb, "_MAX_USER_NAMESPACES_PATH", str(knob))
+        return knob
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (b"0\n", 0),
+            (b"15000\n", 15000),
+            (b"-1\n", -1),
+            (b"abc", None),
+            (b"\xff", None),
+        ],
+    )
+    def test_the_file_decides_the_value(self, monkeypatch, tmp_path, content, expected):
+        monkeypatch.setattr(sys, "platform", "linux")
+        self._knob(monkeypatch, tmp_path, content)
+
+        value = sb._read_max_user_namespaces()
+
+        # The type too: a reader that answered False for "unreadable" would compare
+        # equal to 0 and be taken for a disabled cap.
+        assert (type(value), value) == (type(expected), expected)
+
+    def test_a_missing_file_reads_as_none(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sb, "_MAX_USER_NAMESPACES_PATH", str(tmp_path / "absent"))
+
+        assert sb._read_max_user_namespaces() is None
+
+    def test_a_directory_reads_as_none(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sb, "_MAX_USER_NAMESPACES_PATH", str(tmp_path))
+
+        assert sb._read_max_user_namespaces() is None
+
+    def test_a_refused_open_reads_as_none(self, monkeypatch, tmp_path):
+        """The file holds 0, so only a reader that goes through ``open()`` sees the refusal."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        self._knob(monkeypatch, tmp_path, b"0\n")
+
+        with patch("builtins.open", side_effect=PermissionError("denied")):
+            value = sb._read_max_user_namespaces()
+
+        assert value is None
+
+    def test_on_linux_the_reader_opens_the_knob_once(self, monkeypatch, tmp_path):
+        """Positive control for the off-Linux case below: the counting wrapper sees the read."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        knob = self._knob(monkeypatch, tmp_path, b"0\n")
+        opened: list[object] = []
+        real_open = open
+
+        def counting_open(file, *args, **kwargs):
+            opened.append(file)
+            return real_open(file, *args, **kwargs)
+
+        with patch("builtins.open", counting_open):
+            value = sb._read_max_user_namespaces()
+
+        assert value == 0
+        assert opened == [str(knob)]
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    def test_off_linux_nothing_is_opened(self, monkeypatch, tmp_path, platform):
+        """The file holds 0, so a reader that read it off Linux would answer 0, not None."""
+        self._knob(monkeypatch, tmp_path, b"0\n")
+        opened: list[object] = []
+        real_open = open
+
+        def counting_open(file, *args, **kwargs):
+            opened.append(file)
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(sys, "platform", platform)
+        with patch("builtins.open", counting_open):
+            value = sb._read_max_user_namespaces()
+
+        assert value is None
+        assert opened == []
+
+
+#: The NEWUSER reasons the probe parent writes, spelled out rather than computed
+#: by ``_probe_failure``, so an edit to the reason fails here instead of moving
+#: the expected value with it.
+_NEWUSER_ENOSPC = f"unshare(CLONE_NEWUSER) failed with errno {errno.ENOSPC} (ENOSPC)"
+_NEWUSER_EUSERS = f"unshare(CLONE_NEWUSER) failed with errno {errno.EUSERS} (EUSERS)"
+
+
+@_linux_only
+class TestUsernsCapZeroVerdict:
+    """The parent reads the cap once per NEWUSER ENOSPC/EUSERS report, and only then.
+
+    The reader is replaced by a counting fake in every case, so no test reads the
+    host's knob. Each zero-call case also asserts the whole verdict, which is what
+    proves the script reached the step it names: a case that stopped earlier would
+    record zero reads for the wrong reason. Every case past the NEWUSER step patches
+    the identity-map write, as ``TestProbeSplitSequence`` does, so it gets there.
+    """
+
+    @staticmethod
+    def _counting_reader(monkeypatch, value: int | None = 0) -> list[int]:
+        calls: list[int] = []
+
+        def fake_reader() -> int | None:
+            calls.append(1)
+            return value
+
+        monkeypatch.setattr(sb, "_read_max_user_namespaces", fake_reader)
+        return calls
+
+    @staticmethod
+    def _parent(monkeypatch, pipe_fds, *reports):
+        read_fd, write_fd = pipe_fds
+        monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(*reports))
+        return sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+
+    def test_an_enospc_with_the_cap_at_zero_names_the_disabled_cap(self, monkeypatch, pipe_fds):
+        calls = self._counting_reader(monkeypatch, 0)
+
+        verdict = self._parent(monkeypatch, pipe_fds, ("U", errno.ENOSPC))
+
+        # Still transient and so never cached: only the remedy token changes.
+        assert verdict == (False, True, _NEWUSER_ENOSPC, "userns_cap_zero")
+        assert len(calls) == 1
+
+    def test_an_eusers_with_the_cap_at_zero_names_the_disabled_cap(self, monkeypatch, pipe_fds):
+        calls = self._counting_reader(monkeypatch, 0)
+
+        verdict = self._parent(monkeypatch, pipe_fds, ("U", errno.EUSERS))
+
+        # Still permanent, so still cached.
+        assert verdict == (False, False, _NEWUSER_EUSERS, "userns_cap_zero")
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("cap", [15000, -1, None], ids=["raised", "negative", "unreadable"])
+    def test_any_other_reading_keeps_the_ambiguous_token(self, monkeypatch, pipe_fds, cap):
+        calls = self._counting_reader(monkeypatch, cap)
+
+        verdict = self._parent(monkeypatch, pipe_fds, ("U", errno.ENOSPC))
+
+        assert verdict == (False, True, _NEWUSER_ENOSPC, "max_user_namespaces")
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize(
+        ("reports", "expected"),
+        [
+            ((("U", 0), ("N", 0), ("P", 0)), (True, False, "ok", "")),
+            (
+                (("U", errno.EPERM),),
+                (
+                    False,
+                    False,
+                    f"unshare(CLONE_NEWUSER) failed with errno {errno.EPERM} (EPERM)",
+                    "userns_denied",
+                ),
+            ),
+            (
+                (("U", errno.EINVAL),),
+                (
+                    False,
+                    False,
+                    f"unshare(CLONE_NEWUSER) failed with errno {errno.EINVAL} (EINVAL)",
+                    "no_user_ns",
+                ),
+            ),
+            (
+                (("U", 0), ("N", errno.EPERM)),
+                (
+                    False,
+                    False,
+                    f"unshare(CLONE_NEWNS) failed with errno {errno.EPERM} (EPERM)",
+                    "apparmor_userns",
+                ),
+            ),
+            (
+                (("U", 0), ("N", 0), ("P", errno.EACCES)),
+                (
+                    False,
+                    False,
+                    f"mount(MS_REC|MS_PRIVATE) on / failed with errno {errno.EACCES} (EACCES)",
+                    "mount_denied",
+                ),
+            ),
+        ],
+        ids=["success", "newuser-eperm", "newuser-einval", "newns-eperm", "mount-eacces"],
+    )
+    def test_every_other_outcome_never_reads_the_cap(
+        self, monkeypatch, pipe_fds, reports, expected
+    ):
+        calls = self._counting_reader(monkeypatch)
+        monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
+
+        verdict = self._parent(monkeypatch, pipe_fds, *reports)
+
+        assert verdict == expected
+        assert calls == []
+
+    def test_a_harness_failure_never_reads_the_cap(self, monkeypatch, pipe_fds):
+        calls = self._counting_reader(monkeypatch)
+        failure = ("/proc/4242/uid_map write", errno.EACCES)
+        monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: failure)
+
+        verdict = self._parent(monkeypatch, pipe_fds, ("U", 0))
+
+        assert verdict == (
+            False,
+            False,
+            f"/proc/4242/uid_map write failed with errno {errno.EACCES} (EACCES)",
+            "",
+        )
+        assert calls == []
+
+    def test_the_pure_step_mapping_keeps_the_ambiguous_token(self, monkeypatch):
+        """``_remedy_for_step`` stays I/O-free, so the launcher's own parse keeps its token."""
+        calls = self._counting_reader(monkeypatch)
+
+        remedy = sb._remedy_for_step(sb._PROBE_STEP_NEWUSER, errno.ENOSPC)
+
+        assert remedy == "max_user_namespaces"
+        assert calls == []
 
 
 @_linux_only

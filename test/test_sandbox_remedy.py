@@ -11,11 +11,59 @@ out, and the invariant that it never outlives its failure.
 from __future__ import annotations
 
 import errno
+import logging
+import sys
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import kiro_crew.sandbox as sb
+
+# What wrap_argv and the probe write for a host whose user-namespace cap is involved,
+# copied verbatim from the code rather than read from it: a check that the text is
+# unchanged, or exactly what it should be, has to hold its expected value apart from
+# the code under test, or it compares the code with itself and passes any edit.
+
+#: The refusal prefix for an opt-in nobody declared, everything before "Probe detail: ".
+_UNDECLARED_PREFIX = (
+    "Sandbox backend unavailable and allow_unsandboxed_exec is not set. No OS-level "
+    "sandbox backend is available on this host, and the agent subprocess cannot be "
+    "safely isolated. "
+)
+#: The retry lead-in of an ambiguous transient verdict.
+_LEAD_IN = (
+    "This probe failure looks TRANSIENT (momentary resource pressure) — it is not "
+    "cached and the next spawn re-probes automatically. Do NOT disable the sandbox "
+    "for this; retry instead. "
+)
+#: The guidance of the ambiguous cap token, REMEDY_MAX_USER_NAMESPACES.
+_CAP_GUIDANCE = (
+    "User namespace creation hit the per-user cap, which usually means "
+    "user.max_user_namespaces=0 (a CIS-hardened default). Raise that sysctl. "
+)
+#: The guidance of REMEDY_USERNS_CAP_ZERO.
+_CAP_ZERO_GUIDANCE = (
+    "User namespaces are disabled on this host: user.max_user_namespaces is 0, so the "
+    "kernel refuses every unprivileged user namespace and Kiro Crew cannot build its "
+    "sandbox. A value of 0 is a deliberate hardening setting (CIS benchmarks and many "
+    "IT-managed images apply it), so check with whoever manages this host before "
+    "changing it. To allow user namespaces, raise it with `sudo sysctl -w "
+    "user.max_user_namespaces=15000` and make it persistent with `echo "
+    "'user.max_user_namespaces=15000' | sudo tee /etc/sysctl.d/99-userns.conf`. "
+)
+#: remedy_recovery(REMEDY_USERNS_CAP_ZERO, True): the uncached ENOSPC verdict.
+_NOT_CACHED_RECOVERY = (
+    "This result is not cached: the next spawn checks the host again, so no restart "
+    "is needed once the value is raised. "
+)
+#: remedy_recovery(REMEDY_USERNS_CAP_ZERO, False): the cached EUSERS verdict.
+_CACHED_RECOVERY = (
+    "This result is cached for the life of the gateway, so restart the gateway after "
+    "raising the value. "
+)
+_NEWUSER_ENOSPC = f"unshare(CLONE_NEWUSER) failed with errno {errno.ENOSPC} (ENOSPC)"
+_NEWUSER_EUSERS = f"unshare(CLONE_NEWUSER) failed with errno {errno.EUSERS} (EUSERS)"
 
 
 @pytest.fixture(autouse=True)
@@ -228,6 +276,28 @@ class TestRemedyRecording:
         asyncio.run(probe_on_loop())
         assert sb.unavailable_remedy() == ""
 
+    def test_a_deferred_on_loop_probe_never_reads_the_cap(self, monkeypatch) -> None:
+        """No probe runs on the loop, so there is no NEWUSER errno to explain.
+
+        The platform is pinned only while the probe runs, so the deferral branch
+        behind the Linux guard is reached on every runner while asyncio itself
+        starts and stops under the real platform.
+        """
+        import asyncio
+
+        calls: list[int] = []
+        monkeypatch.setattr(sb, "_kick_background_warm", lambda: None)
+        monkeypatch.setattr(sb, "_read_max_user_namespaces", lambda: calls.append(1) or 0)
+
+        async def probe_on_loop() -> bool:
+            with patch.object(sys, "platform", "linux"):
+                return sb._probe_unshare()
+
+        assert asyncio.run(probe_on_loop()) is False
+        assert calls == []
+        assert sb.unavailable_remedy() == ""
+        assert sb.unavailable_reason().startswith("probe deferred")
+
 
 class TestGuidanceProse:
     """Log/doctor/Slack read the message text, so the prose must move too."""
@@ -258,6 +328,7 @@ class TestGuidanceProse:
             sb.REMEDY_NO_USER_NS,
             sb.REMEDY_USERNS_DENIED,
             sb.REMEDY_MOUNT_DENIED,
+            sb.REMEDY_USERNS_CAP_ZERO,
         ):
             assert sb._linux_remedy_guidance(token), token
 
@@ -365,6 +436,170 @@ class TestCapExhaustionReachability:
 
         assert caught.value.kind == "transient"
         assert caught.value.remedy == ""
+
+
+class TestUsernsCapZeroWording:
+    """A cap that read as 0 is named as disabled user namespaces, never as momentary.
+
+    The refusal is unchanged: the same spawns are refused, the ENOSPC verdict stays
+    transient and uncached, the EUSERS verdict stays permanent, and the carve-out and
+    the governance floor behave as before. What changes is the text after the probe
+    detail, which each case pins whole, as a literal, so a sentence added beside the
+    guidance (an opt-out, a retry hint) fails the equality.
+    """
+
+    @staticmethod
+    def _no_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sb, "detect_backend", lambda *_a, **_k: "none")
+        monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: False)
+        monkeypatch.setattr(sb, "_inside_macos_sandbox", lambda: False)
+        # The undeclared refusal prefix, so the text before the marker is pinned too.
+        monkeypatch.setattr(sb, "_unsandboxed_exec_key_declared", lambda: False)
+
+    @staticmethod
+    def _refusal(argv: list[str] | None = None, **kwargs: Any) -> sb.SandboxUnavailableError:
+        with pytest.raises(sb.SandboxUnavailableError) as caught:
+            sb.wrap_argv(argv or ["/bin/true"], **kwargs)
+        return caught.value
+
+    def test_a_transient_cap_zero_refusal_names_the_disabled_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._no_backend(monkeypatch)
+        _plant_failure(True, _NEWUSER_ENOSPC, sb.REMEDY_USERNS_CAP_ZERO)
+
+        exc = self._refusal()
+        message = str(exc)
+
+        assert exc.kind == "transient"
+        assert exc.remedy == "userns_cap_zero"
+        for phrase in (
+            "user.max_user_namespaces is 0",
+            "disabled on this host",
+            "sudo sysctl -w user.max_user_namespaces=",
+            "/etc/sysctl.d/",
+            "hardening",
+            "This result is not cached",
+            "no restart is needed",
+        ):
+            assert phrase in message, phrase
+        assert "transient" not in message.lower()
+        assert "retry" not in message.lower()
+        assert message.count("Probe detail: ") == 1
+        head, tail = message.split("Probe detail: ", 1)
+        assert head == _UNDECLARED_PREFIX
+        assert tail == _NEWUSER_ENOSPC + ". " + _CAP_ZERO_GUIDANCE + _NOT_CACHED_RECOVERY
+        # A transient verdict never buys the first-party carve-out.
+        assert self._refusal(first_party_fixed_argv=True).kind == "transient"
+
+    @pytest.mark.parametrize("in_container", [True, False], ids=["container", "host"])
+    def test_a_permanent_cap_zero_refusal_names_the_restart(
+        self, monkeypatch: pytest.MonkeyPatch, in_container: bool
+    ) -> None:
+        """Chosen before the container and no-backend branches, so neither text follows."""
+        self._no_backend(monkeypatch)
+        monkeypatch.setattr(sb, "is_docker_container", lambda: in_container)
+        _plant_failure(False, _NEWUSER_EUSERS, sb.REMEDY_USERNS_CAP_ZERO)
+
+        exc = self._refusal()
+        message = str(exc)
+
+        assert exc.kind == "no_backend"
+        assert exc.remedy == "userns_cap_zero"
+        assert "restart the gateway" in message
+        assert "transient" not in message.lower()
+        assert "retry" not in message.lower()
+        assert "seccomp" not in message
+        assert "allow_unsandboxed_exec=true" not in message
+        assert message.count("Probe detail: ") == 1
+        tail = message.split("Probe detail: ", 1)[1]
+        assert tail == _NEWUSER_EUSERS + ". " + _CAP_ZERO_GUIDANCE + _CACHED_RECOVERY
+
+    def test_a_permanent_cap_zero_keeps_the_first_party_carve_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._no_backend(monkeypatch)
+        # No trusted `env` binary, so the passthrough returns the argv itself on
+        # every platform rather than behind an `env -u` scrub prefix.
+        monkeypatch.setattr(sb, "_ENV_BINARY_CANDIDATES", ())
+        _plant_failure(False, _NEWUSER_EUSERS, sb.REMEDY_USERNS_CAP_ZERO)
+        audit = MagicMock()
+
+        with patch("kiro_crew.sel.sel", return_value=audit):
+            wrapped, cleanup = sb.wrap_argv(["/bin/true"], first_party_fixed_argv=True)
+
+        assert (wrapped, cleanup) == (["/bin/true"], None)
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "unconfined"
+
+    def test_the_governance_floor_still_replaces_the_cap_zero_guidance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor's text replaces every guidance, this one included."""
+        self._no_backend(monkeypatch)
+        monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: "strict")
+        monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: True)
+        _plant_failure(False, _NEWUSER_EUSERS, sb.REMEDY_USERNS_CAP_ZERO)
+
+        message = str(self._refusal())
+
+        assert "This host is GOVERNED" in message
+        assert "User namespaces are disabled on this host" not in message
+        assert "restart the gateway" not in message
+
+    def test_the_cap_zero_guidance_offers_no_opt_out(self) -> None:
+        guidance = sb.remedy_guidance(sb.REMEDY_USERNS_CAP_ZERO)
+
+        assert guidance == _CAP_ZERO_GUIDANCE
+        assert "allow_unsandboxed_exec" not in guidance
+        assert "disable the sandbox" not in guidance.lower()
+
+    def test_the_ambiguous_cap_message_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cap that did not read as 0 keeps today's lead-in and guidance, byte for byte."""
+        self._no_backend(monkeypatch)
+        reason = TestCapExhaustionReachability._cap_reason()
+        _plant_failure(True, reason, sb.REMEDY_MAX_USER_NAMESPACES)
+
+        message = str(self._refusal())
+
+        assert message.count("Probe detail: ") == 1
+        assert message.split("Probe detail: ", 1)[1] == reason + ". " + _LEAD_IN + _CAP_GUIDANCE
+
+    def test_a_cap_zero_host_recovers_on_the_next_spawn(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Uncached, so raising the cap needs no restart; and the log never says "transiently"."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sb, "_PROBE_TRANSIENT_RETRY_DELAY_SECS", 0)
+        monkeypatch.setattr(sb, "_backend", None)
+        monkeypatch.setattr(sb, "_probe_sandbox_exec", lambda: False)
+        monkeypatch.setattr(
+            sb,
+            "_probe_unshare_once",
+            lambda: (False, True, _NEWUSER_ENOSPC, sb.REMEDY_USERNS_CAP_ZERO),
+        )
+        caplog.set_level(logging.WARNING, logger="kiro_crew.sandbox")
+
+        assert sb.detect_backend() == "none"
+        assert sb._backend is None
+
+        messages = [record.getMessage() for record in caplog.records]
+        cap_lines = [m for m in messages if "user.max_user_namespaces=0" in m]
+        assert len(cap_lines) == 1, messages
+        assert "NOT cached" in cap_lines[0]
+        assert not any("transiently" in m for m in messages), messages
+
+        monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok", ""))
+        assert sb.detect_backend() == "namespace"
+
+    def test_remedy_recovery_states_each_verdict_s_cache_rule(self) -> None:
+        assert sb.remedy_recovery(sb.REMEDY_USERNS_CAP_ZERO, True) == _NOT_CACHED_RECOVERY
+        assert sb.remedy_recovery(sb.REMEDY_USERNS_CAP_ZERO, False) == _CACHED_RECOVERY
+        for token, transient in (
+            (sb.REMEDY_MAX_USER_NAMESPACES, True),
+            (sb.REMEDY_MAX_USER_NAMESPACES, False),
+            ("", True),
+        ):
+            assert sb.remedy_recovery(token, transient) == "", (token, transient)
 
 
 class TestWrapArgvWiring:

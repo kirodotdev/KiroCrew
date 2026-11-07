@@ -374,6 +374,39 @@ class TestReadEndpoints:
         assert "kirocrew doctor" not in body["error"]
         assert "no sandbox" not in body["error"]
 
+    @pytest.mark.parametrize("kind", ["transient", "no_backend"])
+    async def test_preflight_cap_zero_refusal_names_the_disabled_cap(
+        self, tmp_path, monkeypatch, kind
+    ):
+        """A cap read as 0 is named for any kind, never as a limit a moment clears."""
+        import kiro_crew.sandbox
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(p, r):
+            raise SandboxUnavailableError(
+                "refused",
+                kind=kind,
+                detail="probe",
+                remedy=kiro_crew.sandbox.REMEDY_USERNS_CAP_ZERO,
+            )
+
+        monkeypatch.setattr(hc.iam, "reachability_check", _refused)
+        resp = await hc.api_cloud_preflight(
+            _req("GET", "/api/cloud/preflight", state=_state(tmp_path))
+        )
+        assert resp.status == 503
+        body = _body(resp)
+        assert body["code"] == "sandbox_unavailable"
+        assert body["kind"] == kind
+        assert body["detail"] == "probe"
+        assert body["remedy"] == "userns_cap_zero"
+        assert "user.max_user_namespaces=0" in body["error"]
+        assert "kirocrew doctor" in body["error"]
+        assert "credentials were not checked" in body["error"]
+        error = body["error"].lower()
+        for phrase in ("temporary", "try again", "in a moment"):
+            assert phrase not in error, phrase
+
 
 class TestPluginInstallCommand:
     """The remedy must match the GATEWAY's platform. A hardcoded Homebrew line is

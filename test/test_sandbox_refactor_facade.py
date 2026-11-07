@@ -276,7 +276,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _PROBE_SPAWN_TIMEOUT_SECONDS _probe_spawn_unavailable_logged _probe_spawned_death
         _probe_unshare_via_spawn _probe_unshare_via_fork is_wsl is_docker_container
         _probe_sandbox_exec _inside_kirocrew_sandbox _macos_sandbox_state
-        _inside_macos_sandbox
+        _inside_macos_sandbox _MAX_USER_NAMESPACES_PATH _read_max_user_namespaces
+        REMEDY_USERNS_CAP_ZERO
         """.split()),
     "kiro_crew.sandbox_unavailable": tuple("""
         _allow_no_isolation UNSANDBOXED_BY_OPERATOR UNSANDBOXED_BY_PLATFORM
@@ -299,6 +300,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
+        remedy_recovery
         """.split()),
     "kiro_crew.sandbox_cgroup": tuple("""
         _CGROUP_DEFAULT_MAX_PROCESSES _CGROUP_DEFAULT_CPU_WEIGHT _CGROUP_MEMORY_FRACTION

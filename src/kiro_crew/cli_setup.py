@@ -48,7 +48,7 @@ from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused
 from kiro_crew.host_timezone import LOCAL_TIMEZONE, detect_host_timezone, is_local_timezone
-from kiro_crew.sandbox import unavailable_kind
+from kiro_crew.sandbox import REMEDY_USERNS_CAP_ZERO, unavailable_kind, unavailable_remedy
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
@@ -1313,6 +1313,15 @@ def _setup_sandbox_consent() -> None:
         kind = unavailable_kind()
     except Exception as exc:  # pragma: no cover — defensive
         print(f"  ⚠️  Could not probe for a sandbox backend: {exc}")
+        return
+    if kind == "transient" and unavailable_remedy() == REMEDY_USERNS_CAP_ZERO:
+        # Still not grounds for an opt-in (the verdict is uncached, like any
+        # transient one), but the cause is certain, so it is named instead of
+        # being called momentary pressure that a retry clears.
+        print("── Sandbox ──\n")
+        print("  User namespaces are disabled on this host (user.max_user_namespaces=0),")
+        print("  so Kiro Crew cannot build its sandbox and no opt-in is offered.")
+        print("  Run `kirocrew doctor` for the fix.\n")
         return
     if kind == "transient":
         # A momentary fork/resource failure is NOT grounds for a permanent

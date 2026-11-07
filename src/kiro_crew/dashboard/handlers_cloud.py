@@ -50,7 +50,11 @@ from kiro_crew.dashboard.handlers.source_providers import (
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.defaults import RecipientMoved
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
-from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
+from kiro_crew.sandbox import (
+    REMEDY_USERNS_CAP_ZERO,
+    SandboxCeilingUnsealable,
+    SandboxUnavailableError,
+)
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
@@ -408,7 +412,9 @@ def _sandbox_unavailable_response(
 
     The sentence follows ``exc.kind``: only ``no_backend`` means this host has no
     sandbox. ``transient`` clears on a retry, and ``foreign_sandbox`` means an
-    outer sandbox confines the gateway while the host's own sandbox is fine.
+    outer sandbox confines the gateway while the host's own sandbox is fine. A
+    ``REMEDY_USERNS_CAP_ZERO`` remedy is named first, for any kind: the probe read
+    ``user.max_user_namespaces`` as 0, so no retry clears it.
     """
     logger.warning(
         "cloud %s: aws call refused by the sandbox (kind=%s, detail=%s); returning 503",
@@ -418,7 +424,13 @@ def _sandbox_unavailable_response(
     )
     _audit(op, "failure", request_id=request_id, error=f"sandbox_unavailable: {exc.detail}")
     not_sent = "nothing was sent to AWS and your credentials were not checked."
-    if exc.kind == "transient":
+    if exc.remedy == REMEDY_USERNS_CAP_ZERO:
+        reason = (
+            "user namespaces are disabled on this host (user.max_user_namespaces=0), so "
+            f"the sandbox for the aws command cannot start and {not_sent} Run "
+            "`kirocrew doctor` in a terminal for the fix."
+        )
+    elif exc.kind == "transient":
         reason = (
             "the sandbox for the aws command hit a temporary limit, so "
             f"{not_sent} Try again in a moment."
