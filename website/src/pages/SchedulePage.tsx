@@ -142,6 +142,7 @@ export function CollapsibleMessage({ message }: { message: string }) {
     <div className="text-sm">
       <Btn
         onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
+        aria-expanded={open}
         className="!p-0 !border-none !rounded-none flex items-start gap-1 text-left w-full hover:text-text-strong"
         title={open ? i18nT('pages.schedulePage.collapse') : i18nT('pages.schedulePage.expand')}
       >
