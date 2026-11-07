@@ -1788,6 +1788,10 @@ to this kind would store content no reader can parse.
   re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
   automatic re-mint: a second `load` also happens when a link inside an artifact
   navigates the frame, and silently pulling the reader back would fight them.
+  The crewmate Dashboard tab differs and re-mints by itself
+  (`useFrameAliveRecovery`): its links go through the host's link bridge, so its
+  frame has no navigation of its own to fight, and a document that does not
+  answer the host's ping after a `load` is re-minted, at most three times in a row.
   `/sandbox-doc/` is on the service worker's skip list for the same single-use
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget
