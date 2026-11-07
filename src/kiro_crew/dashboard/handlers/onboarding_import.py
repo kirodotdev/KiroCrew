@@ -550,9 +550,13 @@ def _backfill_embeddings(vector_store: object) -> int:
     if not callable(backfill):
         return 0
     try:
-        from kiro_crew.embeddings import get_shared_embedder, model_file_present
+        from kiro_crew.embeddings import (
+            get_shared_embedder,
+            model_file_present,
+            ollama_backend_selected,
+        )
 
-        if not model_file_present():
+        if not model_file_present() and not ollama_backend_selected():
             # Still downloading — the gateway's own boot sweep backfills later.
             return 0
         embedder = get_shared_embedder()

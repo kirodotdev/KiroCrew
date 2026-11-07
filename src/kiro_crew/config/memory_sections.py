@@ -28,6 +28,12 @@ HISTORY_IDLE_HOURS_MIN = 0.5
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
 KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
+#: backend in :mod:`kiro_crew.embeddings_ollama`.
+OLLAMA_HTTP_PROVIDER = "ollama_http"
+EMBEDDING_PROVIDERS = ("llama_cpp", OLLAMA_HTTP_PROVIDER)
+OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
+
 
 @dataclass
 class MemoryConfig:
@@ -35,9 +41,14 @@ class MemoryConfig:
         default="llama_cpp",
         metadata=_meta(
             "Embedding Provider",
-            "Vector embedding backend (always-on). In-process via vendored llama-cpp-python. "
-            "Legacy configs with 'ollama' or 'none' are auto-migrated to 'llama_cpp'.",
-            enum=["llama_cpp"],
+            "Vector embedding backend (always-on). 'llama_cpp' runs the model in-process "
+            "via vendored llama-cpp-python. 'ollama_http' sends memory and knowledge text "
+            "to the Ollama server at memory.ollama_url; set memory.ollama_model and "
+            "memory.embedding_dim to match its model. Legacy configs with 'ollama' or "
+            "'none' are auto-migrated to 'llama_cpp'. Switching changes the vector "
+            "space, so stored embeddings are regenerated in the background.",
+            enum=list(EMBEDDING_PROVIDERS),
+            restart=True,
         ),
     )
     embedding_dim: int = field(
@@ -47,6 +58,36 @@ class MemoryConfig:
             "Dimensionality of embedding vectors. Changing it changes the vector "
             "space, so every stored embedding must be regenerated -- applied by the "
             "Settings embedding-model action, not by a plain config write.",
+            restart=True,
+        ),
+    )
+    ollama_url: str = field(
+        default=OLLAMA_DEFAULT_URL,
+        metadata=_meta(
+            "Ollama URL",
+            "Base URL of the Ollama server used when embedding_provider is "
+            "'ollama_http'. A loopback address keeps text on this machine; any other "
+            "host needs ollama_allow_remote and an https:// URL. Credentials, query "
+            "strings and redirects are refused.",
+            restart=True,
+        ),
+    )
+    ollama_model: str = field(
+        default="",
+        metadata=_meta(
+            "Ollama Embedding Model",
+            "Name of the embedding model the Ollama server serves, as listed by its "
+            "/api/tags (for example 'nomic-embed-text'). Required for 'ollama_http'. "
+            "It names the vector space, so changing it regenerates stored embeddings.",
+            restart=True,
+        ),
+    )
+    ollama_allow_remote: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Remote Ollama Server",
+            "Permit a non-loopback memory.ollama_url. Memory and knowledge text then "
+            "leaves this machine, so it is off by default and the URL must use https://.",
             restart=True,
         ),
     )
@@ -468,12 +509,16 @@ def lesson_extraction_enabled(memory: object) -> bool:
 def _coerce_embedding_provider(raw: str) -> str:
     """Normalize legacy or unknown embedding_provider values.
 
-    Embeddings are always-on: every value coerces to the field's default,
-    ``"llama_cpp"``, the one provider. Old configs may carry ``"ollama"`` (a retired
-    runtime) or ``"none"`` (the disabled setting); both are transparently upgraded.
-    Unknown values also coerce so a config file from a newer/older version never
-    crashes.
+    Embeddings are always-on: a value in :data:`EMBEDDING_PROVIDERS` is kept and
+    every other one coerces to the field's default, ``"llama_cpp"``. Old configs may
+    carry ``"ollama"`` (a different, retired runtime) or ``"none"`` (the disabled
+    setting); both are transparently upgraded, never mapped to ``"ollama_http"``,
+    because that would send an existing install's text to a server it may not
+    run. Unknown values also coerce so a config file from a newer/older
+    version never crashes.
     """
+    if raw in EMBEDDING_PROVIDERS:
+        return raw
     return field_default(MemoryConfig, "embedding_provider")
 
 

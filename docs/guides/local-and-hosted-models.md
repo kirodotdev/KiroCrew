@@ -1,7 +1,9 @@
 # Using local and hosted models through OpenCode, Pi, or goose
 
-Kiro Crew does not call LM Studio, OpenRouter, or Ollama itself. The harnesses
-it can drive already do: [OpenCode](https://opencode.ai/docs/),
+Kiro Crew does not call LM Studio, OpenRouter, or Ollama itself for the chat
+model; only memory embeddings can opt into an Ollama server
+(`memory.embedding_provider`). The harnesses it can drive already do:
+[OpenCode](https://opencode.ai/docs/),
 [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent), and
 [goose](https://block.github.io/goose/). Each keeps its own provider
 configuration and credentials. Kiro Crew starts the harness, and the chat model
