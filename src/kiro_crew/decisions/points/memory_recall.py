@@ -210,10 +210,10 @@ def kept_memories(
 
     1. this is not an owner dashboard call — refuse, before anything else. The
        CALLER decides this (``handlers/memory_member._memory_recall_keep``, gated
-       on ``session_surface.dashboard_surfaced_keys()``): the receipt rides a reply
-       someone is looking at, so a cron, sub-agent, integration or closed tab is
-       never asked about. A channel-born session with its dashboard tab open does
-       qualify;
+       on ``session_surface.dashboard_surfaced_keys()`` and an open owner dashboard
+       socket): the receipt rides a reply someone is looking at, so a cron,
+       sub-agent, integration or closed tab is never asked about. A channel-born
+       session with its dashboard tab open does qualify;
     2. no usable loop, or this thread is running one — refuse. Waiting on a
        future from the loop's own thread would deadlock the loop;
     3. there are no candidates — refuse. An empty block is what both arms
