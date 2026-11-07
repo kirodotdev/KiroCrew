@@ -412,10 +412,12 @@ class TestLessonDedupPaths:
     def test_the_authority_pre_pass_skips_rows_the_lexical_branches_claim(
         self, tmp_path: Path
     ) -> None:
-        """A row substring/topic-overlap would resolve keeps main's outcome.
+        """A consolidation write containing a ``user_explicit`` rule keeps both.
 
-        The pre-pass covers pure semantic matches only; the source-blind substring branch
-        still deletes a contained ``user_explicit`` row ("longer wins").
+        The pre-pass covers pure semantic matches only, so the substring
+        branch claims this pair first (per-row branch order). That branch
+        must not turn it into an authority decline, and must not retire the
+        user's own rule either: the submission is stored beside it.
         """
         taught = "Zebra crossings need beacons"
         submitted = "Zebra crossings need beacons after dusk"
@@ -425,8 +427,51 @@ class TestLessonDedupPaths:
         result = store.write_lesson(submitted, source="consolidation")
         assert result  # stored, not declined
         assert result.outcome is LessonWriteOutcome.INSERTED
-        assert len(result.superseded) == 1  # the contained row was superseded
-        assert _lesson_texts(store) == [submitted]
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == sorted([taught, submitted])
+
+    @pytest.mark.parametrize("stored_source", ["user_explicit", "import"])
+    def test_a_topic_overlap_write_keeps_an_outranking_row(
+        self, tmp_path: Path, stored_source: str
+    ) -> None:
+        """A consolidation write sharing half its keywords never retires a higher row.
+
+        ``user_explicit`` outranks by source; the onboarding import's 1.0 outranks
+        the write's 0.9 by confidence.
+        """
+        taught = "Quokkas patrol the deck"
+        submitted = "Quokkas patrol the western observation deck at dawn"
+        store = _store(tmp_path)
+        if stored_source == "user_explicit":
+            assert store.write_lesson(taught)
+        else:
+            key = f"lesson.{hashlib.sha256(taught.encode()).hexdigest()[:16]}"
+            value = {"rule": taught, "category": "preference", "negative": None}
+            assert store.set_semantic_if_absent(key, value, 1.0, "import") == "imported"
+        result = store.write_lesson(submitted, source="consolidation")
+        assert result.outcome is LessonWriteOutcome.INSERTED
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == sorted([taught, submitted])
+
+    def test_a_semantic_match_the_pre_pass_skips_keeps_an_outranking_row(
+        self, tmp_path: Path
+    ) -> None:
+        """The scan's semantic branch keeps a user rule the pre-pass left to the scan.
+
+        The stored row is an ``on_topic`` finding that contains the standing
+        submission, so the pre-pass skips it as lexical and the substring branch
+        does not decline it; the keyword ratio is under 0.5, so only the cosine
+        branch matches.
+        """
+        taught = "Quokkas patrol the western observation deck at dawn every single morning"
+        submitted = "patrol the western observation deck"
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder({taught: _unit(0), submitted: _unit(0)})
+        assert store.write_lesson(taught, applies="on_topic")  # user_explicit
+        result = store.write_lesson(submitted, source="consolidation")
+        assert result.outcome is LessonWriteOutcome.INSERTED
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == sorted([taught, submitted])
 
     def test_a_substring_covered_refusal_drops_the_deferred_semantic_deletes(
         self, tmp_path: Path

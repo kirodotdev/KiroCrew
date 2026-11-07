@@ -779,7 +779,7 @@ outlive the incognito or temporary boundary that prohibits derived memory.
 
 ### Lesson Extraction from Chat
 
-The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). V1 lesson writes use `write_lesson()` with substring and topic-overlap dedup (shared keywords ≥ 50% of the LARGER of the two keyword sets → newer replaces older), or `LessonStore.save()` when vector memory is inactive. V2 publishes lessons inside the consolidation transaction and never constructs a JSONL fallback.
+The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). V1 lesson writes use `write_lesson()` with substring and topic-overlap dedup (shared keywords ≥ 50% of the LARGER of the two keyword sets → newer replaces older, unless the stored row outranks the write), or `LessonStore.save()` when vector memory is inactive. V2 publishes lessons inside the consolidation transaction and never constructs a JSONL fallback.
 
 ### Configuration
 
@@ -3839,6 +3839,13 @@ whose `repo_scope` is present but unusable counts as neither.
   makes its text longer and its guidance NARROWER, so the row that survives can be the
   one that applies in fewer cases.
 - Topic-overlap dedup: "use light mode" replaces "use dark mode" (shared keywords ≥ 50% of the LARGER keyword set → newer wins)
+- Neither lexical rule deletes a stored row that outranks the write (`user_explicit` over
+  another source, or strictly higher stored confidence): the submission is stored beside it.
+  The cost is that a consolidation correction of a user rule ("use light mode" over a
+  `user_explicit` "use dark mode") leaves both in effect until a `user_explicit` write or a
+  delete retires the old one. The authority pre-pass declines a pure semantic
+  near-duplicate instead: above 0.85 cosine it carries no new text, while a lexical match
+  can carry a new condition the user may want
 - Allowlist validation, injection scanning, audit logging
 
 Substring-delete and topic-overlap are not independent: verbatim containment at word
@@ -3848,7 +3855,7 @@ did. Suppressing either one alone does not keep both lessons — which is why
 `write_lesson` REPORTS its deletions (below) rather than declining to make them, and
 why a caller that must never replace an existing lesson routes to
 `set_semantic_if_absent` instead (see `onboarding_import`, whose comment records that a
-foreign directive could otherwise delete a correction the user taught the agent).
+foreign directive could otherwise delete a lesson already in the store).
 
 **A call that stores nothing deletes nothing.** Every branch above QUEUES its
 supersedes; the queue drains only after the semantic write commits the submission. The
@@ -4046,7 +4053,7 @@ lesson beat a contradicting preference in the same prompt.
 | Lesson contradicts a preference | Lesson wins via the `[Learned corrections]` framing | `context.py` |
 | Two semantic writes to one key in V1 | User-explicit writes win; automated writes cannot replace a user-explicit fact, and otherwise use the existing confidence precedence | `vector_memory._write_semantic()` |
 | Two semantic writes to one key in V2 | Owner correction or verified transcript correction with matching revision replaces the fact; other changed automated assertions remain reviewable proposals | `vector_memory._write_semantic()` |
-| Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins, regardless of source), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older regardless of source), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). A non-mutating authority pre-pass decides semantic-match refusals before the scan; it mirrors the earlier substring/topic branches, which remain source-blind. Every branch's deletions are deferred and execute only after the semantic write commits, so a call that stores nothing deletes nothing: a `deduped` verdict from any branch and a `refused` from the semantic write each preserve every live lesson row and report empty `superseded` (a lazy embedding backfill for a row the call read may still have flushed, which changes a vector and no lesson). `delete_semantic` takes an optional `expect_value_json`, carrying the comparison inside its own UPDATE, so a queued row is tombstoned only while its stored body is still the version the scan read and one a competing writer changed is skipped -- the same compare-and-write contract the lazy embedding backfill applies, atomic against another process, and what covers the write's own key once `set_semantic` has committed under it. A drain that stops partway (raised error, killed process) keeps the submission and leaves the rows it had not reached: the residue is a duplicate, never a lost lesson, and the next write matching those rows retires them. Every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
+| Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). No branch deletes a row that outranks the write by that same rule: the two lexical branches store the submission beside it, so a consolidation rewording never retires the user's own lesson. A non-mutating authority pre-pass decides semantic-match refusals before the scan; it skips the rows the earlier substring/topic branches claim. Every branch's deletions are deferred and execute only after the semantic write commits, so a call that stores nothing deletes nothing: a `deduped` verdict from any branch and a `refused` from the semantic write each preserve every live lesson row and report empty `superseded` (a lazy embedding backfill for a row the call read may still have flushed, which changes a vector and no lesson). `delete_semantic` takes an optional `expect_value_json`, carrying the comparison inside its own UPDATE, so a queued row is tombstoned only while its stored body is still the version the scan read and one a competing writer changed is skipped -- the same compare-and-write contract the lazy embedding backfill applies, atomic against another process, and what covers the write's own key once `set_semantic` has committed under it. A drain that stops partway (raised error, killed process) keeps the submission and leaves the rows it had not reached: the residue is a duplicate, never a lost lesson, and the next write matching those rows retires them. Every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
 | Distinct lessons in V2 | Different rule text coexists without substring, topic or embedding deduplication. Exact-rule enrichment remains; key-targeted corrections use the owner/revision machinery | `vector_memory.write_lesson()` |
 | Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `VectorMemoryStore.search_episodic()` (`vector_memory_runtime/episodic_search.py`) |
 | A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | the publication tail of `vector_memory._write_semantic()` (`vector_memory_runtime/semantic.py`), after the write commits |
