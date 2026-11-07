@@ -16,7 +16,7 @@ import { configureStore } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { resolveByApprovalId, selectSlotPendingApproval, sseChatMessage, switchSlot, warmSlotCache } from './chatSlice'
+import chatReducer, { resolveApprovalRow, selectSlotPendingApproval, sseChatMessage, switchSlot, warmSlotCache } from './chatSlice'
 import { api } from '../api/client'
 import { keepPendingCoordinatorApprovals } from './chat/coordinatorApprovals'
 import type { ChatMessage } from '../types'
@@ -49,7 +49,10 @@ const otherPage = {
 /** The row `useWebSocket` writes for a coordinator `approval` frame. */
 const approvalFrame = (slot: string, id = APPROVAL_ID) => sseChatMessage({
   slot, role: 'permission', content: '[subagent] Write File', ts: ts(5),
-  meta: { tool_input: '{}', approval_id: id, source: 'subagent', registry: 'coordinator' },
+  meta: {
+    tool_input: '{}', approval_id: id, source: 'subagent', registry: 'coordinator',
+    approval_target: { origin: 'coordinator', id, slot, instance: `inst-${id}` },
+  },
 })
 
 function makeStore() {
@@ -152,7 +155,10 @@ describe('a pending coordinator approval stays on its chat (#28691)', () => {
     const store = makeStore()
     await store.dispatch(switchSlot(PARENT))
     store.dispatch(approvalFrame(PARENT))
-    store.dispatch(resolveByApprovalId({ id: APPROVAL_ID, slot: PARENT, decision: 'approved', registry: 'coordinator' }))
+    store.dispatch(resolveApprovalRow({
+      target: { origin: 'coordinator', id: APPROVAL_ID, slot: PARENT, instance: `inst-${APPROVAL_ID}` },
+      decision: 'approved',
+    }))
     expect(pendingId(store, PARENT)).toBeUndefined()
 
     await store.dispatch(switchSlot(OTHER))

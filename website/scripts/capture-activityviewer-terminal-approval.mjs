@@ -18,7 +18,7 @@ import { mkdirSync } from 'node:fs'
 const BASE = process.argv[2] || 'http://127.0.0.1:6823'
 const OUT = process.argv[3] || '../temp-screenshots/activityviewer-terminal-approval'
 const BEFORE = process.argv.includes('--before')
-const EXPECTED = 'This approval has expired or was already decided'
+const EXPECTED = 'This approval expired, was already decided'
 mkdirSync(OUT, { recursive: true })
 
 const browser = await chromium.launch()

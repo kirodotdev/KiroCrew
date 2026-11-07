@@ -156,11 +156,29 @@ describe('CollapsibleToolGroup approval dispatch', () => {
 
     fireEvent.click(screen.getByText(T('approve')))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // A refused decide is a failed request: it renders through ErrorNotice
+    // (errors-use-error-notice), the gone sentence included.
+    const gone = await screen.findByRole('alert')
+    expect(gone).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
     expect(screen.queryByText(T('approve'))).not.toBeInTheDocument()
     expect(screen.queryByText(T('reject'))).not.toBeInTheDocument()
+    // Nothing is left to decide, so the header no longer says one is needed.
+    expect(screen.queryByText(T('approval_needed'))).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(T('approval_needed'))).not.toBeInTheDocument()
+  })
+
+  it('a terminal refusal drops the pending amber bar from the command preview', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onApprove = vi.fn().mockRejectedValue(new ApiError(404, 'not found'))
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission permissionMeta={{ tool_input: 'zzq --run' }} onApprove={onApprove}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    expect(screen.getByTestId('tool-group-approval-preview').className).toContain('amber')
+    fireEvent.click(screen.getByText(T('approve')))
+    await screen.findByRole('alert')
+    expect(screen.getByTestId('tool-group-approval-preview').className).not.toContain('amber')
   })
 
   it('keeps an auth-required 404 retryable and shows the server refusal', async () => {

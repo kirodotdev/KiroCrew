@@ -6,7 +6,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 
-import chatReducer, { replaceMessages, resolveByApprovalId, setActiveSlot } from '../store/chatSlice'
+import chatReducer, { replaceMessages, resolveElicitationRow, setActiveSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
@@ -111,19 +111,34 @@ describe('chatSlice elicitation rows', () => {
     expect(s2.messages.find(m => m.role === 'elicitation')?.meta?.resolved).toBeUndefined()
   })
 
-  it('resolveByApprovalId writes an elicitation answer onto the row the mid names', () => {
+  it('resolveElicitationRow writes an elicitation answer onto the row the mid names', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('A'))
     store.dispatch(replaceMessages([
       msg({ role: 'elicitation', content: 'old ask', meta: { approval_id: 'el-1', mid: 'm-old' } }),
       msg({ role: 'elicitation', content: 'live ask', meta: { approval_id: 'el-1', mid: 'm-live' } }),
     ]))
-    store.dispatch(resolveByApprovalId({ slot: 'A', id: 'el-1', decision: 'accept', mid: 'm-live', answer: { confirm: true } }))
+    store.dispatch(resolveElicitationRow({ slot: 'A', id: 'el-1', decision: 'accept', mid: 'm-live', answer: { confirm: true } }))
     const [old, live] = chat(store).messages
     expect(live.meta?.resolved).toBe('accept')
     expect(live.meta?.answer).toEqual({ confirm: true })
     expect(old.meta?.resolved).toBeUndefined()
     expect(old.meta?.answer).toBeUndefined()
+  })
+
+  it('resolveElicitationRow never settles a permission row under the same id', () => {
+    // An ACP request id is connection-scoped, so a tool permission can carry
+    // the id an elicitation used: the permission is settled by its own target.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({ role: 'permission', content: 'run tool?', meta: { approval_id: 'el-2', mid: 'm-perm' } }),
+      msg({ role: 'elicitation', content: 'Really?', meta: { approval_id: 'el-2', mid: 'm-ask' } }),
+    ]))
+    store.dispatch(resolveElicitationRow({ slot: 'A', id: 'el-2', decision: 'decline' }))
+    const [permission, ask] = chat(store).messages
+    expect(permission.meta?.resolved).toBeUndefined()
+    expect(ask.meta?.resolved).toBe('decline')
   })
 })
 

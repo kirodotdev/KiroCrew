@@ -28,7 +28,7 @@ import reducer, {
   openActivityPanel,
   openActivityToTab,
   switchSlot,
-  resolveByApprovalId,
+  resolveApprovalRow,
   selectSlotSubagentsActive,
   selectSlotPendingSpawnApprovals,
   selectSlotPendingApproval,
@@ -536,74 +536,79 @@ describe('permission cls parsing and approval resolution', () => {
     expect(state.messages[0].meta?.approval_id).toBe('req-existing')
   })
 
-  it('resolveByApprovalId marks permission as approved', () => {
-    const cls = JSON.stringify({ request_id: 'req-1' })
-    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-1', decision: 'approved' }))
+  // A runner row is named by its slot, its id and the delivery `mid` it was
+  // written with; the same id under another mid is another request.
+  const native = (id: string, mid = `m-${id}`) => ({ origin: 'native' as const, id, slot, mid })
+  const runnerRow = (id: string, mid = `m-${id}`) => sseChatMessage({
+    slot, role: 'permission', content: 'approve?', cls: JSON.stringify({ request_id: id }), meta: { mid },
+  })
+
+  it('resolveApprovalRow marks permission as approved', () => {
+    let state = reducer(mkState(), runnerRow('req-1'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-1'), decision: 'approved' }))
     expect(state.messages[0].meta?.resolved).toBe('approved')
   })
 
-  it('resolveByApprovalId marks permission as rejected', () => {
-    const cls = JSON.stringify({ request_id: 'req-2' })
-    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-2', decision: 'rejected' }))
+  it('resolveApprovalRow marks permission as rejected', () => {
+    let state = reducer(mkState(), runnerRow('req-2'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-2'), decision: 'rejected' }))
     expect(state.messages[0].meta?.resolved).toBe('rejected')
   })
 
-  it('resolveByApprovalId is no-op for unknown id', () => {
-    const cls = JSON.stringify({ request_id: 'req-3' })
-    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-unknown' }))
+  it('resolveApprovalRow is a no-op for an unknown request', () => {
+    let state = reducer(mkState(), runnerRow('req-3'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-unknown'), decision: 'approved' }))
     expect(state.messages[0].meta?.resolved).toBeUndefined()
   })
 
-  it('resolveByApprovalId does not downgrade a decided row to stale', () => {
+  it('resolveApprovalRow leaves a row the same id names under another mid', () => {
+    // The id recurs; the mid names which request the row was raised for.
+    let state = reducer(mkState(), runnerRow('req-4', 'm-first'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-4', 'm-second'), decision: 'approved' }))
+    expect(state.messages[0].meta?.resolved).toBeUndefined()
+  })
+
+  it('resolveApprovalRow does not downgrade a decided row to stale', () => {
     // A stale retirement carries no outcome (expired wait, 404, or a reconcile
-    // snapshot that no longer lists the id). Arriving after a real decision it
-    // is old news, not a new fact, and must leave the decision in place.
-    const cls = JSON.stringify({ request_id: 'req-decided' })
-    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-decided', decision: 'approved' }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-decided', decision: 'stale' }))
+    // snapshot that no longer lists the request). Arriving after a real
+    // decision it is old news, not a new fact, and must leave the decision.
+    let state = reducer(mkState(), runnerRow('req-decided'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-decided'), decision: 'approved' }))
+    state = reducer(state, resolveApprovalRow({ target: native('req-decided'), decision: 'stale' }))
     expect(state.messages[0].meta?.resolved).toBe('approved')
   })
 
-  it('resolveByApprovalId lets a real decision overwrite stale on the selected registry', () => {
+  it('resolveApprovalRow lets a real decision overwrite stale, on the named registry only', () => {
     // The guard is directional: a decision that lands after a stale marker is
     // the outcome the card was waiting for, so that direction stays open. A
-    // registry-qualified resolution must update the matching collision row.
+    // coordinator target settles the coordinator row under a colliding id and
+    // never the runner's.
+    const coordinator = { origin: 'coordinator' as const, id: 'req-late', slot, instance: 'inst-late' }
     let state = reducer(mkState(), sseChatMessage({
-      slot, role: 'permission', content: 'runner?', meta: { approval_id: 'req-late' },
+      slot, role: 'permission', content: 'runner?', meta: { approval_id: 'req-late', mid: 'm-late' },
     }))
     state = reducer(state, sseChatMessage({
       slot, role: 'permission', content: 'coordinator?',
-      meta: { approval_id: 'req-late', registry: 'coordinator' },
+      meta: { approval_id: 'req-late', registry: 'coordinator', approval_target: coordinator },
     }))
-    state = reducer(state, resolveByApprovalId({
-      slot, id: 'req-late', decision: 'stale', registry: 'coordinator',
-    }))
+    state = reducer(state, resolveApprovalRow({ target: coordinator, decision: 'stale' }))
     expect(state.messages[0].meta?.resolved).toBeUndefined()
     expect(state.messages[1].meta?.resolved).toBe('stale')
-    state = reducer(state, resolveByApprovalId({
-      slot, id: 'req-late', decision: 'rejected', registry: 'coordinator',
-    }))
+    state = reducer(state, resolveApprovalRow({ target: coordinator, decision: 'rejected' }))
     expect(state.messages[0].meta?.resolved).toBeUndefined()
     expect(state.messages[1].meta?.resolved).toBe('rejected')
   })
 
-  it('resolveByApprovalId still marks a pending row stale', () => {
-    const cls = JSON.stringify({ request_id: 'req-pending' })
-    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-pending', decision: 'stale' }))
+  it('resolveApprovalRow still marks a pending row stale', () => {
+    let state = reducer(mkState(), runnerRow('req-pending'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-pending'), decision: 'stale' }))
     expect(state.messages[0].meta?.resolved).toBe('stale')
   })
 
   it('resolved permission is filterable by meta.resolved', () => {
-    const cls1 = JSON.stringify({ request_id: 'req-a' })
-    const cls2 = JSON.stringify({ request_id: 'req-b' })
-    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'tool1', cls: cls1 }))
-    state = reducer(state, sseChatMessage({ slot, role: 'permission', content: 'tool2', cls: cls2 }))
-    state = reducer(state, resolveByApprovalId({ slot, id: 'req-a', decision: 'approved' }))
+    let state = reducer(mkState(), runnerRow('req-a'))
+    state = reducer(state, runnerRow('req-b'))
+    state = reducer(state, resolveApprovalRow({ target: native('req-a'), decision: 'approved' }))
     const pending = state.messages.filter(m => m.role === 'permission' && !m.meta?.resolved)
     expect(pending).toHaveLength(1)
     expect(pending[0].meta?.approval_id).toBe('req-b')

@@ -61,7 +61,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
 
   it('an approval frame chimes and adds a bell note and banner for the conductor, named for the crew member', () => {
     const { result } = renderHook(() => useApprovalRegistry(store.dispatch, new QueryClient()))
-    const owner = result.current.onApprovalFrame({ id: 'ap-w1', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 5 }, false)
+    const { slot: owner } = result.current.onApprovalFrame({ id: 'ap-w1', instance: 'i-w1', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 5 }, false)
     // The permission row still goes to the crew member's own transcript.
     expect(owner).toBe('w1')
     expect(chimes).toEqual([APPROVAL_KIND])
@@ -128,7 +128,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     bindSlotReadSender(slot => { sent.push(slot) })
     try {
       const { result } = renderHook(() => useApprovalRegistry(store.dispatch, new QueryClient()))
-      result.current.onApprovalFrame({ id: 'ap-w1b', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 6 }, false)
+      result.current.onApprovalFrame({ id: 'ap-w1b', instance: 'i-w1b', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 6 }, false)
       expect(store.getState().dashboard.unreadSlots ?? []).not.toContain('root')
       expect(sent).toContain('root')
     } finally {

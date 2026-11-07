@@ -1231,7 +1231,13 @@ class TestApproveRouteEndToEnd:
             if c.args[0] == "approval_resolved"
         ]
         assert frames == [
-            {"id": "rid-1", "approved": True, "slot": slot.key, "mid": body["request_mid"]}
+            {
+                "id": "rid-1",
+                "approved": True,
+                "slot": slot.key,
+                "mid": body["request_mid"],
+                "origin": "native",
+            }
         ]
 
     @pytest.mark.asyncio
