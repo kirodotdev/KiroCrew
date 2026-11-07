@@ -681,8 +681,9 @@ them:
   base has one spelling in the dedupe, the result ids and the audit rows),
   `region`, optional `profile`. `kb_ids` is the one caller-supplied field a
   source retains and re-parses on every search, so it is bounded where it is
-  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` entries (also the
-  per-search fan-out cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
+  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` distinct ids, counted
+  after blank pieces and repeats are dropped (also the per-search fan-out
+  cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
   each normalized id exactly the `[0-9A-Za-z]{10}` shape the Retrieve API
   accepts. `validate_config` parses strictly and refuses the first violation
   by name before any probe, and the insert only runs after validation, so
