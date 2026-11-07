@@ -23,6 +23,7 @@ from kiro_crew.session_storage_parts.batch_manifest import (
     _summarize_manifest,
 )
 from kiro_crew.session_storage_parts.crew_staging import (
+    _crew_staging,
     _discard_crew_staging,
     _unlisted_crew_staging,
 )
@@ -47,6 +48,7 @@ from kiro_crew.session_storage_parts.store_layout import (
     EmptyProgress,
     EmptySkip,
     SessionStorageError,
+    _tree_bytes,
     logger,
     trash_root,
 )
@@ -360,6 +362,8 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
     given - would destroy session data the user was never shown. Pinning once and taking
     both from that descriptor makes the pair describe one object or nothing.
 
+    The size counts the manifest itself, because the delete frees it too.
+
     None means no identity, and a batch with no identity is dropped from the approved set
     rather than carried unchecked.
     """
@@ -381,6 +385,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
         # silently resolving through it.
         try:
             info = os.stat(path, follow_symlinks=False)
+            manifest_bytes = os.stat(path / MANIFEST_NAME, follow_symlinks=False).st_size
         except OSError:
             return None
         summary = _summarize_manifest(path)
@@ -392,7 +397,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
             BatchIdentity(
                 info.st_dev, info.st_ino, None, rels_digest=_rels_digest(_manifest_rels(path))
             ),
-            summary[2],
+            summary[2] + manifest_bytes,
         )
     try:
         parent_fd, batch_fd = _open_absolute_nofollow(resolved)
@@ -410,6 +415,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
         scanned = _scan_tree(batch_fd, device=info.st_dev)
         dirs, files, links = scanned.dirs, scanned.files, scanned.links
         summary = _summarize_manifest(path, dir_fd=batch_fd)
+        manifest_bytes = os.stat(MANIFEST_NAME, dir_fd=batch_fd, follow_symlinks=False).st_size
     except OSError:
         return None
     finally:
@@ -427,7 +433,7 @@ def _approve_batch(path: Path) -> tuple[BatchIdentity, int] | None:
             links,
             rels_digest=digest,
         ),
-        summary[2],
+        summary[2] + manifest_bytes,
     )
 
 
@@ -508,7 +514,8 @@ def staged_targets(
             recorded, staged_bytes = approved
             identities[batch.batch_id] = recorded
             ids.append(batch.batch_id)
-            total += staged_bytes
+            # Plus its crew-log staging, freed with it; it lives outside the pinned batch.
+            total += staged_bytes + _tree_bytes(_crew_staging(batch.batch_id))
         if unapprovable and wanted is not None:
             # Only for a NAMED selection, which is exactly the asymmetry the missing-id rule
             # above draws. Raising on the sweep would let one batch damaged by a crash
