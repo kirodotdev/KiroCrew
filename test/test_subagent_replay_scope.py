@@ -17,15 +17,18 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from kiro_crew import crew_log as lg
+from kiro_crew import executors
 from kiro_crew.crew_log import CrewLog
 from kiro_crew.dashboard import subagent_replay_scope as scope
 from kiro_crew.dashboard import ws as dashboard_ws
+from kiro_crew.sel_request_provenance import bind_request_forwarded, current_request_forwarded
 from kiro_crew.testing.wait import await_until, finished, wait_until
 
 GATEWAY = "gateway"
@@ -462,6 +465,13 @@ def _drawn(sent: list[dict]) -> set[str]:
     return ids
 
 
+class _EveryWorkerBusy(ThreadPoolExecutor):
+    """A default executor none of whose workers ever frees: work queues, none starts."""
+
+    def submit(self, fn, /, *args, **kwargs):
+        return Future()
+
+
 class TestTheHandlerReplaysOnlyWhatTheSocketViews:
     """Through ``api_ws`` itself: subscribe, focus and replay frames on one socket."""
 
@@ -726,3 +736,37 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
         assert len(calls) == 1
         assert _drawn(fake.sent) == {"folder-1"}
         assert folds.units == []
+
+    def test_a_fold_runs_while_the_default_and_discovery_pools_are_busy(self, monkeypatch):
+        """A fold needs neither shared pool: on the default executor folds from several
+        tabs would hold the workers each ``to_thread`` endpoint (``/api/health`` among
+        them) queues on, and on ``discovery_executor`` the ones chat turns wait on.
+        Here no worker of either ever frees, and the fold still draws its cards, in the
+        request's context so a denial it audits keeps the request's provenance."""
+        slots = _home(2, 1, {(0, 0)})
+        busy: list[_EveryWorkerBusy] = []
+        seen: list[bool | None] = []
+        real_read = dashboard_ws.read_fold_subagent_records
+
+        def read_in_request(pairs, **kwargs):
+            seen.append(current_request_forwarded())
+            return real_read(pairs, **kwargs)
+
+        def every_default_worker_busy() -> bool:
+            # Read on the loop when the subscribe is handled, before the fold is queued.
+            if not busy:
+                busy.append(_EveryWorkerBusy(max_workers=1))
+                asyncio.get_running_loop().set_default_executor(busy[0])
+            return True
+
+        monkeypatch.setattr(executors, "_discovery_pool", _EveryWorkerBusy(max_workers=1))
+        monkeypatch.setattr(dashboard_ws, "crew_log_enabled", every_default_worker_busy)
+        monkeypatch.setattr(dashboard_ws, "read_fold_subagent_records", read_in_request)
+        frames = [{"type": "subscribe_subagents", "slots": [slots[0]]}]
+        with bind_request_forwarded(True):
+            _replayed, _peak, fake = self._drive(
+                monkeypatch, frames, slots, expect_units={"acp-0-0"}
+            )
+        assert busy, "the handler never asked whether the crew log is on"
+        assert seen == [True], "the fold did not run in the request's context"
+        assert _drawn(fake.sent) == {f"acp-0-0-child-{n}" for n in range(2)}

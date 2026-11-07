@@ -717,3 +717,8 @@ itself and the injection works as described above.
   scan, the folder suggestion's directory match and sample titles, the artifact folder
   list, and the terminal's cwd and title probes and selection redaction all run on
   `discovery_executor` (`test/test_dashboard_reads_off_subprocess_pool.py`).
+  The Subagents panel's reconnect replay (the crew-log fold, or the run-folder scan with
+  the log off) stays off both the default executor and `discovery_executor`, on its own
+  two-worker `mc-replay` pool (`subagent_replay_scope.replay_executor`): every tab starts
+  one on each connect, so a reconnect burst would otherwise hold the workers every
+  `asyncio.to_thread` caller or every chat turn needs (`test/test_subagent_replay_scope.py`).
