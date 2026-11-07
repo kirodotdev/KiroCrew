@@ -17257,7 +17257,11 @@
       "delete_n_selected_other": "選択した {{count}} 件を削除",
       "delete_n_scheduled_jobs_title_other": "{{count}} 件のスケジュール済みジョブを削除しますか？",
       "bulk_delete_removes_jobs_and_history_other": "選択したジョブとその実行履歴を完全に削除します。この操作は取り消せません。",
-      "type_token_to_confirm": "確認するには <token/> と入力します"
+      "type_token_to_confirm": "確認するには <token/> と入力します",
+      "close_wont_cancel_create": "閉じても中止されません — スケジュールは作成される可能性があります。",
+      "close_wont_cancel_edit": "閉じても中止されません — 変更は保存される可能性があります。",
+      "late_save_failed": "スケジュール「{{job}}」は保存されませんでした。",
+      "late_save_unconfirmed": "スケジュール「{{job}}」が保存されたかどうかは不明です — サーバーが確認していません。"
     },
     "servicesTab": {
       "channels": "チャットプラットフォーム",

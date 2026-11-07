@@ -17717,7 +17717,11 @@
       "delete_n_scheduled_jobs_title_other": "{{count}} geplante Jobs löschen?",
       "bulk_delete_removes_jobs_and_history_one": "Dies entfernt den ausgewählten Job und seinen Ausführungsverlauf endgültig. Diese Aktion kann nicht rückgängig gemacht werden.",
       "bulk_delete_removes_jobs_and_history_other": "Dies entfernt die ausgewählten Jobs und ihren Ausführungsverlauf endgültig. Diese Aktion kann nicht rückgängig gemacht werden.",
-      "type_token_to_confirm": "Gib zur Bestätigung <token/> ein"
+      "type_token_to_confirm": "Gib zur Bestätigung <token/> ein",
+      "close_wont_cancel_create": "Schließen bricht den Vorgang nicht ab — der Zeitplan kann trotzdem angelegt werden.",
+      "close_wont_cancel_edit": "Schließen bricht den Vorgang nicht ab — deine Änderungen können trotzdem gespeichert werden.",
+      "late_save_failed": "Der Zeitplan „{{job}}“ wurde nicht gespeichert.",
+      "late_save_unconfirmed": "Der Zeitplan „{{job}}“ wurde vielleicht gespeichert, vielleicht nicht — der Server hat es nicht bestätigt."
     },
     "servicesTab": {
       "channels": "Chat-Plattformen",

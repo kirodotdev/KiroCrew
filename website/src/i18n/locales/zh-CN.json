@@ -17257,7 +17257,11 @@
       "delete_n_selected_other": "删除 {{count}} 个选中项",
       "delete_n_scheduled_jobs_title_other": "删除 {{count}} 个定时任务？",
       "bulk_delete_removes_jobs_and_history_other": "会永久删除所选任务及其运行历史。此操作无法撤销。",
-      "type_token_to_confirm": "输入 <token/> 以确认"
+      "type_token_to_confirm": "输入 <token/> 以确认",
+      "close_wont_cancel_create": "关闭不会取消 — 定时任务仍可能被创建。",
+      "close_wont_cancel_edit": "关闭不会取消 — 你的更改仍可能被保存。",
+      "late_save_failed": "定时任务“{{job}}”未保存。",
+      "late_save_unconfirmed": "定时任务“{{job}}”可能已保存，也可能没有 — 服务器未确认。"
     },
     "servicesTab": {
       "channels": "聊天平台",

@@ -18177,7 +18177,11 @@
       "bulk_delete_removes_jobs_and_history_one": "Esto elimina permanentemente el trabajo seleccionado y su historial de ejecuciones. Esta acción no se puede deshacer.",
       "bulk_delete_removes_jobs_and_history_many": "Esto elimina permanentemente los trabajos seleccionados y su historial de ejecuciones. Esta acción no se puede deshacer.",
       "bulk_delete_removes_jobs_and_history_other": "Esto elimina permanentemente los trabajos seleccionados y su historial de ejecuciones. Esta acción no se puede deshacer.",
-      "type_token_to_confirm": "Escribe <token/> para confirmar"
+      "type_token_to_confirm": "Escribe <token/> para confirmar",
+      "close_wont_cancel_create": "Cerrar no lo cancela — la programación puede crearse igualmente.",
+      "close_wont_cancel_edit": "Cerrar no lo cancela — tus cambios pueden guardarse igualmente.",
+      "late_save_failed": "La programación “{{job}}” no se guardó.",
+      "late_save_unconfirmed": "La programación “{{job}}” puede haberse guardado o no — el servidor no lo confirmó."
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

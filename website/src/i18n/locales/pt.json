@@ -18177,7 +18177,11 @@
       "bulk_delete_removes_jobs_and_history_one": "Isto remove permanentemente o job selecionado e seu histórico de execuções. Esta ação não pode ser desfeita.",
       "bulk_delete_removes_jobs_and_history_many": "Isto remove permanentemente os jobs selecionados e seu histórico de execuções. Esta ação não pode ser desfeita.",
       "bulk_delete_removes_jobs_and_history_other": "Isto remove permanentemente os jobs selecionados e seu histórico de execuções. Esta ação não pode ser desfeita.",
-      "type_token_to_confirm": "Digite <token/> para confirmar"
+      "type_token_to_confirm": "Digite <token/> para confirmar",
+      "close_wont_cancel_create": "Fechar não cancela — o agendamento ainda pode ser criado.",
+      "close_wont_cancel_edit": "Fechar não cancela — suas alterações ainda podem ser salvas.",
+      "late_save_failed": "O agendamento “{{job}}” não foi salvo.",
+      "late_save_unconfirmed": "O agendamento “{{job}}” pode ou não ter sido salvo — o servidor não confirmou."
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

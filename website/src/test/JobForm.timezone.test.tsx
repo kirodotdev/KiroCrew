@@ -170,6 +170,19 @@ describe('JobForm local zone', () => {
     expect(vi.mocked(api.updateCron).mock.calls.at(-1)![1]).toMatchObject({ timezone: 'local' })
   })
 
+  it('marks the form dirty when only the zone changed, not when the default loads', async () => {
+    const onDirtyChange = vi.fn()
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: null })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} onDirtyChange={onDirtyChange} />,
+    )
+    await waitFor(() => expect(tzTrigger()).toHaveTextContent('Local (follows this computer, now Asia/Shanghai)'))
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true)
+
+    fireEvent.click(tzTrigger())
+    fireEvent.click(await screen.findByRole('option', { name: 'Asia/Tokyo' }))
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+  })
+
   it('a configured default zone is what a job with no zone shows', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.crons).mockResolvedValueOnce({ jobs: [], host_tz: 'Asia/Shanghai', default_tz: 'Europe/London' })
