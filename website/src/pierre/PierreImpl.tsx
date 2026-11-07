@@ -28,6 +28,7 @@ import {
   highlightLanguageForTag,
   type ResolvedHighlightLanguage,
 } from '../utils/highlightLanguages'
+import { startsFileHeader } from '../utils/diffLineCounts'
 import {
   PIERRE_EXTENSION_OVERRIDES,
   PIERRE_REGEX_ENGINE,
@@ -212,22 +213,13 @@ export function normalizePatchHunks(patch: string): string {
     return body
   }
   let hunkBody = markHunkBodies()
-  /** True when `--- `/`+++ ` at `i` is a real file-header pair rather than a
-   *  hunk body line deleting `-- x` / adding `++ x`.
-   *
-   *  Inside a hunk body those two are indistinguishable by shape — a deletion of
-   *  `-- foo/bar` IS the text `--- foo/bar` — so a pair there is content unless
-   *  it announces itself the way a real file section does: `diff ` above it, or a
-   *  `@@` hunk header immediately below. Known limit: a second file section that
-   *  is BOTH headerless and un-announced while a previous hunk is open reads as
-   *  content; git always emits `diff --git`, so that shape is not produced. */
+  /** Whether the `--- ` or `+++ ` line at `i` is half of a file-header pair, by
+   *  the rule the chat rows are cut with (`startsFileHeader`). Known limit: a
+   *  second file with no `diff ` line and no `@@` right below its pair, inside
+   *  an open hunk, reads as content; git always emits `diff --git`. */
   const isFileHeader = (i: number) => {
-    const minus = lines[i].startsWith('--- ') ? i : lines[i].startsWith('+++ ') ? i - 1 : -1
-    if (minus < 0) return false
-    if (!(lines[minus] ?? '').startsWith('--- ')) return false
-    if (!(lines[minus + 1] ?? '').startsWith('+++ ')) return false
-    if (!hunkBody[minus]) return true
-    return (lines[minus - 1] ?? '').startsWith('diff ') || (lines[minus + 2] ?? '').startsWith('@@')
+    const minus = lines[i].startsWith('+++ ') ? i - 1 : i
+    return startsFileHeader(lines, minus, hunkBody[minus])
   }
   /** Body extent + line tallies for the hunk starting after `start`. */
   const measure = (start: number) => {

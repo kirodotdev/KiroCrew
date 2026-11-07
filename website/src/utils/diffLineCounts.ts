@@ -141,9 +141,9 @@ export interface PatchSection {
  * never because the hunk's declared counts say it is over, since a hand- or
  * model-written patch gets those counts wrong in both directions and reading
  * a pair as a header on their word turned real changed lines into a fake
- * file. That is the cut `normalizePatchHunks` makes for Pierre before it
- * repairs the counts from the body, so the rows and the bodies under them
- * agree on where each file begins. Lines before the first file's preamble
+ * file. `normalizePatchHunks` cuts Pierre's bodies by the same predicate
+ * (`startsFileHeader`), so the rows and the bodies under them agree on where
+ * each file begins. Lines before the first file's preamble
  * stay with that file.
  *
  * Text with no hunk header at all — a hand-pasted ```diff fence of bare `+`/`-`
@@ -307,19 +307,30 @@ type PatchLineKind =
   | 'meta'
 
 /**
+ * Whether a file's `--- `/`+++ ` header pair starts at line `i`: the one
+ * file-boundary rule `walkPatch` and `normalizePatchHunks` share. Inside a hunk
+ * body a deleted `-- x` over an added `++ y` has the same shape, so there the
+ * pair is a header only when a `@@` right below announces it, never on the
+ * hunk's declared counts. Both walks end the body at a `diff ` line.
+ */
+export function startsFileHeader(lines: readonly string[], i: number, inHunkBody: boolean): boolean {
+  if (!(lines[i] ?? '').startsWith('--- ') || !(lines[i + 1] ?? '').startsWith('+++ ')) return false
+  return !inHunkBody || isHunkHeader(lines[i + 2] ?? '')
+}
+
+/**
  * The positional walk `splitPatchSections` reads, so what counts as a header,
  * a hunk line or a preamble is decided once.
  *
  * Every line beginning `@@` is a hunk header — git's `@@ -a,b +c,d @@` and the
  * bare `@@ text @@` a hand-written patch carries (`normalizePatchHunks` feeds
- * Pierre the same reading). Inside a hunk body a `---`/`+++` pair is the next
- * file's header only when a `@@` right below announces it; a `diff ` /
- * `Index: ` line always begins a file. A header's declared counts decide
- * nothing — a hand- or model-written patch gets them wrong in both directions,
- * and `normalizePatchHunks` rewrites them from the body for Pierre — so a
- * `---`/`+++` line that nothing announces is content whatever the counts say.
- * Text with no `@@` at all is read by the prefix rule instead: `+`/`-` lines
- * are content, `---`/`+++` lines are headers.
+ * Pierre the same reading). A `---`/`+++` pair begins a file where
+ * `startsFileHeader` says so; a `diff ` / `Index: ` line always begins a file.
+ * A header's declared counts decide nothing — a hand- or model-written patch
+ * gets them wrong in both directions, and `normalizePatchHunks` rewrites them
+ * from the body for Pierre — so a `---`/`+++` line that nothing announces is
+ * content whatever the counts say. Text with no `@@` at all is read by the
+ * prefix rule instead: `+`/`-` lines are content, `---`/`+++` lines are headers.
  */
 function walkPatch(lines: readonly string[], visit: (kind: PatchLineKind, line: string, index: number) => void): void {
   if (!lines.some(isHunkHeader)) {
@@ -327,9 +338,6 @@ function walkPatch(lines: readonly string[], visit: (kind: PatchLineKind, line: 
     return
   }
   let inHunk = false
-  // A `--- `/`+++ ` pair that a `@@` right below announces as the next file's
-  // header — the one reading of such a pair a hunk body allows.
-  const announcedPair = (i: number) => lines[i].startsWith('--- ') && (lines[i + 1] ?? '').startsWith('+++ ') && isHunkHeader(lines[i + 2] ?? '')
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (isHunkHeader(line)) {
@@ -339,16 +347,7 @@ function walkPatch(lines: readonly string[], visit: (kind: PatchLineKind, line: 
     }
     if (inHunk) {
       if (line.startsWith('\\')) { visit('marker', line, i); continue }
-      // Inside a hunk a `---`/`+++` pair is the next file's header only when a
-      // `@@` right below announces it (a `diff ` line above announces it too,
-      // and is read as the preamble it is). Never the counts: a header's
-      // declared counts are the one thing a hand- or model-written patch gets
-      // wrong in both directions, and reading a pair as a header because the
-      // counts say the hunk is over turned a deleted `-- foo` and an added
-      // `++ bar` into a fake file and lost them from every body — the same
-      // rule `normalizePatchHunks` applies before it repairs the counts from
-      // the body for Pierre, so the rows and the bodies agree.
-      if (!announcedPair(i)) {
+      if (!startsFileHeader(lines, i, true)) {
         if (line.startsWith('+')) {
           visit('add', line, i)
           continue
@@ -370,8 +369,8 @@ function walkPatch(lines: readonly string[], visit: (kind: PatchLineKind, line: 
     // Paired with its `+++`, the way a header always is: a lone `--- x`
     // outside a hunk is a stray line, not a file, and cutting a file there
     // would hand the renderer a headless half of it.
-    else if (line.startsWith('--- ') && (lines[i + 1] ?? '').startsWith('+++ ')) visit('old-header', line, i)
-    else if (line.startsWith('+++ ') && (lines[i - 1] ?? '').startsWith('--- ')) visit('new-header', line, i)
+    else if (startsFileHeader(lines, i, false)) visit('old-header', line, i)
+    else if (startsFileHeader(lines, i - 1, false)) visit('new-header', line, i)
     else visit('meta', line, i)
   }
 }
