@@ -263,6 +263,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "inflight_interactive": ("property", False, "7949c1538a15", "session_handle_class"),
     "is_responsive": ("function", False, "4b2fc7c136b8", "session_handle_watchdog"),
     "is_turn_active": ("property", False, "a6632a57e602", "session_handle_class"),
+    "kas_command_call": ("function", True, "0c8766b65545", "session_handle_kas"),
     "last_steer_monotonic": ("property", False, "59162e39f6f1", "session_handle_class"),
     "maybe_refresh_available_models": (
         "function",

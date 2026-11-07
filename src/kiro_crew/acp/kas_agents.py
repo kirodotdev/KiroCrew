@@ -98,7 +98,15 @@ from kiro_crew.acp.kas_permissions import (
     without_allowed_commands,
 )
 from kiro_crew.acp.kas_projection_reads import _registry_governed, _relayed_env_references
+from kiro_crew.acp.kas_prompt import (
+    _KAS_FALLBACK_PROMPT,
+    _KAS_FALLBACK_PROMPT_AGENTS,
+    _PROMPT_FILE_SCHEME,
+    prompt_file_path,
+    spec_prompt,
+)
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
+from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
@@ -112,7 +120,7 @@ from kiro_crew.agent_discovery import (
     spec_by_declared_name,
     spec_welcome_message,
 )
-from kiro_crew.agent_files import LITE_AGENT_FILENAME, kas_wire_agent_id
+from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
@@ -140,8 +148,6 @@ logger = logging.getLogger(__name__)
 
 #: Cap KAS enforces on ``_meta.kiro.customAgents`` (``z.array(...).max(50)``).
 KAS_MAX_CUSTOM_AGENTS = 50
-
-_PROMPT_FILE_SCHEME = "file://"
 
 #: Kiro Crew's OWN managed MCP servers — the ones whose ``env`` may retain a
 #: single Crew-authored key through projection (see :func:`_project_mcp_servers`).
@@ -234,8 +240,9 @@ def spec_keys_without_carrier(
 ) -> list[str]:
     """What *spec* sets that the session runs without, sorted.
 
-    Whole keys from :data:`SPEC_KEYS_WITHOUT_CARRIER`. ``toolsSettings`` is named
-    whole too, unless *translates_tools_settings* says this session receives its
+    Whole keys from :data:`SPEC_KEYS_WITHOUT_CARRIER`, a user's ``toolAliases``
+    and each dropped knowledge base (:mod:`kiro_crew.acp.kas_spec_carry`). ``toolsSettings``
+    is named whole too, unless *translates_tools_settings* says this session receives its
     ``permissions`` translation (KAS only); then each ``toolsSettings.<tool>.<key>``
     the translation cannot carry is named instead.
 
@@ -244,6 +251,9 @@ def spec_keys_without_carrier(
     as ``mcpServers.<name>.oauth``.
     """
     lost = [k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k)]
+    lost.extend(projected_resources(spec.get("resources"))[1])
+    if user_tool_aliases(spec.get("toolAliases")):
+        lost.append("toolAliases")
     if discards_mcp_oauth:
         lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
     tools_settings = spec.get("toolsSettings")
@@ -308,43 +318,17 @@ class KasAgentSpecAbsent(KasAgentTranslationError):
         self.agent_id = agent_id
 
 
-#: The prompt Crew's own background agent ``kirocrew-lite`` gets on KAS. It is the
-#: ONLY agent that gets it (:data:`_KAS_FALLBACK_PROMPT_AGENTS`): lite runs small
-#: system-issued text tasks (titles, summaries, tags, rephrases), so a short
-#: "do exactly the request, nothing else" brief keeps those replies to their
-#: format. Every other prompt-less spec -- a user's, an app's, a crewmate's
-#: worker -- is a user-chosen agent, and on kiro-cli such a spec runs with
-#: kiro-cli's own default prompt and nothing added. KAS behaves the same way when
-#: the projected ``prompt`` is ``""``: the field is required on the wire (an
-#: entry without it is refused as ``_kiro/customAgent/not_found`` and the session
-#: falls back to KAS's ``vibe`` mode), but an empty string registers the agent
-#: and its prompt adds nothing to KAS's own base prompt, as a non-empty one is
-#: layered on top of it (measured live on kiro-cli 2.35.1). So those agents send
-#: ``""`` and this text, which tells the model it has no tools, never reaches an
-#: agent that has them.
-_KAS_FALLBACK_PROMPT = """\
-You are a Kiro Crew lightweight background worker. You are dispatched by the
-system — never by a human in a chat — to perform one small, self-contained text
-task per request: naming or summarizing a conversation, classifying or tagging
-content, rephrasing a line, suggesting a short label, and similar. The specific
-task is fully described in each request.
+class KasPromptFileUnreadable(KasAgentTranslationError):
+    """A ``file://`` prompt names an allowed path that is missing, unreadable or empty.
 
-- Do exactly what the request asks, and only that. Treat its stated output
-  format as binding: if it asks for a single line, a length limit, or JSON,
-  return exactly that — no preamble, no explanation, no markdown fences unless
-  the request asks for them.
-- Be concise and deterministic. Prefer the shortest correct answer; add no
-  commentary, caveats, or follow-up questions.
-- You have no tools and touch no external state. Work only from the text in the
-  request. If it is empty or unintelligible, return a minimal safe default (an
-  empty string or a generic label) rather than guessing at length.
-- This is not a conversation: no user to address, no session to remember. Each
-  request stands alone.
-"""
+    kiro-cli runs such an agent with no prompt, so the KAS projection does too
+    (:func:`build_kas_custom_agents`); every other reader of the prompt still
+    refuses, as a subclass. A path that is not an allowed location is not this.
+    """
 
-#: The agents that get :data:`_KAS_FALLBACK_PROMPT` when their spec has no
-#: prompt: Crew's own background agent, by its id (``agent_files.LITE_AGENT_FILENAME``).
-_KAS_FALLBACK_PROMPT_AGENTS = frozenset({Path(LITE_AGENT_FILENAME).stem})
+    def __init__(self, message: str, path: Path) -> None:
+        super().__init__(message)
+        self.path = path
 
 
 def resolve_prompt(
@@ -372,6 +356,12 @@ def resolve_prompt(
     agents directory; that rule is enforced where the checkout's spec is chosen
     (``acp.harness.kas.resolve_projected_spec``), not here.
 
+    The prompt is ``prompt``, else kiro-cli's ``systemPrompt`` alias
+    (:func:`~kiro_crew.acp.kas_prompt.spec_prompt`), and a ``file://`` path
+    expands ``$VAR`` and ``~`` (:func:`~kiro_crew.acp.kas_prompt.prompt_file_path`).
+    A file that is missing, unreadable or empty raises
+    :class:`KasPromptFileUnreadable`.
+
     A spec with no prompt (missing or blank) resolves to ``""``, which KAS runs
     on its own default prompt alone, as kiro-cli does for the same spec. Crew's
     background agent ``kirocrew-lite`` is the one exception: it gets the small
@@ -380,7 +370,7 @@ def resolve_prompt(
     Only KAS reaches this — the kiro-cli path keeps its empty-prompt behaviour
     untouched.
     """
-    raw = spec.get("prompt")
+    raw = spec_prompt(spec)
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         # Missing or blank — an intentionally prompt-less agent.
         if agent_id in _KAS_FALLBACK_PROMPT_AGENTS:
@@ -395,8 +385,11 @@ def resolve_prompt(
     if not raw.startswith(_PROMPT_FILE_SCHEME):
         return raw
     ref = raw[len(_PROMPT_FILE_SCHEME) :]
-    candidate = Path(ref).expanduser()
-    path = (candidate if candidate.is_absolute() else agents_dir / candidate).resolve()
+    try:
+        path = prompt_file_path(ref, agents_dir)
+    except (OSError, RuntimeError) as exc:  # ``~nosuchuser``, a symlink loop
+        bad = f"agent {agent_id!r} prompt path {ref!r} cannot be resolved: {exc}"
+        raise KasPromptFileUnreadable(bad, agents_dir / ref) from exc
     if _is_unsafe_prompt_path(path):
         raise KasAgentTranslationError(
             f"agent {agent_id!r} prompt path {path} is not an allowed location; refusing to inline it"
@@ -404,13 +397,14 @@ def resolve_prompt(
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise KasAgentTranslationError(
+        raise KasPromptFileUnreadable(
             f"agent {agent_id!r} prompt file {path} is unreadable: {exc}. Point the "
             f"spec's prompt at a readable file, delete the {agent_id!r} spec in "
-            f"{agents_dir}, or choose another agent"
+            f"{agents_dir}, or choose another agent",
+            path,
         ) from exc
     if not text.strip():
-        raise KasAgentTranslationError(f"agent {agent_id!r} prompt file {path} is empty")
+        raise KasPromptFileUnreadable(f"agent {agent_id!r} prompt file {path} is empty", path)
     return text
 
 
@@ -1240,11 +1234,10 @@ def to_client_custom_agent(
         if isinstance(value, bool):
             out[flag] = value
 
-    resources = spec.get("resources")
-    if isinstance(resources, list):
-        entries = [r for r in resources if isinstance(r, str) and r]
-        if entries:
-            out["resources"] = entries
+    # Knowledge-base objects too, checked; the session notice names a dropped one.
+    entries, _ = projected_resources(spec.get("resources"))
+    if entries:
+        out["resources"] = entries
 
     mcp_servers = _project_mcp_servers(
         spec,
@@ -1596,10 +1589,16 @@ def build_kas_custom_agents(
     session_key: str = "",
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
     withheld_out: WithheldOut | None = None,
+    prompt_unread_out: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
     *withheld_out* is handed to :func:`_project_mcp_servers`.
+
+    A ``file://`` prompt that is missing, unreadable or empty
+    (:class:`KasPromptFileUnreadable`) is projected as ``""``, as kiro-cli runs it
+    with no prompt, and its path is appended to *prompt_unread_out* for the
+    session-start notice.
 
     One entry: KAS registers the injected agent, it then surfaces as a mode, and
     the ordinary ``session/set_mode`` activation can select it. Without this the
@@ -1624,7 +1623,13 @@ def build_kas_custom_agents(
     *agents_dir* stays for :func:`resolve_prompt`, which anchors a ``file://``
     prompt URI and reads a different artifact than the spec.
     """
-    prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
+    try:
+        prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
+    except KasPromptFileUnreadable as exc:
+        logger.warning("%s; the session runs on KAS's default prompt", exc)
+        prompt = ""
+        if prompt_unread_out is not None:
+            prompt_unread_out.append(exc.path)
     return [
         to_client_custom_agent(
             agent_id,

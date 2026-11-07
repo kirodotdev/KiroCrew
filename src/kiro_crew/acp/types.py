@@ -250,6 +250,14 @@ METHOD_KAS_SESSION_COMPACT = "_kiro/session/compact"
 #: as ``_meta.kiro.checkpoints``. Driven live against kiro-cli 2.32.0's relay: the
 #: model's next answer left the reverted prompt out.
 METHOD_KAS_CHECKPOINT_REVERT = "_kiro/checkpoint/revertMultiple"
+#: KAS's own verbs behind kiro-cli's ``/context <sub>``, ``/knowledge`` and ``/code``.
+#: Each is a REQUEST taking ``{"sessionId", "subcommand", ...}`` and answering
+#: ``{"success": bool, "message"?: str, ...}``; each is listed in ``initialize``'s
+#: ``_meta.kiro.extensionMethods``. The dashboard's slash gate sends them for a
+#: person's typed command (``dashboard/kas_local_commands.py``), never the model.
+METHOD_KAS_SESSION_CONTEXT = "_kiro/session/context"
+METHOD_KAS_KNOWLEDGE = "_kiro/knowledge"
+METHOD_KAS_CODE_INTELLIGENCE = "_kiro/codeIntelligence"
 #: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
 #: drops the session from its local map and unsubscribes the Codex thread, so the
 #: sessionId stops answering while the thread's own record survives on the Codex

@@ -394,7 +394,7 @@ The
 
 | Field | Type | Effect |
 |---|---|---|
-| `prompt` | str | The system prompt. A literal string, or a `file://` URI. On the markdown form the body wins over a frontmatter `prompt`. |
+| `prompt` | str | The system prompt. A literal string, or a `file://` URI. On the markdown form the body wins over a frontmatter `prompt`. kiro-cli's `systemPrompt` spelling is read when `prompt` is absent. |
 
 `file://` resolution is Crew's, in `resolve_prompt`, and applies on the **KAS path
 only** — the kiro-cli path never inlines a prompt because kiro-cli reads the file
@@ -402,18 +402,23 @@ itself:
 
 - a relative path is anchored to the agents directory and may use `..`
   (`file://../prompts/x.md`), as on kiro-cli;
-- an absolute path (and `~`) is accepted and resolved;
+- an absolute path (and `~`) is accepted and resolved; a relative one expands
+  `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli does;
 - relative or absolute, the resolved path (symlinks followed) must not be a
   credential or governance location, `~/.config/gh`, the data home's
   `app_receipt_secret` or `session_token_*.sig`, `/proc`, `/sys` or `/dev` —
   the content is shipped
   over the wire, so a spec pointing at `/proc/<pid>/environ` would exfiltrate
   the gateway's environment (`acp/kas_prompt_paths.py`);
+- a checkout spec that loses keys (only `name`, `description`, `prompt`,
+  `tools`, `excludedTools` and `model` are taken), or a user-level spec that wins
+  over a checkout spec of the same name, gets a session-start notice;
 - a spec from a project checkout's `.kiro/agents` is untrusted: its prompt must
-  be a relative path that stays inside that directory;
-- an empty or unreadable file is an error, not a fallback; the unreadable
-  error names the agents directory holding the spec and tells the user to fix
-  the `prompt`, delete the spec, or choose another agent;
+  be a relative path that stays inside that directory (a leading `$` counts as
+  rooted and is refused);
+- a missing, unreadable or empty file does not refuse the session: the agent
+  runs on KAS's default prompt, as kiro-cli runs it with no prompt, and a
+  session-start notice names the file (`kas_prompt.prompt_unread_notice`);
 - a missing or blank prompt is sent as `"prompt": ""`, so the agent runs on
   KAS's own default prompt alone, as it runs on kiro-cli's (#25320). KAS needs
   the key present, not non-empty: an entry without it is not registered and the
@@ -473,7 +478,7 @@ product contract, so member essentials must not try to read it as a project
 document; the current contract is injected at session start instead. Custom
 persona paths outside those managed locations retain their normal handling.
 
-`systemPrompt` is not a field Kiro Crew reads. Use `prompt`.
+`systemPrompt` is kiro-cli's other spelling of `prompt`; Crew reads it only when `prompt` is absent. Prefer `prompt`.
 
 *Unverified:* kiro-cli v3's own on-disk loader is sometimes described as
 requiring a relative `file://` prompt ref. Nothing in this repository asserts
@@ -646,8 +651,12 @@ only — a URI string or an object, the contract kiro-cli itself reports as
 `resource must be a string (file:// or skill://) or an object` — and leaves the
 keys inside to the backend. Crew never reads the entry: no document, no budget
 spent, no path derived, so the admitted roots are unchanged.
-`to_client_custom_agent` projects string entries only, so the object never
-reaches the KAS wire. `agent_capabilities._rows` still requires strings, because
+On KAS, `to_client_custom_agent` sends a valid object with only the keys KAS's
+`KnowledgeBaseResourceSchema` names (`acp/kas_spec_carry.py`): `source` must be
+`file://` with a path; `~` and `$VAR` are expanded; an absolute path must not be
+a sensitive location and a relative one may not use `..`; each other key must
+have its schema type. Any other object is dropped and the session-start notice
+names it as `resources[<index>]`, because one KAS refuses drops the whole agent. `agent_capabilities._rows` still requires strings, because
 each entry is a catalog key: a member enrolled in capability management cannot
 carry the object until that model represents it.
 
@@ -739,9 +748,10 @@ every other mirrored harness.
 | `includePowers` | not read | wire field when the spec states a bool | not read |
 | `resources` `skill://` | Crew injects the mapped set; the native launch view carries no `skill://` | forwarded on the wire, and Crew injects the mapped set | Crew injects the mapped set |
 | `resources` `file://` | loaded natively | loaded natively | Crew injects, from `kirocrew.json` only |
+| `resources` `knowledgeBase` | honoured | wire field when valid; a dropped one is named in the session-start notice | not read |
 | `hooks` | honoured | dropped from the wire projection; fired by Crew's turn loop | Crew's gate, renamed events |
 | `toolsSettings` | honoured | no wire slot; session-start notice | not read |
-| `toolAliases` | honoured | no wire slot | not read |
+| `toolAliases` | honoured | no wire slot; session-start notice unless Crew's Connections pass wrote every pair | not read |
 | `managedToolPolicy` | Crew-side, per session | Crew-side, per session | Crew-side, per session |
 | `welcomeMessage` | Crew-only (chat transcript) | chat transcript, and a wire field from the same capped reading | Crew-only (chat transcript) |
 

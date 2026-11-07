@@ -206,7 +206,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: in), all keyword defaults, so every pre-split caller still fits.
 #: ``run_script_hook`` and ``_hook_subprocess_env`` take a trailing
 #: ``acp_session_id=None`` keyword, so their callers fit too.
-_BASE_SHAPE_DIGEST = "7e872cdc83e52010926255562ce45a06080de990bd7ddae5ead63d497ad9c6e2"
+#: ``safe_read_prefix`` takes a keyword-only ``refuse=None`` (a caller's fence on
+#: the opened descriptor's kernel path), so its callers fit too.
+_BASE_SHAPE_DIGEST = "c47db4500dbcd140482a61e55e6d818452d0cf0aefdf45f6982c94230b34122a"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

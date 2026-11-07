@@ -151,7 +151,8 @@ class TestKasClear:
 class TestKasOtherCommands:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "command", ["/hooks", "/context add x", "/agent create x", "/changelog"]
+        "command",
+        ["/tools trust x", "/code overview", "/agent create x", "/changelog", "/effort high"],
     )
     async def test_unrunnable_command_is_refused_not_prompted(self, tmp_path, command) -> None:
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
@@ -293,10 +294,10 @@ class TestKasMenuMatchesTheGate:
     async def test_every_command_left_out_of_the_menu_is_one_the_gate_refuses(
         self, tmp_path
     ) -> None:
-        """Every command the KAS menu leaves out (/hooks, /changelog, ...) gets the notice."""
+        """Every command the KAS menu leaves out (/changelog, ...) gets the notice."""
         listed = await _menu_names(ACP_BACKEND_KAS)
         left_out = _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS - listed
-        assert {"/changelog", "/code", "/experiment", "/hooks", "/logdump"} <= left_out
+        assert {"/changelog", "/experiment", "/logdump"} <= left_out
 
         for command in sorted(left_out):
             state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
@@ -312,10 +313,12 @@ class TestKasMenuMatchesTheGate:
         assert listed == {
             "/agent",
             "/clear",
+            "/code",
             "/compact",
             "/context",
             "/goal",
             "/help",
+            "/hooks",
             "/mcp",
             "/model",
             "/prompts",
@@ -379,7 +382,16 @@ class TestStrandsCommandsAreServedHere:
         """KAS's local answers read state only a KAS session has, so they are
         left out of a Strands menu, which keeps every other dashboard command."""
         kas = await _menu_names(ACP_BACKEND_KAS)
-        kas_only = {"/context", "/help", "/mcp", "/model", "/tools", "/usage"}
+        kas_only = {
+            "/code",
+            "/context",
+            "/help",
+            "/hooks",
+            "/mcp",
+            "/model",
+            "/tools",
+            "/usage",
+        }
         assert await _menu_names(ACP_BACKEND_STRANDS) == kas - kas_only
 
     @pytest.mark.asyncio

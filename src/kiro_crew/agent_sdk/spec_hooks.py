@@ -1029,17 +1029,22 @@ def kas_spec_load_error(agents_dir: Path, agent_id: str) -> str | None:
     # circular import: kas_agents imports this module at load time.
     from kiro_crew.acp.kas_agents import (
         KasAgentTranslationError,
+        KasPromptFileUnreadable,
         load_agent_spec,
         resolve_prompt,
     )
+    from kiro_crew.acp.kas_prompt import spec_prompt
 
     try:
         spec = load_agent_spec(agents_dir, agent_id)
-        prompt = spec.get("prompt")
+        prompt = spec_prompt(spec)
         # A blank or absent prompt takes resolve_prompt's constant fallback and
         # cannot fail; skipping it avoids that function's warning per probe.
         if not (prompt is None or (isinstance(prompt, str) and not prompt.strip())):
             resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
+    except KasPromptFileUnreadable:
+        # KAS runs the agent on its default prompt (``build_kas_custom_agents``).
+        return None
     except KasAgentTranslationError as exc:
         return str(exc)
     return None

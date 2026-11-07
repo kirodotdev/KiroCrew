@@ -57,6 +57,7 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
+from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
     build_kas_argv,
@@ -213,7 +214,10 @@ PROJECT_SPEC_HONOURED_KEYS = ("name", "description", "prompt", "tools", "exclude
 
 
 def resolve_projected_spec(
-    agents_dir: Path, agent: str, work_dir: str | Path | None
+    agents_dir: Path,
+    agent: str,
+    work_dir: str | Path | None,
+    notices: list[str] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     """The spec KAS is handed for *agent*, and the directory its prompt anchors to.
 
@@ -239,6 +243,10 @@ def resolve_projected_spec(
     A name no spec declares at either level raises its subclass
     :class:`~kiro_crew.acp.kas_agents.KasAgentSpecAbsent`, so a caller can say
     what is missing rather than quote a failed file open.
+
+    *notices* gets one session-start line where this differs from kiro-cli, which
+    runs a checkout's spec over the user's: when a user-level spec wins over a
+    checkout spec of the same name, and when a checkout spec's keys are dropped.
     """
     from kiro_crew.agent_files import is_mate_service_agent
 
@@ -258,6 +266,12 @@ def resolve_projected_spec(
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
         spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+        if notices is not None and work_dir and project_agent_spec(agent, work_dir)[0]:
+            notices.append(
+                f"ℹ Agent {agent} is defined in this folder's .kiro/agents and in "
+                "your own agents folder. Your own one runs here. kiro-cli would run "
+                "the folder's, but Crew does not let a cloned folder replace your agent."
+            )
         # A user-level custom agent gets Crew's default servers, through the helper
         # the kiro-cli skill view applies too, so the two paths cannot drift.
         return with_default_crew_servers(agent, spec), agents_dir
@@ -301,12 +315,18 @@ def resolve_projected_spec(
         raise KasAgentTranslationError(
             f"agent {agent!r} is declared by {work_dir}/.kiro/agents but that spec is unreadable"
         )
-    prompt = project.get("prompt")
+    prompt = spec_prompt(project)
+    if "prompt" not in project and prompt is not None:
+        # kiro-cli's ``systemPrompt`` spelling, carried as ``prompt`` so the path
+        # rules below and the honoured-keys filter apply to it.
+        project = {**project, "prompt": prompt}
     if isinstance(prompt, str) and prompt.startswith(kas_agents_mod._PROMPT_FILE_SCHEME):
         ref = prompt[len(kas_agents_mod._PROMPT_FILE_SCHEME) :]
         # ``anchor``, not ``is_absolute``: on Windows ``/etc/x`` is rooted without a
         # drive, so it is not absolute there yet still names a file outside the checkout.
-        if Path(ref).expanduser().anchor:
+        # A leading ``$`` is rooted too: kiro-cli reads ``$HOME/x`` as an absolute path.
+        # So is a leading ``~`` (``~user`` too), checked without expanding it.
+        if ref.startswith(("$", "~")) or Path(ref).anchor:
             raise KasAgentTranslationError(
                 f"agent {agent!r} is declared by a project checkout, so its prompt must be "
                 f"a path inside that checkout's .kiro/agents, not {ref!r}"
@@ -315,8 +335,14 @@ def resolve_projected_spec(
         # checkout's agents directory. ``resolve_prompt`` lets a TRUSTED spec use
         # ``..``; a cloned repository must not choose which of the user's files
         # is shipped over the wire.
-        base = paths_mod.project_agents_dir(work_dir or ".").resolve()
-        target = (base / ref).resolve()
+        try:
+            base = paths_mod.project_agents_dir(work_dir or ".").resolve()
+            target = (base / ref).resolve()
+        except (OSError, RuntimeError) as exc:  # a symlink loop in the checkout
+            raise KasAgentTranslationError(
+                f"agent {agent!r} is declared by a project checkout whose prompt path "
+                f"{ref!r} cannot be resolved: {exc}"
+            ) from exc
         if target != base and base not in target.parents:
             raise KasAgentTranslationError(
                 f"agent {agent!r} is declared by a project checkout, so its relative prompt "
@@ -325,13 +351,24 @@ def resolve_projected_spec(
         # Hand on the target that was checked, not the ref: resolving the ref again
         # at read time would follow a link the checkout repointed in between.
         project = {**project, "prompt": kas_agents_mod._PROMPT_FILE_SCHEME + target.as_posix()}
-    dropped = sorted(k for k in project if k not in PROJECT_SPEC_HONOURED_KEYS)
+    # ``systemPrompt`` is not dropped: it was carried as ``prompt`` above.
+    dropped = sorted(
+        k for k in project if k not in PROJECT_SPEC_HONOURED_KEYS and k != "systemPrompt"
+    )
     if dropped:
         logger.info(
             "agent %r: the project checkout's spec is not trusted to grant; ignored keys: %s",
             agent,
             ", ".join(dropped),
         )
+        if notices is not None:
+            # Key names only, never values: they come from a cloned folder.
+            names = ", ".join(k for k in dropped if k.isidentifier()) or "some keys"
+            notices.append(
+                f"ℹ Agent {agent} comes from this folder's .kiro/agents, so it runs "
+                f"without {names}. Crew takes only a folder agent's name, description, "
+                "prompt, tools and model. Copy it to your own agents folder to use the rest."
+            )
     spec = {k: project[k] for k in PROJECT_SPEC_HONOURED_KEYS if k in project}
     # The checkout's keys are filtered above; the approved additions come from the
     # user's own record, never from the checkout. The checkout's switch-off keys for
@@ -351,32 +388,53 @@ def resolve_projected_spec(
     return spec, paths_mod.project_agents_dir(work_dir)
 
 
-def _skill_scope_rules(
+def _skill_scope(
     agent: str,
     spec: dict[str, Any],
     spec_dir: Path,
     work_dir: str | Path | None,
-) -> tuple[dict[str, Any], ...]:
-    """The ``skill`` deny rules that give this KAS session its kiro-cli skill set.
+) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+    """The ``skill`` deny rules and the extra ``skill://`` resources that give this
+    KAS session its kiro-cli skill set.
 
     KAS loads ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` for every
     session on top of the agent's ``resources``; kiro-cli under Crew loads only the
-    scope Crew resolves (``acp/kas_skill_scope.py``). A failure here costs the
-    narrowing, never the session: the extra skills are the user's own, and a
-    session that fails to start over them loses more than it protects.
+    scope Crew resolves (``acp/kas_skill_scope.py``). The resources are fixed
+    copies of in-scope skills KAS would drop (``refused_skill_copies``). A failure
+    here costs the narrowing or the copies, never the session: the skills are the
+    user's own, and a session that fails to start over them loses more than it
+    protects.
     """
     from kiro_crew.acp import kas_skill_scope
 
     try:
         globs = kas_skill_scope.scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
-        return tuple(kas_skill_scope.skill_scope_rules(globs, work_dir=work_dir))
     except Exception:  # see the docstring: degrade to the unscoped catalog
         logger.warning(
             "KAS skill scope for %r failed; the session loads KAS's default skill trees",
             agent,
             exc_info=True,
         )
-        return ()
+        return (), ()
+    try:
+        copies = kas_skill_scope.refused_skill_copies(
+            agent, spec, globs, agents_dir=spec_dir, work_dir=work_dir
+        )
+    except Exception:  # see the docstring: the session runs without the copies
+        logger.warning("KAS skill copies for %r failed", agent, exc_info=True)
+        copies = []
+    try:
+        rules = kas_skill_scope.skill_scope_rules(
+            globs, work_dir=work_dir, also_allowed=frozenset(c.name for c in copies)
+        )
+    except Exception:  # see the docstring: degrade to the unscoped catalog
+        logger.warning(
+            "KAS skill scope for %r failed; the session loads KAS's default skill trees",
+            agent,
+            exc_info=True,
+        )
+        rules = []
+    return tuple(rules), tuple(c.uri for c in copies)
 
 
 def mate_worker_projection(
@@ -843,6 +901,7 @@ class KasHarness(MembershipHarness):
             # second read is removed rather than re-verified. Every other agent mirrors
             # nothing, has no snapshot, and is resolved nearest-first here.
             agents_dir = paths_mod.kiro_agents_dir()
+            spec_notices: list[str] = []
             # A session bound to an app's own agent projects that app's registered
             # file, read by its path; a bound file that is gone refuses the session
             # instead of falling back to a checkout's spec of the same name.
@@ -860,7 +919,9 @@ class KasHarness(MembershipHarness):
                 spec, prompt_dir = merge_at_spawn(agent, bound), agents_dir
             else:
                 try:
-                    spec, prompt_dir = resolve_projected_spec(agents_dir, agent, work_dir)
+                    spec, prompt_dir = resolve_projected_spec(
+                        agents_dir, agent, work_dir, spec_notices
+                    )
                 except kas_agents_mod.KasAgentSpecAbsent as exc:
                     # Nothing defines the agent, so name what removed it (an app
                     # switched off, usually) and the fix, rather than a file open
@@ -940,16 +1001,26 @@ class KasHarness(MembershipHarness):
             # did not change has to compare against this snapshot rather than against a
             # fresh read of the file.
             withheld: kas_agents_mod.WithheldOut = {}
+            prompt_unread: list[Path] = []
+            scope_rules, skill_copies = _skill_scope(agent, spec, prompt_dir, work_dir)
+            projected = spec
+            if skill_copies:
+                # Crew's own copies of the spec's skills, not a widening of the
+                # spec: each stands in for a skill already in its scope.
+                declared = spec.get("resources")
+                kept = declared if isinstance(declared, list) else []
+                projected = {**spec, "resources": [*kept, *skill_copies]}
             custom_agents = kas_agents_mod.build_kas_custom_agents(
                 prompt_dir,
                 agent,
-                spec,
+                projected,
                 stub_server_names=stubbed,
                 member_dispatch=member_dispatch,
                 crew_panel=crew_panel,
                 session_key=session_key,
-                skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
+                skill_scope_rules=scope_rules,
                 withheld_out=withheld,
+                prompt_unread_out=prompt_unread,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
@@ -958,7 +1029,15 @@ class KasHarness(MembershipHarness):
             apps = resolve_app_identity_launches(
                 custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
             )
-            notice = withheld_credentials_notice(withheld)
+            notice = "\n\n".join(
+                n
+                for n in (
+                    *spec_notices,
+                    prompt_unread_notice(agent, prompt_unread),
+                    withheld_credentials_notice(withheld),
+                )
+                if n
+            )
             return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:
