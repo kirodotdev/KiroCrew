@@ -755,6 +755,8 @@ if _typing.TYPE_CHECKING:
         _SCRIPT_TIMEOUT,
         NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
+        Awaitable,
+        Callable,
         StreamingLogLines,
         _adoption_pending,
         _install_script_platform_refusal,

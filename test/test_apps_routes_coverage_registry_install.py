@@ -18,6 +18,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import TestClient, TestServer
 from apps_routes_coverage_helpers import (
     APP,
+    _deregister_into,
     _install,
     _make_app,
     _setup_env,
@@ -176,6 +177,52 @@ class TestRegistryInstall:
 
         assert body["registration"]["agents"] == []
         assert calls == ["stop", "deregister"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path", ["/api/apps/registry/install", "/api/apps/registry/install-stream"]
+    )
+    @pytest.mark.parametrize("ok", [True, False])
+    async def test_reinstall_over_an_installed_app_takes_it_down_to_replace_its_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, ok: bool
+    ) -> None:
+        # Replacing an installed app's files fails on Windows while its backend
+        # holds one open, so both routes stop the backend and scrub its resources
+        # at the replacement boundary, and a failed replacement brings it back.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+
+        async def _reinstall(name: str, **kwargs: Any) -> dict[str, Any]:
+            await kwargs["before_replace"]()
+            calls.append("replace")
+            return {"ok": ok, "name": name, "error": "" if ok else "copy failed"}
+
+        def _register(name: str) -> SimpleNamespace:
+            calls.append("register")
+            return SimpleNamespace(to_dict=dict)
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _reinstall)
+        monkeypatch.setattr(routes_mod, "register_app", _register)
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(path, json={"name": APP})
+            text = await resp.text()
+        if path.endswith("-stream"):
+            assert json.loads(_sse_events(text)[-1][1])["ok"] is ok
+        else:
+            assert resp.status == (201 if ok else 400), text
+        assert calls == [
+            "stop",
+            "deregister (agents kept)",
+            "replace",
+            "register",
+            "start",
+        ], calls
 
 
 # POST /api/apps/registry/install-stream (SSE)

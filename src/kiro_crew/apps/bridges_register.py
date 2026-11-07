@@ -225,13 +225,12 @@ def register_app(
         return result
 
     # NOTE: pruning of resources a manifest UPGRADE removed is NOT done here.
-    # The enable/update route handlers all deregister_app() first, so nothing
-    # stale survives for them to prune — a prune here (a directory walk over
-    # every agent file + lock acquisition, scaling with agent count) would run
-    # redundantly on every one of those deregister-first calls. The one path
-    # that re-registers WITHOUT a preceding deregister — the boot reconcile —
-    # does the prune itself, off the loop, in
-    # reconcile_enabled_app_resources(). See that function.
+    # Every path either deregisters first, so nothing stale survives for it to
+    # prune — a prune here (a directory walk over every agent file + lock
+    # acquisition, scaling with agent count) would run redundantly on each of
+    # those calls — or re-registers over kept agent specs and prunes itself, off
+    # the loop: the boot reconcile (reconcile_enabled_app_resources) and a
+    # registry update (routes_lifecycle._reinstall_from_registry).
 
     # MCP servers BEFORE agents: _register_agents copies the app's own registered
     # server specs into each agent config, so registering them afterwards leaves
@@ -558,21 +557,26 @@ def discard_app_session_pointers(app_name: str) -> SessionPointerCleanup:
     return SessionPointerCleanup(dropped=cleared)
 
 
-def deregister_app(app_name: str) -> RegistrationResult:
+def deregister_app(app_name: str, *, keep_agents: bool = False) -> RegistrationResult:
     """Deregister all resources for an app.
 
     Removes symlinks and cron manifests.  Does not remove the app directory.
+
+    ``keep_agents`` leaves the agent specs for a registry update that registers the
+    app again: registration rewrites each in place, so one it cannot rewrite keeps
+    its last good copy and the user's edits (app-kit-platform §3).
 
     Does NOT touch session resume pointers — see
     :func:`discard_app_session_pointers` for why that belongs to uninstall alone.
     """
     result = RegistrationResult()
 
-    try:
-        n = _deregister_agents(app_name)
-        result.agents = [f"removed {n} agent(s)"]
-    except Exception as exc:
-        result.errors.append(f"agent deregistration failed: {exc}")
+    if not keep_agents:
+        try:
+            n = _deregister_agents(app_name)
+            result.agents = [f"removed {n} agent(s)"]
+        except Exception as exc:
+            result.errors.append(f"agent deregistration failed: {exc}")
 
     try:
         _deregister_skills(app_name)
