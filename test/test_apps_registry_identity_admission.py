@@ -469,6 +469,38 @@ async def test_install_script_rewriting_manifest_is_refused(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX,
+    reason="onInstall scripts run via /bin/bash; the rewrite scenario is POSIX-only",
+)
+async def test_install_script_leaving_a_bom_manifest_still_installs(monkeypatch, tmp_path):
+    """A UTF-8 byte-order mark on the post-script ``app.json`` is not an identity
+    mismatch: the final pass and the registration both read it as the same app."""
+    src = tmp_path / "app-sources" / "demoapp"
+    script = (
+        "python3 -c \"p='app.json';d=open(p,'rb').read();"
+        "open(p,'wb').write(b'\\xef\\xbb\\xbf'+d)\""
+    )
+    _identity_harness(
+        monkeypatch,
+        src,
+        cloned_manifest={
+            "name": "demoapp",
+            "version": "1.0.0",
+            "displayName": "Demo",
+            "description": "bom fixture",
+            "author": "tester",
+            "setup": {"onInstall": script},
+        },
+    )
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is True, result.get("error")
+    assert (src / "app.json").read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+@pytest.mark.asyncio
 async def test_failed_pull_aborts_instead_of_installing_stale_code(monkeypatch, tmp_path):
     """A failed fast-forward pull must abort the operation: installing the
     checkout's stale contents while recording the catalog URL as provenance
