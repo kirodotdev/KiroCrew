@@ -462,8 +462,17 @@ def build_github_review_payload(record: dict) -> dict:
     entry anchored on ``{path, line, side:'RIGHT'}`` against the head commit SHA
     (``record['revision']``). GitHub rejects inline comments outside the diff, so a
     finding lacking a usable ``{path, line}`` anchor is folded into the review body
-    rather than dropped (design note §4 known constraint)."""
-    pending = record.get("pending_comments") or []
+    rather than dropped (design note §4 known constraint).
+
+    ``pending_comments`` is derived from the record's ``findings`` when the record
+    does not already carry it, so a reloaded result record (standalone generation,
+    a manual posting retry) yields the same payload as the live run path. Without
+    the fallback such a record has only ``findings`` and the payload comes out
+    empty, which reads downstream as a review that could not be confirmed."""
+    pending = record.get("pending_comments")
+    if pending is None:
+        pending = build_pending_comments(record)
+    pending = pending or []
     # commit_id (revision) is written by the LLM worker, so redact it too before it
     # reaches the GitHub API — same egress treatment as body/path (idempotent; a
     # real SHA never matches credential/URL patterns).

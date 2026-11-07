@@ -146,6 +146,28 @@ class TestGithubReviewPayload(unittest.TestCase):
         self.assertEqual(pay["comments"][0],
                          {"path": "src/a.rs", "line": 5, "side": "RIGHT", "body": "F1 body"})
 
+    def test_builds_from_a_findings_record_with_no_pending_comments(self):
+        """A reloaded result record carries ``findings`` but not
+        ``pending_comments`` (standalone generation, a manual posting retry). The
+        payload must still anchor every finding inline, the same as the live run
+        path that pre-stashes ``pending_comments``. Without the derive-fallback the
+        payload comes out empty and the draft reads as unconfirmable."""
+        rec = {
+            "revision": "abc123sha",
+            "findings": [
+                {"severity": "red", "file": "src/a.rs", "line": 5,
+                 "observation": "O1", "consequence": "C1", "suggestion": "S1"},
+                {"severity": "yellow", "file": "src/b.rs", "line": 9,
+                 "observation": "O2", "consequence": "C2", "suggestion": "S2"},
+            ],
+        }
+        pay = P.build_github_review_payload(rec)
+        self.assertEqual([c["path"] for c in pay["comments"]],
+                         ["src/a.rs", "src/b.rs"])
+        self.assertEqual([c["line"] for c in pay["comments"]], [5, 9])
+        self.assertTrue(pay["body"])  # the always-emitted ship-readiness summary
+        self.assertEqual(pay["commit_id"], "abc123sha")
+
     def test_unanchored_finding_folds_into_body(self):
         rec = {"revision": "s", "pending_comments": [
             {"kind": "finding", "file": "", "line": 0, "body": "no-anchor finding"},
