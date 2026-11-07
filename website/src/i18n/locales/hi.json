@@ -13035,6 +13035,8 @@
         "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
+        "agent_started": "एजेंट ने शुरू किया",
+        "agent_started_tooltip": "एजेंट ने खुद जवाब दिया, जैसे उसके शुरू किए किसी बैकग्राउंड कार्य के पूरा होने के बाद।",
         "earlier_step_one": "{{count}} पिछला चरण",
         "earlier_step_other": "{{count}} पिछले चरण",
         "hide_earlier_steps": "पिछले चरण छिपाएँ",

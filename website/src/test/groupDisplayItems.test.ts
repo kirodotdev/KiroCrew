@@ -727,3 +727,102 @@ describe('groupDisplayItems — turn-dispatching inject rows', () => {
     expect(rowsOf(holder as DisplayItem)).toEqual(['a', 't', 'continuation', 't2', 'b'])
   })
 })
+
+describe('groupDisplayItems: a turn the agent started on its own', () => {
+  const withMeta = (role: string, content: string, meta: Record<string, unknown>): ChatMessage =>
+    ({ role, content, cls: '', meta } as unknown as ChatMessage)
+  const ended = (content: string): ChatMessage => withMeta('assistant', content, { turn_stats: { elapsed_ms: 1000 } })
+  /** The first row the agent's turn wrote, whatever its role. */
+  const opener = (role: string, content: string, meta: Record<string, unknown> = {}): ChatMessage =>
+    withMeta(role, content, { ...meta, origin: { kind: 'agent', turn_start: true } })
+  /** A later reply of that turn: marked as the agent's, but not its opener. */
+  const agentReply = (content: string): ChatMessage =>
+    withMeta('assistant', content, { origin: { kind: 'agent' }, turn_stats: { elapsed_ms: 1000 } })
+  const contents = (d: DisplayItem): string[] =>
+    d.kind === 'turn'
+      ? d.items.flatMap(t => (t.kind === 'single' ? [t.msg.content] : t.msgs.map(m => m.content)))
+      : d.kind === 'single' ? [d.msg.content] : d.msgs.map(m => m.content)
+  const agentTurns = (turns: DisplayItem[]) => turns.filter(d => d.kind === 'turn' && d.agentStarted).map(contents)
+
+  it('groups the agent turn on its own, from its first row to the next prompt', () => {
+    const { turns } = groupDisplayItems([
+      msg('user', 'run the build in the background'),
+      ended('started it'),
+      opener('tool', 'read the build log'),
+      agentReply('the build passed'),
+      msg('user', 'status?'),
+      ended('all quiet'),
+    ])
+
+    expect(turns.map(contents)).toEqual([
+      ['run the build in the background'],
+      ['started it'],
+      ['read the build log', 'the build passed'],
+      ['status?'],
+      ['all quiet'],
+    ])
+    expect(turns.map(d => d.kind === 'turn' && !!d.agentStarted)).toEqual([false, false, true, false, false])
+  })
+
+  it('wraps a turn that wrote only tool rows, and a lone reply, so either can be headed', () => {
+    const toolOnly = groupDisplayItems([msg('user', 'u'), ended('a'), opener('tool', 'started another job')])
+    expect(agentTurns(toolOnly.turns)).toEqual([['started another job']])
+
+    const lone = groupDisplayItems([msg('user', 'u'), ended('a'), opener('assistant', 'it finished', { turn_stats: {} })])
+    expect(agentTurns(lone.turns)).toEqual([['it finished']])
+  })
+
+  it('leaves the rows before the opener with the turn they belong to, even with no end marker', () => {
+    // The user's turn ran a tool and wrote no closing reply, so it left no footer row.
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      msg('tool', 'user tool'),
+      opener('assistant', 'agent reply', { turn_stats: {} }),
+    ])
+
+    expect(turns.map(contents)).toEqual([['u'], ['user tool'], ['agent reply']])
+    expect(agentTurns(turns)).toEqual([['agent reply']])
+  })
+
+  it('starts a second agent turn at its own first row', () => {
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      ended('a'),
+      opener('tool', 'first job'),
+      opener('tool', 'second job'),
+      agentReply('both done'),
+    ])
+
+    expect(agentTurns(turns)).toEqual([['first job'], ['second job', 'both done']])
+  })
+
+  it('opens the turn at the next shown row when its first row is a permission card', () => {
+    // The chat page shows permission requests in the approval bar, not as rows.
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      ended('a'),
+      opener('permission', 'fs_write'),
+      msg('tool', 'write the file'),
+      agentReply('wrote it'),
+    ])
+
+    expect(agentTurns(turns)).toEqual([['write the file', 'wrote it']])
+    expect(turns.map(contents)).toEqual([['u'], ['a'], ['write the file', 'wrote it']])
+  })
+
+  it('leaves an agent reply that carries no opener as it was', () => {
+    // A reply saved before turns were marked at their first row.
+    const { turns } = groupDisplayItems([msg('user', 'u'), ended('a'), msg('tool', 't'), agentReply('b')])
+
+    expect(agentTurns(turns)).toEqual([])
+    expect(turns.map(contents)).toEqual([['u'], ['a', 't', 'b']])
+  })
+
+  it('marks the running agent turn as the trailing turn', () => {
+    const grouped = groupDisplayItems([msg('user', 'u'), ended('a'), opener('tool', 'working')])
+    const items = applyRunningState(grouped, true)
+    const last = items[items.length - 1]
+
+    expect(last.kind === 'turn' && last.agentStarted && !last.complete).toBe(true)
+  })
+})

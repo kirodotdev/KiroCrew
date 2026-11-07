@@ -13653,6 +13653,8 @@
         "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
+        "agent_started": "Начато агентом",
+        "agent_started_tooltip": "Агент ответил сам, например после завершения запущенной им фоновой задачи.",
         "earlier_step_few": "{{count}} предыдущих шага",
         "earlier_step_many": "{{count}} предыдущих шагов",
         "earlier_step_one": "{{count}} предыдущий шаг",

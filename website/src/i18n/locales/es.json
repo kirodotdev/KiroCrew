@@ -13344,6 +13344,8 @@
         "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
+        "agent_started": "Iniciado por el agente",
+        "agent_started_tooltip": "El agente respondió por su cuenta, por ejemplo cuando terminó una tarea en segundo plano que había iniciado.",
         "earlier_step_many": "{{count}} pasos anteriores",
         "earlier_step_one": "{{count}} paso anterior",
         "earlier_step_other": "{{count}} pasos anteriores",

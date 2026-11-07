@@ -310,6 +310,12 @@ def append(
             owed_cut()
         except Exception:
             logger.warning("owed segment cut failed for slot %s", self.key, exc_info=True)
+    # A turn with no prompt row has its first durable row open it, after any
+    # row the cut above wrote first.
+    owed_opener = getattr(self, "_owed_turn_opener", None)
+    if owed_opener is not None and role not in _WIRE_ONLY_ROLES and role != "user":
+        self._owed_turn_opener = None
+        meta = owed_opener(meta)
     # A live row the person typed makes any in-flight return summary stale.
     # The local import avoids a state -> warm_task_brief -> state cycle, and
     # replay appends (broadcast=False) deliberately do not cancel current work.

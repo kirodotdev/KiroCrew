@@ -131,6 +131,17 @@ export const isTurnEnd = (msg: ChatMessage): boolean =>
   msg.role === 'assistant' &&
   !!(msg.meta as Record<string, unknown> | undefined)?.turn_stats
 
+/** Whether *msg* is the first row of a turn the agent started on its own: its
+ *  `meta.origin` is `{kind: 'agent', turn_start: true}` (`chat_turn/agent_started.py`). */
+export function opensAgentTurn(msg: ChatMessage | undefined): boolean {
+  const origin = (msg?.meta as Record<string, unknown> | undefined)?.origin as Record<string, unknown> | undefined
+  return typeof origin === 'object' && origin !== null && origin.kind === 'agent' && origin.turn_start === true
+}
+
+/** Whether *item* begins with the first row of a turn the agent started (`opensAgentTurn`). */
+export const itemOpensAgentTurn = (item: TurnItem): boolean =>
+  opensAgentTurn(item.kind === 'single' ? item.msg : item.msgs[0])
+
 /** A `recovery` inject: the runner resuming the SAME turn after it ended
  *  abnormally (`build_recovery_requeue`), not a prompt of its own. */
 export const isRecoveryInjection = (msg: ChatMessage): boolean =>
@@ -277,19 +288,27 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   // Phase 1: build raw items (singles + groups)
   const raw: TurnItem[] = []
   let group: ChatMessage[] = [], groupStart = 0
+  // A skipped row that opened an agent-started turn hands that to the next shown row.
+  const carriedOpeners = new Set<TurnItem>()
+  let carryOpener = false
   for (let i = 0; i < messages.length; i++) {
     // Permission messages handled by pinned ApprovalBar — skip entirely
-    if (messages[i].role === 'permission') continue
+    if (messages[i].role === 'permission') { carryOpener ||= opensAgentTurn(messages[i]); continue }
     // A sub-agent completion the card cannot parse stays internal: the LLM sees
     // it, the user does not. One it CAN parse renders as a compact outcome row,
     // which is the only scrollback record that a wave's results arrived.
-    if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+    if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) {
+      carryOpener ||= opensAgentTurn(messages[i])
+      continue
+    }
     if (GROUPABLE.has(messages[i].role)) {
       if (!group.length) groupStart = i
       group.push(messages[i])
     } else {
       if (group.length) { raw.push({ kind: 'group', msgs: group, startIdx: groupStart }); group = [] }
-      raw.push({ kind: 'single', msg: messages[i], idx: i })
+      const item: TurnItem = { kind: 'single', msg: messages[i], idx: i }
+      if (carryOpener) { carriedOpeners.add(item); carryOpener = false }
+      raw.push(item)
     }
   }
   if (group.length) raw.push({ kind: 'group', msgs: group, startIdx: groupStart })
@@ -311,6 +330,8 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   // ANSWER, which `settlePendingSynthesisAnswer` below splits off before any
   // later fold can reach it.
   let pendingSynthesisAnswer = false
+  // Set while the open batch is a turn the agent started on its own.
+  let agentTurnOpen = false
   const hasWorkingSteps = (items: TurnItem[]) =>
     items.some(t =>
       (t.kind === 'single' && (t.msg.role === 'tool' || t.msg.role === 'assistant' || t.msg.role === 'streaming')) ||
@@ -340,8 +361,12 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   // spread a one-tool turn (tool + answer) loose, so it never got the
   // "1 tool call" fold a two-tool turn gets. Assistant-only batches keep the
   // length rule: a lone answer has no step to fold and must stay loose.
-  const flushTurn = (items: TurnItem[], complete: boolean) => {
-    if (hasToolStep(items) || (hasWorkingSteps(items) && items.length > 2) || contentThinkingCount(items) >= 2) {
+  // A turn the agent started wraps at any length too, so TurnBlock heads it with
+  // its label even when it holds a single row.
+  const flushTurn = (items: TurnItem[], complete: boolean, agentStarted = false) => {
+    if (agentStarted) {
+      turns.push({ kind: 'turn', items, complete, agentStarted: true })
+    } else if (hasToolStep(items) || (hasWorkingSteps(items) && items.length > 2) || contentThinkingCount(items) >= 2) {
       turns.push({ kind: 'turn', items, complete })
     } else {
       turns.push(...items)
@@ -397,7 +422,8 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       // A previous synthesis in this same user turn left its answer inside the
       // open batch; get it out before the fold below runs.
       settlePendingSynthesisAnswer()
-      if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
+      if (turnItems.length > 0) { flushTurn(turnItems, true, agentTurnOpen); turnItems = [] }
+      agentTurnOpen = false
       if (!regionHasForeign) foldInterimRegion(turns, regionStart)
       // The synthesis row leads the turn that carries the answer, so it opens
       // the next batch rather than joining the region behind it.
@@ -431,7 +457,8 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       // is flushed into the region a later synthesis folds, and that synthesis
       // then reads the next wave's own reply as the answer boundary.
       settlePendingSynthesisAnswer()
-      if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
+      if (turnItems.length > 0) { flushTurn(turnItems, true, agentTurnOpen); turnItems = [] }
+      agentTurnOpen = false
       turns.push(item)
       // A user/nudge prompt begins a fresh interim region; a sub-agent
       // completion belongs to the one already open.
@@ -450,6 +477,13 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       }
       continue
     }
+    // A turn the agent started on its own has no prompt row; its first row opens
+    // it instead, so the rows before that row stay with the turn they belong to.
+    if (carriedOpeners.has(item) || itemOpensAgentTurn(item)) {
+      settlePendingSynthesisAnswer()
+      if (turnItems.length > 0) { flushTurn(turnItems, true, agentTurnOpen); turnItems = [] }
+      agentTurnOpen = true
+    }
     turnItems.push(item)
   }
   // Flush the trailing group as complete, and remember whether that flush
@@ -459,7 +493,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   let trailingTurnIdx = -1
   if (turnItems.length > 0) {
     const before = turns.length
-    flushTurn(turnItems, true)
+    flushTurn(turnItems, true, agentTurnOpen)
     const last = turns[turns.length - 1]
     if (turns.length === before + 1 && last && last.kind === 'turn') {
       trailingTurnIdx = turns.length - 1
@@ -494,6 +528,7 @@ const sameDisplayItem = (a: DisplayItem, b: DisplayItem): boolean => {
     // list (the presence of a synthesis row), so it must be compared or the
     // substitution below would freeze a turn at a stale fold state.
     if (!!a.interim !== !!b.interim) return false
+    if (!!a.agentStarted !== !!b.agentStarted) return false
     for (let i = 0; i < a.items.length; i++) if (!sameTurnItem(a.items[i], b.items[i])) return false
     return true
   }

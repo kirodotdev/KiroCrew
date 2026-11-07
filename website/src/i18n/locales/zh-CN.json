@@ -12726,6 +12726,8 @@
         "kas_route_lead": "{{route}}{{message}}"
       },
       "turnBlock": {
+        "agent_started": "由助手主动发起",
+        "agent_started_tooltip": "助手主动作答，例如它启动的后台任务完成之后。",
         "earlier_step_other": "之前的 {{count}} 个步骤",
         "hide_earlier_steps": "隐藏之前的步骤",
         "hide_tool_calls": "隐藏工具调用",

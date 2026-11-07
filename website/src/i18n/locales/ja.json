@@ -12726,6 +12726,8 @@
         "kas_route_lead": "{{route}}{{message}}"
       },
       "turnBlock": {
+        "agent_started": "エージェントが開始",
+        "agent_started_tooltip": "エージェントが自ら応答しました。たとえば、開始したバックグラウンドタスクが完了したときです。",
         "earlier_step_other": "以前の {{count}} ステップ",
         "hide_earlier_steps": "以前のステップを非表示",
         "hide_tool_calls": "ツール呼び出しを非表示",

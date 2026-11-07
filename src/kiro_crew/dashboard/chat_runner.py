@@ -144,6 +144,7 @@ from kiro_crew.dashboard.chat_turn.agent_started import (  # noqa: F401
     _ask_the_owed_cancel_answered,
     _close_agent_turn_stream,
     _send_owed_agent_cancel,
+    agent_turn_opener_meta,
     is_agent_started_row,
 )
 from kiro_crew.dashboard.chat_turn.app_agent_binding import (
@@ -1039,6 +1040,7 @@ async def _run_chat(
         # re-apply build_message's provenance so only the user's text is upgraded.
         if _agent_started:
             event_stream = turn._agent_turn_stream = client.stream_unsolicited()
+            slot._owed_turn_opener = agent_turn_opener_meta
         elif is_slash:
             event_stream = client.stream_command(message)
         else:

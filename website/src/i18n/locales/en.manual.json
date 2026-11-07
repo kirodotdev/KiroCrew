@@ -5940,6 +5940,8 @@
         "state_queued": "Queued"
       },
       "turnBlock": {
+        "agent_started": "Started by the agent",
+        "agent_started_tooltip": "The agent answered on its own, for example after a background task it started finished.",
         "earlier_step_one": "{{count}} earlier step",
         "earlier_step_other": "{{count}} earlier steps",
         "hide_earlier_steps": "Hide earlier steps",
