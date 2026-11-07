@@ -6,6 +6,7 @@
  */
 
 import type { ChatSlot, ChatSlotDetailResponse, CrewPause, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
+import type { MergeBackDraft, MergeBackResult } from '../../types/mergeBack'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -336,13 +337,21 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  a click on a leftover countdown is rejected rather than ending a later wait. */
     endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
     approveChatSlot: (slot: string, action: string, extra?: Record<string, string | number>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
-    resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
+    resumeChatSlot: (key: string, title?: string, expectedCreatedAt?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key, ...(expectedCreatedAt !== undefined ? { expected_created_at: expectedCreatedAt } : {}) }).then(j),
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
     sideTools: () => fetch('/api/chat/side/tools').then(j) as Promise<{ read_only_tools: boolean; claude_adapter_outdated: boolean; claude_adapter_min_version: string; claude_adapter_update_command: string; config_unavailable: boolean }>,
     sideState: (slot: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/side').then(j) as Promise<SideSnapshot>,
     // No body: promotion always copies the WHOLE transcript with no prompt/mode
     // override (see chat_fork.api_chat_slot_promote), so there is nothing to narrow.
     promoteChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/promote', {}).then(j),
+    /** Draft a summary of the fork messages its parent does not have yet. Writes
+     *  nothing; rejects with the body's `code` (`parent_not_open`, `parent_deleted`,
+     *  `parent_unconfirmed`, `nothing_to_merge`, `fork_running`, `merge_back_restricted`, ...). */
+    mergeBackDraft: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/merge-back/draft', {}).then(j) as Promise<MergeBackDraft>,
+    /** Write the reviewed summary into the fork's parent as a merge card.
+     *  `through` and `digest` are the draft's values; a fork whose covered
+     *  messages changed since rejects with `merge_draft_stale`. */
+    mergeBack: (slot: string, summary: string, through: string, digest: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/merge-back', { summary, through, digest }).then(j) as Promise<MergeBackResult>,
     sideOpen: async (slot: string) => {
       await waitForSideClose(slot)
       return post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>

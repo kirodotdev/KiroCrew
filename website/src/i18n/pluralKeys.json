@@ -560,5 +560,9 @@
   "pages.settings.releases.earlier_count",
   "pages.settings.releases.show_more",
   "pages.capabilitiesPage.mcp_servers_waiting",
-  "pages.chatPage.mcp_sign_in_needed_more"
+  "pages.chatPage.mcp_sign_in_needed_more",
+  "components.mergeBackDialog.covers",
+  "components.mergeBackDialog.covers_partial",
+  "components.mergeBackDialog.remaining",
+  "pages.chat.mergedFromLabel.messages"
 ]

@@ -402,15 +402,18 @@ export interface ChatState {
    *  racing a sidebar resume was unordered before. */
   lastResumeRequestId: string | null
   /** Every resume still on its way, by requestId: the history key it asked
-   *  for and when it started. A second resume of a key with an entry younger
-   *  than PENDING_OPEN_LEASE_MS is dropped (a double click on a slow resume),
-   *  whichever resumes ran in between; an older entry is treated as hung and
+   *  for, the transcript identity it pinned (if any) and when it started. A
+   *  second resume of the same key and pin with an entry younger than
+   *  PENDING_OPEN_LEASE_MS is dropped (a double click on a slow resume),
+   *  whichever resumes ran in between. A resume with a different pin is a
+   *  different request: dropping it would hand its click to a resume the
+   *  gateway never checks against that identity. An older entry is treated as hung and
    *  no longer blocks the row. The chat page counts a non-empty map like a
    *  pending create or fork. Ordering stays with `lastResumeRequestId`.
    *  `origin` is where the user stood at the last click that asked for this
    *  resume, re-taken when a repeat is dropped; the fulfilled reducer asks
    *  `forkMayOpen` against it. */
-  pendingResumes?: Record<string, { key: string; startedAt: number; origin: { activeSlot: string | null; moves: number; autoMoves: number; requestMoves: number; seq: number; burst: number } }>
+  pendingResumes?: Record<string, { key: string; expectedCreatedAt?: string; startedAt: number; origin: { activeSlot: string | null; moves: number; autoMoves: number; requestMoves: number; seq: number; burst: number } }>
   /** A history delete the gateway REFUSED (409 with a `code`), sibling of
    *  `unresumableResume` above and rendered at the same site. The row is still
    *  in `history` -- nothing was deleted -- so without this the click looked

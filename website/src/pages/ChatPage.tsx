@@ -51,6 +51,7 @@ import { useComposerAboveBand } from './chat/page/composerDock'
 import { useStableRowKeys, useTranscriptRows } from './chat/page/transcriptRows'
 import { useBusyTurnControls } from './chat/page/busyTurnControls'
 import { useSignedLinkAnchor, useForkSession, useOpenFollowupSession, useOpenSideChatForPane } from './useChatPageSlotSwitches'
+import { useOpenMergedFork } from './chat/useOpenMergedFork'
 import ChatPageFrame from './chat/page/ChatPageFrame'
 import SessionsSidebarChrome from './chat/page/SessionsSidebarChrome'
 import ChatPaneChrome from './chat/page/ChatPaneChrome'
@@ -993,12 +994,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setHighlightTs,
     handleJumpToPinnedMessage,
   })
+  // Opens the fork a merge card names: switched to when open, reopened from
+  // History when not. One identity for the transcript renderer memo.
+  const openMergedFork = useOpenMergedFork()
   const {
     activeSlotTitle, renderMessage, renderTurnItem, renderFarmItem,
   } = useTranscriptRendering({
     embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
     activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-    handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
+    handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, openMergedFork, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
     decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
     handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
@@ -1095,7 +1099,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   return (
     <ChatPageFrame
-      embedded={embedded} activeSlot={activeSlot} chatConfig={chatConfig} jiraSourceHosts={jiraSourceHosts} runInTerminalScope={runInTerminalScope} activitySlot={activitySlot}
+      embedded={embedded} popout={popout} activeSlot={activeSlot} chatConfig={chatConfig} jiraSourceHosts={jiraSourceHosts} runInTerminalScope={runInTerminalScope} activitySlot={activitySlot}
       chatContainerRef={chatContainerRef} closedSessionActions={closedSessionActions} sidebarFolderActions={sidebarFolderActions}
     >
       <SessionsSidebarChrome
