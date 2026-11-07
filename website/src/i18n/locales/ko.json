@@ -14632,7 +14632,7 @@
       "pod_memory_of_ceiling": "cgroup 상한 대비 파드 메모리 사용량",
       "pod_cpu_usage": "파드 CPU 사용량",
       "pod_task_count": "파드 작업(프로세스/스레드) 수",
-      "pod_tasks_label": "작업",
+      "pod_task_chip_other": "작업 {{n}}개",
       "pod_memory": "메모리: {{value}}",
       "pod_cpu": "CPU: {{value}}",
       "pod_tasks": "작업: {{value}}",

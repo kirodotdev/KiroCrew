@@ -8265,7 +8265,6 @@
       "pod_memory_of_ceiling": "Pod memory used against its cgroup ceiling",
       "pod_cpu_usage": "Pod CPU usage",
       "pod_task_count": "Pod task (process/thread) count",
-      "pod_tasks_label": "tasks",
       "pod_memory": "Memory: {{value}}",
       "pod_cpu": "CPU: {{value}}",
       "pod_tasks": "Tasks: {{value}}",

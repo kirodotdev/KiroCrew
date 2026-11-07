@@ -14632,7 +14632,7 @@
       "pod_memory_of_ceiling": "Pod 已用内存与其 cgroup 上限对比",
       "pod_cpu_usage": "Pod CPU 使用率",
       "pod_task_count": "Pod cgroup 中的任务数",
-      "pod_tasks_label": "个任务",
+      "pod_task_chip_other": "{{n}} 个任务",
       "pod_memory": "内存：{{value}}",
       "pod_cpu": "CPU：{{value}}",
       "pod_tasks": "任务：{{value}}",
