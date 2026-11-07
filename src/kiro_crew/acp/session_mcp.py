@@ -84,7 +84,6 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
-from kiro_crew import kiro_cli as _kiro_cli
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
@@ -1904,7 +1903,7 @@ def kiro_control_plane_servers(
     # registry can govern this sign-in: the spec then carries the control plane
     # unmarked (``managed_mcp._registry_marker_for``), so it gets its element too.
     registry_declared = _registry_mode()
-    if not agent or (registry_declared and not _kiro_cli.registry_governance_known_unreachable()):
+    if not agent or _agent_mod._registry_marker_for("kirocrew-core", registry_declared):
         return NativeControlPlaneMount([], {})
     spec = spec_override if spec_override is not None else _agent_spec_for(agent, work_dir)
     if not isinstance(spec, dict) or not isinstance(spec.get("mcpServers"), dict):
