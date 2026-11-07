@@ -19,13 +19,14 @@
  *    rather than a swallowed throw;
  *  - the picker/JSON hand-off in BOTH directions — a tab switch that dropped the
  *    other pane's edits would discard typing the user can still see;
- *  - delete, which is `confirm`-gated and must write nothing when declined.
+ *  - delete, which asks through the in-app dialog (never the browser's
+ *    `confirm()`), names the theme, and must write nothing when declined.
  *
  * Fake timers are armed purely as a teardown guard: nothing in this tree
  * schedules one today, and an unhandled late callback would redden the run while
  * every test still reported as passing.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 
 import type { CustomThemeData } from '../hooks/useTheme'
@@ -36,6 +37,7 @@ const themeStore = vi.hoisted(() => ({
   addCustomTheme: vi.fn<(data: { name: string }) => Promise<unknown>>(),
   deleteCustomTheme: vi.fn<(slug: string) => Promise<void>>(),
   loadCustomThemes: vi.fn<() => Promise<void>>(),
+  customThemes: [{ value: 'custom-ocean', label: '🌊 Ocean', custom: true }],
 }))
 
 vi.mock('../hooks/useTheme', async importOriginal => {
@@ -63,6 +65,10 @@ import {
   useThemeEditor,
 } from '../components/themeEditor'
 import { CUSTOM_THEMES_CHANGED_EVENT } from '../hooks/useTheme'
+import { confirmText, stubAppConfirm } from './appConfirmStub'
+import { registerAppConfirmHost } from '../lib/appConfirm'
+import AppConfirmHost from '../components/AppConfirmHost'
+import Modal from '../components/Modal'
 
 /* ── fixtures ─────────────────────────────────────────────────── */
 
@@ -349,24 +355,87 @@ describe('useThemeEditor', () => {
   })
 
   it('does nothing on delete when no theme is targeted', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const ask = stubAppConfirm(true)
     const { result } = renderHook(() => useThemeEditor())
     await act(async () => { await result.current.handleDelete() })
 
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(ask).not.toHaveBeenCalled()
     expect(themeStore.deleteCustomTheme).not.toHaveBeenCalled()
   })
 
   it('writes nothing when the delete confirmation is declined', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    stubAppConfirm(false)
     const { result } = renderHook(() => useThemeEditor())
     await act(async () => { await result.current.handleDelete('ocean') })
 
     expect(themeStore.deleteCustomTheme).not.toHaveBeenCalled()
   })
 
+  it('asks in the app, never the browser, and names the theme being deleted', async () => {
+    const native = vi.spyOn(window, 'confirm')
+    const ask = stubAppConfirm(true)
+    const { result } = renderHook(() => useThemeEditor())
+    await act(async () => { await result.current.handleDelete('ocean') })
+
+    expect(native).not.toHaveBeenCalled()
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(confirmText(ask.mock.calls[0][0])).toContain('Delete “🌊 Ocean”?')
+    expect(ask.mock.calls[0][0].confirmLabel).toBe('Delete theme')
+    expect(themeStore.deleteCustomTheme).toHaveBeenCalledWith('ocean')
+  })
+
+  it('reports the confirmation as open until it is answered', async () => {
+    let answer: (ok: boolean) => void = () => {}
+    onTestFinished(registerAppConfirmHost(() => new Promise<boolean>(r => { answer = r })))
+    const { result } = renderHook(() => useThemeEditor())
+    let pending: Promise<void> = Promise.resolve()
+    act(() => { pending = result.current.handleDelete('ocean') })
+
+    expect(result.current.confirmingDelete).toBe(true)
+    await act(async () => { answer(false); await pending })
+    expect(result.current.confirmingDelete).toBe(false)
+  })
+
+  it('keeps the editor dialog open when Escape cancels the delete confirmation', async () => {
+    function EditorInModal() {
+      const editor = useThemeEditor()
+      return (
+        <>
+          <AppConfirmHost />
+          <button data-testid="open-edit" onClick={() => void editor.openEditTheme('ocean')}>edit</button>
+          <Modal open={editor.editorOpen} onClose={editor.closeEditor} title="Edit Theme"
+            guardAccidentalDismiss={editor.isDirty || editor.confirmingDelete}>
+            <ThemeEditorPanel editor={editor} />
+          </Modal>
+        </>
+      )
+    }
+    render(<EditorInModal />)
+    fireEvent.click(screen.getByTestId('open-edit'))
+    await waitFor(() => expect(screen.getByLabelText('Theme Name')).toHaveValue('Ocean'))
+    fireEvent.click(btn(/Delete Theme/))
+    await screen.findByText(/Delete “🌊 Ocean”\?/)
+    // The confirmation takes focus once it opens; Escape is pressed from there, as a user would.
+    const ask = screen.getByText(/Delete “🌊 Ocean”\?/).closest('[role="dialog"], [role="alertdialog"]') as HTMLElement
+    await waitFor(() => expect(ask).toContainElement(document.activeElement as HTMLElement))
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByText(/Delete “🌊 Ocean”\?/)).toBeNull())
+    expect(screen.getByLabelText('Theme Name')).toBeInTheDocument()
+    expect(themeStore.deleteCustomTheme).not.toHaveBeenCalled()
+  })
+
+  it('names a theme missing from the list by its slug', async () => {
+    const ask = stubAppConfirm(false)
+    const { result } = renderHook(() => useThemeEditor())
+    await act(async () => { await result.current.handleDelete('gone') })
+
+    expect(confirmText(ask.mock.calls[0][0])).toContain('Delete “gone”?')
+  })
+
   it('surfaces a failed delete instead of closing the editor', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     themeStore.deleteCustomTheme.mockRejectedValue(new Error('in use'))
     const { result } = renderHook(() => useThemeEditor())
     await act(async () => { await result.current.openEditTheme('ocean') })
@@ -377,7 +446,7 @@ describe('useThemeEditor', () => {
   })
 
   it('reports a non-Error delete rejection through the catalog fallback', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     themeStore.deleteCustomTheme.mockRejectedValue('boom')
     const { result } = renderHook(() => useThemeEditor())
     await act(async () => { await result.current.handleDelete('ocean') })
@@ -640,7 +709,7 @@ describe('ThemeEditorPanel', () => {
   })
 
   it('deletes the edited theme once the confirmation is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     await openEdit()
     fireEvent.click(btn(/Delete Theme/))
 
