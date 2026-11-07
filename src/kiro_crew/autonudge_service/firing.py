@@ -54,6 +54,7 @@ from kiro_crew.autonudge_service.model import (
     runtime_budget_exceeded,
     runtime_elapsed,
 )
+from kiro_crew.autonudge_service.subject_reads import hold_tick, sleep_until_cycle
 from kiro_crew.autonudge_service.timers import (
     _ACTING_TIMER,
     _REARM_BACKOFF_MAX_SHIFT,
@@ -96,7 +97,7 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     self._admitted_transaction_owner.set(None)
     self._admitted_transaction_submissions.set(None)
     try:
-        await asyncio.sleep(loop.idle_secs if delay is None else delay)
+        await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
     if shutdown_event.is_set():
@@ -215,14 +216,17 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # held loop spends no cycles. Before the runtime budget, because that clock keeps
     # running while nobody answers; the held time is handed back on release
     # (``release_approval_hold``). A stalled approval (``notify_approval_stalled``)
-    # would only be declined again, so the tick fires and arms nothing; the release
-    # re-arms the loop once a person is back.
+    # would only be declined again, so the tick fires nothing. A held gated loop still
+    # reads the pull request it names, so one that ended during the hold settles the
+    # loop (``subject_reads.hold_tick``, which re-arms it one read interval out); any
+    # other held loop arms nothing, and the release re-arms it once a person is back.
     if loop.approval_stalled:
         logger.debug(
             "AutoNudge: loop %s is paused for approval -- not firing cycle %d",
             loop.id,
             loop.cycle_count + 1,
         )
+        await hold_tick(self, loop)
         return
     # Runtime budget: checked after the cycle cap (both spent -> the cap wins) and
     # before the fire, so a spent budget never buys one more turn. Same terminal
