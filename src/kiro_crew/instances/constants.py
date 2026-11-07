@@ -207,6 +207,10 @@ SESSION_IMPORT_MEMORY_WAIT_SECS: float = 300.0
 # hundred bytes of JSON.
 SESSION_TRANSFER_REPLY_MAX_BYTES: int = 256 * 1024
 
+# Bundle keys carrying a session's model context (instances.md §14.1a): a kiro-cli
+# pair, and a KAS session. A transcript-only fallback drops both.
+SESSION_BUNDLE_CONTEXT_KEYS: tuple[str, ...] = ("layer_b", "layer_b_kas")
+
 # Timeout (secs) for one federated GET /api/sessions/search to a peer. The peer
 # scans (bounded by its _SEARCH_SCAN_WINDOW), so 2s gives false "unreachable", while
 # 30s would let one dead tunnel stall a keystroke-driven search. Peers run
