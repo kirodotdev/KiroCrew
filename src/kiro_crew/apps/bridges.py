@@ -156,6 +156,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _mcp_lock,
         _read_mcp_json,
         _read_mcp_json_unlocked,
+        _sync_app_tool_refs,
         _write_mcp_json_unlocked,
     )
     from kiro_crew.apps.bridges_register import (  # noqa: F401
