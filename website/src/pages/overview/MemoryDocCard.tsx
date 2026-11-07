@@ -5,6 +5,7 @@ import { Card, CardTitle, Btn } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
 import { i18nT } from '../../i18n/t'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /** One markdown memory document, as an editable card.
  *
@@ -86,7 +87,7 @@ export default function MemoryDocCard({ docKey, store, title, info, rows, mono, 
         </Btn>
       </CardTitle>
       <MemoryScopeNotice error={doc.error ?? save.error} />
-      {!!doc.error && onDirtyChange && <Btn className="mb-3 min-h-11" disabled={doc.isFetching} onClick={() => void doc.refetch()}>{i18nT('memoryV2.retry_read')}</Btn>}
+      {queryReadFailed(doc) && onDirtyChange && <Btn className="mb-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={doc.isFetching || undefined} onClick={() => { if (!doc.isFetching) void doc.refetch() }}>{i18nT('memoryV2.retry_read')}</Btn>}
       {contentRedacted && <p role="status" className="mb-3 text-[13px] text-warn">{i18nT('memoryV2.sensitive_document_read_only')}</p>}
       <textarea
         aria-label={title}
