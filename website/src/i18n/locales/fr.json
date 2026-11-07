@@ -15891,6 +15891,7 @@
         "kiro_requests_left": "~{{calls}} requêtes Kiro pour terminer",
         "knowledge_base_ids": "IDs de la base de connaissances",
         "max_file_size": "{{max}} Mo max par fichier.",
+        "file_too_large": "Fichier trop volumineux : {{name}} ({{max}} Mo max)",
         "max_file_size_unavailable": "Impossible de charger la limite de taille. Tu peux quand même envoyer des fichiers ; le serveur vérifie chaque fichier.",
         "manual": "○ manuel",
         "name_optional": "Nom (facultatif)",

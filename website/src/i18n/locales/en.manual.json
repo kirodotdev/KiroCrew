@@ -7120,6 +7120,7 @@
         "kiro_requests_left": "~{{calls}} Kiro requests to finish",
         "knowledge_base_ids": "Knowledge Base IDs",
         "max_file_size": "Max {{max}} MB per file.",
+        "file_too_large": "File too large: {{name}} (max {{max}} MB)",
         "max_file_size_unavailable": "Couldn't load the size limit. You can still upload; the server checks each file.",
         "opening": "Opening...",
         "paused": "Paused",
