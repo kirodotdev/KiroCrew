@@ -12750,6 +12750,8 @@
         "menu_crewlog_desc": "Ce que cette session a fait et ce qu'elle a coûté : état, consommation, chronologie, outils, validations, sous-agents"
       },
       "stopEventCard": {
+        "force_stopped": "Arrêt forcé, session réinitialisée",
+        "force_stopped_2": "[Arrêt forcé, session réinitialisée]",
         "stop_declined_compacting": "Arrêt refusé : le contexte se compactait",
         "stop_declined_compacting_2": "[Compactage : un arrêt a été refusé pendant que le contexte se compactait ; rien n'a été arrêté, le compactage s'est terminé tout seul]",
         "stop_failed_session_reset": "Échec de l'arrêt, session réinitialisée",

@@ -12230,6 +12230,8 @@
         "menu_crewlog_desc": "이 세션이 한 일과 비용: 상태, 사용량, 타임라인, 도구, 승인, 서브에이전트"
       },
       "stopEventCard": {
+        "force_stopped": "강제 중지하여 세션을 초기화했습니다",
+        "force_stopped_2": "[강제 중지, 세션 초기화]",
         "stop_declined_compacting": "중지 거부됨: 컨텍스트가 압축 중이었습니다",
         "stop_declined_compacting_2": "[압축 중: 컨텍스트 압축 중에 중지가 거부되었습니다. 아무것도 중지되지 않았고 압축은 자동으로 완료되었습니다]",
         "stop_failed_session_reset": "중지에 실패하여 세션을 초기화했습니다",

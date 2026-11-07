@@ -12750,6 +12750,8 @@
         "menu_crewlog_desc": "O que esta sessão fez e quanto custou: estado, consumo, cronologia, ferramentas, aprovações, subagentes"
       },
       "stopEventCard": {
+        "force_stopped": "Parada forçada, sessão redefinida",
+        "force_stopped_2": "[Parada forçada, sessão redefinida]",
         "stop_declined_compacting": "Parada recusada: o contexto estava sendo compactado",
         "stop_declined_compacting_2": "[Compactando: uma parada foi recusada enquanto o contexto era compactado; nada foi interrompido e a compactação terminou sozinha]",
         "stop_failed_session_reset": "Falha ao parar, sessão redefinida",

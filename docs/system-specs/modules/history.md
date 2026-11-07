@@ -3086,12 +3086,15 @@ Possible `state` values:
 | `stopping` | Cooperative cancel in flight; waiting for agent ack |
 | `stopped` | Agent acknowledged cancel; session preserved |
 | `stop_failed_reset` | Agent did not ack within budget; session was hard-killed and reset |
+| `force_stopped` | A second stop escalated the pending cooperative cancel; session was hard-killed and reset as asked |
 
 The stop event is inserted at soft-start time with `state: "stopping"` and
 updated in place (same `id`) when the outcome resolves. The updated message
 is re-broadcast via `_on_message` so the frontend `StopEventCard` transitions
-from `stopping` → `stopped`/`stop_failed_reset`. A press that finds an
-orphaned card from a prior attempt **in the same turn** (no turn-opening row —
+from `stopping` → `stopped`/`stop_failed_reset`/`force_stopped`. A hard kill
+reads `force_stopped` when its card is the one the user escalated
+(`slot._stop_escalated_card_id`), whichever hard callback settles it, and
+`stop_failed_reset` otherwise. A press that finds an orphaned card from a prior attempt **in the same turn** (no turn-opening row —
 `user`/`nudge`/`subagent`, mirroring `TURN_OPENER_ROLES` in
 `groupDisplayItems.ts` — after it) RE-ARMS that row in place (same `id`, back to `stopping`) instead of
 resolving it and appending a fresh row — the pane upserts stop cards by

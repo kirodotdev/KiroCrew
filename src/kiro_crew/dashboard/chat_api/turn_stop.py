@@ -92,6 +92,11 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
         # cooperative Stop was declined. The card becomes the notice,
         # so the row the press opened tells the user what happened to it.
         final_state = "stop_declined_compacting"
+    elif slot._stop_escalated_card_id == stop_id:
+        # The user pressed Stop again to get this hard kill, so it did not fail.
+        # Keyed on the card, not on which callback fires: the first press's own
+        # timeout callback can settle this card before the forced one does.
+        final_state = "force_stopped"
     else:
         final_state = "stop_failed_reset"
     found = False
@@ -117,7 +122,7 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
         slot._dirty = True
         found = True
         # Re-broadcast updated stop_event so frontend StopEventCard
-        # transitions from "stopping" → "stopped"/"stop_failed_reset".
+        # transitions from "stopping" to its settled state.
         on_msg = getattr(slot, "_on_message", None)
         if on_msg:
             try:
@@ -250,7 +255,7 @@ def _make_stop_resolver(
     chat_runner.py, through the `_stopping` setter in state_parts/chat_slot.py), and that
     teardown races the escalation. When teardown won, the hard callback bailed,
     `_resolve_stop_event` never ran, and the card pulsed at "stopping" for the
-    rest of the session instead of settling to "stop_failed_reset".
+    rest of the session instead of settling.
 
     Precedence needs its own non-racy marker. A cooperative ack that arrives
     after the user escalated must not relabel a hard kill as a clean stop, and
