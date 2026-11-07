@@ -668,6 +668,52 @@ class TestTopLevel:
         # The agent-spec lock file spec writers share is not a spec.
         assert not list(app_env["kiro_agents"].glob("*.json"))
 
+    def test_a_gate_closed_managed_ref_is_neither_copied_nor_reported(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # Computer use off: the app agent's spec must not carry kirocrew-computer
+        # (its backend would stall KAS readiness), and the ref it leaves dangling on
+        # purpose is not a "will never mount" finding on every registration.
+        import kiro_crew.agent as agent_mod
+
+        computer = agent_mod._MANAGED_MCP_SERVERS["kirocrew-computer"]
+        monkeypatch.setitem(computer, "spec_gate", lambda: False)
+        src = _make_app_source(tmp_path)
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps({"name": "my-agent", "tools": ["@kirocrew-computer", "@kirocrew-core"]})
+        )
+        install_app(src)
+
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            assert refresh_app_agents("test-app")
+
+        (spec_path,) = app_env["kiro_agents"].glob("*.json")
+        servers = json.loads(spec_path.read_text(encoding="utf-8"))["mcpServers"]
+        assert "kirocrew-computer" not in servers
+        assert "kirocrew-core" in servers
+        assert "never mount" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("before", "after", "materialized"),
+        [(True, True, True), (True, False, False), (None, None, False), (True, None, True)],
+        ids=["enabled", "disabled-during-rewrite", "unreadable-before", "unreadable-after"],
+    )
+    def test_refresh_app_agents_if_enabled_rechecks_enablement_around_the_rewrite(
+        self, tmp_path, app_env, monkeypatch, before, after, materialized
+    ):
+        # A CLI disable (another process) can land while a computer-use enable flip
+        # rewrites app agents; the rewrite must not leave that app's agents
+        # dispatchable; an unreadable state writes nothing before and deletes nothing after.
+        import kiro_crew.apps.bridges_register as register_mod
+
+        install_app(_make_app_source(tmp_path))
+        states = iter([before, after])
+        monkeypatch.setattr(register_mod, "app_enabled_state", lambda _name: next(states))
+
+        register_mod.refresh_app_agents_if_enabled("test-app")
+
+        assert bool(list(app_env["kiro_agents"].glob("*.json"))) is materialized
+
     def test_install_while_execution_denied_registers_nothing(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.execution as execution_mod
 
