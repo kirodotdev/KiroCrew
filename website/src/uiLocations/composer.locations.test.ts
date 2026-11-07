@@ -125,8 +125,8 @@ const EXPECTED: Record<string, Expect> = {
   'composer.approval-mode': {
     kind: 'button', labelKey: 'uiLocations.description.composer_approval_mode', source: APPROVAL,
     aliasKeys: ['components.approvalModePicker.approval_mode'],
-    en: "The approval-mode picker in the message box's control row. It sets whether tool calls ask first (Normal), run reads without asking (Reads), trust this session (Trust), or auto-approve everything (YOLO).",
-    zh: '消息框控制栏中的审批模式选择器，用于设置工具调用是先询问（常规）、读取操作直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。',
+    en: "The approval-mode picker in the message box's control row. It sets whether only lookups run without asking (Normal), its own memory, chat, skill and knowledge searches run too (Reads), this session is trusted (Trust), or everything is auto-approved (YOLO).",
+    zh: '消息框控制栏中的审批模式选择器，用于设置是只有查找类操作直接运行（常规）、它自己的记忆、对话、技能和知识搜索也直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。',
     parents: ['page.chat'], entry: 'toolbar', requires: [OPEN, EXPANDED],
   },
 }

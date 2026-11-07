@@ -12,7 +12,7 @@
  * REAL left-rail item, so the frame documents shipped wiring.
  *
  * Both scenes ASSERT the rendered string before writing, so a frame cannot
- * document the wrong copy: the row must read "read-only shell commands" and
+ * document the wrong copy: the row must read the catalog's current value and
  * must NOT read the old "read-only operations".
  *
  * Usage:
