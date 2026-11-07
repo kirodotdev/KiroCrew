@@ -538,6 +538,22 @@ def _fresh_update_ownership(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _krb5_keyring_check_done(_floor_monkeypatch):
+    """Mark the once-per-process KEYRING ccache check as already run, for every test.
+
+    Every spawn a test drives reaches ``env.resolve_krb5_ccname``, which runs the
+    check in ``env_krb5_keyring``. Left armed, the first one on a worker would read
+    the HOST's krb5 config, log a WARNING into whichever test is capturing, and flip
+    the module flag for the rest of the run, so the outcome would depend on the host
+    and on test order. Tests of the check
+    itself re-arm it through their own ``monkeypatch``.
+    """
+    from kiro_crew import env_krb5_keyring
+
+    _floor_monkeypatch.setattr(env_krb5_keyring, "_KRB5_KEYRING_CHECKED", True)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_host_unservable_backends(_floor_monkeypatch):
     """Give every test its own copy of the host's KAS-floor verdicts.
 
