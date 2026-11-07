@@ -18191,7 +18191,11 @@
       "bulk_delete_removes_jobs_and_history_one": "Questa operazione rimuove definitivamente il job selezionato e la sua cronologia di esecuzione. L’azione non può essere annullata.",
       "bulk_delete_removes_jobs_and_history_many": "Questa operazione rimuove definitivamente i job selezionati e la loro cronologia di esecuzione. L’azione non può essere annullata.",
       "bulk_delete_removes_jobs_and_history_other": "Questa operazione rimuove definitivamente i job selezionati e la loro cronologia di esecuzione. L’azione non può essere annullata.",
-      "type_token_to_confirm": "Digita <token/> per confermare"
+      "type_token_to_confirm": "Digita <token/> per confermare",
+      "close_wont_cancel_create": "Chiudere non annulla l'operazione — la pianificazione potrebbe essere creata comunque.",
+      "close_wont_cancel_edit": "Chiudere non annulla l'operazione — le modifiche potrebbero essere salvate comunque.",
+      "late_save_failed": "La pianificazione «{{job}}» non è stata salvata.",
+      "late_save_unconfirmed": "La pianificazione «{{job}}» potrebbe essere stata salvata oppure no — il server non l'ha confermato."
     },
     "servicesTab": {
       "channels": "Piattaforme di chat",

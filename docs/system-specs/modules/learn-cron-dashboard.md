@@ -1586,6 +1586,17 @@ failed list read preserves the param, including while Retry is in flight, so the
 first successful retry can still open the requested job. The Bot Profile's
 Schedules rows link here.
 
+The job dialog never refuses a dismissal, because closing cannot cancel a save
+already sent. While a create or edit is in flight its Cancel reads **Close** and
+a strip above the footer says the schedule may still be created (or the changes
+saved), and the Logs tab is locked so the form that reports the result stays
+mounted; Save is off on the Logs tab, where no form is on screen. An answer that arrives after the dialog closed refreshes the list but
+never closes the dialog open by then, and a late failure is shown on the page,
+one dismissable notice per save with the server's message, worded "wasn't saved"
+when the server refused it (a 4xx) and "may or may not have been saved" when
+nothing confirmed the outcome. While the dialog holds typed work the page refuses
+an in-app leave or browser Back.
+
 Templates surface in two places on the Schedule page (`/schedule`, `SchedulePage.tsx`):
 - **Empty state** (no jobs): a bottom-pinned "Start from a pre-made schedule" row of the `featured` presets only (`SCHEDULE_PRESETS.filter(p => p.featured)`), plus a **Browse all templates** link that opens the gallery.
 - **Any state**: a **Templates** button next to Add Job in the Jobs header opens `ScheduleTemplateGallery` (`website/src/components/ScheduleTemplateGallery.tsx`) — a modal listing every preset grouped into `PRESET_CATEGORIES` sections (empty categories are skipped).

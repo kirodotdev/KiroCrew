@@ -256,6 +256,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     'not a confirmation prompt: a non-interactive outcome notice stating whether the named '
     + 'mate was created; it offers no destructive action and the name identifies the '
     + 'uncertain result that the user must check in the roster',
+  'pages.schedulePage.late_save_unconfirmed':
+    'not a confirmation prompt: a non-interactive notice that a save sent from the closed '
+    + 'job dialog was never confirmed; it offers no destructive action',
   'apps.awsControl.console.library_remove_confirm_slug':
     'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
     + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '

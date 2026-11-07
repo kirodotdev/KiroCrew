@@ -17726,7 +17726,11 @@
       "delete_n_scheduled_jobs_title_other": "{{count}}টি সময়সূচি করা জব মুছে ফেলবে?",
       "bulk_delete_removes_jobs_and_history_one": "এটি নির্বাচিত জব আর তার রান হিস্ট্রি স্থায়ীভাবে মুছে ফেলবে। এই কাজটি ফেরানো যাবে না।",
       "bulk_delete_removes_jobs_and_history_other": "এটি নির্বাচিত জবগুলো আর সেগুলোর রান হিস্ট্রি স্থায়ীভাবে মুছে ফেলবে। এই কাজটি ফেরানো যাবে না।",
-      "type_token_to_confirm": "নিশ্চিত করতে <token/> টাইপ করো"
+      "type_token_to_confirm": "নিশ্চিত করতে <token/> টাইপ করো",
+      "close_wont_cancel_create": "বন্ধ করলে এটি বাতিল হবে না — সময়সূচিটি তবুও তৈরি হয়ে যেতে পারে।",
+      "close_wont_cancel_edit": "বন্ধ করলে এটি বাতিল হবে না — তোমার পরিবর্তনগুলো তবুও সংরক্ষিত হয়ে যেতে পারে।",
+      "late_save_failed": "সময়সূচি “{{job}}” সংরক্ষিত হয়নি।",
+      "late_save_unconfirmed": "সময়সূচি “{{job}}” সংরক্ষিত হয়েছে কি না জানা নেই — সার্ভার তা নিশ্চিত করেনি।"
     },
     "servicesTab": {
       "channels": "চ্যাট প্ল্যাটফর্ম",

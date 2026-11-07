@@ -18191,7 +18191,11 @@
       "bulk_delete_removes_jobs_and_history_one": "Ceci supprime définitivement la tâche sélectionnée et son historique d’exécution. Cette action est irréversible.",
       "bulk_delete_removes_jobs_and_history_many": "Ceci supprime définitivement les tâches sélectionnées et leur historique d’exécution. Cette action est irréversible.",
       "bulk_delete_removes_jobs_and_history_other": "Ceci supprime définitivement les tâches sélectionnées et leur historique d’exécution. Cette action est irréversible.",
-      "type_token_to_confirm": "Saisis <token/> pour confirmer"
+      "type_token_to_confirm": "Saisis <token/> pour confirmer",
+      "close_wont_cancel_create": "Fermer ne l'annule pas — la planification peut tout de même être créée.",
+      "close_wont_cancel_edit": "Fermer ne l'annule pas — les modifications peuvent tout de même être enregistrées.",
+      "late_save_failed": "La planification « {{job}} » n'a pas été enregistrée.",
+      "late_save_unconfirmed": "La planification « {{job}} » a peut-être été enregistrée, ou pas — le serveur ne l'a pas confirmé."
     },
     "servicesTab": {
       "channels": "Plateformes de chat",
