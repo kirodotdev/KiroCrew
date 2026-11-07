@@ -1045,3 +1045,36 @@ def test_type_comes_from_three_role_variables_of_generic_families_only() -> None
     assert body and "var(--font-sans)" in body.group(1)
     for face in ("apple-system", "BlinkMacSystemFont", "Segoe UI"):
         assert face not in body.group(1)
+
+
+@pytest.mark.parametrize(
+    ("value", "js_text"),
+    [
+        (3.0, "3"),
+        (100.0, "100"),
+        (-2.0, "-2"),
+        (0.0, "0"),
+        (2.5, "2.5"),
+        (0.1, "0.1"),
+        (0.00001, "0.00001"),
+        (1.5e-7, "1.5e-7"),
+        (1e21, "1e+21"),
+        (1.25e22, "1.25e+22"),
+        (123456789012345680000.0, "123456789012345680000"),
+        (7, "7"),
+        ({"done": 2.0, "rate": 1e-5}, '{"done":2,"rate":0.00001}'),
+        ([1.0, 0.5], "[1,0.5]"),
+    ],
+)
+def test_a_number_cell_reads_as_the_bootstrap_fills_it(value: Any, js_text: str) -> None:
+    """The no-script fill spells a number as JS ``String``/``JSON.stringify`` does.
+
+    The bootstrap reads JSON, so ``3.0`` arrives as the JS number 3 and shows ``3``.
+    """
+    read = dashboard_frame.read_payload({"rate": value})
+    out = dashboard_frame.fill_bindings_as_text('<p data-dashboard-field="rate"></p>', read)
+    escaped = js_text.replace('"', "&quot;")
+    assert out in (
+        f'<p data-dashboard-field="rate">{js_text}</p>',
+        f'<p data-dashboard-field="rate">{escaped}</p>',
+    ), out
