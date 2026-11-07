@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _TurnExit,
     )
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _TurnDiedNote
     from kiro_crew.dashboard.chat_turn.turn_stats import _FirstVisibleClock
     from kiro_crew.dashboard.deny_override import DenyOverrideOffer
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
@@ -144,7 +145,7 @@ class _ChatTurn:
     _current_replay_message: "dict[Any, Any] | None"
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
-    died_notice: "str | None"
+    died_notice: "_TurnDiedNote | None"
     _deferred_options_expiry: "bool"
     _deny_override: "DenyOverrideOffer | None"
     _dir_consumed_out: "dict[str, str]"

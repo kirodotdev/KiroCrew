@@ -23,7 +23,7 @@ const note = (over: Partial<Notification> = {}): Notification => ({
 describe('a gateway-written note', () => {
   afterEach(async () => { await i18next.changeLanguage('en') })
 
-  // Every id a gateway producer stamps today.
+  // The turn-limit and default-model notes.
   it.each(['turn_limit', 'default_model_applied', 'default_model_failed'] as const)('renders the %s copy in the dashboard language', async (id) => {
     await i18next.changeLanguage('zh-CN')
     renderWithProviders(<NotificationCard n={note({ i18n: { id, params: { surface: 'discord' } } })} />)
@@ -31,6 +31,18 @@ describe('a gateway-written note', () => {
     const body = copy[`${id}_body`].replace('{{surface}}', 'discord').replace('{{productName}}', 'Kiro Crew')
     expect(screen.getByText(copy[`${id}_title`])).toBeInTheDocument()
     expect(screen.getByText(body.slice(0, 140))).toBeInTheDocument()
+  })
+
+  // A chat that stopped: one shared title, a body per way the turn died.
+  it.each([
+    'chat_stopped_signed_out', 'chat_stopped_error', 'chat_stopped_connection_dropped', 'chat_stopped_agent_restarting',
+    'chat_stopped_unrecovered', 'chat_stopped_busy', 'chat_stopped_refused', 'chat_stopped_stalled',
+  ] as const)('renders the %s copy in the dashboard language', async (id) => {
+    await i18next.changeLanguage('zh-CN')
+    renderWithProviders(<NotificationCard n={note({ title: '⚠️ A chat stopped', body: 'English body', i18n: { id } })} />)
+    const copy = zh.components.notifications.systemNote
+    expect(screen.getByText(copy.chat_stopped_title)).toBeInTheDocument()
+    expect(screen.getByText(copy[`${id}_body`])).toBeInTheDocument()
   })
 
   it.each(['not_a_copy', 'constructor'])('keeps the stored English for the id %s', async (id) => {

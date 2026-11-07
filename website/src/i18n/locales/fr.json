@@ -8528,7 +8528,16 @@
         "default_model_applied_title": "Modèle par défaut appliqué",
         "default_model_applied_body": "Le modèle par défaut enregistré est maintenant actif. Les nouvelles sessions l’utiliseront.",
         "default_model_failed_title": "Impossible d’appliquer le modèle par défaut",
-        "default_model_failed_body": "Le réglage a été enregistré, mais les nouvelles sessions continueront d’utiliser le modèle précédent. {{productName}} réessaie automatiquement ; si le problème persiste, consulte les journaux du gateway."
+        "default_model_failed_body": "Le réglage a été enregistré, mais les nouvelles sessions continueront d’utiliser le modèle précédent. {{productName}} réessaie automatiquement ; si le problème persiste, consulte les journaux du gateway.",
+        "chat_stopped_title": "⚠️ Une discussion s’est arrêtée",
+        "chat_stopped_signed_out_body": "La discussion s’est arrêtée, car l’agent est déconnecté. Ouvre la discussion pour te connecter.",
+        "chat_stopped_error_body": "La discussion s’est arrêtée sur une erreur. Ouvre la discussion pour voir ce qui s’est passé.",
+        "chat_stopped_connection_dropped_body": "La connexion à l’agent n’a cessé de se couper. Ouvre la discussion pour en démarrer une nouvelle.",
+        "chat_stopped_agent_restarting_body": "Le processus d’agent a redémarré à plusieurs reprises et le tour ne s’est pas terminé. Ouvre la discussion pour réessayer.",
+        "chat_stopped_unrecovered_body": "La discussion s’est arrêtée et n’a pas pu reprendre. Ouvre la discussion pour en démarrer une nouvelle.",
+        "chat_stopped_busy_body": "La discussion est restée occupée et n’a pas pu reprendre. Ouvre la discussion pour en démarrer une nouvelle.",
+        "chat_stopped_refused_body": "Le modèle a refusé de répondre et la discussion s’est arrêtée. Ouvre la discussion pour voir pourquoi.",
+        "chat_stopped_stalled_body": "La discussion s’est bloquée et n’a pas pu reprendre. Ouvre la discussion pour en démarrer une nouvelle."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",

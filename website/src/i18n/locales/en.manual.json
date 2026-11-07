@@ -3160,7 +3160,16 @@
         "default_model_applied_title": "Default model applied",
         "default_model_applied_body": "The saved default model is now active. New sessions will use it.",
         "default_model_failed_title": "Default model could not be applied",
-        "default_model_failed_body": "The setting was saved but new sessions will keep using the previous model. {{productName}} retries automatically; check the gateway logs if this persists."
+        "default_model_failed_body": "The setting was saved but new sessions will keep using the previous model. {{productName}} retries automatically; check the gateway logs if this persists.",
+        "chat_stopped_title": "⚠️ A chat stopped",
+        "chat_stopped_signed_out_body": "The chat stopped because the agent is signed out. Open the chat to sign in.",
+        "chat_stopped_error_body": "The chat stopped with an error. Open the chat to see what happened.",
+        "chat_stopped_connection_dropped_body": "The connection to the agent kept dropping. Open the chat to start a new one.",
+        "chat_stopped_agent_restarting_body": "The agent process kept restarting and the turn did not finish. Open the chat to retry.",
+        "chat_stopped_unrecovered_body": "The chat stopped and could not recover. Open the chat to start a new one.",
+        "chat_stopped_busy_body": "The chat stayed busy and could not recover. Open the chat to start a new one.",
+        "chat_stopped_refused_body": "The model declined to answer and the chat stopped. Open the chat to see why.",
+        "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",

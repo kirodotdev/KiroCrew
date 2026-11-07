@@ -8120,7 +8120,16 @@
         "default_model_applied_title": "默认模型已生效",
         "default_model_applied_body": "已保存的默认模型现已生效，新会话将使用它。",
         "default_model_failed_title": "无法应用默认模型",
-        "default_model_failed_body": "设置已保存，但新会话仍会使用之前的模型。{{productName}} 会自动重试；如果问题持续，请查看 gateway 日志。"
+        "default_model_failed_body": "设置已保存，但新会话仍会使用之前的模型。{{productName}} 会自动重试；如果问题持续，请查看 gateway 日志。",
+        "chat_stopped_title": "⚠️ 聊天已停止",
+        "chat_stopped_signed_out_body": "聊天已停止，因为智能体未登录。请打开聊天进行登录。",
+        "chat_stopped_error_body": "聊天因出错而停止。请打开聊天查看发生了什么。",
+        "chat_stopped_connection_dropped_body": "与智能体的连接反复中断。请打开聊天，开始新的聊天。",
+        "chat_stopped_agent_restarting_body": "智能体进程反复重启，本轮未能完成。请打开聊天重试。",
+        "chat_stopped_unrecovered_body": "聊天已停止且无法恢复。请打开聊天，开始新的聊天。",
+        "chat_stopped_busy_body": "聊天一直处于忙碌状态，无法恢复。请打开聊天，开始新的聊天。",
+        "chat_stopped_refused_body": "模型拒绝回答，聊天已停止。请打开聊天查看原因。",
+        "chat_stopped_stalled_body": "聊天已停滞且无法恢复。请打开聊天，开始新的聊天。"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",

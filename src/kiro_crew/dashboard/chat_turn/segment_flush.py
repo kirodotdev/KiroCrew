@@ -1251,10 +1251,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                         "msg msg-info",
                         meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
                     )
-                turn.died_notice = (
-                    "The model declined to answer and the chat stopped. "
-                    "Open the chat to see why."
-                )
+                turn.died_notice = "chat_stopped_refused"
     elif _stop_reason == STOP_REASON_REFUSAL:
         # Model-side content refusal with no accompanying text: Anthropic's
         # bare `refusal` stop reason (passed through by every harness), or
@@ -1331,9 +1328,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     "msg msg-info",
                     meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
                 )
-            turn.died_notice = (
-                "The model declined to answer and the chat stopped. " "Open the chat to see why."
-            )
+            turn.died_notice = "chat_stopped_refused"
     elif turn._agent_started:
         # A turn the agent started answers no prompt, so neither recovery below
         # (the post-compaction continuation, the empty-response ladder) has a

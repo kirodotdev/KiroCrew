@@ -8324,7 +8324,16 @@
         "default_model_applied_title": "Standardmodell übernommen",
         "default_model_applied_body": "Das gespeicherte Standardmodell ist jetzt aktiv. Neue Sitzungen verwenden es.",
         "default_model_failed_title": "Standardmodell konnte nicht übernommen werden",
-        "default_model_failed_body": "Die Einstellung wurde gespeichert, aber neue Sitzungen verwenden weiter das bisherige Modell. {{productName}} versucht es automatisch erneut; bleibt das Problem bestehen, sieh in den Gateway-Logs nach."
+        "default_model_failed_body": "Die Einstellung wurde gespeichert, aber neue Sitzungen verwenden weiter das bisherige Modell. {{productName}} versucht es automatisch erneut; bleibt das Problem bestehen, sieh in den Gateway-Logs nach.",
+        "chat_stopped_title": "⚠️ Ein Chat wurde abgebrochen",
+        "chat_stopped_signed_out_body": "Der Chat wurde abgebrochen, weil der Agent abgemeldet ist. Öffne den Chat, um dich anzumelden.",
+        "chat_stopped_error_body": "Der Chat wurde mit einem Fehler abgebrochen. Öffne den Chat, um zu sehen, was passiert ist.",
+        "chat_stopped_connection_dropped_body": "Die Verbindung zum Agenten ist wiederholt abgebrochen. Öffne den Chat, um einen neuen zu starten.",
+        "chat_stopped_agent_restarting_body": "Der Agent-Prozess wurde wiederholt neu gestartet, und die Runde wurde nicht abgeschlossen. Öffne den Chat, um es erneut zu versuchen.",
+        "chat_stopped_unrecovered_body": "Der Chat wurde abgebrochen und konnte nicht wiederhergestellt werden. Öffne den Chat, um einen neuen zu starten.",
+        "chat_stopped_busy_body": "Der Chat blieb beschäftigt und konnte nicht wiederhergestellt werden. Öffne den Chat, um einen neuen zu starten.",
+        "chat_stopped_refused_body": "Das Modell hat die Antwort verweigert, und der Chat wurde abgebrochen. Öffne den Chat, um den Grund zu sehen.",
+        "chat_stopped_stalled_body": "Der Chat hing fest und konnte nicht wiederhergestellt werden. Öffne den Chat, um einen neuen zu starten."
       },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",

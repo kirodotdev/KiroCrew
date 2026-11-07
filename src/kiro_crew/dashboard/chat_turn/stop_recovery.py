@@ -138,9 +138,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _emit_recovery_outcome("stale_recover", "exhausted", slot._stale_recovery_retries)
                 slot._stale_recovery_exhausted_emitted = True
             _emit_stale(turn, gn.GATEWAY_SESSION_STUCK_TEXT, notice=gn.GATEWAY_NOTICE_SESSION_STUCK)
-            turn.died_notice = (
-                "The chat stalled and could not recover. Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_stalled"
         else:
             # depth>0 (nested turn) with budget remaining: reset the session
             # but don't re-queue (mirrors the pipe-death depth>0 handling);
@@ -203,9 +201,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _emit_recovery_outcome("tool_stall", "exhausted", slot._tool_stall_retries)
                 slot._tool_stall_exhausted_emitted = True
             _emit_stall(turn, gn.GATEWAY_SESSION_STUCK_TEXT, notice=gn.GATEWAY_NOTICE_SESSION_STUCK)
-            turn.died_notice = (
-                "The chat stalled and could not recover. Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_stalled"
         else:
             _emit_stall(
                 turn,
@@ -366,10 +362,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                     notice=gn.GATEWAY_NOTICE_SESSION_STUCK,
                     **_rc_args,
                 )
-                turn.died_notice = (
-                    "The connection to the agent kept dropping. "
-                    "Open the chat to start a new one."
-                )
+                turn.died_notice = "chat_stopped_connection_dropped"
             else:
                 _emit_error(
                     turn,
@@ -378,10 +371,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                     notice=gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING,
                     **_rc_args,
                 )
-                turn.died_notice = (
-                    "The agent process kept restarting and the turn did not finish. "
-                    "Open the chat to retry."
-                )
+                turn.died_notice = "chat_stopped_agent_restarting"
         else:
             _emit_error(
                 turn,

@@ -8528,7 +8528,16 @@
         "default_model_applied_title": "Modelo predeterminado aplicado",
         "default_model_applied_body": "El modelo predeterminado guardado ya está activo. Las sesiones nuevas lo usarán.",
         "default_model_failed_title": "No se pudo aplicar el modelo predeterminado",
-        "default_model_failed_body": "El ajuste se guardó, pero las sesiones nuevas seguirán usando el modelo anterior. {{productName}} lo reintenta automáticamente; si esto persiste, revisa los registros del gateway."
+        "default_model_failed_body": "El ajuste se guardó, pero las sesiones nuevas seguirán usando el modelo anterior. {{productName}} lo reintenta automáticamente; si esto persiste, revisa los registros del gateway.",
+        "chat_stopped_title": "⚠️ Un chat se detuvo",
+        "chat_stopped_signed_out_body": "El chat se detuvo porque el agente no tiene la sesión iniciada. Abre el chat para iniciar sesión.",
+        "chat_stopped_error_body": "El chat se detuvo por un error. Abre el chat para ver qué pasó.",
+        "chat_stopped_connection_dropped_body": "La conexión con el agente se cortó una y otra vez. Abre el chat para iniciar uno nuevo.",
+        "chat_stopped_agent_restarting_body": "El proceso del agente se reinició varias veces y el turno no terminó. Abre el chat para volver a intentarlo.",
+        "chat_stopped_unrecovered_body": "El chat se detuvo y no pudo recuperarse. Abre el chat para iniciar uno nuevo.",
+        "chat_stopped_busy_body": "El chat siguió ocupado y no pudo recuperarse. Abre el chat para iniciar uno nuevo.",
+        "chat_stopped_refused_body": "El modelo se negó a responder y el chat se detuvo. Abre el chat para ver por qué.",
+        "chat_stopped_stalled_body": "El chat se atascó y no pudo recuperarse. Abre el chat para iniciar uno nuevo."
       },
       "notificationBanner": {
         "dismiss_notification": "Descartar notificación",

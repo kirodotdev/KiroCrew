@@ -8120,7 +8120,16 @@
         "default_model_applied_title": "デフォルトモデルを適用しました",
         "default_model_applied_body": "保存したデフォルトモデルが有効になりました。新しいセッションではこのモデルを使用します。",
         "default_model_failed_title": "デフォルトモデルを適用できませんでした",
-        "default_model_failed_body": "設定は保存されましたが、新しいセッションでは引き続き以前のモデルを使用します。{{productName}} は自動的に再試行します。この状態が続く場合は、ゲートウェイのログを確認してください。"
+        "default_model_failed_body": "設定は保存されましたが、新しいセッションでは引き続き以前のモデルを使用します。{{productName}} は自動的に再試行します。この状態が続く場合は、ゲートウェイのログを確認してください。",
+        "chat_stopped_title": "⚠️ チャットが停止しました",
+        "chat_stopped_signed_out_body": "エージェントがサインアウトしているため、チャットが停止しました。チャットを開いてサインインしてください。",
+        "chat_stopped_error_body": "エラーによりチャットが停止しました。チャットを開いて状況を確認してください。",
+        "chat_stopped_connection_dropped_body": "エージェントとの接続が切断を繰り返しました。チャットを開いて新しいチャットを開始してください。",
+        "chat_stopped_agent_restarting_body": "エージェントプロセスが再起動を繰り返し、ターンが完了しませんでした。チャットを開いてもう一度お試しください。",
+        "chat_stopped_unrecovered_body": "チャットが停止し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
+        "chat_stopped_busy_body": "チャットが使用中のままで、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
+        "chat_stopped_refused_body": "モデルが回答を拒否したため、チャットが停止しました。チャットを開いて理由を確認してください。",
+        "chat_stopped_stalled_body": "チャットが停滞し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",

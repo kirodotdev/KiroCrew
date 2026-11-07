@@ -8528,7 +8528,16 @@
         "default_model_applied_title": "Modello predefinito applicato",
         "default_model_applied_body": "Il modello predefinito salvato è ora attivo. Le nuove sessioni lo useranno.",
         "default_model_failed_title": "Impossibile applicare il modello predefinito",
-        "default_model_failed_body": "L’impostazione è stata salvata, ma le nuove sessioni continueranno a usare il modello precedente. {{productName}} riprova automaticamente; se il problema persiste, controlla i log del gateway."
+        "default_model_failed_body": "L’impostazione è stata salvata, ma le nuove sessioni continueranno a usare il modello precedente. {{productName}} riprova automaticamente; se il problema persiste, controlla i log del gateway.",
+        "chat_stopped_title": "⚠️ Una chat si è interrotta",
+        "chat_stopped_signed_out_body": "La chat si è interrotta perché l’agente non ha effettuato l’accesso. Apri la chat per accedere.",
+        "chat_stopped_error_body": "La chat si è interrotta per un errore. Apri la chat per vedere cosa è successo.",
+        "chat_stopped_connection_dropped_body": "La connessione con l’agente si è interrotta più volte. Apri la chat per avviarne una nuova.",
+        "chat_stopped_agent_restarting_body": "Il processo dell’agente si è riavviato più volte e il turno non è terminato. Apri la chat per riprovare.",
+        "chat_stopped_unrecovered_body": "La chat si è interrotta e non è riuscita a riprendersi. Apri la chat per avviarne una nuova.",
+        "chat_stopped_busy_body": "La chat è rimasta occupata e non è riuscita a riprendersi. Apri la chat per avviarne una nuova.",
+        "chat_stopped_refused_body": "Il modello ha rifiutato di rispondere e la chat si è interrotta. Apri la chat per vedere perché.",
+        "chat_stopped_stalled_body": "La chat si è bloccata e non è riuscita a riprendersi. Apri la chat per avviarne una nuova."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignora notifica",
