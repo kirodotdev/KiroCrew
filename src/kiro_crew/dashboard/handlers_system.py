@@ -41,6 +41,7 @@ from kiro_crew.embeddings import (
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.owner_only_files import restrict_file_to_owner_soft
 from kiro_crew.platform import current_context
 from kiro_crew.safety_override import (
     cached_disabled_approval_modes,
@@ -163,7 +164,7 @@ def _get_telemetry_salt() -> bytes:
             os.write(tmp_fd, salt)
             os.close(tmp_fd)
             tmp_fd = -1
-            platform_compat.chmod_safe(tmp_path, 0o600)
+            restrict_file_to_owner_soft(tmp_path)  # the hard link shares the DACL
             os.link(tmp_path, str(salt_file))
             return salt
         except FileExistsError:
