@@ -166,14 +166,17 @@ class LedgerFacts(NamedTuple):
 NO_LEDGER = LedgerFacts()
 
 
-def _group(status: str, progress: str = "") -> str:
+def _group(status: str, progress: str = "", looping: bool = False) -> str:
     """The side panel group from real signals only.
 
     A tool approval is ``approval``; a running turn is ``working``; a closed tab, a
     closed ledger item, or a worker that reported ``done`` is ``done``; a worker
     that reported ``blocked`` or ``question`` (whatever its ``reason``), or one with
-    an open question card, waits on its conductor: ``with_conductor``. Anything else
-    is idle, ``waiting``: having replied is not having finished.
+    an open question card, waits on its conductor: ``with_conductor``. An idle
+    worker whose own loop will wake it (*looping*, ``ledger_wake.worker_looping``:
+    a bounded ``monitor_start`` loop waiting on CI) is still ``working``: the flow
+    runs, only the result is outside. Anything else is idle, ``waiting``: having
+    replied is not having finished.
     """
     if status == STATUS_NEEDS_APPROVAL:
         return GROUP_APPROVAL
@@ -183,7 +186,17 @@ def _group(status: str, progress: str = "") -> str:
         return GROUP_DONE
     if status == STATUS_ASKING or progress == GROUP_WITH_CONDUCTOR:
         return GROUP_WITH_CONDUCTOR
+    if looping:
+        return GROUP_WORKING
     return GROUP_WAITING
+
+
+def _looping(key: str) -> bool:
+    """Whether *key*'s session holds a loop that will wake it, as the ledger reads it."""
+    from kiro_crew import ledger_wake
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_looping(get_instance(), key)
 
 
 #: Report statuses that mean the worker waits on its conductor.
@@ -675,7 +688,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "title": str(row.get("title") or ""),
                 "agent": str(row.get("agent") or ""),
                 "status": status,
-                "group": _group(status, facts.progress),
+                "group": _group(status, facts.progress, status == STATUS_IDLE and _looping(key)),
                 "last_activity": _last_activity(row),
                 "ledger_item": item,
                 "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
@@ -1019,7 +1032,13 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         _crew_ledger_items, root, [*(str(lane["key"]) for lane in lanes), *closed]
     )
     for lane in lanes:
-        lane["group"] = _group(lane["status"], items.get(lane["key"], NO_LEDGER).progress)
+        lane["group"] = _group(
+            lane["status"],
+            items.get(lane["key"], NO_LEDGER).progress,
+            lane["role"] == "worker"
+            and lane["status"] == STATUS_IDLE
+            and _looping(str(lane["key"])),
+        )
 
     def closed_lanes(keys: list[str], role: str) -> list[dict[str, Any]]:
         from kiro_crew.dashboard.chat_utils_display import _redact_for_display

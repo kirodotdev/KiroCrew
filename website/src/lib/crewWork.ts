@@ -17,6 +17,9 @@ export interface CrewWorkCounts {
   person: number
   /** Open items still moving: not stalled and not on a person. */
   moving: number
+  /** Of `moving`, those whose worker's own loop will wake it (waiting on CI):
+   *  running, though no turn is in flight. */
+  looping: number
   /** Open items gone quiet with their next move unmade, and no live conductor
    *  loop (`conductor_looping`) to pick them up. */
   stalled: number
@@ -37,15 +40,19 @@ export function crewWorkCounts(
   if (!facts || typeof facts !== 'object' || !Array.isArray(facts.items)) return null
   const running = new Set(rows.filter(r => r.running).map(r => r.key))
   let moving = 0
+  let looping = 0
   let stalled = 0
   for (const item of facts.items) {
     if (!item || typeof item !== 'object') continue
     const at = typeof item.stale_at_ms === 'number' ? item.stale_at_ms : 0
     const stale = !facts.conductor_looping && !(item.worker && running.has(item.worker)) && at > 0 && now >= at
     if (stale) stalled += 1
-    else moving += 1
+    else {
+      moving += 1
+      if (item.looping === true) looping += 1
+    }
   }
-  return { person: Math.max(0, facts.person | 0), moving, stalled }
+  return { person: Math.max(0, facts.person | 0), moving, looping, stalled }
 }
 
 /** The stalled items (same rule as `crewWorkCounts`), each as its worker's slot

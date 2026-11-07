@@ -72,6 +72,9 @@ export interface WorkBoardItem {
   orphaned: boolean
   /** The move is with the worker and it has gone quiet. */
   stale: boolean
+  /** Its worker's own loop will wake it (waiting on CI): idle, yet running.
+   *  Absent from an older gateway. */
+  looping?: boolean
   /** The bar is one `accept_eval.py` can actually evaluate. */
   acceptance_concrete: boolean
   /** The worker's last `work_report` / `work_brief` call never reached the

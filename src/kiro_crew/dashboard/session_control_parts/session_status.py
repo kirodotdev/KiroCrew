@@ -378,7 +378,9 @@ async def created_session_status(
     * ``working`` — a turn is in flight. Wait.
     * ``queued`` — idle, but messages are waiting to run. Also wait, but nothing is
       happening yet, so a steer would land on nothing.
-    * ``idle`` — open and doing nothing. This is the one that needs a decision.
+    * ``idle`` — open and doing nothing. This is the one that needs a decision,
+      unless the row's ``looping`` is true: the session's own bounded loop (a
+      ``monitor_start`` waiting on CI) will wake it, so wait, as for ``working``.
     * ``closed`` — the crew log names it, the dashboard does not hold it, and the
       log records a ``session/closed`` edge: a worker that FINISHED and closed its
       tab. Carries ``closed_at``. Ignore it; there is nothing here to message, and
@@ -598,12 +600,18 @@ async def created_session_status(
             continue
         queue_depth = len(slot._queue)
         running = bool(slot.running)
+        from kiro_crew import ledger_wake
+        from kiro_crew.autonudge import get_instance as get_nudge
+
         rows.append(
             {
                 "target": key,
                 "title": _bounded_status_title(slot.display_title),
                 "status": "working" if running else ("queued" if queue_depth else "idle"),
                 "running": running,
+                # Its own loop will wake it (``ledger_wake.worker_looping``): an
+                # ``idle`` row with it is waiting on something outside, not stopped.
+                "looping": not running and ledger_wake.worker_looping(get_nudge(), key),
                 "queue_depth": queue_depth,
                 "process": process_state(state, slot),
                 **_pending_approval_fields(state, slot),
