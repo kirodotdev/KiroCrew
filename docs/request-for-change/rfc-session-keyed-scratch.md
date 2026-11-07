@@ -175,7 +175,8 @@ maps a session key to a tree basename plus a state:
   spawned process can reach it. It is also added to the crew-home sensitive
   leaves in `security/paths_lists.py`, because the `scratch` leaf is
   deliberately reachable by the agent's file tools and the index must not be.
-  #15980 makes the same two choices for its `.trees.json`.
+  The conversation-resume `.trees.json` index also lives in the masked scratch
+  root.
 - It is not kept in `session_map.json`. `security.md` documents that file as
   agent-writable, so a row there could be repointed at another session's tree.
 - A row names a basename only, validated on every read as a plain directory

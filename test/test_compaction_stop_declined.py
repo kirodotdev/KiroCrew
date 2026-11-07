@@ -1188,11 +1188,15 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
 
 
 async def _until_registered(mgr, key, old) -> object:
-    """Wait for a successor of *old* to be registered under *key*, and return it."""
+    """Wait for a successor's registration and queue adoption to commit."""
 
     def _succeeded() -> bool:
         current = mgr._sessions.get(key)
-        return current is not None and current is not old
+        return (
+            current is not None
+            and current is not old
+            and not mgr._allocation_boundary()._lock.locked()
+        )
 
     await async_wait_until(
         _succeeded, describe=lambda: f"no successor registered under the key: {mgr._sessions!r}"

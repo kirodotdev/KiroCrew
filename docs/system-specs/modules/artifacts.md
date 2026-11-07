@@ -1685,6 +1685,17 @@ to this kind would store content no reader can parse.
   match but raised with the producer's own "could not be verified" wording.
   The file-backed `source_path` pointers stay on the bounded
   `security.is_sensitive_path()` and fall back to the snapshot silently.
+- **Scratch tree index** — `agent_scratch`'s `.trees.json` maps session keys to
+  their scratch work trees. The scratch root is masked from sandboxed agents.
+- **Snapshot publication** — Snapshot writes pin the judged parent once
+  (`pinned_fs.pin_parent`) and stage into a fresh, unpredictable temp name created
+  `O_CREAT|O_EXCL` relative to that descriptor, then rename it. An exclusive
+  create never opens an existing entry, so a link planted at a staging name
+  cannot redirect a publish on Windows either. The Windows fallback holds
+  `platform_compat.pinned_directory` through staging and replacement, reporting
+  a link or non-directory refusal as `ArtifactError`. It rechecks the canonical
+  destination against the fence only when the pinned parent's real path differs
+  from the judged one. Its non-share-delete handle prevents parent swaps.
 - **Relocate root confinement** — `PATCH /api/artifacts/{slug}/relocate`
   points a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable
@@ -1708,6 +1719,8 @@ to this kind would store content no reader can parse.
   loaded companion's extra credential/cookie regexes apply to the audit trail.
 - **Atomic writes** — `_write_text()` writes to a `.tmp` sibling and renames,
   so a crash mid-write cannot corrupt `current.html` or `meta.json`.
+  Cleanup of a leftover legacy staging file is best-effort: an `OSError` is logged
+  at debug level and does not fail a save whose replacement already published.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
   `decode_meta` in `kiro_crew.artifact_store.records`, which ignores unknown keys
   and supplies defaults for missing keys, so future schema additions don't break
