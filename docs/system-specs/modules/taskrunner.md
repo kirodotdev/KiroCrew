@@ -376,6 +376,10 @@ Every `decompose_yaml` audit event carries the run's provenance — `source` and
 `spec_name` in its metadata, and the source as its caller identity (`dashboard` for
 unsourced runs), so a denial is attributed to the surface that started the run.
 
+A YAML plan with no workflow name, no `# ` line and no path is named after its first
+step's title (`auto_name`'s `first_step`), not after its first line, a YAML key such as
+`agents:`.
+
 ### Data Types
 
 Named `TaskStatus`/`Task`/`Project` live in `task_models.py`; `StepStatus`/`Step`/`TaskRun`
