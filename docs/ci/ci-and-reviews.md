@@ -931,7 +931,7 @@ These test preconditions do not promise production ordering under tied clocks.
 Test commands route only `ipv6_required` items to the hosted lane described above.
 This is one migration being validated, not eight already-proven shards
 or a rollout conditional on three green canaries.
-On CodeBuild the only remaining fan-out bound is the CodeBuild account concurrency (300 concurrent builds); `ci-runner-watchdog.yml` already treats saturating it as a known state.
+On CodeBuild the only remaining fan-out bound is the CodeBuild account concurrency, which is a per-compute-type quota rather than one account-wide number: each operating system and instance size (Linux or Windows, Medium or Large) has its own ceiling, so read the live quota in the fleet's account before reasoning against a number. Most routes draw on Linux/Medium; the routes that add `instance-size:large` (the `ci.yml` and `build.yml` resolvers and `codeql.yml`'s `analyze`) draw on Linux/Large. `ci-runner-watchdog.yml` already treats saturating it as a known state.
 
 The CI workflow requires this repository, a push, a merge-group event or an
 `opened`/`synchronize` same-repository PR event, and
@@ -1121,7 +1121,6 @@ The sites that target the group with `group:` are, by workflow:
   `validate` and `publish`
 - the same-repo review lanes: `codex-review`, `claude-review`,
   `first-principles-review`, `design-review`, `ux-review`
-- `codeql.yml`
 - `docker-smoke.yml`, both jobs
 - `release.yml`: `version`, `resolve-promotion`, `stable-gate`,
   `github-release`, `record-promotion`
@@ -1171,7 +1170,7 @@ why they took the `group:` form.
 
 **This test governs what may be ADDED; it does not describe what the group
 already holds.** Several of the sites listed above can be started by a
-personal fork: the same-repo review lanes, `codeql.yml`'s `analyze` and
+personal fork: the same-repo review lanes and
 both `docker-smoke.yml` jobs all fire on `pull_request` with no head-repository
 check, and `release.yml`'s jobs start on a `v*` tag push, which a fork
 owner can make in their own fork. None of them was admitted under this test,
@@ -1200,18 +1199,50 @@ obtains the same short-lived, Bedrock-only OIDC credential it obtained on
 `secrets.AWS_BEDROCK_ROLE_ARN` it used there; moving the job does not widen,
 narrow or re-scope that credential.
 
-**Why CodeQL.** It is the largest single editable `runs-on` in the repository,
-and it already excludes forks through the `Analyze` job's own `if`. Its load is
-also permanent for an unrelated reason: GitHub's CodeQL default setup, which
-this workflow replaced, is off, so there is no second scan to fall back to.
+**Why CodeQL is not on this list.** It is the largest single editable `runs-on`
+in the repository, and its load is permanent: GitHub's CodeQL default setup,
+which this workflow replaced, is off, so there is no second scan to fall back
+to. That size is why it takes the CodeBuild fleet on an admitted actor's push
+or `opened`/`synchronize` pull request instead, and the fleet-fallback label
+below on every other event -- the weekly schedule and a manual dispatch carry no
+fleet-eligible action, and the schedule carries no live collaborator actor for
+the AWS webhook to admit either. The label reaches the same larger-runner
+definition the `group:` form reached, and names it specifically where the group
+would dispatch to any member. It also closes this lane's share of the
+fork-startable gap described above: in a personal fork the expression degrades
+to `ubuntu-latest` rather than queueing against a group that fork cannot reach.
 
-**Every review lane and CodeQL moved here can hold merges, so treat any stuck
-run as an immediate rollback.** (The label-routed fallbacks below hold no merge,
-apart from `pr-readiness.yml`'s own `readiness` job: the rest are not polled by
-`pr-readiness.yml` or `merge-queue-readiness.yml`, and none fires on
-`pull_request` or `merge_group`. The rollback rule still covers them. The
-`readiness` job does hold every merge -- see **PR Readiness reaches the group by
-LABEL** below, and roll that one back first.)
+**The fleet leg takes `instance-size:large`, because the default compute does
+not hold this scan.** A CodeBuild `BUILD_GENERAL1_MEDIUM` is 4 vCPU and 7 GB,
+and the `javascript-typescript` extractor does not fit in that: on the 16 GB
+runner this lane leaves, its own log reports `Memory for TypeScript process:
+7284 MB, and 400 MB reserve`, so one process sizes itself above a MEDIUM
+container's entire 7,168 MB. The `codeql-action` scales that figure from
+detected memory rather than failing outright, but the TypeScript compiler's
+heap requirement scales with program size, not with what the host has, so a
+MEDIUM leg would be expected to die during extraction with no query error.
+`instance-size:large` is 8 vCPU and 15 GB: essentially the memory this lane has
+today, and twice the CPU. The size also matters for wall time: at the default
+size the `python` leg ran about three and a half times as long as on the
+hosted group, over half of the job's `timeout-minutes: 60`.
+
+The size suffix is the same one `ci.yml` and `build.yml` emit from their
+resolvers, and `codeql.yml` is the first INLINE routing constant to carry it.
+`test_ci_fleet_routing_expression_parity.py` derives
+`_CANONICAL_ROUTING_EXPR_LARGE` from `_CANONICAL_ROUTING_EXPR` by substituting
+the label alone, so the two forms cannot differ in anything but the suffix and
+a change to the shared policy reaches both. Its three builds per run draw on
+the Linux/Large ceiling it shares with the `ci.yml` and `build.yml` large legs,
+not on the Linux/Medium one most routed lanes use.
+
+**Every review lane moved here can hold merges, so treat any stuck run as an
+immediate rollback.** (Two of the label-routed fallbacks below hold one as well:
+`pr-readiness.yml`'s own `readiness` job, and `codeql.yml`'s `analyze`, which
+sits in the per-lane loop named next. The rest are in neither that loop nor
+`merge-queue-readiness.yml`'s polled set, so their queueing holds no merge; the
+rollback rule still covers them. The `readiness` job holds every merge -- see
+**PR Readiness reaches the group by LABEL** below, and roll that one back
+first.)
 `pr-readiness.yml` resolves them all through one per-lane loop:
 `claude-review.yml`, `codex-review.yml`, `design-review.yml`, `ux-review.yml`,
 `first-principles-review.yml` and CodeQL sit in `workflow_specs` on the
@@ -1225,8 +1256,8 @@ CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
 once rather than waiting to see whether the queue clears -- for any
-group-targeted site, not just CodeQL. The fleet-fallback label sites below are
-covered by the same rule but have their own recipe, since a whole-line
+group-targeted site. The fleet-fallback label sites below, CodeQL among them,
+are covered by the same rule but have their own recipe, since a whole-line
 replacement there would take the fleet route out with it; the PR-time label
 sites take the plain replacement, since they carry no fleet route to preserve;
 and among the `ci.yml` label sites, the single-OS lanes take the plain
@@ -1354,10 +1385,12 @@ measure rather than assume.** The fleet branch admits the `pull_request` actions
 `opened` and `synchronize` only, and these workflows subscribe to more than
 that: `code-review.yml` adds `reopened` and `edited`, `pr-policy.yml` adds
 `reopened`, `edited`, `labeled` and `unlabeled`, `dependency-review.yml` adds
-`reopened`, `labeled` and `unlabeled`, and `macos-on-demand.yml` adds `reopened`
-and `labeled`. So every label a bot adds or removes, and every description edit,
-on an ordinary same-repository pull request from a listed actor misses the fleet
-and lands here. Measured over one 6-hour window on the two workflows carrying
+`reopened`, `labeled` and `unlabeled`, `macos-on-demand.yml` adds `reopened`
+and `labeled`, and `codeql.yml` adds `reopened` and `ready_for_review`. So every
+label a bot adds or removes, every description edit, and every draft marked
+ready for review, on an ordinary same-repository pull request from a listed
+actor, misses the fleet and lands here. Measured over one 6-hour window on the
+two workflows carrying
 most of it, 317 of 357 such jobs (88%) were same-repository runs on a
 non-admitted action and only 40 (11%) were fork pull requests. A merge group
 queued by an unlisted actor lands here too.
