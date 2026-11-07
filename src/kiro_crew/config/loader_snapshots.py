@@ -237,7 +237,10 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             # refresh. safe_read_file re-checks the RESOLVED target and raises
             # PermissionError for a refused path — an OSError subclass, so a
             # refused entry is skipped by the same handler as an unreadable one.
-            data = parse_agent_spec_text(safe_read_file(str(af)), af)
+            # The canonical gate judges each resolved path inline: this scan
+            # runs off the loop and reads every spec, and the bounded gate would
+            # send each one to the resolver pool again.
+            data = parse_agent_spec_text(safe_read_file(str(af), canonical_gate=True), af)
         except (ValueError, OSError) as exc:
             # Its agent may be one this scan now leaves out; the scan is partial.
             _SCAN_STATE.complete = False
