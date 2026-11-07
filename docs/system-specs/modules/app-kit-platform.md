@@ -6166,6 +6166,103 @@ Writers: `apps/app_sdk_level.py`, `apps/route_registry.py`, `apps/context.py`,
 `website/src/pages/chat/page/launchIntake.ts`, `website/src/appNav.ts`,
 `website/src/components/appstore/appManifest.ts`.
 
+## 32a. App Kit seam level 2: agent turns and untrusted text
+
+Level 2 (`APP_SDK_LEVEL = 2`), alongside `ctx.lifecycle` (§32b), publishes what a
+built-in that drives background agents (Meetings) reached privately: the session
+manager read off
+`request.app["state"]`, `llm_helpers.stream_and_collect` with its approval policy,
+Shared Crew admission, and the injection screen, neutralizer and fence markers.
+Nothing in either seam names an app, and neither widens the sandbox or governance:
+each call goes through the same spawn ceiling, gate, admission and neutralizer a
+core surface uses.
+
+**Agent turns** (`apps/agent_turn_sdk.AgentTurnSDK`, `ctx.turns`). Built only when
+the manifest declares `permissions.agentTurns` as the literal `true` and the
+gateway's Application is wired in (`turn_host`, passed by both context builders,
+like `crewmate_host`); otherwise `None`. `run(key, text, *, agent, timeout_secs,
+cancel_ack_secs)` runs one turn under `ToolApprovalPolicy.HOOK_BASED` with
+`app=<ctx.name>`, so the PreToolUse gate resolves `POLICY ∩ PROFILE` for this app,
+and admits it through `run_admitted_or_raise(automation=True,
+operation=BACKGROUND)`. Session acquisition is outside the budget; past it, or on
+the caller's cancellation, the provider is asked to cancel and the session is reset
+when it does not acknowledge, and the turn lease is always released, never the
+session. `run_oneshot(prompt, *, label)` is the tool-less pattern
+(`kirocrew-lite`, `REJECT_ALL`, released and destroyed). `has_session(key)` reads
+liveness. No method takes an app name, an approval policy or an admission class.
+A key must be `<app>-<id>` with *id* 1 to 400 of `[A-Za-z0-9._-]`, checked before
+the session manager is touched, so an app cannot address a person's chat slot or a
+core session. The separator is a plain `-`, so app `x` can spell a key of app
+`x-y`: the check is attribution, not a boundary against the app's own in-gateway
+Python, which could reach the manager anyway. The managers are read off the
+Application on every call, so a context built before the gateway state exists
+works once it does. The agent a session starts as is the app's choice (Meetings
+lets the owner configure any agent per meeting), and the operator's
+`capabilities.spawn` row bounds that choice: before any session is acquired, `run`
+and `run_oneshot` ask `subagent._vet_spawn_governance` under `app=<ctx.name>`
+whether spawning is on for the app and whether the agent is in its `agents` scope,
+the same two questions `SpawnSDK` and the workflow `ctx.agent()` step ask. An
+empty `agent` is resolved first to the template a plain session runs
+(`dispatch_kiro_agent(default_template(...))`, off the loop), `run_oneshot` asks
+about `kirocrew-lite`, and a default that cannot be resolved is a refusal. The
+session is then opened BY that name (`get_or_create(key, agent=<name>)`, never
+`None`): a cold start with a `None` agent launches the literal `kirocrew`
+(`providers/acp_runtime_start.py`), not `agent.default_agent`, so passing the name
+is what makes the agent that starts the agent the ceiling was asked about. Once
+the lease is held, the agent the turn carries is read back from the session
+manager's record (`get_agent(key)`) on every path, `run` and `run_oneshot` alike:
+a reused session answers with the agent it started as, which is asked about again
+when it differs from the one just asked, and a session whose record names no agent
+is refused; the lease is released on every refusal. So neither a changed default nor a different `agent` argument puts a reused
+session outside a narrowed scope. The hook gate is handed that recorded agent
+(`stream_and_collect`'s `agent=`), so `resolve_active_scope`'s task bind is the
+running agent's and a later call's `agent` argument cannot pick a looser profile.
+A refusal is
+SEL-audited as `agent_turn` (`spawn_sdk._audit_spawn_denied`) and raises
+`AgentTurnRefused`, a `PermissionError`. With no policy and no profile both
+questions permit, so an ungoverned host runs as before. Every tool the agent calls
+is still gated.
+
+**Untrusted text** (`apps/untrusted_text_sdk.UntrustedTextSDK`, `ctx.untrusted`).
+Always present, built in `AppContext.__post_init__` from `name`, because it adds no
+reach and an app refused it would ship its own patterns. `flagged` is
+`security.contains_injection`, `neutralize` is `context.neutralize_untrusted_text`,
+and `fence(body, *, kind)` returns `open\n<neutralized body>\nclose` for a kind in
+the closed `UNTRUSTED_FENCE_KINDS` (`"calendar"`), whose markers come from
+`context_assembly/markers.py` so every other fence neutralizes them. Neutralizing a
+body whose fields were already neutralized returns it unchanged, so a caller that
+screens field by field gets the same bytes. `record_dropped(surface, ...)` calls
+`audit_injection_dropped` with surface `<ctx.name>_<surface>` and agent
+`<ctx.name>`; a surface outside `[a-z0-9][a-z0-9_]{0,63}` is recorded as
+`<app>_unnamed`, and the session key label is capped at 256 characters.
+
+**The built-in on the seam.** A built-in has no context (its routes are registered
+on the Application directly), so Meetings constructs the same classes with its own
+name: `domain/session.dispatch_to_agent` is one `AgentTurnSDK.run`,
+`translate.run_oneshot_translation` is one `run_oneshot(label="translate")`, and
+`build_meeting_context` screens, neutralizes, audits and fences through one
+module-level `UntrustedTextSDK`. Keys (`meetings-<agent>-<meeting>`,
+`meetings-translate-<hex>`), the audit surfaces (`meetings_calendar_<field>`), the
+fenced bytes, the cancellation and release order and the admission class are
+unchanged; its agents now answer its `capabilities.spawn` row like any app's. Its
+manifest declares `agentTurns`, so an installed copy gets the same
+seam from `ctx.turns`. The session manager it hands the SDK is still the one its
+routes read off `request.app["state"]`.
+
+**Not here.** Spec Builder's turns are dashboard chat-slot turns (`_run_chat`, the
+slot queue, restore and archive), which need an app-owned chat slot API rather than
+a background turn. Protected subdirectories (Meetings' `edits/` and `notes/`, Spec
+Builder's decision record under `trust/`) stay core rows: a manifest-declared HIDDEN
+leaf under the app's own data directory is the credential-mask seam, and a
+write-only fence an app declares for itself is not yet an approved seam.
+
+Writers: `apps/agent_turn_sdk.py`, `apps/untrusted_text_sdk.py`, `apps/context.py`,
+`apps/manifest_sections.py`, `apps/hooks_integration.py`, `apps/lifecycle.py`,
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/builtins/meetings/app.json`, `apps/builtins/meetings/backend/domain/session.py`,
+`apps/builtins/meetings/backend/domain/translate.py`. Tests:
+`test/test_app_agent_turn_sdk.py`, `test/test_app_untrusted_text_sdk.py`.
+
 ## 32b. `ctx.lifecycle`: an app's own switch and admission (seam level 2)
 
 `APP_SDK_LEVEL` is 2 on both sides, and `AppContext.lifecycle` is part of level 2: an

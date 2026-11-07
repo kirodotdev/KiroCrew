@@ -1,8 +1,10 @@
 """Live translation claims no start priority of its own.
 
-Meeting translation is a per-line stream nobody waits on, so the session it
-opens names no ``start_priority`` at all: the core's BACKGROUND default is the
-whole statement. The core's claimer pins are in ``test/test_start_priority.py``.
+Meeting translation is a per-line stream nobody waits on, so it opens its session
+through the App Kit's one-shot turn and names no ``start_priority`` at all: the
+core's BACKGROUND default is the whole statement. The SDK's own pin, that its
+session opens claim nothing, is in ``test/test_app_agent_turn_sdk.py``; the core's
+claimer pins are in ``test/test_start_priority.py``.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from pathlib import Path
 from kiro_crew.apps.builtins.meetings.backend.domain import translate
 
 _FUNCTION = "run_oneshot_translation"
-_CALLEE = "get_or_create"
+_CALLEE = "run_oneshot"
 
 
 def _calls_in(path: Path, function: str, callee: str) -> list[ast.Call]:

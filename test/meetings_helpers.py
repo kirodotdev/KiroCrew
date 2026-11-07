@@ -102,11 +102,17 @@ class FakeSessionManager:
         #: set to model a sweep having retired some slots out from under a meeting,
         #: which is what ``MeetingSession.abandoned`` reads.
         self.live_keys: set[str] | None = None
+        #: The agent each key's session was started as, as the real manager records it.
+        self.agents: dict[str, str] = {}
 
     async def get_or_create(self, key: str, agent: str | None = None, **_kwargs):
         if self.fail:
             raise RuntimeError("session unavailable")
+        self.agents[key] = agent or ""
         return _FakeProvider(self, key, agent or ""), True, False
+
+    def get_agent(self, key: str) -> str:
+        return self.agents.get(key, "")
 
     def release(self, key: str) -> None:
         self.released.append(key)

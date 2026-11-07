@@ -254,7 +254,17 @@ evidence that every caller passed through action-item review.
 
 ## Agent dispatch
 
-`domain/session.py`. One `AgentQueue` per enabled agent plus the always-on task
+`domain/session.py`. Every turn goes through the App Kit's agent-turn seam
+(`apps/agent_turn_sdk.AgentTurnSDK`, app-kit-platform §32a): bounded by this app's
+`capabilities.spawn` row (a refused agent's dispatch fails like any other and
+counts toward the circuit breaker), tool-gated under this app's identity, admitted
+as Crew automation, keyed `meetings-<agent>-<meeting>`
+(an agent id hand-edited into `config.json` outside the seam's key alphabet is
+keyed `meetings-_<digest>-<meeting>` instead, so it is still dispatched);
+live translation is its tool-less `run_oneshot` on `meetings-translate-<hex>`. The
+calendar fence, its screen and the drop audit go through the untrusted-text seam
+(`apps/untrusted_text_sdk.UntrustedTextSDK`). The manifest declares
+`permissions.agentTurns`. One `AgentQueue` per enabled agent plus the always-on task
 extractor. A queue batches lines and flushes every `BATCH_INTERVAL_SECS` (30s),
 so an agent gets a paragraph of context rather than one interruption per
 utterance. Three consecutive dispatch failures trip a circuit breaker (backoff
@@ -276,7 +286,8 @@ the rest of the title is still screened. Any other field is screened as
 written, so a topic phrase with anything else attached is withheld, and every
 other pattern (including `<system>` tags and "ignore prior instructions")
 applies. A match is replaced by `[withheld: failed content screening]` and
-recorded with `audit_injection_dropped` under `meetings_calendar_<field>`.
+recorded through `UntrustedTextSDK.record_dropped` (the core's
+`audit_injection_dropped`) under `meetings_calendar_<field>`.
 Calendar pre-creation writes an empty attachment list, and a test pins that.
 Other fields pass through `neutralize_untrusted_text`, which scrubs every
 untrusted fence marker and the primary prompt boundary markers, so no field can
@@ -410,10 +421,10 @@ teardown OR replace path cannot quietly reintroduce the loss.
 
 **Dispatch is in-process.** Upstream POSTed each batch back to its own gateway
 over authenticated loopback HTTP. Here the routes live ON the gateway, so a batch
-goes straight to the shared `SessionManager` via
-`llm_helpers.stream_and_collect` under `ToolApprovalPolicy.HOOK_BASED` — the
-agents' file writes still traverse the PreToolUse gate (deny patterns,
-sensitive paths, governance) exactly like any other turn.
+goes straight to the shared `SessionManager` through `AgentTurnSDK.run`, which
+approves tools only through the PreToolUse gate under this app's identity — the
+agents' file writes still traverse deny patterns, sensitive paths and governance
+exactly like any other turn.
 
 ## Live translation
 

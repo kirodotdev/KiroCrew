@@ -1384,14 +1384,72 @@ loop only. It needs no permission and is present on every context the gateway
 builds; on an older host `getattr(ctx, "lifecycle", None)` is `None` and
 `ctx.sdk_level` is below 2.
 
+### Agent turns (`ctx.turns`)
+
+Present when the manifest declares `permissions.agentTurns` and `None` otherwise.
+A host below seam level 2 has no `turns` attribute at all, so read it with
+`getattr(ctx, "turns", None)`. It runs turns of agents on sessions your app
+owns, through the host's session manager, tool gate and fair admission:
+
+```python
+await ctx.turns.run(f"{ctx.name}-notes-{meeting_id}", batch, agent="my-app-note-taker")
+line = await ctx.turns.run_oneshot(prompt, label="translate")
+```
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `run(key, text, *, agent="", timeout_secs=None, cancel_ack_secs=5.0)` | reply text | Send *text* to the session *key*, created on first use as *agent* (`""` is the default agent) and kept for the next call. Past `timeout_secs` the turn is cancelled (the session is reset if the agent does not acknowledge within `cancel_ack_secs`) and `asyncio.TimeoutError` is raised; the budget starts after the session is acquired |
+| `run_oneshot(prompt, *, label="oneshot")` | reply text | One call on a throwaway `<app>-<label>-<hex>` session running the tool-less `kirocrew-lite` agent, destroyed afterwards. `label` is 1-32 of `a-z 0-9 _ -` |
+| `has_session(key)` | bool | Whether a live session exists for *key* |
+
+A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`; any other key
+raises `ValueError` before anything runs. You choose neither the identity nor the
+approval: every tool `run` asks for is decided by the host's tool gate with your
+app's name, so the operator's profile for your app applies, and `run_oneshot`
+rejects every tool. The operator's `capabilities.spawn` row for your app bounds
+which agents you may run, as it does for `ctx.spawn`: when spawning is off for your
+app, or the agent (for `agent=""`, the default agent; for `run_oneshot`,
+`kirocrew-lite`) is outside its `agents` scope, the call raises `AgentTurnRefused`
+(a `PermissionError`) before any session opens. `agent=""` starts the session as
+the default agent by name, so the agent that runs is the one that was checked. A
+`run` that reuses a live session is asked again about the agent that session started
+as, not the one you pass now or today's default, and raises `AgentTurnRefused` when
+the scope no longer allows it. The tool gate judges each tool call by that same
+running agent, so its profile, not the one a later `agent` argument names, governs a
+reused session.
+Every turn is admitted as Crew
+automation; a refused one raises `TurnRefused` and never runs. No session manager (a bare test host) raises
+`RuntimeError`.
+
+### Untrusted text (`ctx.untrusted`)
+
+Always present on a level-2 host, like `ctx.scrub`. An older host has no
+`untrusted` attribute, so read it with `getattr(ctx, "untrusted", None)`. Use it
+for outside text you put into an agent's prompt, such as a calendar invite's title
+or attendee list:
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `flagged(text)` | bool | Whether *text* matches the host's prompt-injection screen |
+| `neutralize(text)` | str | *text* with every untrusted fence marker and prompt boundary marker scrubbed, so it cannot close or forge a fence |
+| `fence(body, *, kind="calendar")` | str | *body*, neutralized, between the open and close markers of the fence *kind*, one per line |
+| `fence_markers(kind="calendar")` | `(open, close)` | The markers themselves |
+| `record_dropped(surface, *, session_key="", sample="")` | — | Record in the security event log that a field was withheld, as surface `<app>_<surface>` with your app as the agent |
+
+The only fence kind is `"calendar"`; any other raises `ValueError`. A `surface` that
+is not lowercase letters, digits and `_` (at most 64) is recorded as
+`<app>_unnamed`. Withhold a flagged field yourself, then put a short line such as
+`[withheld: failed content screening]` in its place.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
 the shared embedder, structural routes (see `backend.hooks.routes` in
 [manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
 listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
-adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle) to everything level 1 has; each
-level includes every level below it. Read it
+adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle), agent turns (`ctx.turns`)
+and the untrusted-text controls (`ctx.untrusted`) to everything level 1 has;
+each level includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.

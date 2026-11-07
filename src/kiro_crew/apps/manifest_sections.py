@@ -587,6 +587,10 @@ class Permissions:
     #: May raise a ``crewmate.import`` owner card through ``ctx.crewmate``. The
     #: card creates nothing until the owner presses it.
     proposeCrewmate: bool = False  # noqa: N815
+    #: May run turns of agents on sessions under its own key prefix through
+    #: ``ctx.turns``: tool-gated under this app's identity, admitted as Crew
+    #: automation. Declared for the same reason as ``spawn``.
+    agentTurns: bool = False  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -618,6 +622,8 @@ class Permissions:
             d["jobs"] = True
         if self.proposeCrewmate:
             d["proposeCrewmate"] = True
+        if self.agentTurns:
+            d["agentTurns"] = True
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -648,6 +654,7 @@ class Permissions:
             spawn=data.get("spawn") is True,
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
+            agentTurns=data.get("agentTurns") is True,  # noqa: N815
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 
