@@ -282,6 +282,25 @@ def test_the_set_project_directive_arms_the_peer(tmp_path, monkeypatch):
     assert b._pending_reset_history_key == KEY
 
 
+def test_a_clear_marks_every_alias_so_any_of_them_retracts_the_cwd(tmp_path, monkeypatch):
+    """Whichever alias consumes the shared reset must know a clear armed it."""
+    from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+    state = _state(tmp_path, monkeypatch)
+    a = state.get_or_create_slot("a", linked_session_key=KEY)
+    b = state.get_or_create_slot("b", linked_session_key=KEY)
+    arm_project_reset(state, a, KEY, clears_cwd=True)
+    joiner = state.get_or_create_slot("c", linked_session_key=KEY)
+
+    assert a._pending_reset_clears_cwd and b._pending_reset_clears_cwd
+    assert joiner._pending_reset_clears_cwd
+
+    a.project = str(tmp_path / "q")
+    arm_project_reset(state, a, KEY)
+
+    assert not a._pending_reset_clears_cwd and not b._pending_reset_clears_cwd
+
+
 def test_an_alias_joining_after_the_reset_was_armed_inherits_it(tmp_path, monkeypatch):
     """Teardown can wait on attached sub-agents; a slot joining meanwhile needs the flag."""
     from kiro_crew.dashboard.transcript_binding import arm_project_reset
