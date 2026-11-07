@@ -446,7 +446,9 @@ def build_message(
                 _resume_member = ""
                 if _member_turn.deliver_section:
                     _member_section = self._build_member_section(
-                        member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+                        member,
+                        include_briefing=not blocks_reads,
+                        desk_withheld=ctx._desk_withheld(execution_context, desk_member),
                     )
                     if _member_section:
                         _resume_member = (
@@ -612,7 +614,9 @@ def build_message(
         # chokepoint consult above).
         if _member_turn.deliver_section:
             _member_section = self._build_member_section(
-                member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+                member,
+                include_briefing=not blocks_reads,
+                desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             )
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))

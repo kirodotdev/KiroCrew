@@ -406,7 +406,9 @@ def build_session_context(
         and not essentials
     ):
         _member_section = self._build_member_section(
-            member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+            member,
+            include_briefing=not blocks_reads,
+            desk_withheld=ctx._desk_withheld(execution_context, desk_member),
         )
         if _member_section:
             append_required(_member_section)
