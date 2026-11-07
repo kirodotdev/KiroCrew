@@ -360,7 +360,7 @@ def test_git_status_runs_no_repository_hook(tmp_path, where):
     hooks = root / ".git" / "hooks" if where == "hooks_dir" else root / "agent-hooks"
     hooks.mkdir(exist_ok=True)
     hook = hooks / "post-index-change"
-    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", newline="\n")
     hook.chmod(0o755)
     if where == "hooks_path":
         _git(root, "config", "core.hooksPath", str(hooks))
