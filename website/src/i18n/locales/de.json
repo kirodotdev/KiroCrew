@@ -9984,7 +9984,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "Der Code meldet Sie automatisch an und läuft in etwa {{minutes}} Minuten ab.",
       "copy_failed_select_the_link_and_copy_it_manually": "Kopieren fehlgeschlagen — markieren Sie den Link und kopieren Sie ihn manuell.",
       "could_not_create_a_link_try_again": "Link konnte nicht erstellt werden — versuchen Sie es erneut.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "Die Telefonverbindung ist auf dieser Bereitstellung per Richtlinie deaktiviert."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "Die Telefonverbindung ist auf dieser Bereitstellung per Richtlinie deaktiviert.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "Diese Sitzung ist an dieses Gerät gebunden, daher könnte ein hier erzeugter Code nur dieses Gerät anmelden. Um ein anderes Gerät anzumelden, öffne „Zugriff per Telefon“ auf dem Computer, auf dem das Dashboard läuft, über seine lokale Adresse."
     },
     "filePathMenu": {
       "copy_failed": "Pfad konnte nicht kopiert werden",

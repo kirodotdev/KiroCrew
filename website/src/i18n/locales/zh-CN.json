@@ -9757,7 +9757,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "扫码后自动登录，二维码约 {{minutes}} 分钟后失效。",
       "copy_failed_select_the_link_and_copy_it_manually": "复制失败，请选中链接后手动复制。",
       "could_not_create_a_link_try_again": "无法创建链接，请重试。",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "此部署已通过策略禁用手机连接。"
+      "phone_connection_is_disabled_by_policy_on_this_dep": "此部署已通过策略禁用手机连接。",
+      "this_session_is_tied_to_this_device_so_a_code_made": "此会话绑定在这台设备上，因此在这里生成的二维码只能登录这台设备。要登录其他设备，请在运行控制台的电脑上通过本地地址打开手机访问。"
     },
     "filePathMenu": {
       "copy_failed": "无法复制路径",

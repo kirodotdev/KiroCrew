@@ -10211,7 +10211,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "El código inicia tu sesión automáticamente y caduca en unos {{minutes}} minutos.",
       "copy_failed_select_the_link_and_copy_it_manually": "No se pudo copiar: selecciona el enlace y cópialo manualmente.",
       "could_not_create_a_link_try_again": "No se pudo crear el enlace: inténtalo de nuevo.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "La conexión del teléfono está deshabilitada por política en esta implementación."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "La conexión del teléfono está deshabilitada por política en esta implementación.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "Esta sesión está vinculada a este dispositivo, así que un código creado aquí solo podría iniciar sesión en este mismo dispositivo. Para iniciar sesión en otro dispositivo, abre Acceso desde el teléfono en el ordenador donde se ejecuta el panel, a través de su dirección local."
     },
     "filePathMenu": {
       "copy_failed": "No se pudo copiar la ruta",

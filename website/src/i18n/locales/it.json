@@ -10211,7 +10211,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "Il codice esegue l'accesso automaticamente e scade tra circa {{minutes}} minuti.",
       "copy_failed_select_the_link_and_copy_it_manually": "Copia non riuscita: seleziona il link e copialo manualmente.",
       "could_not_create_a_link_try_again": "Impossibile creare il link: riprova.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "La connessione del telefono è disabilitata dai criteri in questa distribuzione."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "La connessione del telefono è disabilitata dai criteri in questa distribuzione.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "Questa sessione è legata a questo dispositivo, quindi un codice creato qui potrebbe accedere solo da questo stesso dispositivo. Per accedere da un altro dispositivo, apri Accesso da telefono sul computer su cui gira la dashboard, tramite il suo indirizzo locale."
     },
     "filePathMenu": {
       "copy_failed": "Impossibile copiare il percorso",

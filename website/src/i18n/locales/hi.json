@@ -9984,7 +9984,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "कोड अपने आप साइन इन कर देता है और लगभग {{minutes}} मिनट में समाप्त हो जाता है।",
       "copy_failed_select_the_link_and_copy_it_manually": "कॉपी नहीं हो सका — लिंक चुनें और उसे मैन्युअल रूप से कॉपी करें।",
       "could_not_create_a_link_try_again": "लिंक नहीं बन सका — पुनः प्रयास करें।",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "इस परिनियोजन में नीति द्वारा फ़ोन कनेक्शन अक्षम है।"
+      "phone_connection_is_disabled_by_policy_on_this_dep": "इस परिनियोजन में नीति द्वारा फ़ोन कनेक्शन अक्षम है।",
+      "this_session_is_tied_to_this_device_so_a_code_made": "यह सत्र इसी डिवाइस से जुड़ा है, इसलिए यहाँ बना कोड सिर्फ़ इसी डिवाइस में साइन इन कर सकता है। किसी दूसरे डिवाइस में साइन इन करने के लिए, जिस कंप्यूटर पर डैशबोर्ड चलता है उस पर उसके लोकल पते से फ़ोन एक्सेस खोलो।"
     },
     "filePathMenu": {
       "copy_failed": "पथ कॉपी नहीं किया जा सका",
