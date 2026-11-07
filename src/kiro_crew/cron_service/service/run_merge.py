@@ -11,7 +11,8 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_held_run_records``, ``_held_settlements``, ``_pending_removals``.
+Instance fields written: ``_fired_schedules``, ``_held_run_records``, ``_held_settlements``,
+``_pending_removals``.
 
 Instance fields read: ``_held_run_records_guard``, ``_jobs``, ``_load_failed``,
 ``_path``.
@@ -111,18 +112,22 @@ def _apply_held_run_record(
     """Apply a held record to ``target``; a schedule edited since keeps its pause state.
 
     A ``settlement`` record follows :func:`apply_settlement_record`. Any other
-    applies only to an older generation. ``apply_run_record`` derives a fired
-    one-shot's disable from the record's schedule. When ``target`` carries a
-    different schedule from the one that fired (another writer made the
-    one-shot recurring, or moved it to a later time), that disable belongs to
-    the old schedule: the run's result and generation are taken, the current
-    schedule's ``enabled`` and ``user_paused`` are kept.
+    applies only to an older generation, through :func:`_apply_to_current_schedule`.
     """
     if settlement:
         apply_settlement_record(target, record, newer_run=newer_run)
         return
     if target.run_generation >= record.run_generation:
         return
+    _apply_to_current_schedule(target, record)
+
+
+def _apply_to_current_schedule(target: CronJob, record: CronJob) -> None:
+    """``apply_run_record``, except that a schedule edited since the fire keeps its pause state.
+
+    The fired one-shot's park is the old schedule's, so a ``target`` another writer
+    made recurring takes the run's result and generation but not the park.
+    """
     enabled, user_paused = target.enabled, target.user_paused
     apply_run_record(target, record)
     if target.schedule != record.schedule:
@@ -275,7 +280,7 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
                 by_id[job.id].run_generation,
             )
         elif job.id in by_id:
-            apply_run_record(by_id[job.id], job)
+            _apply_to_current_schedule(by_id[job.id], job)
         # A fire-time-DENIED run is a policy refusal, not a completed run:
         # deleting the one-shot here would make the documented
         # resume-on-policy-loosening semantic impossible for at-jobs.
@@ -284,6 +289,8 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
         # the one-shot would destroy scheduled work that never got a chance to
         # run. Only the delete is suppressed: unlike a policy denial this needs
         # no operator action, so the job stays enabled and simply retries.
+        # Nor is a row another writer gave a new schedule consumed: the consume
+        # was the fired schedule's, as its park is (_apply_to_current_schedule).
         # TWO signals, because the queue and the audit ask different
         # questions and a corrupt store answers them differently.
         #   delete_owed      -- is a consume OWED by this path at all?
@@ -300,6 +307,7 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
             job.delete_after_run
             and job.last_status != "error"
             and not (job.fire_time_denied or job.run_never_started)
+            and (job.id not in by_id or by_id[job.id].schedule == job.schedule)
         )
         removed_one_shot = False
         restore: list[tuple[CronJob, str]] = []
@@ -333,6 +341,7 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
                 if job.id in by_id:
                     by_id[job.id].enabled = False
                     by_id[job.id].user_paused = True
+                self._fired_schedules[job.id] = job.schedule
                 self._pending_removals.add(job.id)
             else:
                 # Consuming the one-shot retires its principal cron:<job id>,
@@ -375,6 +384,7 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
             # whether the delete is owed, and the drain intersects the queue
             # with what is present and drops the rest.
             if delete_owed:
+                self._fired_schedules[job.id] = job.schedule
                 self._pending_removals.add(job.id)
             if isinstance(exc, CronStoreUnreadable):
                 # Return WITHOUT auditing: the emit below records only a SAVED
