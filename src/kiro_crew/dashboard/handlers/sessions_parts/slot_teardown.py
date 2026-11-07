@@ -155,6 +155,12 @@ async def _remove_slot_for_history_key(
                 target_session_key,
                 exc_info=True,
             )
+    if session_destroyed and target_session_key is not None:
+        # The browser tabs that session opened close with it, as on a plain close.
+        # circular: the handlers package imports this module and browser_ops both.
+        from kiro_crew.dashboard.handlers.browser_ops import close_chat_tabs
+
+        close_chat_tabs(state, target_session_key)
 
     # Remote dispatch: the hub item this transcript's slot was bound to closes with
     # it, as on a plain close, whether the slot was live or already archived. Only
