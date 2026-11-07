@@ -675,6 +675,7 @@ def _scan_mount_pins(
 #: depends on a pass finishing). Measured for scale: 939k directories took ~11s
 #: on tmpfs, so this clears a normal backlog in one pass and spreads a
 #: pathological one over a few, instead of occupying a worker for a minute.
+#: The pin scan is not charged to it: on a busy host the scan alone outlasts it.
 _SWEEP_TIME_BUDGET_SECONDS = 10.0
 
 #: How often the budget is consulted. A clock read per entry would be a
@@ -808,7 +809,9 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                 # the class forever — it cannot be holding a source this uid
                 # staged.
                 if pin_scan is None:
+                    scan_started = time.monotonic()
                     pin_scan = _mount_pinned_source_names(coverage=coverage)
+                    started += time.monotonic() - scan_started
                 pinned, scan_complete = pin_scan
                 if entry in pinned or not (scan_complete or coverage.covered):
                     dirs_held_back += 1
