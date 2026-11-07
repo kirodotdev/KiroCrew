@@ -27,8 +27,9 @@ import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/
 import { RouteHistoryTracker } from './components/NavHistoryArrows'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
-import { BASE_PATH } from './lib/basePath'
+import { BASE_PATH, appPathname } from './lib/basePath'
 import { appPopoutRouterBasename } from './utils/appPopoutRoute'
+import { desktopWindowBridge, desktopWindowTarget } from './desktopWindow/desktopWindowTarget'
 // i18n must initialize before the first render — a component rendering ahead of
 // init would emit its bare translation key instead of text. The `/lazy` entry
 // fetches a non-English catalog on demand; plain `./i18n` has no loader, so
@@ -248,6 +249,23 @@ const appTree = (
   </StrictMode>
 )
 
+// A window the desktop shell hosts for an app mounts only that app's declared
+// module, never the dashboard (desktopWindow/DesktopWindowRoot.tsx). It is a
+// lazy chunk so the dashboard's own chunk graph does not carry it, and a chunk
+// that fails to load closes the window rather than leaving it unrevealed.
+const desktopTarget = desktopWindowTarget(appPathname())
+const DesktopWindowRoot = lazy(() =>
+  import('./desktopWindow/DesktopWindowRoot').catch((err: unknown) => {
+    // eslint-disable-next-line no-console -- the window is never revealed, so the log is the only trace
+    console.error('[DesktopWindow] could not load the window host:', err)
+    if (desktopTarget) desktopWindowBridge(desktopTarget)?.close()
+    return { default: () => null }
+  }),
+)
+const rootTree = desktopTarget
+  ? <Suspense fallback={null}><DesktopWindowRoot target={desktopTarget} /></Suspense>
+  : appTree
+
 // Restore the host-side backup of the renderer's own settings BEFORE the first
 // render, on any profile that has never successfully reached the host — a fresh
 // browser profile, a moved dashboard port (localStorage is per-origin), or a
@@ -309,7 +327,7 @@ function boot(startSync: boolean): void {
   // definition for how the language is reconciled first).
   void catalogReady.then(() => {
     announceBoot('render')
-    createRoot(document.getElementById('root')!).render(appTree)
+    createRoot(document.getElementById('root')!).render(rootTree)
     if (startSync) startUiPrefsSync()
   })
 }

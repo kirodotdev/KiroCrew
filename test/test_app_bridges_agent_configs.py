@@ -251,6 +251,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "publishProvider": {"id": "p", "label": "P"},
                 "notifications": {"channels": [{"id": "n", "name": "N"}]},
                 "l10n": {"de": {"displayName": "Sonde"}},
+                "desktop": {"windows": [{"id": "w", "entry": "ui/w.js", "kind": "overlay"}]},
                 "contributes": {
                     "commands": [
                         {

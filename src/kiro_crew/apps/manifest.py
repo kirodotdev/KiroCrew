@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
+from kiro_crew.apps.desktop_manifest import DesktopConfig
 from kiro_crew.apps.manifest_containment import (  # noqa: F401
     _AGENT_TEMPLATE_PLACEHOLDER_RE,
     PATH_SCREEN_REFUSAL,
@@ -397,6 +398,7 @@ _KNOWN_FIELDS = frozenset(
         "notifications",
         "contributes",
         "l10n",
+        "desktop",
     }
 )
 
@@ -473,6 +475,9 @@ class AppManifest:
 
     # --- Listing copy per locale (content, never trust; see L10nConfig) ---
     l10n: L10nConfig = field(default_factory=L10nConfig)
+
+    # --- Windows and global shortcuts the desktop shell hosts (desktop_manifest) ---
+    desktop: DesktopConfig = field(default_factory=DesktopConfig)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -565,6 +570,12 @@ class AppManifest:
             refusal = path_refusal(tab.entry)
             if refusal:
                 report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
+        # A desktop window's entry is mounted by the same ESM host as a panel tab.
+        errors.extend(self.desktop.validate())
+        for window in self.desktop.windows:
+            refusal = path_refusal(window.entry)
+            if refusal:
+                report_path(refusal, f"desktop.windows entry {refusal}: {window.entry!r}")
         # A link-preview entry is imported by the same ESM host, so same check.
         for preview in self.contributes.linkPreviews:
             refusal = path_refusal(preview.entry)
@@ -973,6 +984,12 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        desktop_d = self.desktop.to_dict()
+        if desktop_d:
+            # Each window's `entry` is an ESM module run in the dashboard's origin, and
+            # each shortcut claims a system-wide chord, so both are publisher intent.
+            # Included only when non-empty so earlier manifests keep their payload.
+            body["desktop"] = desktop_d
         publish_provider_d = self.publishProvider.to_dict()
         if publish_provider_d:
             # `endpoint` is where the artifact page POSTs the reader's artifact, like the
@@ -1045,6 +1062,9 @@ class AppManifest:
         l10n_d = self.l10n.to_dict()
         if l10n_d:
             d["l10n"] = l10n_d
+        desktop_d = self.desktop.to_dict()
+        if desktop_d:
+            d["desktop"] = desktop_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -1203,6 +1223,7 @@ class AppManifest:
             notifications=notifications,
             contributes=contributes,
             l10n=L10nConfig.from_value(data.get("l10n")),
+            desktop=DesktopConfig.from_value(data.get("desktop")),
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],

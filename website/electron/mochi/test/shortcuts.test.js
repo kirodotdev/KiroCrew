@@ -66,6 +66,20 @@ const TOGGLE = IS_MAC ? "CommandOrControl+Shift+M" : "Alt+Shift+M";
 const HIDEALL = IS_MAC ? "CommandOrControl+Shift+H" : "Alt+Shift+H";
 const SCREENCAP = IS_MAC ? "CommandOrControl+Shift+X" : "Alt+Shift+X";
 
+test("the configured chords stay reserved from apps while unbound, and follow a rebind", () => {
+  const { shellShortcutReservations } = require("../../shell-shortcut-reservations");
+  const { mod } = loadModule();
+  // Reserved before anything is registered (Mochi disabled at startup).
+  mod.reserveMochiShortcuts(undefined);
+  for (const accel of [TOGGLE, HIDEALL, SCREENCAP]) {
+    assert.strictEqual(shellShortcutReservations.isReserved(accel), true, accel);
+  }
+  mod.registerMochiShortcuts({ onToggleWindow() {} }, { toggleWindow: "Alt+Shift+J" });
+  mod.unregisterMochiShortcuts();
+  assert.strictEqual(shellShortcutReservations.isReserved("Alt+Shift+J"), true);
+  assert.strictEqual(shellShortcutReservations.isReserved(TOGGLE), false);
+});
+
 test("registers exactly the ported toggleWindow + hideAll accelerators", () => {
   const { mod, state } = loadModule();
   mod.registerMochiShortcuts({ onToggleWindow() {}, onHideAll() {} });
