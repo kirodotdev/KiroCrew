@@ -337,6 +337,15 @@ class TestGateLauncher:
         assert "%*" in body
         assert '"C:\\tools\\pi.cmd"' in body and '"C:\\site\\gate.ts"' in body
 
+    def test_the_windows_body_keeps_a_percent_in_either_path_literal(self, monkeypatch):
+        """cmd.exe expands ``%OS%`` even inside quotes, so pi would not be found."""
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        body = _pi_gate_launcher_body(r"C:\a%OS%b\pi.cmd", r"C:\x%y\g.ts")
+        assert body == '@echo off\r\n"C:\\a%%OS%%b\\pi.cmd" %* --extension "C:\\x%%y\\g.ts"\r\n'
+        quoted = 'C:\\q"\\pi.cmd'
+        with pytest.raises(AcpError, match=re.escape(repr(quoted))):
+            _pi_gate_launcher_body(quoted, r"C:\x\g.ts")
+
     def test_the_launcher_is_written_once_and_lives_in_the_run_dir(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
