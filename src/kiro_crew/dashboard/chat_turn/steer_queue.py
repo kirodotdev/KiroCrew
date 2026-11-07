@@ -463,7 +463,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # `_meta` above; the card drawn from this frame is what a cancel
             # restores, and a frame without the quote would show the raw
             # blockquote as text until a reload.
-            _push_meta = {
+            _push_meta: dict[str, object] = {
                 **attachment_meta(_meta),
                 # Same rule the entry's text follows (`queue_entry_is_user_origin`):
                 # the human's own words stay as typed, anyone else's are redacted.
@@ -474,8 +474,11 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             _push_send_id = normalize_send_id(_meta.get("sendId"))
             if _push_send_id:
                 _push_meta["sendId"] = _push_send_id
-            if _push_meta:
-                _push["meta"] = _push_meta
+            # Says this card is a requeued steer, so the client's drain of THIS
+            # card (matched by `queue_id`) can tie its row to the steer row. A
+            # card only: the entry and the row it drains into never carry it.
+            _push_meta["requeuedSteer"] = True
+            _push["meta"] = _push_meta
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the

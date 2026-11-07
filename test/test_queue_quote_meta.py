@@ -308,7 +308,11 @@ class TestQuoteThroughTheHandler:
         assert slot._queue[0]["meta"]["quote"] == _QUOTE
         pushes = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
         assert len(pushes) == 1
-        assert pushes[0]["meta"] == {"files": ["/tmp/a.pdf"], "quote": _QUOTE}
+        assert pushes[0]["meta"] == {
+            "files": ["/tmp/a.pdf"],
+            "quote": _QUOTE,
+            "requeuedSteer": True,
+        }
 
 
 class TestQueueEditPrunesTheQuote:

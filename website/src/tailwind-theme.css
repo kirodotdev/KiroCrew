@@ -202,6 +202,9 @@
   --animate-dot-breathe: dot-breathe 2s ease-in-out infinite;
   --animate-brand-glow: brand-glow 5s ease-in-out infinite alternate;
   --animate-msg-highlight: msg-highlight 2s ease-out forwards;
+  /* The same accent ring, shorter: a requeued steer's text landing as its own
+     row (UserMessage). Reuses `msg-highlight`, so no new keyframes. */
+  --animate-steer-landed: msg-highlight 1.2s ease-out;
   --animate-float: float 3s ease-in-out infinite;
 
   @keyframes rise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: translateY(0) } }
