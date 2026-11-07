@@ -152,8 +152,8 @@ _ = pytest_asyncio
 _SLUG = "notion"
 
 
-def _provider_url() -> str:
-    provider = get_provider(_SLUG)
+def _provider_url(slug: str = _SLUG) -> str:
+    provider = get_provider(slug)
     assert provider is not None, "registry no longer ships the fixture provider"
     return str(provider["mcp_url"])
 
@@ -283,30 +283,33 @@ async def _client(
     return client
 
 
-async def _disconnect(project: pathlib.Path | None = None) -> dict:
+async def _disconnect(project: pathlib.Path | None = None, slug: str = _SLUG) -> dict:
     client = await _client(project=project)
     try:
-        resp = await client.post("/api/connections/disconnect", json={"slug": _SLUG})
+        resp = await client.post("/api/connections/disconnect", json={"slug": slug})
         assert resp.status == 200
         return await resp.json()
     finally:
         await client.close()
 
 
+# figma is hidden from the gallery, so Mint refuses it; a grant stored before
+# that must still be revocable here.
 @pytest.mark.asyncio
+@pytest.mark.parametrize("slug", [_SLUG, "figma"])
 async def test_disconnect_revokes_the_grant_and_removes_the_entry(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, slug: str
 ) -> None:
     purged: list[str] = []
     _wire(
         monkeypatch,
         removed=["token", "registration"],
         surviving=[],
-        inventory=[_entry(_SLUG, _provider_url())],
+        inventory=[_entry(slug, _provider_url(slug))],
         purged=purged,
     )
 
-    body = await _disconnect()
+    body = await _disconnect(slug=slug)
 
     assert body == {
         "ok": True,
@@ -318,7 +321,7 @@ async def test_disconnect_revokes_the_grant_and_removes_the_entry(
         "grantCensusUnreadable": [],
         "agentSpecRewritten": True,
     }
-    assert purged == [_SLUG]
+    assert purged == [slug]
 
 
 @pytest.mark.asyncio
