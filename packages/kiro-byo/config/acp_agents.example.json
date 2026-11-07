@@ -1,0 +1,11 @@
+{
+  "agents": [
+    {
+      "id": "example-agent",
+      "title": "Example ACP Agent",
+      "command": ["example-acp-agent"],
+      "enabled": false,
+      "timeout_seconds": 300
+    }
+  ]
+}
