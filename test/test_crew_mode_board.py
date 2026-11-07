@@ -89,7 +89,9 @@ def test_a_board_page_tells_the_conductor_not_to_draw_a_board():
     dashboard_agentic.adopt_crew_mode_board(ROOT)
     block = dashboard_agentic.session_turn_block(ROOT)
     assert dashboard_agentic.BOARD_IN_PANEL_LINE in block
-    assert "Do not write a task board" in block
+    assert "Do not redraw the board or a per-task status list" in block
+    # Narrowed so it does not read as "no pictures": other widgets still get drawn.
+    assert "Other pictures" in block and "still get drawn as widgets" in block
 
 
 def test_a_page_that_is_not_a_board_gets_no_board_line():
