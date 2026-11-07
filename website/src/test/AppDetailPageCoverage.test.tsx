@@ -1093,7 +1093,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText('Chat approval modes it can set')).toBeInTheDocument()
     // Each mode carries the picker's gloss, so "Trust" here cannot be read as
     // the consent verb.
-    expect(screen.getByText(/checks with you before doing anything/)).toBeInTheDocument()
+    expect(screen.getByText(/checks with you before anything else/)).toBeInTheDocument()
     expect(screen.getByText('sessionApproval')).toBeInTheDocument()
     expect(screen.getByText('Normal')).toBeInTheDocument()
     expect(screen.getByText('Reads')).toBeInTheDocument()
