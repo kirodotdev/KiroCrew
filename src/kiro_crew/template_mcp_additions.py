@@ -66,8 +66,10 @@ RECORD_MAX_BYTES = 1024 * 1024
 #: server. Nothing here grants a tool. ``autoApprove`` / ``allowedTools`` /
 #: ``disabledTools`` and anything else are refused on write and dropped on merge;
 #: the merge then layers the MCP page's own ``disabledTools`` switch back on.
+#: ``waitForReady`` (a bool) asks the engine to hold each prompt until the server
+#: has connected; it grants nothing either.
 ENTRY_KEYS: frozenset[str] = frozenset(
-    {"command", "args", "env", "url", "headers", "type", "timeout"}
+    {"command", "args", "env", "url", "headers", "type", "timeout", "waitForReady"}
 )
 
 #: Keys whose presence on an entry is a trust grant. Named separately only so the
@@ -297,6 +299,21 @@ def merge_into(
         merged[name] = _with_switch_offs(
             copy.deepcopy(dict(addition.entry)), switched_off.get(name)
         )
+    # The engine starts servers a few at a time in map order, so an added server the
+    # session's prompt waits for (``waitForReady``) goes first: at the back it would
+    # connect last and hold every first prompt the longest.
+    waited = [
+        name
+        for name in recorded
+        if name in merged
+        and merged[name] is not (servers or {}).get(name)
+        and merged[name].get("waitForReady") is True
+    ]
+    if waited:
+        merged = {
+            **{name: merged[name] for name in waited},
+            **{name: entry for name, entry in merged.items() if name not in waited},
+        }
     return merged
 
 
@@ -685,6 +702,10 @@ def validate_entry(entry: object) -> dict[str, Any]:
         ):
             raise AdditionError("timeout_invalid")
         clean["timeout"] = timeout
+    if "waitForReady" in entry:
+        if not isinstance(entry["waitForReady"], bool):
+            raise AdditionError("wait_for_ready_invalid")
+        clean["waitForReady"] = entry["waitForReady"]
     return clean
 
 
