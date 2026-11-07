@@ -994,8 +994,25 @@ def _launch_refusal(who: LaunchIdentity, cfg: PolicyConfig) -> str | None:
     than a name is that the resolution produces two spellings and the policy must see
     both — see :meth:`LaunchIdentity.as_app_ref`, which puts each in the field
     ``check_app`` reads it from.
+
+    A platform that knows further spellings (``LaunchIdentity.aliases``) gets each
+    one checked: any denial refuses, and a non-empty allow-list passes when any
+    spelling is on it. With no aliases this is exactly one ``check_app`` call.
     """
-    return policy.check_app(who.as_app_ref(), cfg)
+    refs = who.app_refs()
+    if len(refs) == 1:
+        return policy.check_app(refs[0], cfg)
+    deny_only = replace(cfg, allowed_apps=())
+    for ref in refs:
+        refusal = policy.check_app(ref, deny_only)
+        if refusal:
+            return refusal
+    if not cfg.allowed_apps:
+        return None
+    verdicts = [policy.check_app(ref, cfg) for ref in refs]
+    if any(v is None for v in verdicts):
+        return None
+    return verdicts[0]
 
 
 def _refusal(

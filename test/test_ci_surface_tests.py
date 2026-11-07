@@ -412,9 +412,13 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
 
     ``test_ci_fork_windows_scope_posix.py`` is listed for the same reason: it runs
     ci.yml's fork Windows scope step under bash inside a throwaway git checkout.
+
+    ``test_computer_use_linux_driver.py`` covers the Linux AT-SPI/X11 driver, which
+    is Linux-only by design: it reads uids, ``/proc`` and root-owned system paths.
     """
     assert _ignore_names() == {
         "test_ci_fork_windows_scope_posix.py",
+        "test_computer_use_linux_driver.py",
         "test_macos_pool_ceiling_posix.py",
         "test_sandbox_argv.py",
         "test_sandbox_argv_launcher_plan.py",
