@@ -4932,6 +4932,41 @@ governance error — matching the Slack path). Egress text is redacted through t
 canonical `redact_via_context` shim so a loaded companion's extra
 credential/token regexes apply.
 
+**Local images and attachments on the mirror.** The mirror never prints a path on
+this host. The reply leg (`_deliver_cross_surface_reply`, and the Slack reply
+mirror in `turn_spec_hooks`) runs the channel renderers' extraction
+(`messaging.outbound_files.extract_local_refs_off_loop`) BEFORE splitting, through
+`_cross_surface_images` and the renderers' own gates: the transport's budgets for
+THIS conversation (`MessagingTransport.outbound_image_limits(conversation_id,
+thread_id)`, its renderer's own, or `None` where its renderer would send no
+picture there), the shared `upload_gate.uploads_restricted` ceiling, and roots that
+are the live provider's `cwd` and `work_scratch_dir`, peeked with
+`sessions.get_provider`. Each extracted image goes out through the channel's own
+picture send (`send_outbound_image(conversation_id, file, *, thread_id) -> bool`),
+the call its renderer uses. Every reference that is not sent, because a gate did
+not admit it, extraction refused it, or the upload failed, becomes `🖼 <name>` in
+the text, and a refusal or failure adds one `⚠ <name> …` line in a separate
+message after the answer, so an `[OPTIONS:]` trailer still ends the answer.
+Refusals and uploads are SEL-audited as `<channel>_mirror.upload_files` with reason
+codes and counts only.
+
+Per channel: **Feishu** uploads to an allow-listed DM (`open_id`) only, as its
+renderer does for a `p2p` chat. **Webex** uploads to a 1:1 room only (an email
+target, or a room Webex reports as `direct`), as its renderer does. **Telegram**
+(`send_media_group`), **Discord** (`send_message_with_files`), **WeCom**
+(`send_document`), **WhatsApp** (`send_image`, after the renderer's decode
+screen), **Teams** (an inline PNG/JPEG attachment on a learned personal-chat
+route) and **Slack** (`slack.files.upload_outbound_files`, under
+`slack.files.UPLOAD_LIMITS`) upload wherever their renderer would.
+**iMessage** and **Weixin** have no picture send (`files_outbound=False`), so
+their mirror names every picture.
+
+Both user-message echoes (Slack's `> 💬` quote and the channel-neutral `💬`) send
+no bytes: a pasted `![image](<path>)` and an `[attached_file N] <path>` marker
+become `🖼 <name>` / `📎 <name>` (`_mirror_echo_text`, reading the turn's own
+`meta.files`), because the dashboard uploads store is not a root any channel
+upload admits.
+
 **Known asymmetry / future work.** Slack already runs the unified one-session
 model; the other transports run two sessions bridged by the mirror. Folding the
 dashboard channel tab into the channel session (as Slack does) would remove the

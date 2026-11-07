@@ -422,6 +422,7 @@ def _strip_attached_file_tokens(
     drop_trailing_partial: bool = False,
     labels: dict[str, str] | None = None,
     budget: list[int] | None = None,
+    label_prefix: str = "",
 ) -> str:
     """Replace dashboard-generated ``[attached_file N] path`` references.
 
@@ -437,7 +438,9 @@ def _strip_attached_file_tokens(
     ``None`` to keep the historical drop-to-space behaviour. ``budget`` is a
     single-element list carrying the remaining label allowance, so a message with
     many attachments substitutes the first few and collapses the rest rather than
-    crowding out the user's own words.
+    crowding out the user's own words. ``label_prefix`` is written before each
+    substituted name, so a reader elsewhere (the cross-surface echo) can tell an
+    attachment from a word the user typed.
 
     Current dashboard messages store paths in token-index order, making each
     lookup constant-time. The whitespace-delimited fallback preserves support
@@ -512,7 +515,7 @@ def _strip_attached_file_tokens(
                 label = ""
             else:
                 remaining[0] -= len(label)
-        chunks.append(f" {label} " if label else " ")
+        chunks.append(f" {label_prefix}{label} " if label else " ")
         cursor = path_end
 
     return "".join(chunks)

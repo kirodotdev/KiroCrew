@@ -65,6 +65,7 @@ from typing import Any, Awaitable, Callable
 from kiro_crew.config.sections import _coerce_whatsapp_groups
 from kiro_crew.messaging.attachments import append_attachment_context, cleanup
 from kiro_crew.messaging.dispatch import inbound_permitted
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -410,6 +411,29 @@ class WhatsAppTransport(MessagingTransport):
         sent_id = await self._client.react(jid, sender_id, message_id, emoji)
         if sent_id:
             self.echo.remember(jid, sent_id)
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets (``files.whatsapp_limits``)."""
+        from kiro_crew.whatsapp.files import whatsapp_limits
+
+        return whatsapp_limits()
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image after the renderer's own decode screen.
+
+        A picture the screen refuses (undecodable, past the pixel budget) answers
+        False rather than reaching :meth:`send_image`, whose image build would
+        fail on it.
+        """
+        from kiro_crew.whatsapp.files import _decode_refusal
+
+        if await asyncio.to_thread(_decode_refusal, file) is not None:
+            return False
+        return bool(await self.send_image(conversation_id, file.data))
 
     async def resolve_conversation(self, user_id: str) -> str:
         return normalize_jid(wa_id_to_user_jid(user_id))
