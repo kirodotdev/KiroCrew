@@ -715,8 +715,8 @@ profile does not reach a worker already open. An empty mate pin leaves that
 half unpinned, so the worker's selected agent or the global default decides.
 `create_session` resolves the caller's member record
 (`_dispatching_crewmate`: the caller's protected execution record when it names
-a `member` — by persisted id, else by selection name — or, for a slot with no
-record, the slot's agent name as `resolve_crew_identity` reads it) and fills
+a `member` — by persisted id, else by selection name; a slot with no record is
+no Bot, whatever its slot agent names) and fills
 what the call left unsaid from `worker_session_defaults(record)`: the record's
 `worker_model` / `worker_reasoning_effort` when set, else its own `model` /
 `reasoning_effort`. `worker_model` is read raw, so `"auto"` is a real pin there
@@ -740,10 +740,10 @@ crewmate's backend"), so its pins are judged there; the profile's explicit
 `worker_model` is validated for that harness (`PUT /api/agents/{name}`) and
 crosses freely. A conductor's hand-off whose worker backend cannot carry the
 worker's kit is refused `capability_harness_unsupported` before anything is
-allocated. A conductor slot with no execution record (one from before records,
-named only by its slot agent) is refused `conductor_record_missing` the same way:
-its worker would carry no crewmate and run on the shared store. Either pin is dropped when the child's namespace advertises a list it is
-not on while another harness claims it; `"auto"` always passes. When the
+allocated. A slot with no execution record is no conductor, so its child
+resolves as any other caller's does. Either pin is dropped when the child's
+namespace advertises a list it is not on while another harness claims it;
+`"auto"` always passes. When the
 mate's own model is dropped, the mate's own effort that rode along for
 it is dropped too; an explicit `worker_reasoning_effort` stays. A caller whose record is a
 template — a dispatched worker running on its mate's store — is not a
