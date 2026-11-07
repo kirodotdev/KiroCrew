@@ -5154,6 +5154,7 @@
         "budget": "预算",
         "couldn_t_start_the_run": "无法启动运行",
         "couldn_t_validate_the_script": "无法校验脚本",
+        "couldn_t_load_examples": "无法加载示例",
         "invalid_fix_before_running": "无效 — 运行前请先修复：",
         "load_example": "加载示例…",
         "run": "运行",

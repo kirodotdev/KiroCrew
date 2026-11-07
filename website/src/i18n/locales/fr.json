@@ -5528,6 +5528,7 @@
         "budget": "budget",
         "couldn_t_start_the_run": "Impossible de démarrer l’exécution",
         "couldn_t_validate_the_script": "Impossible de valider le script",
+        "couldn_t_load_examples": "Impossible de charger les exemples",
         "invalid_fix_before_running": "Non valide — corrigez avant l’exécution :",
         "load_example": "Charger un exemple…",
         "run": "Exécuter",

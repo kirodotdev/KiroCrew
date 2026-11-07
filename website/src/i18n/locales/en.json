@@ -3925,6 +3925,7 @@
         "budget": "budget",
         "couldn_t_start_the_run": "Couldn't start the run",
         "couldn_t_validate_the_script": "Couldn't validate the script",
+        "couldn_t_load_examples": "Couldn't load the examples",
         "invalid_fix_before_running": "Invalid — fix before running:",
         "load_example": "Load example…",
         "run": "Run",
