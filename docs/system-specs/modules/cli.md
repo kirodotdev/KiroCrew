@@ -564,8 +564,9 @@ dropped, through `_sanitize_imported_crons(..., drop_malformed=False)` — the r
 keeps its own shape handling (merge skips an unusable store, replace validates it), so
 only the vet and the pause are applied. A hook in the staged `hooks.json` that has a
 `command` is restored with `enabled` false by
-`portability_vetting._disable_imported_script_hooks`, which keeps every other top-level
-key (webhook resume contexts) and leaves skill-only hooks alone; the dashboard import
+`portability_vetting._disable_imported_script_hooks`, which parses the file's bytes the
+way the hook store does, keeps every other top-level key (webhook resume contexts) and
+leaves skill-only hooks alone; the dashboard import
 calls it too and lists the names in `disabled_hooks`. The restore prints the paused,
 disabled and dropped names, and where to switch each back on (Schedules, Hooks). A merge
 into a home that already has a `hooks.json` keeps that file, so no bundle hook is named.

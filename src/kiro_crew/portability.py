@@ -1166,5 +1166,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNREADABLE_STORE,
         _publish_staged_cron_store,
         _read_staged_cron_store,
+        _read_staged_store_bytes,
         _sanitize_cron_text,
     )
