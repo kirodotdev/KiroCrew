@@ -17,6 +17,7 @@ import type { useCollapsedCrewSpaces, useCollapsedCrews, useCrewEnable } from '.
 import type { SessionRow } from './SessionRow'
 import type { useBoardColumnMutations, useBoardColumns, useBoardFolderCollapse, useColumnMatches, useColumnPopover } from './board'
 import type { useBulkModelSwitch } from './bulkModelSwitch'
+import type { useBulkTitles } from './bulkTitles'
 import type { useConductorLane } from './conductor'
 import type { useFolderChatCreate, useSessionCreate } from './create'
 import type { useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
@@ -344,6 +345,8 @@ export interface SidebarScope {
 
   // From `useResumeAll`
   resumeAll: ReturnType<typeof useResumeAll>
+  // From `useBulkTitles`
+  bulkTitles: ReturnType<typeof useBulkTitles>
 
   // From `usePinnedSessionOrder`
   pinned: ReturnType<typeof usePinnedSessionOrder>['pinned']

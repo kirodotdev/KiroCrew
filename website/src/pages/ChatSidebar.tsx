@@ -96,6 +96,7 @@ import { renderHistoryPane } from './chat-sidebar/HistoryPane'
 import { renderFolderModal } from './chat-sidebar/folderModal'
 import { renderSessionCleanupPanel, useSessionCleanup } from './chat-sidebar/sessionCleanup'
 import { renderBulkModelPanel, useBulkModelSwitch } from './chat-sidebar/bulkModelSwitch'
+import { renderBulkTitlesPanel, useBulkTitles } from './chat-sidebar/bulkTitles'
 import BroadcastPanel from './chat-sidebar/BroadcastPanel'
 import { makeKindOf, type KindSections } from './chat-sidebar/kindSections'
 import type { Slot } from './chat-sidebar/types'
@@ -346,6 +347,7 @@ function ChatSidebar({
   const bulkSlots = useMemo(() => dashboardSlots.filter(s => !s.peer_id), [dashboardSlots])
   const bulkModel = useBulkModelSwitch({ localSlots, slots: bulkSlots })
   const resumeAll = useResumeAll({ localSlots, connected })
+  const bulkTitles = useBulkTitles()
 
   const {
     pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
@@ -935,7 +937,7 @@ function ChatSidebar({
   const scope: SidebarScope = { activeDrag, activeFilters, activeModelKeys, activeModelRows, activeSlot,
     activeTagIds, activeTagNames, addColumnAfterMutation, allHiddenFolders, armHold, attachStripEdges,
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
-    broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
+    broadcastOpen, bulkModel, bulkTitles, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
     closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
     columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
@@ -1060,6 +1062,7 @@ function ChatSidebar({
        *  running session left unskipped, so the red caveat renders only once
        *  the skip box is cleared with some session running. */}
       {bulkModel.bulkModelOpen && renderBulkModelPanel(scope)}
+      {bulkTitles.bulkTitlesOpen && renderBulkTitlesPanel(scope)}
 
       {/* Broadcast dialog — one message steered into every session the pick
        *  reaches: a running turn takes it after its current tool call, an idle
