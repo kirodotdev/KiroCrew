@@ -404,7 +404,7 @@ def _dispatch_turn(
     slot: Any,
     message: str,
     *,
-    message_meta: dict[str, str] | None = None,
+    message_meta: dict[str, Any] | None = None,
     append_user: bool = True,
     directive_user_origin: bool = False,
     message_is_typed: bool = True,
@@ -421,9 +421,11 @@ def _dispatch_turn(
             # designed behaviour rather than a containment change.
             from kiro_crew.dashboard.session_control import containment_meta
 
+            # The drain stores the entry's meta on the user row, so a queued
+            # message keeps its `message_meta` (pastes) like a dispatched one.
             slot.queue_append(
                 message,
-                meta=containment_meta(state, slot),
+                meta={**(message_meta or {}), **containment_meta(state, slot)},
                 directive_user_origin=directive_user_origin,
             )
         except Exception:

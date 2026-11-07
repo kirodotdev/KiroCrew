@@ -938,6 +938,15 @@ class TestDispatchTurn:
         assert CRED_NAME not in slot.messages[0]["content"]
         assert state.pushes == 1
 
+    def test_a_busy_slot_queues_the_message_meta_with_the_turn(self):
+        # The drain stores the queued entry's meta on the user row: the paste chip.
+        slot = _Slot("spec-builder-demo", running=True)
+        slot.queue_append = mock.Mock()  # type: ignore[method-assign]
+        state = _State(**{"spec-builder-demo": slot})
+        pastes = [{"id": "p1", "seq": 1, "lines": 4, "content": "a\nb\nc\nd"}]
+        r._dispatch_turn(state, slot, "look", message_meta={"pastes": pastes})
+        assert slot.queue_append.call_args.kwargs["meta"]["pastes"] == pastes
+
     def test_a_slot_that_cannot_queue_or_echo_is_tolerated(self):
         slot = _Slot("spec-builder-demo", running=True)
         slot.queue_append = mock.Mock(side_effect=RuntimeError("full"))  # type: ignore
