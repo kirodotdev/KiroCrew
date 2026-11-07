@@ -21703,6 +21703,13 @@
     "memberChanged_one": "[{{name}}: {{count}} çĥàñğè ĺìşţèð ƀèĺøẁ. ················]",
     "memberChanged_other": "[{{name}}: {{count}} çĥàñğèş ĺìşţèð ƀèĺøẁ. ·················]"
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "[Þàçķàğèş ············]"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "[Ţĥè şèŕṽèŕ àççèþţèð ţĥè ŕèǫùèşţ, ƀùţ ìţş ŕèþĺý çøùĺð ñøţ ƀè ŕèàð. ·······················]",
