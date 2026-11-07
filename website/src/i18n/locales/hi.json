@@ -9461,18 +9461,18 @@
     },
     "trustDropdown": {
       "trust": "भरोसा करें",
-      "trust_all_base": "सभी <mono>{{base}}</mono> कमांड पर भरोसा करें",
-      "trust_all_base_channel": "सभी <mono>{{base}}</mono> कमांड पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
-      "trust_all_base_hour": "किसी भी <mono>{{base}}</mono> कमांड पर एक घंटे के लिए भरोसा करो ({{time}} तक)",
-      "trust_all_base_session": "किसी भी <mono>{{base}}</mono> कमांड पर इस सत्र के लिए भरोसा करो",
-      "trust_all_base_today": "किसी भी <mono>{{base}}</mono> कमांड पर आधी रात तक भरोसा करो ({{time}})",
+      "trust_all_base": "सभी <mono/> कमांड पर भरोसा करो",
+      "trust_all_base_channel": "सभी <mono/> कमांड पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
+      "trust_all_base_hour": "किसी भी <mono/> कमांड पर एक घंटे के लिए भरोसा करो ({{time}} तक)",
+      "trust_all_base_session": "किसी भी <mono/> कमांड पर इस सत्र के लिए भरोसा करो",
+      "trust_all_base_today": "किसी भी <mono/> कमांड पर आधी रात तक भरोसा करो ({{time}})",
       "trust_all_tools": "इस सत्र के लिए सभी टूल पर भरोसा करें",
       "trust_all_tools_channel": "इस चैनल के सभी टूल पर भरोसा करें — रीस्टार्ट के बाद भी बना रहता है",
-      "trust_this_command": "<mono>{{cmd}}</mono> पर भरोसा करो",
-      "trust_this_command_channel": "<mono>{{cmd}}</mono> पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
-      "trust_this_command_hour": "<mono>{{cmd}}</mono> पर एक घंटे के लिए भरोसा करो ({{time}} तक)",
-      "trust_this_command_session": "<mono>{{cmd}}</mono> पर इस सत्र के लिए भरोसा करो",
-      "trust_this_command_today": "<mono>{{cmd}}</mono> पर आधी रात तक भरोसा करो ({{time}})"
+      "trust_this_command": "<mono/> पर भरोसा करो",
+      "trust_this_command_channel": "<mono/> पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
+      "trust_this_command_hour": "<mono/> पर एक घंटे के लिए भरोसा करो ({{time}} तक)",
+      "trust_this_command_session": "<mono/> पर इस सत्र के लिए भरोसा करो",
+      "trust_this_command_today": "<mono/> पर आधी रात तक भरोसा करो ({{time}})"
     },
     "tunnelStatus": {
       "connected": "कनेक्टेड",
