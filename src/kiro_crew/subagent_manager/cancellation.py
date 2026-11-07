@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         clear_tombstone,
         delivery_is_parked,
         logger,
+        read_tombstone,
         time,
     )
 
@@ -369,7 +370,7 @@ class CancellationCoordinator(ManagerComponent):
             undurable = self._manager._undurable_in_dispatch.pop(agent_id, None)
             return stored if undurable is None else undurable
         if stored is None:
-            self._repost_unlanded_cancel(agent_id)
+            self._repost_unlanded_cancel(agent_id, entry)
         return entry
 
     def _take_window_entry(self, agent_id: str) -> dict | None:
@@ -381,20 +382,21 @@ class CancellationCoordinator(ManagerComponent):
             return queue.pop(index)
         return None
 
-    def _repost_unlanded_cancel(self, agent_id: str) -> None:
-        """Say that a stopped window entry's store cancel did not land, and retry it.
+    def _repost_unlanded_cancel(self, agent_id: str, entry: dict) -> None:
+        """Say that a stopped window entry's store cancel did not land, and settle it.
 
-        A window entry always HAS a row while a store is attached -- a spawn
-        whose accept the store refused is never queued -- so nothing cancelled
-        for one means the cancel did not LAND: the store was unreachable, or the
-        row left the unstarted states between the read and the write. The caller
-        publishes a stop either way, and a row left `queued` is dispatchable by
-        the next incarnation, which would run work the user was told had
-        stopped. So the refusal is audible (the shape `taskq_settle` uses for a
-        refused `finish`) and re-posted to the writer thread, where a store that
-        answers again cancels the row; `taskq_cancel_queued` re-reads the state
-        under its own transaction, so a row that legitimately started is left
-        alone.
+        A persistent window entry always HAS a row while a store is attached --
+        a spawn whose accept the store refused is never queued, and a temporary
+        or incognito one never writes a row -- so nothing cancelled for one
+        means the cancel did not LAND: the store was unreachable, or the row
+        left the unstarted states between the read and the write. A row left
+        `queued` is dispatchable by the next incarnation, which would run work
+        the user was told had stopped. So the refusal is audible (the shape
+        `taskq_settle` uses for a refused `finish`) and the cancel is settled
+        (`taskq_settle_unlanded_cancel`): the queued-stop marker the next boot
+        settles the row `cancelled` on, then the cancel retried until the store
+        answers, a row that legitimately started left alone. A single `cancel`
+        publishes its stop only once that settle lets it (`cancel_impl`).
         """
         # Imported here: this helper is not an ``_impl`` and so keeps this
         # module's namespace, where the facade's ``logger`` is only a type hint.
@@ -402,18 +404,13 @@ class CancellationCoordinator(ManagerComponent):
 
         admission = self._manager._admission
         store = admission.taskq_store()
-        if store is None:
+        if store is None or entry.get("_memory_mode", "persistent") != "persistent":
             return
         logger.warning(
             "Queued stop for %s: no store row was cancelled — re-posting the cancel",
             agent_id,
         )
-        admission._post_store_write(
-            store,
-            f"queued cancel retry {agent_id}",
-            admission.taskq_cancel_queued,
-            agent_id,
-        )
+        admission.taskq_settle_unlanded_cancel(agent_id)
 
     def _report_queued_stop_impl(
         self,
@@ -422,6 +419,7 @@ class CancellationCoordinator(ManagerComponent):
         row_settled: bool = False,
         error: str = "",
         report_owed: bool = False,
+        gate: "asyncio.Future[bool] | None" = None,
     ) -> "asyncio.Task[bool] | None":
         """Publish the terminal record of work that ended before startup.
 
@@ -439,7 +437,9 @@ class CancellationCoordinator(ManagerComponent):
 
         *row_settled* says the caller's own cancel of the store row landed, so
         that cancel is the row's terminal write and the report's settle writes
-        no second one (see ``taskq_settle``).
+        no second one (see ``taskq_settle``). *gate* holds the report back,
+        with the record registered, until the caller's cancel is durable
+        (``_report_terminal``'s ``gate``).
 
         The claim is per ROW: a row that already holds its finalized queued-stop
         record was reported by whichever stop reached it first, and this one
@@ -507,6 +507,7 @@ class CancellationCoordinator(ManagerComponent):
             ),
             mark_delivered_on_success=False,
             settle_digest=True,
+            gate=gate,
         )
 
     def _registered_run(self, agent_id: str) -> bool:
@@ -1499,7 +1500,7 @@ class CancellationCoordinator(ManagerComponent):
                     stopped += 1
                     _answer(agent_id, True)
                     continue
-                self._repost_unlanded_cancel(agent_id)
+                self._repost_unlanded_cancel(agent_id, entry)
             row = entry if entry is not None else stored
             if row is None:
                 continue
@@ -1592,11 +1593,30 @@ class CancellationCoordinator(ManagerComponent):
                 )
             else:
                 stored = await self._manager._admission.taskq_cancel_queued_async(agent_id)
+
+            async def _report_unqueued(queued: dict, stored: "dict | None") -> bool:
+                logger.info("Cancelled queued subagent %s before it started", agent_id)
+                settled = None
+                if stored is None:
+                    # The cancel may not have landed: ``_unqueue`` may have left
+                    # it settling (``_repost_unlanded_cancel``). The record below
+                    # fences the claimer at once; its report, and this answer,
+                    # wait until the row is durably ended.
+                    async def _once_settled() -> bool:
+                        await self._manager._admission.await_pending_defer(agent_id)
+                        return True
+
+                    settled = asyncio.create_task(_once_settled())
+                self._manager._report_queued_stop(
+                    queued, row_settled=stored is not None, gate=settled
+                )
+                if settled is not None:
+                    await asyncio.shield(settled)
+                return True
+
             queued = self._manager._unqueue(agent_id, stored=stored, store_cancelled=True)
             if queued is not None:
-                logger.info("Cancelled queued subagent %s before it started", agent_id)
-                self._manager._report_queued_stop(queued, row_settled=stored is not None)
-                return True
+                return await _report_unqueued(queued, stored)
             # Nothing to cancel in the store and nothing in the window: the row
             # may be one whose start the claimer has just taken in the store
             # (``admitted -> starting``, ``claim_and_start``) and not yet
@@ -1619,9 +1639,7 @@ class CancellationCoordinator(ManagerComponent):
             queued = self._manager._unqueue(agent_id, stored=stored, store_cancelled=True)
             if queued is None:
                 return False
-            logger.info("Cancelled queued subagent %s before it started", agent_id)
-            self._manager._report_queued_stop(queued, row_settled=stored is not None)
-            return True
+            return await _report_unqueued(queued, stored)
         if not info._reap_started:
             # The stamps below name THIS stop as the run's stopper. A reap already
             # in flight (a deadline, a parent end) owns the record, and the record
@@ -1886,12 +1904,23 @@ class CancellationCoordinator(ManagerComponent):
                 # — `_reported_to_parent` marks the ones that already reached the
                 # parent, so a cancellation in the later teardown/tombstone waits
                 # does not cause a duplicate delivery on restart.
+                from kiro_crew.subagent_manager.admission.types import (
+                    QUEUED_STOP_TOMBSTONE_CAUSE,
+                )
+
                 for task, owner in zip(stragglers, abandoned):
                     if owner is None or not task.cancelled():
                         continue
                     if owner._reported_to_parent:
                         continue
                     try:
+                        marker = (read_tombstone(owner.id) or {}).get("cause")
+                        if marker == QUEUED_STOP_TOMBSTONE_CAUSE:
+                            # The marker a stop whose cancel did not land leaves:
+                            # the next boot settles the row ``cancelled`` on it,
+                            # and the run never started, so there is nothing to
+                            # re-deliver.
+                            continue
                         if clear_tombstone(owner.id):
                             logger.warning(
                                 "cancel_all: %s's completion was not delivered — "
