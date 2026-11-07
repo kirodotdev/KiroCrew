@@ -104,6 +104,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # spec-write-allowlist row reads this.
         spec_write_allowlist=e.spec_write_allowlist,
         spec_write_cwd=e.spec_write_cwd,
+        # Same row as spec_granted_builtins, with the denies it is checked against.
+        spec_denied_grant=e.spec_denied_grant,
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,

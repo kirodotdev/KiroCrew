@@ -1,0 +1,269 @@
+"""A KAS spec that pairs a grant with ``deniedCommands`` / write ``deniedPaths``
+runs what the grant covers and no deny names, as on kiro-cli.
+
+The projection records the grants those denies held back, with the denies
+(``kas_spec_denies``); the gate refuses what a deny names (``spec-denies``) and
+grants the rest only after the deny check clears it (``spec-builtin-grant``).
+Anything Crew cannot read keeps asking.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+from test_tool_call_classification_kas import _kas_builtin_flow
+
+from kiro_crew.acp import kas_agents
+from kiro_crew.acp._dispatch import attach_kas_custom_agents
+from kiro_crew.acp.kas_permissions import CREW_ANSWERED_COMMANDS_KEY, CREW_SPEC_DENIES_KEY
+from kiro_crew.acp.kas_spec_denies import projected_spec_denies
+from kiro_crew.acp.types import AcpEvent
+from kiro_crew.hooks import (
+    TOOL_ALLOW,
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    HookManager,
+    HooksConfig,
+    hook_gate_kwargs,
+)
+from kiro_crew.platform import context as ctx_mod
+from kiro_crew.platform import governance_profiles as gp
+
+
+@pytest.fixture(autouse=True)
+def _no_profiles(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch):
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    _floor_monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+    gp.reset_store()
+    yield
+    gp.reset_store()
+    ctx_mod.reset_context()
+
+
+def _project(cwd: str = "", **spec: Any) -> tuple[dict[str, Any], Any]:
+    out = kas_agents.to_client_custom_agent("a", {"name": "a", "prompt": "p", **spec}, "p")
+    return out, projected_spec_denies([out], "a", cwd)
+
+
+def _judge(event: AcpEvent, out: dict[str, Any], grant: Any):
+    event.spec_granted_builtins = frozenset(out.get("_crewAnsweredBuiltins", ()))
+    event.spec_granted_commands = tuple(out.get(CREW_ANSWERED_COMMANDS_KEY, ()))
+    event.spec_denied_grant = grant
+    return HookManager(HooksConfig()).on_tool_call(event.title, **hook_gate_kwargs(event))
+
+
+def _shell(command: str) -> AcpEvent:
+    return _kas_builtin_flow(
+        "run_command", title="Run Command", kind="execute", raw_input={"command": command}
+    )
+
+
+def _write(path: Path) -> AcpEvent:
+    return _kas_builtin_flow(
+        "fs_write", title="Write", kind="edit", raw_input={"path": str(path), "content": "x"}
+    )
+
+
+_SHELL_SETTINGS = {
+    "shell": {
+        "allowedCommands": ["make build", "npm publish.*", "make clean.*"],
+        "deniedCommands": ["npm publish.*", "make clean"],
+    }
+}
+
+
+# ── shell ─────────────────────────────────────────────────────────────────────
+
+
+def test_an_allowed_command_no_deny_names_runs_without_a_prompt() -> None:
+    out, grant = _project(toolsSettings=_SHELL_SETTINGS)
+    assert CREW_ANSWERED_COMMANDS_KEY not in out, "only granted once the denies are checked"
+    verdict = _judge(_shell("make build"), out, grant)
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["npm publish --tag next", "make clean now"],
+)
+def test_an_allowed_command_a_deny_names_is_refused(command: str) -> None:
+    """``make clean now``: a deny read as a prefix too, never narrower than kiro-cli."""
+    out, grant = _project(toolsSettings=_SHELL_SETTINGS)
+    verdict = _judge(_shell(command), out, grant)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-denies")
+
+
+@pytest.mark.parametrize("command", ["make cleanup", "make clean-all"])
+def test_a_deny_is_never_a_hard_refusal_mid_word(command: str) -> None:
+    """``make clean`` refuses ``make clean now``, never ``make cleanup``: the refusal
+    reads a deny only up to a word end. The grant is still withheld, so it asks."""
+    out, grant = _project(toolsSettings=_SHELL_SETTINGS)
+    verdict = _judge(_shell(command), out, grant)
+    assert verdict.tier != "spec-denies"
+    assert verdict.action != TOOL_AUTO_APPROVE
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["npm test", "make build $(id)", "make build > out", "make build && npm publish x"],
+)
+def test_an_unmatched_or_unreadable_command_still_asks(command: str) -> None:
+    out, grant = _project(toolsSettings=_SHELL_SETTINGS)
+    verdict = _judge(_shell(command), out, grant)
+    assert verdict.tier != "spec-builtin-grant"
+    assert verdict.action != TOOL_AUTO_APPROVE
+
+
+def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names() -> None:
+    out, grant = _project(
+        allowedTools=["shell"], toolsSettings={"shell": {"deniedCommands": ["rm .*"]}}
+    )
+    assert (_judge(_shell("make build"), out, grant).tier) == "spec-builtin-grant"
+    assert _judge(_shell("rm notes.txt"), out, grant).tier == "spec-denies"
+
+
+@pytest.mark.parametrize(
+    "denied",
+    [["rm \\d+"], [7], "rm .*", ["make clean|npm publish"], ["\\<git.*"]],
+    ids=["unreadable-entry", "not-a-string", "not-a-list", "alternation", "rust-word-boundary"],
+)
+def test_a_deny_crew_cannot_read_keeps_the_grant_at_the_prompt(denied: Any) -> None:
+    settings = {"shell": {"allowedCommands": ["make build"], "deniedCommands": denied}}
+    out, grant = _project(toolsSettings=settings)
+    assert grant is None
+    assert _judge(_shell("make build"), out, grant).action == TOOL_ALLOW
+
+
+@pytest.mark.parametrize(
+    "beside",
+    [{"denyByDefault": True}],
+)
+def test_another_restriction_beside_the_deny_keeps_the_grant_at_the_prompt(beside) -> None:
+    settings = {"shell": {"allowedCommands": ["make build"], "deniedCommands": ["rm .*"], **beside}}
+    out, grant = _project(toolsSettings=settings)
+    assert grant is None or not grant.commands
+
+
+# ── write paths ───────────────────────────────────────────────────────────────
+
+
+def _write_spec(tmp_path: Path, **extra: Any) -> dict[str, Any]:
+    return {
+        "allowedTools": ["write"],
+        "toolsSettings": {
+            "write": {
+                "allowedPaths": [f"{tmp_path}/autopilot/**"],
+                "deniedPaths": [f"{tmp_path}/autopilot/secret"],
+            }
+        },
+        **extra,
+    }
+
+
+def test_an_allowed_write_no_deny_covers_runs_without_a_prompt(tmp_path: Path) -> None:
+    (tmp_path / "autopilot").mkdir()
+    out, grant = _project(str(tmp_path), **_write_spec(tmp_path))
+    verdict = _judge(_write(tmp_path / "autopilot" / "run-report.md"), out, grant)
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+def test_a_write_a_deny_covers_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "autopilot" / "secret").mkdir(parents=True)
+    out, grant = _project(str(tmp_path), **_write_spec(tmp_path))
+    verdict = _judge(_write(tmp_path / "autopilot" / "secret" / "key.txt"), out, grant)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-denies")
+
+
+def test_a_write_through_a_link_into_a_denied_dir_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "autopilot" / "secret").mkdir(parents=True)
+    (tmp_path / "autopilot" / "door").symlink_to(tmp_path / "autopilot" / "secret")
+    out, grant = _project(str(tmp_path), **_write_spec(tmp_path))
+    verdict = _judge(_write(tmp_path / "autopilot" / "door" / "key.txt"), out, grant)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-denies")
+
+
+def test_an_ungranted_write_still_asks(tmp_path: Path) -> None:
+    (tmp_path / "autopilot").mkdir()
+    spec = _write_spec(tmp_path)
+    spec["allowedTools"] = ["read"]
+    out, grant = _project(str(tmp_path), **spec)
+    verdict = _judge(_write(tmp_path / "autopilot" / "run-report.md"), out, grant)
+    assert verdict.action == TOOL_ALLOW
+
+
+def test_two_spellings_of_one_deny_still_grant(tmp_path: Path) -> None:
+    """``secret/**`` and ``./secret/**`` anchor to one glob: both entries check, so
+    the grant holds and the write they name is refused."""
+    (tmp_path / "secret").mkdir()
+    spec = _write_spec(tmp_path)
+    spec["toolsSettings"]["write"]["allowedPaths"] = [f"{tmp_path}/**"]
+    spec["toolsSettings"]["write"]["deniedPaths"] = ["secret/**", "./secret/**"]
+    out, grant = _project(str(tmp_path), **spec)
+    assert grant is not None and len(grant.denied_write_paths) == 1
+    assert _judge(_write(tmp_path / "secret" / "k"), out, grant).tier == "spec-denies"
+
+
+def test_a_deny_under_either_shell_spelling_refuses() -> None:
+    """With both shell spellings set, every deny under either is read, so the
+    gate refuses what any of them names and is never narrower than kiro-cli."""
+    settings = {
+        "shell": {"deniedCommands": ["rm .*"]},
+        "execute_bash": {"deniedCommands": ["make build"]},
+    }
+    out, grant = _project(allowedTools=["shell"], toolsSettings=settings)
+    assert grant is not None
+    assert sorted(grant.denied_commands) == ["make build", "rm .*"]
+    assert _judge(_shell("rm notes.txt"), out, grant).tier == "spec-denies"
+    assert _judge(_shell("make build"), out, grant).tier == "spec-denies"
+    assert _judge(_shell("npm test"), out, grant).tier == "spec-builtin-grant"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows strips a trailing space from a directory name"
+)
+def test_a_blank_looking_deny_still_refuses_what_it_names(tmp_path: Path) -> None:
+    """``" "`` is a real relative path to kiro-cli; it is kept and checked, never
+    dropped, so the write it covers is refused rather than granted."""
+    (tmp_path / " ").mkdir()
+    spec = _write_spec(tmp_path)
+    spec["toolsSettings"]["write"]["allowedPaths"] = [f"{tmp_path}/**"]
+    spec["toolsSettings"]["write"]["deniedPaths"] = [" ", "protected"]
+    out, grant = _project(str(tmp_path), **spec)
+    assert grant is not None
+    assert _judge(_write(tmp_path / " " / "k"), out, grant).tier == "spec-denies"
+
+
+def test_an_empty_deny_entry_keeps_the_grant_at_the_prompt(tmp_path: Path) -> None:
+    spec = _write_spec(tmp_path)
+    spec["toolsSettings"]["write"]["deniedPaths"] = ["", "protected"]
+    _, grant = _project(str(tmp_path), **spec)
+    assert grant is None
+
+
+def test_a_relative_deny_with_no_session_directory_grants_nothing(tmp_path: Path) -> None:
+    spec = _write_spec(tmp_path)
+    spec["toolsSettings"]["write"]["deniedPaths"] = ["secret/**"]
+    out, grant = _project("", **spec)
+    assert grant is None
+
+
+# ── plumbing ──────────────────────────────────────────────────────────────────
+
+
+def test_the_record_never_reaches_the_wire() -> None:
+    out, _ = _project(toolsSettings=_SHELL_SETTINGS)
+    assert CREW_SPEC_DENIES_KEY in out
+    params: dict[str, Any] = {}
+    attach_kas_custom_agents(params, [out])
+    (wire,) = params["_meta"]["kiro"]["customAgents"]
+    assert CREW_SPEC_DENIES_KEY not in wire
+
+
+def test_a_malformed_record_grants_nothing() -> None:
+    out, _ = _project(toolsSettings=_SHELL_SETTINGS)
+    out[CREW_SPEC_DENIES_KEY]["deniedCommands"] = "npm publish.*"
+    assert projected_spec_denies([out], "a", "") is None

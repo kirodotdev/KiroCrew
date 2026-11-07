@@ -1391,6 +1391,16 @@ def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     return None
 
 
+def _tier_spec_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS spec's checked ``deniedCommands`` / write ``deniedPaths``: refuse a call
+    of the session's own agent that one names, on every approval policy
+    (:mod:`kiro_crew.platform.spec_denied_gate`). Only ever refuses."""
+    from kiro_crew.platform.spec_denied_gate import spec_denies_refusal
+
+    reason = spec_denies_refusal(facts.call, _spec_builtin_names(facts.call))
+    return None if reason is None else ToolHookResult.deny_policy(reason)
+
+
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     """A KAS built-in the session's agent spec grants in ``allowedTools``.
 
@@ -1447,14 +1457,20 @@ def grant_spec_builtin(
         return None
     call = facts.call
     granted = call.spec_granted_builtins
-    if not (granted or call.spec_granted_commands):
+    if not (granted or call.spec_granted_commands or call.spec_denied_grant):
         return None
     if not call.kas_builtin_ids or not call.identity_trusted:
         return None
     if call.mcp_server or not call.mcp_tool:
         return None
     names = _spec_builtin_names(call)
-    if not any(name in granted for name in names) and not _spec_command_granted(call, names):
+    from kiro_crew.platform.spec_denied_gate import denied_grant_applies
+
+    if (
+        not any(name in granted for name in names)
+        and not _spec_command_granted(call, names)
+        and not denied_grant_applies(call, names)
+    ):
         if _spec_command_composed(call, names, call.spec_granted_commands):
             from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
 
