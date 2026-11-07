@@ -127,7 +127,8 @@ def _do_merge(
                 print(f"  ↩️  {_core_file_not_installed(mc / 'memory.db')}")
                 memory_ok = False
         else:
-            _merge_memory(snap / "memory.db", mc / "memory.db")
+            # A refused merge imported nothing, so it must not print the success tick.
+            memory_ok = _merge_memory(snap / "memory.db", mc / "memory.db")
         if memory_ok:
             print("  ✅ memory")
 

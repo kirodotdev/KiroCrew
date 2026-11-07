@@ -1133,6 +1133,33 @@ class TestImportMerge:
         finally:
             os.unlink(str(zip_path))
 
+    def test_import_merge_reports_a_refused_memory_merge(self, patched_config_dir, tmp_path):
+        """A refused memory merge imported nothing, so the summary must not call it merged.
+
+        The dashboard handler turns the summary into the result an API caller sees, so
+        ``memory (merged)`` over a refused source database reports a success that brought
+        no row back. It is flagged in ``refused_merges``, as a refused crons merge is.
+        """
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+            conn = sqlite3.connect(str(target / "memory.db"))  # live db: the merge branch runs
+            conn.execute("CREATE TABLE semantic_memory (key TEXT PRIMARY KEY)")
+            conn.commit()
+            conn.close()
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    # _merge_memory refuses a corrupt or unreadable source by returning False.
+                    with patch("kiro_crew.portability._merge_memory", return_value=False):
+                        summary = apply_import_zip(zip_path, mode="merge")
+
+            assert "memory (merged)" not in summary["items"], summary
+            assert "memory" in (summary.get("refused_merges") or []), summary
+        finally:
+            os.unlink(str(zip_path))
+
     def test_import_merge_workspace_no_overwrite(self, patched_config_dir, tmp_path):
         """Merge doesn't overwrite existing workspace files."""
         zip_path = self._make_export(patched_config_dir)

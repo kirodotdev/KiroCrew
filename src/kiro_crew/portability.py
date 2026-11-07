@@ -904,9 +904,13 @@ def apply_import_zip(
                     else:
                         summary["items"].append("memory (skipped: not a regular file)")
                         summary.setdefault("refused_merges", []).append("memory")
-                else:
-                    _merge_memory(snap / "memory.db", mc / "memory.db")
+                elif _merge_memory(snap / "memory.db", mc / "memory.db"):
                     summary["items"].append("memory (merged)")
+                else:
+                    # A refused merge imported no row, so it is named and flagged
+                    # in refused_merges, as a refused crons merge is below.
+                    summary["items"].append("memory (skipped: unreadable or corrupt memory.db)")
+                    summary.setdefault("refused_merges", []).append("memory")
 
             if (snap / "crons.json").is_file():
                 if (mc / "crons.json").is_file():
