@@ -695,3 +695,8 @@ itself and the injection works as described above.
   `PUT`/`DELETE /api/prompts/{name}`) use the same pool for the same reason: directory
   resolution, the link check, and the write itself all touch the filesystem, and on a
   network-mounted home that is a multi-second stall the event loop must not take.
+  The Subagents panel's reconnect replay (the crew-log fold, or the run-folder scan with
+  the log off) stays off both the default executor and `discovery_executor`, on its own
+  two-worker `mc-replay` pool (`subagent_replay_scope.replay_executor`): every tab starts
+  one on each connect, so a reconnect burst would otherwise hold the workers every
+  `asyncio.to_thread` caller or every chat turn needs (`test/test_subagent_replay_scope.py`).
