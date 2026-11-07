@@ -8641,6 +8641,7 @@
       "branch_protection_requirements_approving_reviews": "Die Branch-Schutzanforderungen (zustimmende Reviews oder erforderliche Prüfungen) sind noch nicht erfüllt.",
       "cancel": "Abbrechen",
       "change_number": "Änderung {{number}}",
+      "close_source_tab": "{{label}} aus diesem Bereich entfernen",
       "changes": "Änderungen",
       "check_failed": "Fehlgeschlagen",
       "check_in_progress": "Läuft",

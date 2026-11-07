@@ -8853,6 +8853,7 @@
       "branch_protection_requirements_approving_reviews": "Les exigences de protection de branche (relectures approuvées ou vérifications requises) ne sont pas encore satisfaites.",
       "cancel": "Annuler",
       "change_number": "Changement {{number}}",
+      "close_source_tab": "Retirer {{label}} de ce panneau",
       "changes": "Modifications",
       "check_failed": "Échec",
       "check_in_progress": "En cours",

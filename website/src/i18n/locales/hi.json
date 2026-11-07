@@ -8641,6 +8641,7 @@
       "branch_protection_requirements_approving_reviews": "ब्रांच सुरक्षा की शर्तें (स्वीकृति समीक्षाएँ या आवश्यक जाँचें) अभी पूरी नहीं हुई हैं।",
       "cancel": "रद्द करें",
       "change_number": "चेंज {{number}}",
+      "close_source_tab": "{{label}} को इस पैनल से हटाओ",
       "changes": "बदलाव",
       "check_failed": "विफल",
       "check_in_progress": "चल रही है",
