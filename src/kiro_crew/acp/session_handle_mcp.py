@@ -46,6 +46,7 @@ from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    METHOD_KAS_MCP_GOVERNANCE_DISABLED,
     METHOD_KAS_MCP_STATUS,
     JsonRpcMessage,
 )
@@ -336,6 +337,11 @@ async def wait_mcp_ready(
     wait: governed, the session starts as soon as every pending server is such a
     drop; undeclared, the start fails at once naming the servers and the
     setting, instead of spending *timeout* on servers that cannot come.
+
+    A ``_kiro/mcp/governance_disabled`` for this session with reason
+    :data:`GOVERNANCE_API_FAILURE_REASON` is decided the same way: undeclared,
+    the start fails at once naming the transient governance read; governed,
+    the settle checkpoint decides as before.
     """
     readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
     self._mcp_report.include_configured(required)
@@ -380,6 +386,18 @@ async def wait_mcp_ready(
             self._apply_init_notification(msg, classify_notification(msg))
         except Exception:
             logger.debug("error processing init notification", exc_info=True)
+        # Before the stale-frame skip: governance_disabled is session-scoped,
+        # not roster-scoped, so a pre-switch count must not swallow it either.
+        # Governed, the settle checkpoint keeps deciding, as for a registry
+        # drop: a declared install starts without Crew's servers.
+        if not governed and _governance_api_failure(self._session_id, msg):
+            raise AcpRuntimeError(
+                "KAS managed MCP initialization failed: the host disabled MCP "
+                "for this session after its governance read failed "
+                f"({GOVERNANCE_API_FAILURE_REASON}), so the managed servers will "
+                "not report during this start. The read is transient: send the "
+                "message again to start a new session."
+            )
         if stale:
             stale -= 1
             continue
@@ -399,6 +417,28 @@ async def wait_mcp_ready(
                 raise AcpRuntimeError(_registry_filtered_message(readiness))
     for name in required:
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+
+
+#: The ``_kiro/mcp/governance_disabled`` reason that ends an undeclared readiness
+#: wait at once. ``api_failure`` means the host's governance READ failed, so the
+#: verdict is a transient miss, not a policy. The host re-reads only on a later
+#: session start, load or prompt on the same process, or on its five-minute
+#: timer, so the managed servers will not report during this start, and
+#: spending the rest of the start budget only delays the error. Under declared
+#: registry mode the settle checkpoint still decides, as for a registry drop.
+#: ``admin_disabled`` is a real verdict and stays on the ordinary path.
+GOVERNANCE_API_FAILURE_REASON = "api_failure"
+
+
+def _governance_api_failure(session_id: str, msg: JsonRpcMessage) -> bool:
+    """Whether *msg* fail-closed *session_id*'s MCP on a failed governance read."""
+    params = msg.params if isinstance(msg.params, dict) else {}
+    return (
+        msg.id is None
+        and msg.is_method(METHOD_KAS_MCP_GOVERNANCE_DISABLED)
+        and params.get("sessionId") == session_id
+        and params.get("reason") == GOVERNANCE_API_FAILURE_REASON
+    )
 
 
 def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, governed: bool) -> bool:

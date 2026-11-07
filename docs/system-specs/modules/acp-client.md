@@ -2271,6 +2271,9 @@ KAS opts into a readiness barrier through its harness notification declaration.
 Its `_kiro/mcp/status` and `_kiro/tools/didChange` notifications carry an explicit
 `params.sessionId` and full `servers` / `tags` snapshots. The reader stages both
 methods before the create/load response and transfers only that session's frames.
+The KAS `mcp_init` declaration also stages `_kiro/mcp/governance_disabled`
+(`{sessionId, reason}`): the host emits it in the same window when its governance
+verdict fail-closes the session's MCP, and the wait reads it below.
 Status entries carry `name`, `status`, `failedAuthorization`, `errorMessage`,
 `tools` (the connected server's catalog) and `_meta.kiro.resource.source.origin`;
 the required Crew declarations have origin `client`. Exposure -- the model can
@@ -2501,6 +2504,19 @@ idle-success shortcut or extra sleep. `failed`, `disabled`, failed
 authorization, and `connected without provenance` terminate startup with
 `AcpRuntimeError`; connecting, missing
 reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
+With registry mode off, a `_kiro/mcp/governance_disabled` for this session
+with `reason: "api_failure"` also terminates startup with `AcpRuntimeError`
+naming the transient governance read failure. The host has already
+fail-closed the session's MCP and re-reads governance only on a later session
+start, load or prompt on the same process, or on its five-minute timer, so the
+managed servers will not report during this start and the rest of the budget
+would only delay the error. The failed start evicts the session — on a cold
+start the freshly spawned runtime is reaped with it — and the next start
+re-reads governance. With registry mode on, the settle checkpoint below
+still decides, as it does for a registry drop. `admin_disabled` and other
+reasons keep the ordinary wait. Verified against the KAS 2.32.0 and 2.37.0
+engines, which emit the frame once, at session start, as `{sessionId, reason}`
+with `reason` either `api_failure` or `admin_disabled`.
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
