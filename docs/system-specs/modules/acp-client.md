@@ -2431,7 +2431,13 @@ spec the same way kiro-cli v2 does where the wire allows it:
   sensitive location, `~/.config/gh`, the data home's `app_receipt_secret` or `session_token_*.sig`,
   or a pseudo-filesystem (`acp/kas_prompt_paths.py`). A spec from
   a project checkout is untrusted, and its relative ref must stay inside that
-  checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`).
+  checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`); a leading
+  `$` counts as rooted there. A relative ref expands `$VAR` and `~` first
+  (`acp/kas_prompt.py` `prompt_file_path`), and `systemPrompt` is read when
+  `prompt` is absent (`spec_prompt`), as on kiro-cli. A file that is missing,
+  unreadable or empty (`KasPromptFileUnreadable`) is sent as `"prompt": ""` by
+  `build_kas_custom_agents`, as kiro-cli runs it with no prompt, and the
+  session-start notice names it; every other reader of the prompt still refuses.
 - `toolsSettings.subagent` becomes `subagent` rules
   (`kas_permissions.tools_settings_to_permissions`), the capability whose
   resource is the sub-agent's name (a KAS consent names it as such, and KAS writes
