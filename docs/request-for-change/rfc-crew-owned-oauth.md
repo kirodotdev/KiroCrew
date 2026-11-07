@@ -31,7 +31,7 @@ Crew paths are under `src/kiro_crew/` unless they start with `docs/`. KAS paths 
 - **claude, codex, opencode, goose, pi, copilot, strands, deepseek**: Crew's own capability table says none honours a Connection's `oauth` block.
 - Google also needs `access_type=offline` + `prompt=consent`. No engine sends them.
 
-**Proposal.** Kiro Crew runs OAuth itself, in the gateway: consent URL, code swap with the secret, refresh, revoke. Tokens live in Crew's existing encrypted vault. Each harness gets a plain **stdio** MCP server (a tiny bridge) that forwards to the gateway over Crew's owner-only, kernel-attested Unix socket. The gateway adds `Authorization: Bearer` and forwards to the vendor. The token never enters the harness, the sandbox, the wire or the transcript. Any harness that can start a stdio MCP server works with no OAuth code of its own.
+**Proposal.** Kiro Crew runs OAuth itself, in the gateway: consent URL, code swap with the secret, refresh, revoke. Tokens live in Crew's existing encrypted vault. Each harness gets a plain **stdio** MCP server (a tiny bridge) that forwards to the gateway over Crew's owner-only, kernel-attested Unix socket (on Windows, verified loopback TCP; see [Amendment 2026-11-07](#amendment-2026-11-07-windows-bridge-over-verified-loopback-tcp-ahead-of-phase-2)). The gateway adds `Authorization: Bearer` and forwards to the vendor. The token never enters the harness, the sandbox, the wire or the transcript. Any harness that can start a stdio MCP server works with no OAuth code of its own.
 
 **Most of it exists.** Crew already ships each half:
 
@@ -187,7 +187,7 @@ The harness sees a stdio server. It never gets a URL to the vendor, a header, or
 | C2 | **TokenStore** | One vault entry per connection, e.g. `CONNECTIONS_<SLUG>_OAUTH_TOKENS` = JSON `{access, refresh, expires_at, scope, account}`. One atomic replace commits all fields together (the WakaTime note's reasoning, `wakatime-oauth-read-auth.md`, "Credentials and storage") | Reuses `secrets/vault.py` (606 lines): `get_with_revision`, `set_with_revision`, `delete_if_revision`. **New:** a `set_if_revision` compare-and-set (~30 lines); today `set_with_revision` overwrites |
 | C3 | **Refresher** | Refresh before expiry (on demand in C4, plus an optional background pass). **Single-flight per connection:** an `asyncio.Lock` per slug inside the gateway, and a file lock (`platform_compat.file_lock`, already imported by `secrets/vault.py`) for a second gateway on the same data home. Inside the lock: re-read the entry; refresh only if still the same revision and still expiring; write with `set_if_revision`. On `invalid_grant`/`bad_refresh_token`: re-read once (another writer may have rotated), else mark `needs_auth`. Never delete on a refresh failure. | New. Fixes the exact v2 failure (§1.2) by design |
 | C4 | **ConnectionProxy** (gateway route on the owner-only Unix socket) | Admit only an attested session caller. Accept MCP JSON-RPC from the bridge. Apply the governed tool policy and write one SEL event per `tools/call`. Add `Authorization: Bearer`. POST to the registry `mcp_url` only; no redirects. Relay `Mcp-Session-Id`, `MCP-Protocol-Version`, JSON or event-stream answers. On vendor 401: refresh once and retry; else return a JSON-RPC error with a "reconnect on the Connections page" message. **Never return HTTP 401 to the harness.** | New streaming route. Reuses the admission gates of `_admit` in `dashboard/handlers/mediated_secrets.py` (`internal_auth`, `X-Session-Key`, `member_request_scope`), SEL `log_api_access` (via `_audit`), `loopback_http.unix_socket_urlopen` |
-| C5 | **Bridge** (inside the harness/sandbox) | Stdio MCP server; forwards each message to C4 over the Unix socket. Holds no token and no vendor URL. | Adapt `kas_http_bridge.py` (269 lines, #28615): today it POSTs to an `https://` URL with headers from a launch snapshot; change the target to the gateway socket. Launched through `kas_env_shim.py` (234 lines) |
+| C5 | **Bridge** (inside the harness/sandbox) | Stdio MCP server; forwards each message to C4 over the Unix socket. Holds no token and no vendor URL. | Adapt `kas_http_bridge.py` (269 lines, #28615): today it POSTs to an `https://` URL with headers from a launch snapshot; change the target to the gateway socket. Launched through `kas_env_shim.py` (234 lines). Stays lean: no config or platform composition per bridge; only the opener picks the transport |
 | C6 | **Per-harness config writer** | Replace each Connection entry's `url` + `oauth` with the bridge stdio entry. KAS: in the `kas_agents.py` projection. claude/codex/opencode/goose/deepseek/pi/strands: the `session/new` MCP array. copilot: its `--additional-mcp-config` file, since it rejects stdio on `session/new`. | Mostly reuse: `acp/kas_env_launch.py` (372 lines), `ACP_BACKENDS_SESSION_MCP_ARRAY` in `backends_mcp.py` (and the copilot/strands file routes beside it). Stop writing `oauth.clientSecret` into any spec |
 | C7 | **Connections status/UI** | Read state from C2 (connected, account, expiry, `needs_auth`). Disconnect = revoke upstream + delete entry. | Edits to `connections/status.py`, `mint.py` retirement path, `mcp_grant.py` kept only for migration |
 
@@ -201,7 +201,7 @@ The harness sees a stdio server. It never gets a URL to the vendor, a header, or
 - Each call needs a single-use capability minted by the ACP approval of that tool call (the `X-Mediated-Secret-Capability` check in `mediated_secrets.py`, `mediated_request_capability.py`, 423 lines).
 - Dispatch SSRF-vets and DNS-pins the destination and resolves the secret only at send time (module docstring of `mcp_secrets.py`; `secrets_mediation/dispatch.py`, 440 lines). Everything is SEL-audited (`_audit` in `mediated_secrets.py`).
 
-What this RFC **reuses** from it: the vault, the Unix-socket transport and peer check, `member_request_scope` / `session_key_is_attested`, the SEL audit call, the "value never leaves the gateway" discipline, and the Windows refusal stance.
+What this RFC **reuses** from it: the vault, the Unix-socket transport and peer check, `member_request_scope` / `session_key_is_attested`, the SEL audit call, the "value never leaves the gateway" discipline, and the no-TCP-fallback stance on POSIX. On Windows the bridge leg uses verified loopback TCP instead (Amendment 2026-11-07).
 
 What is **new**:
 
@@ -273,6 +273,8 @@ Boundaries: (1) the gateway process (trusted); (2) the harness and the agent san
 | Secret persisted | Per-session header written into KAS `session.json` | Nothing secret on the wire; bridge args name only session/agent/server/version (module docstring of `kas_env_shim.py`) |
 | Harness starts its own OAuth on 401 | Yes on KAS (`MCPConnection` constructor) | No (stdio no-op provider, same constructor) |
 
+This table covers the harness-facing URL. The Windows bridge→gateway leg is covered in Amendment 2026-11-07.
+
 If a loopback HTTP fallback is ever needed: bind `127.0.0.1` only, random port, per-session secret header compared with `hmac.compare_digest`, `Host` allowlist = exact `127.0.0.1:<port>`, reject any `Origin`, never answer 401, secret rotates per session. It stays off unless a harness needs it.
 
 ### 4.3 The agent inside its own session (top risk)
@@ -306,7 +308,7 @@ The vault's own doc says: "The protection is enforced by Kiro Crew, not by the o
 
 - Other OS users: blocked by owner-only data home and peer-credential checks (§4.2).
 - Several people on one gateway (Shared Crew): grants are gateway-wide today on both v2 and KAS (module docstring of `kas_secret_storage.py`). MVP keeps that model (one token per connection per gateway). Per-member tokens are possible later because Crew owns the store (`mcp-oauth-ownership.md` lists this as a current limitation), but they need a product decision (§7).
-- Windows: the attested Unix-socket channel does not exist; `_call_tool_inner` in `mcp_secrets.py` refuses. The proxy can use `mcp_gateway`'s named-pipe transport with SID checks (`GATEWAY_SUPPORTED_PLATFORMS` in `mcp_gateway/__init__.py`, the platform table in `socketsec.py`), but that path is **not built for this use**. MVP: POSIX only, flag refuses on Windows.
+- Windows: the attested Unix-socket channel does not exist; `_call_tool_inner` in `mcp_secrets.py` refuses. The bridge→gateway leg uses loopback TCP verified on both ends (Amendment 2026-11-07). MVP: POSIX only, flag refuses on Windows until phase 1b.
 
 ### 4.7 Callback listener
 
@@ -362,9 +364,10 @@ Without reuse, add roughly: new encrypted store (~600), transport attestation an
 |---|---|---|---|
 | 0 | Docs: amend `mcp-oauth-ownership.md`, the invariant in `docs/system-specs/modules/connections.md`, this RFC accepted. Optional: send KAS the 5-line fix (alt. a) | docs only | — |
 | 1 MVP | GitHub, KAS only, POSIX only. C1-C5 + KAS part of C6 + minimal C7 | ~900-1,300 / ~1,100-1,600 | `connections.crew_oauth: false` default; per-provider allowlist |
+| 1b | Windows: bridge→gateway over verified loopback TCP (Amendment 2026-11-07) | ~50-80 / ~150-250 | same flag |
 | 2 | Asana + six Google (offline params, agentic-client runbook note), refresh background pass | +150-250 / +200-300 | same flag |
 | 3 | All other harnesses (session array, copilot file), disconnect revoke for all, retire v2 mint | +250-450 / +300-500 | flag on by default after security sign-off |
-| 4 (optional) | DCR providers via Crew; per-member tokens; Windows named pipe | not sized | separate decision |
+| 4 (optional) | DCR providers via Crew; per-member tokens; Windows named-pipe hardening | not sized | separate decision |
 
 Everything through phase 3 can ship default-off: with the flag off, C6 writes today's `oauth` block and nothing else changes.
 
@@ -410,7 +413,7 @@ Do (a) in parallel if the KAS team will take it: it unblocks the default backend
 4. **Approval at the proxy.** How C4 knows a `tools/call` was approved by the harness gate. Options: C4 refuses calls without a matching approval record Crew's gate saw; or C4 applies only the static ceiling and grant list. Needs a decision with the governance owners.
 5. **Per-member tokens on Shared Crew.** Keep gateway-wide grants (today's model) or scope tokens per member?
 6. **Migration.** Existing v2 grants cannot be read without opening kiro-cli's files, which the current rule forbids. Proposal: ask users to reconnect once; do not import.
-7. **Windows.** Ship POSIX only, or build the named-pipe path in phase 3?
+7. **Windows.** Closed by Amendment 2026-11-07: verified loopback TCP, as phase 1b.
 8. **Google 100-refresh-token limit per account per client** *(earlier research)*: one Crew-held token per product per gateway keeps the count low, but six Google slugs on one client may each hold one. Share one Google token across slugs (scopes merged) or keep one per slug?
 9. **KAS team ask.** Do we still file the KAS bug (a draft exists in earlier research) if (d) is accepted? Recommended yes: other KAS users need it.
 
@@ -425,3 +428,28 @@ Do (a) in parallel if the KAS team will take it: it unblocks the default backend
 - The remote-gateway paste-back code path in `connections/mint.py` for pre-registered providers.
 - WakaTime OAuth: designed in a note; implementation not found on main.
 - Nothing in this RFC was measured live; all claims are from code and docs at the heads above.
+
+---
+
+## Amendment 2026-11-07: Windows bridge over verified loopback TCP, ahead of phase 2
+
+Read at `0795ebc479`. Phase 1 shipped behind the flag in [#29543](https://github.com/kirodotdev/KiroCrew/pull/29543) and [#31821](https://github.com/kirodotdev/KiroCrew/pull/31821); [#31149](https://github.com/kirodotdev/KiroCrew/issues/31149) tracks its follow-ups. This amendment changes §3.3, §4.2, §4.6, the phasing table and open question 7. Each of those points here. Everything else stands.
+
+**Threat scope.** Kiro Crew is a single-owner personal tool. Other local OS users are out of scope as a threat. The same-user rules stay: the bridge token, the pid pin (§4.3) and per-call approval at the proxy.
+
+**Windows transport.** The bridge→gateway leg uses loopback TCP on `127.0.0.1`. Both ends check the connection before any credential byte moves:
+
+| End | Check | Existing code |
+|---|---|---|
+| Bridge | Far-end pid by exact 4-tuple from the kernel TCP table must be the recorded gateway pid, with its start token and our SID | `tcp_verified_urlopen` in `loopback_http.py`; `_connected_peer_verdict` in `cli_server_peer.py` |
+| Gateway | Peer pid by 4-tuple, then same user (SID); then the bridge token and pid pin as on POSIX | `_request_peer_pid` in `member_memory_auth.py`; `GetExtendedTcpTable` in `platform_compat_ports.py` |
+
+A failed or ambiguous table lookup gives no pid, so the call is refused. A remote peer has no row in the local table, so it is refused too. The TCP arm of `_request_peer_pid` does not check the owner today; the Windows code adds that check first.
+
+**POSIX does not change.** The bridge stays Unix-socket-only with the peer-credential checks. There is no TCP fallback, even when the socket file is missing.
+
+**Why not a named pipe first.** A pipe stops other users before they connect. With other users out of scope, that is depth, not the core control. It would also need a new HTTP-over-pipe client and a new local-IPC arm in the shared Unix-socket request check. The pipe stays optional later hardening (phase 4). CPython does not expose AF_UNIX on Windows ([cpython#77589](https://github.com/python/cpython/issues/77589)).
+
+**Phasing.** Windows moves ahead of phase 2 as phase 1b. Open question 7 is closed.
+
+**Later.** [MCP-over-ACP](https://agentclientprotocol.com/rfds/mcp-over-acp) (a draft) would let the harness reach the Connection over its existing ACP link. That removes the bridge on every OS. KAS 3.1.0 does not advertise it, so it is tracked, not planned.
