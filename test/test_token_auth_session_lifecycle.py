@@ -585,6 +585,32 @@ async def test_url_token_exchanged_for_distinct_session_cookie() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner_minted", [True, False])
+async def test_exchange_carries_owner_mint_claim_to_both_cookies(owner_minted) -> None:
+    """The owner-mint claim survives the link→session exchange on the access
+    cookie AND the refresh cookie, and is never added to a link without it."""
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_owner_minted
+    from kiro_crew.dashboard.token_auth_tokens import (
+        owner_mint_extra,
+        token_owner_minted_unverified,
+    )
+
+    mw = token_auth_middleware()
+    url_token = generate_token(
+        "U_OWNER",
+        ttl_seconds=MAX_SESSION_TTL_SECS,  # flake-ok: a token lifetime claim, not a wait
+        extra=owner_mint_extra() if owner_minted else None,
+    )
+    resp = await mw(_make_request(query={"token": url_token}, remote="10.0.0.4"), _ok_handler)
+    assert resp.status == 200
+    cookie = resp.cookies.get("mc_token_5476")
+    refresh = resp.cookies.get(refresh_cookie_name(5476))
+    assert cookie is not None and refresh is not None
+    assert token_owner_minted_unverified(cookie.value) is owner_minted
+    assert refresh_token_owner_minted(refresh.value) is owner_minted
+
+
+@pytest.mark.asyncio
 async def test_exchanged_cookie_preserves_app_claim() -> None:
     """If an app token ever arrives via the URL flow, the exchanged cookie must
     keep the ``app`` claim so app-scope enforcement continues to apply."""

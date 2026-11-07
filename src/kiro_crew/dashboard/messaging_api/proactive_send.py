@@ -271,6 +271,7 @@ async def _resolve_session_link_url(
     # module's import path (it loads at gateway boot) and matches the file's
     # other deferred imports. The config read is paid only on this opt-in path.
     from kiro_crew.dashboard.chat_backfill import session_deep_link
+    from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
     from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
 
     try:
@@ -289,7 +290,7 @@ async def _resolve_session_link_url(
     # button to the OWNER DM only, so the token never rides a shared channel --
     # the same DM-only rule ``send_dashboard_link`` keeps. No owner id means no DM
     # to post to, so no token is minted (the button is not posted either).
-    token = generate_token(state.owner_id) if state.owner_id else ""
+    token = generate_token(state.owner_id, extra=owner_mint_extra()) if state.owner_id else ""
     return session_deep_link(cfg.dashboard.url, slot_key, tunnel_url=tunnel_url, token=token)
 
 
