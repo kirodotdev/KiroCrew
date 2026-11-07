@@ -24,7 +24,10 @@ _SKILL_TOKEN_DECL_RE = re.compile(
     r"export const SKILL_TOKEN_RE = /(?P<body>.+)/(?P<flags>[a-z]*)$",
     re.MULTILINE,
 )
-_LEADING_DECL_RE = re.compile(r"const DISPATCH_LEADING_RE =\s*/\^\[(?P<cls>[^\]]+)\]\+/")
+_TRIMMED_DECL_RE = re.compile(
+    r"const DISPATCH_TRIMMED_RANGES\b[^=]*=\s*\[(?P<body>.*?)\n\]", re.DOTALL
+)
+_RANGE_RE = re.compile(r"\[\s*0x(?P<first>[0-9a-fA-F]+)\s*,\s*0x(?P<last>[0-9a-fA-F]+)\s*\]")
 
 
 def _skill_token_decl() -> re.Match[str]:
@@ -39,10 +42,12 @@ def _frontend_skill_token_re() -> re.Pattern[str]:
     return re.compile(match.group("body"), flags)
 
 
-def _frontend_leading_re() -> re.Pattern[str]:
-    match = _LEADING_DECL_RE.search(_DISPATCH_SHAPE.read_text(encoding="utf-8"))
-    assert match, "DISPATCH_LEADING_RE not found -- was it renamed or reshaped?"
-    return re.compile("[" + match.group("cls") + "]")
+def _frontend_trimmed_set() -> set[str]:
+    match = _TRIMMED_DECL_RE.search(_DISPATCH_SHAPE.read_text(encoding="utf-8"))
+    assert match, "DISPATCH_TRIMMED_RANGES not found -- was it renamed or reshaped?"
+    ranges = [(int(m["first"], 16), int(m["last"], 16)) for m in _RANGE_RE.finditer(match["body"])]
+    assert ranges, "DISPATCH_TRIMMED_RANGES has no readable [first, last] entries"
+    return {chr(c) for first, last in ranges for c in range(first, last + 1)}
 
 
 class TestTheFenceTracksTheExpander:
@@ -105,15 +110,20 @@ def _python_strip_set() -> set[str]:
 class TestTheLeadingTrimCoversEverySendPathTrim:
     """A character either trim drops, but the fence does not, would hide a leading sigil."""
 
-    def test_the_fence_class_matches_a_known_member(self):
-        assert _frontend_leading_re().match("\u00a0")
+    def test_the_fence_table_holds_a_known_member(self):
+        assert "\u00a0" in _frontend_trimmed_set()
 
     def test_every_browser_trim_character_is_skipped(self):
-        fence = _frontend_leading_re()
-        missed = sorted("U+%04X" % ord(ch) for ch in _js_trim_set() if not fence.match(ch))
+        fence = _frontend_trimmed_set()
+        missed = sorted("U+%04X" % ord(ch) for ch in _js_trim_set() - fence)
         assert not missed, missed
 
     def test_every_server_strip_character_is_skipped(self):
-        fence = _frontend_leading_re()
-        missed = sorted("U+%04X" % ord(ch) for ch in _python_strip_set() if not fence.match(ch))
+        fence = _frontend_trimmed_set()
+        missed = sorted("U+%04X" % ord(ch) for ch in _python_strip_set() - fence)
         assert not missed, missed
+
+    def test_every_skipped_character_is_in_the_bmp(self):
+        # stripDispatchLeading reads one UTF-16 unit per step, so a range above the BMP
+        # would never be skipped.
+        assert all(ord(ch) <= 0xFFFF for ch in _frontend_trimmed_set())

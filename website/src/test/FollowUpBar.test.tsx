@@ -283,12 +283,34 @@ describe('FollowUpBar', () => {
       const onSelect = vi.fn()
       const onSend = vi.fn()
       render(<FollowUpBar options={['/clear', 'Go']} picked={new Set()} onSelect={onSelect} onSend={onSend} />)
-      fireEvent.dblClick(screen.getByRole('button', { name: '/clear' }))
+      // A real double-click: click(detail 1), click(detail 2), then dblclick.
+      const doubleClick = (el: HTMLElement) => {
+        fireEvent.click(el, { detail: 1 })
+        fireEvent.click(el, { detail: 2 })
+        fireEvent.dblClick(el)
+      }
+      doubleClick(screen.getByRole('button', { name: '/clear' }))
       expect(onSend).not.toHaveBeenCalled()
       expect(onSelect).toHaveBeenCalledTimes(1)
       expect(onSelect.mock.calls[0][0]).toBe('/clear')
-      fireEvent.dblClick(screen.getByRole('button', { name: 'Go' }))
+      doubleClick(screen.getByRole('button', { name: 'Go' }))
       expect(onSend).toHaveBeenCalledWith('Go', undefined)
+    })
+
+    it('keeps a command-shaped chip picked when Quick Send picked it on the first click of a double-click', () => {
+      const onSelect = vi.fn()
+      const props = { options: ['/clear', 'Go'], onSelect, onSend: vi.fn(), quickSend: true }
+      const { rerender } = render(<FollowUpBar {...props} picked={new Set()} />)
+      const chip = screen.getByRole('button', { name: '/clear' })
+      fireEvent.click(chip, { detail: 1 })
+      expect(onSelect).toHaveBeenCalledTimes(1)
+      // The caller picks it; the same DOM node now runs the debounced handlers.
+      rerender(<FollowUpBar {...props} picked={new Set(['/clear'])} />)
+      const picked = screen.getByRole('button', { name: '/clear' })
+      fireEvent.click(picked, { detail: 2 })
+      fireEvent.dblClick(picked)
+      expect(onSelect).toHaveBeenCalledTimes(1)
+      expect(props.onSend).not.toHaveBeenCalled()
     })
 
     it('does not promise a double-click send on a picked command-shaped chip, which that gesture un-picks', () => {
