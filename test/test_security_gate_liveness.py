@@ -708,7 +708,10 @@ def _url_payload_command(n: int) -> str:
 #: walk is bounded by ``rm_floor._WALK_BUDGET_CHARS``.
 #: Raised by 24, from 34,936, for ``rm_floor._carrier_home``: each ``$HOME`` the carrier
 #: command leaves live is read as home in a nested payload. Deny-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_960
+#: Raised by 31, from 34,960, for ``text_redaction.ends_plain_sentence``:
+#: the dashboard's sentence-end check moved here unchanged so the Slack stream
+#: shares it; the dashboard copy was deleted. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_991
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
