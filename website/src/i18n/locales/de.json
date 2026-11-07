@@ -18763,6 +18763,7 @@
         "default_priority": "Standardpriorität: {{priority}}",
         "failed_to_load_channels": "Kanäle konnten nicht geladen werden",
         "mute_notification_sources_or_override_their_prio": "Benachrichtigungsquellen stummschalten oder ihre Priorität übersteuern. Stummgeschaltete Benachrichtigungen bleiben im Verlauf, erzeugen aber niemals ein Abzeichen, einen Ton oder ein Banner.",
+        "mute_notification_sources_or_override_their_prio_summary": "Stummgeschaltete Benachrichtigungen bleiben im Verlauf, erzeugen aber niemals ein Abzeichen, einen Ton oder ein Banner.",
         "notifications_for": "Benachrichtigungen für {{name}}",
         "per_category_sounds": "Töne pro Kategorie",
         "play_sound_on_new_notifications": "Ton bei neuen Benachrichtigungen abspielen",

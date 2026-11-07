@@ -18763,6 +18763,7 @@
         "default_priority": "डिफ़ॉल्ट प्राथमिकता: {{priority}}",
         "failed_to_load_channels": "चैनल लोड करने में विफल",
         "mute_notification_sources_or_override_their_prio": "सूचना स्रोतों को म्यूट करें या उनकी प्राथमिकता बदलें। म्यूट की गई सूचनाएँ इतिहास में रहती हैं लेकिन कभी बैज, ध्वनि या बैनर नहीं दिखातीं।",
+        "mute_notification_sources_or_override_their_prio_summary": "म्यूट की गई सूचनाएँ इतिहास में रहती हैं लेकिन कभी बैज, ध्वनि या बैनर नहीं दिखातीं।",
         "notifications_for": "{{name}} के लिए सूचनाएँ",
         "per_category_sounds": "श्रेणी-वार ध्वनियाँ",
         "play_sound_on_new_notifications": "नए नोटिफिकेशन पर ध्वनि बजाएँ",

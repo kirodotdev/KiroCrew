@@ -19224,6 +19224,7 @@
         "default_priority": "Prioridad predeterminada: {{priority}}",
         "failed_to_load_channels": "No se pudieron cargar los canales",
         "mute_notification_sources_or_override_their_prio": "Silencia fuentes de notificaciones o cambia su prioridad. Las notificaciones silenciadas se conservan en el historial, pero nunca muestran distintivo, sonido ni banner.",
+        "mute_notification_sources_or_override_their_prio_summary": "Las notificaciones silenciadas se conservan en el historial, pero nunca muestran distintivo, sonido ni banner.",
         "notifications_for": "Notificaciones de {{name}}",
         "per_category_sounds": "Sonidos por categoría",
         "play_sound_on_new_notifications": "Reproducir un sonido con las notificaciones nuevas",

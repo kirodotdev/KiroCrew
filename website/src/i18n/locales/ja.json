@@ -18302,6 +18302,7 @@
         "default_priority": "デフォルトの優先度：{{priority}}",
         "failed_to_load_channels": "チャネルの読み込みに失敗しました",
         "mute_notification_sources_or_override_their_prio": "通知ソースをミュートするか、優先度をオーバーライドします。ミュートされた通知は履歴に残りますが、バッジ、サウンド、またはバナーは表示されません。",
+        "mute_notification_sources_or_override_their_prio_summary": "ミュートされた通知は履歴に残りますが、バッジ、サウンド、またはバナーは表示されません。",
         "notifications_for": "{{name}} の通知",
         "per_category_sounds": "カテゴリごとのサウンド",
         "play_sound_on_new_notifications": "新しい通知でサウンドを再生",

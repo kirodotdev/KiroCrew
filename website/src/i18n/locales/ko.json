@@ -18318,6 +18318,7 @@
         "default_priority": "기본 우선순위: {{priority}}",
         "failed_to_load_channels": "채널을 불러오지 못했습니다",
         "mute_notification_sources_or_override_their_prio": "알림 소스를 음소거하거나 우선순위를 재정의합니다. 음소거된 알림은 기록에는 남지만 배지, 소리, 배너로는 표시되지 않습니다.",
+        "mute_notification_sources_or_override_their_prio_summary": "음소거된 알림은 기록에는 남지만 배지, 소리, 배너로는 표시되지 않습니다.",
         "notifications_for": "{{name}} 알림",
         "per_category_sounds": "카테고리별 소리",
         "play_sound_on_new_notifications": "새 알림에 소리 재생",
