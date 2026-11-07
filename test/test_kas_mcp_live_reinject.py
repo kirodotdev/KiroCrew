@@ -83,6 +83,12 @@ def _provider(
     return provider
 
 
+async def _passthrough(message, send, _incarnation, *, requests_model=True):
+    """An essential delivery that hands the message straight to the send."""
+    async for event in send(message):
+        yield event
+
+
 class TestTheMark:
     def test_kas_declares_and_takes_the_mark(self) -> None:
         provider = _provider(_runtime())
@@ -353,6 +359,76 @@ class TestTheTurnBoundary:
             async for _ in provider.stream("hello"):
                 pass
         assert released == ["claim-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_gate_refusal_after_the_apply_sends_nothing(self, monkeypatch) -> None:
+        """The channel's gate reaches the session through the outer provider and is
+        asked once the apply has swapped the handle; its refusal sends no prompt."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        runtime = _runtime()
+        inner = _provider(runtime)
+        inner.mark_mcp_config_changed()
+        prompted: list[str] = []
+
+        async def _prompt(message: str, **_kw: object):
+            prompted.append(message)
+            if False:
+                yield None
+
+        runtime.new_handle.prompt = _prompt
+        released: list[object] = []
+        monkeypatch.setattr(inner, "_claim_shared_turn", lambda: "claim-1")
+
+        async def _end(claim: object) -> None:
+            released.append(claim)
+
+        monkeypatch.setattr(inner, "_end_shared_turn", _end)
+        inner.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = inner
+        outer.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        asked_on: list[object] = []
+
+        def _refuse() -> None:
+            asked_on.append(inner._handle)
+            raise PermissionError("sender no longer admitted")
+
+        with pytest.raises(PermissionError):
+            async for _ in outer.stream("hello", prompt_gate=_refuse):
+                pass
+        assert asked_on == [runtime.new_handle]
+        assert prompted == [] and released == ["claim-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_direct_client_asks_the_gate_after_its_own_reload(self) -> None:
+        """The direct client applies a pending MCP change in ``_ready_confirmed_session``;
+        the gate is asked after it, and its refusal sends no prompt."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.providers.acp import AcpProvider
+
+        sent: list[str] = []
+
+        async def _stream_events(message: str, **_kw: object):
+            sent.append(message)
+            if False:
+                yield None
+
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = MagicMock(spec=AcpClient)
+        outer._client.stream_events = _stream_events
+        outer._ready_confirmed_session = AsyncMock()  # type: ignore[method-assign]
+        outer.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        ready_when_asked: list[int] = []
+
+        def _refuse() -> None:
+            ready_when_asked.append(outer._ready_confirmed_session.await_count)
+            raise PermissionError("sender no longer admitted")
+
+        with pytest.raises(PermissionError):
+            async for _ in outer.stream("hello", prompt_gate=_refuse):
+                pass
+        assert ready_when_asked == [1] and sent == []
 
 
 class TestKeepRecordOnTeardown:
