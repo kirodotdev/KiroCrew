@@ -9,6 +9,7 @@ crewmate with its model pin, and the template name binds the template.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +21,7 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.dashboard import chat_handlers
+from kiro_crew.dashboard.chat_folders_records import migrate_folder_member_labels
 
 MEMBER_KEY = "Jira ticket"
 SPEC = "jira-ticket"
@@ -105,3 +107,54 @@ async def test_a_template_name_default_binds_the_template(tmp_path, cfg):
     bindings = resolve_agent_bindings(cfg, slot.agent, validate_memory_files=False)
     assert bindings.selection_kind == "template"
     assert bindings.model != MEMBER_MODEL
+
+
+@pytest.mark.asyncio
+async def test_a_folder_saved_with_a_crewmates_label_binds_the_crewmate_once(
+    tmp_path, cfg, monkeypatch
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    cfg.dashboard.default_session_folder = "jira"
+    state = _state(tmp_path, SPEC)
+
+    await migrate_folder_member_labels(state, cfg)
+
+    assert json.loads((home / "folders.json").read_text())[0]["default_agent"] == MEMBER_KEY
+    status, data = await _create(state, {"default_folder": True})
+    assert status == 200, data
+    bindings = resolve_agent_bindings(
+        cfg, state._slots[data["key"]].agent, validate_memory_files=False
+    )
+    assert (bindings.selection_kind, bindings.model) == ("member", MEMBER_MODEL)
+
+    # The template, picked by name after that run, is what the person chose.
+    state._folders[0]["default_agent"] = SPEC
+    await migrate_folder_member_labels(state, cfg)
+    assert state._folders[0]["default_agent"] == SPEC
+
+
+def _share_the_label(cfg):
+    cfg.agents["Jira copy"] = KiroCrewAgentConfig(kiro_agent=SPEC, display_name=SPEC)
+
+
+def _key_the_label(cfg):
+    cfg.agents[SPEC] = KiroCrewAgentConfig(kiro_agent=SPEC)
+
+
+def _lose_the_crewmates(cfg):
+    cfg._degraded_sections = frozenset({"agents"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [_share_the_label, _key_the_label, _lose_the_crewmates])
+async def test_a_label_naming_no_single_crewmate_is_left_as_saved(
+    tmp_path, cfg, monkeypatch, change
+):
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    change(cfg)
+    state = _state(tmp_path, SPEC)
+
+    await migrate_folder_member_labels(state, cfg)
+
+    assert state._folders[0]["default_agent"] == SPEC

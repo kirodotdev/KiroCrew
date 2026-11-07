@@ -1571,6 +1571,13 @@ async def start_dashboard(
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
         logger.warning("bot-owned-config migration failed", exc_info=True)
+    # A folder Default agent saved as a crewmate's label is pointed at that
+    # crewmate's key: once per data home, after the socket is up; never raises.
+    # Imported here, like the Crew Mode start pass below, so the server's own
+    # namespace, which its composition contract test freezes, gains no name.
+    from kiro_crew.dashboard.chat_folders_records import migrate_folder_member_labels
+
+    await migrate_folder_member_labels(state, cfg)
 
     await _restore_dashboard_sessions(state, cfg)
 
