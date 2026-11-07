@@ -398,7 +398,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_CLEANUP_ATTEMPTS,
         _CRON_CLEANUP_BACKOFF_SECS,
         _deregister_crons_with_retry,
+        _InProcessRequest,
         _run_uninstall,
+        uninstall_app_in_process,
     )
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,
