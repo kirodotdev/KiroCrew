@@ -7,7 +7,7 @@
  * entry; a stored value is never shown; the provider and model are plain config.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { api } from '../../api/client'
@@ -295,6 +295,82 @@ describe('StrandsSetupCard', () => {
     const modelRow = input.closest('[data-setting-label]') as HTMLElement
     fireEvent.click(within(modelRow).getByRole('button', { name: 'Save' }))
     expect(await screen.findByText(reason, { exact: false })).toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on the model Save while it runs and after a refusal', async () => {
+    let refuse: (reason: Error) => void = () => {}
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    vi.mocked(api.patchConfig).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject }) as never,
+    )
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    const save = within(modelRow).getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('agent.strands_model', 'some-model'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    fireEvent.click(save)
+    expect(vi.mocked(api.patchConfig).mock.calls.filter(c => c[0] === 'agent.strands_model')).toHaveLength(1)
+
+    await act(async () => { refuse(new Error('refused')) })
+    await waitFor(() => expect(save).not.toHaveAttribute('aria-disabled'))
+    expect(save).toHaveFocus()
+  })
+
+  it('returns focus to the model field after a model save lands', async () => {
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    const save = within(modelRow).getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(within(modelRow).queryByRole('button', { name: 'Save' })).toBeNull())
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveFocus())
+  })
+
+  it('leaves focus on another field the user moved to while the save settled', async () => {
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    // A key field: it stays editable while the model save runs.
+    const other = [...document.querySelectorAll<HTMLInputElement>('input:not([type=hidden])')]
+      .find(el => !modelRow.contains(el) && !el.disabled) as HTMLElement
+    expect(other).toBeTruthy()
+    // Hold the config re-read the save triggers, so the window between the
+    // save landing and the field re-enabling stays open.
+    let reread: () => void = () => {}
+    const current = vi.mocked(api.kirocrewConfig).getMockImplementation()!
+    vi.mocked(api.kirocrewConfig).mockImplementation(
+      () => new Promise(resolve => { reread = () => resolve(current() as never) }) as never,
+    )
+    const save = within(modelRow).getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(within(modelRow).queryByRole('button', { name: 'Save' })).toBeNull())
+    other.focus()
+    vi.mocked(api.kirocrewConfig).mockImplementation(current)
+    await act(async () => { reread() })
+    await waitFor(() => expect(screen.getByLabelText('Model')).not.toBeDisabled())
+    expect(other).toHaveFocus()
+  })
+
+  it('returns focus to the model field when Cancel drops the draft', async () => {
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    const cancel = within(modelRow).getByRole('button', { name: 'Cancel' })
+    cancel.focus()
+    fireEvent.click(cancel)
+    await waitFor(() => expect(within(modelRow).queryByRole('button', { name: 'Cancel' })).toBeNull())
+    expect(screen.getByLabelText('Model')).toHaveFocus()
   })
 
   it('reads an unset or empty provider as Bedrock and auto as no model', () => {

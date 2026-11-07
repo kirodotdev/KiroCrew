@@ -151,12 +151,33 @@ export function StrandsSetupCard() {
     onMutate: () => setModelDraft(null),
     onSettled: () => qc.invalidateQueries({ queryKey: CONFIG_QUERY_KEY }),
   })
+  // Save and Cancel live only while the model is dirty, so a saved or dropped
+  // draft unmounts the button that was pressed. Focus goes back to the model
+  // field once it is enabled again, instead of falling to the page.
+  const modelRowRef = useRef<HTMLDivElement>(null)
+  const refocusModel = useRef(false)
+  const leaveModelDraft = () => {
+    if (modelRowRef.current?.contains(document.activeElement)) refocusModel.current = true
+    setModelDraft(null)
+  }
   const modelMut = useMutation({
     mutationFn: (model: string) =>
       serial(() => api.patchConfig(STRANDS_MODEL_KEY, model || STRANDS_MODEL_AUTO)),
-    onSuccess: () => setModelDraft(null),
+    onSuccess: leaveModelDraft,
     onSettled: () => qc.invalidateQueries({ queryKey: CONFIG_QUERY_KEY }),
   })
+  const modelBusy = modelMut.isPending || providerMut.isPending
+  const modelInputEnabled = configQ.isSuccess && !modelBusy
+  useEffect(() => {
+    if (!refocusModel.current || !modelInputEnabled || modelDraft !== null) return
+    refocusModel.current = false
+    // Only pick focus up where it fell: a control the user moved to while the
+    // save settled keeps it.
+    const active = document.activeElement
+    const fell = !active || active === document.body || modelRowRef.current?.contains(active)
+    if (!fell) return
+    modelRowRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
+  }, [modelInputEnabled, modelDraft])
   // The pick on screen while its write is in flight, so the fields follow the click.
   const provider =
     (providerMut.isPending && STRANDS_PROVIDERS.find(p => p.id === providerMut.variables)) ||
@@ -225,6 +246,7 @@ export function StrandsSetupCard() {
           serial={serial}
         />
       ))}
+      <div ref={modelRowRef}>
       <SettingsInput
         label={i18nT('pages.developer.strandsSetup.model_label')}
         description={
@@ -239,19 +261,29 @@ export function StrandsSetupCard() {
         after={
           modelDirty ? (
             <div className="flex items-center gap-2">
+              {/* `aria-disabled` plus the guard, NOT `disabled`: a native
+                  `disabled` takes the pressed button out of the tab order and
+                  drops a keyboard user's focus to the page while the save runs,
+                  and a refused save leaves it there. */}
               <Btn
-                disabled={modelMut.isPending || providerMut.isPending}
-                onClick={() => modelMut.mutate(model.trim())}
+                aria-disabled={modelBusy || undefined}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+                onClick={() => { if (!modelBusy) modelMut.mutate(model.trim()) }}
               >
                 {i18nT('pages.developer.strandsSetup.save')}
               </Btn>
-              <Btn disabled={modelMut.isPending} onClick={() => setModelDraft(null)}>
+              <Btn
+                aria-disabled={modelMut.isPending || undefined}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+                onClick={() => { if (!modelMut.isPending) leaveModelDraft() }}
+              >
                 {i18nT('pages.developer.strandsSetup.cancel')}
               </Btn>
             </div>
           ) : undefined
         }
       />
+      </div>
       {modelMissing && (
         <p className="m-0 text-[12px] leading-relaxed text-warn" role="status" data-testid="strands-model-missing">
           {i18nT('pages.developer.strandsSetup.model_missing')}
