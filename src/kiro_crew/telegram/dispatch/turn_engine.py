@@ -48,11 +48,11 @@ from kiro_crew.messaging.dispatch import (
     delivery_is_muted,
     driver_turn_landed,
     open_turn_crew_log,
-    predecessor_sid,
     rearm_reinjection,
     requested_model_sid,
     rollback_skill_bodies,
     slot_workspace,
+    store_predecessor,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
@@ -187,6 +187,12 @@ async def _run_turn(
         if not muted:
             await renderer.on_turn_start()
         _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
+        _opens_crew_log = resumed_key is None or bool(channel_namespace_of(session_key))
+        # The slot's newest crew log on disk, read off the loop before the claim so the
+        # opener below stays synchronous; the opener combines it with the capture.
+        _crew_log_store = (
+            await store_predecessor(self.sessions, session_key) if _opens_crew_log else None
+        )
         # The pick this turn starts on, read once: get_or_create applies it and
         # the post-turn promotion follow compares against it, so a pick made
         # while the turn prepares is left for the next turn.
@@ -223,7 +229,7 @@ async def _run_turn(
         # lookup at failure time answers for the replacement and the question
         # silently becomes "was the NEW runtime shared".
         _turn_provider = provider
-        if resumed_key is None or channel_namespace_of(session_key):
+        if _opens_crew_log:
             # The session's crew log, opened the moment the allocation lands
             # and before ANY further await: the work ledger appends every write
             # to the acting session's log and rolls back one it cannot record,
@@ -236,22 +242,25 @@ async def _run_turn(
             # taken inside its critical section and consumed here after the
             # claim -- no read of the mapping around the call, which a
             # concurrent turn's allocate-and-recycle could stale while this turn
-            # waited inside the allocation. Every CHANNEL session this dispatcher
-            # runs is opened here, including a same-DM native history picked
-            # through ``/sessions`` (``resumed_key`` naming a channel key): no
-            # dashboard runner ever handles its turns, so this is its only
-            # opener. Only a resumed DASHBOARD session is left alone -- its
-            # opener is the dashboard's, which alone holds its lineage. The
-            # workspace is read off the dashboard slot this conversation is
-            # surfaced under, the source a tab on it states the same fact from,
-            # so the two writers of this log agree. Never raises, never suspends.
+            # waited inside the allocation -- with the slot's store read above
+            # behind it, for a restart or a replay-pending allocation. Every
+            # CHANNEL session this dispatcher runs is opened here, including a
+            # same-DM native history picked through ``/sessions`` (``resumed_key``
+            # naming a channel key): no dashboard runner ever handles its turns,
+            # so this is its only opener. Only a resumed DASHBOARD session is
+            # left alone -- its opener is the dashboard's, which alone holds its
+            # lineage. The workspace is read off the dashboard slot this
+            # conversation is surfaced under, the source a tab on it states the
+            # same fact from, so the two writers of this log agree. Never
+            # raises, never suspends.
             open_turn_crew_log(
                 provider,
                 session_key=session_key,
                 agent=agent,
                 resumed=resumed,
                 ctx_builder=self.ctx_builder,
-                previous_sid=predecessor_sid(self.sessions, session_key),
+                sessions=self.sessions,
+                store=_crew_log_store,
                 model_requested=requested_model_sid(self.sessions, session_key),
                 workspace=slot_workspace(self.dashboard_state, session_key),
             )
