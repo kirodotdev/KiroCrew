@@ -528,13 +528,16 @@ def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _session_approval_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Project the explicit session approval grant for pre-install disclosure."""
+    """Project the explicit session approval grant, and its member-thread scope, for pre-install disclosure."""
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
         return None
     if permissions.get("sessionApproval") is not True:
         return None
-    return {"permissions": {"sessionApproval": True}}
+    projected: dict[str, Any] = {"sessionApproval": True}
+    if permissions.get("memberThreads") is True:
+        projected["memberThreads"] = True
+    return {"permissions": projected}
 
 
 #: The largest integer JavaScript can represent exactly (2**53 - 1). A star

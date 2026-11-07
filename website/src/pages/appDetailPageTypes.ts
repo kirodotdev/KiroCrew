@@ -113,6 +113,7 @@ interface AppPermissions {
   network?: boolean
   memory?: boolean | string
   sessionApproval?: boolean
+  memberThreads?: boolean
   [key: string]: unknown
 }
 

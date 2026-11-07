@@ -2481,8 +2481,36 @@ into the exclusion, a malformed authored `managedToolPolicy`, `exclude` or
 existing local user-owned sessions, choose generated response options, approve
 or deny tool requests, or change approval modes require an enabled app whose
 live manifest declares `permissions.sessionApproval: true`. The route must also
-be allowed by `permissions.api`. Cron, system, remote, member-mode, and other
-apps' sessions are denied. An app's existing access to its own slots is
+be allowed by `permissions.api`. Cron, system, remote, and other apps' sessions
+are denied, and so is a member-mode session unless the manifest also declares
+`permissions.memberThreads: true`: that scope widens the same grant, and
+nothing else, to a Bot's pinned DM thread -- the live slot
+`POST /api/members/{slug}/thread` minted, judged positively on both marks it is
+born with (`slot_ownership.is_member_thread`: `mode="member"` AND a
+`member-` key), USER origin, running on its own `dashboard:` session. The scope
+alone grants nothing, and it is never read apart from the grant: one read
+(`permissions.app_session_control_grant`, a `SessionControlGrant` of `granted`
+and `member_threads`) reads the manifest once, judges consent and enablement
+against it (`app_can_manage_session_approvals(..., manifest=)`) and takes the
+scope from that same manifest, so a request overlapping a manifest update can
+never pair the consented grant of the old manifest with the scope the new one
+declares before the owner re-consents. Every app caller pays that one read
+whatever session it named (`slot_ownership.read_session_control_grant`;
+`session_grant` memoizes both fields, `member_thread_grant` reads the memo
+synchronously), and a member-mode slot under any other key stays denied
+whatever the manifest says. With it, `POST /api/chat/slots/{slot}/approve`,
+`POST /api/chat/mode`, `POST /api/approvals/{id}/{action}` and a
+`POST /api/chat` turn (an `[OPTIONS:]` choice is one) reach the thread through
+the same session-control rule as a user session, the send's allow row naming
+the scope (`permissions.sessionApproval+memberThreads|slot=member-<slug>`).
+It reaches no more than that: every `/api/members/*` and `/api/teams*` route
+still answers an app 404, the thread's transcript stays owner-only, a resume or
+`POST /v1/chat/completions` naming a member key stays refused, and an app still
+never mints or holds a member slot -- `app_reserved_key_reason` stands down for
+a `member-` key only when a live Bot thread holds exactly that key on a
+grant route (`app_new_key_refusal(..., session_grant_route=True)`), so a send
+to a member key with no live thread is the uniform 404 and creates nothing.
+An app's existing access to its own slots is
 unchanged. On a user-owned session a `POST /api/chat` from the app sends a
 turn: a send carrying a change to the session's agent binding, persona settings,
 or a harness slash command (the body's `agent` onto an agent-less slot, its
@@ -2517,14 +2545,21 @@ require an explicit live allowed slot and are limited to Normal, Reads and
 Trust; YOLO is global rather than slot-scoped, so app tokens are refused
 (``app_yolo_forbidden``) for both arming and revoking it. Consent is captured
 when the user enables the app, so `update_app` disables an enabled app
-whose new version adds the flag (SEL operation `session_approval_widened`) and
+whose new version widens user-session control
+(`manager_records._session_control_widening`: the flag newly declared, or
+`memberThreads` newly declared on a held grant; SEL operation
+`session_approval_widened`, whose row names the keys actually added --
+`permissions.memberThreads` when the grant was already held) and
 returns `notice: "session_approval_reconsent"`; the detail page shows that notice
-and the user re-enables the app after seeing the grant. `register_external_app`
+and the user re-enables the app after seeing the grant and, when declared, its
+Bot-thread scope. `register_external_app`
 does the same for self-managed apps (a registration that newly declares the flag
-is written disabled, SEL caller `app_register`). App updates retain the prior
+or the scope is written disabled, SEL caller `app_register`). App updates retain the prior
 tree until the replacement and its metadata are durable, so a failed update
 restores the old manifest and enabled state together. A replacement manifest
-that removes the flag clears any lingering `sessionApprovalConsentPending` bit.
+that removes the flag clears any lingering `sessionApprovalConsentPending` bit;
+one that removes only the scope revokes the reach on the next live read and
+leaves the consent as it stands. `test_member_thread_grant` pins the scope.
 
 A record with no `sessionApprovalConsentPending` key is consent-pending. Every
 record this host writes carries the key, so one without it comes from a host
@@ -2537,7 +2572,22 @@ caller's copy: it never turns one that is key-less or already pending into
 "no consent needed" unless the write is `enable_app`'s consent write or the
 live manifest is readable and does not declare the grant, so no save path (a
 disable, an unreadable manifest, an early update, a stale copy written back by
-a rollback) records a consent that was not given. After `KIROCREW_READY`, `apps/session_consent.reconcile_after_ready`
+a rollback) records a consent that was not given. The Bot-thread scope
+follows the same rule: `enable_app`'s consent write records
+`memberThreadsConsented` when the live manifest declares
+`permissions.memberThreads` beside the grant. The consent is bound to the
+message that was shown: the enable request carries `memberThreadsConsent`
+only when the confirmed dialog named chats with the user's Bots, and `enable_app` refuses
+(`session_approval_consent_required`) a consent without it while the manifest,
+read once under the record lock, declares the scope, so an update that adds the
+scope while the dialog is open is not covered by that click. A consented record without
+that key (one written by a host that ignored the scope) reads as pending when
+the live manifest declares both, so a host upgrade never lends the scope to a
+consent that did not cover it. `_session_approval_consent_unrecorded` reads the
+manifest even for an already-consented record, so a manifest that gains
+`memberThreads` without going through an update (edited in place, for example)
+leaves the app disabled at the next reconcile until the owner consents again.
+After `KIROCREW_READY`, `apps/session_consent.reconcile_after_ready`
 (a tracked background task started from `service_boot.run`) handles each such
 record, and any record that reads both enabled and pending, under
 `app_lifecycle_lock`: it re-checks the record, runs the disable route's bounded

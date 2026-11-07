@@ -87,6 +87,7 @@ from kiro_crew.dashboard.chat_api import slot_repair as _owner_slot_repair
 from kiro_crew.dashboard.chat_api import slot_settings as _owner_slot_settings
 from kiro_crew.dashboard.chat_api import slot_summary as _owner_slot_summary
 from kiro_crew.dashboard.chat_api import source_links as _owner_source_links
+from kiro_crew.dashboard.chat_api import sse_write as _owner_sse_write
 from kiro_crew.dashboard.chat_api import turn_stop as _owner_turn_stop
 from kiro_crew.dashboard.chat_api.agent_switch import (  # noqa: F401
     CREW_MODE_LOCKED,
@@ -138,7 +139,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     hold_crew_steer,
     mark_crew_steer,
     steer_is_auto,
-    write_sse_or_abort,
 )
 from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
     _close_managed,
@@ -350,6 +350,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
     api_chat_slot_source_link_unlink,
     api_chat_slot_source_links,
 )
+from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_target,
     _compaction_in_flight,
@@ -532,8 +533,9 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     deny_app_session_control,
     deny_app_slot_access,
     deny_app_slot_session_access,
+    member_thread_grant,
     own_session_key,
-    read_session_grant,
+    read_session_control_grant,
     session_grant,
     slot_not_found,
     transcript_acquisition_reason,
@@ -1352,6 +1354,7 @@ _facade_compose(
         _owner_slot_settings,
         _owner_slot_summary,
         _owner_source_links,
+        _owner_sse_write,
         _owner_turn_stop,
     ),
 )
