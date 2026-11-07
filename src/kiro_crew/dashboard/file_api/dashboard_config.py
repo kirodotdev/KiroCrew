@@ -562,7 +562,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # Both run OFF-THREAD so the event loop is never blocked. Only the
         # dashboard.<field> keys this request validated are written, leaving every
         # other config section on disk untouched. GET stays lock-free.
-        from kiro_crew.config.loader import update_config_locked  # noqa: F811
+        from kiro_crew.config.loader import (  # noqa: F811
+            PendingEditBlocksSave,
+            update_config_locked,
+        )
         from kiro_crew.dashboard.handlers.agents import (  # lazy: import cycle
             _get_config_lock,
         )
@@ -618,6 +621,17 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 tool_name="dashboard_config_write",
                 outcome="failure",
                 error="request_cancelled",
+            )
+            raise
+        except PendingEditBlocksSave:
+            # config.json has a change pending owner review: logged like any refused
+            # write, then the dashboard chain answers 409 with the code the UI links
+            # to the pending card.
+            _sel().log_tool_invocation(
+                session_key="dashboard",
+                tool_name="dashboard_config_write",
+                outcome="failure",
+                error="file_pending_review",
             )
             raise
         except Exception:

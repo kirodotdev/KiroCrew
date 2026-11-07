@@ -117,6 +117,9 @@ export type {
   DeniedCommandRule,
   DeniedUserRule,
   AwsConsentStatus,
+  ConfigPendingChange,
+  ConfigPendingData,
+  ConfigPendingLeaf,
   CredentialRedactionState,
   DeniedCommandsData,
   GovernanceScopeDetail,
@@ -1272,6 +1275,15 @@ const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
 const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teammate' }
 const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
 
+/**
+ * The eighth: `GET /api/security/config-pending` answering `owner_only` to a caller that is
+ * not the dashboard owner. The shell reads it on every page for the Settings nav dot, and for
+ * a guest that refusal means "nothing to review", so journaling it would file one error report
+ * per page load. Apply and Discard keep `j`: a refusal there is a real failure.
+ */
+const CONFIG_PENDING_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jConfigPending = (r: Response) => parseJson(r, CONFIG_PENDING_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1539,6 +1551,7 @@ const transport: ClientTransport = {
   jSharedCrewPreview,
   jMembers,
   jApps,
+  jConfigPending,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,

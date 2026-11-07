@@ -170,6 +170,7 @@
       "too_many_open_sessions_http_429_close_old": "開いているセッションが多すぎます。古いセッションをいくつか閉じてから（履歴に残り、いつでも開き直せます）、もう一度お試しください。",
       "subagents_still_running_or_queued": "実行中またはキュー待ち：{{list}}。",
       "subagents_could_not_be_checked": "一部のサブエージェントを確認できませんでした。",
+      "file_pending_review": "この設定ファイルは {{productName}} の外で変更されたため、保存しませんでした。先に 設定 → セキュリティ で変更を確認し（反映 または 破棄）、もう一度お試しください。",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "ターミナルで kirocrew token を実行し、下にサインイン URL を貼り付けて Enter を押してください。",
       "session_expired": "セッションの有効期限が切れました。",
@@ -7027,7 +7028,8 @@
       "try_again": "もう一度試す"
     },
     "errorNotice": {
-      "dismiss": "閉じる"
+      "dismiss": "閉じる",
+      "review_pending_change": "変更を確認"
     },
     "excalidrawBlock": {
       "render_failed": "図を描画できませんでした — ソースを表示しています"
@@ -18735,6 +18737,48 @@
         "support": "サポート"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} が {{productName}} の外で変更されました",
+          "intro": "この変更はまだ反映されていません。反映すると使われ始めます。破棄すると {{productName}} が最後に保存したバージョンに戻ります。",
+          "added": "{{key}} を追加",
+          "added_value": "{{key}} を追加: {{after}}",
+          "added_hidden": "{{key}} を追加 (値は非表示)",
+          "removed": "{{key}} を削除",
+          "removed_value": "{{key}} を削除 (変更前: {{before}})",
+          "removed_hidden": "{{key}} を削除 (値は非表示)",
+          "changed": "{{key}} を変更",
+          "changed_value": "{{key}} を {{before}} から {{after}} に変更",
+          "changed_hidden": "{{key}} を変更 (値は非表示)",
+          "hint_sandbox_off": "プロセスのサンドボックスをオフにします。",
+          "hint_sandbox_changed": "エージェントのサンドボックスの厳しさを変更します。",
+          "hint_unsandboxed_exec": "エージェントがサンドボックスの外でコマンドを実行できるようにします。",
+          "hint_third_party_apps": "サードパーティのアプリを実行できるようにします。",
+          "hint_auto_approve": "確認なしで実行されるツールを変更します。",
+          "hint_agent_env": "各エージェントの起動時の環境変数を変更します。",
+          "hint_deny_all_off": "組み込みのコマンド拒否ルールをすべてオフにします。",
+          "hint_deny_rules": "適用されるコマンド拒否ルールを変更します。",
+          "hint_computer_use_on": "エージェントがこのコンピューターの画面、キーボード、マウスを操作できるようにします。",
+          "hint_section": "ファイルのこの部分にはセキュリティ設定が含まれています。",
+          "no_key_changes": "設定は変わっていません。ファイルの書式だけが異なります。",
+          "truncated": "ここに表示されている以上のキーが変更されています。",
+          "invalid_json": "編集されたファイルは有効な JSON ではないため、反映できません。ファイルを修正するか、変更を破棄してください。",
+          "removed_file": "ファイルは削除されました。{{productName}} が最後に保存したバージョンが引き続き使われます。破棄するとファイルが元に戻ります。",
+          "pending_changed": "確認中にファイルが再び変更されました。一覧には最新の変更が表示されています。",
+          "apply_refused_action": "ファイルを修正するか、変更を破棄してください。",
+          "apply": "反映",
+          "apply_file": "{{file}} の変更を反映",
+          "apply_title": "{{file}} の変更を反映しますか？",
+          "apply_body": "{{productName}} はこの変更をすぐに使い始めます。この変更により、下に示すセキュリティ設定が変わります。",
+          "apply_edit": "変更を反映",
+          "apply_turn_off_sandbox": "反映してサンドボックスをオフにする",
+          "discard": "破棄",
+          "discard_file": "{{file}} の変更を破棄",
+          "discard_title": "{{file}} の変更を破棄しますか？",
+          "discard_body": "{{productName}} は最後に保存したバージョンで {{file}} を上書きします。{{productName}} の外で行った変更は失われます。",
+          "nav_dot": "{{productName}} の外で変更された設定ファイル",
+          "search_description": "{{productName}} の外で設定ファイルに加えられた変更を確認し、反映または破棄します。",
+          "read_failed": "{{productName}} の外で変更された設定ファイルを確認できませんでした。"
+        },
         "add": "追加",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "カスタム拒否パターン(正規表現)を追加します。例: rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "独自の拒否パターン(Python 互換の正規表現)を追加します。これらは {{productName}}のPreToolUseゲートで組み込み規則と一緒に適用されます。",

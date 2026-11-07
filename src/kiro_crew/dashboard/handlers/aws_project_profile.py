@@ -242,7 +242,7 @@ async def api_aws_project_profile_put(request: web.Request) -> web.Response:
             {"error": "failed to read config file", "code": "config_unreadable"}, status=500
         )
     except ConfigWriteRefused as exc:
-        return web.json_response({"error": str(exc), "code": "config_write_refused"}, status=400)
+        return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     except OSError:
         logger.warning("%s PUT: config.json write failed", PROJECT_PROFILES_KEY, exc_info=True)
         return web.json_response(

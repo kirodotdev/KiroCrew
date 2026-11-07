@@ -19,6 +19,7 @@ import { handleGuideObserveFrame } from '../guide/liveObservation'
 import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
+import { CONFIG_PENDING_QUERY_KEY } from '../pages/settings/configPendingQuery'
 import { teamRoots } from '../pages/chat/command-center/model'
 import {
   applySessionProjection,
@@ -219,6 +220,9 @@ export function useWebSocket() {
       // which a restarted gateway's frames would all fall below. One re-read per
       // connection re-bases it on the process now serving.
       void queryClient.invalidateQueries({ queryKey: ['crew-log-projections'] }, { cancelRefetch: false })
+      // `config_pending_changed` is one-shot: a change while the socket was down
+      // is only seen by re-reading.
+      void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY }, { cancelRefetch: false })
       // The Context tab's usage revisions belong to the previous process too.
       resetContextTraceRefresh()
       // Cache auto-speak preference
@@ -305,6 +309,12 @@ export function useWebSocket() {
             break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
+            break
+          case 'config_pending_changed':
+            // Owner-only frame: a settings file edited outside the dashboard went
+            // pending or was resolved. The Settings nav dot and the Security cards
+            // read this one query (pages/settings/configPendingQuery.ts).
+            void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY })
             break
           case 'skills.pending_changed': {
             // A skill candidate (new or an update proposal) was just staged for

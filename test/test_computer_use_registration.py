@@ -1191,7 +1191,9 @@ class TestSpecEmissionGate:
 
         from kiro_crew.dashboard.handlers import computer_use as handler
 
-        src = inspect.getsource(handler.api_computer_use_config_save)
+        save_src = inspect.getsource(handler.api_computer_use_config_save)
+        assert "await apply_enable_change(request)" in save_src
+        src = inspect.getsource(handler.apply_enable_change)
         rebuild_call = re.search(r"to_thread\(\s*rebuild_agent_spec\b", src)
         rebuild_at = rebuild_call.start() if rebuild_call else -1
         reset_at = src.find("_reset_all_sessions")

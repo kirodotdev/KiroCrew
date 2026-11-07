@@ -190,6 +190,7 @@
       "too_many_open_sessions_http_429_close_old": "Trop de sessions sont ouvertes. Ferme quelques anciennes sessions (elles restent dans l’historique et se rouvrent à tout moment), puis réessaie.",
       "subagents_still_running_or_queued": "Encore en cours ou en file d’attente : {{list}}.",
       "subagents_could_not_be_checked": "Certains sous-agents n’ont pas pu être vérifiés.",
+      "file_pending_review": "Ce fichier de paramètres a été modifié en dehors de {{productName}}, donc cet enregistrement n’a pas eu lieu. Vérifie d’abord la modification dans Paramètres → Sécurité (Appliquer ou Abandonner), puis réessaie.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Lance kirocrew token dans un terminal, colle l’URL de connexion ci-dessous, puis appuie sur Entrée.",
       "session_expired": "Session expirée.",
@@ -7411,7 +7412,8 @@
       "try_again": "Réessayer"
     },
     "errorNotice": {
-      "dismiss": "Ignorer"
+      "dismiss": "Ignorer",
+      "review_pending_change": "Vérifier la modification"
     },
     "excalidrawBlock": {
       "render_failed": "Impossible d’afficher le diagramme — affichage de la source"
@@ -19711,6 +19713,48 @@
         "support": "Assistance"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} a été modifié en dehors de {{productName}}",
+          "intro": "Cette modification n’est pas encore active. Applique-la pour commencer à l’utiliser, ou abandonne-la pour remettre la version que {{productName}} a enregistrée en dernier.",
+          "added": "{{key}} ajouté",
+          "added_value": "{{key}} ajouté : {{after}}",
+          "added_hidden": "{{key}} ajouté (valeur masquée)",
+          "removed": "{{key}} supprimé",
+          "removed_value": "{{key}} supprimé (valait {{before}})",
+          "removed_hidden": "{{key}} supprimé (valeur masquée)",
+          "changed": "{{key}} modifié",
+          "changed_value": "{{key}} modifié de {{before}} à {{after}}",
+          "changed_hidden": "{{key}} modifié (valeur masquée)",
+          "hint_sandbox_off": "Désactive le sandbox des processus.",
+          "hint_sandbox_changed": "Change le niveau d’isolement des agents dans le sandbox.",
+          "hint_unsandboxed_exec": "Permet aux agents d’exécuter des commandes hors du sandbox.",
+          "hint_third_party_apps": "Permet l’exécution d’apps tierces.",
+          "hint_auto_approve": "Change les outils qui s’exécutent sans te demander.",
+          "hint_agent_env": "Change les variables d’environnement avec lesquelles chaque agent démarre.",
+          "hint_deny_all_off": "Désactive toutes les règles intégrées qui bloquent des commandes.",
+          "hint_deny_rules": "Change les règles de blocage de commandes qui s’appliquent.",
+          "hint_computer_use_on": "Permet aux agents de contrôler l’écran, le clavier et la souris de cet ordinateur.",
+          "hint_section": "Cette partie du fichier contient des réglages de sécurité.",
+          "no_key_changes": "Aucun réglage n’a changé. Seule la mise en forme du fichier diffère.",
+          "truncated": "Plus de clés ont changé que celles listées ici.",
+          "invalid_json": "Le fichier modifié n’est pas du JSON valide, il ne peut donc pas être appliqué. Corrige le fichier ou abandonne la modification.",
+          "removed_file": "Le fichier a été supprimé. La version que {{productName}} a enregistrée en dernier reste active. Abandonne la modification pour remettre le fichier.",
+          "pending_changed": "Le fichier a encore changé pendant que tu le vérifiais. La liste affiche maintenant la dernière modification.",
+          "apply_refused_action": "Corrige le fichier ou abandonne la modification.",
+          "apply": "Appliquer",
+          "apply_file": "Appliquer la modification de {{file}}",
+          "apply_title": "Appliquer la modification de {{file}} ?",
+          "apply_body": "{{productName}} commencera à utiliser cette modification tout de suite. Elle fait les changements de sécurité indiqués ci-dessous.",
+          "apply_edit": "Appliquer la modification",
+          "apply_turn_off_sandbox": "Appliquer et désactiver le sandbox",
+          "discard": "Abandonner",
+          "discard_file": "Abandonner la modification de {{file}}",
+          "discard_title": "Abandonner la modification de {{file}} ?",
+          "discard_body": "{{productName}} va écraser {{file}} avec la dernière version enregistrée. La modification faite en dehors de {{productName}} sera perdue.",
+          "nav_dot": "Fichiers de réglages modifiés en dehors de {{productName}}",
+          "search_description": "Vérifie les modifications faites aux fichiers de réglages en dehors de {{productName}}, puis applique-les ou abandonne-les.",
+          "read_failed": "Impossible de vérifier les fichiers de réglages modifiés en dehors de {{productName}}."
+        },
         "add": "Ajouter",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "Ajouter un motif de refus personnalisé (regex), ex. rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "Ajoutez vos propres motifs de refus (regex compatible Python). Ils sont appliqués au point de contrôle PreToolUse de {{productName}}, en plus des règles intégrées.",

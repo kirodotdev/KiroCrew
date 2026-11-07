@@ -113,6 +113,32 @@ The gate **fails closed** — a missing, unreadable or malformed keystone yields
 entry — matching `enable_state`'s own posture, for a stronger reason: the open
 position hands out the operator's whole desktop.
 
+`is_enabled()` reads whatever the gateway last endorsed, not a tampered disk file.
+`computer_use.json` is a per-file read-only sandbox leaf, and the Linux bind stops
+sealing it after the gateway's next rename-save, so a prompt-injected agent could
+write `enabled: true` directly past the seal; where the namespace sandbox seals it,
+`enable_state.load_state` parses the gateway-endorsed copy whenever the on-disk bytes
+differ (whole-file, so every key including `enabled` is covered). `save_state`
+endorses its own serialized bytes before the rename publishes them, and the dashboard
+saver's strict read (`_read_state_strict`) reconciles the same way before it mutates,
+so nothing re-endorses a tampered `enabled: true`; while the keystone is pending, an
+ordinary save of it is refused (`file_pending_review`) until the owner applies or discards. Where the
+sandbox seals the keystone, a copy that cannot be written aborts the save, and an
+unreadable copy reads as an unreadable keystone (disabled). A keystone with no endorsed copy
+yet is read as written until the gateway's first save of it endorses it. A keystone that
+differs from its copy (a hand edit, or an in-sandbox write) is PENDING: `is_enabled()` keeps
+reading the endorsed copy until the dashboard owner applies or discards the change in
+Settings > Security (owner-gated, CSRF-guarded, never an agent or MCP tool), so writing
+`enabled: true` from a sandbox never enables computer use on its own. Apply runs the PUT's
+own field validation (`keystone_patch`: `enabled` a boolean and not locked by policy,
+`allowed_apps` / `extra_denied_apps` pattern lists within the PUT's caps, lowercased as the PUT
+stores them) on the keys the edit changed; a refused value answers `409 write_refused` with the
+PUT's message and the keystone stays pending. This applies only where the Linux namespace sandbox
+actually seals the keystone (`loosening_provenance.enforcement_active`: a Linux host that
+can build the namespace sandbox, probed once per process); off Linux, and on a Linux host
+without user namespaces, the keystone is read as written. Mechanism and threat:
+[security](security.md) and [config](config.md).
+
 Both in-process checks stay, and they cover what the gate structurally cannot: the
 keystone flipping **off** mid-session, after the spec was written and the backend
 spawned. The gate covers what they cannot: the process existing.
@@ -2556,6 +2582,8 @@ Deliberately narrow, so a restart is never gratuitous:
 The response carries `sessions_reset` so the panel can EXPLAIN the restart — an
 unexplained session reset reads as a crash. Pinned by
 `test_computer_use_api_keystone.py::TestEnableRestartsSessions`.
+Applying a pending `computer_use.json` edit in Settings > Security that changes whether
+computer use is on runs the same rebuild and reset (`apply_enable_change`, shared with the PUT).
 
 ## Known limitations
 

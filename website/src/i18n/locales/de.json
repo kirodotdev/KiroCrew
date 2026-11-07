@@ -180,6 +180,7 @@
       "too_many_open_sessions_http_429_close_old": "Zu viele Sitzungen sind geöffnet. Schließe ein paar alte Sitzungen (sie bleiben im Verlauf und lassen sich jederzeit wieder öffnen) und versuche es erneut.",
       "subagents_still_running_or_queued": "Noch aktiv oder in der Warteschlange: {{list}}.",
       "subagents_could_not_be_checked": "Einige Unteragenten konnten nicht geprüft werden.",
+      "file_pending_review": "Diese Einstellungsdatei wurde außerhalb von {{productName}} geändert, deshalb wurde nicht gespeichert. Prüfe die Änderung zuerst unter Einstellungen → Sicherheit (Übernehmen oder Verwerfen) und versuche es dann erneut.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Führe kirocrew token in einem Terminal aus, füge die Anmelde-URL unten ein und drücke die Eingabetaste.",
       "session_expired": "Sitzung abgelaufen.",
@@ -7219,7 +7220,8 @@
       "try_again": "Erneut versuchen"
     },
     "errorNotice": {
-      "dismiss": "Schließen"
+      "dismiss": "Schließen",
+      "review_pending_change": "Änderung prüfen"
     },
     "excalidrawBlock": {
       "render_failed": "Diagramm konnte nicht gerendert werden – Quelltext wird angezeigt"
@@ -19223,6 +19225,48 @@
         "support": "Support"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} wurde außerhalb von {{productName}} geändert",
+          "intro": "Diese Änderung ist noch nicht wirksam. Übernimm sie, um sie zu verwenden, oder verwirf sie, um die zuletzt von {{productName}} gespeicherte Version wiederherzustellen.",
+          "added": "{{key}} hinzugefügt",
+          "added_value": "{{key}} hinzugefügt: {{after}}",
+          "added_hidden": "{{key}} hinzugefügt (Wert ausgeblendet)",
+          "removed": "{{key}} entfernt",
+          "removed_value": "{{key}} entfernt (war {{before}})",
+          "removed_hidden": "{{key}} entfernt (Wert ausgeblendet)",
+          "changed": "{{key}} geändert",
+          "changed_value": "{{key}} von {{before}} auf {{after}} geändert",
+          "changed_hidden": "{{key}} geändert (Wert ausgeblendet)",
+          "hint_sandbox_off": "Schaltet die Prozess-Sandbox aus.",
+          "hint_sandbox_changed": "Ändert, wie streng Agents in der Sandbox laufen.",
+          "hint_unsandboxed_exec": "Lässt Agents Befehle außerhalb der Sandbox ausführen.",
+          "hint_third_party_apps": "Lässt Apps von Drittanbietern laufen.",
+          "hint_auto_approve": "Ändert, welche Tools ohne Rückfrage laufen.",
+          "hint_agent_env": "Ändert die Umgebungsvariablen, mit denen jeder Agent startet.",
+          "hint_deny_all_off": "Schaltet alle integrierten Regeln aus, die Befehle sperren.",
+          "hint_deny_rules": "Ändert, welche Regeln zum Sperren von Befehlen gelten.",
+          "hint_computer_use_on": "Lässt Agents Bildschirm, Tastatur und Maus dieses Computers steuern.",
+          "hint_section": "Dieser Teil der Datei enthält Sicherheitseinstellungen.",
+          "no_key_changes": "Keine Einstellung wurde geändert. Nur die Formatierung der Datei ist anders.",
+          "truncated": "Es wurden mehr Schlüssel geändert, als hier aufgeführt sind.",
+          "invalid_json": "Die bearbeitete Datei ist kein gültiges JSON und kann daher nicht übernommen werden. Korrigiere die Datei oder verwirf die Änderung.",
+          "removed_file": "Die Datei wurde gelöscht. Die zuletzt von {{productName}} gespeicherte Version bleibt wirksam. Verwirf die Änderung, um die Datei wiederherzustellen.",
+          "pending_changed": "Die Datei hat sich erneut geändert, während du sie geprüft hast. Die Liste zeigt jetzt die neueste Änderung.",
+          "apply_refused_action": "Korrigiere die Datei oder verwirf die Änderung.",
+          "apply": "Übernehmen",
+          "apply_file": "Änderung an {{file}} übernehmen",
+          "apply_title": "Änderung an {{file}} übernehmen?",
+          "apply_body": "{{productName}} verwendet diese Änderung sofort. Sie nimmt die unten aufgeführten Sicherheitsänderungen vor.",
+          "apply_edit": "Änderung übernehmen",
+          "apply_turn_off_sandbox": "Übernehmen und Sandbox ausschalten",
+          "discard": "Verwerfen",
+          "discard_file": "Änderung an {{file}} verwerfen",
+          "discard_title": "Änderung an {{file}} verwerfen?",
+          "discard_body": "{{productName}} überschreibt {{file}} mit der zuletzt gespeicherten Version. Die außerhalb von {{productName}} gemachte Änderung geht verloren.",
+          "nav_dot": "Einstellungsdateien außerhalb von {{productName}} geändert",
+          "search_description": "Prüfe Änderungen, die außerhalb von {{productName}} an Einstellungsdateien gemacht wurden, und übernimm oder verwirf sie.",
+          "read_failed": "Außerhalb von {{productName}} geänderte Einstellungsdateien konnten nicht geprüft werden."
+        },
         "add": "Hinzufügen",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "Benutzerdefiniertes Verbotsmuster (Regex) hinzufügen, z. B. rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "Fügen Sie eigene Verbotsmuster hinzu (Python-kompatible Regex). Diese werden am PreToolUse-Gate von {{productName}} zusammen mit den integrierten Regeln erzwungen.",

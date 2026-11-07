@@ -34,13 +34,14 @@ from kiro_crew.apps.registry import (
 )
 from kiro_crew.apps.routes import app_lifecycle_lock
 from kiro_crew.apps.teardown import teardown_app_runtime
-from kiro_crew.config.loader import (
+from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served by the security facade
     ConfigReadError,
     KiroCrewConfig,
     _invalidate_config_cache,
     config_local_path,
     config_path,
     read_config_text,
+    read_endorsed_config_text,
     update_config_locked,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
@@ -249,10 +250,11 @@ _TRUST_SETTING_NAMES = (
 def _overlay_owned_trust_settings() -> list[str]:
     """Return the trust settings ``config.local.json`` currently owns (blocking I/O)."""
     path = config_local_path()
-    if not path.is_file():
-        return []
     try:
-        raw = json.loads(read_config_text(path))
+        # No is_file() check first: a deleted overlay whose endorsed copy is still in
+        # force is read as that copy, as the load reads it (FileNotFoundError, an
+        # OSError, means neither exists).
+        raw = json.loads(read_endorsed_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         # Unreadable overlay: the loader ignores it, so config.json IS effective.
         # Refusing here would block a legitimate revoke on an unrelated broken file.
@@ -266,10 +268,10 @@ def _overlay_owned_trust_settings() -> list[str]:
 async def _preflight_agent_config_mutable() -> None:
     """Raise if an ``agent`` trust mutation could not succeed, WITHOUT writing.
 
-    Used by the falling-edge allow-all path, which stops app code before it
-    persists the flag: without this, a mutation destined to fail (corrupt
-    ``config.json``, overlay-owned setting) would tear the user's apps down and
-    then refuse, leaving them stopped for nothing. Raising the same two exceptions
+    Used by the revoke and falling-edge allow-all paths, which stop app code before
+    they persist: without this, a mutation destined to fail (corrupt ``config.json``,
+    an overlay-owned setting, a change pending review) would tear the user's apps down
+    and then refuse, leaving them stopped for nothing. Raising the same exceptions
     the real mutation raises keeps the handler's error branches identical.
 
     This is a pre-flight, not a guarantee — the real check still runs inside the
@@ -277,18 +279,31 @@ async def _preflight_agent_config_mutable() -> None:
     failures are reported before anything is stopped.
     """
 
+    # Function-local, so the security facade serves no new name.
+    from kiro_crew.config import loosening_provenance
+    from kiro_crew.config.loader import PendingEditBlocksSave
+
     def _check() -> None:
         path = config_path()
-        if path.is_file():
-            try:
-                existing = json.loads(read_config_text(path))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
-            if not isinstance(existing, dict):
-                raise ConfigCorruptError(f"{path} is not a JSON object")
+        try:
+            existing: object = json.loads(read_endorsed_config_text(path))
+        except FileNotFoundError:
+            existing = {}  # neither the file nor an endorsed copy
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
+        if not isinstance(existing, dict):
+            raise ConfigCorruptError(f"{path} is not a JSON object")
         owned = _overlay_owned_trust_settings()
         if owned:
             raise TrustSettingOverlayOwned(owned)
+        # The save would be refused with the file pending review (the middleware's
+        # 409 ``file_pending_review``): refuse it here, before anything is stopped.
+        try:
+            pending = loosening_provenance.leaf_pending(loosening_provenance.LEAF_CONFIG)
+        except OSError as exc:
+            raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
+        if pending:
+            raise PendingEditBlocksSave(loosening_provenance.LEAF_CONFIG)
 
     await asyncio.get_running_loop().run_in_executor(None, _check)
 
@@ -681,6 +696,7 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
     # reaches back into sibling handler modules, so importing the helper at
     # module scope from here would close a cycle.
+    from kiro_crew.config.loader import PendingEditBlocksSave
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     denied = await require_owner_dashboard_request(request, op)
@@ -710,6 +726,9 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
         # what makes the check race-free at the moment of the write.
         try:
             await _preflight_agent_config_mutable()
+        except PendingEditBlocksSave as exc:
+            _audit(request, operation=op, outcome="denied", resources=f"{name}=file_pending_review")
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         except ConfigCorruptError as exc:
             _audit(request, operation=op, outcome="denied", resources=f"{name}=config_corrupt")
             return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
@@ -846,6 +865,7 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
     # reaches back into sibling handler modules, so importing the helper at
     # module scope from here would close a cycle.
+    from kiro_crew.config.loader import PendingEditBlocksSave
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     denied = await require_owner_dashboard_request(request, op)
@@ -891,6 +911,9 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
     if value is False:
         try:
             await _preflight_agent_config_mutable()
+        except PendingEditBlocksSave as exc:
+            _audit(request, operation=op, outcome="denied", resources="file_pending_review")
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         except ConfigCorruptError as exc:
             _audit(request, operation=op, outcome="denied", resources="config_corrupt")
             return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)

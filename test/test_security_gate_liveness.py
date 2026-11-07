@@ -712,7 +712,9 @@ def _url_payload_command(n: int) -> str:
 #: (``_document_link_spans``, ``_plantuml_verdict``) hands it to its nested call, and
 #: ``_well_formed_token_param_prefixes`` is the one shape gate the live read and a
 #: snapshot share. No rule, pattern or pass changed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_894
+#: Raised by 4, from 34,894, for the two endorsed-copy leaves on the read+write floor in
+#: ``paths_lists`` (copies of leaves already there). Re-measured.
+_PACKAGE_LINE_BUDGET = 34_898
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

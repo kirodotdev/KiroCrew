@@ -877,4 +877,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent may have written, pass the exfiltration-URL and credential redactors "
         "before they are carried in the chat metadata of the spec chooser card.",
     ),
+    (
+        "Settings changed outside Kiro Crew",
+        "config/loosening_provenance.py",
+        "The before and after values in the changed-key diff of a hand-edited "
+        "settings file, on their way to the owner's Settings -> Security pending "
+        "card in the browser. Runs the credential redactor "
+        "only, as a test: a string it would alter is withheld from the diff and "
+        "the row is marked redacted, as is any value under a credential-like key, "
+        "an env or headers section, an over-long string or a nested value.",
+    ),
 )

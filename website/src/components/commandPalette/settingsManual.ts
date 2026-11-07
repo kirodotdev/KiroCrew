@@ -109,6 +109,22 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { section: 'redaction' },
   },
+  // The review cards for settings files edited outside the dashboard
+  // (SecurityPanelConfigPending.tsx). They render in the Security sub-nav's banner,
+  // above every section, so any section mounts them: `posture` is the one a bare
+  // `/settings/security` opens, which is what the gateway's bell note links to.
+  // They mount only after the config-pending read, so `settingId` makes the
+  // highlight wait for them.
+  {
+    id: 'security.config-pending',
+    labelKey: 'pages.settings.securityPanel.configPending.nav_dot',
+    descriptionKey: 'pages.settings.securityPanel.configPending.search_description',
+    tab: 'security',
+    type: 'buttonGroup',
+    occurrence: 1,
+    params: { section: 'posture' },
+    settingId: 'security.config-pending',
+  },
   {
     id: 'security.trust-this-machine-s-tailnet-name',
     labelKey: 'pages.settings.securityPanel.tailnet_title',
