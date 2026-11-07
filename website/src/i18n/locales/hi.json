@@ -17800,7 +17800,11 @@
       "delete_n_scheduled_jobs_title_other": "{{count}} शेड्यूल किए गए जॉब हटाओ?",
       "bulk_delete_removes_jobs_and_history_one": "यह चयनित जॉब और उसका रन इतिहास स्थायी रूप से हटा देगा। यह क्रिया पूर्ववत नहीं की जा सकती।",
       "bulk_delete_removes_jobs_and_history_other": "यह चयनित सभी जॉब और उनका रन इतिहास स्थायी रूप से हटा देगा। यह क्रिया पूर्ववत नहीं की जा सकती।",
-      "type_token_to_confirm": "पुष्टि करने के लिए <token/> टाइप करो"
+      "type_token_to_confirm": "पुष्टि करने के लिए <token/> टाइप करो",
+      "close_wont_cancel_create": "बंद करने से यह रद्द नहीं होगा — शेड्यूल फिर भी बन सकता है।",
+      "close_wont_cancel_edit": "बंद करने से यह रद्द नहीं होगा — तुम्हारे बदलाव फिर भी सहेजे जा सकते हैं।",
+      "late_save_failed": "शेड्यूल “{{job}}” सहेजा नहीं गया।",
+      "late_save_unconfirmed": "शेड्यूल “{{job}}” सहेजा गया या नहीं, पता नहीं — सर्वर ने इसकी पुष्टि नहीं की।"
     },
     "servicesTab": {
       "channels": "चैट प्लेटफ़ॉर्म",

@@ -436,7 +436,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // null = the picker was never touched on a job with no zone of its own: no
   // `timezone` is sent, so a new job takes the default zone and an edit keeps
   // the job's empty zone instead of pinning whatever the picker displayed.
-  const [tz, setTz] = useState<string | null>(() => job?.timezone || null)
+  const [initialTz] = useState<string | null>(() => job?.timezone || null)
+  const [tz, setTz] = useState(initialTz)
   const { data: zones, error: zonesError } = useQuery(cronZonesQuery)
   // Until the server names the default, an untouched picker says "Default zone"
   // rather than guessing Local: a configured zone would make that guess wrong.
@@ -448,10 +449,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
   // value typed and then typed back reads as untouched again — the same rule
-  // the crew editor's own dirtyPanes uses. tz is excluded: its initial value
-  // is the default zone, an environment fact rather than user work worth a
-  // discard confirm. Reported through an effect keyed on the recomputed
-  // boolean, so hosts only hear about EDGES, not every keystroke.
+  // the crew editor's own dirtyPanes uses. tz is the picked zone, never the
+  // default `shownTz` displays, so a default that loads late is not an edit.
+  // Reported through an effect keyed on the recomputed boolean, so hosts only
+  // hear about EDGES, not every keystroke.
   const dirty =
     name !== init.name || msg !== init.message ||
     agent !== defaults.agent || model !== defaults.model ||
@@ -460,7 +461,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     hideInChat !== defaults.hideInChat || schedMode !== init.schedMode ||
     minimalContext !== defaults.minimalContext ||
     chatFolderId !== defaults.chatFolderId ||
-    autoPause !== initialAutoPause ||
+    autoPause !== initialAutoPause || alertAfter !== initialAlertAfter || tz !== initialTz ||
     timeLimitMin !== runLimitMinutes(timeLimitBase) ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
     weekTime !== init.weekTime || cronExpr !== init.cronExpr || onceAt !== init.onceAt ||
@@ -698,7 +699,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       // Reached only when the call threw past the inner handler. Same rule as
       // above: a 4xx is the server deciding, a 5xx or a transport failure is not.
       const decided = e instanceof ApiError && e.status >= 400 && e.status < 500
-      setError(msg); onSubmitError?.(msg, decided, f.name); setSaving(false)
+      // The host shows this after the form is gone, so it gets the server's reason.
+      setError(msg); onSubmitError?.(e instanceof Error ? e.message : msg, decided, f.name); setSaving(false)
     }
   }
 

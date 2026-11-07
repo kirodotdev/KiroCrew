@@ -17,6 +17,7 @@ import TimezoneSelect from '../components/TimezoneSelect'
 import JobForm from '../components/JobForm'
 import JobLogsView from '../components/JobLogsView'
 import ErrorNotice from '../components/ErrorNotice'
+import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { crewDisplayName, type KiroCrewAgent } from '../components/AgentSelector'
 import CrewAvatar from '../components/CrewAvatar'
 import SimpleSelect from '../components/SimpleSelect'
@@ -380,6 +381,16 @@ export default function SchedulePage() {
   // create panel (the panel is keyed on this; without it, edits from a prior
   // pick of the same preset would leak into the "fresh" form).
   const [prefillNonce, setPrefillNonce] = useState(0)
+  // Saves that failed after their dialog closed, one per save: the dialog that
+  // would have shown the error is gone, so the page says it instead.
+  const [lateFailures, setLateFailures] = useState<(LateSaveFailure & { id: number })[]>([])
+  const lateFailureSeq = useRef(0)
+  // Typed work in the job dialog. Guarded at the page, so an in-app exit or the
+  // browser's Back cannot unmount it: the leave is refused, and the draft stays
+  // in the dialog already on screen until the user closes it.
+  const [draftDirty, setDraftDirty] = useState(false)
+  useRegisterNavigationLeaveGuard(() => !draftDirty)
+  usePublishNavigationStake(draftDirty)
   const [jobsView, setJobsView] = useState<'list' | 'calendar' | 'executions'>('list')
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [renderTz, setRenderTz] = useState<string>(() => {
@@ -780,6 +791,17 @@ export default function SchedulePage() {
               </Btn>
             </div>
           )}
+          {lateFailures.map(f => (
+            <ErrorNotice
+              key={f.id}
+              className="mb-3"
+              title={f.confirmed ? i18nT('pages.schedulePage.late_save_failed', { job: f.name }) : i18nT('pages.schedulePage.late_save_unconfirmed', { job: f.name })}
+              message={f.message}
+              askAgent
+              onDismiss={() => setLateFailures(prev => prev.filter(x => x.id !== f.id))}
+              testId="schedule-late-save-error"
+            />
+          ))}
           {foldersFailed && (
             <ErrorNotice className="mb-3" message={queryErrorMessage(foldersError)} askAgent testId="schedule-folders-error" />
           )}
@@ -1294,7 +1316,9 @@ export default function SchedulePage() {
             defaultAgent={defaultAgent}
             rosterFailure={rosterFailure}
             onClose={closeDetail}
-            onSaved={() => { load(); closeDetail() }}
+            onChanged={load}
+            onDirtyChange={setDraftDirty}
+            onLateFailure={f => setLateFailures(prev => [...prev, { ...f, id: ++lateFailureSeq.current }])}
           />
         )}
       </Dialog>
@@ -1744,8 +1768,11 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
   )
 }
 
-function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onSaved }: {
-  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onSaved: () => void
+/** `confirmed`: the server refused the save, so it was not saved. */
+type LateSaveFailure = { name: string; message: string; confirmed: boolean }
+
+function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onChanged, onDirtyChange, onLateFailure }: {
+  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onChanged: () => void; onDirtyChange: (dirty: boolean) => void; onLateFailure: (f: LateSaveFailure) => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -1755,6 +1782,14 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
   const [detailTab, setDetailTab] = useState<'details' | 'logs'>('details')
   useEffect(() => { setDetailTab('details') }, [job?.id])
   const submitRef = useRef<(() => void) | null>(null)
+  // Closing never cancels a request, so an answer can arrive after this dialog
+  // is gone. It still refreshes the list, but only a live dialog closes: a late
+  // one must not close the dialog open by then.
+  const live = useRef(true)
+  useEffect(() => { live.current = true; return () => { live.current = false } }, [])
+  const onSaved = () => { onChanged(); if (live.current) onClose() }
+  // A live form shows its own error; a closed one hands it to the page.
+  const onSubmitError = (message: string, confirmed: boolean, name = '') => { if (!live.current) onLateFailure({ name, message, confirmed }) }
 
   return (
     <DialogContent maxWidth={720} className="max-h-[86vh]">
@@ -1767,7 +1802,9 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             <SegmentedControl
               segments={[
                 { key: 'details' as const, label: i18nT('pages.schedulePage.details_tab') },
-                { key: 'logs' as const, label: i18nT('pages.schedulePage.logs_tab') },
+                // Logs unmounts the form, which would drop a save's error mid-flight
+                // (and Save is off on Logs, where no form is on screen to report one).
+                { key: 'logs' as const, label: i18nT('pages.schedulePage.logs_tab'), disabled: saving },
               ]}
               value={detailTab}
               onChange={setDetailTab}
@@ -1797,7 +1834,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
                 <span>{i18nT('pages.schedulePage.writes_notice')}</span>
               </div>
             )}
-            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} rosterFailure={rosterFailure} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
+            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} rosterFailure={rosterFailure} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} onSubmitError={onSubmitError} onDirtyChange={onDirtyChange} />
             {/* No hand-off: JobForm draft */}
             <ErrorNotice message={panelError} testId="schedule-job-panel-error" />
             {job?.script && <ScriptSourcePanel jobId={job.id} />}
@@ -1879,6 +1916,12 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </>
         )}
       </DialogBody>
+      {/* Between body and footer, so it is always in view and the buttons do not move. */}
+      {saving && (
+        <div className="shrink-0 border-t border-border bg-warn-subtle px-5 py-2 text-[11.5px] text-warn-text" role="status">
+          {job ? i18nT('pages.schedulePage.close_wont_cancel_edit') : i18nT('pages.schedulePage.close_wont_cancel_create')}
+        </div>
+      )}
       <DialogFooter className="justify-between">
         {job ? (
           <Btn danger onClick={() => setConfirmDelete(true)} {...uiLocation('schedule.delete')}>
@@ -1889,8 +1932,8 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </Btn>
         ) : <div />}
         <div className="flex items-center gap-2">
-          <Btn onClick={onClose}>{i18nT('pages.schedulePage.cancel')}</Btn>
-          <SendBtn onClick={() => submitRef.current?.()} disabled={saving}>
+          <Btn onClick={onClose}>{saving ? i18nT('app.close') : i18nT('pages.schedulePage.cancel')}</Btn>
+          <SendBtn onClick={() => submitRef.current?.()} disabled={saving || detailTab === 'logs'}>
             <SaveCreateLabel isEdit={!!job} saving={saving} />
           </SendBtn>
         </div>
