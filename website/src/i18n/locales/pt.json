@@ -7774,6 +7774,25 @@
       "unreachable": "sem acesso",
       "unreachable_via": "sem acesso — {{via}} está fora"
     },
+    "relayCrews": {
+      "title": "Crews pelo relay",
+      "list_label": "Crews remotas que você pode abrir pelo relay",
+      "type_personal": "Pessoal",
+      "type_team": "Equipe",
+      "online": "online",
+      "offline": "offline",
+      "open": "Abrir",
+      "open_crew": "Abrir {{name}}",
+      "empty": "Nenhuma crew remota para abrir.",
+      "refusal_not_granted": "Você não tem mais acesso a esta crew.",
+      "refusal_remote_access_off": "O acesso remoto está desativado para esta conta.",
+      "refusal_offline": "Esta crew está offline.",
+      "refusal_throttled": "Solicitações demais. Tente de novo em um minuto.",
+      "refusal_signed_out": "Entre no Kiro para ver suas crews remotas.",
+      "refusal_not_configured": "As crews remotas pelo relay não estão configuradas.",
+      "refusal_generic": "Não foi possível abrir esta crew.",
+      "refusal_list_generic": "Não foi possível carregar suas crews remotas."
+    },
     "instancesViewport": {
       "connecting": "Conectando…",
       "connection_error": "Erro de conexão",

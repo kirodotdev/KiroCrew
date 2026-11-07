@@ -11,6 +11,7 @@ import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
 import InstanceTabBar from '../../components/InstanceTabBar'
+import RelayCrewsMenu from '../../components/RelayCrewsMenu'
 import { getTopBarWidgets } from '../../apps/topBarWidgets'
 import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
@@ -276,6 +277,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             </button>
           )}
           <InstanceTabBar variant="inline" />
+          {/* Desktop app only, and only while the relay viewer is on: renders nothing otherwise. */}
+          <RelayCrewsMenu />
           </div>
         </div>
         )}

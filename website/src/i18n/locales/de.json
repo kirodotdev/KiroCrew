@@ -7569,6 +7569,25 @@
       "unreachable": "nicht erreichbar",
       "unreachable_via": "nicht erreichbar — {{via}} ist aus"
     },
+    "relayCrews": {
+      "title": "Relay-Crews",
+      "list_label": "Remote-Crews, die du über das Relay öffnen kannst",
+      "type_personal": "Persönlich",
+      "type_team": "Team",
+      "online": "online",
+      "offline": "offline",
+      "open": "Öffnen",
+      "open_crew": "{{name}} öffnen",
+      "empty": "Keine Remote-Crews zum Öffnen.",
+      "refusal_not_granted": "Du hast keinen Zugriff mehr auf diese Crew.",
+      "refusal_remote_access_off": "Der Fernzugriff ist für dieses Konto ausgeschaltet.",
+      "refusal_offline": "Diese Crew ist offline.",
+      "refusal_throttled": "Zu viele Anfragen. Versuche es in einer Minute erneut.",
+      "refusal_signed_out": "Melde dich bei Kiro an, um deine Remote-Crews zu sehen.",
+      "refusal_not_configured": "Remote-Crews über das Relay sind nicht eingerichtet.",
+      "refusal_generic": "Diese Crew konnte nicht geöffnet werden.",
+      "refusal_list_generic": "Deine Remote-Crews konnten nicht geladen werden."
+    },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
       "connection_error": "Verbindungsfehler",
