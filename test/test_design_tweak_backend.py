@@ -1133,6 +1133,44 @@ class TestStaticResponse:
         # It lists the HTML it DID find, as a link through this server's own base.
         assert b"/p1/pages/about.html" in body
 
+    @pytest.mark.parametrize(
+        ("folder", "quoted"),
+        [
+            ("section#one", "section%23one"),
+            ("my folder", "my%20folder"),
+            ("100%", "100%25"),
+            pytest.param(
+                "a?b",
+                "a%3Fb",
+                marks=pytest.mark.skipif(sys.platform == "win32", reason="not a Windows file name"),
+            ),
+            pytest.param(
+                'say"hi"',
+                "say%22hi%22",
+                marks=pytest.mark.skipif(sys.platform == "win32", reason="not a Windows file name"),
+            ),
+        ],
+    )
+    def test_base_href_url_quotes_reserved_folder_characters(self, tmp_path, folder, quoted):
+        """A folder name is file-system text; the browser parses `<base>` as a URL.
+
+        Unquoted, `#` turns the rest into a fragment, `?` into a query, `%` into a
+        broken escape and `"` ends the attribute, so relative assets miss the folder.
+        """
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "index.html").write_text("<html><head></head><body>x</body></html>")
+        status, _, body = _static_response_at(tmp_path, f"{folder}/index.html")
+        assert status == 200
+        assert f'<base href="/p1/{quoted}/">'.encode() in body
+
+    def test_diagnostic_links_url_quote_reserved_folder_characters(self, tmp_path):
+        """The no-entry page links each HTML file it found; `#` must not cut the link."""
+        (tmp_path / "section#one").mkdir()
+        (tmp_path / "section#one" / "about.html").write_text("<html><body>a</body></html>")
+        status, _, body = _static_response_at(tmp_path, "")
+        assert status == 404
+        assert b'href="/p1/section%23one/about.html"' in body
+
     def test_bundler_template_explains_instead_of_blank_page(self, tmp_path):
         (tmp_path / "index.html").write_text(
             '<html><body><div id="root"></div>'
