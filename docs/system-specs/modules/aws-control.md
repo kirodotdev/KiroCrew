@@ -1848,7 +1848,14 @@ density), so the remove flow, the Reconnect disclosure and the hand-off gating
 exist once. A row carries two controls, the select surface and its overflow
 menu; Reconnect (offered on a degraded resolved row) and Remove are items in
 that menu, and the health word on the row is the cue that the menu holds
-something to do. The bare `/aws-control` path and an unknown pane segment both land on
+something to do. A failing key's Reconnect leads with that key's own probe
+error (`profiles[].detail`, redacted server-side) as an `AwsErrorNotice`, so
+the cause is on screen before any generic guidance. The Refresh button on the
+Overview and Accounts panes re-probes every key (`GET /accounts?refresh=1`,
+which also skips the identity probe's 30-second cache) into the list's one
+cache entry: a plain read is answered from the five-minute snapshot, so a key
+fixed after the page loaded would keep its failure. The bare
+`/aws-control` path and an unknown pane segment both land on
 Overview; every named pane path is unchanged. The month-to-date figure shares the
 Usage pane's cost cache entry and, like it, settles to a dash with a visible
 reason (consent missing, or the read failed) rather than a tooltip. A read that
