@@ -377,7 +377,18 @@ Request flow:
    refused by `is_owner_dashboard_request`, so a claim would withdraw the
    capability the admission grants. Consulting the registry first changes what is
    recorded, never what is admitted; a registry that raises names no app and
-   leaves the host-process leg to decide as before.
+   leaves the host-process leg to decide as before. On loopback TCP the caller's
+   pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
+   descriptors, so it is resolved once per accepted connection: the answer is kept
+   against that connection's transport with the process start id read beside it,
+   and a later request on the same kept-alive connection reuses it while the pid
+   still reports that start id. A new connection, or a changed start id, resolves
+   again. The owner-process judgement itself still runs on every request. The
+   process that was the connection's unique holder at its first request stays its
+   caller for the connection's life: a later share of that socket (a fork without
+   exec, a descriptor passed over a Unix socket) is the holder delegating, which it
+   could equally do by handing over a minted token, and detecting it would take the
+   full scan this lookup avoids.
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie)
 5. Check IP binding
