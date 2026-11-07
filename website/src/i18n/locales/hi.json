@@ -13510,7 +13510,7 @@
         "annotation_note": "सिर्फ़ चिह्न, इसने न अनुमति दी, न रोका",
         "confidence_title": "अपने ही उत्तर पर Jev का भरोसा, 0 से 1 तक",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "सिर्फ़ राय",
         "rate_right_jev": "Jev ने जोखिम सही आँका",
         "rate_wrong_jev": "Jev ने जोखिम गलत आँका",
         "tier_caution": "देखने लायक",

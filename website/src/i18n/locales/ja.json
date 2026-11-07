@@ -13194,7 +13194,7 @@
         "annotation_note": "印だけで、許可も拒否もしていません",
         "confidence_title": "自分の答えに対する Jev の確信度（0 から 1）",
         "labelled_tier": "Jev: {{tier}}",
-        "rate_jev": "Jev",
+        "rate_label": "フィードバックのみ",
         "rate_right_jev": "Jev のリスク判断は正しい",
         "rate_wrong_jev": "Jev のリスク判断は誤り",
         "tier_caution": "見ておきたい",
