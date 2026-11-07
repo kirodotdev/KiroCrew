@@ -1294,8 +1294,20 @@ def host_available_mib() -> int:
     if IS_MACOS:
         return _macos_available_mib()
     if IS_WINDOWS:
-        mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
-        return (mem[1] // _MIB_BYTES) if mem else 0
+        # A new process must commit what it maps, so free physical RAM is capped
+        # by commit headroom (ullAvailPageFile: commit limit minus commit charge).
+        # After a successful call the answer is at least 1 MiB: 0 means "unknown"
+        # here, and an exhausted host must read as full, not as unmeasured.
+        try:
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            stat = _MemoryStatusEx()
+            stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if not kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return 0
+            avail, commit = int(stat.ullAvailPhys), int(stat.ullAvailPageFile)
+        except Exception:
+            return 0
+        return max(1, min(avail, commit) // _MIB_BYTES)
     return 0
 
 
