@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
 
@@ -1133,6 +1134,9 @@ class TestCachedParseSessions:
             return {"total_sessions": calls["n"], "daily_history": []}
 
         monkeypatch.setattr(usage_mod, "_cached_parse_sessions", _fake_cached_parse)
+        # This test asserts the refreshed answer, so a stalled loop must not run out the
+        # route's short session wait and hand back the refreshing placeholder instead.
+        monkeypatch.setattr(usage_mod, "_USAGE_SESSION_WAIT_SECONDS", FALLBACK_TIMEOUT_SECS)
         first = usage_mod.asyncio.create_task(_fake_cached_parse())
         assert await first == {"total_sessions": 1, "daily_history": []}
         usage_mod._USAGE_SESSION_REFRESH_TASK = first
