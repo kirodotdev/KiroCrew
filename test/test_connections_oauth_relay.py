@@ -517,7 +517,12 @@ def _relay_log_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord
 @pytest.mark.parametrize(
     ("listener_status", "level", "fragment"),
     [
-        (200, logging.INFO, "code delivered to the local callback status=200"),
+        (
+            200,
+            logging.INFO,
+            "code delivered to the local callback status=200; "
+            "the listener finishes the token exchange",
+        ),
         (400, logging.WARNING, "local callback rejected the return address status=400"),
     ],
 )

@@ -7,7 +7,14 @@ effect but the decision under test is neutralized there.
 from __future__ import annotations
 
 import pytest
-from test_connections_disconnect import _SLUG, _client, _entry, _provider_url, _wire
+from test_connections_disconnect import (
+    _SLUG,
+    _client,
+    _disconnect,
+    _entry,
+    _provider_url,
+    _wire,
+)
 
 
 @pytest.mark.asyncio
@@ -212,3 +219,27 @@ async def test_connect_uses_crews_sign_in_only_where_routing_does(
         await client.close()
     assert resp.status == 200
     assert (body["token"] == "crew-tok") is crew and (started == ["github"]) is crew
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surviving", [["token", "registration"], []])
+async def test_the_kept_grant_line_names_kiro_clis_pair_only_when_it_exists(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, surviving: list[str]
+) -> None:
+    """The line is about kiro-cli's native pair, so it is silent when none exists."""
+    _wire(
+        monkeypatch,
+        removed=[],
+        surviving=surviving,
+        inventory=[_entry(_SLUG, _provider_url()), _entry("notion-work", _provider_url())],
+        purged=[],
+    )
+    caplog.set_level("INFO", logger="kiro_crew.connections.ownership")
+
+    await _disconnect()
+
+    kept = [r.getMessage() for r in caplog.records if "Disconnect kept" in r.getMessage()]
+    if surviving:
+        assert len(kept) == 1 and "kiro-cli's native grant" in kept[0]
+    else:
+        assert kept == []

@@ -209,7 +209,7 @@ def _log_relay_outcome(server: str, outcome: str, status: int | None = None) -> 
     if outcome == "delivered":
         logger.info(
             "MCP OAuth relay for %s: code delivered to the local callback%s; "
-            "the MCP client finishes the token exchange",
+            "the listener finishes the token exchange",
             server,
             suffix,
         )

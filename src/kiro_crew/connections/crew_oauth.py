@@ -569,7 +569,10 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
 
 
 def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
-    """One SEL record; names the provider and a coarse code, never a value."""
+    """One SEL record and one gateway.log line; a provider and a coarse code, never a value."""
+    logger.info(
+        "Crew OAuth %s for %s: %s%s", operation, slug, outcome, f" ({detail})" if detail else ""
+    )
     try:
         from kiro_crew.sel import sel
 

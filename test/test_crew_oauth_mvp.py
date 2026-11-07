@@ -600,6 +600,21 @@ def test_crew_custody_needs_kas_as_the_chat_backend(monkeypatch):
     assert crew_oauth.manages("github") is True
 
 
+def test_every_audit_also_reaches_the_gateway_log(monkeypatch, caplog):
+    """An operator reading gateway.log sees Crew's sign-in, never a value."""
+    import logging
+
+    monkeypatch.setattr(
+        "kiro_crew.sel.sel", lambda: types.SimpleNamespace(log_api_access=lambda **_k: None)
+    )
+    caplog.set_level(logging.INFO, logger=crew_oauth.logger.name)
+    crew_oauth._audit("connections_crew_oauth_sign_in", "error", "github", "crew_oauth_denied")
+    lines = [r.getMessage() for r in caplog.records if r.name == crew_oauth.logger.name]
+    assert lines == [
+        "Crew OAuth connections_crew_oauth_sign_in for github: error (crew_oauth_denied)"
+    ]
+
+
 def test_a_stored_pair_is_found_whatever_the_flag_says(tmp_path, monkeypatch):
     """Disconnect cleans a pair stored while the flag was on, after it is turned off."""
     vault = SecretVault(tmp_path)

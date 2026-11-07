@@ -114,7 +114,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   // feed below; this never mints and never owns reachability (that stays with
   // /api/mcp). Declared before the mint feed because `waitingSlugs` reads the
   // awaiting_consent verdicts.
-  const { data: statusBySlug = {} } = useQuery<Record<string, ConnectionStatus>>({
+  const { data: statusBySlug = {}, isError: statusIsError } = useQuery<Record<string, ConnectionStatus>>({
     queryKey: ['connections-status'],
     queryFn: async () => {
       const { connections } = await api.connectionsStatus()
@@ -127,6 +127,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // card is rendered, so a background poll would stat every provider's grant
     // artifacts every 30s for a surface nobody is looking at.
     refetchInterval: activeTab === 'services' ? CONNECTION_STATUS_POLL_MS : false,
+    // A cached verdict from before a Connect would show Connect again on
+    // navigating back, and a click would replace the live sign-in.
+    refetchOnMount: 'always',
   })
 
   // Minted approval URLs, keyed by slug. Fetched only while a connect is pending:
@@ -211,10 +214,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         || (
           mintRowIsOurs(mint, pending)
           && mint?.state === 'expired'
-          && mint.reason
         )
       ) {
-        mintFailures.push({ slug: provider.slug, reason: mint.reason, endpoint: mint.rejected_endpoint })
+        mintFailures.push({
+          slug: provider.slug,
+          // A reasonless expiry is the sign-in window running out.
+          reason: mint.reason ?? (mint.state === 'expired' ? 'expired' : undefined),
+          endpoint: mint.rejected_endpoint,
+        })
       }
       if (outcome.probe) grantedMints.push(provider.slug)
     }
@@ -251,6 +258,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               break
             case 'mint_process_gone':
               error = t('pages.connectionsPage.mint_failure_process_gone')
+              break
+            case 'expired':
+            case 'crew_oauth_consent_expired':
+              error = t('pages.connectionsPage.mint_failure_sign_in_timed_out')
               break
             case 'mint_server_absent':
               error = t('pages.connectionsPage.mint_failure_server_absent')
@@ -747,7 +758,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           </div>}
 
           {/* No hand-off: a card waiting for approval can hold an unsaved return address while this status re-polls. */}
-          {isError && (
+          {(isError || statusIsError) && (
             <ErrorNotice message={t('pages.connectionsPage.could_not_load_status')} className="mb-3" />
           )}
 
