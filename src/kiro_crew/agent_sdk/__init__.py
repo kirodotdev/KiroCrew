@@ -83,6 +83,11 @@ from kiro_crew.agent_sdk.backend_install import (
     probe_backend,
     probe_backends,
 )
+from kiro_crew.agent_sdk.backends import (
+    CODEX_CLI_ADAPTER_MISSING,
+    CODEX_CLI_OVERRIDE_UNUSABLE,
+    CODEX_CLI_UNRESOLVED,
+)
 from kiro_crew.agent_sdk.capabilities import (
     MODEL_NAMESPACE_ACP,
     UNKNOWN_BACKEND_CAPABILITIES,
@@ -121,6 +126,7 @@ from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_nat
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from kiro_crew.acp.client_spawn_env import CodexCliResolution
     from kiro_crew.acp.managed_agent_shadow import AgentNameClaim
 
 
@@ -147,6 +153,14 @@ def agents_dir_competing_claim(
     from kiro_crew.acp.managed_agent_shadow import agents_dir_competing_claim as _claim
 
     return _claim(agent, agents_dir, own_file)
+
+
+def resolve_codex_cli() -> CodexCliResolution:
+    """The ``codex`` CLI the codex-acp adapter would run, or why it cannot be found."""
+    # Imported lazily: the ACP spawn module is heavy and imports back into this package.
+    from kiro_crew.acp.client_spawn_env import resolve_codex_cli as _resolve
+
+    return _resolve()
 
 
 def session_start_concurrency() -> int:
@@ -202,6 +216,10 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "CODEX_CLI_ADAPTER_MISSING",
+    "CODEX_CLI_OVERRIDE_UNUSABLE",
+    "CODEX_CLI_UNRESOLVED",
+    "resolve_codex_cli",
     "session_start_concurrency",
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
