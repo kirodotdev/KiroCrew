@@ -3615,6 +3615,92 @@
       }
     },
     {
+      "name": "fs_write percent-encoded path is decoded for display",
+      "input": {
+        "kind": "edit",
+        "toolName": "fs_write",
+        "rawInput": {
+          "command": "str_replace",
+          "path": "drafts/The%20Power%20of%20Running.md",
+          "oldStr": "a",
+          "newStr": "b"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "edit",
+          "path": "drafts/The Power of Running.md"
+        },
+        "more": 0,
+        "title": "Edit drafts/The Power of Running.md",
+        "kind": "edit",
+        "derived": true
+      }
+    },
+    {
+      "name": "fs_read percent-encoded path is decoded before cwd is stripped",
+      "input": {
+        "kind": "read",
+        "toolName": "fs_read",
+        "cwd": "/home/u/proj",
+        "rawInput": {
+          "path": "/home/u/proj/a%20b.md"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "read",
+          "path": "a b.md"
+        },
+        "more": 0,
+        "title": "Read a b.md",
+        "kind": "read",
+        "derived": true
+      }
+    },
+    {
+      "name": "fs_read keeps a segment encoded when it would decode to a separator",
+      "input": {
+        "kind": "read",
+        "toolName": "fs_read",
+        "cwd": "/home/u/proj",
+        "rawInput": {
+          "path": "/home/u/proj/a%2Fb%20c.md"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "read",
+          "path": "a%2Fb%20c.md"
+        },
+        "more": 0,
+        "title": "Read a%2Fb%20c.md",
+        "kind": "read",
+        "derived": true
+      }
+    },
+    {
+      "name": "fs_read keeps a segment encoded when it has a malformed escape",
+      "input": {
+        "kind": "read",
+        "toolName": "fs_read",
+        "cwd": "/home/u/proj",
+        "rawInput": {
+          "path": "/home/u/proj/50%off%20now.md"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "read",
+          "path": "50%off%20now.md"
+        },
+        "more": 0,
+        "title": "Read 50%off%20now.md",
+        "kind": "read",
+        "derived": true
+      }
+    },
+    {
       "name": "edit kind from a persisted unified diff",
       "input": {
         "kind": "edit",
