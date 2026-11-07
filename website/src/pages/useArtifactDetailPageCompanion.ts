@@ -150,7 +150,8 @@ export function useArtifactDetailPageCompanion({
    *  with full slot metadata moments later.
    *
    *  `prefillText` is staged via writePrefill BEFORE the optimistic bind so
-   *  ChatPage's slot-activation effect deterministically finds it on mount. */
+   *  ChatPage's slot-activation effect finds it on mount; the panel withholds the
+   *  slot while `chatCreating`, so a slots frame listing it first cannot mount it earlier. */
   /**
    * The silent /context write, routed through `useMutation` like every other write on this
    * page (use-react-query guideline) rather than a bare promise chain.
