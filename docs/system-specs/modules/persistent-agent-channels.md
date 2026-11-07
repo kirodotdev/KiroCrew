@@ -50,6 +50,8 @@ ChannelAgent
 
 `run_channel_agent` publishes `pending` before it acquires a session, transitions to `listening` after `SessionManager.get_or_create`, uses `working` only while handling an inbox message, and reports `failed` on an execution error. `Channel.subscribe` uses bounded queue waits so a terminal agent cannot leave a task blocked forever; `test/test_channel_subscribe_timeout.py::test_subscribe_exits_when_agent_becomes_done` pins that shutdown behavior.
 
+A member holds its session's lease from spawn until it dies and does not acquire again before each message, so an identity sweep only flags its session. Before each inbox message the loop therefore runs the Kiro account check (`SessionManager.run_identity_check`), and when the check flagged the session (`is_retiring`) it replaces it through `_reset_busy_session`, so the message runs on the current account and the member starts a new conversation. If the replacement lease is unobtainable, the loop posts one system message, sets `failed`, and stops consuming its inbox, as for an unrecoverable wedge.
+
 A new orchestrator posts a ready system message, while a new specialist posts its task and @mentions the orchestrator. A terminal agent can be restarted only through `api_channel_wake_agent`; it returns an error for an active or missing agent.
 
 ### Prompt-Busy Recovery

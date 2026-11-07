@@ -40,6 +40,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
@@ -113,6 +114,7 @@ _AUTO_COMPACTED = "🗜️ 上下文接近上限，已自动压缩。"
 _SOFT_THRESHOLD = "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。"
 _COMPACT_BUSY = "⏳ 正在处理上一条消息，请稍后再试 /compact。"
 _COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
+_COMPACT_ACCOUNT_CHANGED = COMPACT_ACCOUNT_CHANGED_REPLY_ZH
 _COMPACT_DONE = "🗜️ 已压缩上下文。"
 _COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
 
@@ -684,7 +686,9 @@ class WeixinDispatcher:
         # Serialize compaction against the turn semaphore: compacting while a
         # turn is mutating the same session races the transcript.
         if not await self.sessions.try_acquire(session_key):
-            if self.sessions.has_session(session_key):
+            if self.sessions.is_retiring(session_key):
+                await self._say(user_id, _COMPACT_ACCOUNT_CHANGED)
+            elif self.sessions.has_session(session_key):
                 await self._say(user_id, _COMPACT_BUSY)
             else:
                 await self._say(user_id, _COMPACT_NOTHING)
