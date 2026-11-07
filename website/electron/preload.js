@@ -76,6 +76,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // boot splash (loading.html) can paint in the user's chosen colour. Read back
   // by main.js and injected as a query param — see showLoadingThenConnect.
   setThemeAccent: (hex) => ipcRenderer.send("theme-accent-changed", String(hex || "")),
+  // Hand over the active theme pack's splash art ({ type, bytes }), or null
+  // when it ships none, for the next boot splash (see theme-splash.js).
+  setThemeSplash: (image) => ipcRenderer.send("theme-splash-changed", image || null),
   // Report the user's dark/light mode PREFERENCE ("system" | "dark" | "light")
   // so main.js can set `nativeTheme.themeSource` to match. Must be the
   // preference, not the resolved mode: pinning themeSource to dark/light also

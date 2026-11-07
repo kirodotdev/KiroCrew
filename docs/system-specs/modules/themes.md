@@ -35,7 +35,7 @@ a pack may ship. Validation is tier-scaled to payload trust.
 | Tier | `level` | Surface unlocked |
 |---|---|---|
 | **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
-| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
+| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome, splash), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
 Level-1 and Level-2 manifests may also declare `loaderIcons`: 4–8 distinct
@@ -83,6 +83,27 @@ plays in place and holds its first frame under `prefers-reduced-motion: reduce`)
 Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
 pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
 too, matching the left rail.
+
+The desktop app's boot splash (`website/electron/loading.html`, the "waiting for
+gateway" screen) paints before any gateway can serve a pack, so a Level-1 pack's
+`branding/splash.svg|png` (512 KB) reaches it through the shell. Each time the
+active theme's branding is applied, `reportThemeSplash`
+(`website/src/hooks/themeSplash.ts`) fetches the image and hands its bytes to the
+main process, or hands it `null` when the theme ships none; a custom selection
+whose detail has not loaded, or an image download that fails (an expired session
+mid-refresh, a network blip), hands over nothing, so a slow or failed load keeps
+the stored art, as it keeps the render cache.
+`website/electron/theme-splash.js` keeps the last one as `theme-splash.png|svg`
+in the shell's own userData directory and refuses any other type, an empty body
+or one over 512 KB, which clears the stored art. `splashQuery` passes the file as
+`?splash=` on every splash paint, cold boot and reconnect alike. The art takes the
+place of the ghosts and of the closing wordmark, over the theme accent the splash
+already follows; with no art, or art that fails to load, the stock ghosts play.
+Under `prefers-reduced-motion: reduce` the art's `<img>` stays hidden and only
+decodes it, and one frame is painted onto a canvas that never repaints, as the
+dashboard's `PackLoaderImage` does, so an animated SVG holds still.
+Like the accent, it is the last value any dashboard window reported, so it shows
+from the launch after the theme is picked.
 
 Constants (`dashboard/theme_validate.py`): `_THEME_MAX_LEVEL=2`,
 `_THEME_MAX_FONTS=6`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,

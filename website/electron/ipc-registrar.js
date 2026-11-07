@@ -21,6 +21,7 @@ const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
 const { safeFilename } = require("./download-handler");
+const { saveThemeSplash } = require("./theme-splash");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -247,6 +248,8 @@ function createIpcRegistrar({
 
     ipcMain.on("theme-accent-changed", (_event, hex) =>
       windows.chrome.setThemeAccent(hex));
+    ipcMain.on("theme-splash-changed", (_event, image) =>
+      saveThemeSplash(app.getPath("userData"), image));
     ipcMain.on("focus-mode-chrome", (event, visible) =>
       windows.chrome.focusMode(event.sender, visible));
     // Arm/disarm the off-window cursor poll that dismisses a focus-mode reveal.
