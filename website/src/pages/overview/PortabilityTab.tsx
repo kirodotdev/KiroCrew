@@ -6,7 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 
 import { i18nT } from '../../i18n/t'
-import { fmtBytes } from '../../i18n/format'
+import { fmtBytes, fmtList } from '../../i18n/format'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
@@ -190,7 +190,7 @@ export function skippedChats(header: string | null): number {
 
 /** A bounded list of names, with the left-out count as "N more". */
 function joinWithMore(names: string[], more: number): string {
-  return [...names, ...(more ? [i18nT('app.n_more', { count: more })] : [])].join(', ')
+  return fmtList([...names, ...(more ? [i18nT('app.n_more', { count: more })] : [])])
 }
 
 /** Strings only, empty ones and repeats dropped, in first-seen order. */
@@ -452,12 +452,11 @@ export default function PortabilityTab() {
           ? summary.agent_templates_installed.filter((n: unknown): n is string => typeof n === 'string')
           : []
         const templateLines = installedTemplates.length
-          ? [i18nT('pages.overview.portabilityTab.import_agent_templates_installed', { names: installedTemplates.join(', ') })]
+          ? [i18nT('pages.overview.portabilityTab.import_agent_templates_installed', { names: fmtList(installedTemplates) })]
           : []
         const skippedTemplates = skippedTemplateRows(summary.agent_templates_skipped)
-        const describeSkipped = (rows: { name: string; reason: TemplateSkipReason }[]) => rows
-          .map(row => `${row.name} (${i18nT(SKIP_REASON_KEYS[row.reason])})`)
-          .join(', ')
+        const describeSkipped = (rows: { name: string; reason: TemplateSkipReason }[]) => fmtList(rows
+          .map(row => `${row.name} (${i18nT(SKIP_REASON_KEYS[row.reason])})`))
         // A template this install could not write is a failure, so it joins the
         // errors below; every other skip is a caveat.
         const failedTemplates = skippedTemplates.filter(row => row.reason === 'unwritable')
@@ -483,7 +482,7 @@ export default function PortabilityTab() {
         }
         const keptFiles = keptSettingsFiles(summary.settings_kept)
         if (keptFiles.length) {
-          warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: keptFiles.map(settingsFileLabel).join(', ') }))
+          warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: fmtList(keptFiles.map(settingsFileLabel)) }))
         }
         const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
         const chats = [...templateLines, ...chatImportLines(summary)]

@@ -353,7 +353,7 @@ describe('SpriteImporter — picking a sheet', () => {
     expect(screen.getAllByText('4f')).toHaveLength(5)
     // Every slot starts empty: a detected grid is not a mapping.
     for (const label of REQUIRED_LABELS) expect(slotSelect(label).value).toBe('')
-    expect(screen.getByText('Missing: Idle, Walking, Thinking, Working, Error, Offline')).toBeInTheDocument()
+    expect(screen.getByText('Missing: Idle, Walking, Thinking, Working, Error, and Offline')).toBeInTheDocument()
   })
 
   it('keeps the default frame size when the sheet has no transparent grid lines', async () => {
@@ -673,7 +673,7 @@ describe('SpriteImporter — editing an existing pack', () => {
     expect(document.querySelectorAll('[data-strip="data:image/png;base64,IDLEBYTES"]').length).toBeGreaterThan(0)
     // Rebuilt-from-strips is still the stored state, so Save stays shut.
     expect(saveButton()).toBeDisabled()
-    expect(screen.getByText('Missing: Working, Error, Offline')).toBeInTheDocument()
+    expect(screen.getByText('Missing: Working, Error, and Offline')).toBeInTheDocument()
   })
 
   it('falls back to the stored strips when reading the source sheet fails', async () => {
