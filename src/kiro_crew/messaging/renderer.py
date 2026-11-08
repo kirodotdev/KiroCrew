@@ -95,7 +95,13 @@ class OutputEvent:
     # rules (the Slack `wait` stream rollover) must key on what the tool IS.
     # Empty when the transport sent no identity; renderers then fall back to the
     # title, which is what they matched on before the identity travelled.
+    # prompt_choice: the same identity of the tool asked about, set only from a
+    # pair :func:`trusted_mcp_identity` accepts, beside ``mcp_server``.
     tool_name: str = ""
+    # prompt_choice: the MCP server the call is routed to (``_meta.kiro.mcpServerName``),
+    # so an approver can see WHERE a tool runs: ``email_send`` alone does not say which
+    # mail server sends it. "" for a built-in, a shell call or an unproven identity.
+    mcp_server: str = ""
     tool_kind: str = ""  # tool_call (e.g. "read"/"execute" — drives phase emoji)
     tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
     # tool_result: the call's TERMINAL outcome as the ACP layer reported it, one
@@ -359,6 +365,23 @@ def session_provenance_tag(session_key: str) -> str:
     if not session_key:
         return ""
     return hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
+
+
+def trusted_mcp_identity(event: object) -> tuple[str, str]:
+    """``(server, tool)`` of the MCP tool a permission *event* asks about, or ``("", "")``.
+
+    Read from the ``_meta.kiro`` identity the ACP layer marked ``mcp_identity_trusted``,
+    never from the title the model wrote, and only when it names a server: a built-in
+    or a shell call has no server, and an unproven pair names nothing an approver can
+    rely on. Each field is type-checked, so an event shape that lacks them (a shim, a
+    stand-in) reads as unproven rather than as an attribute that merely exists.
+    """
+    if getattr(event, "mcp_identity_trusted", False) is not True:
+        return "", ""
+    server, tool = getattr(event, "mcp_server_name", ""), getattr(event, "tool_name", "")
+    if not isinstance(server, str) or not server.strip():
+        return "", ""
+    return server, tool if isinstance(tool, str) else ""
 
 
 def new_approval_nonce() -> str:
@@ -864,6 +887,11 @@ class Renderer(ABC):
     #: ``on_tool_call`` is rendering (``OutputEvent.raw_title``), set by
     #: :meth:`dispatch` before the hook runs; ``""`` for a derived title.
     current_tool_raw_title: str = ""
+    #: ``(server, tool)`` of the MCP tool the prompt ``on_prompt_choice`` is rendering
+    #: asks about (``OutputEvent.mcp_server`` / ``tool_name``), set by :meth:`dispatch`
+    #: for that one call and cleared after it, so a later direct call cannot show
+    #: another tool's server. Never model-authored, unlike ``tool_title``.
+    prompt_mcp_identity: tuple[str, str] = ("", "")
     #: The driver's empty-turn verdict for the turn being finalized
     #: (``OutputEvent.notice`` on ``DONE``), set by :meth:`dispatch` before
     #: ``on_done`` runs. Non-empty means the turn closed with no assistant text
@@ -1095,13 +1123,17 @@ class Renderer(ABC):
         elif event.kind == TOOL_RESULT:
             await self.on_tool_result(event.tool_call_id, event.tool_status)
         elif event.kind == PROMPT_CHOICE:
-            await self.on_prompt_choice(
-                event.options,
-                event.request_id,
-                event.title,
-                event.tool_purpose,
-                event.tool_input,
-            )
+            self.prompt_mcp_identity = (event.mcp_server, event.tool_name)
+            try:
+                await self.on_prompt_choice(
+                    event.options,
+                    event.request_id,
+                    event.title,
+                    event.tool_purpose,
+                    event.tool_input,
+                )
+            finally:
+                self.prompt_mcp_identity = ("", "")
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
         elif event.kind == DONE:

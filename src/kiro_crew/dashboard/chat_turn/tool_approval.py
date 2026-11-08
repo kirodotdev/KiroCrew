@@ -529,6 +529,10 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # Set only by a deny-rules refusal this request may override (below), and read
     # by _on_permission_prompt's card; every request starts with none.
     turn._deny_override = None
+    # Set once the gate below has fired this request's PreToolUse hooks and they
+    # passed. The trust arm and _on_permission_prompt's approved answer read it so
+    # the hooks run once per call; every request starts unfired.
+    turn._pre_tool_hooks_fired = False
     # A call an earlier sub-agent activity event named is a native child's, on any
     # transport (the set the directive refusal reads), so neither the card nor the
     # parent's session overrides reach it (``deny_override.slot_may_override``).
@@ -569,7 +573,6 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             slot.key,
             _open_construct,
         )
-    _pre_tool_hooks_fired = False
     # "Not applied — approve this command explicitly" notices from a
     # rung that declined its grant. Held until the request actually
     # reaches the interactive card: a later unconditional rung
@@ -976,7 +979,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 refusal_notices=_refusal_notices,
             )
             return _Flow.CONTINUE
-        _pre_tool_hooks_fired = True
+        turn._pre_tool_hooks_fired = True
         # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
     # Native crew auto-approve: when a native subagent (crew pipeline)
     # is active and the session is configured to auto-approve subagent
@@ -1330,7 +1333,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 refusal_reasons=_refusal_reasons,
             )
             return _Flow.CONTINUE
-        if not _pre_tool_hooks_fired:
+        if not turn._pre_tool_hooks_fired:
             try:
                 _parsed_input = json.loads(event.tool_input) if event.tool_input else None
             except Exception:
