@@ -1074,7 +1074,8 @@ _WRITE_TOOL_KINDS: frozenset[str] = frozenset(
 )
 
 
-# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests,
+# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests (a
+# former builtin's adopted record included, ``apps/builtin_adoption_gate.py``),
 # populated ONCE at gateway boot via ``set_builtin_app_mcp_servers`` (see the
 # dashboard startup). Parallel to ``_BUILTIN_APP_NAMES`` and kept as a plain
 # module global for the same reason — the PreToolUse gate does ZERO filesystem
