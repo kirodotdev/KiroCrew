@@ -847,6 +847,17 @@ On the `kas` backend, a background helper whose agent mounts no tool
 | `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. The default is about twice one measured self-contained clone with its dependencies. A value that is not a positive number uses the default | `5.0` |
 | `work_ledger.remote_dispatch_retire_minutes` | Minutes a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. A value that is not a positive number uses the default | `30.0` |
 
+### Kiro relay viewer
+
+The desktop app's list of remote Crews it can open through the Kiro relay. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). The gateway reads all four on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `tunnel.relay_viewer_enabled` | Lets the desktop app list the remote Crews your Kiro sign-in can reach through the relay and open them. While it is off, both relay viewer routes answer 404 and the list is hidden. Only the JSON boolean `true` turns it on | `false` |
+| `tunnel.relay_viewer_cps_url` | The base URL of the control plane the viewer lists Crews from and gets access tokens from. Must be `https://` (`http://` only for a loopback port-forward); any other value is ignored with a warning. Empty means not set up | `""` |
+| `tunnel.relay_viewer_credential` | For testing only. Where the viewer reads a test credential to use instead of your Kiro sign-in, as `secret://NAME` or the absolute path of a file. Never the credential itself; a value that is not a reference is ignored with a warning that does not repeat it | `""` (your Kiro sign-in) |
+| `tunnel.relay_viewer_relay_domain` | Empty (the default) keeps the check that the Crew address starts with its endpoint ID. Set, the address must be exactly `https://<endpoint ID>.<this domain>` with no port, so a value that isn't the relay's domain lists no Crews | `""` |
+
 ### Power
 
 | Key | Description | Default |
