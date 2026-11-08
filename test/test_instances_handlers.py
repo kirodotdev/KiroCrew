@@ -1128,7 +1128,7 @@ class TestHandlers:
                 events.append(f"teardown(keep_intent={keep_intent})")
                 return True
 
-            async def reconfigure(self, instance_id, apply):
+            async def reconfigure(self, instance_id, apply, needs_teardown=None):
                 events.append("enter-critical-section")
                 await self.disconnect(instance_id, keep_intent=True)
                 out = apply()
@@ -1180,7 +1180,7 @@ class TestHandlers:
         reg.update("cd-1", was_connected=True)
 
         class _WedgedManager:
-            async def reconfigure(self, instance_id, apply):
+            async def reconfigure(self, instance_id, apply, needs_teardown=None):
                 raise OSError("ssh process will not die")
 
             async def disconnect(self, instance_id, *, keep_intent=False):
