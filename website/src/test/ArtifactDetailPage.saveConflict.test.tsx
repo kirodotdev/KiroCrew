@@ -331,8 +331,10 @@ describe('stale-write guard', () => {
     await waitFor(() => expect(screen.queryByTestId('editor-stub')).not.toBeInTheDocument())
     flush.refuse(conflict())
 
-    // The pull re-enables only once the refusal has been handled.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Pull latest' })).toBeEnabled())
+    // The pull re-enables only once the refusal has been handled. Busy is
+    // aria-disabled now, not native disabled, so the re-enable is the attribute
+    // clearing rather than the button going non-disabled (it never was).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pull latest' })).not.toHaveAttribute('aria-disabled'))
     expect(screen.queryByText('Not saved.')).not.toBeInTheDocument()
     expect(api.pullLatest).not.toHaveBeenCalled()
   })
@@ -447,13 +449,16 @@ describe('stale-write guard', () => {
     await editAndDirty()
     const pull = await screen.findByRole('button', { name: 'Pull latest' })
     fireEvent.keyDown(document, { key: 's', metaKey: true })
-    await waitFor(() => expect(pull).toBeDisabled())
+    // Busy button goes aria-disabled, not native disabled: it stays focusable
+    // (keeps a keyboard user's focus) but ignores a press while the save runs.
+    await waitFor(() => expect(pull).toHaveAttribute('aria-disabled', 'true'))
+    expect(pull).not.toBeDisabled()
     fireEvent.click(pull)
     expect(saveCalls()).toHaveLength(1)
     expect(api.pullLatest).not.toHaveBeenCalled()
 
     first.settle(mkArtifact({ content: '# v1 edited', content_token: TOKEN_SAVED }))
-    await waitFor(() => expect(pull).toBeEnabled())
+    await waitFor(() => expect(pull).not.toHaveAttribute('aria-disabled'))
   })
 
   it('omits the token for an artifact that has none', async () => {
