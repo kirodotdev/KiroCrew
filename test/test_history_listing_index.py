@@ -371,6 +371,20 @@ def test_the_build_fills_has_messages_for_untitled_rows(tmp_path, monkeypatch) -
     assert not [k for k in listed if k.startswith(("cron_", "dashboard_m-"))]
 
 
+def test_the_boot_search_warm_up_builds_the_index(indexed, monkeypatch) -> None:
+    """The gateway's boot warm-up is the one head-read pass: the first listing reads none."""
+    indexed.log.warm_search()
+    reads = _Count()
+    monkeypatch.setattr(
+        SessionCatalogProjection,
+        "_listing_row",
+        reads.wrap(SessionCatalogProjection._listing_row),
+    )
+    rows = indexed.log.list_sessions_indexed()
+    assert reads.calls == []
+    assert rows == ConversationLog(base_dir=indexed.dir).list_sessions()
+
+
 def _fail_scandir_once(monkeypatch: pytest.MonkeyPatch, directory) -> list[str]:
     """Make the next ``os.scandir`` of *directory* raise ``EMFILE``; returns the record."""
     failed: list[str] = []

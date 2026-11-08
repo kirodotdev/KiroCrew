@@ -584,10 +584,12 @@ class SessionCatalogProjection:
         Reads every window session's metadata into the log's cache and opens
         the index with one shortlist read, which together are most of what a
         first query costs beyond any later new query. Blocking; run off the loop.
+        The window comes from the listing index, so this read also builds it and
+        the first Older Sessions listing finds it built.
         """
         if not self._log._dir.exists():
             return
-        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        window = self._log.list_sessions_indexed()[: _facade_search_scan_window()]
         self._index_shortlist(window, [])
 
     def _search_sessions(
