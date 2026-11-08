@@ -448,7 +448,9 @@ def persist_jpeg(raw: bytes) -> str:
         # Same warn-and-continue as ``capture_macos``: the frame is already
         # written, and deleting it would lose the observation over a defence-in-depth
         # step that the per-user %TEMP% already partly covers.
-        logger.warning("could not restrict computer-use screenshot %s to owner-only", path)
+        logger.warning(
+            "SECURITY: could not restrict computer-use screenshot %s to owner-only", path
+        )
     trim_shots_dir()
     return path
 
