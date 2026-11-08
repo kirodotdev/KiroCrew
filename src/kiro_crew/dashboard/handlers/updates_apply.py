@@ -356,12 +356,18 @@ async def _restart_gateway(
         # image itself, and the sessions closed above do not come back. Exit on
         # that rather than fall through to ``return True``, which reports a
         # restart that did not happen from a process that cannot serve.
+        # The exec skips the orderly exit that marks the crash dump clean, so it
+        # is marked here, with nothing left between the mark and the exec.
+        from kiro_crew.dashboard import crash_dump_store
+
+        await crash_dump_store.mark_clean_exit()
         try:
             if launcher is not None:
                 reexec_launcher(launcher, sys.argv[1:])
             else:
                 reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         except OSError:
+            await crash_dump_store.unmark_clean_exit()
             await exit_after_failed_restart_exec(launcher or exe)
         return True
     finally:

@@ -509,7 +509,8 @@ def _doctor_cron_health(issues: list[str]) -> None:
 
 def _doctor_crash_dumps(issues: list[str]) -> None:
     """Render the ``Loop-stall Crash Dumps`` section: the newest dump with stacks,
-    where the loop wedged, and who it was working for."""
+    where the loop wedged, who it was working for, and the gateways that died
+    with neither stacks nor a clean shutdown."""
     print("\nLoop-stall Crash Dumps")
     try:
         dumps_dir = cli_doctor.get_dumps_dir()
@@ -588,6 +589,20 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                 )
         else:
             print("  dumps:       ✅ no crash dumps found (healthy)")
+        # Gateways that ended with neither a stall dump nor an orderly shutdown.
+        # A hard kill is an ordinary way to end one, so the row informs and never
+        # adds an issue.
+        _unclean = cli_doctor.unexplained_exits(dumps_dir)
+        if _unclean:
+            _newest_h = cli_doctor.dump_age_seconds(_unclean[-1]) / 3600
+            print(
+                f"  unclean:     ℹ️  {len(_unclean)} earlier gateway session(s) ended "
+                "without a clean shutdown and left no stacks"
+            )
+            print(
+                f"               newest started {_newest_h:.1f}h ago: "
+                f"{render._safe_display(_unclean[-1].name)}"
+            )
         print(f"  dump dir:    {dumps_dir}")
     except Exception as exc:
         print(f"  crash dumps: ⚠️  check failed ({exc})")

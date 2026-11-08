@@ -60,9 +60,9 @@ async def _open_loop_watchdog(_launch_environment: dict[str, str]) -> LoopStallW
     ~/.kiro/crew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
     and startup warnings, rather than buried in interleaved stderr/journal.
     Crash-dump hygiene: sweep header-only dumps left by prior sessions that
-    exited without ever wedging (every startup pre-creates one for
-    faulthandler's fd), THEN rotate. Sweeping first keeps empty startup files
-    from aging real stall dumps out of the rotation window.
+    exited cleanly (every startup pre-creates one for faulthandler's fd), THEN
+    rotate. Sweeping first keeps empty startup files from aging real stall
+    dumps out of the rotation window.
     """
     await asyncio.to_thread(sweep_stale_dumps)
     await asyncio.to_thread(rotate_dumps)

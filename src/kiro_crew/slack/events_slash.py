@@ -683,6 +683,11 @@ async def _handle_restart(
     from kiro_crew.cli import drain_log_queue_before_hard_exit
 
     await drain_log_queue_before_hard_exit()
+    # An owner-asked restart is an orderly exit too: once its teardown is done,
+    # mark the crash dump clean so the next boot does not list it as unclean.
+    from kiro_crew.dashboard import crash_dump_store
+
+    await crash_dump_store.mark_clean_exit()
     # hard_exit cancels an update apply in flight first (its build child
     # killed) rather than leaving it writing a tree after the exit.
     from kiro_crew import platform_compat
