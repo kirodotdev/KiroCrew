@@ -1557,17 +1557,23 @@ class TestHoistManagedServers:
         ],
         ids=["timeout", "registry", "remote", "no-command"],
     )
-    def test_a_restricted_or_unrepresentable_entry_keeps_the_block_path(self, entry):
+    def test_a_restricted_or_unrepresentable_entry_keeps_the_block_path(self, monkeypatch, entry):
         # No ``disabled: true`` case: such an entry is never declared in the first
         # place (see ``TestMutedServersAreNotDeclared``), so it cannot reach here
         # to be hoisted or kept.
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
         projected = to_client_custom_agent(
             "kirocrew", _spec(mcpServers={"kirocrew-core": entry}), "p"
         )
         agents, array = hoist_servers_for_session([projected], "kirocrew", [])
         assert array == []
-        assert agents[0] is projected
-        assert agents[0]["mcpServers"]["kirocrew-core"] == entry
+        if "command" in entry:
+            # Kept in the block, it still launches the managed invocation.
+            launch = {"command": "/opt/kc", "args": ["mcp-core"]}
+            assert agents[0]["mcpServers"]["kirocrew-core"] == {**entry, **launch}
+        else:
+            assert agents[0] is projected
+            assert agents[0]["mcpServers"]["kirocrew-core"] == entry
 
     def test_no_agents_or_no_block_is_a_passthrough(self):
         array = [{"name": "x"}]

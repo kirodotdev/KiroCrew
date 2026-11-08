@@ -1,11 +1,12 @@
-"""A server's ``autoApprove`` reaches KAS as ``permissions``, under the kiro-cli checks.
+"""A server's ``autoApprove`` reaches both runtimes as an ``allowedTools`` grant.
 
-kiro-cli honours ``mcpServers.<name>.autoApprove`` once
-``governance.strip_ungoverned_auto_approve`` keeps it. KAS has no slot for the key,
-so the projection turns each kept verb into an ``allowedTools`` entry and derives
-the ``permissions`` rule from it, where it meets the per-entry ceiling and the
-PreToolUse-hook withholding as well. These tests pin that a kept verb is granted
-and that every check that withholds it on either route still withholds it.
+Neither runtime reads the key: kiro-cli has no such field and KAS has no slot for
+it. So each verb ``governance.strip_ungoverned_auto_approve`` keeps becomes an
+``@server/tool`` entry. The KAS projection derives the ``permissions`` rule from it,
+where it meets the per-entry ceiling and the PreToolUse-hook withholding as well;
+on kiro-cli the native skill view carries it in its own ``allowedTools``
+(``grant_in_skill_view``). These tests pin that a kept verb is granted and that
+every check that withholds it on either route still withholds it.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import types
 import pytest
 from kas_agents_helpers import _spec
 
-from kiro_crew.acp import kas_agents
+from kiro_crew.acp import kas_agents, kas_auto_approve
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.platform import governance
@@ -140,3 +141,113 @@ def test_refs_follow_the_spec_and_skip_malformed_entries(ungoverned):
     }
     assert auto_approve_refs(spec) == ["@s1/b", "@s1/a"]
     assert auto_approve_refs({"mcpServers": []}) == []
+
+
+# -- the kiro-cli skill view ---------------------------------------------------
+
+
+@pytest.fixture
+def view_events(ungoverned, monkeypatch) -> list[dict]:
+    """The ungoverned host, with the view's ceiling and its audit sink pinned."""
+    events: list[dict] = []
+    monkeypatch.setattr(kas_auto_approve, "may_skip_gate_now", lambda ref: True)
+    monkeypatch.setattr(kas_auto_approve, "_RECORDED", set())
+    monkeypatch.setattr(
+        kas_auto_approve,
+        "sel",
+        lambda: types.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+    )
+    return events
+
+
+def _view(**extra) -> dict:
+    return {"tools": ["@docs-mcp"], "mcpServers": {"docs-mcp": dict(_DOCS)}, **extra}
+
+
+def test_a_kept_verb_is_granted_in_the_skill_view(view_events):
+    """kiro-cli has no ``autoApprove`` field, so the view kiro-cli runs carries the
+    grant the KAS projection derives, as an ``allowedTools`` entry."""
+    view = _view(allowedTools=["fs_read"])
+    assert kas_auto_approve.grant_in_skill_view("a", view) == ["@docs-mcp/read_page"]
+    assert view["allowedTools"] == ["fs_read", "@docs-mcp/read_page"]
+    assert view["mcpServers"]["docs-mcp"]["autoApprove"] == ["read_page"]
+
+
+def test_a_view_with_no_allowed_tools_gets_the_list(view_events):
+    view = _view()
+    kas_auto_approve.grant_in_skill_view("a", view)
+    assert view["allowedTools"] == ["@docs-mcp/read_page"]
+
+
+def test_the_owner_opt_in_off_grants_nothing_in_the_view(view_events, monkeypatch):
+    """A custom agent's file is never rewritten, so its list stays written; the view
+    asks governance again at every spawn."""
+    monkeypatch.setattr(governance, "_auto_approve_is_honoured", lambda: False)
+    view = _view(allowedTools=["fs_read"])
+    assert kas_auto_approve.grant_in_skill_view("a", view) == []
+    assert view["allowedTools"] == ["fs_read"]
+
+
+def test_a_ceiling_on_the_server_grants_nothing_in_the_view(view_events, monkeypatch):
+    monkeypatch.setattr(governance, "may_skip_gate_now", lambda ref: ref != "@docs-mcp")
+    view = _view(allowedTools=[])
+    assert kas_auto_approve.grant_in_skill_view("a", view) == []
+    assert view["allowedTools"] == []
+
+
+@pytest.mark.parametrize("refusal", ["opt_in_off", "server_ceiling"])
+def test_a_first_filter_refusal_in_the_view_is_recorded_once(view_events, monkeypatch, refusal):
+    """The first filter runs unaudited at every spawn, so what it drops is recorded
+    through the view's own deduplicated recorder, once."""
+    if refusal == "opt_in_off":
+        monkeypatch.setattr(governance, "_auto_approve_is_honoured", lambda: False)
+    else:
+        monkeypatch.setattr(governance, "may_skip_gate_now", lambda ref: ref != "@docs-mcp")
+    for _ in range(2):
+        assert kas_auto_approve.grant_in_skill_view("a", _view(allowedTools=[])) == []
+    assert [e["operation"] for e in view_events] == ["mcp_auto_approve_withheld"]
+    assert "@docs-mcp/read_page" in view_events[0]["resources"]
+
+
+def test_a_ceiling_on_the_tool_withholds_the_view_grant_and_records_it(view_events, monkeypatch):
+    monkeypatch.setattr(
+        kas_auto_approve, "may_skip_gate_now", lambda ref: ref != "@docs-mcp/read_page"
+    )
+    view = _view(allowedTools=[])
+    assert kas_auto_approve.grant_in_skill_view("a", view) == []
+    assert view["allowedTools"] == []
+    assert [e["operation"] for e in view_events] == ["mcp_auto_approve_withheld"]
+
+
+@pytest.mark.parametrize("verbs", [["other"], []], ids=["narrowed", "emptied"])
+def test_a_verb_the_owner_drops_leaves_no_grant_in_the_next_view(view_events, verbs):
+    """The view is rebuilt from the spec at every spawn and the spec never holds the
+    grant, so a verb taken off the list takes its grant with it."""
+    authored = _view(allowedTools=["fs_read"])
+    kas_auto_approve.grant_in_skill_view("a", authored)
+    assert "@docs-mcp/read_page" in authored["allowedTools"]
+    edited = _view(allowedTools=["fs_read"])
+    edited["mcpServers"]["docs-mcp"]["autoApprove"] = verbs
+    kas_auto_approve.grant_in_skill_view("a", edited)
+    assert "@docs-mcp/read_page" not in edited["allowedTools"]
+
+
+def test_an_entry_already_on_the_list_is_not_repeated(view_events):
+    view = _view(allowedTools=["@docs-mcp/read_page"])
+    assert kas_auto_approve.grant_in_skill_view("a", view) == []
+    assert view["allowedTools"] == ["@docs-mcp/read_page"]
+
+
+def test_a_list_that_is_not_a_list_is_left_alone(view_events):
+    view = _view(allowedTools="*")
+    assert kas_auto_approve.grant_in_skill_view("a", view) == []
+    assert view["allowedTools"] == "*"
+
+
+def test_a_view_grant_is_recorded_once_per_process(view_events):
+    """The view is rebuilt at every spawn; the security log gets the decision once."""
+    for _ in range(3):
+        kas_auto_approve.grant_in_skill_view("a", _view(allowedTools=[]))
+    assert [e["operation"] for e in view_events] == ["mcp_auto_approve_honoured"]
+    assert "@docs-mcp/read_page" in view_events[0]["resources"]
+    assert view_events[0]["source"] == "skill-view:a"

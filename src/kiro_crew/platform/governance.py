@@ -464,9 +464,12 @@ def strip_ungoverned_auto_approve(
 ) -> Dict[str, object]:
     """Return ``servers`` with a ceiling-governed ``autoApprove`` removed.
 
-    ``autoApprove`` is the OTHER route to the exemption ``allowedTools`` grants,
-    and a more direct one: kiro-cli approves an autoApproved MCP tool locally and
-    emits no permission request, so ``hooks.on_tool_call`` never runs for it.
+    ``autoApprove`` is the OTHER route to the exemption ``allowedTools`` grants:
+    neither runtime reads the key, so each verb kept here is granted as an
+    ``@<server>/<tool>`` entry where the session starts (the skill view's
+    ``allowedTools`` on kiro-cli, the projection's ``permissions`` on KAS), which the
+    runtime approves locally with no permission request, so ``hooks.on_tool_call``
+    never runs for it.
     ``agent.py``'s managed-server block states the rule for the servers KiroCrew
     ships ("DELIBERATELY NO autoApprove KEY, and none may ever be added"); this
     applies it to every other source.

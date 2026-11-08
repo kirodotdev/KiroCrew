@@ -592,9 +592,10 @@ def require_shared_template_within_ceiling(
     """Refuse a *backend* start on a crew-bound spec Kiro Crew does not own that the
     ceiling would narrow.
 
-    kiro-cli honours a spec file's ``allowedTools`` and server ``autoApprove`` before
-    Kiro Crew's gate, and Kiro Crew never writes a spec it does not own (owner
-    decision, docs/decisions). So a session on such a file is started only when the
+    kiro-cli honours a spec file's ``allowedTools`` before Kiro Crew's gate (a server's
+    ``autoApprove`` reaches it the same way, as the ``allowedTools`` entries the skill
+    view adds for the verbs governance keeps), and Kiro Crew never writes a spec it
+    does not own (owner decision, docs/decisions). So a session on such a file is started only when the
     two governance passes would remove nothing from any file that claims *agent*:
     otherwise it would auto-approve what the ceiling denies. Only a host in
     ``ACP_BACKENDS_SPEC_FILE_GRANTS`` reads the file's grants, so only its starts

@@ -870,6 +870,52 @@ class TestInstallAgent:
         assert "builder-mcp" in config["mcpServers"], "the server stays reachable"
         assert "autoApprove" not in config["mcpServers"]["builder-mcp"]
 
+    @pytest.mark.parametrize("honour", [True, False])
+    def test_a_rebuild_writes_no_auto_approve_grant_and_keeps_the_owner_s(
+        self, tmp_path: Path, monkeypatch, honour: bool
+    ):
+        """The rebuild never turns a kept ``autoApprove`` verb into an ``allowedTools`` entry.
+
+        kiro-cli has no ``autoApprove`` field; the skill view it runs carries the grant,
+        rebuilt at every spawn, so ``kirocrew.json`` holds none that could outlive the
+        verb when the owner narrows or deletes the list or turns the opt-in off. A grant
+        the owner wrote in ``allowedTools`` is theirs, and the opt-in does not touch it.
+        """
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = honour
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        own = "@builder-mcp/OwnersOwn"
+        (kiro_dir / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "model": "claude-user-custom",
+                    "tools": ["@builder-mcp"],
+                    "allowedTools": [own],
+                    "mcpServers": {
+                        "builder-mcp": {
+                            "command": "builder-mcp",
+                            "autoApprove": ["ReadInternalWebsites", "OwnersOwn"],
+                        }
+                    },
+                    "hooks": {},
+                }
+            )
+        )
+
+        for _rebuild in range(2):
+            path = _run_install(tmp_path, cfg_dir)
+            config = json.loads(path.read_text(encoding="utf-8"))
+            assert ("autoApprove" in config["mcpServers"]["builder-mcp"]) is honour
+            granted = [r for r in config["allowedTools"] if r.startswith("@builder-mcp")]
+            assert granted == [own]
+
     def test_kirocrew_mcp_json_overrides_kiro_mcp(self, tmp_path: Path, monkeypatch):
         """~/.kirocrew/mcp.json overrides ~/.kiro/settings/mcp.json for kirocrew agent.
 

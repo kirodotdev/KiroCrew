@@ -1421,10 +1421,11 @@ def heartbeat_mcp_servers(default_spec: dict[str, Any] | None) -> dict[str, dict
     included, with :data:`_HEARTBEAT_STRIPPED_FLAGS` removed from its ``args``:
     ``--flag=value`` is dropped, and a bare ``--flag`` drops the argument after it too.
     An edition server is copied verbatim, filters included, minus ``autoApprove``:
-    that field makes kiro-cli approve a matching call itself, before the gateway's
-    ``_heartbeat_approval`` and its SEL audit ever see it, and this agent has no
-    approver behind it. Pure given the context, so the installer and the spawn gate
-    derive the same map from the same bytes.
+    a kept verb becomes an auto-approval (an ``allowedTools`` entry of the skill view
+    on kiro-cli, a ``permissions`` allow on KAS) that runs a matching call before the
+    gateway's ``_heartbeat_approval`` and its SEL audit ever see it, and this agent
+    has no approver behind it. Pure given the context, so the installer and the spawn
+    gate derive the same map from the same bytes.
     """
     servers = (default_spec or {}).get("mcpServers")
     if not isinstance(servers, dict):

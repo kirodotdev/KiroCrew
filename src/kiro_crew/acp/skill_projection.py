@@ -128,6 +128,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _has_spec_pin,
         _pinned_source,
         _projection_enabled,
+        _relaunch_reserved_servers,
         _warn_ceiling_fallback_once,
         prepare_native_skill_projection,
         project_agent_view,

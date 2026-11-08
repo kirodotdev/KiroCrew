@@ -357,7 +357,14 @@ Slack thread, the text-command channels (Webex, Discord, Teams, Feishu, via
 Read-only native agent listing/schema commands remain available. Mode activation
 refreshes the view inside the existing derived-spec freshness bracket.
 The reserved core server's command and environment are pinned to the managed
-declaration. Explicit search exclusions disable that agent's projected view with an
+declaration. Every other reserved `kirocrew-*` stdio entry the view carries keeps
+its own keys but launches the managed `command` and `args`
+(`managed_mcp_spec_entry(name, include_opt_in=True)`, applied by
+`agent.with_managed_launch`): kiro-cli mounts a view entry as written wherever no
+per-session element replaces it (the direct client, or a `timeout` that withholds
+the element), so a spec copied from `kirocrew.json` would otherwise start the
+payload an upgrade has since removed. The authored spec is never rewritten.
+Explicit search exclusions disable that agent's projected view with an
 actionable error. The reserved server's `disabled` must be a boolean and
 `disabledTools` a list of strings; null or malformed values fail only that agent
 with an actionable error instead of aborting preparation of healthy agents.
@@ -2465,7 +2472,15 @@ the caller's array already carries is skipped (a broker stub or member dispatch
 entry stays authoritative and a name appears once), and only a stdio entry whose
 keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,
 `disabledTools` or `timeout` customization, a registry marker, a remote URL or a
-command-less entry keeps the agent-block path where that field is honoured. The agent's `tools`, `excludedTools` and `permissions` are
+command-less entry keeps the agent-block path where that field is honoured.
+A managed stdio entry kept there (a `timeout`, a registry marker) still
+launches the managed invocation: its `command` and `args` are replaced from
+`SessionExtras.managed_entries` (`agent.with_managed_launch`), every other key
+stays as projected, and it carries no session token. KAS starts a block entry
+as declared, so without this a user spec copied from `kirocrew.json` keeps the
+launcher of a payload an upgrade has since removed and the server fails with
+ENOENT. A name the caller's array carries keeps its block entry as declared.
+The agent's `tools`, `excludedTools` and `permissions` are
 untouched: refs resolve wherever the server was declared, and on 2.18.0 an
 allowlist-only or `excludedTools` restriction on the hoisted server still
 yields readiness with only the permitted tag advertised. Exact legacy

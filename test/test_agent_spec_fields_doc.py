@@ -136,7 +136,7 @@ def test_native_launch_view_carries_no_skill_resources(doc_text, tmp_path, monke
     monkeypatch.setattr(projection, "kiro_agents_dir", lambda: agents)
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
-        lambda name: {"command": "test-core", "args": []},
+        lambda name, **_kw: {"command": "test-core", "args": []},
     )
     monkeypatch.setattr(
         projection,
