@@ -3231,8 +3231,26 @@ normal consent dialog can create the missing binding. The exception is an app
 still installed with positively local provenance: the grant endpoint binds to
 that installed source, so the dialog could only record a local grant again.
 That refusal returns `app_trust_local_only` instead, so no consent dialog opens,
-and its prose names the route that does record the repository: uninstall
-keeping data, then install from the App Store. A still-installed app with
+and carries `trustRepository`: the normalized, credential-free coordinate of the
+row it resolved (the prose names no coordinate). The update route is what
+records that repository (`apps/local_trust_switch.py`):
+`POST /api/apps/{name}/update` with `source: "registry:<name>"` and that value as
+`trustRepository`, owner-only like every update. Under the app's lifecycle lock,
+before the install starts, it requires the name to hold exactly a local-only grant
+(name plus local marker, no binding) over positively local installed code and the
+proof to equal the freshly resolved install row, refusing otherwise with
+`app_trust_switch_not_applicable` or `app_trust_repository_mismatch` and writing
+nothing. It then writes the grant the consent dialog writes for a fresh install
+(binding set, local marker dropped), so no repository byte is fetched under the
+local grant. When the install fails or raises, the local marker is put back
+(only while the binding still names that repository) before the old app is
+restored, so its backend starts admitted. A failure before the take-down puts
+the grant back and then starts the old backend again, because the health watch
+can stop it while the repository grant does not cover its local code. The detail page's banner for this
+refusal opens the consent dialog on that repository and sends this request; the
+App Store's Update on a path install that a registry row offers a newer version
+of runs the registry update (the detail page's Update), never a folder re-copy.
+A still-installed app with
 positively local provenance retains migration compatibility; an unknown/fresh
 same-name local source does not inherit that old grant. The commit is deliberately
 not bound: a new pin in the same repository is the ordinary catalog update path
@@ -3248,7 +3266,9 @@ Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
 (`list_catalog_apps`, `_resolve_registry_row`, `_append_external_registry_apps`,
 `_detect_installed_probe`), `apps/registry_pipeline/checkout.py` (`_git_fetch_commit`),
 `dashboard/handlers/security_trusted_apps.py` (`api_trusted_app_grant`),
-`apps/routes_registry.py` (`handle_registry`), `apps/routes_listing.py` (`handle_list_apps`, `handle_get_app`), and
+`apps/local_trust_switch.py` with `apps/routes_install.py` (`handle_update_app`),
+`apps/routes_registry.py` (`handle_registry`), `apps/routes_listing.py` (`handle_list_apps`, `handle_get_app`),
+`website/src/pages/AppDetailPage.tsx` (the local-only banner), and
 `website/src/components/appstore/TrustAppModal.tsx`.
 
 ## 15. A registry's credential posture follows its index's change control

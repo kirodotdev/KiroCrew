@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -41,6 +41,10 @@ from kiro_crew.apps.registry import install_from_registry
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
+
+if TYPE_CHECKING:
+    # Annotation-only, so the routes facade does not serve them.
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
@@ -284,7 +288,11 @@ async def _restore_app_after_failed_update(
 
 
 async def _reinstall_from_registry(
-    name: str, registry_name: str, log_lines: list[str] | None = None
+    name: str,
+    registry_name: str,
+    log_lines: list[str] | None = None,
+    *,
+    after_failure: Callable[[bool], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Re-install installed *name* from the registry, taking it down only to replace it.
 
@@ -300,6 +308,11 @@ async def _reinstall_from_registry(
     self-managed (``resources: "app"``) skips the take-down, so once the record says so
     the backend is stopped and the app fully deregistered: it registers its own from
     then on.
+
+    ``after_failure`` is awaited once for a failed install, with whether the app was
+    taken down, before anything starts the old app again. The update route puts a
+    switched trust grant back there, so the restored local code starts under the
+    grant that covers it.
     """
     taken_down = False
     loop = asyncio.get_running_loop()
@@ -323,6 +336,8 @@ async def _reinstall_from_registry(
     result = await install_from_registry(
         registry_name, log_lines=log_lines, before_replace=_take_down
     )
+    if not result.get("ok") and after_failure is not None:
+        await after_failure(taken_down)
     if not taken_down:
         if not was_self_managed and await _is_self_managed():
             await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)

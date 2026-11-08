@@ -755,12 +755,11 @@ describe('AppsPage — Library enable and update', () => {
     expect(updateApp).not.toHaveBeenCalled()
   })
 
-  it('syncs a PATH-installed app in place instead of routing at the registry', async () => {
-    // The grid only offers Update while one is pending (a registry row later
-    // published for this name), but ROUTING stays keyed on the RECORDED
-    // source: a directory install refreshes via POST /api/apps/{name}/update
-    // (re-copying the recorded directory), never the streaming registry
-    // install the detail page runs.
+  it('sends a PATH install that a registry row offers an update for to the detail page', async () => {
+    // The grid offers Update only while one is pending (a registry row later
+    // published for this name), and Update installs that version, the way the
+    // detail page's own Update button does. Re-copying the recorded directory
+    // here reported success while the listed version never landed.
     listApps.mockResolvedValue([{
       ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
       source: '/home/u/apps/orchestrator-switch', origin: 'local',
@@ -771,8 +770,10 @@ describe('AppsPage — Library enable and update', () => {
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
     fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
-    await waitFor(() => expect(updateApp).toHaveBeenCalledWith('orchestrator-switch'))
-    expect(screen.queryByTestId('detail-route')).toBeNull()
+    const probe = await screen.findByTestId('detail-route')
+    expect(probe).toHaveAttribute('data-path', '/apps/detail/orchestrator-switch')
+    expect(probe).toHaveAttribute('data-auto', 'update')
+    expect(updateApp).not.toHaveBeenCalled()
   })
 
   it('reflects a completed in-place sync, which is otherwise invisible', async () => {
@@ -784,12 +785,11 @@ describe('AppsPage — Library enable and update', () => {
       ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
       source: '/home/u/apps/orchestrator-switch', origin: 'local',
     }])
-    listRegistry.mockResolvedValue({
-      apps: [{ ...REGISTRY_APPS[1], name: 'orchestrator-switch', displayName: 'Orchestrator Switch' }],
-    })
+    // No registry row offers an update, so the tile's verb is Sync.
+    listRegistry.mockResolvedValue({ apps: [] })
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sync' }))
     // The message is read from the always-mounted live region (the visible
     // card carries the same text, hidden from assistive tech).
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Synced Orchestrator Switch from its source directory/))
@@ -800,13 +800,12 @@ describe('AppsPage — Library enable and update', () => {
       ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
       source: '/home/u/apps/orchestrator-switch', origin: 'local',
     }])
-    listRegistry.mockResolvedValue({
-      apps: [{ ...REGISTRY_APPS[1], name: 'orchestrator-switch', displayName: 'Orchestrator Switch' }],
-    })
+    // No registry row offers an update, so the tile's verb is Sync.
+    listRegistry.mockResolvedValue({ apps: [] })
     updateApp.mockRejectedValue(new Error('source path no longer exists'))
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sync' }))
     expect(await screen.findByText('source path no longer exists')).toBeInTheDocument()
   })
 
