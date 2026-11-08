@@ -716,12 +716,16 @@ export const deleteSlot = createAsyncThunk<
         // `push_slot_removed` confirms the durable close, while the restore arm
         // puts the key back and publishes a list that releases this hold.
         dispatch(awaitCloseOutcome({ key, requestId }))
-        dispatch(watchCloseOutcome({ key, title: refusedTitle, incarnation }))
         // The hold's wall-clock cap is otherwise evaluated only when a list
         // arrives, and an idle main-dashboard tab may receive none; the timer
         // makes the bound real. Fire-and-forget: the reducer's guards make a
         // late or redundant fire a no-op.
         const inFlightUntil = (getState() as RootState).dashboard.closingSlots?.[key]?.inFlightUntil
+        // The DELETE answered 404, so this close is done for THIS tab, but the
+        // close that popped the key may still be saving. Keep the restore watch
+        // quiet until that in-flight cap passes: a re-listing before it is the
+        // server putting the row back, one after it is the slow save (#31538).
+        dispatch(watchCloseOutcome({ key, title: refusedTitle, incarnation, quietUntil: inFlightUntil ?? undefined }))
         if (inFlightUntil !== null && inFlightUntil !== undefined) {
           setTimeout(() => dispatch(expireCloseHold({ key, requestId })), Math.max(0, inFlightUntil - Date.now()) + 1)
         }
