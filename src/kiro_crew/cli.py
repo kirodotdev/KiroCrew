@@ -1272,6 +1272,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LOG_FATAL_ERRNOS,
         _LOG_QUEUE_LISTENER,
         _LONG_LIVED_COMMANDS,
+        _chat_console_filter,
         _CliLogQueueHandler,
         _fd_is_regular_file,
         _fd_targets_file,
