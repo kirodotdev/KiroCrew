@@ -409,6 +409,7 @@ from kiro_crew.platform.update_governance import (
 )
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -799,6 +800,11 @@ class GatewayOrchestrator:
     _mandatory_update_deferred_key: str | None
     _wheel_update_noticed: set[str]
     _mcp_gateway_manager: GatewayManager | None
+    # A manager whose start failed, held while ``_mcp_gateway_start_retry``
+    # starts it again (gateway_runtime/mcp_broker.py). Defaulted on the class
+    # so the ``__new__`` fixtures that never run ``__init__`` read "no retry".
+    _mcp_gateway_pending: GatewayManager | None = None
+    _mcp_gateway_start_retry: asyncio.Task[None] | None = None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
     _mcp_overlay_refresh_lock: asyncio.Lock | None = None
@@ -1064,6 +1070,9 @@ class GatewayOrchestrator:
     # gateway_runtime/mcp_broker.py
     _schedule_mcp_launch_approval_persist = _mcp_broker._schedule_mcp_launch_approval_persist
     _init_mcp_gateway = _mcp_broker._init_mcp_gateway
+    _mark_mcp_broker_ready = _mcp_broker._mark_mcp_broker_ready
+    _mcp_gateway_start_retry_delay = _mcp_broker._mcp_gateway_start_retry_delay
+    _retry_mcp_gateway_start = _mcp_broker._retry_mcp_gateway_start
 
     #: Floor on the gap between timed pre-resolve passes. ``refresh_hours = 0``
     #: legitimately means "always stale" for the freshness check, but it must not
