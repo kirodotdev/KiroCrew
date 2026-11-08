@@ -171,7 +171,13 @@ def test_the_diagnosis_codes_the_troubleshooting_table_quotes_still_exist(doc_fl
     diagnostics = (ROOT / "src" / "kiro_crew" / "instances" / "diagnostics.py").read_text(
         encoding="utf-8"
     )
-    for code in ("ssh_unreachable", "ssm_unreachable", "remote_down", "tunnel_down"):
+    for code in (
+        "ssh_unreachable",
+        "ssm_unreachable",
+        "ssm_target_missing",
+        "remote_down",
+        "tunnel_down",
+    ):
         assert f'"{code}"' in diagnostics, f"the page quotes the diagnosis code {code}"
         assert f"`{code}`" in doc_flat
 
