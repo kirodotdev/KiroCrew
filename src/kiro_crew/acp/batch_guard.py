@@ -1216,8 +1216,6 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
     least one other member before config is read; then the call and its peers
     are classified with the operator's extra write commands.
     """
-    import asyncio
-
     window = getattr(transport, "_batch_window", None)
     if window is None or event is None:
         return None
@@ -1314,8 +1312,6 @@ async def reject(
     """Answer a request :func:`screen_approval` refused: drop any mediated-secret
     grant minted for the call, log and audit it as the guard's, and reject it.
     Returns ``False``, what ``approve_tool`` returns for a refusal."""
-    import asyncio
-
     from kiro_crew import mediated_request_capability, permission_floor
 
     mediated_request_capability.invalidate_for_gate_event(session_key, event)
