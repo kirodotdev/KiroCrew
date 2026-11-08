@@ -739,11 +739,36 @@ semaphore and the host-safe ceiling are the only throttling mechanisms.
 
 ## Runs Persistence
 
-Persistent, non-cron runs are snapshotted throughout their lifecycle to
-`{work_dir}/runs.json` and loaded by `__init__`. Admission, plan/task edits,
-progress, terminal transitions, and deletion all await the fsync-backed snapshot
-path. See [Task snapshot persistence](#task-snapshot-persistence) for the full
-record, privacy exclusions, failure handling, and ordering contract.
+Persistent, non-cron runs are snapshotted throughout their lifecycle to the
+registry file in `{work_dir}` (`runs.json`, or the per-home name below) and loaded
+by `__init__`. Admission, plan/task edits, progress, terminal transitions, and
+deletion all await the fsync-backed snapshot path. See
+[Task snapshot persistence](#task-snapshot-persistence) for the full record,
+privacy exclusions, failure handling, and ordering contract.
+
+The default workspace root is one folder per OS user (see
+[config](config.md#workspace-root)), so every data home with no workspace of its
+own shares one work dir. There a `KIROCREW_HOME` override names its registry
+`runs-<data_home_id>.json` (the `session_work_dir.data_home_id()` a run-dir marker
+records), so a gateway lists and rewrites only its own home's runs. The name
+depends only on the data home and the folder: a configured
+`taskrunner.workspace_dir` inside that root gets the per-home name too, and the
+default home and every work dir outside that root keep `runs.json`. While the work
+dir stays the folder `_load_runs` read, every write goes to that file. Both macOS
+bases (`/Volumes/workplace` and `~/workplace`) count as that root, so a volume
+mounting later never changes a folder's name; a live `taskrunner.workspace_dir`
+change to another folder writes the name a start there reads.
+
+On the first start under a per-home name, `_adopt_home_rows` copies the shared
+`runs.json` rows whose `taskrunner:<task_id>:runtime` session record is in this
+home's own session history (binding the run's execution writes it) into the new
+per-home file; the shared file is never written, moved or deleted. Rows it
+cannot attribute stay there, and a warning names the file and counts them. If the
+copy cannot finish (a read or the write fails; a record whose first line is
+corrupt counts as unattributed, since no restart could read it), the start fences
+writes until a restart, so no new snapshot creates the per-home file and ends the retry. A later
+start reads its own file and copies nothing. Pinned by
+`test_taskrunner_atomic_persistence.py::TestRegistryPerDataHome`.
 
 A plan's default work directory is provisional until the plan is accepted. A
 failed attempt removes that taskrunner-owned directory; an explicit caller

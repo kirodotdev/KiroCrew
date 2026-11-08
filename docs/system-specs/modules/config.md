@@ -395,8 +395,10 @@ Each session/task gets an isolated subdirectory under this root via `_session_wo
 - TaskRunner: the session key `taskrunner:main`. Both `TaskRunner` constructions
   (`cli_server.py` and the gateway boot) pass `_session_work_dir("taskrunner:main")`,
   and `_safe_dir_name` turns the colon into an underscore, so the folder on disk is
-  kirocrew-workspace/taskrunner_main. It holds `runs.json` and one subdirectory per
-  run: `<spec stem>` for a spec run, `plan_<task_id>` for a planned one. Setting
+  kirocrew-workspace/taskrunner_main. It holds `runs.json` (`runs-<data_home_id>.json`
+  for a `KIROCREW_HOME` override; see [taskrunner](taskrunner.md#runs-persistence))
+  and one subdirectory per run:
+  `<spec stem>` for a spec run, `plan_<task_id>` for a planned one. Setting
   `taskrunner.workspace_dir` moves all of it into that folder, and a run started
   with its own `workspace_dir` works there directly; see [taskrunner](taskrunner.md).
 - One-run directories for a subagent and a stateless cron run:
