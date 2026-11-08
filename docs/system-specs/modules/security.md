@@ -1274,7 +1274,11 @@ stand-ins on the host root, with a warning.
 view, a namespace and a root, since the kernel renders the same table for every task
 that shares both; it holds each read view's namespace and root open until the scan
 returns so neither identity can be re-used, and reads every task whose view does not
-resolve, so the pins and coverage it reports are the ones reading every task gives. The rest is carved into owner modules, each with one
+resolve, so the pins and coverage it reports are the ones reading every task gives. On
+Linux the scan of the host's `/proc` runs in a spawned child, `sandbox_pin_scan_child`, which returns the
+pinned names and the coverage verdict as one JSON line; a child that cannot start, runs
+past 300 s, crashes, exits non-zero or replies malformed counts as an incomplete scan
+with coverage unproven, so that pass reclaims no directory. The rest is carved into owner modules, each with one
 job: `sandbox_leaves` names the crew-home leaves and the data-home prefixes and holds each
 leaf's `HIDDEN` / `READONLY` / `VISIBLE` disposition, with the leaves a foreign child is
 withheld or may read (`crew_host_runtime_leaves`); `sandbox_tiers` each tier's mask lists
