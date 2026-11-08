@@ -6,6 +6,7 @@ import { ArrowRight } from 'lucide-react'
 import { api } from '../api/client'
 import type { AcpBackendConfig } from '../api/acpBackend'
 import { i18nT } from '../i18n/t'
+import { useOutageFailure } from '../hooks/useOutageFailure'
 import { useAppSelector } from '../store'
 import ErrorNotice from './ErrorNotice'
 import { reportForError } from '../utils/errorReport'
@@ -54,7 +55,8 @@ export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
  *   good read shows nothing: the query keeps that read's backend.
  * - The status read FAILED on a KAS gateway: a plain-language line saying
  *   what to do, the sign-in button, and the hand-off, which carries the
- *   server's error.
+ *   server's error. Not for a read that failed while the dashboard was
+ *   disconnected (a gateway restart): the offline state says that one.
  * - Kiro REFUSED to renew the stored sign-in (`refresh_rejected`, recorded by
  *   the renewal tick when the issuer answers no). Once the access token is
  *   also `expired` (the usual case: the tick only asks inside the refresh
@@ -116,6 +118,13 @@ export default function KiroSignInNotice() {
     enabled: kas,
     refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
   })
+  // A status read that failed because the gateway was down (a restart): the
+  // offline state says so, and nothing about the sign-in is known to be wrong.
+  const outageFailure = useOutageFailure(
+    statusQuery.isError,
+    statusQuery.errorUpdatedAt,
+    () => statusQuery.refetch({ cancelRefetch: false }),
+  )
 
   if (pathname === settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB })) return null
 
@@ -159,6 +168,7 @@ export default function KiroSignInNotice() {
     )
   }
 
+  if (kas && outageFailure) return null
   // The status read's failure, on KAS only (the only backend that reads it).
   const failedRead = kas && statusQuery.isError
     ? { key: `status:${statusQuery.dataUpdatedAt}`, error: statusQuery.error }

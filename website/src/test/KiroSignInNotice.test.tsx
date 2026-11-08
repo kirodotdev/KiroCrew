@@ -10,6 +10,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { api, type KasLoginStatus } from '../api/client'
+import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 const navigate = vi.fn()
 vi.mock('react-router-dom', async importOriginal => ({
@@ -199,6 +200,21 @@ describe('KiroSignInNotice', () => {
 
     fireEvent.click(within(el).getByRole('button', { name: 'Dismiss' }))
     expect(failure()).not.toBeInTheDocument()
+  })
+
+  it('leaves a status read that failed while the gateway was down to the offline state (#32966)', async () => {
+    backend('kas')
+    kasLoginStatus.mockRejectedValue(new Error('Failed to fetch'))
+    setGatewayConnected(false)
+    try {
+      renderWithProviders(<KiroSignInNotice />)
+      await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
+      await settle()
+      expect(failure()).not.toBeInTheDocument()
+      expect(notice()).not.toBeInTheDocument()
+    } finally {
+      __resetGatewayConnectedForTests()
+    }
   })
 
   it('says a backend-setting read that failed before any good read could not be read, with no sign-in claim', async () => {
