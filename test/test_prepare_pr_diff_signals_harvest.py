@@ -9,6 +9,7 @@ the workflow and checks the local verdicts match CI's.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,7 @@ def test_a_non_fix_title_needs_no_section(title: str) -> None:
 def test_check_body_reports_exit_26(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     def fake_run(cmd):
         if cmd[:2] == ["git", "log"]:
-            return 0, "fix(cli): name the cap\nchore: second\n", ""
+            return 0, "0a1b fix(cli): name the cap\n2c3d chore: second\n", ""
         raise AssertionError(cmd)
 
     monkeypatch.setattr(ds, "run", fake_run)
@@ -106,3 +107,24 @@ def test_the_script_accepts_the_same_body_with_the_line(tmp_path: Path) -> None:
     rc, out = _run(repo, _BODY + "## Pattern harvest\n\nNot generalizable: one index\n")
     assert rc == 0, out
     assert "PATTERN HARVEST" not in out
+
+
+def test_a_batch_launcher_git_still_reads_the_fix_title(tmp_path: Path, monkeypatch) -> None:
+    """Behind a .cmd launcher every argument with a cmd.exe metacharacter is refused.
+    The title read must not need one, and a read that fails must not pass as exempt."""
+    from test_prepare_pr_diff_signals_proof import _git_env, _make_repo
+
+    repo = _make_repo(tmp_path, enforce_from=None, script=False)
+    meta = ds._tool_argv().CMD_META
+
+    def batch_git(cmd):  # what _tool_argv.resolve answers for git.cmd
+        if any(ch in arg for arg in cmd[1:] for ch in meta):
+            return 126, "", "refusing batch-file launch"
+        p = subprocess.run(
+            cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", env=_git_env()
+        )
+        return p.returncode, p.stdout, p.stderr
+
+    monkeypatch.setattr(ds, "run", batch_git)
+    assert ds.harvest_check(_BODY, "main") == 26
+    assert ds.harvest_check(_BODY, "ma%in") == 2

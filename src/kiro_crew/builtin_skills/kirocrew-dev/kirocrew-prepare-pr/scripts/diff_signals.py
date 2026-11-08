@@ -60,6 +60,9 @@ With ``--check-body`` it also reads the PR body the skill writes --
   no script to run from the base). A miss prints CI's message and is exit 26. The
   three ``HARVEST_*`` patterns are that step's; a test fails if the workflow's change.
 
+A branch title git cannot read is exit 2 from the three checks that need it (sibling
+sweep, proof line, Pattern harvest), never a skip or an exemption.
+
 All checks run and print before any exit; when several breach, the lowest code wins.
 
 Size and age signals are printed, never an exit code. ``! SIZE`` appears at
@@ -166,8 +169,12 @@ GENERIC_BASENAMES = {
 
 
 def run(args):
+    """Run a command; return (returncode, stdout, stderr). argv[0] is vetted by ``_tool_argv``."""
+    argv, refused = _tool_argv().resolve(args)
+    if refused:
+        return refused
     try:
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
@@ -310,21 +317,31 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
         return None
 
 
-_CONTRACT: dict = {}
+_SIBLINGS: dict = {}
 
 
-def _review_contract():
-    """The shared contract module beside this script (the one fence reader), loaded once."""
-    if "module" not in _CONTRACT:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
-        loader = _NoBytecodeSourceLoader("_prepare_pr_diff_signals_contract", path)
+def _sibling(filename, name):
+    """A module beside this script, loaded once without bytecode writes."""
+    if filename not in _SIBLINGS:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        loader = _NoBytecodeSourceLoader(name, path)
         spec = importlib.util.spec_from_loader(loader.name, loader)
         if spec is None:  # pragma: no cover - defensive
             raise RuntimeError("cannot import kirocrew-prepare-pr sibling: " + path)
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
-        _CONTRACT["module"] = module
-    return _CONTRACT["module"]
+        _SIBLINGS[filename] = module
+    return _SIBLINGS[filename]
+
+
+def _review_contract():
+    """The shared contract module beside this script (the one fence reader), loaded once."""
+    return _sibling("_review_contract.py", "_prepare_pr_diff_signals_contract")
+
+
+def _tool_argv():
+    """The shared argv[0] resolver and batch-launcher guard, loaded once."""
+    return _sibling("_tool_argv.py", "_prepare_pr_diff_signals_tool_argv")
 
 
 def _what_changed_unfenced(body):
@@ -453,12 +470,28 @@ def gate_proof_check(body, gitdir):
         return 0
     finally:
         sys.dont_write_bytecode = previous
-    tree = run(["git", "rev-parse", "HEAD^{tree}"])[1].strip()
+    tree = run(["git", "rev-parse", "HEAD:"])[1].strip()
     problem = gate.contradiction(body, gitdir, tree)
     if problem:
         print("GATE PROOF: {} - fix the line or delete it; the proof is optional".format(problem))
         return 25
     return 0
+
+
+def branch_title(base):
+    """The branch's first commit subject (the PR title CI checks), or None when git fails.
+
+    No ``%`` here, and ``HEAD:`` rather than ``HEAD^{tree}`` for the tree: ``_tool_argv``
+    refuses a cmd.exe metacharacter in any argument when git is a batch launcher. A
+    failed read is an environment error to each check, never a pass.
+    """
+    rng = "origin/{}..HEAD".format(base)
+    rc, out, stderr = run(["git", "log", "--reverse", "--no-decorate", "--pretty=oneline", rng])
+    if rc != 0:
+        err("ERROR: cannot read the branch's first commit subject: " + stderr.strip())
+        return None
+    lines = out.splitlines()
+    return lines[0].partition(" ")[2].strip() if lines else ""
 
 
 def harvest_problem(title, body):
@@ -474,10 +507,10 @@ def harvest_problem(title, body):
 
 
 def harvest_check(body, base):
-    """Apply CI's Pattern harvest rule to ``body``; return 0 or 26."""
-    # The same title the Sibling check reads: the branch's first commit subject.
-    subjects = run(["git", "log", "--reverse", "--format=%s", "origin/{}..HEAD".format(base)])[1]
-    title = subjects.splitlines()[0].strip() if subjects.strip() else ""
+    """Apply CI's Pattern harvest rule to ``body``; return 0, 26, or 2 (title unreadable)."""
+    title = branch_title(base)
+    if title is None:
+        return 2
     problem = harvest_problem(title, body)
     if problem:
         print("PATTERN HARVEST: " + problem)
@@ -545,7 +578,7 @@ def template_check(body, base):
 
 
 def sibling_check(body, base):
-    """Run the base ref's ``SIBLING_CHECK`` on ``body``; return 0 or 23.
+    """Run the base ref's ``SIBLING_CHECK`` on ``body``; return 0, 23, or 2 (title unreadable).
 
     The script prints its findings and exits 1 only when it is enforcing, so a
     warn-mode finding is shown here and never stops the loop. Absent on the base
@@ -556,8 +589,9 @@ def sibling_check(body, base):
         return 0
     # The pull request title is the squash message of a one-commit branch; with the
     # permitted second (mechanical) commit it is still the first commit's subject.
-    subjects = run(["git", "log", "--reverse", "--format=%s", "origin/{}..HEAD".format(base)])[1]
-    title = subjects.splitlines()[0].strip() if subjects.strip() else ""
+    title = branch_title(base)
+    if title is None:
+        return 2
     merge_base = run(["git", "merge-base", "origin/" + base, "HEAD"])[1].strip()
     head = run(["git", "rev-parse", "HEAD"])[1].strip()
     if not (title and merge_base and head):
@@ -594,7 +628,7 @@ def sibling_check(body, base):
 
 
 def proof_check(body, base, gitdir):
-    """Run the base ref's ``PROOF_CHECK`` on ``body``; return 0 or 24.
+    """Run the base ref's ``PROOF_CHECK`` on ``body``; return 0, 24, or 2 (title unreadable).
 
     The script prints its findings and exits 1 only when it is enforcing, so a
     warn-mode finding is shown here and never stops the loop. Absent on the base
@@ -605,9 +639,10 @@ def proof_check(body, base, gitdir):
         return 0
     # The pull request title is the squash message of a one-commit branch; with the
     # permitted second (mechanical) commit it is still the first commit's subject.
-    subjects = run(["git", "log", "--reverse", "--format=%s", "origin/{}..HEAD".format(base)])[1]
-    title = subjects.splitlines()[0].strip() if subjects.strip() else ""
-    tree = run(["git", "rev-parse", "HEAD^{tree}"])[1].strip()
+    title = branch_title(base)
+    if title is None:
+        return 2
+    tree = run(["git", "rev-parse", "HEAD:"])[1].strip()
     if not (title and tree):
         print("WARN: cannot resolve HEAD - proof line check skipped")
         return 0
