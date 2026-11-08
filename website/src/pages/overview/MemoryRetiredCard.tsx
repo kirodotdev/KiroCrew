@@ -120,7 +120,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
           </tbody>
         </table></div>
       )}
-      {retired.hasNextPage && <Btn className="mt-3 min-h-11" disabled={retired.isFetchingNextPage} onClick={() => void retired.fetchNextPage()}>{i18nT('memoryV2.show_more')}</Btn>}
+      {retired.hasNextPage && <Btn className="mt-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={retired.isFetchingNextPage || undefined} onClick={() => { if (!retired.isFetchingNextPage) void retired.fetchNextPage() }}>{i18nT('memoryV2.show_more')}</Btn>}
     </Card>
   )
 }
