@@ -726,15 +726,27 @@ is waiting for.
 
 `monitor_watch` takes an opt-in `wake_on_terminal` argument (default `false`,
 stored on `MonitorState`, restart-durable — a legacy record without it reads
-`False`). When it is set, `_decide_effect` converts those two terminal
-transitions into one ordinary `WAKE_ACTIONABLE`, delivered through the existing
-`format_monitor_wake` envelope so the woken turn carries the reason code, the PR
-url, and the merge revision. It is **one-shot**: `WAKE_ACTIONABLE` records
-`last_wake_reason_code`, so the next terminal tick carrying the same reason no
-longer matches the gate and falls through to the ordinary `STOP_SUCCESS` /
-`STOP_BLOCKED`. The gate is scoped to exactly those two reason codes, so a plain
-`review_ready` success and every non-terminal blocker are untouched, and the
-default leaves every existing and stored watch on the turn-free stop paths.
+`False`). The ordinary flow stops a watch at `review_ready` (a `SUCCESS`), which
+is reached before the merge, so a watch that stopped there would never see the
+merge the opt-in exists to announce. When `wake_on_terminal` is set,
+`_decide_effect` therefore does three things for that watch:
+
+- `review_ready` is **held** (`RECORD_ONLY`) instead of `STOP_SUCCESS`, so the
+  watch keeps probing until the PR actually merges or closes.
+- the first `pull_request_merged` / `pull_request_closed` tick converts into one
+  ordinary `WAKE_ACTIONABLE`, delivered through the existing
+  `format_monitor_wake` envelope so the woken turn carries the reason code, the
+  PR url, and the merge revision.
+- a terminal tick that **already woke** returns its own terminal verdict
+  (`STOP_SUCCESS` for merged, `STOP_BLOCKED` for closed), taken before the
+  fingerprint dedupe so a closed (`BLOCKED`) subject stops on
+  `pull_request_closed` rather than falling through to `NO_CHANGE` and polling
+  until the stall detector retires it.
+
+The one-shot pivot is `last_wake_reason_code`, which the driver stamps on
+`WAKE_ACTIONABLE`. The behaviour is scoped to a watch that opts in: the default
+leaves every existing and stored watch on the turn-free stop paths, with
+`review_ready` and both terminal transitions stopping exactly as before.
 
 The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live kernel path: per-key `alerted` timestamps in its loaded
