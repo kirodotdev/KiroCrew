@@ -20,7 +20,7 @@ from contextlib import suppress
 
 import pytest
 
-from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.autonudge import AutoNudgeService, MonitorUpdateConflict
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, until_parked
 
 
@@ -520,6 +520,65 @@ class TestARestoredClaimIsSettledOnReactivation:
     @staticmethod
     def _row(tmp_path) -> dict:
         return json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))["loops"][0]
+
+    @pytest.mark.asyncio
+    async def test_a_claim_stop_survives_a_reasonless_pause_and_a_re_arm_replaces_it(
+        self, tmp_path
+    ) -> None:
+        """Both claim stops are system-imposed: kept against a pause, replaceable by a re-arm."""
+        loop_id = await self._interrupted_store(tmp_path, undelivered=False)
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            svc._load()
+            assert svc._loops[loop_id].stopped_reason == "interrupted_cycle"
+            other = await svc.add(slot_key="chat-1-2", message="go", idle_secs=300)
+            await svc.update(other.id, active=False, stopped_reason="claim_unsaved")
+
+            for stopped_id, reason in ((loop_id, "interrupted_cycle"), (other.id, "claim_unsaved")):
+                await svc.update(stopped_id, active=False)
+                kept = svc._loops[stopped_id].stopped_reason
+                assert kept == reason, f"a reasonless pause rewrote {reason!r} to {kept!r}"
+
+            for slot in ("chat-1-1", "chat-1-2"):
+                rearmed = await svc.add(
+                    slot_key=slot,
+                    message="re-arm",
+                    idle_secs=300,
+                    replace_existing=False,
+                    replace_stopped=True,
+                )
+                assert rearmed.active and rearmed.slot_key == slot
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_pause_saved_with_an_open_claim_keeps_its_reason_across_a_restart(
+        self, tmp_path
+    ) -> None:
+        """A user's pause saved mid-delivery is not relabelled into a replaceable stop."""
+        loop_id = await self._interrupted_store(tmp_path, undelivered=False)
+        store = tmp_path / "autonudge.json"
+        data = json.loads(store.read_text(encoding="utf-8"))
+        data["loops"][0]["active"] = False
+        data["loops"][0]["stopped_reason"] = "manual"
+        store.write_text(json.dumps(data), encoding="utf-8")
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            svc._load()
+            loaded = svc._loops[loop_id]
+            assert (loaded.active, loaded.stopped_reason) == (False, "manual")
+            with pytest.raises(MonitorUpdateConflict):
+                await svc.add(
+                    slot_key="chat-1-1",
+                    message="re-arm",
+                    idle_secs=300,
+                    replace_existing=False,
+                    replace_stopped=True,
+                )
+        finally:
+            svc.stop()
 
     @pytest.mark.asyncio
     async def test_resume_settles_the_claim_and_a_later_restart_keeps_the_loop_running(
