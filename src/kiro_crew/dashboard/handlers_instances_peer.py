@@ -19,7 +19,7 @@ from urllib.parse import unquote
 from aiohttp import web
 
 import kiro_crew
-from kiro_crew.apps.version import versions_compatible
+from kiro_crew.apps.version import known_version, versions_compatible
 from kiro_crew.crew_mode import VIEW_ALL as CREW_VIEW_ALL
 from kiro_crew.dashboard.chat_persistence import (
     cap_effort_capability_levels,
@@ -223,6 +223,13 @@ def _cap_str(value: object, limit: int = _CAP_MAX_STR) -> str:
     return redact_peer_text(sanitize_string(value))[:limit]
 
 
+def _peer_version(payload: object) -> str:
+    """The version a peer's ``/api/version`` reply names, or "" when it names none."""
+    if not isinstance(payload, dict):
+        return ""
+    return known_version(_cap_str(payload.get("version"), _CAP_MAX_VERSION_STR))
+
+
 def _remote_is_behind(local: str, remote: str) -> bool:
     """Whether a peer runs a strictly OLDER build than this gateway.
 
@@ -365,10 +372,10 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
                 else "capability_error"
             )
 
-    peer_version = ""
-    version_payload = raw.get("version")
-    if isinstance(version_payload, dict):
-        peer_version = _cap_str(version_payload.get("version"), _CAP_MAX_VERSION_STR)
+    peer_version = _peer_version(raw.get("version"))
+    if not peer_version:
+        # A read that answered without a usable version still names why it is unknown.
+        unavailable.setdefault("version", "capability_malformed_reply")
     agents_payload = raw.get("agents")
     workspaces_payload = raw.get("workspaces")
     workspaces = _cap_rows(
@@ -400,6 +407,8 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
             # Exact-version skew, independent of the compatibility gate above:
             # a patch-behind peer still chats, but the header says it is behind.
             "behind": behind,
+            # Mirror of behind: the peer runs a strictly newer build.
+            "ahead": _remote_is_behind(peer_version, kiro_crew.__version__),
             "agents": _cap_rows(
                 _cap_list(agents_payload, "agents"),
                 {"name": 128, "description": _CAP_MAX_STR, "scope": 32, "model": 128},
@@ -531,12 +540,13 @@ async def api_instances_versions(request: web.Request) -> web.Response:
             read_error = "capability_unreachable"
         else:
             ok, payload = outcome
-            if ok and isinstance(payload, dict):
-                version = _cap_str(payload.get("version"), _CAP_MAX_VERSION_STR)
-            elif not ok:
+            if not ok:
                 read_error = (
                     _cap_str(payload.get("code"), 64) if isinstance(payload, dict) else ""
                 ) or "capability_error"
+            else:
+                version = _peer_version(payload)
+                read_error = "" if version else "capability_malformed_reply"
         rows.append(
             {
                 "id": iid,

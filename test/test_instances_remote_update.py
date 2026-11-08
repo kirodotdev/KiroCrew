@@ -200,6 +200,16 @@ class TestVersionsRoute:
             ("", False, "capability_unreachable"),
         ]
 
+    async def test_a_placeholder_zero_version_is_unknown_never_behind(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state, _ = _versions_state({"a": "0"})
+
+        data = await _body(await hi.api_instances_versions(_request(state)))
+
+        assert [(r["version"], r["behind"], r["error"]) for r in data["instances"]] == [
+            ("", False, "capability_malformed_reply"),
+        ]
+
     async def test_a_failed_read_carries_the_carriers_own_code(self, monkeypatch):
         _enable_instances(monkeypatch)
         state, _ = _versions_state({"a": "0.9.0"})
@@ -624,6 +634,17 @@ class TestUpdateJob:
         self, tmp_path, monkeypatch
     ):
         reg, mgr = _manager(tmp_path, versions=("0.9.0", "<script>alert(1)</script>"))
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        _patch_runner(monkeypatch, _Runner((0, ""), (0, "")))
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "unverified" and job["version_after"] == ""
+        await mgr.shutdown()
+
+    async def test_a_placeholder_zero_version_is_no_answer(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path, versions=("0.9.0", "0"))
         reg.add(name="Box", ssh_host="box-alias", instance_id="box")
         _patch_runner(monkeypatch, _Runner((0, ""), (0, "")))
 

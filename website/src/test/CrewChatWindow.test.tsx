@@ -297,11 +297,11 @@ describe('CrewChatWindow', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       mocks.instancesCapabilities
-        .mockResolvedValueOnce({ version_match: false, version: '', local_version: '0.9.0' })
+        .mockResolvedValueOnce({ version_match: false, version: '', local_version: '0.9.0', unavailable: { version: 'capability_peer_not_connected' } })
         .mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
       renderWindow()
-      // The tunnel-down answer reads as a mismatch; its notice is the first frame that answer renders.
-      await screen.findByText(/runs .* but this machine runs/, {}, PEER_ROW_WAIT)
+      // The tunnel-down answer reads as an unknown version; its notice is the first frame that answer renders.
+      await screen.findByText(/Could not read which version this crew runs \(capability_peer_not_connected\)/, {}, PEER_ROW_WAIT)
       await waitFor(() => expect(mocks.instancesCapabilities).toHaveBeenCalledTimes(1))
       expect(mocks.crewPeerGet).not.toHaveBeenCalled()
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
@@ -788,6 +788,15 @@ describe('CrewChatWindow', () => {
     expect(FakeEventSource.all).toHaveLength(0)
     expect(screen.getByRole('textbox', { name: 'Message the agent on devbox…' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  })
+
+  it.each([
+    [{ version: '0.8.0', behind: true }, "This crew runs Kiro Crew 0.8.0, older than this machine's 0.9.0. Update the crew to match."],
+    [{ version: '0.10.0', ahead: true }, "This crew runs Kiro Crew 0.10.0, newer than this machine's 0.9.0. Update this machine to match."],
+  ])('names the older side of a version mismatch (%o)', async (caps, text) => {
+    mocks.instancesCapabilities.mockResolvedValue({ version_match: false, local_version: '0.9.0', ...caps })
+    renderWindow()
+    expect(await screen.findByText(text, {}, PEER_ROW_WAIT)).toBeTruthy()
   })
 
   it('shows the Behind badge in the header for a compatible crew on an older build', async () => {

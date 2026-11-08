@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from kiro_crew.apps.version import known_version
 from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
 from kiro_crew.instances.constants import (
     DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS as _CAPABILITY_PROXY_TIMEOUT,
@@ -1017,7 +1018,7 @@ async def peer_version(self: SshTunnelManager, instance_id: str) -> tuple[bool, 
         code = payload.get("code", "capability_unreachable") if isinstance(payload, dict) else ""
         return False, str(code)
     version = payload.get("version") if isinstance(payload, dict) else None
-    if not isinstance(version, str) or not version:
+    if not isinstance(version, str) or not known_version(version):
         return False, "capability_malformed_reply"
     return True, version
 
