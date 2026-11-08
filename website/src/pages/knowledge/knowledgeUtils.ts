@@ -42,10 +42,11 @@ const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
 }
 
 /** The status a source row shows and polls on. A folder scan stamps 'synced'
- *  when its first file lands, so a row that still reports `scanning` reads as
- *  'syncing' until the scan ends. Paused, error and pending rows keep their own. */
+ *  when its first file lands, and 'error' when one file fails, so a row that
+ *  still reports `scanning` reads as 'syncing' until the scan ends; an error
+ *  shows once it does. Paused and pending rows keep their own. */
 export function displaySyncStatus(s: Pick<Source, 'sync_status' | 'scanning'>): string {
-  if (s.scanning && (s.sync_status === 'synced' || s.sync_status === 'active')) return 'syncing'
+  if (s.scanning && (s.sync_status === 'synced' || s.sync_status === 'active' || s.sync_status === 'error')) return 'syncing'
   return s.sync_status
 }
 
