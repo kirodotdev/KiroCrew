@@ -1772,6 +1772,8 @@ def tools_settings_to_permissions(
     rules: list[dict[str, Any]] = []
     lost: list[str] = []
     star_subtrees: list[tuple[str, str, list[str]]] = []
+    # Allows go in last (below), so an over-long list can never sink the denies.
+    allow_groups: list[tuple[str, list[dict[str, Any]]]] = []
 
     def converted(where: str, values: Any, convert: Callable[[str], str | None]) -> list[str]:
         out: list[str] = []
@@ -1890,6 +1892,8 @@ def tools_settings_to_permissions(
                     lost.append(f"{tool}.fallbackAction")
         elif family == "web_fetch":
             # `trusted` is an allow: not carried, so those fetches keep prompting.
+            # shortcut: KAS matches a host only, so a `blocked` regex is carried as a host
+            # deny or named; upgrade to a full-URL match at Crew's gate.
             handled.add("blocked")
             rules.extend(
                 _chunked_rules(
@@ -1916,7 +1920,8 @@ def tools_settings_to_permissions(
             # An allow, so the merge puts it to the governance ceiling (the refs
             # that name the sub-agent tool) and drops it when the ceiling refuses.
             trusted = converted(f"{tool}.trustedAgents", settings.get("trustedAgents"), _agent_glob)
-            rules.extend(_chunked_rules("subagent", "allow", trusted))
+            allows = _chunked_rules("subagent", "allow", trusted)
+            allow_groups.append((f"{tool}.trustedAgents", allows))
 
         lost.extend(
             f"{tool}.{key}"
@@ -1935,6 +1940,12 @@ def tools_settings_to_permissions(
             lost.append(where)
         else:
             rules.extend(extra)
+    # Each key's allows whole, or named and left prompting: every deny still travels.
+    for where, allows in allow_groups:
+        if len(rules) + len(allows) > _MAX_RULES:
+            lost.append(where)
+        else:
+            rules.extend(allows)
     return ({"rules": rules} if rules else None), sorted(set(lost))
 
 

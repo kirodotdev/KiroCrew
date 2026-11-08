@@ -444,6 +444,11 @@ _UNCARRIED_SETTINGS = {
         ({"use_aws": {"allowedServices": ["s3"]}}, "toolsSettings.use_aws.allowedServices"),
         ({"use_aws": {}}, "toolsSettings.use_aws"),
         ({"execute_bash": "deny"}, "toolsSettings.execute_bash"),
+        # Read over ASCII by Crew, over Unicode by kiro-cli: not exact, so refused.
+        (
+            {"execute_bash": {"allowedCommands": ["make \\w+"]}},
+            "toolsSettings.execute_bash.allowedCommands",
+        ),
     ],
 }
 
@@ -549,7 +554,7 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
 
 def test_an_allowed_command_crews_gate_cannot_answer_is_refused():
     """A listed grant must take effect too: an unusable entry is refused."""
-    settings = {"execute_bash": {"allowedCommands": ["make -j\\d+"]}}
+    settings = {"execute_bash": {"allowedCommands": ["make -j\\D+"]}}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert "toolsSettings.execute_bash.allowedCommands" in caught.value.fields

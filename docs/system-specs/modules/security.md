@@ -2734,9 +2734,14 @@ projection records the patterns (`kas_permissions.crew_answered_commands`, at mo
 read by `platform/allowed_commands.py`, which keeps only the syntax Rust's `regex`
 reads the same way: literal characters, escaped punctuation, `.`, bracket classes
 (ranges, `^` negation, a `-` only first, last or as a range), groups `( )` and
-`(?: )`, alternation and the repeats `* + ?`. It refuses a POSIX or nested class, a
-class operator (`&& -- ~~`), an alphanumeric escape (`\d`, `\b`), a counted, lazy or
-doubled repeat, a flag or named group, and `^`/`$` anywhere but the two ends. A
+`(?: )`, alternation, the repeats `* + ?`, the counted repeats `{n}` `{n,}` `{n,m}`
+(each count at most 256, the expanded entry at most 4,096 nodes, an empty group
+counted as one), and the
+classes `\d \s \w`, alone or inside a bracket class, read over ASCII only; Rust reads
+those three over Unicode, so such an entry judges no command holding a non-ASCII
+character: it grants nothing there, and the entries after it still match. It refuses a POSIX or nested class, a
+class operator (`&& -- ~~`), any other alphanumeric escape (`\D`, `\b`), a `{,m}`,
+lazy or doubled repeat, a flag or named group, and `^`/`$` anywhere but the two ends. A
 top-level `a|b` is matched against the whole command, never the wider
 prefix-or-suffix reading `\Aa|b\z` would give it, so Crew grants at most what
 kiro-cli grants. It matches with its own Thompson automaton, never `re`, so a POSIX

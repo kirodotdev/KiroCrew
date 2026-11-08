@@ -185,8 +185,8 @@ class TestNotice:
                 {"subagent": {"trustedAgents": ["r"]}, "use_subagent": {"x": 1}},
                 ["subagent.trustedAgents", "use_subagent"],
             ),
-            # `\d` is outside the regex syntax Crew reads, so the entry is unusable.
-            ({"executeBash": {"allowedCommands": [r"ls \d"]}}, ["executeBash.allowedCommands"]),
+            # `\D` is outside the regex syntax Crew reads, so the entry is unusable.
+            ({"executeBash": {"allowedCommands": [r"ls \D"]}}, ["executeBash.allowedCommands"]),
         ],
     )
     def test_a_kept_alias_is_named_as_the_spec_wrote_it(self, monkeypatch, settings, named):
@@ -197,6 +197,12 @@ class TestNotice:
         # The worker policy's tool view names the same spellings.
         unenforced = [p for p in named if not p.endswith(".trustedAgents")]
         assert tools_settings_unenforced(settings) == unenforced
+
+    def test_an_ascii_class_entry_is_named_for_the_crewmate_as_the_spec_wrote_it(self):
+        # `\d` is carried for the session, but read over ASCII, so a crewmate's
+        # policy names it under the alias the spec used.
+        settings = {"executeBash": {"allowedCommands": [r"ls \d"]}}
+        assert tools_settings_unenforced(settings) == ["executeBash.allowedCommands"]
 
     def test_withheld_write_paths_are_named_as_the_spec_wrote_them(self, monkeypatch):
         # The ceiling withholds the write grant, so `allowedPaths` go unanswered.
