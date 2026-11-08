@@ -591,7 +591,7 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
 
 def test_an_allowed_command_crews_gate_cannot_answer_is_refused():
     """A listed grant must take effect too: an unusable entry is refused."""
-    settings = {"execute_bash": {"allowedCommands": ["make -j\\D+"]}}
+    settings = {"execute_bash": {"allowedCommands": ["make -j\\p{N}+"]}}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert "toolsSettings.execute_bash.allowedCommands" in caught.value.fields

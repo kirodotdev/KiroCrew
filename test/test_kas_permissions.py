@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.acp import kas_permissions
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import (
     CAPABILITY_BY_TOOL,
@@ -1129,6 +1130,21 @@ class TestALongMatchIsSplitNotRefused:
             merged = _merge({"rules": [allow, deny]}, derived=_DERIVED, agent_id="uno")
         assert _user_rules(merged) == [deny]
         assert "rule 0" in caplog.text and "refusing its whole" not in caplog.text
+
+    def test_the_allows_left_out_are_read_quietly_by_index(self, caplog):
+        """The session-start notice names each allow left out; a block refused
+        whole is named as ``permissions`` instead, so it reports none here."""
+        deny = {"capability": "web_search", "effect": "deny"}
+        allow = {"capability": "web_fetch", "exclude": self._hosts(65), "effect": "allow"}
+        bounded = dict(allow, exclude=self._hosts(64))
+        # Looked up when called, so a module without it fails this test, not the file.
+        projection_dropped_rules = kas_permissions.projection_dropped_rules
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.kas_permissions"):
+            assert projection_dropped_rules({"rules": [deny, allow, bounded, allow]}) == [1, 3]
+            assert projection_dropped_rules({"rules": [allow, "not-a-rule"]}) == []
+            assert projection_dropped_rules({"rules": [bounded]}) == []
+            assert projection_dropped_rules(None) == []
+        assert caplog.text == ""
 
     @pytest.mark.parametrize("effect", ["deny", "ask"])
     def test_a_narrowing_rule_with_a_long_exclude_still_refuses_the_block(self, effect):
