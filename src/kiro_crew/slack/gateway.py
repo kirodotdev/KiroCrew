@@ -1123,6 +1123,7 @@ class GatewayOrchestrator:
     _finish_auto_update_apply = _upd_sched._finish_auto_update_apply
     _RESTART_GATE_HOLD_SECS = _upd_sched._RESTART_GATE_HOLD_SECS
     _restart_gate_when_idle = _upd_sched._restart_gate_when_idle
+    _restart_gate_held = _upd_sched._restart_gate_held
     _release_restart_gate_hold = _upd_sched._release_restart_gate_hold
     _wheel_apply_module = staticmethod(_upd_sched._wheel_apply_module)
     _dashboard_policy_applies = staticmethod(_upd_sched._dashboard_policy_applies)
