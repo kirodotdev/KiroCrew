@@ -744,7 +744,12 @@ async def _teardown_locked(self: SshTunnelManager, instance_id: str, *, keep_int
     return tunnel is not None
 
 
-async def reconfigure(self: SshTunnelManager, instance_id: str, apply: Callable[[], _T]) -> _T:
+async def reconfigure(
+    self: SshTunnelManager,
+    instance_id: str,
+    apply: Callable[[], _T],
+    needs_teardown: Callable[[], bool] | None = None,
+) -> _T:
     """Tear the tunnel down and rewrite its coordinates as ONE operation.
 
     Editing the host/port/transport of a live instance is two steps that must
@@ -758,8 +763,18 @@ async def reconfigure(self: SshTunnelManager, instance_id: str, apply: Callable[
     ``apply`` performs the persistence and returns whatever the caller needs;
     it runs on a worker thread because the registry write is blocking, so the
     event loop is not held while the lock is.
+
+    ``needs_teardown``, when given, runs the same way under the lock first,
+    because whether an edit moves the tunnel depends on the record as it is
+    then. False writes in that same hold of the lock and touches nothing else,
+    so a tunnel the edit does not move keeps its self-heal; True goes on to the
+    barrier and the teardown below.
     """
-    # The barrier goes up FIRST, with no await before it, so no recovery can
+    if needs_teardown is not None:
+        async with self._lock:
+            if not await asyncio.to_thread(needs_teardown):
+                return await _write_out(apply)
+    # The barrier goes up before the cancellation's first await, so no recovery can
     # be scheduled for this instance from here on (see `_reconfiguring`).
     # Cancellation then runs OUTSIDE the lock, because a recovery task may
     # itself be waiting for that lock and awaiting it while holding the lock
@@ -801,18 +816,25 @@ async def _reconfigure_locked(
         # the tunnel stays tracked (see _teardown_locked), and the caller is
         # told to disconnect and retry.
         await self._teardown_locked(instance_id, keep_intent=True)
-        # The write is shielded: if this request's task is cancelled (the
-        # client hung up), the worker thread keeps going regardless, and an
-        # unshielded await would unwind the `async with` and release the lock
-        # while that write was still in flight — letting a concurrent connect
-        # read the pre-edit coordinates. Awaiting it out under the lock keeps
-        # the critical section honest, then the cancellation propagates.
-        write = asyncio.ensure_future(asyncio.to_thread(apply))
-        try:
-            return await asyncio.shield(write)
-        except asyncio.CancelledError:
-            await asyncio.wait({write})
-            raise
+        return await _write_out(apply)
+
+
+async def _write_out(apply: Callable[[], _T]) -> _T:
+    """Run the record write *apply* on a worker thread, under the caller's lock.
+
+    The write is shielded: if this request's task is cancelled (the client hung
+    up), the worker thread keeps going regardless, and an unshielded await would
+    unwind the caller's `async with` and release the lock while that write was
+    still in flight — letting a concurrent connect read the pre-edit
+    coordinates. Awaiting it out keeps the critical section honest, then the
+    cancellation propagates.
+    """
+    write = asyncio.ensure_future(asyncio.to_thread(apply))
+    try:
+        return await asyncio.shield(write)
+    except asyncio.CancelledError:
+        await asyncio.wait({write})
+        raise
 
 
 async def shutdown(self: SshTunnelManager) -> None:
