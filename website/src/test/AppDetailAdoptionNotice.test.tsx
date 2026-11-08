@@ -72,8 +72,8 @@ describe('adoption notice on the app detail page', () => {
   it('maps every reason code to copy, and ignores one it does not know', () => {
     const codes: AdoptionReasonCode[] = [
       'network_unreachable', 'network_timeout', 'http_status', 'disk_full', 'config_unreadable',
-      'admission_denied', 'trust_conflict', 'trust_overlay_owned', 'permission_widening',
-      'platform_mismatch', 'host_too_old', 'host_sdk_too_old', 'commit_not_found',
+      'stage_io_failed', 'admission_denied', 'trust_conflict', 'trust_overlay_owned',
+      'permission_widening', 'platform_mismatch', 'host_too_old', 'host_sdk_too_old', 'commit_not_found',
       'archive_digest_mismatch', 'tree_digest_mismatch', 'manifest_identity_mismatch',
       'version_mismatch', 'tree_requires_build', 'tree_has_link', 'tree_unportable_name',
       'tree_too_large', 'pinned_feature_unsupported',
