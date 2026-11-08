@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.context_assembly.markers import neutralize_background_context_frame
 from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
 
 if TYPE_CHECKING:
@@ -178,7 +179,8 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
         ctx_parts.append(
             f'[Background context from "{source}"]\n'
             f"{_CONTEXT_FRAME_CONTRACT}\n"
-            f'{entry["content"]}\n'
+            # A copy of the frame inside the content cannot end this frame early.
+            f'{neutralize_background_context_frame(entry["content"])}\n'
             f"[End of background context]\n"
         )
     slot._pending_context.clear()

@@ -1092,7 +1092,11 @@ async def _seed_context(
     if not thread_ts or thread_ts == msg_ts:
         return ""
     from kiro_crew.context import _neutralize_structural_markers
-    from kiro_crew.context_assembly.markers import _neutralize_fence_markers
+    from kiro_crew.context_assembly.markers import (
+        SLACK_SEED_FENCE_CLOSE,
+        SLACK_SEED_FENCE_OPEN,
+        _neutralize_fence_markers,
+    )
     from kiro_crew.security import audit_injection_dropped, contains_injection
     from kiro_crew.slack.thread_parent import fetch_thread_parent, parent_prompt_text
     from kiro_crew.slack.thread_replies import replies_since_last_turn
@@ -1123,13 +1127,7 @@ async def _seed_context(
     if not parts:
         return ""
     body = _neutralize_structural_markers(_neutralize_fence_markers("\n\n".join(parts)))
-    body = _END_FENCE.sub("[end-of-thread-data]", body)
-    return f"{_SEED_FENCE_OPEN}\n{body}\n{_SEED_FENCE_CLOSE}"
-
-
-_SEED_FENCE_OPEN = "[SLACK THREAD — UNTRUSTED DATA]"
-_SEED_FENCE_CLOSE = "[END SLACK THREAD]"
-_END_FENCE = re.compile(r"\[\s*end\s+slack\s+thread[^\]]*\]", re.IGNORECASE)
+    return f"{SLACK_SEED_FENCE_OPEN}\n{body}\n{SLACK_SEED_FENCE_CLOSE}"
 
 
 #: The pending-context source the seed framing is queued under.
