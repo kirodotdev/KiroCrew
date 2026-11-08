@@ -3,7 +3,8 @@
 Each poll gates on the app's live enabled flag (suspending research loops and
 their slot trust while disabled), hands workflow-mode campaigns to their
 adapter, and for agent-mode campaigns: expires the 24h auto-approve trust,
-re-arms trust and the loop, pauses an attended campaign on a pending question,
+parks a campaign whose trust a person revoked (never granting it back),
+re-arms trust on a new worker slot and the loop, pauses an attended campaign on a pending question,
 records new cycles, and settles a run as COMPLETE, STAGNANT, STOPPED or FAILED.
 Settlement is fenced to the run generation it observed and persists before the
 worker's loop is removed, so a stale poll cannot settle a newer run and a
@@ -97,8 +98,10 @@ def check_stagnation(campaign_id: str) -> bool:
     return True
 
 
-async def _expire_trust(cid: str, observed_started_at: float | None) -> None:
-    """24h auto-approve expiry: park the campaign for re-authorization.
+async def _expire_trust(
+    cid: str, observed_started_at: float | None, *, revoked: bool = False
+) -> None:
+    """24h auto-approve expiry, or a person's revoke: park the campaign for re-authorization.
 
     Transition FIRST, then write the synthetic question only if it persisted:
     a refused transition (a user Stop committed during the hop) must not leave
@@ -127,8 +130,13 @@ async def _expire_trust(cid: str, observed_started_at: float | None) -> None:
                 qpath.write_text(
                     json.dumps(
                         {
-                            "question": "Auto-approval expired after 24h. Resume to "
-                            "re-authorize and continue."
+                            "question": (
+                                "Auto-approval was turned off. Resume to re-authorize "
+                                "and continue."
+                                if revoked
+                                else "Auto-approval expired after 24h. Resume to "
+                                "re-authorize and continue."
+                            )
                         }
                     ),
                     encoding="utf-8",
@@ -140,7 +148,7 @@ async def _expire_trust(cid: str, observed_started_at: float | None) -> None:
                     cid,
                     exc_info=True,
                 )
-        lifecycle._audit("campaign_trust_expired", cid)
+        lifecycle._audit("campaign_trust_revoked" if revoked else "campaign_trust_expired", cid)
         lifecycle._sse_from_thread(event_loop, {"type": "needs_input", "campaign_id": cid})
 
     await lifecycle._guarded_transition(
@@ -194,9 +202,7 @@ async def _suspend_research_loops_while_disabled(state: Any) -> None:
                 logger.warning("auto_research: could not deactivate loop %s on disable", loop.id)
         slot = state._slots.get(loop.slot_key) if state is not None else None
         if slot is not None and getattr(slot, "_trust", False):
-            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
-
-            revoke_slot_trust(state, slot)
+            agent_mode.release_worker_trust(state, loop.slot_key, slot)
 
 
 def _stalled_campaign_verdict(
@@ -462,17 +468,26 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                             stopped_reason=stopped_reason,
                         )
                         continue
+                # A person (or a policy) revoked the trust: stop the worker loop and
+                # park for re-authorization instead of granting it back. The record
+                # stays until a start or Resume, so a failed park or an answer in the
+                # guidance box parks again on the next poll rather than re-trusting. Checked
+                # before the 24h cap, whose release would erase the person's record.
+                if slot is not None and agent_mode.worker_trust_revoked(slot_key, slot):
+                    agent_mode.release_worker_trust(state, slot_key, slot, forget=False)
+                    if svc is not None and loop is not None and loop.active:
+                        await svc.update(loop.id, active=False)
+                    await _expire_trust(cid, started, revoked=True)
+                    continue
                 # 24h auto-approve cap: expire trust and require re-authorization.
                 if started and time.time() - started > _TRUST_TTL_SECS:
                     if slot is not None:
-                        from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
-
-                        revoke_slot_trust(state, slot)
+                        agent_mode.release_worker_trust(state, slot_key, slot)
                     await _expire_trust(cid, started)
                     continue
-                # Re-establish worker trust each cycle (restart-durable; bounded above).
+                # Re-establish worker trust on a new slot (restart-durable; bounded above).
                 if slot is not None and not slot._trust:
-                    slot._trust = True
+                    agent_mode.grant_worker_trust(slot_key, slot)
                     lifecycle._audit("campaign_trust_reestablished", cid)
                 # Re-arm the autonudge loop if a prior app-disable deactivated it
                 # (see _suspend_research_loops_while_disabled at the enabled guard).
