@@ -31,8 +31,11 @@ from kiro_crew.apps.registry import (
     _REGISTRY_TRUST_TIERS,
     _TRUST_INDEX,
     _TRUST_OWNER,
+    _effective_registries,
+    _external_registry_fetch_status,
     _git_url_host,
     _pinned_registries,
+    _public_registry_name,
     _registry_identity_key,
     _registry_trust_tier_of,
     _same_git_target,
@@ -90,6 +93,21 @@ async def _announce_app_updates(request: web.Request, rows: list[dict[str, Any]]
         deliver_app_update_notes(state, notes)
 
 
+def _registry_fetch_failures() -> list[dict[str, Any]]:
+    """``{"name", **fetch status}`` for each registry in force whose latest index fetch failed.
+
+    Read after the listing has fetched, so each status describes the fetch that
+    built (or, inside the failure window, held back) the rows just listed.
+    Blocking: reads the config and one marker per registry.
+    """
+    failures: list[dict[str, Any]] = []
+    for reg in _effective_registries():
+        status = _external_registry_fetch_status(reg)
+        if status is not None:
+            failures.append({"name": _public_registry_name(reg), **status})
+    return failures
+
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     # The published catalog is the storefront's source of truth when it is
@@ -104,6 +122,14 @@ async def handle_registry(request: web.Request) -> web.Response:
         await _announce_app_updates(request, apps)
     else:
         apps = await list_registry()
+    # Said out loud for the same reason: a registry whose index fetch failed adds
+    # no rows, or only its last-synced ones, to a listing that still answers 200.
+    # A report on the listing, so a failure to read it never fails the listing.
+    try:
+        registry_status = await asyncio.to_thread(_registry_fetch_failures)
+    except Exception:
+        logger.warning("ignoring the registries' fetch status", exc_info=True)
+        registry_status = []
     # Published rail order and layout ride along on the response the store already
     # makes, rather than endpoints the page would have to wait on separately. They
     # are two documents with two caches, loaded CONCURRENTLY: each cold-cache load
@@ -130,6 +156,7 @@ async def handle_registry(request: web.Request) -> web.Response:
         {
             "apps": apps,
             "catalogUnavailable": catalog_unavailable,
+            "registryStatus": registry_status,
             "serverPlatform": get_server_platform(),
             "categoryOrder": category_order,
             "editorialSections": sections,
