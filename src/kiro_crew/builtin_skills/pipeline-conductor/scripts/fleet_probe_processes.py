@@ -27,8 +27,9 @@ from pathlib import Path
 #: host: ``setup.cfg`` documents that ``auto`` is bounded by the rootdir
 #: conftest's ``pytest_xdist_auto_num_workers`` hook, which sizes the pool by
 #: available memory and by what concurrent runs on the host already hold, and
-#: that "an explicit ``-n <N>`` bypasses the budget" -- the hook is
-#: ``firstresult`` and only ever answers ``auto``. The gate runner
+#: that an explicit ``-n <N>`` bypasses the memory budget (it still claims the
+#: shared host slots) -- the hook is ``firstresult`` and only ever answers
+#: ``auto``. The gate runner
 #: (``scripts/run_scoped_tests.py::pytest_parallel_args``) therefore emits
 #: ``-n auto`` and cannot pass a number, and the default ``addopts`` supply
 #: ``-n auto`` to a pytest carrying no ``-n`` at all.

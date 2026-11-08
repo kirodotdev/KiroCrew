@@ -188,11 +188,11 @@ def local_gate_workers() -> int:
 def pytest_parallel_args() -> list[str]:
     """``-n auto --dist loadgroup``: the budgeted form, never an explicit ``-n``.
 
-    An explicit ``-n <N>`` would bypass `xdist_budget.py`'s ``firstresult`` hook
-    entirely -- no live free-memory clamp, no flock slots shared with a concurrent
-    run, no respect for a cap the agent's spawn boundary seeded -- so the bound
-    goes through ``PYTEST_XDIST_AUTO_NUM_WORKERS`` (:func:`pytest_worker_env`)
-    and ``auto`` is what the hook then budgets. ``--dist loadgroup`` keeps
+    An explicit ``-n <N>`` still claims the host's shared flock slots, but it
+    skips `xdist_budget.py`'s ``firstresult`` hook -- no live free-memory clamp,
+    no respect for a cap the agent's spawn boundary seeded -- so the bound goes
+    through ``PYTEST_XDIST_AUTO_NUM_WORKERS`` (:func:`pytest_worker_env`) and
+    ``auto`` is what the hook then budgets. ``--dist loadgroup`` keeps
     ``xdist_group``-marked modules serialized on one worker.
     """
     return ["-n", "auto", "--dist", "loadgroup"]

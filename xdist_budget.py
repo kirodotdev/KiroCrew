@@ -600,7 +600,7 @@ def claim_explicit_workers(requested: int) -> int:
         )
         warnings.warn(
             f"xdist worker budget: -n {requested} clamped to {granted} worker(s): {why}. "
-            f"Slow, not stuck. Set {_EXPLICIT_BYPASS_ENV}=1 to skip the shared pool.",
+            "Slow, not stuck.",
             stacklevel=1,
         )
     return granted

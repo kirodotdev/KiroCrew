@@ -139,7 +139,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
         # unavailable one (0) is skipped rather than read as "no memory".
         # Derived from the reservation rather than restated: the constant tracks a
         # remeasured per-worker footprint and has moved (2 -> 3 GiB when the
-        # collection floor doubled), so a literal here pins the wrong thing and
+        # collection floor doubled, 3 -> 5 after a host OOM), so a literal here pins the wrong thing and
         # goes red for a reason that is not this test's subject.
         assert budget._static_memory_bounded_capacity(32) == 8 // budget._GIB_PER_WORKER
 

@@ -579,6 +579,21 @@ def test_per_worker_reservation_is_platform_aware(monkeypatch: pytest.MonkeyPatc
     assert 4 * ct._MACOS_GIB_PER_WORKER > 36
 
 
+def test_the_live_linux_reservation_is_5_gib_and_matches_the_spawn_cap() -> None:
+    """Pins the live per-worker reservation the host OOM was sized from.
+
+    A Linux worker was measured at ~4.5 GiB, so 3 GiB admits more workers than
+    the host can hold. The agent-spawn cap in ``resource_status`` sizes the
+    same worker, so the two must not drift apart.
+    """
+    from kiro_crew import resource_status
+
+    assert ct._GIB_PER_WORKER_AVAILABLE == 5
+    assert ct._GIB_PER_WORKER == ct._GIB_PER_WORKER_AVAILABLE
+    assert ct._GIB_PER_WORKER_AVAILABLE == resource_status._DEFAULT_XDIST_PER_WORKER_GB
+    assert ct._MACOS_GIB_PER_WORKER == resource_status._MACOS_XDIST_PER_WORKER_GB
+
+
 def test_a_starved_host_floors_at_one_worker_instead_of_refusing(
     budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -782,8 +797,11 @@ def test_an_explicit_n_that_fits_is_unchanged_but_still_held(budget_host: pathli
 def test_an_explicit_n_on_a_full_host_floors_at_one_and_warns(budget_host: pathlib.Path) -> None:
     budget_host.mkdir(parents=True, exist_ok=True)
     with _holding_slots(budget_host, 10):
-        with pytest.warns(UserWarning, match=r"-n 6 clamped to 1 .*KIROCREW_TEST_SLOTS_BYPASS=1"):
+        with pytest.warns(UserWarning, match=r"-n 6 clamped to 1 ") as record:
             assert ct.claim_explicit_workers(6) == 1
+    # The clamp fires only when other runs hold slots, so naming the bypass here
+    # would invite the uncounted oversubscription this pool exists to stop.
+    assert all(ct._EXPLICIT_BYPASS_ENV not in str(w.message) for w in record)
 
 
 def test_an_explicit_n_alone_on_a_small_host_keeps_its_workers(
