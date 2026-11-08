@@ -32,7 +32,7 @@ import { Link } from 'react-router-dom'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import type { McpServer } from '../../types'
-import { fmtDate } from '../../i18n/format'
+import { fmtDate, fmtList } from '../../i18n/format'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
@@ -548,7 +548,7 @@ function ConnectionCard({
   const sharedText = sharedGrant
     ? `${
         grantSharedWith && grantSharedWith.length > 0
-          ? t('pages.connectionsPage.grant_shared_fact', { names: grantSharedWith.join(', ') })
+          ? t('pages.connectionsPage.grant_shared_fact', { names: fmtList(grantSharedWith) })
           : t('pages.connectionsPage.grant_shared_fact_unconfirmed')
       } ${t('pages.connectionsPage.grant_shared_caveat')}`
     : ''
