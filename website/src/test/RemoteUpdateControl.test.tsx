@@ -173,6 +173,13 @@ describe('RemoteUpdateControl', () => {
     })
     renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
     expect(await screen.findByText(text)).toBeInTheDocument()
+    // The update's exit 0 does not prove an install (it also exits 0 when nothing
+    // was newer), so the message never says one happened, and offers Restart now
+    // only as the way to start a version the update may have installed.
+    expect(screen.queryByText(/new version is installed/i)).toBeNull()
+    if (code !== 'peer_cannot_wait') {
+      expect(screen.getByText(/If the update installed a new version, Restart now starts it/)).toBeInTheDocument()
+    }
     // The generic next step would contradict the message, which names its own.
     expect(screen.queryByText(/Fix the cause on Old box/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Restart now' })).toBeInTheDocument()
@@ -221,13 +228,15 @@ describe('RemoteUpdateControl', () => {
     expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
   })
 
-  it('says when the update landed but the restart failed', async () => {
+  it('says when the update ran but the restart failed', async () => {
     vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
       job: { ...RUNNING, state: 'failed', phase: 'restarting', error: 'systemd refused', finished_at: 2 },
     })
     renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
-    expect(await screen.findByText(/The new version is installed on Old box, but its restart failed: systemd refused/)).toBeInTheDocument()
-    expect(screen.getByText(/Old box keeps running its old version until it restarts\. Run kirocrew restart on that crew/)).toBeInTheDocument()
+    expect(await screen.findByText(/^Old box ran its update, but its restart failed: systemd refused$/)).toBeInTheDocument()
+    expect(screen.getByText(/Old box keeps running the version it had until it restarts\. Run kirocrew restart on that crew/)).toBeInTheDocument()
+    // Exit 0 from the update does not prove an install, so no message claims one.
+    expect(screen.queryByText(/new version is installed|old version/i)).toBeNull()
     expect(screen.queryByText(/for example its network or sign-in/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Update Old box' })).toHaveTextContent('Try again')
   })
