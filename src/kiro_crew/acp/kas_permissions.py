@@ -1801,7 +1801,11 @@ def tools_settings_to_permissions(
                 ) and not _write_falls_back_to_deny(settings):
                     lost.append(f"{tool}.fallbackAction")
         elif family == "web_fetch":
-            # `trusted` is an allow: not carried, so those fetches keep prompting.
+            # KAS matches a host only, so a `blocked` regex is carried here as a host
+            # deny or named, and `trusted` (an allow) is named. Crew's gate grants a
+            # plain-URL `trusted` entry itself (`kas_spec_denies.web_fetch_gate`); the
+            # session notice drops it then, and a crewmate's policy check reads only
+            # this KAS side.
             handled.add("blocked")
             rules.extend(
                 _chunked_rules(

@@ -135,7 +135,7 @@ from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_p
 from kiro_crew.acp.kas_settings_mcp import include_mcp_json
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
-from kiro_crew.acp.kas_spec_denies import spec_denies_record
+from kiro_crew.acp.kas_spec_denies import spec_denies_record, web_fetch_carried, web_fetch_gate
 from kiro_crew.acp.kas_spec_grants import _entry_shell_readonly, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
@@ -276,7 +276,9 @@ def spec_keys_without_carrier(
         lost.extend(tools_settings_unapplied(tools_settings))
         return sorted(lost)
     _, not_carried = tools_settings_to_permissions(tools_settings)
-    lost.extend(f"toolsSettings.{path}" for path in not_carried)
+    # A `web_fetch.trusted` KAS cannot carry, Crew's gate may (`web_fetch_carried`).
+    gate_carried = web_fetch_carried(tools_settings, spec.get("permissions"))
+    lost.extend(f"toolsSettings.{path}" for path in not_carried if path not in gate_carried)
     if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
         lost.append("permissions")
     if (
@@ -1174,6 +1176,11 @@ def to_client_custom_agent(
         commands=answered_commands,
         commands_answered=CREW_ANSWERED_COMMANDS_KEY in out,
     )
+    # A plain-URL `web_fetch.trusted` grant, held back by any blocked match.
+    web_fetch = web_fetch_gate(tools_settings, spec.get("permissions"))
+    if web_fetch:
+        base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
+        denies = {**base, **web_fetch}
     if denies:
         out[CREW_SPEC_DENIES_KEY] = denies
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
