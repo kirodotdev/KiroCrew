@@ -1640,7 +1640,16 @@ not reconfigured; a stream without `reconfigure` does not raise) and
 
 Once the dashboard listens, the gateway prints how to reach it
 (`urls.format_dashboard_urls`): the dashboard URL, the `ssh -NL` tunnel form
-over SSH, and the proxy URL behind a managed proxy. Those URLs carry the
+over SSH, and the proxy URL behind a managed proxy. The `ssh -NL` target is
+the `SSH_CONNECTION` server address when it is globally routable; otherwise it
+is the placeholder `<the host you ssh to>` with the machine's own name on the
+next line as `(this machine calls itself ...)`. A shell under AWS Session
+Manager (`urls.is_ssm_session`: `ssm-session-wor`, the 15-character `comm`
+form, found in the bounded process ancestry) with no SSH variables gets the
+localhost link, the `ssh -NL` and Session Manager port-forward hints, and the
+same machine-name hint; a configured `dashboard.url` or non-loopback host keeps
+its working URL line. That detection fails closed to "not detected" off Linux
+or on a `/proc` read error. Those URLs carry the
 startup login link (`?token=`) only when `urls.login_link_may_print()` is
 true, that is when `sys.stdout.isatty()` is. Any other stdout is a log
 something keeps (the journal under `systemd`, the launchd `gateway.log` file,
@@ -1655,6 +1664,8 @@ without its query string (`with_token=False`), followed by
   that a user session runs as a unit included, so keying on them could strip
   the link from a real terminal, and no service launcher hands the gateway a
   terminal.
+- Auto-open is skipped on a headless remote session (SSH or SSM, no `DISPLAY` or
+  `WAYLAND_DISPLAY`, not macOS) and the boot prints a skip line instead.
 - A stdout that is absent (`pythonw`) or has no `isatty` counts as not a
   terminal.
 - Browser auto-open still gets the link directly. When the browser takes
