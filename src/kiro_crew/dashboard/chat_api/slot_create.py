@@ -49,7 +49,7 @@ if TYPE_CHECKING:
         effective_session_key,
         folder_principal,
         is_owner_dashboard_request,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         logger,
         members_mod,
         owner_start_priority,
@@ -146,11 +146,13 @@ async def _birth_default_project(cfg: KiroCrewConfig | None, workspace: str) -> 
     def resolve() -> str:
         if isinstance(cfg_proj, str) and cfg_proj:
             resolved = os.path.realpath(os.path.expanduser(cfg_proj))
+            # *resolved* is canonical, so the canonical gate judges it: it answers
+            # inline off the loop, where a resolver stall cannot read as a match.
             # A configured default that overlaps the data home would be refused
             # at spawn anyway, so it is skipped here like a sensitive path.
             if (
                 os.path.isdir(resolved)
-                and not is_sensitive_path(resolved)
+                and not is_sensitive_canonical_path(resolved)
                 and voice_runtime_workspace_conflict(resolved) is None
             ):
                 return resolved
