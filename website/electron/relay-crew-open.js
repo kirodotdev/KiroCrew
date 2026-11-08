@@ -12,6 +12,13 @@
  *
  * Answers `{ ok: true }` or `{ ok: false, error: <code> }`, never a token, a
  * Crew URL or an expiry. Log lines name the endpoint and the outcome only.
+ *
+ * When any renewal stops on SIGNED_OUT (the gateway reads the Kiro sign-in on
+ * every mint), every renewal stops and every relay Crew window closes. This is
+ * noticed at the next renewal, not at the moment of sign-out.
+ * shortcut: an account switch isn't caught, because the next mint succeeds as
+ * the new person. A follow-up PR adds a non-secret per-sign-in marker to the
+ * token answer and closes every window when it changes.
  */
 
 // The relay's endpoint ID grammar has one definition, in the window module.
@@ -45,10 +52,30 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       if (firstCode === null) firstCode = code;
       return { code: RENEWAL_CODE[code] || code, retryAfter: answer ? answer.retryAfter : null };
     };
-    const renewal = createRenewal({ endpointId, mint, holder, log });
+    const onOutcome = (o) => {
+      if (o && o.code === "SIGNED_OUT" && o.stopped === true) closeAll("SIGNED_OUT");
+    };
+    const renewal = createRenewal({ endpointId, mint, holder, onOutcome, log });
     const first = await renewal.start();
     if (first && first.ok) return { renewal };
+    // A refused first mint emits no outcome, so a sign-out it finds closes here.
+    if (firstCode === "SIGNED_OUT") closeAll("SIGNED_OUT");
     return { error: firstCode || (first && first.code) || "UNAVAILABLE" };
+  }
+
+  // Stop every renewal (which clears its token holder) and close every window.
+  // A mint still in flight when this runs finds `epoch` (a new open) or its
+  // entry (a restart) changed, and stops its own renewal.
+  let epoch = 0;
+  function closeAll(reason) {
+    epoch += 1;
+    const entries = [...windows];
+    windows.clear();
+    for (const [endpointId, entry] of entries) {
+      try { entry.renewal.stop(); } catch { /* still close the window */ }
+      try { entry.win.close(); } catch { /* already gone */ }
+      say(endpointId, `closed (${reason})`);
+    }
   }
 
   function wire(entry) {
@@ -59,10 +86,17 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
   async function openNew(endpointId) {
     const holder = createTokenHolder();
     const crew = { crewUrl: "", name: "" };
+    const at = epoch;
     const { renewal, error } = await startRenewal(endpointId, holder, crew);
     if (!renewal) {
       say(endpointId, error);
       return { ok: false, error };
+    }
+    // Everything closed while the mint was in flight: open nothing.
+    if (epoch !== at) {
+      renewal.stop();
+      say(endpointId, "UNAVAILABLE");
+      return { ok: false, error: "UNAVAILABLE" };
     }
     let win;
     try {
