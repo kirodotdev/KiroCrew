@@ -3329,6 +3329,19 @@ ownership predicate evaluated inside `_locked(history_key)` on the write AND on 
 resume's read-then-clear — a durable-metadata contract change rather than a
 loop-side ordering one, so it is deliberately not what these two teardown paths do.
 
+**A slow close names its slow stage.** On the path of a close that commits, the
+shared close (`close_slot` and `_close_slot`) awaits each stage that has no bound
+of its own through `_timed_close_stage`: the nudge-loop retire and its late re-run,
+the app close hook, the merge-card hand-off and its late re-run, the archive save,
+the session teardown, the work item close and the hand-back. A stage that reaches
+`_SLOW_CLOSE_STAGE_SECS` (5 s) logs one WARNING,
+`Closing slot <name>: <stage> took <n>s`. The bounded waits (the guarded-write
+wait, the turn cancel, the file-change flush, the close record) are left as they
+are: each is either shorter than the threshold or warns at its own bound. The
+rollback arms are not timed. The gateway logs warnings and up, so this line is the
+only record of where a close that outlasts a proxy's timeout spent its time. It
+only measures: no ordering, bound or outcome of the close changes.
+
 Yielding to a replacement carries four obligations, and they exist because the
 state a close compensates is not all scoped the same way.
 
