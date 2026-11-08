@@ -589,7 +589,9 @@ A `template` record's provider template is dispatched exactly. A `member`
 record runs the Bot conductor whenever the member's current `kiro_agent`
 binding owns a Bot file, even when the record kept an older template; any
 other member runs its recorded template
-([crew-mode](crew-mode.md), `mate_worker.member_record_template`).
+([crew-mode](crew-mode.md), `mate_worker.member_record_template`), and when a
+new chat with that member would run another agent, the chat tells the user so
+once per new agent (`dashboard/member_rebind_notice.py`).
 
 Admission captures the record before asynchronous work and passes it directly to
 provider allocation and prompt construction. Automatic selection publication

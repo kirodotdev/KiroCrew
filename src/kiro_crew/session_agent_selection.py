@@ -124,6 +124,29 @@ def _member_record_agent(bound_kiro_agent: str, template_id: str) -> str:
     return member_chat_agent(template_id)
 
 
+def _member_record_agents(member_cfg: Any, template_id: str) -> tuple[str, str]:
+    """``(record, new_chat)`` for a ``member`` record whose member row is *member_cfg*.
+
+    *record* is :func:`_member_record_agent` under the member's current binding;
+    *new_chat* is ``member_template_id`` of the row, what a new chat with the
+    member records (``resolve_member_execution``), and ``""`` when the config no
+    longer names the member (*member_cfg* None). One ownership read of the
+    binding answers both: a binding whose new chat is not the conductor owns no
+    crewmate file, so the record is read without asking again, and a binding the
+    agents snapshot does not know is rescanned once, not twice.
+    """
+    from kiro_crew.config.loader import member_template_id
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if member_cfg is None:
+        return _member_record_agent("", template_id), ""
+    new_chat = member_template_id(member_cfg)
+    bound = ""
+    if new_chat == MATE_CONDUCTOR_AGENT:
+        bound = getattr(member_cfg, "kiro_agent", "") or ""
+    return _member_record_agent(bound, template_id), new_chat
+
+
 def resolve_session_agent_bindings(
     resolver,
     config,
@@ -153,14 +176,13 @@ def resolve_session_agent_bindings(
     # No name and no record is the default TEMPLATE, not the default crewmate
     # alias: the resolver answers an empty name with that session.
     selected = agent_name or ""
-    # The member's CURRENT bound ``kiro_agent`` from config, when its record names one.
-    bound_kiro_agent = ""
+    # The member's CURRENT row from config, when its record names one.
+    member_cfg: Any = None
     if execution is not None:
         # Member display labels may change; the durable ID and store do not.
         if execution.member_id is not None and execution.selection_kind == "member":
             try:
                 selected, member_cfg = member_config_for_id(config, execution.member_id)
-                bound_kiro_agent = getattr(member_cfg, "kiro_agent", "") or ""
             except UnknownMemoryStore:
                 selected = execution.selection_name or execution.member_id
         else:
@@ -193,7 +215,7 @@ def resolve_session_agent_bindings(
         # already the provider selection and must stay exact.
         kiro_agent = _source_of_view(execution.template_id)
         if execution.selection_kind == "member":
-            kiro_agent = _member_record_agent(bound_kiro_agent, kiro_agent)
+            kiro_agent, bindings.new_chat_agent = _member_record_agents(member_cfg, kiro_agent)
         bindings.kiro_agent = kiro_agent
         bindings.execution_context = execution
     bindings.selection_revision = _revision(execution)

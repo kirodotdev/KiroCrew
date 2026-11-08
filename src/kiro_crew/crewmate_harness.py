@@ -768,6 +768,25 @@ def worker_harnesses(config: Any) -> list[str]:
     return _harnesses_whose_runtime_is_in(config, frozenset(_backends.ACP_BACKENDS_MATE_WORKER_KIT))
 
 
+def pin_remedy(pin: CrewBackendPin, harnesses: list[str], *, clearing_helps: bool) -> str:
+    """The fix for a session refused for what its crewmate's pinned harness lacks.
+
+    The pin outranks ``agent.member_acp_backend`` (``members.select_provider_backend``),
+    so a fix naming that setting cannot help. This names the pin and the harnesses
+    in *harnesses* (stored spelling) that would carry the session, and clearing the
+    pin only when *clearing_helps* (the member route would carry it).
+    """
+    crew = pin.crew
+    fixes = []
+    if harnesses:
+        able = ", ".join(harness_label(h) for h in harnesses)
+        fixes.append(f"in {crew}'s settings pick a harness that can ({able})")
+    if clearing_helps:
+        fixes.append("clear the pin")
+    fix = " or ".join(fixes) or "no harness that can starts on this gateway"
+    return f"{crew} is pinned to {harness_label(pin.stored)} (agents.{crew}.acp_backend); {fix}"
+
+
 def harness_pin_rejected(value: object, config: Any) -> str | None:
     """Why *value* cannot be stored as a crewmate's harness pin, or ``None``.
 

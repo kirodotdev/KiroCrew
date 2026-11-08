@@ -265,20 +265,21 @@ async def _run_inner_impl(
         from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
         _cfg = await asyncio.to_thread(_Config.load)
+        _crew = crew_for_member_id(_cfg, str(execution.member_id or ""))
         try:
             worker_backend = (
                 resolve_selected_backend(info.backend)
                 if info.backend is not None
-                else crewmate_worker_backend(
-                    _cfg, crew_for_member_id(_cfg, str(execution.member_id or ""))
-                )
+                else crewmate_worker_backend(_cfg, _crew)
             )
         except CrewmateHarnessUnavailable as exc:
             # The crewmate's pinned harness cannot start, so neither can its
             # worker; it never runs on another harness in its place. The
             # message leads with its code, as the kit refusal below does.
             raise RuntimeError(str(exc)) from None
-        backend_reason = worker_kit_backend_refusal(worker_backend)
+        backend_reason = worker_kit_backend_refusal(
+            worker_backend, _cfg, _crew, requested=info.backend is not None
+        )
         if backend_reason is not None:
             raise RuntimeError(f"capability_harness_unsupported: {backend_reason}")
     elif agent and (kind == "member" or (info.conversation_key and not info.agent)):

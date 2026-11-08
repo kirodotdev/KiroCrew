@@ -12783,6 +12783,7 @@
         "agent_switch_blocked_crew_mode": "‘{{agent}}’(으)로 전환하는 것이 차단되었습니다 — 이 채팅은 Ultra Mode이며 자체 에이전트에 고정됩니다. 다음 턴은 그 에이전트에서 다시 시작합니다.",
         "agent_switch_blocked_channel": "{{agent}}(으)로의 전환이 차단되었습니다 — 이 채팅은 {{channel_agent}}이(가) 담당하는 Slack 채널에 연결되어 있습니다. 다음 턴은 그 에이전트로 다시 시작합니다.",
         "channel_message_not_run": "Slack 채널의 메시지가 실행되지 않았습니다: 이 세션의 에이전트는 그 채널이 사용하는 에이전트가 아닙니다.",
+        "member_rebind_kept_agent": "{{bot}}은(는) 이제 {{agent}}(으)로 설정되어 있지만, 이 채팅은 시작할 때의 에이전트인 {{recorded}}(으)로 계속 실행됩니다. {{agent}}을(를) 사용하려면 {{bot}}와(과) 새 채팅을 시작하세요.",
         "crew_name_undispatchable": "이 스레드의 크루 이름은 사용할 수 없습니다. Bot의 이름을 바꾸거나 다시 만드세요.",
         "code_channel_worktree_not_ready": "이 코드 채널의 worktree가 아직 준비되지 않아 메시지를 실행하지 않았습니다. 잠시 후 다시 보내세요.",
         "remote_crew_read_only": "이 채팅은 원격 크루에서 실행되어 이제 읽기 전용입니다. 계속하려면 크루의 자체 세션을 여세요.",

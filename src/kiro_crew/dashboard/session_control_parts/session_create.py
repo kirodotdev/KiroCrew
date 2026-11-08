@@ -651,21 +651,21 @@ async def create_session(
     from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
     backend_stored = backend_to_stored(backend) if backend is not None else ""
+    crew = crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or "")
     try:
         if backend is not None:
             child_backend = backend
         elif own_worker:
-            child_backend = crewmate_worker_backend(
-                cfg,
-                crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or ""),
-            )
+            child_backend = crewmate_worker_backend(cfg, crew)
         else:
             child_backend = cfg.agent.acp_backend
     except CrewmateHarnessUnavailable as exc:
         # The crewmate's pinned harness cannot start, so neither can its worker.
         raise SessionControlError(str(exc), code=exc.code, status=409) from None
     if own_worker:
-        backend_reason = worker_kit_backend_refusal(child_backend)
+        backend_reason = worker_kit_backend_refusal(
+            child_backend, cfg, crew, requested=backend is not None
+        )
         if backend_reason is not None:
             raise SessionControlError(backend_reason, code="capability_harness_unsupported")
     model_reason = _model_pin_refusal(model_name, child_backend) if model_name else None
@@ -676,7 +676,7 @@ async def create_session(
             child_backend,
             # A worker pin was validated for the worker's own harness, not a pick.
             validated_for_worker=model_from_worker_pin and backend is None,
-            crew=crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or ""),
+            crew=crew,
         )
     if model_reason is not None:
         if "model" not in inherited_fields:

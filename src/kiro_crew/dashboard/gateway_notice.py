@@ -112,6 +112,10 @@ GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
 GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY = "code_channel_worktree_not_ready"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
+# A chat that keeps its record's agent after its Bot was set to another one
+# (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
+# chat with the Bot runs) and ``recorded`` (what this chat keeps running).
+GATEWAY_NOTICE_MEMBER_REBIND_KEPT_AGENT = "member_rebind_kept_agent"
 
 # Rows whose text is COMPOSED outside the dashboard: the token localizes only
 # the fixed frame, and the variable part the gateway interpolated (a reason, a

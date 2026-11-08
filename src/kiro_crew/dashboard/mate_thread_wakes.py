@@ -18,8 +18,10 @@ envelope ``[Worker report]``).
   wakes nobody.
 
 The same flush delivers a moved crewmate's one upgrade notice first
-(:mod:`kiro_crew.mate_upgrade_notice`). Per-gateway state lives on the dashboard
-state object, never in module globals.
+(:mod:`kiro_crew.mate_upgrade_notice`), and the notice a thread owes once its
+crewmate is set to another agent than the thread runs
+(:func:`offer_rebind_notice`). Per-gateway state lives on the dashboard state
+object, never in module globals.
 """
 
 from __future__ import annotations
@@ -295,6 +297,36 @@ def _kept_notices(state: Any) -> dict[str, str]:
     return kept
 
 
+#: The envelope the hidden rebind-notice turn opens with.
+REBIND_NOTICE_PREFIX = "[Agent change]"
+
+
+def _rebind_notices(state: Any) -> dict[str, str]:
+    """Threads whose rebind notice (its prompt) is still to be delivered."""
+    rebind = getattr(state, "_mate_rebind_notices", None)
+    if not isinstance(rebind, dict):
+        rebind = {}
+        state._mate_rebind_notices = rebind
+    return rebind
+
+
+def offer_rebind_notice(state: Any, slot: Any, agent: str, recorded_agent: str) -> None:
+    """Have crewmate thread *slot* tell its user it keeps running *recorded_agent*.
+
+    Its crewmate is now set to *agent*, which a new chat runs
+    (:mod:`kiro_crew.dashboard.member_rebind_notice`). Offered from inside the
+    thread's turn; the flush scheduled here waits for that turn to end and then
+    runs one hidden turn, and a thread whose turn has no task to wait on gets it
+    at a later turn end (:func:`note_turn_end`). A later offer replaces one not
+    yet delivered. Held in memory only: a restart before the delivery loses it,
+    and the thread's notice row stays.
+    """
+    _rebind_notices(state)[slot.key] = REBIND_NOTICE_PREFIX + crewmate_prompts.fill(
+        "rebind_notice", agent=agent, recorded=recorded_agent
+    )
+    schedule_flush(state, slot.key)
+
+
 def _notice_checked(state: Any) -> set[str]:
     checked = getattr(state, "_mate_notice_checked", None)
     if not isinstance(checked, set):
@@ -355,7 +387,9 @@ async def _flush(state: Any, key: str) -> None:
     while True:
         slot = state.get_slot(key)
         reports = _pending(state).get(key)
-        owed = key in _notices(state) or key in _kept_notices(state)
+        owed = (
+            key in _notices(state) or key in _kept_notices(state) or key in _rebind_notices(state)
+        )
         if not (reports or owed) or slot is None or not is_crewmate_thread(slot):
             # Nothing to say, or the thread is gone: what is pending stays, and
             # the thread's next turn end schedules this again.
@@ -378,6 +412,10 @@ async def _flush(state: Any, key: str) -> None:
         if _idle(slot) and key in _kept_notices(state):
             dispatch_hidden_turn(state, slot, _kept_notices(state).pop(key), human_seen=False)
             logger.info("kept notice started on %s", key)
+            continue
+        if _idle(slot) and key in _rebind_notices(state):
+            dispatch_hidden_turn(state, slot, _rebind_notices(state).pop(key), human_seen=False)
+            logger.info("rebind notice started on %s", key)
             continue
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
@@ -403,9 +441,12 @@ async def _flush(state: Any, key: str) -> None:
             # The thread was closed or replaced during the read: no wake on it, and
             # what is pending stays for the thread's next turn end.
             return
-        if not reports:
+        # A rebind notice is offered from inside the thread's own turn, so its
+        # flush waits for that turn to end; the other notices wait for a later
+        # turn end to schedule them again.
+        if not reports and key not in _rebind_notices(state):
             return
-        if _idle(slot):
+        if reports and _idle(slot):
             _pending(state).pop(key, None)
             dispatch_hidden_turn(
                 state,
@@ -548,6 +589,7 @@ def note_turn_end(
                 _pending(state).get(slot.key)
                 or slot.key in _notices(state)
                 or slot.key in _kept_notices(state)
+                or slot.key in _rebind_notices(state)
             ):
                 schedule_flush(state, slot.key)
             if slot.key not in _notice_checked(state):
