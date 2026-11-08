@@ -104,9 +104,9 @@ const LIVE_SKILL = {
  * the notice must state the outcome ONCE instead of hedging and then answering
  * itself a line below. */
 const HEDGED =
-  'Candidate “auto/evil-helper” is no longer pending — it was approved or dismissed in another window or by your Kiro Crew agent, so there was nothing left to approve.'
+  'Candidate “auto/evil-helper” is no longer pending — it was approved or removed in another window or by your Kiro Crew agent, so there was nothing left to approve.'
 const SETTLED_DISMISSED =
-  'Candidate “auto/evil-helper” is no longer pending — it was dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.'
+  'Candidate “auto/evil-helper” is no longer pending — it was removed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.'
 const SETTLED_APPROVED =
   'Candidate “auto/evil-helper” is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below, so there was nothing left to approve.'
 
@@ -366,13 +366,13 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     // surface with its Ask-agent hand-off is mandatory), NAMING the
     // candidate and mapping the coded reason to catalog text. The live
     // list (mocked empty) settles, so the reason states the DISMISSAL
-    // outright rather than "approved or dismissed".
+    // outright rather than "approved or removed".
     await waitFor(() =>
       expect(
-        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
+        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already removed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
       ).toBeInTheDocument(),
     )
-    expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
+    expect(screen.getByRole('alert').textContent).not.toContain('approved or removed')
     // The outcome resolved (handled elsewhere — nothing is broken), so the
     // hand-off follows it instead of naming a "failure".
     expect(
@@ -388,7 +388,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     await confirmAction('Dismiss')
     await waitFor(() =>
       expect(
-        screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
+        screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already removed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
       ).not.toBeInTheDocument(),
     )
   })
@@ -459,18 +459,18 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     await confirmAction('Dismiss')
     await waitFor(() =>
       expect(
-        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
+        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or removed in another window or by your Kiro Crew agent).'),
       ).toBeInTheDocument(),
     )
     await waitFor(() => expect(mockApi.skills.mock.calls.length).toBeGreaterThan(1))
     // The refetch has failed; the hedge stands and no outcome is asserted.
     expect(
-      screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
+      screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or removed in another window or by your Kiro Crew agent).'),
     ).toBeInTheDocument()
     // The failed list read has its own notice; no alert claims an outcome.
     expect(await screen.findByTestId('skill-list-failure')).toHaveTextContent('boom')
     for (const alert of screen.getAllByRole('alert')) {
-      expect(alert.textContent).not.toContain('already dismissed')
+      expect(alert.textContent).not.toContain('already removed')
       expect(alert.textContent).not.toContain('already approved')
     }
   })
@@ -499,7 +499,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below).'),
       ).toBeInTheDocument(),
     )
-    expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
+    expect(screen.getByRole('alert').textContent).not.toContain('approved or removed')
   })
 
   it('a not-found approve refusal survives the refetch that removes its row', async () => {
@@ -526,7 +526,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     // The row disappears (queue re-read as empty) …
     await waitFor(() => expect(screen.queryByText('auto/evil-helper')).not.toBeInTheDocument())
     // … but the refusal does NOT: it moved to the panel, so the user never
-    // mistakes the removal for a successful approve. "Approved or dismissed"
+    // mistakes the removal for a successful approve. "Approved or removed"
     // is RESOLVED from the refetched live list — the candidate never appeared
     // there — and the notice states the dismissal ONCE, in the message.
     await waitFor(() =>
@@ -540,7 +540,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     // One statement per screen: no hedge above the answer, and no separate
     // resolution line repeating it below (the shot-05 "hedges then answers
     // itself" reading).
-    expect(alert.textContent).not.toContain('approved or dismissed')
+    expect(alert.textContent).not.toContain('approved or removed')
     expect(alert.textContent).not.toContain('It was dismissed')
     expect(screen.queryByText(HEDGED)).not.toBeInTheDocument()
     // The hand-off follows the resolved state: nothing is broken once the
@@ -580,7 +580,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       ).toBeInTheDocument(),
     )
     const alert = screen.getByRole('alert')
-    expect(alert.textContent).not.toContain('approved or dismissed')
+    expect(alert.textContent).not.toContain('approved or removed')
     expect(alert.textContent).not.toContain('It was approved')
     expect(screen.queryByText(HEDGED)).not.toBeInTheDocument()
   })
@@ -625,11 +625,11 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     await waitFor(() => expect(approve).not.toBeDisabled())
     fireEvent.click(approve)
     // The hedge stands for good: no false "already approved" (the target
-    // being live proves nothing) and no false "already dismissed".
+    // being live proves nothing) and no false "it was removed".
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('approved or dismissed')
+    expect(screen.getByRole('alert').textContent).toContain('approved or removed')
     expect(screen.getByRole('alert').textContent).not.toContain('already approved')
-    expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
+    expect(screen.getByRole('alert').textContent).not.toContain('it was removed')
   })
 
   it('keeps the open wording while the live-list refetch is still in flight', async () => {
