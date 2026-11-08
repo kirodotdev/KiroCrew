@@ -18721,10 +18721,17 @@
         "filled_in_from_a_link": "リンクから入力されました。SSH ホストが自分の使っているマシンか確認してから追加してください。"
       },
       "notificationsPanel": {
+        "deliver_floor_all": "すべての優先度",
+        "deliver_floor_critical": "緊急のみ",
+        "deliver_floor_default": "デフォルトと緊急",
+        "deliver_min_priority_for": "{{name}} の通知を送信する最低優先度",
+        "deliver_to": "送信先",
+        "deliver_to_group": "{{name}} の通知の送信先",
         "desktop_alerts": "デスクトップ通知",
         "no_channels": "通知ソースはまだありません。",
         "notify_when_a_background_chat_finishes": "バックグラウンドのチャットが完了したら通知する",
         "notify_when_a_background_chat_finishes_description": "完了したチャットの名前を含むシステム通知を表示します。ただし、このウィンドウが最小化されているか他のアプリの背後にあるときのみです。",
+        "transport_unavailable": "利用不可",
         "unread_only_when_done_or_waiting": "対応が必要なときだけセッションを未読にする",
         "unread_only_when_done_or_waiting_description": "バックグラウンドのセッションは、新しいメッセージのたびではなく、エージェントが完了したときや回答を待っているときだけ未読になります。",
         "always_interrupts_cannot_be_muted_or_lowered": "常に割り込み — ミュートまたは低下させることはできません",

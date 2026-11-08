@@ -9091,9 +9091,16 @@
         "recordMetricsStatusUnavailable": "Could not load the metric-recording setting. The switch is locked until it loads."
       },
       "notificationsPanel": {
+        "deliver_floor_all": "Every priority",
+        "deliver_floor_critical": "Critical only",
+        "deliver_floor_default": "Default and critical",
+        "deliver_min_priority_for": "Lowest priority to deliver for {{name}}",
+        "deliver_to": "Deliver to",
+        "deliver_to_group": "Deliver {{name}} notifications to",
         "desktop_alerts": "Desktop alerts",
         "notify_when_a_background_chat_finishes": "Notify when a background chat finishes",
         "notify_when_a_background_chat_finishes_description": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app.",
+        "transport_unavailable": "unavailable",
         "unread_only_when_done_or_waiting": "Mark sessions unread only when they need you",
         "unread_only_when_done_or_waiting_description": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message.",
         "always_interrupts_cannot_be_muted_or_lowered": "Always interrupts — cannot be muted or lowered",

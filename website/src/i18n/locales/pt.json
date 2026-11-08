@@ -19687,10 +19687,17 @@
         "filled_in_from_a_link": "Preenchido a partir de um link. Confira se o host SSH é uma máquina que você usa e depois adicione-a."
       },
       "notificationsPanel": {
+        "deliver_floor_all": "Todas as prioridades",
+        "deliver_floor_critical": "Apenas críticas",
+        "deliver_floor_default": "Padrão e críticas",
+        "deliver_min_priority_for": "Prioridade mínima de envio para {{name}}",
+        "deliver_to": "Enviar para",
+        "deliver_to_group": "Enviar as notificações de {{name}} para",
         "desktop_alerts": "Alertas da área de trabalho",
         "no_channels": "Ainda não há fontes de notificação.",
         "notify_when_a_background_chat_finishes": "Avisar quando uma conversa em segundo plano terminar",
         "notify_when_a_background_chat_finishes_description": "Mostra uma notificação do sistema com o nome da conversa que terminou, mas apenas enquanto esta janela estiver minimizada ou atrás de outro aplicativo.",
+        "transport_unavailable": "indisponível",
         "unread_only_when_done_or_waiting": "Marcar sessões como não lidas só quando precisarem de você",
         "unread_only_when_done_or_waiting_description": "Uma sessão em segundo plano é marcada como não lida quando o agente termina ou espera sua resposta, e não a cada nova mensagem.",
         "always_interrupts_cannot_be_muted_or_lowered": "Sempre interrompe — não é possível silenciar nem reduzir a prioridade",

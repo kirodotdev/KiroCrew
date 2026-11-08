@@ -267,6 +267,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { Input: 1 },
     reason: 'read-only display of the freshly minted sign-in link (select-on-focus for manual copy) — transient, not a persistent setting',
   },
+  'NotificationsBridgeRoute.tsx': {
+    counts: { Select: 1, input: 1 },
+    reason:
+      'the per-channel "Deliver to" chat-app checkboxes and the priority-floor Select ' +
+      'render on runtime-fetched channel rows, offering only the chat apps connected ' +
+      'right now (manual: notifications.sources)',
+  },
   'NotificationsPanel.tsx': {
     counts: { Toggle: 1, Select: 1, input: 1 },
     reason:

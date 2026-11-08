@@ -19204,10 +19204,17 @@
         "filled_in_from_a_link": "Aus einem Link ausgefüllt. Prüfe, ob der SSH-Host ein Rechner ist, den du nutzt, und füge die Crew dann hinzu."
       },
       "notificationsPanel": {
+        "deliver_floor_all": "Jede Priorität",
+        "deliver_floor_critical": "Nur kritisch",
+        "deliver_floor_default": "Standard und kritisch",
+        "deliver_min_priority_for": "Niedrigste Priorität zum Senden für {{name}}",
+        "deliver_to": "Senden an",
+        "deliver_to_group": "Benachrichtigungen von {{name}} senden an",
         "desktop_alerts": "Desktop-Benachrichtigungen",
         "no_channels": "Noch keine Benachrichtigungsquellen.",
         "notify_when_a_background_chat_finishes": "Benachrichtigen, wenn ein Chat im Hintergrund fertig ist",
         "notify_when_a_background_chat_finishes_description": "Zeigt eine Systembenachrichtigung mit dem Namen des fertigen Chats, aber nur solange dieses Fenster minimiert ist oder hinter einer anderen App liegt.",
+        "transport_unavailable": "nicht verfügbar",
         "unread_only_when_done_or_waiting": "Sitzungen nur als ungelesen markieren, wenn sie dich brauchen",
         "unread_only_when_done_or_waiting_description": "Eine Sitzung im Hintergrund wird erst als ungelesen markiert, wenn ihr Agent fertig ist oder auf deine Antwort wartet, nicht bei jeder neuen Nachricht.",
         "always_interrupts_cannot_be_muted_or_lowered": "Unterbricht immer — kann nicht stummgeschaltet oder herabgesetzt werden",
