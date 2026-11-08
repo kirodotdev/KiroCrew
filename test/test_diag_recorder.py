@@ -172,6 +172,17 @@ def test_health_reports_the_documented_keys(tmp_path: Path) -> None:
         assert key in health, key
 
 
+def test_health_counts_rows_past_a_torn_utf8_tail(tmp_path: Path) -> None:
+    recorder = _make(tmp_path)
+    path = Path(recorder.health()["file"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A row written with ensure_ascii=False and cut short inside "é".
+    path.write_bytes(b'{"ts": 1700000000.0}\n{"ts": 1700000000.0, "x": "caf\xc3')
+    health = recorder.health()
+    assert health["rows_today"] == 2
+    assert "running" in health
+
+
 # ── sampling reads what was injected, and nulls what is missing ──────────────
 
 
