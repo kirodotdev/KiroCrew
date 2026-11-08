@@ -404,11 +404,26 @@ Each cycle:
    `accept_eval.py`.
 
    A `blocked` or `question` row may also carry the worker's `reason`: `approval`
-   (a tool approval timed out) or `needs_human` (only a person can unblock it).
-   No reason means the item moves on its own (a build, a service). Tell your workers to
-   report `blocked` with `reason=approval` the moment a tool approval times out.
-   When every open item waits on a person (`approval` or `needs_human`), put the
-   ask in front of the user on that turn: your patrol then holds, takes no
+   (a tool approval timed out) or `needs_human` (the worker says only a person
+   can unblock it). No reason means the item moves on its own (a build, a
+   service). Tell your workers to report `blocked` with `reason=approval` the
+   moment a tool approval times out.
+
+   **`needs_human` is the worker's claim, not a fact: check it.** A person is
+   needed only for one of five asks: (1) credentials, a sign-in or a permission
+   only they can grant; (2) spending money or meaningful quota; (3) a step that
+   cannot be undone, or deletes or overwrites someone else's work; (4) a real
+   preference you cannot infer where a wrong guess is costly; (5) a choice the
+   person said they want to make. If none applies, decide it yourself: take the
+   worker's recommendation (or the safest reversible default when it names
+   none), record `action=decide`, `session_send` it to the worker, and tell the
+   person in one line what you decided. For example, a plain design choice
+   (which of two layouts, which file holds a helper) is yours; a choice that
+   deletes another contributor's branch is ask 3; a choice that needs a token
+   only the person holds is ask 1.
+
+   When every open item waits on a person (`approval`, or a `needs_human` that
+   passed that check), put the ask in front of the user on that turn: your patrol then holds, takes no
    turns and does not extend, and the goal popover shows it waiting on the user.
    A worker's new report releases it; your own writes (decide, goal, close) do
    not, so answer the user's question or re-dispatch to move it.
@@ -886,10 +901,10 @@ what the composer renders:
   to its own parent, so for it they answer — `work_brief` without a prompt,
   `work_report` through the approval gate. See "When a conductor dispatched you"
   for what to report and when.
-- **A `question` costs a human click.** Answering means `session_send`, which
-  prompts by design. So you cannot answer a worker's question unattended, and a
-  question-heavy goal is that much less autonomous. Plan for it rather than
-  waiting on an approval nobody is there to give.
+- **Answering a `question` uses `session_send`.** Under Normal approval that
+  call prompts by design; setting the chat to Trust removes that click.
+  The prompt is a tool approval, not a reason to hand the worker's choice to the
+  person: decide it as step 2 says.
 - **A cron job may dispatch into the sessions it created**, so a fleet can be
   stood up and driven from a schedule instead of only from a live chat session.
   Session control is on by default: the agent config is the grant.
