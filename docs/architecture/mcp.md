@@ -4082,12 +4082,12 @@ content (`DropdownMenu`, `Popover`, `Dialog`, `Select` and `ContextMenu`
 content, `Modal`, `InfoTip`, `InstantTip`) re-emits `data-guide-trust-root` on
 that content while inside one, so a trust menu rendered at the body is as
 refused as the card that opened it. A name rendered from a catalog value with
-`{{...}}` parts resolves to that value's key when it carries all of the
-value's static text in order from start to end (markup and spacing ignored,
-at least two static characters), so a Chinese 信任“npm test” names
-`components.trustDropdown.trust_this_command`. A sensitive match is never
-pointed at, resolved or reported as found: the gateway hears `none` and
-`detail` `not_found`, and the panel says it is a security control.
+`{{...}}` parts or self-closing tags (`<mono/>`) resolves to that value's key
+when it carries all of the value's static text in order from start to end
+(markup and spacing ignored, at least two static characters), so a Chinese
+信任npm test names `components.trustDropdown.trust_this_command`. A sensitive
+match is never pointed at, resolved or reported as found: the gateway hears
+`none` and `detail` `not_found`, and the panel says it is a security control.
 `isCautionTarget` adds the caution line (and the confirm-aware finish) to a
 found control marked `data-guide-caution` (`guideCaution`, for a destructive
 control whose name is built at run time, such as "Delete {{name}}"), whose

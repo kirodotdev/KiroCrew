@@ -9151,18 +9151,18 @@
     },
     "trustDropdown": {
       "trust": "신뢰",
-      "trust_all_base": "<mono>{{base}}</mono> 명령 모두 신뢰",
-      "trust_all_base_channel": "<mono>{{base}}</mono> 명령 모두 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",
-      "trust_all_base_hour": "모든 <mono>{{base}}</mono> 명령 1시간 동안 신뢰({{time}}까지)",
-      "trust_all_base_session": "모든 <mono>{{base}}</mono> 명령 이 세션 동안 신뢰",
-      "trust_all_base_today": "모든 <mono>{{base}}</mono> 명령 자정까지 신뢰({{time}})",
+      "trust_all_base": "<mono/> 명령 모두 신뢰",
+      "trust_all_base_channel": "<mono/> 명령 모두 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",
+      "trust_all_base_hour": "모든 <mono/> 명령 1시간 동안 신뢰({{time}}까지)",
+      "trust_all_base_session": "모든 <mono/> 명령 이 세션 동안 신뢰",
+      "trust_all_base_today": "모든 <mono/> 명령 자정까지 신뢰({{time}})",
       "trust_all_tools": "이 세션의 모든 도구 신뢰",
       "trust_all_tools_channel": "이 채널의 모든 도구 신뢰 — 재시작 후에도 유지",
-      "trust_this_command": "<mono>{{cmd}}</mono> 신뢰",
-      "trust_this_command_channel": "<mono>{{cmd}}</mono> 명령을 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",
-      "trust_this_command_hour": "<mono>{{cmd}}</mono> 1시간 동안 신뢰({{time}}까지)",
-      "trust_this_command_session": "<mono>{{cmd}}</mono> 이 세션 동안 신뢰",
-      "trust_this_command_today": "<mono>{{cmd}}</mono> 자정까지 신뢰({{time}})"
+      "trust_this_command": "<mono/> 신뢰",
+      "trust_this_command_channel": "<mono/> 명령을 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",
+      "trust_this_command_hour": "<mono/> 1시간 동안 신뢰({{time}}까지)",
+      "trust_this_command_session": "<mono/> 이 세션 동안 신뢰",
+      "trust_this_command_today": "<mono/> 자정까지 신뢰({{time}})"
     },
     "tunnelStatus": {
       "connected": "연결됨",
