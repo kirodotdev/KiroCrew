@@ -297,6 +297,13 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 MCP_ROSTER_COMPLETE_NOTE = "the stall is later in session startup, not in those servers"
 METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
 METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
+#: Engine -> client notification: the host fail-closed this session's MCP on its
+#: governance verdict. ``params`` carries ``sessionId`` and ``reason``;
+#: ``api_failure`` means the governance READ itself failed (transient -- the
+#: managed servers will not report during this start, so an undeclared
+#: readiness wait ends the start at once), ``admin_disabled`` is a real policy
+#: verdict and keeps the ordinary path.
+METHOD_KAS_MCP_GOVERNANCE_DISABLED = "_kiro/mcp/governance_disabled"
 #: The client-side reset KAS runs an explicit MCP sign-in through. With
 #: ``startOAuth`` true the engine keeps its OAuth callback listener open for the
 #: whole connect attempt; the ``authorizationUrl`` on a failed ``_kiro/mcp/status``
