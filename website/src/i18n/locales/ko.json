@@ -1917,6 +1917,7 @@
       },
       "modes": {
         "edit": "편집",
+        "label": "모드",
         "preview": "미리보기"
       },
       "page": {
@@ -17036,7 +17037,8 @@
       "task_is_waiting_for_your_decision": "작업 {{index}} ‘{{title}}’이(가) 결정을 기다리고 있습니다",
       "tasks": "작업",
       "the_dag_view_will_appear_once_the_plan_is_ready": "플랜이 준비되면 DAG 보기가 표시됩니다",
-      "failed_to_update_task": "작업을 업데이트하지 못했습니다"
+      "failed_to_update_task": "작업을 업데이트하지 못했습니다",
+      "view_label": "프로젝트 보기"
     },
     "projectsPage": {
       "agent": "에이전트:",

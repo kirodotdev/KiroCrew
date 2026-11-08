@@ -1917,6 +1917,7 @@
       },
       "modes": {
         "edit": "編集",
+        "label": "モード",
         "preview": "プレビュー"
       },
       "page": {
@@ -17036,7 +17037,8 @@
       "task_is_waiting_for_your_decision": "タスク {{index}} 「{{title}}」があなたの決定を待機中",
       "tasks": "タスク",
       "the_dag_view_will_appear_once_the_plan_is_ready": "プランが準備完了するとDAGビューが表示されます",
-      "failed_to_update_task": "タスクの更新に失敗しました"
+      "failed_to_update_task": "タスクの更新に失敗しました",
+      "view_label": "プロジェクトの表示"
     },
     "projectsPage": {
       "agent": "エージェント:",

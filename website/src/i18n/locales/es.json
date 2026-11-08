@@ -1997,6 +1997,7 @@
       },
       "modes": {
         "edit": "Editar",
+        "label": "Modo",
         "preview": "Vista previa"
       },
       "page": {
@@ -17948,7 +17949,8 @@
       "task_is_waiting_for_your_decision": "Tarea {{index}} \"{{title}}\" está esperando tu decisión",
       "tasks": "Tareas",
       "the_dag_view_will_appear_once_the_plan_is_ready": "La vista DAG aparecerá cuando el plan esté listo",
-      "failed_to_update_task": "No se pudo actualizar la tarea"
+      "failed_to_update_task": "No se pudo actualizar la tarea",
+      "view_label": "Vista del proyecto"
     },
     "projectsPage": {
       "agent": "Agente:",

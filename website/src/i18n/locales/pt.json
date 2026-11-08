@@ -1997,6 +1997,7 @@
       },
       "modes": {
         "edit": "Editar",
+        "label": "Modo",
         "preview": "Visualizar"
       },
       "page": {
@@ -17948,7 +17949,8 @@
       "task_is_waiting_for_your_decision": "Tarefa {{index}} \"{{title}}\" está aguardando sua decisão",
       "tasks": "Tarefas",
       "the_dag_view_will_appear_once_the_plan_is_ready": "A visualização DAG aparecerá quando o plano estiver pronto",
-      "failed_to_update_task": "Falha ao atualizar a tarefa"
+      "failed_to_update_task": "Falha ao atualizar a tarefa",
+      "view_label": "Visualização do projeto"
     },
     "projectsPage": {
       "agent": "Agente:",
