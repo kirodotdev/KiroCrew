@@ -780,6 +780,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, info: 'SubagentInfo', parent_key: 'str') -> 'None'",
         ),
+        (
+            "_route_cron_parent_to_tab",
+            "async method",
+            "(self, info: 'SubagentInfo', *, parent_key: 'str', injection_counted: 'bool' = False, **route_kwargs: 'Any') -> 'None'",
+        ),
+        ("_drop_cron_injection", "method", "(self, parent_key: 'str') -> 'None'"),
     ),
     "runtime_charge": (
         ("_apply_gate_verdict", "function", "(job: 'CronJob', tally: '_GateTally') -> 'bool'"),
