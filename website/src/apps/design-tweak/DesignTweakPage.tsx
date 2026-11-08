@@ -379,7 +379,7 @@ export default function DesignTweak() {
     setNewPath, detecting, devOpen, setDevOpen, devDraft, setDevDraft, starting, devError, histOpen,
     setHistOpen, previewId, setPreviewNonce, dimsOpen, setDimsOpen, dims, setDimsFor, mode, status,
     setStatus, bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting, refresh,
-    withFollowUpLabels, toggleReq, postToOverlay, railW, onDragStart, selected, connected, switchTo,
+    withFollowUpLabels, toggleReq, postToOverlay, railW, railResize, selected, connected, switchTo,
     connect, disconnect, removeProject, addProject, pickFolder, sendRequest, missingIds, resendRequest,
     previewProject, myPending, myHistory, previewSrc, previewState, previewNote, isDevServer,
     markFramed, pinItems, focusComment, openInChat, archiveReq, deleteComment, setDevServer,
@@ -679,15 +679,14 @@ export default function DesignTweak() {
           OUT of the tab order: the width it adjusts is cosmetic, both panels
           scroll and stay fully operable at any width, so there is no content or
           control here that only the pointer can reach. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- pointer-only splitter: `onMouseDown` starts the drag, and a separator with no tab stop has no keyboard operation to mirror it with */}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label={i18nT('apps.designTweak.layout.drag_to_resize')}
-        onMouseDown={onDragStart}
+        {...railResize}
         title={i18nT('apps.designTweak.layout.drag_to_resize')}
         className="shrink-0 cursor-col-resize"
-        style={{ width: '11px' }}
+        style={{ width: '11px', touchAction: 'none' }}
       />
 
       {/* ================= RIGHT PANEL (bordered container: preview + action bar) ================= */}
