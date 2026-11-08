@@ -85,6 +85,20 @@ function applyToolOutputToMessages(
   patch(state.slotMessages[safeKey(slot)])
 }
 
+/** Set `meta.done` on every tool row carrying `tid`, in the live list and the
+ *  per-slot cache, as `applyToolOutputToMessages` writes `output`. */
+function markToolRowsDone(state: ChatState, slot: string, tid: string): void {
+  const mark = (msgs: ChatMessage[] | undefined): void => {
+    if (!Array.isArray(msgs)) return
+    for (const m of msgs) {
+      if (m.role === 'tool' && m.meta?.tool_call_id === tid && m.meta.done !== true) m.meta = { ...m.meta, done: true }
+    }
+  }
+  if (slot === state.activeSlot) mark(state.messages)
+  // Optional for the same reason as the status map below.
+  mark(state.slotMessages?.[safeKey(slot)])
+}
+
 export const activityReducers = {
   // A toggle is the user's own choice for the panel, so it also cancels a reopen
   // the phone or embed hold is waiting to make (see `sidePanelReopenSlot`),
@@ -253,6 +267,9 @@ export const activityReducers = {
     // (`final: false`) is not a return. Runs before the tool-log lookup below,
     // which returns early for a slot with no log yet.
     if (tid && action.payload.final !== false && !isUnsafeKey(action.payload.slot)) {
+      // Record the return on the row itself (the server stores `done` too): a
+      // row with no log entry (a transcript read mid-call, a trimmed log) reads it.
+      markToolRowsDone(state, action.payload.slot, tid)
       const statusKey = safeKey(action.payload.slot)
       // Optional: a store built from a partial chat state carries no status map.
       const status = state.slotStatusDetail?.[statusKey]

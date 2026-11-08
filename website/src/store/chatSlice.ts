@@ -1310,7 +1310,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
 
 export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, normalizeQueueEntries, queueEntryAttachments, queueEntryBanner, queueEntryPastes, queueEntryQuote, type QueueEntryAttachments } from './chat/wire'
 export { hydrateQueuedBubbles } from './chat/queue'
-export { floorForGen, hasUnidentifiedDurableRow, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
+export { floorForGen, hasUnidentifiedDurableRow, isDurableRow, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
 export {
   OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, SLOT_DETAIL_MAX_LIMIT, PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING,
   slotSwitchFetchLimit, slotCoverageShortfall, countMatchedFetchLimit, isSupersededPagingRejection,
