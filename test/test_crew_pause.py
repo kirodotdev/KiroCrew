@@ -31,6 +31,7 @@ def _pause_store(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_pause, "_loaded_from", None)
     _floor_monkeypatch.setattr(crew_pause, "_records", {})
     _floor_monkeypatch.setattr(crew_pause, "_RESUMING", set())
+    _floor_monkeypatch.setattr(crew_pause, "_unsaved", False)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
     _floor_monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
     return path
@@ -109,6 +110,30 @@ def test_a_pause_file_too_big_to_read_back_is_never_written(_pause_store, monkey
     assert crew_pause.record("root2") is None
     _restart()
     assert crew_pause.record("root")["stopped"] == ["w1"]
+
+
+@pytest.mark.parametrize("cause", ["disk_full", "size_cap"])
+def test_a_turn_owed_when_its_write_is_refused_is_still_continued(_pause_store, monkeypatch, cause):
+    crew_pause.pause("root", ["w1", "w2"], ["w1"])
+
+    def _fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        if cause == "disk_full":
+            mp.setattr(crew_pause, "atomic_write", _fail)
+        else:  # the file is at the cap, so adding w2 would pass it
+            mp.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+        # The dispatch gate ends w2's held turn, and the write of that obligation fails.
+        assert crew_pause.owe_turn("w2") is True
+    # Resume all still finds it owed, so it continues w2.
+    assert crew_pause.record("root")["stopped"] == ["w1", "w2"]
+    if cause == "disk_full":
+        # Once the disk recovers, the gate's next refusal stores it for a restart.
+        assert crew_pause.owe_turn("w2") is True
+        _restart()
+        assert crew_pause.record("root")["owed"] == ["w2"]
+    assert crew_pause.resume("root")["stopped"] == ["w1", "w2"]
 
 
 @pytest.mark.parametrize(
@@ -352,7 +377,7 @@ async def test_a_restored_card_that_does_not_start_is_not_lost(routes, monkeypat
         if dropped:  # judged stale: the card is gone
             slot._queue.clear()
             slot.queue_depth = 0
-        return False  # otherwise parked (memory still preparing)
+        return False  # otherwise held back (sub-agents still running)
 
     monkeypatch.setattr(chat_handlers, "_start_next_queued_turn", _not_started)
     slots = {r["key"]: _fake_slot(r["key"]) for r in _TREE}
@@ -368,6 +393,81 @@ async def test_a_restored_card_that_does_not_start_is_not_lost(routes, monkeypat
         assert body["resumed"]["w1"] == "held" and "w1" not in routes.calls["continue"]
         assert slots["w1"]._queue[0][RESTORED_SEND_CHOSEN_KEY] is True
     assert not crew_pause.holds_turn("w1")
+
+
+@pytest.mark.parametrize("memory", ["not_ready", "ready", "task_unpublished"])
+@pytest.mark.asyncio
+async def test_resume_while_memory_prepares_never_parks_a_stopped_workers_card(
+    routes, monkeypatch, memory
+):
+    from kiro_crew import memory_startup
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    _restart()
+    slots = {r["key"]: _fake_slot(r["key"]) for r in _TREE}
+    slots["w1"] = _fake_slot("w1", queued=1)
+    slots["w1"]._queue = [{"id": "q-restored", "content": "next step", RESTORED_QUEUE_KEY: True}]
+    state = _state(_TREE, slots)
+    # Memory is still preparing after the restart.
+    ready = memory == "ready"
+    if memory == "task_unpublished":  # the listener is up, the task not yet on the state
+        monkeypatch.setattr(memory_startup, "memory_startup_preparing", lambda: True)
+    else:
+        state.memory_startup_task = asyncio.get_running_loop().create_future()
+    if ready:  # it finishes within a turn's grace
+        asyncio.get_running_loop().call_soon(state.memory_startup_task.set_result, None)
+    elif memory == "not_ready":  # it does not
+        monkeypatch.setattr(memory_startup, "MEMORY_ADMISSION_WAIT_SECONDS", 0)
+    before = crew_pause.record("root")
+    resp = await routes.handler.api_crew_resume(_req(state))
+    if ready:
+        body = json.loads(resp.text)
+        assert body["resumed"]["w1"] == "drained" and "w1" in routes.calls["drain"]
+        assert not crew_pause.holds_turn("w1")
+    else:
+        # Its card would only park, and the drain after the park owes no
+        # Continue: the pause stays exactly as it was, stored, for a later Resume.
+        assert resp.status == 503 and json.loads(resp.text)["code"] == "memory_preparing"
+        assert routes.calls["drain"] == [] and routes.calls["continue"] == []
+        assert crew_pause.record("root") == before
+        _restart()
+        assert crew_pause.record("root") == before
+
+
+@pytest.mark.parametrize("queued", [True, False])
+@pytest.mark.asyncio
+async def test_a_members_continue_while_memory_prepares_keeps_it_paused(
+    tmp_path, monkeypatch, queued
+):
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import memory_startup
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.chat_api import continue_turn
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-w1")
+    if queued:  # a restored card; otherwise Continue would queue its own recovery entry
+        slot._queue = [{"id": "q-restored", "content": "next step", RESTORED_QUEUE_KEY: True}]
+    crew_pause.pause("chat-root", ["chat-w1"], ["chat-w1"])
+    state.memory_startup_task = asyncio.get_running_loop().create_future()
+    monkeypatch.setattr(memory_startup, "MEMORY_ADMISSION_WAIT_SECONDS", 0)
+    started = AsyncMock(return_value=False)
+    monkeypatch.setattr(chat_handlers, "_start_next_queued_turn", started)
+    continued = AsyncMock()
+    monkeypatch.setattr(chat_handlers, "continue_slot_turn", continued)
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("POST", "/x", app=app, match_info={"slot": "chat-w1"})
+    resp = await continue_turn.api_chat_slot_continue(req)
+    assert resp.status == 409 and json.loads(resp.text)["code"] == "crew_paused"
+    # Nothing parked and nothing continued: the pause still owes it its hand-back.
+    started.assert_not_awaited()
+    continued.assert_not_awaited()
+    assert crew_pause.record("chat-root")["stopped"] == ["chat-w1"]
+    assert crew_pause.holds_turn("chat-w1")
 
 
 @pytest.mark.asyncio

@@ -177,6 +177,36 @@ def _queue_is_restored(slot: Any) -> bool:
     return bool(queue) and all(entry.get(RESTORED_QUEUE_KEY) for entry in queue)
 
 
+async def memory_ready_for_drain(state: Any) -> bool:
+    """Wait a turn's own grace for memory preparation; ``False`` when it is still not ready.
+
+    While memory prepares, the queue drain parks instead of starting a card, and
+    the drain that follows can drop that card as stale with no Continue. Resume
+    all and a stopped member's own Continue wait here first, while the pause
+    record still owes the member its hand-back, and change nothing when memory
+    is still not ready; so the card starts or drops while the hand-back can still
+    Continue it.
+    """
+    from kiro_crew.memory_startup import (
+        MemoryStartupUnavailable,
+        memory_startup_preparing,
+        wait_for_memory_preparation,
+    )
+
+    task = getattr(state, "memory_startup_task", None)
+    if task is None:
+        # Startup publishes the task only after the listener is up: until then a
+        # preparing startup refuses every turn, so nothing may be handed back yet.
+        return not memory_startup_preparing()
+    if task.done():
+        return True
+    try:
+        await wait_for_memory_preparation(task)
+    except MemoryStartupUnavailable:
+        return False
+    return True
+
+
 async def drain_held_queue(state: Any, slot: Any, *, send_restored: bool = False) -> str:
     """Start *slot*'s next queued turn under its lock, as an idle drain does.
 
@@ -332,6 +362,9 @@ async def _resume(request: web.Request) -> web.Response:
     held = crew_pause.record(root)
     if kind != "crew" and held is None:
         return _not_root()
+    if (held or {}).get("stopped") and not await memory_ready_for_drain(state):
+        # A stopped member's card would only park: the pause stays as it is.
+        return _bad("memory_preparing", "memory is still being prepared; try again", status=503)
     # Read while the hold stands: once it lifts, a stopped turn's own tail may
     # start the next turn before its hand-back looks. Every session the hold
     # covers is read, not just those stopped so far: a held turn reaching the
