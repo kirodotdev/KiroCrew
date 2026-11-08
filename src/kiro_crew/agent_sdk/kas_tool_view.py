@@ -184,9 +184,11 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
     cannot turn into a rule (a regex with no glob form, a URL pattern naming a
     path) and an ``allowedCommands`` entry Crew's gate cannot answer are named,
     and so is a duplicate alias key kiro-cli drops (``canonical_tools_settings``).
+    Each entry is named under the spelling *raw* wrote (``aliases.as_authored``).
     """
     from kiro_crew.acp import kas_permissions
+    from kiro_crew.platform import tools_settings_aliases as aliases
 
     settings, dropped = kas_permissions.canonical_tools_settings(raw)
     _block, not_carried = kas_permissions.tools_settings_to_permissions(settings)
-    return sorted(set(not_carried) | set(dropped))
+    return sorted({aliases.as_authored(raw, path) for path in not_carried} | set(dropped))

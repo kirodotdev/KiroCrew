@@ -180,6 +180,7 @@ from kiro_crew.platform.tool_names import (
     expand_kiro_cli_tool_exclusions,
     expand_kiro_cli_tool_names,
 )
+from kiro_crew.platform.tools_settings_aliases import as_authored
 from kiro_crew.sel import sel
 from kiro_crew.user_json import copy_json_document
 
@@ -277,19 +278,19 @@ def spec_keys_without_carrier(
         lost.append("toolAliases")
     if discards_mcp_oauth:
         lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
-    tools_settings = spec.get("toolsSettings")
+    raw = spec.get("toolsSettings")
     if not translates_tools_settings:
-        lost.extend(tools_settings_unapplied(tools_settings))
+        lost.extend(tools_settings_unapplied(raw))
         return sorted(lost)
-    # kiro-cli reads one spelling per alias group; the dropped ones are named.
-    tools_settings, dropped = canonical_tools_settings(tools_settings)
+    # kiro-cli reads one spelling per alias group; each name is the one the spec wrote.
+    tools_settings, dropped = canonical_tools_settings(raw)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
     _, not_carried = tools_settings_to_permissions(tools_settings)
-    lost.extend(f"toolsSettings.{path}" for path in not_carried)
+    lost.extend(f"toolsSettings.{as_authored(raw, path)}" for path in not_carried)
     if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
         lost.append("permissions")
     lost.extend(
-        f"toolsSettings.{path}"
+        f"toolsSettings.{as_authored(raw, path)}"
         for path in trusted_agents_withheld(tools_settings, may_skip_gate_now)
     )
     if (
@@ -301,7 +302,7 @@ def spec_keys_without_carrier(
         # Every entry is usable, but the session answers none of them: name each
         # shell key that carries one, so the operator learns why they prompt.
         lost.extend(
-            f"toolsSettings.{key}.allowedCommands"
+            f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
             for key in ("execute_bash", "shell")
             if isinstance(tools_settings.get(key), dict)
             and tools_settings[key].get("allowedCommands")
@@ -312,7 +313,7 @@ def spec_keys_without_carrier(
         and _allowed_commands_withheld(spec, None, tools_settings, "fs_write")
     ):
         lost.extend(
-            f"toolsSettings.{key}.allowedPaths"
+            f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
             for key in ("fs_write", "write")
             if isinstance(tools_settings.get(key), dict) and tools_settings[key].get("allowedPaths")
         )
