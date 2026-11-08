@@ -93,6 +93,7 @@ from kiro_crew.task_models import (
     VerificationStatus,
 )
 from kiro_crew.task_planner import group_parallel_tasks
+from kiro_crew.task_status_file import fail_on_declared_failure
 
 if TYPE_CHECKING:
     from kiro_crew.name_grant import Refusal as NameRefusal
@@ -1431,6 +1432,10 @@ async def execute_task(
                     )
                 except Exception:
                     logger.debug("MCP problem notice failed", exc_info=True)
+
+        # The step's own report decides first: a failure it declared ends the run.
+        if task.status_file and await fail_on_declared_failure(run, task, work_dir):
+            return False
 
         # Only an exit-0 run of the configured command is PASSED (verified).
         if not auto_test:

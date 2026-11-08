@@ -380,6 +380,10 @@ async def _execute_single_task(
 
 
 async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool:
+    if run.status == "failed":
+        # The step failed the run itself (a force_approval gate with no handler,
+        # a declared status file that says failed): nothing is planned around it.
+        return False
     if run.replan_count >= _MAX_REPLAN:
         run.status = "failed"
         clean_err, _ = redact_exfiltration_urls(failed_task.error or "")

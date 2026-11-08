@@ -428,6 +428,7 @@ class Task:
     superseded: bool = False  # a revised plan replaced it; execute_plan never resets it
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
+    status_file: str = ""  # where the step reports its own outcome (see Declared step status)
     depends_on: list[int] = field(default_factory=list)
 
 @dataclass
@@ -633,7 +634,7 @@ already handed back to its run:
 
 | Row | Verdict |
 |---|---|
-| run row, `is_safe_retry` (`params.safe_retry`, i.e. the run had a git worktree, or class `none` / `idempotent_key`) | `recovering`, then `execute_plan(task_id)` -- only steps that did not PASS re-run (`runs.json` / `progress.md` is the checkpoint) |
+| run row, `is_safe_retry` (`params.safe_retry`, i.e. the run had a git worktree, or class `none` / `idempotent_key`) | `recovering`, then `execute_plan(task_id)` -- only steps that did not PASS re-run (`runs.json` / `progress.md` is the checkpoint); a "Resumed after a gateway restart" notice follows a resume that started |
 | run row, not safe (legacy import, no worktree) | `unknown_side_effect`; the run stays `paused`, a "Run not auto-resumed" notice tells the operator to review and resume by hand |
 | run row, safe, that `model.RECOVERY_MAX_ATTEMPTS` (3) earlier gateway lives already resumed | `failed` (`adopted: lost_owner_limit`, listed in `AdoptReport.lost_owner_limit`); the run stays `paused`, a "Run not auto-resumed" notice says the limit counts every gateway stop, a routine restart as much as a crash, and the operator resumes by hand (which opens a new `~N` row) |
 | step row, safe | `failed` ("interrupted by a gateway restart; re-run on resume") -- the resume creates a fresh `~N` row for it |
@@ -678,7 +679,7 @@ A graceful gateway stop or restart ends active runs the same way a crash does. `
 `task_executor.execute_single_task()` evaluates task-level approval before agent execution.
 
 - With an `on_approval` callback, either `requires_approval` or `force_approval` prompts the owning surface; a denial pauses the project for editing.
-- Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate.
+- Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate: it fails the run, and `_try_replan` plans nothing for a run that is already `failed`.
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
 
@@ -893,6 +894,48 @@ A partial example; each run also carries `name`, `auto_approve`,
 
 The global timeout and the watchdog's stall bounds compare a run's AGE, not two wall-clock readings. `started_at` and `last_task_time` stay wall-clock for display and `runs.json`; `_MonotonicAge` keeps a monotonic reading of each. The one for `started_at` is taken where the run is stamped (a new run, a restart, a retry) and shared by `_execute_tasks` and `_watchdog_loop`, so the executor and the watchdog cannot disagree, and a wall-clock step neither times out or stall-cancels a healthy run nor spares one past its bound. The age is awake time, like the steps' own `asyncio` deadlines: `time.monotonic()` stops while the host is suspended on Linux and macOS, so a suspend there is neither timeout nor stall time, and it keeps counting on Windows. `test_taskrunner_run_steps.py::TestGlobalTimeoutClock` and `TestWatchdog::test_watchdog_measures_stalls_on_the_monotonic_clock` pin the step cases; a suspend on Linux or macOS reads as their forward step, the wall clock moving while the monotonic clock does not.
 
+## Declared step status
+
+A step's turn ending normally says only that the agent stopped. A YAML workflow
+agent may therefore name `status_file`: a path, relative to the step's work
+directory, where the step reports its own outcome as a JSON object.
+`decompose_yaml` accepts it only as a non-empty relative path with no `..` part
+(`task_status_file.validate_status_file`), and it round-trips through
+`runs.json`, `plan_to_yaml` and a plan edit. The plan chat's Tasks JSON names
+`status_file` on every step (`""` for none), as it names `force_approval`, and
+`update_plan_tasks` reads it from the edited item: a value sets it (a path outside
+the work directory is refused), `null` or `""` clears it, and an item without the
+key in an edit that names it on another item has none, so a step inserted, removed
+or moved in that JSON keeps its own. Only an edit that names `status_file` on no
+item keeps the old step's value at the same index. That is the step editor
+(`ProjectDetailPage`), which edits every step in place and sends no
+`status_file`, so a step it renames, even to another step's title, keeps its
+declaration.
+
+When a step that names one lands its turn, `task_executor.execute_task` reads the
+file off the loop (`task_status_file.declared_failure`) before the test command
+and the review run. A `"status"` of `"failed"` (any case) fails the step with the
+error `The step reported failure in <file>: <reason>`, quoting a `reason`,
+`error` or `message` string from the file, redacted and bounded. A file that is
+missing, unreadable, outside the work directory once symlinks resolve, larger
+than `STATUS_FILE_MAX_BYTES`, not valid JSON or not a JSON object fails it the
+same way, because the step said it would write it. The gateway reads it, not the
+step, so the read goes through `hooks.safe_read_file_bytes_nolink` held to the work
+directory: a sensitive path (`~/.aws/credentials` in a work directory that is the
+home directory), a hardlinked inode, or a FIFO or other non-regular file is refused
+without being read or opened for blocking, and that refusal (`could not be read
+safely`) fails the step too. Any other status, or none,
+lets the step go on to verification and review unchanged. The file is read as
+found: a file an earlier run left in the same work directory counts.
+
+A failure the step declared is not retried and not re-planned around. It also
+fails the run (`run.status = "failed"`, `run.error = "Task N failed: ..."`), and
+`_try_replan` plans nothing for a run that is already `failed`, so the step's
+dependents never start and the DAG does not continue on the data the step said
+is incomplete. The usual `❌ Task N/M failed` notice and failure lesson follow. A
+resume (`execute_plan`) runs the step again. Pinned by
+`test/test_taskrunner_status_file.py`.
+
 ## Test verification
 
 Execution and verification are separate outcomes. `TaskStatus.PASSED` says a
@@ -968,6 +1011,7 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 | Stall warning | ⚠️ Task may be stalled | Minutes since last activity |
 | Session reset | 🔧 Watchdog: cancelling stalled task | Minutes + resetting |
 | Process died | 💀 Task N: process died | Recovery count |
+| Resumed after a restart | ▶️ Resumed after a gateway restart | The run continues from its checkpoint |
 | Lesson learned | 📝 Lesson learned | Rule text |
 | Replan started | 🔄 Re-planning (attempt N/2) | Failed step title + error |
 | Revised plan | 📋 Revised plan | New step count + titles |
@@ -978,19 +1022,37 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 ### Where a notification lands: the originating conversation
 
 `start_background(..., session_key=)` records the conversation the run was
-started FROM in `TaskRunner._run_session_keys` (task_id → key, in memory only —
-a persisted channel key would outlive the binding it names and send a restart's
-first notice into a conversation that may no longer resolve). `_notify` resolves
-it from `run.task_id` and hands it to `task_reporter.notify`, which forwards it
-to the sink. It is dropped when the run is pruned or deleted; a notification with
-no run attached carries no key.
+started FROM in `TaskRunner._run_session_keys` (task_id → key). `runs.json`
+carries it as the run's `origin_session_key`, and `_load_runs` puts it back, so a
+run a restart recovered still knows its conversation. `_notify` resolves it from
+`run.task_id` and hands it to `task_reporter.notify`, which forwards it to the
+sink. It is dropped when the run is pruned or deleted; a notification with no run
+attached carries no key. A stored key is only a hint: the sink resolves it at
+delivery time, so a conversation that no longer resolves (its tab closed, its
+channel binding gone) gets nothing and the bell keeps the notice.
 
-The sink is what decides where a notice goes, and the one notice a run cannot
-proceed without is an approval request. The gateway's `_task_notify` therefore
-tries the governed cross-surface channel ladder first (`_deliver_channel_reply`,
-see [slack-gateway](slack-gateway.md)) and keeps the owner Slack DM as the
-fallback, so a Telegram-only operator is told about an approval their task is
-waiting on.
+The sink is what decides where a notice goes. Every notice reaches the dashboard
+bell. The one notice a run cannot proceed without is an approval request, so the
+gateway's `_task_notify` tries the governed cross-surface channel ladder first
+(`_deliver_channel_reply`, see [slack-gateway](slack-gateway.md)) and keeps the
+owner Slack DM as the fallback, so a Telegram-only operator is told about an
+approval their task is waiting on.
+
+The notices that say something happened to the run that the person who started it
+from a chat would otherwise never see also reach that conversation
+(`dashboard/task_run_notices.py`, chosen in `reaches_origin` by how the title
+ends, so a run whose name holds one of these words, behind the `[label]` prefix,
+does not route its other notices there): a step's runtime died (`💀 Task N:
+process died`, and the watchdog's `💀 Watchdog: ACP process died`), and a gateway
+restart interrupted the run (`⏸️ Run not auto-resumed`, `▶️ Resumed after a
+gateway restart`). The sink appends the notice,
+title then body as the bell shows them, to the open dashboard tab showing the
+conversation (`dashboard_slot_key`) as an assistant-role `taskrunner_notice`
+system notice row (`dashboard/system_notices.py` and its frontend twin
+`website/src/lib/systemNotice.ts`), so no scan reads it as a turn, and sends it to
+the channel conversation behind the key through the same governed ladder. A Slack
+conversation has no ladder and gets the bell only. The startup restore rebuilds the
+open tabs before the adoption sweep runs, so a restart's notices find the tab.
 
 `task_reporter.NotifyCallback` is `Union[SessionAwareNotify, LegacyNotify]`, not
 one widened signature:
@@ -1138,6 +1200,7 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 - The generic review prompt is used only for a non-git run, or a git run whose commit failed
 - **Fails closed.** A review that raises, or a git run whose step left no diff (unless its commit failed), sets `task.error` to start with `_REVIEW_UNVERIFIED` and FAILS the step: no revert and no re-run, because a re-run would repeat any push or CR the step made and pass without a review
 - Only a real `{"ok": false}` verdict → revert commit → re-run the step once → re-commit on success
+- A step whose declared status file fails it never reaches the review (see Declared step status)
 
 ## Tool Approval
 
@@ -1294,11 +1357,13 @@ The page uses a left run rail plus a detail/compose area. The rail defaults to
 ### Task snapshot persistence
 
 `runs.json` is the ordinary JSON list of retained task records, including each
-run's captured `execution_context`, input, results and diagnostic state. Each
-task entry carries its `resume_hint` (see Step Prompt Context), restored on load
-so it survives a gateway restart; the `/api/taskrunner` status payload does not
-expose it. Each task entry also carries its `verification` verdict (see Test
-verification), which the status payload does return. There is
+run's captured `execution_context`, input, results and diagnostic state, and the
+conversation it was started from (`origin_session_key`, see Notifications). Each
+task entry carries its `resume_hint` (see Step Prompt Context) and its declared
+`status_file` (see Declared step status), restored on load so they survive a
+gateway restart; the `/api/taskrunner` status payload does not expose them. Each
+task entry also carries its `verification` verdict (see Test verification), which
+the status payload does return. There is
 no private sidecar, hidden directory or separate public projection. Incognito and
 Temporary runs are omitted according to their captured mode; cron runs are also
 excluded from this registry. Restored records reuse their captured identity,
