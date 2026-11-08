@@ -14500,7 +14500,8 @@
       "empty_title": "Noch keine Arbeitspakete",
       "no_ledger_title": "Diese Sitzung hat kein Crew-Board",
       "no_ledger_subtitle": "Nur Sitzungen, die Arbeitspakete an die Crew vergeben, haben ein Board.",
-      "error_title": "Diese Übersicht konnte nicht gelesen werden"
+      "error_title": "Diese Übersicht konnte nicht gelesen werden",
+      "refresh_failed": "Dieses Board konnte nicht aktualisiert werden. Die Anzeige ist möglicherweise veraltet."
     },
     "devFleetPage": {
       "actions": "Aktionen",

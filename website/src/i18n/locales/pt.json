@@ -14864,7 +14864,8 @@
       "empty_title": "Ainda não há itens de trabalho",
       "no_ledger_title": "Esta sessão não tem painel do crew",
       "no_ledger_subtitle": "Apenas sessões que distribuem trabalho ao crew têm painel.",
-      "error_title": "Não foi possível ler este quadro"
+      "error_title": "Não foi possível ler este quadro",
+      "refresh_failed": "Não foi possível atualizar este quadro. O que é exibido pode estar desatualizado."
     },
     "devFleetPage": {
       "actions": "Ações",
