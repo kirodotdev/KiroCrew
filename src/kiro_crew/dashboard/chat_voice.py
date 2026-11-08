@@ -566,8 +566,13 @@ async def _synthesize_request(
                 )
 
         if not chunk_paths:
+            # Probed like the built-in engine's path: only a host with no AWS CLI
+            # is the client's to voice. Any other empty stream (every sentence
+            # denied or timed out) gets the generic notice, not browser speech.
+            no_cli = await asyncio.to_thread(resolve_polly_cli) is None
             raise VoiceSynthesisError(
-                "voice_unavailable", "The selected voice provider returned no audio."
+                "voice_unavailable" if no_cli else "voice_synthesis_failed",
+                "The selected voice provider returned no audio.",
             )
         return web.json_response({"ok": True, "chunks": len(chunk_paths), "request_id": request_id})
     except SandboxUnavailableError as exc:
