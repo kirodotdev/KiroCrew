@@ -265,3 +265,50 @@ def test_a_server_named_builtin_something_is_an_mcp_server():
     payload = spec_hooks.kiro_cli_hook_payload({}, HOOK_EVENT_PRE_TOOL_USE, spec)
     assert payload["tool_name"] == "@builtin__docs/delete_file"
     assert payload["tool_tags"] == ["@builtin__docs/delete_file", "@builtin__docs", "@mcp"]
+
+
+# ── A KAS write call's tool_input carries kiro-cli's keys too ──
+
+
+def _write_payload(tool_id: str, tool_input: dict) -> dict:
+    _all, spec = pre_tool_match_names("t", harness_tool_id=tool_id)
+    return spec_hooks.kiro_cli_hook_payload(
+        {"tool_input": tool_input}, HOOK_EVENT_PRE_TOOL_USE, spec
+    )
+
+
+def test_a_kas_fs_write_input_reads_as_kiro_cli_create():
+    got = _write_payload("fs_write", {"path": "/w/a.py", "text": "x = 1\n"})
+    assert got["tool_input"] == {
+        "path": "/w/a.py",
+        "text": "x = 1\n",
+        "command": "create",
+        "content": "x = 1\n",
+    }
+
+
+def test_a_kas_str_replace_input_reads_as_kiro_cli_str_replace():
+    raw = {"path": "/w/a.py", "oldStr": "a", "newStr": "b", "replace_all": True}
+    got = _write_payload("str_replace", raw)
+    assert got["tool_input"] == {**raw, "command": "strReplace", "replaceAll": True}
+    # The caller's dict is not changed in place.
+    assert "command" not in raw
+
+
+def test_a_key_the_input_already_has_is_kept():
+    got = _write_payload(
+        "fs_write", {"path": "/w/a", "text": "new", "command": "x", "content": "y"}
+    )
+    assert (got["tool_input"]["command"], got["tool_input"]["content"]) == ("x", "y")
+
+
+def test_a_kas_fs_append_is_not_told_it_creates_the_file():
+    # fs_append states {path, text} like fs_write, but the text is a fragment.
+    raw = {"path": "/w/a.log", "text": "one more line\n"}
+    got = _write_payload("fs_append", raw)
+    assert got["tool_input"] == raw
+
+
+def test_a_non_write_call_keeps_its_input_as_is():
+    got = _write_payload("run_command", {"command": "ls"})
+    assert got["tool_input"] == {"command": "ls"}
