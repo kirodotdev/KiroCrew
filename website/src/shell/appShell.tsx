@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { setActiveId } from '../store/instancesSlice'
+import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -52,6 +52,7 @@ import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
+import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
@@ -852,6 +853,18 @@ export function useAppShell() {
             mayLeave: mayLeaveForNavigation,
           },
         )
+        return
+      }
+      // A Remote Crew add link (`kirocrew://remote-crew/add`) only fills in the
+      // local Crew's add form; the user still presses Add. Like an app link it
+      // brings the local Crew forward first. The values travel in the store and
+      // the route is the bare page, so the dashboard's own URL never carries them.
+      const addCrew = remoteCrewAddFromPath(path)
+      if (addCrew) {
+        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
+        if (!mayLeaveForNavigation()) return
+        dispatch(prefillCrewAddForm(addCrew))
+        navigate(REMOTE_CREW_SETTINGS_PATH)
         return
       }
       // An app detail link names an app installed in the local Crew. Over a

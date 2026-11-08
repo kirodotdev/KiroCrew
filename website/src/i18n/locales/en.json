@@ -10738,7 +10738,8 @@
         "remote_port_ttl": "· remote port {{port}} · ttl {{ttl}}",
         "warm_cap_count_one": "Up to {{count}} remote crew stays warm (live tunnel) at once; the rest reconnect on demand. Tune with",
         "warm_cap_count_other": "Up to {{count}} remote crews stay warm (live tunnel) at once; the rest reconnect on demand. Tune with",
-        "remote_port_value": "· remote port {{port}}"
+        "remote_port_value": "· remote port {{port}}",
+        "filled_in_from_a_link": "Filled in from a link. Check that the SSH host is a machine you use, then add it."
       },
       "notificationsPanel": {
         "app": "app",

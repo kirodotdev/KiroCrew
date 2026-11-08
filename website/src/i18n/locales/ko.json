@@ -18633,7 +18633,8 @@
         "not_active_until_restart": "— 다시 시작할 때까지 활성화되지 않음",
         "remote_port_ttl": "· 리모트 포트 {{port}} · ttl {{ttl}}",
         "warm_cap_count_other": "최대 {{count}}개의 원격 크루가 동시에 웜 상태(활성 터널)로 유지되고, 나머지는 필요할 때 다시 연결합니다. 조정 방법:",
-        "remote_port_value": "· 리모트 포트 {{port}}"
+        "remote_port_value": "· 리모트 포트 {{port}}",
+        "filled_in_from_a_link": "링크에서 입력되었습니다. SSH 호스트가 사용 중인 머신인지 확인한 다음 추가하세요."
       },
       "privacyPanel": {
         "recordMetricsLabel": "메트릭 기록",

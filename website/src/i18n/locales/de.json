@@ -19116,7 +19116,8 @@
         "remote_port_ttl": "· Remote-Port {{port}} · TTL {{ttl}}",
         "warm_cap_count_one": "Bis zu {{count}} Remote-Crew bleibt gleichzeitig warm (aktiver Tunnel); die übrigen verbinden sich bei Bedarf neu. Anpassen mit",
         "warm_cap_count_other": "Bis zu {{count}} Remote-Crews bleiben gleichzeitig warm (aktiver Tunnel); die übrigen verbinden sich bei Bedarf neu. Anpassen mit",
-        "remote_port_value": "· Remote-Port {{port}}"
+        "remote_port_value": "· Remote-Port {{port}}",
+        "filled_in_from_a_link": "Aus einem Link ausgefüllt. Prüfe, ob der SSH-Host ein Rechner ist, den du nutzt, und füge die Crew dann hinzu."
       },
       "notificationsPanel": {
         "desktop_alerts": "Desktop-Benachrichtigungen",

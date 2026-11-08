@@ -6,10 +6,12 @@ const {
   SCHEME,
   deepLinkFromArgv,
   isAppName,
+  isCrewName,
+  isSshHost,
   resolveDeepLink,
 } = require("../deep-link");
 
-describe("resolveDeepLink accepts exactly three shapes", () => {
+describe("resolveDeepLink accepts exactly four shapes", () => {
   it("bare scheme raises the window and routes nowhere", () => {
     for (const raw of ["kirocrew://", "kirocrew:", "KIROCREW://"]) {
       assert.deepEqual(resolveDeepLink(raw), { ok: true, route: "", slotKey: "" }, raw);
@@ -61,6 +63,162 @@ describe("resolveDeepLink accepts exactly three shapes", () => {
       assert.deepEqual(resolveDeepLink(raw), { ok: false, reason: "invalid app name" }, raw);
     }
     assert.equal(resolveDeepLink(`kirocrew://apps/detail/${"a".repeat(128)}`).ok, true);
+  });
+});
+
+describe("remote-crew/add fills in the Remote Crew add form", () => {
+  const ok = (route) => ({ ok: true, route, slotKey: "" });
+
+  it("routes to Settings -> Remote Crew with the host, port and label rebuilt from the link", () => {
+    assert.deepEqual(
+      resolveDeepLink("kirocrew://remote-crew/add?host=devbox.example.com&port=5476&name=Dev%20box"),
+      ok("/settings/instances?host=devbox.example.com&port=5476&name=Dev%20box"),
+    );
+    // Only host is required; a link without port or name leaves those fields be.
+    assert.deepEqual(resolveDeepLink("kirocrew://remote-crew/add?host=devbox"), ok("/settings/instances?host=devbox"));
+    // Host case, a trailing slash and key order are the URL parser's business.
+    assert.deepEqual(
+      resolveDeepLink("kirocrew://REMOTE-CREW/add/?name=Dev&host=devbox"),
+      ok("/settings/instances?host=devbox&name=Dev"),
+    );
+  });
+
+  it("joins user and host into the form's user@host SSH host", () => {
+    assert.deepEqual(
+      resolveDeepLink("kirocrew://remote-crew/add?host=devbox.example.com&user=me"),
+      ok("/settings/instances?host=me%40devbox.example.com"),
+    );
+    // A host that already names its user needs no user key.
+    assert.deepEqual(
+      resolveDeepLink("kirocrew://remote-crew/add?host=me%40devbox"),
+      ok("/settings/instances?host=me%40devbox"),
+    );
+  });
+
+  it("re-encodes the label rather than copying the input", () => {
+    const r = resolveDeepLink("kirocrew://remote-crew/add?host=h&name=Caf%C3%A9+%26+co");
+    assert.equal(r.ok, true);
+    assert.equal(r.route, `/settings/instances?host=h&name=${encodeURIComponent("Café & co")}`);
+    assert.equal(new URL(r.route, "http://x").searchParams.get("name"), "Café & co");
+  });
+
+  const refused = [
+    ["kirocrew://remote-crew", "unknown route"],
+    ["kirocrew://remote-crew/", "unknown route"],
+    ["kirocrew://remote-crew/connect?host=h", "unknown route"],
+    ["kirocrew://remote-crew/add/now?host=h", "unknown route"],
+    ["kirocrew://remote-crew/add", "missing host"],
+    ["kirocrew://remote-crew/add?name=Dev", "missing host"],
+    ["kirocrew://remote-crew/add?host=h&connect=1", "unknown query parameter"],
+    ["kirocrew://remote-crew/add?host=h&remote_bin=%2Ftmp%2Fx", "unknown query parameter"],
+    ["kirocrew://remote-crew/add?host=h&token=abc", "unknown query parameter"],
+    ["kirocrew://remote-crew/add?host=h&HOST=h", "unknown query parameter"],
+    ["kirocrew://remote-crew/add?host=a&host=b", "repeated query parameter"],
+    ["kirocrew://remote-crew/add?host=h&name=a&name=b", "repeated query parameter"],
+    ["kirocrew://remote-crew/add?host=", "invalid host"],
+    ["kirocrew://remote-crew/add?host=-oProxyCommand%3Dcalc", "invalid host"],
+    ["kirocrew://remote-crew/add?host=h&user=-oProxyCommand%3Dcalc", "invalid host"],
+    ["kirocrew://remote-crew/add?host=a%20b", "invalid host"],
+    ["kirocrew://remote-crew/add?host=%20devbox", "invalid host"],
+    ["kirocrew://remote-crew/add?host=a%3Bb", "invalid host"],
+    ["kirocrew://remote-crew/add?host=me%40h&user=you", "invalid host"],
+    ["kirocrew://remote-crew/add?host=h&user=", "invalid host"],
+    ["kirocrew://remote-crew/add?host=h&user=a%40b", "invalid host"],
+    [`kirocrew://remote-crew/add?host=${"a".repeat(256)}`, "invalid host"],
+    [`kirocrew://remote-crew/add?host=${"a".repeat(250)}&user=abcde`, "invalid host"],
+    ["kirocrew://remote-crew/add?host=h&port=", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&port=0", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&port=05476", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&port=65536", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&port=-1", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&port=80abc", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&port=%E0%A5%AB", "invalid port"],
+    ["kirocrew://remote-crew/add?host=h&name=", "invalid name"],
+    ["kirocrew://remote-crew/add?host=h&name=%20%20", "invalid name"],
+    ["kirocrew://remote-crew/add?host=h&name=a%0Ab", "invalid name"],
+    ["kirocrew://remote-crew/add?host=h&name=a%00b", "invalid name"],
+    ["kirocrew://remote-crew/add?host=h&name=%E2%80%AEevil", "invalid name"],
+    ["kirocrew://remote-crew/add?host=h&name=a%E2%80%8Bb", "invalid name"],
+    [`kirocrew://remote-crew/add?host=h&name=${"a".repeat(201)}`, "invalid name"],
+    // The authority carries no credentials or port, and a fragment is refused,
+    // exactly as for the other shapes.
+    ["kirocrew://me@remote-crew/add?host=h", "credentials or port in URL"],
+    ["kirocrew://remote-crew:22/add?host=h", "credentials or port in URL"],
+    ["kirocrew://remote-crew/add?host=h#connect", "fragment not allowed"],
+    [`kirocrew://remote-crew/add?host=h&name=${"a".repeat(8192)}`, "link too long"],
+  ];
+  for (const [raw, reason] of refused) {
+    it(`${JSON.stringify(raw).slice(0, 70)} -> ${reason}`, () => {
+      assert.deepEqual(resolveDeepLink(raw), { ok: false, reason });
+    });
+  }
+
+  it("caps the whole link at 8192 characters and the label at 200 code points", () => {
+    const head = "kirocrew://remote-crew/add?host=h&name=";
+    assert.equal(resolveDeepLink(head + "a".repeat(200)).ok, true);
+    // 200 astral characters are 400 UTF-16 units; the registry counts 200.
+    assert.equal(resolveDeepLink(head + encodeURIComponent("\u{1F680}".repeat(200))).ok, true);
+    assert.equal(resolveDeepLink(head + encodeURIComponent("\u{1F680}".repeat(201))).reason, "invalid name");
+    const atCap = "kirocrew://remote-crew/add?host=h&name=" + "%41".repeat(Math.floor((8192 - head.length) / 3));
+    assert.ok(atCap.length <= 8192);
+    assert.equal(resolveDeepLink(atCap).reason, "invalid name");
+    assert.equal(resolveDeepLink(atCap + "%41%41%41").reason, "link too long");
+  });
+
+  it("never returns a route outside the Remote Crew page or with a key the form does not take", () => {
+    const probes = [
+      "kirocrew://remote-crew/add?host=h&name=%2F..%2F..%2Fchat",
+      "kirocrew://remote-crew/add?host=h&name=x%26token%3Dabc",
+      "kirocrew://remote-crew/add?host=h&name=x%23frag",
+      "kirocrew://remote-crew/../chat?sid=k",
+      "kirocrew://remote-crew/add/../../apps/detail/mochi",
+      "kirocrew://remote-crew/%61dd?host=h",
+    ];
+    for (const raw of probes) {
+      const r = resolveDeepLink(raw);
+      if (!r.ok || !r.route.startsWith("/settings/")) continue;
+      const url = new URL(r.route, "http://x");
+      assert.equal(url.pathname, "/settings/instances", raw);
+      assert.equal(url.hash, "", raw);
+      for (const key of url.searchParams.keys()) assert.ok(["host", "port", "name"].includes(key), `${raw}: ${key}`);
+    }
+  });
+});
+
+describe("isSshHost agrees with the gateway's validate_ssh_host", () => {
+  // test/test_cli_open.py runs the same hosts through validate_ssh_host, so the
+  // two cannot drift apart without one side going red.
+  const samples = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "ssh-host-samples.json"), "utf8"));
+
+  it("accepts every valid sample", () => {
+    assert.ok(samples.valid.length > 0);
+    for (const host of samples.valid) assert.equal(isSshHost(host), true, JSON.stringify(host));
+  });
+
+  it("refuses every invalid sample", () => {
+    assert.ok(samples.invalid.length > 0);
+    for (const host of samples.invalid) assert.equal(isSshHost(host), false, JSON.stringify(host));
+  });
+
+  it("refuses surrounding whitespace the gateway would strip, non-strings, and hosts over the cap", () => {
+    for (const host of [" devbox", "devbox ", "devbox\n", "\tdevbox"]) assert.equal(isSshHost(host), false, JSON.stringify(host));
+    for (const value of [undefined, null, 7, ["devbox"], { host: "devbox" }]) assert.equal(isSshHost(value), false);
+    assert.equal(isSshHost("a".repeat(255)), true);
+    assert.equal(isSshHost("a".repeat(256)), false);
+  });
+});
+
+describe("isCrewName", () => {
+  it("takes an ordinary label, punctuation and non-Latin scripts included", () => {
+    for (const name of ["Dev box", "devbox-1", "Café & co", "开发机", "Team's box (us-west-2)"]) {
+      assert.equal(isCrewName(name), true, name);
+    }
+  });
+  it("refuses blank, control and invisible formatting characters", () => {
+    for (const name of ["", "   ", "a\tb", "a\u0007b", "a\u0085b", "a\u200Bb", "a\u202Eb", "a\u2066b", "\uFEFFa"]) {
+      assert.equal(isCrewName(name), false, JSON.stringify(name));
+    }
+    for (const value of [undefined, null, 7, ["a"]]) assert.equal(isCrewName(value), false);
   });
 });
 

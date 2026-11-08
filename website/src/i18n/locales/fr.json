@@ -19599,7 +19599,8 @@
         "warm_cap_count_one": "Jusqu'à {{count}} crew distante reste chaude (tunnel actif) à la fois ; les autres se reconnectent à la demande. À régler avec",
         "warm_cap_count_many": "Jusqu'à {{count}} crews distantes restent chaudes (tunnel actif) à la fois ; les autres se reconnectent à la demande. À régler avec",
         "warm_cap_count_other": "Jusqu'à {{count}} crews distantes restent chaudes (tunnel actif) à la fois ; les autres se reconnectent à la demande. À régler avec",
-        "remote_port_value": "· port distant {{port}}"
+        "remote_port_value": "· port distant {{port}}",
+        "filled_in_from_a_link": "Rempli depuis un lien. Vérifie que l’hôte SSH est une machine que tu utilises, puis ajoute-la."
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertes du bureau",

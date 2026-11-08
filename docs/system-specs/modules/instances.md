@@ -875,6 +875,15 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   `is_sensitive_path` floor, so agent file tools can neither read nor write it.
   See §12 and [security.md](security.md).
 - **SEL audit trail.** Every control-plane action is audited, reads included.
+- **An add link fills in a form, nothing more.** The desktop app's
+  `kirocrew://remote-crew/add` link can be opened by any program or web page
+  that can hand the OS a URL, so it reaches no control-plane call: it writes the
+  add form's draft in the dashboard's memory and opens the page. The record is
+  created only by the user's Add click, through the same validation as typed
+  input. That click is the trust decision: from it on the crew is one the user
+  added, so with **Auto-connect crews** on (the default) its tunnel opens once it
+  is added, as for a crew typed by hand. That is why the form names the link and
+  its SSH host. See [Adding a crew from a link](#adding-a-crew-from-a-link).
 - **Addressing fields locked for a correlated cloud instance.** `PATCH
   /api/instances/{id}` rejects an edit to `connection_method`/`ssm_target`/
   `aws_profile`/`aws_region` (`400`, `code: "cloud_instance_addressing_locked"`)
@@ -1029,6 +1038,49 @@ clicked, since the menu has already closed by then.
 > Prerequisite: you can already `ssh <ssh_host>` non-interactively from the hub
 > (a valid key or cert in your `ssh-agent`, no password prompt), and the remote
 > has `kirocrew` installed with a gateway running on its loopback port.
+
+### Adding a crew from a link
+
+A page that lists a user's machines can hand one to the desktop app with
+
+```
+kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]
+```
+
+The app comes forward on **Settings → Remote Crew** with the add form filled
+in and a line above the fields saying the values came from a link. The link
+fills in fields and does nothing else: no record is written and no tunnel opens
+until the user presses **Add remote crew**. That click is the decision to trust
+the host. After it the crew is handled like one typed by hand: with
+**Auto-connect crews** on (the default) it connects once added, and with it off
+it waits for **Connect**.
+
+| Key | Form field | Rule |
+|---|---|---|
+| `host` (required) | SSH host / alias | With `user`, the field gets `user@host`. The result must pass a copy of `validate_ssh_host` (§11). |
+| `user` | SSH host / alias | The user part of `user@host`; refused if `host` already names one. |
+| `port` | Remote port | The REMOTE GATEWAY's port, `1`-`65535` with no leading zero. The port ssh dials, like the user's identity and jump hosts, stays in `~/.ssh/config`, as for a crew typed by hand. |
+| `name` | Name | Not blank, at most `INSTANCE_NAME_MAX` characters, no control or invisible formatting character. |
+
+`website/electron/deep-link.js` resolves the link. It refuses, with a logged
+reason and no other effect, a link over 8192 characters, a path other than
+`/add`, a key outside the four or a repeated one, credentials or a port in the
+authority, a fragment, and any value outside its rule. An accepted link becomes
+the route `/settings/instances?host=…[&port=…][&name=…]`, rebuilt from the
+checked values and delivered over the `navigate` channel the native menu uses.
+The shell's handler (`lib/remoteCrewAddLink.ts`) is the only reader of that
+query: it brings the local Crew forward (Remote Crew is its page), asks the page
+on screen before leaving it, hands the values to the store
+(`prefillCrewAddForm`) and opens the bare `/settings/instances`. The page never
+reads its own URL, so a browser opening the same address fills in nothing.
+
+The add form holds one draft, so the newest link replaces whatever it held,
+typed values included. Each link bumps a counter that keys the Remote Crew
+panel, so a panel already open remounts on **Your crews** with the newest
+values, and the form scrolls into view once on that mount. The link stays on the
+draft while the user edits it, so the line naming it stays too; a successful Add
+or a form cleared back to its defaults drops both. A link opened while Remote
+Crew is turned off waits in the draft until the add form can show it.
 
 ### Pinned crew chips
 
@@ -1354,6 +1406,14 @@ Where it is called, and what each caller does with a rejection:
 | `SshTunnelManager._refresh_token_once()` | Aborts the refresh with a warning. |
 | `SshTunnelManager.restart_remote()` | Returns `{ok: false, message: "invalid ssh settings: ..."}`. |
 | `diagnostics.diagnose_instance()` | Short-circuits to an `unknown` diagnosis with a clear reason, **before** spawning any `ssh`. |
+
+The desktop app's add link checks its host against a JavaScript copy of the
+`validate_ssh_host` rule (`isSshHost` in `website/electron/deep-link.js`), so a
+link can never fill in a host the gateway would refuse. The copy is stricter in
+one way only: it refuses surrounding whitespace instead of stripping it.
+`website/electron/test/fixtures/ssh-host-samples.json` is run through both sides
+(`deep-link.test.js`, `test/test_cli_open.py`), which also pin the copy's
+255-character cap to `_MAX_HOST_LEN` and its label cap to `INSTANCE_NAME_MAX`.
 
 The remaining variable parts of the remote command are bounded by their own
 validators in `token_mint.py`: `_validate_ttl` (`<1-4 digits>[hm]`) and

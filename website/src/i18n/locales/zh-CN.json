@@ -18633,7 +18633,8 @@
         "not_active_until_restart": "— 重启后才会生效",
         "remote_port_ttl": "· 远程端口 {{port}} · ttl {{ttl}}",
         "warm_cap_count_other": "最多 {{count}} 个远程 Crew 可同时保持预热（活动隧道）；其余按需重连。可通过以下命令调整",
-        "remote_port_value": "· 远程端口 {{port}}"
+        "remote_port_value": "· 远程端口 {{port}}",
+        "filled_in_from_a_link": "已根据链接填写。请确认 SSH 主机是你在用的机器，然后再添加。"
       },
       "notificationsPanel": {
         "desktop_alerts": "桌面通知",

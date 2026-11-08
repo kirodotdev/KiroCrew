@@ -5,7 +5,9 @@ The slot-key grammar lives twice -- here in Python and in
 ``website/electron/deep-link.js`` for the Electron shell -- because neither side
 can import the other. The pin test at the bottom reads the JavaScript source and
 asserts the two regexes are byte-identical, so a change to one without the other
-goes red here.
+goes red here. The same class pins the resolver's other copies of a Python rule:
+the app-name grammar, and the SSH host and crew-name rules its
+``kirocrew://remote-crew/add`` shape checks.
 """
 
 from __future__ import annotations
@@ -20,11 +22,16 @@ import pytest
 from kiro_crew import cli_open
 from kiro_crew.apps import manifest_names
 from kiro_crew.cli_open import DeepLinkError, build_deep_link, open_url
+from kiro_crew.instances import registry as instances_registry
+from kiro_crew.instances import validation as instances_validation
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEEP_LINK_JS = _REPO_ROOT / "website" / "electron" / "deep-link.js"
 _APP_NAME_SAMPLES = (
     _REPO_ROOT / "website" / "electron" / "test" / "fixtures" / "app-name-samples.json"
+)
+_SSH_HOST_SAMPLES = (
+    _REPO_ROOT / "website" / "electron" / "test" / "fixtures" / "ssh-host-samples.json"
 )
 
 
@@ -149,8 +156,15 @@ def _js_regex(name: str) -> str:
     return match.group(1)
 
 
+def _js_int(name: str) -> int:
+    source = _DEEP_LINK_JS.read_text(encoding="utf-8")
+    match = re.search(rf"const {name} = (\d+);", source)
+    assert match, f"{name} not found in deep-link.js"
+    return int(match.group(1))
+
+
 class TestGrammarAgreesWithTheElectronResolver:
-    """The Python and JavaScript sides accept exactly the same slot keys."""
+    """The Python and JavaScript sides accept exactly the same values."""
 
     def test_slot_key_regex_is_identical(self):
         assert cli_open._SLOT_KEY_RE.pattern == _js_regex("SLOT_KEY_RE")
@@ -175,3 +189,21 @@ class TestGrammarAgreesWithTheElectronResolver:
     def test_scheme_is_identical(self):
         source = _DEEP_LINK_JS.read_text(encoding="utf-8")
         assert f'const SCHEME = "{cli_open.SCHEME}";' in source
+
+    def test_ssh_host_samples_agree_with_validate_ssh_host(self):
+        # deep-link.js checks a remote-crew link's host with its own copy of
+        # this rule (``isSshHost``); deep-link.test.js runs the same samples
+        # through it, so the copy cannot admit a host the gateway refuses.
+        samples = json.loads(_SSH_HOST_SAMPLES.read_text(encoding="utf-8"))
+        assert samples["valid"] and samples["invalid"]
+        for host in samples["valid"]:
+            assert instances_validation.validate_ssh_host(host) == host, host
+        for host in samples["invalid"]:
+            with pytest.raises(instances_validation.SshValidationError):
+                instances_validation.validate_ssh_host(host)
+
+    def test_ssh_host_length_cap_is_the_gateway_cap(self):
+        assert _js_int("SSH_HOST_MAX_LENGTH") == instances_validation._MAX_HOST_LEN
+
+    def test_crew_name_length_cap_is_the_registry_cap(self):
+        assert _js_int("CREW_NAME_MAX_LENGTH") == instances_registry.INSTANCE_NAME_MAX

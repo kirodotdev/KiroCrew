@@ -19599,7 +19599,8 @@
         "warm_cap_count_one": "Fino a {{count}} crew remota resta calda (tunnel attivo) contemporaneamente; le altre si riconnettono su richiesta. Regola con",
         "warm_cap_count_many": "Fino a {{count}} crew remote restano calde (tunnel attivo) contemporaneamente; le altre si riconnettono su richiesta. Regola con",
         "warm_cap_count_other": "Fino a {{count}} crew remote restano calde (tunnel attivo) contemporaneamente; le altre si riconnettono su richiesta. Regola con",
-        "remote_port_value": "· porta remota {{port}}"
+        "remote_port_value": "· porta remota {{port}}",
+        "filled_in_from_a_link": "Compilato da un link. Controlla che l’host SSH sia una macchina che usi, poi aggiungila."
       },
       "notificationsPanel": {
         "desktop_alerts": "Avvisi desktop",
