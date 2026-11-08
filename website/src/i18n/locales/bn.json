@@ -5877,7 +5877,7 @@
     "commitConfirm": "এই পরিবর্তন “{{branch}}”-এ কমিট করে পুশ করবেন? প্রকাশিত কমিট ফিরিয়ে নেওয়া যায় না।",
     "commitFailed": "কমিট প্রত্যাখ্যান করা হয়েছে।",
     "commitFinding": "ব্রাঞ্চে কমিট করুন",
-    "currentRepo": "কাজ চলছে",
+    "currentRepoLine": "কাজ চলছে: <repo/>",
     "cycle": "চক্র",
     "defectHeading": "ত্রুটি",
     "delta": "মাপা পার্থক্য",

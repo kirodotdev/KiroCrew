@@ -6045,7 +6045,7 @@
     "commitConfirm": "Valider cette modification sur « {{branch}} » et la pousser ? Un commit publié ne peut pas être retiré.",
     "commitFailed": "Le commit a été refusé.",
     "commitFinding": "Valider sur la branche",
-    "currentRepo": "En cours sur",
+    "currentRepoLine": "En cours sur <repo/>",
     "cycle": "Cycle",
     "defectHeading": "Défaut",
     "delta": "Écart mesuré",

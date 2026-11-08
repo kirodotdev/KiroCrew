@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, onTestFinished } from 'vitest'
 import { act, screen, fireEvent, waitFor } from '@testing-library/react'
+import i18next from 'i18next'
 
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
@@ -115,6 +116,19 @@ describe('SetupPanel repository and branch steps', () => {
     expect(screen.getByText(i18nT('autoImprovement.pushDisabled'))).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('checkbox', { name: AUTOCOMMIT }))
     await waitFor(() => expect(calls).toContainEqual({ method: 'PUT', path: '/config', body: { directCommit: true } }))
+  })
+
+  it('puts the repo name where the language places it in the current-repo line', async () => {
+    installApi()
+    const key = 'autoImprovement.currentRepoLine'
+    const shipped = i18next.getResource('ja', 'translation', key) as string
+    onTestFinished(() => { i18next.addResource('ja', 'translation', key, shipped) })
+    i18next.addResource('ja', 'translation', key, '<repo/> SENTINEL')
+    await i18next.changeLanguage('ja')
+    renderWithProviders(<SetupPanel config={CONFIGURED} />)
+    const repo = await screen.findByText('owner/repo')
+    expect(repo).toHaveClass('text-accent')
+    expect(repo.closest('p')?.textContent).toMatch(/^owner\/repo SENTINEL/)
   })
 
   it('hides the branch step when the clone reports no branches', async () => {

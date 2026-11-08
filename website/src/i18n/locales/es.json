@@ -6045,7 +6045,7 @@
     "commitConfirm": "¿Confirmar este cambio en “{{branch}}” y subirlo? Un commit publicado no se puede retirar.",
     "commitFailed": "El commit fue rechazado.",
     "commitFinding": "Confirmar en la rama",
-    "currentRepo": "Trabajando en",
+    "currentRepoLine": "Trabajando en <repo/>",
     "cycle": "Ciclo",
     "defectHeading": "Defecto",
     "delta": "Diferencia medida",
