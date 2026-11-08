@@ -14,10 +14,11 @@
 // All colors come from the app's design tokens (accent / warn / muted / border)
 // via Tailwind utilities — never a hardcoded hex — so the panel matches whatever
 // theme the dashboard is on.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderGit2, GitBranch, Loader2, Play, Square } from 'lucide-react'
 
+import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Badge, Btn, Card, CardTitle, Input } from '../../components/ui'
 import { fmtDateFields } from '../../i18n/format'
@@ -146,7 +147,18 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
         qc.invalidateQueries({ queryKey: ['auto-improvement-branches'] })
       }
     },
+    onSettled: () => { cloning.current = false },
   })
+  // Claimed synchronously before `mutate`: `clone.isPending` only flips on the
+  // next render, so a double click or a repeated Enter in the same tick would
+  // otherwise start a second clone.
+  const cloning = useRef(false)
+  const startClone = () => {
+    const u = url.trim()
+    if (!u || cloning.current) return
+    cloning.current = true
+    clone.mutate(u)
+  }
 
   // One mutation for any allowlisted config key. The backend rejects anything
   // not on its allowlist (clone/target_url can only move through setup-clone), so
@@ -196,13 +208,18 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
             placeholder={i18nT('apps.autoImprovement.setupPanel.https_github_com_owner_repo')}
             className="flex-1"
             aria-label={i18nT('autoImprovement.repoLabel')}
-            {...ime.bindEnter({ onEnter: () => { if (url.trim()) clone.mutate(url.trim()) } })}
+            {...ime.bindEnter({ onEnter: startClone })}
           />
+          {/* A clone in flight marks the button aria-disabled, not disabled: a
+              disabled button leaves the tab order and drops the focus of the
+              keyboard user who just pressed it. An empty URL still disables it. */}
           <Btn
             primary
             aria-label={i18nT('autoImprovement.cloneBtn')}
-            disabled={!url.trim() || clone.isPending}
-            onClick={() => clone.mutate(url.trim())}
+            disabled={!url.trim()}
+            aria-disabled={clone.isPending || undefined}
+            className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:opacity-60 aria-disabled:cursor-default aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100"
+            onClick={startClone}
           >
             {clone.isPending ? (
               <Loader2 className="lucide-inline animate-spin" size={14} />
@@ -211,8 +228,12 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
             )}
           </Btn>
         </div>
-        {clone.data?.error ? (
-          <p className="text-[12px] text-warn">{clone.data.error}</p>
+        {/* No hand-off: the typed repository URL is unsaved, and following
+            "Ask the agent" unmounts this panel and discards it. A refusal
+            the backend explains (`clone.data.error`) and a request that failed
+            outright (`clone.error`) both land here, announced as an alert. */}
+        {clone.data?.error || clone.error ? (
+          <ErrorNotice message={clone.data?.error || clone.error?.message} />
         ) : null}
         {configured ? (
           <p className="text-[12px] text-muted">
