@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import json
 import os
 import re
 import shutil
@@ -699,15 +700,21 @@ def _frontend_tree_complete(npm: str, repo: str) -> bool:
     needs a completeness check that a bare-populated one cannot give.
 
     ``npm ls --all`` walks the installed tree against the lockfile and exits
-    non-zero (``ELSPROBLEMS``, "missing: ...") when any package is absent or
-    invalid; it exits 0 only when the tree is complete. It runs no lifecycle
-    scripts, writes nothing, and needs no network -- measured ~1s. Anything other
-    than a clean exit 0 (a non-zero code, a missing npm, a timeout) returns
-    False, so the unknown case rebuilds rather than trusting the tree.
+    non-zero (``ELSPROBLEMS``) when a package is missing or invalid. It runs no
+    lifecycle scripts, writes nothing, and needs no network -- measured ~2s.
+
+    One ``invalid`` is what ``npm ci`` itself leaves on a complete install: a
+    nested OPTIONAL platform package skipped for this host (``libc``/``os``/
+    ``cpu``) resolves up to a hoisted copy of another version. npm
+    already ignores a missing optional dependency, so an invalid one is accepted
+    the same way: on ``ELSPROBLEMS`` the tree counts complete when every invalid
+    package is one its parent lists in ``optionalDependencies``. Anything else (a
+    missing package, an invalid required one, another error, unparsable output, a
+    missing npm, a timeout) returns False, so the unknown case rebuilds.
     """
     try:
         proc = subprocess.run(  # nosec B603 - argv list, no shell
-            [npm, "ls", "--all"],
+            [npm, "ls", "--all", "--json", "--long"],
             cwd=str(Path(repo) / _FRONTEND_SUBDIR),
             capture_output=True,
             timeout=120,
@@ -716,7 +723,24 @@ def _frontend_tree_complete(npm: str, repo: str) -> bool:
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
-    return proc.returncode == 0
+    if proc.returncode == 0:
+        return True
+    try:
+        tree = json.loads(proc.stdout)
+    except ValueError:
+        return False
+    return tree.get("error", {}).get("code") == "ELSPROBLEMS" and _only_optional_invalid(tree)
+
+
+def _only_optional_invalid(node: dict) -> bool:
+    """True when nothing under ``node`` is missing or invalid on a required edge."""
+    optional = node.get("optionalDependencies") or {}
+    for name, child in (node.get("dependencies") or {}).items():
+        if child.get("missing") or ("invalid" in child and name not in optional):
+            return False
+        if not _only_optional_invalid(child):
+            return False
+    return True
 
 
 def _frontend_build_already_current(git: str, npm: str, repo: str, ref: str) -> str | None:
