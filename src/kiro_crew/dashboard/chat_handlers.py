@@ -1016,8 +1016,9 @@ class SlotCloseError(Exception):
     Extracted alongside :func:`close_slot` so the DELETE endpoint and
     session-control's ``close_target`` map the SAME four failures the same way.
     ``code`` is the machine-readable contract; ``message`` is advisory prose;
-    ``status`` is 500 for every close failure (each leaves the tab open and
-    every partial step rolled back — a state the user can see and retry).
+    ``status`` is 500 for the close's own failures (each leaves the tab open and
+    every partial step rolled back — a state the user can see and retry); a
+    refusal carries its own status.
     """
 
     def __init__(self, message: str, code: str, status: int = 500) -> None:

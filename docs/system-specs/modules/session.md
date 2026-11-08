@@ -2907,6 +2907,14 @@ each one `rewind` does not carry, so nobody reads it as already shared:
   retryable rather than having its name retracted with a thread still writing.
   `close_slot` is the only retraction that WAITS, because it is the only one
   obliged to finish — the person asked for it.
+  A wait can outlast the slot's hold on its name: another close pops it and a
+  send recreates the key. So after the guarded-write wait, after the app close
+  hook, and right before the pop (the nudge retirements wait on the AutoNudge
+  lock), the close checks that the slot still holds the name and otherwise
+  refuses with 409 `slot_replaced`: the retirements resolve the loop by key and
+  the pop is by key, so either would act on the replacement. The refusal
+  releases only that close's own fence and puts nothing back, since the
+  original is gone.
   The fence itself is a DEPTH, not a flag, because two retractions can overlap
   on one slot: the close suspends inside its wait and the sweep can reach the
   same slot meanwhile. With a shared flag, whichever finished first cleared the
