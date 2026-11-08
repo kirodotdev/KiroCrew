@@ -6205,8 +6205,9 @@ AppHost's not-installed state, which points at Apps, under its own boundary key.
 other answer, including a plain 404 or a server-side check that raised, keeps the
 compiled page, and the reinstall is an ordinary registry install. A lookup that
 failed (no 404 came back) is not cached as an answer: it takes the shared retry
-ladder, keeps the compiled page with no notice, and is asked again on the next
-mount. The
+ladder, keeps the compiled page, shows its error in an `ErrorNotice` (agent
+hand-off) above the page once the retries are spent, and is asked again on the
+next mount. The
 app detail page shows the adoption state (`AppDetailAdoptionNotice`): a blocked or
 retrying move with its remedy, a staged move, or an installed copy that needs a newer
 host. A blocked or retrying move is a persisted failure, so it renders through the
