@@ -4,6 +4,7 @@ import { SendBtn, Badge } from '../../components/ui';
 import DetailPanel from '../../components/DetailPanel';
 import ErrorNotice from '../../components/ErrorNotice';
 import type { TaskDetail } from '../../types';
+import { taskStatusText } from './DagView';
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtDuration as fmtDurationParts, fmtList, fmtUnit } from '../../i18n/format'
@@ -114,7 +115,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
         {/* Status */}
         <div className="flex items-center gap-2">
           <Badge variant={task.status === 'passed' || task.status === 'done' ? 'ok' : task.status === 'failed' ? 'err' : task.status === 'in_progress' ? 'aim' : 'warn'}>
-            {task.status.replace('_', ' ')}
+            {taskStatusText(task.status)}
           </Badge>
           <span className="text-[12px] text-muted">{i18nT('pages.aidlc.taskDetailPanel.attempts')} {task.attempts}/3</span>
         </div>
@@ -175,7 +176,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
               {i18nT('pages.aidlc.taskDetailPanel.blocked_waiting_on')} {i18nT('pages.aidlc.taskDetailPanel.task_2', { count: blocking.length })}:
               {blocking.map(d => (
                 <div key={d.index} className="mt-1 pl-4">
-                  {i18nT('pages.aidlc.taskDetailPanel.task')} {d.index}: {d.title} — <span className={d.status === 'failed' ? 'text-danger' : d.status === 'in_progress' ? 'text-accent' : 'text-muted'}>{d.status.replace('_', ' ')}</span>
+                  {i18nT('pages.aidlc.taskDetailPanel.task')} {d.index}: {d.title} — <span className={d.status === 'failed' ? 'text-danger' : d.status === 'in_progress' ? 'text-accent' : 'text-muted'}>{taskStatusText(d.status)}</span>
                 </div>
               ))}
             </div>
