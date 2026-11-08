@@ -130,13 +130,14 @@ an ordinary cycle rather than as a wake — read those flags every cycle. A loop
 without the watch must be fixed with
 `monitor_update(watch="work-ledger")` before anything else. """,
     "patrol_budget": """Keep
-`interval_secs` within 300..900 seconds, whatever the round waits on. Take the
-bounds from the `patrol_budget` tool with `mode=check` (it never
-raises the user's runtime; on exit 21 arm with a 3000-second runtime and say
-so), and on every
-cycle whose nudge's `[patrol budget: ...]` line ends `10% or less left`, call
-it with `mode=renew` and apply what it returns with `monitor_update` — a
-spent loop cannot be renewed later. """,
+`interval_secs` within 300..900 seconds, whatever the round waits on. Pass no
+`max_cycles` and no `max_runtime_secs`: a `watch="work-ledger"` loop has no
+cycle cap, and its one bound is the gateway's 7-day runaway backstop, so it runs
+until you stop it. """,
+    "patrol_final_report": """When every ledger item is terminal or the user says stop, end the patrol in
+two steps. First send the user ONE final report: what landed, what is left, and
+the links. Then, in a later step, stop the loop with `autonudge_stop`. The
+final report is your last message to the user. """,
     "patrol_requested": """A reply saying
 *requested* confirms receipt only — do not retry it in the same turn.
 Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. """,
@@ -291,6 +292,7 @@ refused `memory_delegation_denied` — a binding no setting can change.
     ),
     ("patrol_watch", _LEDGER_CONDUCTOR_RULES["patrol_watch"]),
     ("patrol_budget", _LEDGER_CONDUCTOR_RULES["patrol_budget"]),
+    ("patrol_final_report", _LEDGER_CONDUCTOR_RULES["patrol_final_report"]),
     ("patrol_requested", _LEDGER_CONDUCTOR_RULES["patrol_requested"]),
     (
         "patrol_refused",
@@ -311,8 +313,8 @@ Round-0 go-ahead covers every round.
         "round_close_reset",
         """**Drop your chat at a round close.** Every patrol turn re-sends this whole
 chat; the ledgers already hold your state. Once the next round is dispatched,
-`session_ledger_record` `goal`, `next` (the open item ids, their worker keys and
-their PRs) and `patrol_base`, then call `reset_conversation` as the last act of
+`session_ledger_record` `goal` and `next` (the open item ids, their worker keys
+and their PRs), then call `reset_conversation` as the last act of
 that turn. The next wake resumes from the ledger snapshot it carries. Never
 reset mid-round, and never while a question to the person is unanswered. A
 refused reset changes nothing: carry on.
@@ -355,8 +357,8 @@ loop.
     (
         "patrol_ends",
         """**Patrol ends on two signals only:** every ledger item is terminal, or the user
-says stop. Call `autonudge_stop` only then. `max_cycles` is a runaway backstop,
-not a stop signal. Before you ask the person anything, pass this checklist, and
+says stop. Stop the loop only then, and only after the final report the Patrol
+section names. Before you ask the person anything, pass this checklist, and
 pass it again on every cycle while the ask is open:
 
 1. Is it credentials, spend, deleting or overwriting someone's work, or

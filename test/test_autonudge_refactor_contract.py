@@ -1507,6 +1507,9 @@ _FACADE_PATCHES_FOR_CONSUMERS = {
     # dashboard/session_directive_apply_monitor.py imports is_structured_monitor_loop per call;
     # these tests hand it a SimpleNamespace service, so no owner code runs.
     ("test/test_autonudge_member_self_arm.py", "is_structured_monitor_loop"): "directive consumer",
+    # session_directive_apply_monitor._default_cycle_cap imports infer_monitor per call;
+    # the test stubs the service and authorizer, so no owner code runs.
+    ("test/test_permanent_patrol.py", "infer_monitor"): "directive consumer",
 }
 
 

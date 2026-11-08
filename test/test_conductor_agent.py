@@ -482,8 +482,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """A loop without ``watch="work-ledger"`` is a plain timer that pays a turn
         every interval, and a 30-minute interval leaves a worker's report unread
         for half an hour. Both the prompt and the skill must make the watch
-        mandatory and keep the interval inside the band ``patrol_budget.py``
-        enforces.
+        mandatory and keep the interval inside the 300..900 s band.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
@@ -512,7 +511,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "Needs-human checklist" in body
         for text in (prompt, body):
             assert "Round-0 go-ahead" in text
-            assert "runaway backstop, not a stop signal" in text
+            assert "7-day runaway backstop" in text
             assert "credentials, spend, deleting or overwriting someone's work" in text
             assert "Park just this item" in text
 

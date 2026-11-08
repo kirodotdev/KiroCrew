@@ -164,7 +164,7 @@ def admits_member_default_patrol(
         and message == conductor_patrol.PATROL_MESSAGE
         and idle_secs == conductor_patrol.PATROL_INTERVAL_SECS
         and max_cycles == conductor_patrol.PATROL_MAX_CYCLES
-        and max_runtime_secs == conductor_patrol.PATROL_MAX_RUNTIME_SECS
+        and max_runtime_secs == conductor_patrol.patrol_max_runtime_secs()
         and is_self_arm(slot_key, attested_caller_slot_key)
     )
 

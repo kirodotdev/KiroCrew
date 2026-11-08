@@ -6179,15 +6179,19 @@ recipe arms that loop gated with `judge: false`. Its gated reading carries the p
 request's comments and reviews by body digest beside its checks, head and
 mergeability, so an unchanged pull request costs no turn, any change wakes the loop
 once, and the quiet floor still delivers a turn for what the reading cannot see.
-Its 48 cycles at 300 seconds cover its 14,400-second runtime.
-The kirocrew-prepare-pr recipe arms its poll loop the same way and pairs its 144-cycle
-poll budget with an explicit 24-hour runtime cap, so the four-hour default does
-not truncate its longer review loop. Its 600-second interval paces the quiet floor
+It names no bounds, so it takes the gated default: no cycle cap and the
+`monitoring.max_runtime_secs` ceiling as its runtime, and it ends itself from live
+state with one final report, then `monitor_stop`.
+The kirocrew-prepare-pr recipe arms its poll loop the same way but pairs an explicit
+144-cycle poll budget with an explicit 24-hour runtime cap. Its 600-second interval paces the quiet floor
 as well as detection, so it is what decides how many turns a loop spends on a pull
-request where nothing is happening. Both recipes keep interval x `max_cycles` at
-or above `max_runtime_secs`, so the runtime, not the cycle cap, ends the loop.
-Legacy monitor MCP calls require positive cycle and runtime caps;
-omitted caps default to 24 cycles and 14,400 seconds. The controller persists
+request where nothing is happening. It keeps interval x `max_cycles` at or above
+`max_runtime_secs`, so the runtime, not the cycle cap, ends the loop.
+Legacy monitor MCP calls refuse a zero cap or budget. An omitted runtime defaults
+to the `monitoring.max_runtime_secs` ceiling (7 days as shipped). An omitted cycle
+cap is none on a gated loop, whose quiet ticks cost no turn, and 24 on a loop that
+re-injects every interval (`gate=false`, or no subject to observe); a
+`watch="work-ledger"` patrol takes no bound from the model at all. The controller persists
 changed canonical allowlisted facts,
 fingerprint, dedicated latest
 classification/reason fields, error counters, decision, and next deadline

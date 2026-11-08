@@ -325,7 +325,7 @@ def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
         r"`max_agent_turns` where 0 = no wake cap",
         r"token cap applies only when usage is reported.*`token_usage_known`",
         r"runtime always caps, turns only if set positive",
-        r"never use `0` for unlimited work",
+        r"never pass `0` for unlimited work",
         r"pending application request, not proof that the monitor armed.*END THE TURN",
         r"Terminal records are read-only; restarting requires an explicit new watch",
         r"never add wait/poll beside it",
