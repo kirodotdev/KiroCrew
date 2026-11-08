@@ -1,6 +1,6 @@
 ---
 title: A conductor sends to and closes its own children, and reports on its own item, without an approval prompt
-status: draft
+status: accepted
 author: kirocrew-worker, directed by iamwhatever
 created: 2026-11-08
 last-audited: 2026-11-08
@@ -14,7 +14,9 @@ superseded-by: []
 
 # RFC: A conductor sends to and closes its own children, and reports on its own item, without an approval prompt
 
-Status: draft. Nothing built; this document changes no code. It moves a trust
+Status: accepted. #33043 was approved and merged 2026-11-08 15:07Z; it is
+accepted as proposed, with Q1 (default on) and Q2 (the unprompted first seed) as
+sections 5.4 and 10 propose. Nothing built; this document changes no code. It moves a trust
 boundary, so it is RFC-first under
 [CONTRIBUTING.md](../../CONTRIBUTING.md#pull-request-workflow). **The security
 trade-off in section 6 is the repository owner's (iamwhatever) and the security
