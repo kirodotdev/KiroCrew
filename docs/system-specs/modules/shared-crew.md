@@ -330,7 +330,8 @@ sighting and a device count (a digest per node, at most `MAX_DEVICES`). Unknown
 and system principals are not recorded. `people.people_view` builds the People
 body: it merges that record with the creators recorded on persisted sessions
 and with the people the local Tailscale daemon lists, in that order, so a person
-keeps the first row they have. Each row names its `sources`
+keeps the first row they have. The route builds that body in a worker thread
+(see *Session list query*). Each row names its `sources`
 (`observed`, `session_creator`, `tailscale_share`), so an observation is never
 presented as membership, and carries `is_owner` (the row's principal is one of
 `owner.owner_principal_ids`). An owner viewing always has a row, and the owner's
@@ -683,12 +684,14 @@ transcripts are dropped, then the search (`q`, case-insensitive over title and
 key) and the creator filter, then the page is cut. Order is newest `modified`
 first with a key digest as the tiebreak. The cursor is a keyset position, so one
 walk never returns a row twice; a session modified during a walk moves to the top
-and appears on the next walk. `total_matching` counts every session passing the
-search and the filter. `hidden_by_filter` counts the sessions passing the search
-that the creator filter excluded. The list covers persisted sessions; a slot
-that has never been saved is not in it. The route answers only the dashboard
-user, and refuses an app token or an internal caller with 403, so it reaches no
-session the existing list does not.
+and appears on the next walk. It runs in a worker thread, as do the People body
+and the mode route's creator scan: each parses every row's attribution, which on
+the event loop would stall the gateway on a large catalog. `total_matching`
+counts every session passing the search and the filter. `hidden_by_filter`
+counts the sessions passing the search that the creator filter excluded. The
+list covers persisted sessions; a slot that has never been saved is not in it.
+The route answers only the dashboard user, and refuses an app token or an
+internal caller with 403, so it reaches no session the existing list does not.
 
 The `unattributed` filter (the older `unknown` value is accepted and echoed as
 `unattributed`) lists sessions with no human creator and no named trigger; a
