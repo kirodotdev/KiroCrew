@@ -769,17 +769,27 @@ export function fixCodeFences(s: string): string {
   // after optional whitespace) plus an optional `{...}` attribute block, and
   // nothing more: a ``` run followed by more words is a mid-sentence mention,
   // and moving it onto its own line would open a fence over the prose after it.
-  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (_, pre, nl, fence) =>
-    nl ? pre + nl + fence : pre + '\n\n' + fence
+  // Indentation alone is not glued text: it is how a list item holds its fence,
+  // and moving that fence to column 0 would take it out of the item.
+  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (match, pre, nl, fence, at: number, src: string) =>
+    nl || /^[ \t]*$/.test(src.slice(src.lastIndexOf('\n', at) + 1, at + 1)) ? match : pre + '\n\n' + fence
   )
   // Split closing fences glued to trailing text: ```358KB → ```\n358KB
   // Preserves valid opening fences (```diff, ``` python, ```c++, ```asp.net)
   // via negative lookahead: optional info-string whitespace may precede a tag
   // that starts with a letter and continues as a backtick-free info string,
   // while a size like ```358KB still splits.
-  s = s.replace(/^(```)(?!\s*[a-zA-Z][^`]*$)(.+)$/gm, '$1\n$2')
-  // Split opening fences glued to uppercase text
-  s = s.replace(/```([A-Z])/g, '```\n$1')
+  // An indented fence (inside a list item) splits too, with the split line at
+  // the fence's indentation so both stay in the item. An indented line whose
+  // rest holds another ``` run is inline code (```npm i``` then ...), left alone.
+  s = s.replace(/^([ \t]*)(```)(?!\s*[a-zA-Z][^`]*$)(.+)$/gm, (line, indent: string, fence: string, rest: string) =>
+    indent && rest.includes('```') ? line : indent + fence + '\n' + indent + rest
+  )
+  // Split opening fences glued to uppercase text. The split line keeps the
+  // fence's indentation, so a fence inside a list item stays in that item.
+  s = s.replace(/(^[ \t]*)?```([A-Z])/gm, (_, indent: string | undefined, c: string) =>
+    indent === undefined ? '```\n' + c : indent + '```\n' + indent + c
+  )
   return s
 }
 
