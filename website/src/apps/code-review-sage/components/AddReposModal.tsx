@@ -157,9 +157,14 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
   const submitManual = () => {
     const v = manual.trim()
     if (!v) return
-    // Accept a full URL, a bare owner/repo, or a PULL REQUEST url — the backend
-    // validates all three and, for a PR link, pins its repo and opens the PR.
-    pinRepoUrl(v.includes('://') ? v : `https://github.com/${v.replace(/^\/+|\/+$/g, '')}`)
+    // Accept a full URL, a bare owner/repo, a PULL REQUEST url, or an SCP-style
+    // git remote (`git@host:group/repo.git`, what `git remote -v` prints). The
+    // backend validates them all and, for a PR link, pins its repo and opens the
+    // PR. A URL or a remote names its own host, so it goes as typed; git reads a
+    // remote as SCP-style only when no `/` comes before the first `:`.
+    const colon = v.indexOf(':')
+    const namesHost = v.includes('://') || (colon > 0 && !v.slice(0, colon).includes('/'))
+    pinRepoUrl(namesHost ? v : `https://github.com/${v.replace(/^\/+|\/+$/g, '')}`)
     setManual('')
   }
 
