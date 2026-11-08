@@ -1441,8 +1441,10 @@ both halves:
 
 - **Refusal.** Right after argv parses, before anything resolves or writes the
   data home (project detection runs after it, since its saved-path lookup creates
-  the home), `cli.main` asks `root_run_refusal`, for a bare `kirocrew` too. It
-  refuses when the process is
+  the home), `cli.main` asks `root_run_refusal`, for a bare `kirocrew` too. The
+  slim start of the gateway's own `mcp-*` servers (`mcp_entry.slim_server`) asks
+  it at the same step and, when it refuses, hands over to `cli.main`, which
+  prints the refusal. It refuses when the process is
   root and the data home (or the closest folder above it that exists) belongs to
   another uid, and prints one sentence naming the same command without sudo, exit
   1. Root working in root's own home is left alone, as are `service` (installs the
@@ -1452,23 +1454,32 @@ both halves:
   path), `config.json`, `members/` and `memory_stores/` exist but are owned by
   another uid or not usable: a file must be readable (config writes replace it
   through a sibling), a directory readable, writable and searchable, and a
-  symlink is not followed. It adds one repair line,
-  `sudo find -P <home> -xdev ! -user <user> \( -type d -o -links 1 \) -execdir chown -h <user> {} \; && chmod -R u+rwX <home>`:
-  as root it changes only entries another account owns, on the home's own
-  filesystem, never a symlink's target, and never a non-directory with a second
-  hard link (a link planted in the home to a root-owned file would otherwise
-  hand that file to this account). The walk never follows a symlink (`-P`), and
-  each `chown` runs from inside the entry's own directory on `./<name>`
-  (`-execdir`), so a parent directory swapped for a symlink to a system path
-  after the walk entered it is not followed. Two limits: GNU find refuses
-  `-execdir` while `PATH` holds a relative entry (`sudo`'s `secure_path` avoids
-  it), and `-links 1` is tested during the walk, so a file swapped for a hard link
-  before its `chown` is still re-owned where the kernel allows that link (Linux's
-  `fs.protected_hardlinks` forbids it, macOS does not). The gateway logs it
-  once after it reports ready, off the event loop (`warn_if_data_home_not_owned`,
-  never on the boot path), `kirocrew doctor` prints it under Data Home as an issue, `/api/status`
-  carries it as `data_home_access`, and `POST /api/agents` refuses with 409
-  `data_home_not_owned` and `fix_command` before it touches the config.
+  symlink is not followed. It names the account that owns them (`owner`, empty
+  when they are this account's own but unusable) and `HELP_URL`, the
+  troubleshooting section "Kiro Crew files belong to another account".
+  `DataHomeAccess.explain()` says it in plain words: which folder and owner,
+  that Kiro Crew was probably started as root once, to stop running it as root,
+  and the docs link. The gateway logs that sentence once after it reports ready,
+  off the event loop (`warn_if_data_home_not_owned`, never on the boot path),
+  `kirocrew doctor` prints it under Data Home as an issue, `/api/status` carries
+  `data_home_access` (`ok`, `home`, `foreign`, `owner`, `help_url`), and
+  `POST /api/agents` refuses with 409 `data_home_not_owned`, `home`, `owner` and
+  `help_url` before it touches the config.
+- **No repair as root.** Kiro Crew never changes the owner of these files
+  itself and offers no command that does. Re-owning files as root inside a
+  folder an agent can write is a privilege boundary: a copyable repair line was
+  tried and every version left a race in which a process writing the folder
+  could point root at a file outside it. The docs section frames the manual
+  step as the person's own, taken on the folder the notice names after stopping
+  Kiro Crew and every agent: first `sudo find -P <folder> -xdev -type f -links +1`
+  must print nothing (a hard link planted earlier survives the stop; it runs as
+  root only to list, since the earlier root run can leave folders unreadable to
+  the person), then
+  `sudo find -P <folder> -xdev ! -user "$(id -un)" \( -type d -o -links 1 \) -execdir chown -h "$(id -un)" {} \;`,
+  then `chmod -R u+rwX <folder>` as the person's own account without `sudo`.
+  That last step alone fixes the "can't be used by this account" case (no
+  other owner, only permissions), and it can change nothing the person does
+  not own.
 
 POSIX only: on Windows both answer "nothing wrong".
 

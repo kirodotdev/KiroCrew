@@ -5933,9 +5933,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "{{productName}} wurde wahrscheinlich einmal als root gestartet, zum Beispiel mit sudo. Starte es nicht mehr als root und gib die Dateien danach deinem eigenen Konto zurück.",
       "check_failed": "Konnte nicht prüfen, wem die {{productName}}-Dateien gehören.",
-      "message": "Einige {{productName}}-Dateien gehören einem anderen Benutzer, deshalb kann {{productName}} sie nicht lesen.",
-      "run_this": "Führ diesen Befehl in einem Terminal auf diesem Computer aus und versuch es dann noch einmal."
+      "help_link": "So gibst du die Dateien zurück",
+      "owned_by": "Einige {{productName}}-Dateien in {{home}} gehören {{owner}}, deshalb kann {{productName}} sie nicht lesen.",
+      "unusable": "Einige {{productName}}-Dateien in {{home}} kann dieses Konto nicht nutzen, deshalb kann {{productName}} sie nicht lesen."
     },
     "mateWorkers": {
       "approvals_label": "Tool-Freigaben aus den Sitzungen dieses Bot: {{n}}",

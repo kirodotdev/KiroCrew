@@ -633,13 +633,16 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     access = await asyncio.to_thread(check_data_home, data_home())
     if not access.ok:
         # Files another account owns fail this create part way through with a
-        # bare permission error; say the cause and the repair line instead.
+        # bare permission error; say the cause, the owner and where the docs
+        # explain giving them back instead.
+        found = access.to_json()
         return web.json_response(
             {
-                "error": "Some Kiro Crew files belong to another user, so Kiro Crew "
-                f"can't read them: {', '.join(access.foreign)}",
+                "error": access.explain(),
                 "code": DATA_HOME_NOT_OWNED,
-                "fix_command": access.fix_command,
+                "home": found["home"],
+                "owner": found["owner"],
+                "help_url": found["help_url"],
             },
             status=409,
         )

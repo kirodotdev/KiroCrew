@@ -6100,9 +6100,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "Es probable que {{productName}} se iniciara una vez como root, por ejemplo con sudo. Deja de ejecutarlo como root y luego devuelve los archivos a tu propia cuenta.",
       "check_failed": "No se pudo comprobar a quién pertenecen los archivos de {{productName}}.",
-      "message": "Algunos archivos de {{productName}} pertenecen a otro usuario, así que {{productName}} no puede leerlos.",
-      "run_this": "Ejecuta este comando en una terminal de este equipo y vuelve a intentarlo."
+      "help_link": "Cómo devolver los archivos",
+      "owned_by": "Algunos archivos de {{productName}} en {{home}} pertenecen a {{owner}}, así que {{productName}} no puede leerlos.",
+      "unusable": "Algunos archivos de {{productName}} en {{home}} no los puede usar esta cuenta, así que {{productName}} no puede leerlos."
     },
     "mateWorkers": {
       "approvals_label": "Aprobaciones de herramientas de las sesiones de este Bot: {{n}}",
