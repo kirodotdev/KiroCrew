@@ -17,7 +17,7 @@
  * Backend contract: kiro_crew/apps/builtins/ops_mission_control/backend/routes.py
  * Design: docs/system-specs/modules/ops-mission-control.md
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Radio,
@@ -429,9 +429,13 @@ export default function OpsMissionControlPage() {
   // Manual trigger for the same cycle the dispatch cron runs. Present because a
   // user who has just connected a provider should be able to prove it works now
   // rather than waiting up to a heartbeat to find out they mistyped a region.
+  // Claimed in the click itself: `dispatchMutation.isPending` only re-renders a
+  // tick after `mutate()`, so two fast presses would both read it as false.
+  const dispatchClaimed = useRef(false)
   const dispatchMutation = useMutation({
     mutationFn: () => opsApi.dispatch(),
     onSettled: () => {
+      dispatchClaimed.current = false
       queryClient.invalidateQueries({ queryKey: ['ops-mission-control', 'state'] })
       queryClient.invalidateQueries({ queryKey: ['ops-mission-control', 'ledger'] })
     },
@@ -534,9 +538,17 @@ export default function OpsMissionControlPage() {
         actions={
           <div className="flex items-center gap-2">
             {view === 'board' ? (
+              // While claiming: `aria-disabled` plus the claim, NOT `disabled`, which
+              // leaves the tab order and drops a keyboard user's focus to the page
+              // for the whole cycle.
               <Btn
-                disabled={dispatchMutation.isPending}
-                onClick={() => dispatchMutation.mutate()}
+                aria-disabled={dispatchMutation.isPending || undefined}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                onClick={() => {
+                  if (dispatchClaimed.current) return
+                  dispatchClaimed.current = true
+                  dispatchMutation.mutate()
+                }}
                 title={i18nT('apps.opsMissionControl.opsMissionControlPage.poll_every_configured_source_now_and_claim_anyth')}
               >
                 {/* "Poll & claim", not "Check now". The Signals tab's neighbouring button
