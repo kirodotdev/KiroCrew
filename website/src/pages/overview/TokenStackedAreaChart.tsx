@@ -5,6 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { area, curveMonotoneX, scaleLinear, stack } from 'd3'
 import type { Series, SeriesPoint } from 'd3'
 import { api } from '../../api/client'
+import { failedWithNoData } from '../../api/queryState'
 import type {
   UsageSeriesDimension,
   UsageSeriesLayer,
@@ -176,14 +177,20 @@ export function TokenStackedAreaChart() {
   // until the new one answers; without `keepPreviousData` every first switch
   // collapses the card to the skeleton. The answer carries the dimension it was
   // split by, so a stand-in stack keeps its own labels and caption.
-  const { data, error: queryErr, isPlaceholderData, isFetching, refetch } = useQuery<SeriesView>({
+  const seriesQuery = useQuery<SeriesView>({
     queryKey: ['usage-series', prefs.by],
     queryFn: async () => ({ ...(await api.usageSeries(prefs.by)), by: prefs.by }),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   })
+  const { data, error: queryErr, isPlaceholderData, isFetching, refetch } = seriesQuery
   const shownBy = data?.by ?? prefs.by
-  const err = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
+  const liveErr = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
+  // A retry with nothing cached clears `error` while it reads; the last
+  // message is held so the notice stays up beside the busy Try again.
+  const [heldErr, setHeldErr] = useState('')
+  if (liveErr && liveErr !== heldErr) setHeldErr(liveErr)
+  const err = liveErr || (failedWithNoData(seriesQuery) ? heldErr : '')
 
   const layers = useMemo(() => {
     if (!data) return []
@@ -279,13 +286,17 @@ export function TokenStackedAreaChart() {
   // With nothing drawn there are no "last values" to keep showing, so a failed
   // refresh over an empty window reads like a failed first load.
   const nothingDrawn = !data || data.total <= 0 || days === 0
+  // `err` holds through a first-load retry (see heldErr), so this branch, and
+  // the Try again the user just pressed, stay mounted instead of swapping for
+  // the skeleton. The busy button is aria-disabled, not disabled, so it keeps
+  // keyboard focus.
   if (err && nothingDrawn) {
     return (
       <div>
         {controls}
         <ErrorNotice title={i18nT('pages.overview.usageSeriesChart.load_failed')} message={err} messagePlacement="below" askAgent />
-        <Btn className="mt-3 min-h-11" disabled={isFetching} onClick={() => void refetch()}>
-          {i18nT('pages.overview.usageSeriesChart.retry')}
+        <Btn className="mt-3 min-h-11 aria-disabled:opacity-60 aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100" aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
+          {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.overview.usageSeriesChart.retry')}
         </Btn>
       </div>
     )
