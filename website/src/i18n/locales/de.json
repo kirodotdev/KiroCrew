@@ -7638,7 +7638,10 @@
       "refusal_signed_out": "Melde dich bei Kiro an, um deine Remote-Crews zu sehen.",
       "refusal_not_configured": "Remote-Crews über das Relay sind nicht eingerichtet.",
       "refusal_generic": "Diese Crew konnte nicht geöffnet werden.",
-      "refusal_list_generic": "Deine Remote-Crews konnten nicht geladen werden."
+      "refusal_list_generic": "Deine Remote-Crews konnten nicht geladen werden.",
+      "try_again": "Erneut versuchen",
+      "details": "Details",
+      "request_id": "Anfrage-ID: {{id}}"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",

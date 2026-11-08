@@ -11,7 +11,6 @@ import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
 import InstanceTabBar from '../../components/InstanceTabBar'
-import RelayCrewsMenu from '../../components/RelayCrewsMenu'
 import { getTopBarWidgets } from '../../apps/topBarWidgets'
 import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
@@ -34,6 +33,7 @@ import { useExplorePreview } from '../../hooks/usePreviewFlag'
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
+const RelayCrewsMenu = lazy(() => import('../../components/RelayCrewsMenu'))
 
 // Corner radius, in px, of the top bar's Liquid Glass pills (the search
 // trigger, the readout capsule; components/FeedbackPill.tsx carries the same
@@ -278,7 +278,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           )}
           <InstanceTabBar variant="inline" />
           {/* Desktop app only, and only while the relay viewer is on: renders nothing otherwise. */}
-          <RelayCrewsMenu />
+          <Suspense fallback={null}>
+            <RelayCrewsMenu />
+          </Suspense>
           </div>
         </div>
         )}

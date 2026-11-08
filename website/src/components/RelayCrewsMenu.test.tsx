@@ -4,11 +4,11 @@
  * refusal shown as its plain text, and Open handing the shell the endpoint ID only.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api, ApiError, type RelayCrewEntry } from '../api/client'
 import RelayCrewsMenu from './RelayCrewsMenu'
-import { RELAY_VIEWER_CREWS_KEY, relayRefusalText } from '../hooks/useRelayViewerCrews'
+import { RELAY_VIEWER_CREWS_KEY, relayRefusalText, relayRetryable } from '../hooks/useRelayViewerCrews'
 import { timeAgo } from '../utils/timeAgo'
 
 const crew = (over: Partial<RelayCrewEntry>): RelayCrewEntry => ({
@@ -215,6 +215,101 @@ describe('RelayCrewsMenu', () => {
     fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
     expect((await screen.findByTestId('relay-crews-list-refusal')).textContent)
       .toContain("Couldn't load your remote Crews.")
+  })
+
+  const refused = (status: number, body: Record<string, unknown>) =>
+    new ApiError(status, 'refused', JSON.stringify({ error: 'refused', ...body }))
+
+  it('shows the request ID under Details and a Try again that reads the list again', async () => {
+    withBridge()
+    const spy = vi.spyOn(api, 'relayViewerCrews')
+      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR', requestId: 'req-0000-example' }))
+      .mockResolvedValueOnce({ crews: [crew({})] })
+    mount()
+    fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
+    const details = await screen.findByTestId('relay-crews-list-details')
+    expect(details.textContent).toContain('Details')
+    expect(details.textContent).toContain('Request ID: req-0000-example')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    expect(await screen.findByRole('list')).toBeTruthy()
+  })
+
+  it('shows no Details when the refusal has no request ID', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(502, { code: 'SERVICE_ERROR' }))
+    mount()
+    fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
+    await screen.findByTestId('relay-crews-list-refusal')
+    expect(screen.queryByTestId('relay-crews-list-details')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
+  it.each(['CREW_ACCESS_NOT_GRANTED', 'REMOTE_ACCESS_DISABLED', 'ACCESS_DENIED', 'SIGNED_OUT', 'NOT_SET_UP', 'INVALID_REQUEST'])(
+    'offers no Try again for %s, where the same request fails again',
+    async code => {
+      withBridge()
+      vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(403, { code, requestId: 'req-0000-example' }))
+      mount()
+      fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
+      await screen.findByTestId('relay-crews-list-details')
+      expect(screen.queryByTestId('relay-crews-list-retry')).toBeNull()
+    },
+  )
+
+  it('keeps Try again off until a throttle\'s Retry-After passes', async () => {
+    // A fake clock: the 30 s wait passes only when the test moves it, so a slow
+    // runner cannot reach the deadline first. shouldAdvanceTime keeps findBy and
+    // react-query moving between the steps.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(429, { code: 'THROTTLED', retryAfter: 30 }))
+    mount()
+    fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
+    const retry = (await screen.findByTestId('relay-crews-list-retry')) as HTMLButtonElement
+    expect(retry.disabled).toBe(true)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(retry.disabled).toBe(false)
+  })
+
+  it('keeps Try again off while the list is being read again', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews')
+      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR' }))
+      .mockReturnValueOnce(new Promise<never>(() => {}))
+    mount()
+    fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
+    const retry = (await screen.findByTestId('relay-crews-list-retry')) as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    fireEvent.click(retry)
+    await waitFor(() => expect(retry.disabled).toBe(true))
+    // The refusal Try again was clicked from stays up during its own read.
+    expect(screen.getByTestId('relay-crews-list-refusal').textContent).toContain("Couldn't load your remote Crews.")
+  })
+
+  it('does not bring back an older request ID on a later read once a retry failed again', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews')
+      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR', requestId: 'req-old' }))
+      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR', requestId: 'req-new' }))
+      .mockReturnValueOnce(new Promise<never>(() => {}))
+    const client = mount()
+    fireEvent.click(await screen.findByTestId('relay-crews-trigger'))
+    expect((await screen.findByTestId('relay-crews-list-details')).textContent).toContain('req-old')
+    fireEvent.click(screen.getByTestId('relay-crews-list-retry'))
+    await waitFor(() => expect(screen.getByTestId('relay-crews-list-details').textContent).toContain('req-new'))
+    // A later read with no list loaded (the 60 s re-read, here started by hand).
+    act(() => { void client.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.fetchStatus).toBe('fetching'))
+    expect(screen.queryByText(/req-old/)).toBeNull()
+  })
+
+  it('marks only the resend-safe codes retryable', () => {
+    expect(['SERVICE_ERROR', 'THROTTLED', 'UNREACHABLE', 'BAD_ANSWER', 'CREW_OFFLINE', 'UNAVAILABLE', 'service_error']
+      .every(relayRetryable)).toBe(true)
+    expect(['CREW_ACCESS_NOT_GRANTED', 'SIGN_IN_CHANGED', 'INVALID_ENDPOINT', 'something_new', '']
+      .some(c => relayRetryable(c))).toBe(false)
+    expect(relayRetryable(undefined)).toBe(false)
   })
 
   it('maps an unknown code to the generic text', () => {

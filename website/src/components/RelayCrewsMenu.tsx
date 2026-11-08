@@ -11,12 +11,13 @@
  * entries and an `onOpen` callback, so moving it into Instances panes later
  * swaps this caller, not the list.
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RadioTower } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  isRelayCrewOnline, openRelayCrew, relayCrewStatusText, relayRefusalText, useRelayViewerCrews,
+  isRelayCrewOnline, openRelayCrew, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
+  type RelayListRefusal,
 } from '../hooks/useRelayViewerCrews'
 import { Btn, PanelSectionHeader } from './ui'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
@@ -78,9 +79,48 @@ export function RelayCrewList({ crews, onOpen, refusals }: {
   )
 }
 
+/** The list's refusal: its plain text, Try again where a resend can help (off
+ *  until a throttle's Retry-After passes), and CPS's request ID under Details
+ *  when CPS sent one, so a server failure can be reported. */
+function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
+  refusal: RelayListRefusal
+  onRetry: () => void
+  /** A read is in flight: Try again stays off until it answers. */
+  retrying: boolean
+}) {
+  const { t } = useTranslation()
+  const { retryAt } = refusal
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (retryAt === null) return
+    const ms = retryAt - Date.now()
+    if (ms <= 0) return
+    // At least retryAt, so a timer that fires a little early still turns the button on.
+    const timer = setTimeout(() => setNow(Math.max(Date.now(), retryAt)), ms)
+    return () => clearTimeout(timer)
+  }, [retryAt])
+  const waiting = retryAt !== null && retryAt > now
+  return (
+    <div className="flex flex-col gap-1">
+      <ErrorNotice variant="inline" message={refusal.text} askAgent testId="relay-crews-list-refusal" />
+      {relayRetryable(refusal.code) && (
+        <Btn className="self-start" disabled={waiting || retrying} onClick={onRetry} data-testid="relay-crews-list-retry">
+          {t('components.relayCrews.try_again')}
+        </Btn>
+      )}
+      {refusal.requestId && (
+        <details className="text-[11px] text-muted px-1" data-testid="relay-crews-list-details">
+          <summary className="cursor-pointer">{t('components.relayCrews.details')}</summary>
+          <span className="font-mono select-all">{t('components.relayCrews.request_id', { id: refusal.requestId })}</span>
+        </details>
+      )}
+    </div>
+  )
+}
+
 export default function RelayCrewsMenu() {
   const { t } = useTranslation()
-  const { hidden, crews, refusal } = useRelayViewerCrews()
+  const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
   const [refusals, setRefusals] = useState<Record<string, string>>({})
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
@@ -104,7 +144,7 @@ export default function RelayCrewsMenu() {
         <div className="flex flex-col gap-1">
           <PanelSectionHeader label={t('components.relayCrews.title')} className="px-1 pt-1" />
           {refusal
-            ? <ErrorNotice variant="inline" message={refusal} askAgent testId="relay-crews-list-refusal" />
+            ? <RelayListRefusalNotice refusal={refusal} onRetry={retry} retrying={retrying} />
             : <RelayCrewList crews={crews} onOpen={onOpen} refusals={refusals} />}
         </div>
       </PopoverContent>

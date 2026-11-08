@@ -7844,7 +7844,10 @@
       "refusal_signed_out": "Inicia sesión en Kiro para ver tus crews remotos.",
       "refusal_not_configured": "Los crews remotos por relay no están configurados.",
       "refusal_generic": "No se pudo abrir este crew.",
-      "refusal_list_generic": "No se pudieron cargar tus crews remotos."
+      "refusal_list_generic": "No se pudieron cargar tus crews remotos.",
+      "try_again": "Reintentar",
+      "details": "Detalles",
+      "request_id": "ID de solicitud: {{id}}"
     },
     "instancesViewport": {
       "connecting": "Conectando…",

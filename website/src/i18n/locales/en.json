@@ -5056,7 +5056,10 @@
       "refusal_signed_out": "Sign in to Kiro to see your remote Crews.",
       "refusal_not_configured": "Remote Crews over the relay aren't set up.",
       "refusal_generic": "Couldn't open this Crew.",
-      "refusal_list_generic": "Couldn't load your remote Crews."
+      "refusal_list_generic": "Couldn't load your remote Crews.",
+      "try_again": "Try again",
+      "details": "Details",
+      "request_id": "Request ID: {{id}}"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",

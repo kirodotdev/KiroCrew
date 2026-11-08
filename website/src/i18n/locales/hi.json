@@ -7638,7 +7638,10 @@
       "refusal_signed_out": "अपने रिमोट क्रू देखने के लिए Kiro में साइन इन करो।",
       "refusal_not_configured": "रिले से रिमोट क्रू अभी सेट अप नहीं हैं।",
       "refusal_generic": "यह क्रू नहीं खुल सका।",
-      "refusal_list_generic": "तुम्हारे रिमोट क्रू लोड नहीं हो सके।"
+      "refusal_list_generic": "तुम्हारे रिमोट क्रू लोड नहीं हो सके।",
+      "try_again": "फिर कोशिश करो",
+      "details": "विवरण",
+      "request_id": "अनुरोध आईडी: {{id}}"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",

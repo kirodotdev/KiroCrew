@@ -7432,7 +7432,10 @@
       "refusal_signed_out": "リモートクルーを表示するには Kiro にサインインしてください。",
       "refusal_not_configured": "リレー経由のリモートクルーは設定されていません。",
       "refusal_generic": "このクルーを開けませんでした。",
-      "refusal_list_generic": "リモートクルーを読み込めませんでした。"
+      "refusal_list_generic": "リモートクルーを読み込めませんでした。",
+      "try_again": "もう一度試してください",
+      "details": "詳細",
+      "request_id": "リクエスト ID: {{id}}"
     },
     "instancesViewport": {
       "connecting": "接続中…",
