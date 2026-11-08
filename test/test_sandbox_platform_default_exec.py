@@ -349,3 +349,208 @@ class TestWrapArgvOnABackendlessHost:
         assert len(security) == 1
         assert "sandbox_allow_unsandboxed_exec=false" in security[0]
         assert "Install a supported sandbox" not in security[0]
+
+
+class TestFloorMandateNamesTheFloorNotThePowerlessKey:
+    """A ``sandbox.min_level`` floor that mandates isolation is the real refuser.
+
+    When the floor forbids unsandboxed execution, ``agent.sandbox_allow_unsandboxed_exec``
+    is powerless whatever its value, so the refusal names the FLOOR and does not tell
+    the operator to flip that key -- for a floor with the opt-in set true, set false,
+    or never set alike.
+
+    The refuse/allow DECISION is independent of wording: every (floor x key x backend)
+    combination refuses or proceeds solely on the gate logic, not on which remedy text
+    is emitted.
+    """
+
+    @pytest.fixture
+    def no_backend(self, monkeypatch):
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_last_unshare_failure", (False, "not Linux", ""))
+        monkeypatch.setattr(sandbox_mod, "_inside_macos_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox_mod, "is_docker_container", lambda: False)
+
+    def test_floor_plus_declared_false_names_the_floor_not_the_key(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """floor=cc, key declared false: the refusal names the floor, not the
+        powerless key, and the SEL sel_reason names the floor too."""
+        _pin_config(monkeypatch, value=False, declared=True)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "cc")
+        sel_instance = MagicMock()
+        with patch("kiro_crew.sel.sel", return_value=sel_instance):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        assert "sandbox.min_level='cc'" in message
+        assert "GOVERNED" in message
+        # The powerless-key remedy must be gone.
+        assert "Change that key to true" not in message
+        assert "is set to false" not in message
+        # The SEL sel_reason (carried in the audit error) must name the floor too.
+        sel_error = sel_instance.log_tool_invocation.call_args_list[0].kwargs["error"]
+        assert "sandbox.min_level='cc'" in sel_error
+        assert "is declared false" not in sel_error
+
+    def test_floor_plus_unset_key_also_names_the_floor(self, no_backend, monkeypatch) -> None:
+        """floor=strict, key never declared: still the floor, not "not set"."""
+        _pin_config(monkeypatch, value=False, declared=False)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "strict")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        assert "sandbox.min_level='strict'" in message
+        assert "allow_unsandboxed_exec is not set" not in message
+
+    def test_floor_plus_transient_keeps_retry_guidance_and_names_the_floor(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """A transient probe failure self-heals on retry, which the floor permits.
+
+        The floor forbids only UNSANDBOXED execution; it must not bury the
+        "retry, do not disable the sandbox" guidance behind "get a backend or
+        ask the policy owner", and it must not offer the powerless opt-in key.
+        """
+        _pin_config(monkeypatch, value=False, declared=False)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "cc")
+        monkeypatch.setattr(sandbox_mod, "_last_unshare_failure", (True, "fork EAGAIN", "retry"))
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        # The transient retry guidance survives.
+        assert "TRANSIENT" in message
+        assert "retry" in message
+        # The floor is still named so the operator knows the opt-in is powerless.
+        assert "sandbox.min_level='cc'" in message
+        # No dead-end advice to flip the opt-in key.
+        assert "Change that key to true" not in message
+        assert "sandbox_allow_unsandboxed_exec=true" not in message
+        # The transient kind is still raised, matching the guidance.
+        assert excinfo.value.kind == "transient"
+
+    def test_floor_plus_governed_ubuntu_keeps_the_profile_install_steps(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """A governed stock Ubuntu host with no backend keeps the AppArmor
+        profile-install fix, which gives it a working sandbox under the floor.
+
+        The floor forbids unsandboxed execution, not a working sandbox, so the
+        'kirocrew service install' step must survive; only the opt-out sentence
+        is dropped and the floor is named.
+        """
+        import kiro_crew.sandbox_unavailable as su
+
+        _pin_config(monkeypatch, value=False, declared=False)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "cc")
+        # Pin a stock-Ubuntu host: Linux, AppArmor userns restriction, not an AppImage.
+        monkeypatch.setattr(su.sys, "platform", "linux")
+        monkeypatch.setattr(su, "_apparmor_userns_restricted", lambda: True)
+        monkeypatch.delenv("APPIMAGE", raising=False)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        # The concrete host-specific fix survives.
+        assert "kirocrew service install" in message
+        assert "AppArmor" in message
+        # The floor is named.
+        assert "sandbox.min_level='cc'" in message
+        # No opt-out text at all.
+        assert "sandbox_allow_unsandboxed_exec=true" not in message
+        assert "As a last resort" not in message
+
+    def test_floor_appimage_repair_command_survives_the_probe_error_cap(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """The floor note must not push the AppImage repair command past the
+        1200-char probe-error cap that doctor and the dashboard truncate at."""
+        import kiro_crew.sandbox_unavailable as su
+        from kiro_crew.mcp_discovery_probe_state import _PROBE_ERROR_MAX_CHARS
+
+        _pin_config(monkeypatch, value=False, declared=False)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "cc")
+        monkeypatch.setattr(su.sys, "platform", "linux")
+        monkeypatch.setattr(su, "_apparmor_userns_restricted", lambda: True)
+        monkeypatch.setenv("APPIMAGE", "/home/user/Applications/KiroCrew-1.2.3-x86_64.AppImage")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        # The whole repair command (through "then restart the app") survives the cut.
+        assert "then restart the app" in message[:_PROBE_ERROR_MAX_CHARS]
+        assert "sandbox.min_level='cc'" in message
+
+    def test_floor_generic_no_backend_points_at_the_policy_owner(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """Where no backend can be installed (Windows), the floor refusal still
+        names a lever: the policy owner relaxing sandbox.min_level."""
+        import kiro_crew.sandbox_unavailable as su
+
+        _pin_config(monkeypatch, value=False, declared=False)
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "cc")
+        monkeypatch.setattr(su.sys, "platform", "win32")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        assert "policy owner to relax sandbox.min_level" in str(excinfo.value)
+
+    def test_refuse_or_proceed_decision_is_unchanged_across_the_matrix(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """For every floor x key x backend the raise/return verdict is exactly
+        what the gate logic dictates, independent of the remedy wording.
+
+        The gate (``floor_mandates_sandbox or not opted_in``) refuses when a backend
+        is absent AND (the floor mandates OR the host did not opt in). A present
+        backend always wraps. ``cc`` and ``strict`` mandate; the empty floor does not.
+        """
+        floors = {"": False, "cc": True, "strict": True}  # floor -> mandates?
+        keys = [(True, True), (False, True), (False, False)]  # (value, declared)
+        for floor, mandates in floors.items():
+            for value, declared in keys:
+                for backend_present in (True, False):
+                    for attr in ("_warned", "_nested_passthrough_logged"):
+                        if hasattr(sandbox_mod.wrap_argv, attr):
+                            delattr(sandbox_mod.wrap_argv, attr)
+                    _pin_config(monkeypatch, value=value, declared=declared)
+                    monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda f=floor: f)
+                    if backend_present:
+                        monkeypatch.setattr(
+                            sandbox_mod, "detect_backend", lambda config_mode="auto": "namespace"
+                        )
+                        # Patch the function the namespace path actually calls, so
+                        # the stub intercepts before any platform-specific step
+                        # (namespace_argv reaches os.getuid, which is absent on
+                        # Windows). Shaped like a real launcher argv so
+                        # _launcher_script_of can index the script slot; matches
+                        # TestFlagIsOtherwiseInert in test_sandbox_first_party_exec.
+                        _stub = [
+                            "launcher",
+                            *sandbox_mod._LAUNCHER_INTERPRETER_FLAGS,
+                            "/tmp/launcher.py",
+                            *_ARGV,
+                        ]
+                        monkeypatch.setattr(
+                            sandbox_mod,
+                            "namespace_argv",
+                            lambda argv, level, _s=_stub, **kwargs: list(_s),
+                        )
+                    else:
+                        monkeypatch.setattr(
+                            sandbox_mod, "detect_backend", lambda config_mode="auto": "none"
+                        )
+                    # Expected: a present backend always proceeds; backendless
+                    # refuses when the floor mandates or the host did not opt in.
+                    should_refuse = (not backend_present) and (mandates or not value)
+                    label = f"floor={floor!r} value={value} declared={declared} backend={backend_present}"
+                    with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+                        if should_refuse:
+                            with pytest.raises(SandboxUnavailableError):
+                                wrap_argv(list(_ARGV), mode="standard")
+                        else:
+                            wrapped, _ = wrap_argv(list(_ARGV), mode="standard")
+                            assert wrapped is not None, label
