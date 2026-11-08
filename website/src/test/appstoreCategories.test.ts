@@ -115,6 +115,10 @@ describe('provenance helpers', () => {
     expect(sourceLabel({})).toBe('Kiro Crew registry')
   })
 
+  it('labels a local install as local, never as the registry', () => {
+    expect(sourceLabel({ origin: 'local' })).toBe('Local install')
+  })
+
   it('verifies built-ins and kirocrew-authored core apps only', () => {
     expect(isVerified({ origin: 'builtin', author: 'x' })).toBe(true)
     expect(isVerified({ author: 'KiroCrew' })).toBe(true)

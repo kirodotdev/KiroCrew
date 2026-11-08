@@ -6612,6 +6612,7 @@
         "revocable": "Você pode desfazer isso quando quiser em Configurações → Segurança → Apps de terceiros. O app para de funcionar quando você fizer isso.",
         "source": "Publicado em",
         "not_reviewed": "O {{productName}} lista este app, mas não revisou o código dele, e o nome acima vem do próprio app.",
+        "not_reviewed_local": "O {{productName}} não revisou o código deste app, e o nome acima vem do próprio app.",
         "registry_community": "Um registro da comunidade listou o “{{app}}”. Os colaboradores fazem só uma verificação leve, e a equipe do {{productName}} não validou esta listagem. Confie nele apenas se você o reconhecer.",
         "registry_community_credentialed": "Um registro da comunidade listou o “{{app}}”. Os colaboradores fazem só uma verificação leve, e a equipe do {{productName}} não validou esta listagem. O {{productName}} faz o download com o seu login do Git salvo, então confie nele apenas se você o reconhecer.",
         "cancel": "Cancelar",

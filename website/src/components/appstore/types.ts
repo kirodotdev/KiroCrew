@@ -306,6 +306,8 @@ export function sourceLabel(app: Pick<RegistryApp, '_registry' | 'origin' | 'pro
   if (app.provenance === 'official' || app.provenance === 'core') {
     return i18nT('components.appstore.types.kirocrew_registry')
   }
+  // An installed record carries no ``provenance``: a local install claims no registry.
+  if (app.origin === 'local') return i18nT('appStoreSources.local')
   // Legacy fallback (older gateway: no ``provenance`` field).
   if (app.origin === 'builtin') return i18nT('components.appstore.types.built_in')
   return i18nT('components.appstore.types.kirocrew_registry')

@@ -6612,6 +6612,7 @@
         "revocable": "Puedes revertirlo en cualquier momento en Ajustes → Seguridad → Aplicaciones de terceros. La aplicación deja de funcionar cuando lo hagas.",
         "source": "Publicado en",
         "not_reviewed": "{{productName}} incluye esta aplicación en su listado, pero no ha revisado su código, y el nombre de arriba lo proporciona la propia aplicación.",
+        "not_reviewed_local": "{{productName}} no ha revisado el código de esta aplicación, y el nombre de arriba lo proporciona la propia aplicación.",
         "registry_community": "Un registro de la comunidad publicó “{{app}}”. Sus colaboradores revisan las publicaciones de forma ligera y el equipo de {{productName}} no verificó esta publicación. Confía en ella solo si la reconoces.",
         "registry_community_credentialed": "Un registro de la comunidad publicó “{{app}}”. Sus colaboradores revisan las publicaciones de forma ligera y el equipo de {{productName}} no verificó esta publicación. {{productName}} la descarga con tu inicio de sesión de Git guardado, así que confía en ella solo si la reconoces.",
         "cancel": "Cancelar",
