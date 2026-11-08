@@ -340,10 +340,10 @@ choice blob makes the usage line unreadable.
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew chat -m "msg"` | Send a single message, print streaming response |
-| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
+| `kirocrew chat -m "msg"` | Send a single message, print streaming response. On a harness other than kiro-cli and KAS the message opens a new session, so it carries Kiro Crew's session context (see [Session context](#session-context)) |
+| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D). On a harness other than kiro-cli and KAS the first message of each session carries Kiro Crew's session context (see [Session context](#session-context)) |
 | `kirocrew chat --model X` | Override model for this session |
-| `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key. |
+| `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key, so a member bound to a named store opens its session with neither memory nor lessons (see [Session context](#session-context)). |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
@@ -1372,10 +1372,57 @@ start-of-process maintenance and is barred from async code (#1057, guarded by
 `test/test_no_config_dir_in_async.py`) — because `KIROCREW_HOME` is what the
 hook's own path expansion reads.
 
+### Session context
+
+On a harness other than kiro-cli and KAS, the first message of every session
+`kirocrew chat` opens is built by `ContextBuilder.build_message` (`cli_chat_context.CliSessionContext.first_message`),
+as the dashboard, a channel, cron and `kirocrew run` build theirs: the agent's
+`[AGENT SYSTEM PROMPT]`, the session context with its memory, lessons, critical
+rules and the agent's skill directory, `file://` steering on Claude Code, then the
+typed text as the current request. A harness other than Kiro's reads a custom
+agent's `prompt` and its `skill://` skills from this message alone (every mirror
+rules both withheld on that premise), so a session sent the typed text bare runs
+that harness's own default persona. kiro-cli and KAS load the agent's prompt and
+skills themselves, so a CLI session on either (the provider's `is_kiro_backend` or
+`is_kas_backend`) sends the typed text as before and gets no session context.
+
+The `-m` message and the REPL's first turn are built this way. So is the next
+turn after any of these, since each leaves a session holding none of it: a
+compaction restart; a `/clear` or `/compact` the user typed; and a provider whose
+`context_incarnation` changed since the context last went out. A backend process
+that exits between turns is respawned by the next send, which changes the
+incarnation, so that send goes as typed and the turn after it carries the context:
+asking the process whether it runs would read a shared runtime's liveness as this
+session's.
+Every other turn is sent as typed, and so is a reply the backend could not take
+mid-turn, which goes out as the next message.
+
+A turn owed the context whose text opens with a slash command is sent as typed,
+because a harness runs a command only when it opens the prompt text; the context
+goes with the next ordinary message. A quick prompt (a built-in one or an opted-in
+`~/.kiro/prompts` file) is not a command: `build_message` expands it, so it carries
+the context. A build that raises prints one `Session context not built` line to
+stderr and sends the typed text; the next turn tries the context again.
+
+The builder reads the store `resolve_agent_bindings` resolved, with no vector
+store attached. A kiro agent or a member on the default store gets the default
+store's memory and lessons. A member bound to a named store gets neither, and the
+message names both as withheld: the CLI does not bind that store, and Global memory
+is not the member's to read. The builder reads the skill tree already on disk (the
+gateway owns the builtin sync), runs the message hooks of the CLI's own gate, and
+is called with `interactive=False`, since a terminal renders neither the
+dashboard's `[OPTIONS:]` chips nor its widgets. Only a session's first message
+goes through the builder, so those message hooks run on that message alone; a
+later turn reaches the backend without them. As on the dashboard and the task
+runner, the hook result is not acted on: a transform or injected context is
+already in the message, and an auto-reply does not replace the turn.
+`test/test_cli_chat_context.py` pins each of these paths against a recording
+provider.
+
 ### Context Tracking
 
 After each message, checks `provider.context_usage_pct()`:
-- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run
+- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run. The next message opens the new session, so it carries the [session context](#session-context) again
 - `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT`: warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
 
 CLI compaction is blocking (single-user, acceptable).

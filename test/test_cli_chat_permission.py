@@ -815,6 +815,7 @@ print("survived")
         assert "\\U0001f4a3" in written
 
 
+@pytest.mark.usefixtures("close_skills_loaders")
 class TestChatProviderShutdown:
     """``provider.start()`` hands back a live backend process, so every exit from
     the turn -- return, error, or cancellation -- has to run ``shutdown()``."""
@@ -846,7 +847,13 @@ class TestChatProviderShutdown:
         monkeypatch.setattr(
             cli_chat, "build_provider_factory", lambda cfg: (lambda *a, **k: provider)
         )
-        monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent: None)
+        from kiro_crew.hooks import HookManager
+
+        # A real gate, as production always builds one: _chat hands its hooks
+        # to the context builder before the backend starts.
+        monkeypatch.setattr(
+            cli_chat, "_build_tool_gate", lambda agent: cli_chat._ToolGate(hooks=HookManager())
+        )
 
     @pytest.mark.asyncio
     async def test_shutdown_runs_when_the_turn_is_cancelled(self, monkeypatch):
