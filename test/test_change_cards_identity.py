@@ -590,6 +590,16 @@ def test_arm_guard_crewmate_update_put_arms_the_applied_member_id():
         other, _rec("crewmate.update", {"member_id": "m-aaa"}), "apply", step
     )
     assert other == {}
+    # The body-form PUT a card uses for a name that needs encoding arms
+    # the same guard.
+    body_form: dict[str, Any] = {}
+    routes._arm_card_undo_cron_guard(
+        body_form,
+        _rec("crewmate.update", {"member_id": "m-bbb"}),
+        "undo",
+        {"method": "PUT", "path": "/api/agents"},
+    )
+    assert body_form[REQ_CARD_UNDO_CREWMATE_EXPECT] == "m-bbb"
 
 
 def _update_request(name: str, body: dict[str, Any], expected_member_id: str | None):

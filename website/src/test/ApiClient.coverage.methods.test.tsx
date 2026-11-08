@@ -240,7 +240,7 @@ describe('uploadCrewAvatar', () => {
       await api.uploadCrewAvatar('my crew', blob)
     } finally { spy.mockRestore() }
     const { url, init } = call()
-    expect(url).toBe('/api/agents/my%20crew/avatar')
+    expect(url).toBe('/api/agents/b64/bXkgY3Jldw/avatar')
     expect(init?.method).toBe('POST')
     expect(init?.body).toBeInstanceOf(FormData)
     expect(calls).toEqual([['file', blob, 'avatar.png']])
