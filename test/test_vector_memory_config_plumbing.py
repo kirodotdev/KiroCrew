@@ -162,6 +162,8 @@ class TestMemoryTuningPlumbing:
         "cli_server.py",
         "cli_commands_learn.py",
         "cli_commands_memory.py",
+        # `kirocrew consolidate` hands its pass the default store.
+        "cli_knowledge.py",
         "dashboard/handlers/memory_services.py",
         "apps/builtins/ops_mission_control/backend/dispatch.py",
         "apps/builtins/ops_mission_control/backend/routes.py",
