@@ -379,7 +379,13 @@ undo a page already read.
   not hang. The user's own tabs are never attached.
 - **Tab ledger.** Each target the agent creates is recorded at the create reply,
   whether or not the page then loads; `tabs` lists only those and session end
-  closes only those.
+  closes only those. A chat whose session ends -- its tab closed, archived as
+  idle, or its open conversation deleted -- closes the ledgered tabs it owned, in
+  the background and after any op still in flight (`browser_ops.close_chat_tabs`);
+  every other chat keeps its own. A chat reopened on the same key before that
+  close runs keeps the tabs. Closing the tab of a chat linked to a channel
+  session (`slack:<ts>`) closes none: that session keeps running and shares the
+  tab's hub key.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -504,9 +510,10 @@ address pill. One daemon serves every chat, so every op runs under one
 gateway-wide lock and is preceded by a tab bind: the session keeps the agent tab
 it was bound to while the browser still has it (`switch_tab` back to it if the
 daemon moved), adopts the daemon's current tab when no other session owns it,
-and otherwise opens a tab of its own. Chat B therefore never clicks on chat A's
-page, `tabs` lists and switches only the caller's own tabs, and a takeover in
-chat A fences A's tab while B keeps browsing. With `browser.live.enabled` off
+and otherwise opens a tab of its own; a daemon whose current tab was closed (an
+ended chat's, or one the person closed) counts as having none. Chat B therefore
+never clicks on chat A's page, `tabs` lists and switches only the caller's own
+tabs, and a takeover in chat A fences A's tab while B keeps browsing. With `browser.live.enabled` off
 the hub publishes no event at all, so no card is mounted; the ops still run. While the owner's Chrome shows its Allow sheet the op route tells
 the hub `waiting_allow`, bounded at 60 s per op (the Allow sheet itself outlasts
 the op). The session key the shim resolves (`dashboard:<slot>` or the bare slot)

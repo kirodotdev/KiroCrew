@@ -1187,6 +1187,13 @@ async def _close_slot(
         from kiro_crew.coder.retention import feed_notifier, schedule_archived
 
         schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
+        # The browser tabs that session opened close with it; other chats keep theirs.
+        # A linked slot's session (slack:<ts>) outlives its tab and shares the hub key,
+        # so it keeps its tabs. Imported here, never at boot: it loads the handlers.
+        if not slot.linked_session_key:
+            from kiro_crew.dashboard.handlers.browser_ops import close_chat_tabs
+
+            close_chat_tabs(state, _history_key_for(name))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)
@@ -1714,6 +1721,11 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+            # Same browser tab close as a single archive (see _close_slot).
+            if not removed.linked_session_key:
+                from kiro_crew.dashboard.handlers.browser_ops import close_chat_tabs
+
+                close_chat_tabs(state, _history_key_for(name))
         # Same retention as a single archive (see _close_slot).
         from kiro_crew.coder.retention import feed_notifier, schedule_archived
 
