@@ -27,6 +27,12 @@ from runtime_reconcile_helpers import (
 
 from kiro_crew import runtime_ownership as ro
 from kiro_crew import runtime_reconcile as rr
+from kiro_crew.testing.ids import unallocatable_pids
+
+#: Fake slice pids no OS can issue. ``_unowned`` drops ``os.getpid()``, which a
+#: literal placed in the agent slice can equal on an xdist worker, dropping that
+#: candidate. These sites are singletons, so any distinct fakes serve.
+_SLICE_A, _SLICE_B, _SLICE_C, _SLICE_D, _SLICE_E = unallocatable_pids(5)
 
 # The rootdir conftest wipes runtime_ownership's tables on both sides of every
 # test. This file does its own intra-file isolation with explicit
@@ -247,10 +253,10 @@ def test_a_tenant_claiming_after_the_gate_abandons_the_reconcilers_kill() -> Non
     killed: list[int] = []
     released: list[int] = []
     reconciler = _reconciler(
-        kernel={9001},
+        kernel={_SLICE_A},
         recorded=set(),
-        alive={9001},
-        ours={9001},
+        alive={_SLICE_A},
+        ours={_SLICE_A},
         killed=killed,
     )
     # Two passes: the first only confirms, the second would kill.
@@ -278,10 +284,10 @@ def test_the_reconciler_releases_its_barrier_even_when_the_kill_raises() -> None
         raise OSError("killpg refused")
 
     reconciler = _reconciler(
-        kernel={9002},
+        kernel={_SLICE_B},
         recorded=set(),
-        alive={9002},
-        ours={9002},
+        alive={_SLICE_B},
+        ours={_SLICE_B},
     )
     reconciler._kill_tree = _raises
     reconciler._release_teardown = released.append
@@ -289,7 +295,7 @@ def test_the_reconciler_releases_its_barrier_even_when_the_kill_raises() -> None
     reading = reconciler.run_once()
 
     assert reading.killed == 0
-    assert released == [9002], f"the barrier is dropped on the raising path too; {released}"
+    assert released == [_SLICE_B], f"the barrier is dropped on the raising path too; {released}"
 
 
 def test_the_reconcilers_barrier_seams_are_the_real_tenancy_table() -> None:
@@ -329,7 +335,7 @@ def test_a_pid_holding_only_a_tenancy_is_never_counted_unowned() -> None:
     row behind it on every pass, forever.
     """
     ro._reset_for_tests()
-    pid = 424242
+    pid = _SLICE_C
     killed: list[int] = []
 
     def build() -> rr.RuntimeReconciler:
@@ -379,7 +385,7 @@ def test_an_unreadable_tenancy_table_means_claimed() -> None:
     def _boom(pid: int) -> int:
         raise RuntimeError("the tenancy table could not be read")
 
-    rec = _reconciler(kernel={424243}, recorded=set())
+    rec = _reconciler(kernel={_SLICE_D}, recorded=set())
     rec._claims_on = _boom
     rec.run_once()
     reading = rec.run_once()
@@ -516,13 +522,13 @@ def test_the_reconciler_hands_the_captured_identity_to_the_kill_seam() -> None:
     read and the age floor all agreed about.
     """
     seen: list[tuple[int, str | None]] = []
-    rec = _reconciler(kernel={5550}, recorded=set())
+    rec = _reconciler(kernel={_SLICE_E}, recorded=set())
     rec._kill_tree = lambda pid, expected=None: (seen.append((pid, expected)), 1)[1]
 
     rec.run_once()
     rec.run_once()
 
-    assert seen == [(5550, "id-5550")], (
+    assert seen == [(_SLICE_E, f"id-{_SLICE_E}")], (
         "the seam is called with the identity this pass captured, not with the pid "
         f"alone; {seen}"
     )
