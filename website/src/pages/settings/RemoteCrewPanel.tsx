@@ -83,6 +83,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
+import { Trans } from 'react-i18next'
 import { AddInstanceForm, RestartToActivateText } from './InstancesPanel'
 import { CrewVersionsReadError } from './CrewVersionStatus'
 import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
@@ -980,7 +981,7 @@ export function RemoteCrewPanel() {
         {restartPending && (
           <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
             <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-            <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
+            <span><Trans i18nKey="pages.settings.instancesPanel.disabled_restart_to_tear_down_tunnels" components={{ cmd: <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code> }} /></span>
           </div>
         )}
         <Btn primary onClick={() => enableMutation.mutate()} disabled={enableMutation.isPending}>
