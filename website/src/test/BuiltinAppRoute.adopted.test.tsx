@@ -115,6 +115,13 @@ describe('BuiltinAppRoute for an adopted former built-in', () => {
     expect(getApp).toHaveBeenCalledWith('former-app')
   })
 
+  it('keeps the compiled page and shows an error notice when the release lookup fails', async () => {
+    getApp.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('gateway unreachable'), { status: 503 })))
+    renderAt('/former-app', withInstalledApps([]))
+    expect(await screen.findByTestId('compiled-page', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+    expect(await screen.findByText('gateway unreachable', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+  })
+
   it('switches to the adopted copy once the shell\'s list arrives after the compiled page', async () => {
     const client = installedAppsClient()
     client.removeQueries({ queryKey: ['apps'], exact: true })
