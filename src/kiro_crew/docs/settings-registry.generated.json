@@ -1812,8 +1812,8 @@
       "label": "Require approval before generated skills go live",
       "tab": "skills",
       "route": "/settings/skills?highlight=key%3Askills.approval_required",
-      "description": "Off lets skills without scripts go live without your approval.",
-      "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
+      "description": "Off lets new skills without scripts go live without your approval.",
+      "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets new prose-only skills publish automatically; skills that bundle scripts, and any update to an existing skill, always require approval, unless skills.auto_refine_on_deviation is on.",
       "configKey": "skills.approval_required"
     },
     {

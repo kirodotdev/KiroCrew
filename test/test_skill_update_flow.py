@@ -96,13 +96,13 @@ class FakeLoader:
         return None
 
 
-def _mk(loader, **kw):
+def _mk(loader, approval_required=True, **kw):
     return HistoryConsolidator(
         log=MagicMock(),
         memory=MagicMock(),
         skills_loader=loader,
         auto_skills_enabled=True,
-        approval_required=True,
+        approval_required=approval_required,
         **kw,
     )
 
@@ -311,9 +311,12 @@ def test_stage_update_no_loop_skips_merge():
 # ── _process_auto_skills routing ──
 
 
-def test_process_routes_update(monkeypatch):
+# An update to a live skill stages even with approval off: the toggle governs
+# new candidates only, as its help text and the Skills doc say.
+@pytest.mark.parametrize("approval_required", [True, False])
+def test_process_routes_update(monkeypatch, approval_required):
     loader = FakeLoader()
-    c = _mk(loader)
+    c = _mk(loader, approval_required=approval_required)
     monkeypatch.setattr(
         c, "_dedupe_candidate", lambda s, d, t: (H.VERDICT_UPDATE, "auto/deploy-helper")
     )
