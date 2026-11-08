@@ -718,8 +718,11 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                               the only way the hook runs at all, which a reader who
                               expects a dry run should know BEFORE pressing it. The
                               mark's own hint is already that sentence, so it is
-                              reused rather than translated again. */}
-                          <Btn disabled={testMut.isPending} title={dormantHint(h.event)} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
+                              reused rather than translated again. `aria-disabled`
+                              while a test runs, not `disabled`: the press that started
+                              it holds focus here (as Rescan does), and handleTest's
+                              in-flight claim keeps a second press inert. */}
+                          <Btn aria-disabled={testMut.isPending} aria-busy={testMut.isPending} title={dormantHint(h.event)} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-accent/10 aria-disabled:active:scale-100">{i18nT('pages.hooksPage.test')}</Btn>
                           <Btn
                             danger
                             disabled={isDeleting(h.id)}
