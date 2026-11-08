@@ -17966,6 +17966,8 @@
       "status_error": "শেষ হয়েছে",
       "status_running": "চলমান",
       "title": "সেশন বিশ্লেষণ",
+      "turn_n": "টার্ন {{n}}",
+      "turn_short": "{{n}}",
       "tool_count_one": "{{n}} টুল",
       "tool_count_other": "{{n}} টুল",
       "unknown_agent": "সাব-এজেন্ট",

@@ -17966,6 +17966,8 @@
       "status_error": "beendet",
       "status_running": "aktiv",
       "title": "Sitzungsaufschlüsselung",
+      "turn_n": "Zug {{n}}",
+      "turn_short": "Z{{n}}",
       "tool_count_one": "{{n}} Tool",
       "tool_count_other": "{{n}} Tools",
       "unknown_agent": "Unteragent",

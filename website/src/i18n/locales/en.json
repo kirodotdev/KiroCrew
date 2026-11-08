@@ -10166,6 +10166,8 @@
       "status_error": "ended",
       "status_running": "running",
       "title": "Session Breakdown",
+      "turn_n": "Turn {{n}}",
+      "turn_short": "t{{n}}",
       "tool_count_one": "{{n}} tool",
       "tool_count_other": "{{n}} tools",
       "unknown_agent": "sub-agent",

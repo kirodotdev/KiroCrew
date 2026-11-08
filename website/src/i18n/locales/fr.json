@@ -18436,6 +18436,8 @@
       "status_error": "arrêté",
       "status_running": "en cours",
       "title": "Détail de la session",
+      "turn_n": "Tour {{n}}",
+      "turn_short": "T{{n}}",
       "tool_count_one": "{{n}} outil",
       "tool_count_many": "{{n}} outils",
       "tool_count_other": "{{n}} outils",

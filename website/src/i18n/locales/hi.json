@@ -17966,6 +17966,8 @@
       "status_error": "समाप्त",
       "status_running": "चल रहा",
       "title": "सेशन विश्लेषण",
+      "turn_n": "टर्न {{n}}",
+      "turn_short": "{{n}}",
       "tool_count_one": "{{n}} टूल",
       "tool_count_other": "{{n}} टूल",
       "unknown_agent": "सब-एजेंट",
