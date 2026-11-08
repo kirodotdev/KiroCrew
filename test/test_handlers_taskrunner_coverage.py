@@ -181,6 +181,32 @@ class TestStart:
         runner.start_background.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("handler", "starts"),
+        [
+            (api_taskrunner_plan, "plan"),
+            (api_taskrunner_execute_plan, "execute_plan"),
+            (api_taskrunner_retry, "retry_from_task"),
+        ],
+    )
+    async def test_disabled_task_runner_app_refuses_plan_execute_and_retry(
+        self, tmp_path: Path, handler: Any, starts: str
+    ) -> None:
+        # Plan, Execute and Retry get a run going too, so they answer like start.
+        runner = _runner(tmp_path)
+        runner.plan = AsyncMock(return_value=_planned_run())  # so an unrefused plan answers 200
+        with patch(
+            "kiro_crew.apps.manager._read_installed",
+            return_value=SimpleNamespace(enabled=False),
+        ):
+            resp = await handler(
+                _request(_state(runner), match_info={"task_id": "t1"}, json_body={"input": "x"})
+            )
+        assert resp.status == 409
+        assert _body(resp)["code"] == "app_disabled"
+        getattr(runner, starts).assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_no_runner_is_400(self) -> None:
         resp = await api_taskrunner_start(_request(_state(None), json_body={"spec": "x"}))
         assert resp.status == 400
