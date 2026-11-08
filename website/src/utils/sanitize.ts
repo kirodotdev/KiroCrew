@@ -111,8 +111,9 @@ function decodeB64Safe(chunk: string): string {
 // below runs. `sanitizeCredentialsGlued.test.ts` runs `CRED_PATTERNS` itself, one
 // `replace` per pattern, and checks this scan redacts exactly the same on text with no
 // glued credentials, so a change to a pattern fails that test until its reader follows.
-// The one intended difference is the JWT header check below, which those patterns, and
-// the base64 check that runs them, lack: that check over-redacts, the safe direction.
+// The intended differences are the JWT header check below, which those patterns, and
+// the base64 check that runs them, lack (it over-redacts, the safe direction), and a key
+// assignment whose value is already a backend tag, which is left alone.
 
 function isDigit(c: number): boolean { return c >= 48 && c <= 57 }
 function isUpper(c: number): boolean { return c >= 65 && c <= 90 }
@@ -235,6 +236,13 @@ class CredentialScan {
     const sep = this.skipSpace(pos + name.length)
     if (this.text[sep] !== ':' && this.text[sep] !== '=') return -1
     const value = this.skipSpace(sep + 1)
+    // The backend keeps an AWS key's label and writes its tag in place of the value. A
+    // value that is already that tag, after an opening quote that may be JSON-escaped,
+    // holds no secret, so it is left as written.
+    let open = this.text[value] === '\\' ? value + 1 : value
+    if (this.text[open] === '"' || this.text[open] === "'") open++
+    if (this.text.startsWith('[REDACTED: credential]', open)
+      || this.text.startsWith('[REDACTED: encoded credential]', open)) return -1
     if (value >= this.valueFrom && value < this.valueRun) return -1
     const end = this.runEnd(value, isNonSpace)
     this.valueFrom = value

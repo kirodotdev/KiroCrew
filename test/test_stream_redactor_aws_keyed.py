@@ -172,7 +172,9 @@ def test_a_key_name_ending_another_credentials_value_does_not_split_it(
     else:
         out = _stream(text, chunk)
     assert out == redact(text)
-    assert tail_key not in out
+    # The value is gone; a kept AWS label may spell the tail key itself.
+    assert "v0-" not in out
+    assert out.count(tail_key) == label.count(tail_key)
 
 
 @pytest.mark.parametrize("tail_key", ["AccessKeyId", "SessionToken", "SecretAccessKey"])

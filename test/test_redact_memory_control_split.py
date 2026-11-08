@@ -775,13 +775,13 @@ def test_find_and_replace_stays_available_when_a_proposal_is_hidden() -> None:
 def test_a_document_the_scrub_itself_breaks_is_withheld() -> None:
     """The parser must judge the STORED bytes, because the scrub can break the document.
 
-    A credential-assignment pattern spans a name, its colon and its value, so splicing one
-    out of a JSON document leaves text that does not parse. Judging JSON-ness on that text
-    calls a real document prose and hands it back unscanned, and the escaped control-split
-    credential beside it never reaches the descent.
+    A credential-assignment value runs to the next quote, so it takes the backslash that
+    escapes one, and splicing it out of a JSON document leaves text that does not parse.
+    Judging JSON-ness on that text calls a real document prose and hands it back
+    unscanned, and the escaped control-split credential beside it never reaches the descent.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    stored = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
+    stored = '{"aws_secret_access_key": "x\\" y", "d": "never commit ' + escaped + '"}'
 
     assert json.loads(stored)["d"]
     spliced = _shared._scrub_text(stored)
@@ -860,7 +860,7 @@ def test_a_nested_document_the_leaf_scrub_breaks_is_withheld_too() -> None:
     back with its own payload unwalked.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    inner = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
+    inner = '{"aws_secret_access_key": "x\\" y", "d": "never commit ' + escaped + '"}'
     stored = json.dumps({"snapshot": inner})
 
     assert _shared._scrub_text(stored) == stored

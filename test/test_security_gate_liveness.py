@@ -722,7 +722,12 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 31, from 35,005, for ``text_redaction.ends_plain_sentence``:
 #: the dashboard's sentence-end check moved here unchanged so the Slack stream
 #: shares it; the dashboard copy was deleted. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_036
+#: Raised by 34, from 35,036, for the AWS key-value branches keeping their label:
+#: pass 1 starts the redacted span after the ``_AWS_LABEL_RULES`` label and leaves a
+#: value made only of a credential tag's bytes (whole, cut by the end of the text,
+#: with its space dropped, or in a JSON-escaped quote) alone. No pattern or pass
+#: changed. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_070
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -804,9 +804,10 @@ def redact_credentials(
 
 
 #: Label forms of the key-value AWS branches: the key name, its separator and
-#: an optional opening quote. The redactor replaces the WHOLE match, label
-#: included, so a record keeps the label to let the reader see which field
-#: the removed value belonged to. A label is a fixed key name, never secret.
+#: an optional opening quote. A label is a fixed key name, never secret, so pass
+#: 1 keeps it in the text and redacts only the value after it: a config line keeps
+#: its key, a JSON document whose value is a string still parses, and the record
+#: names no label, the text shows it.
 _AWS_LABEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?:SecretAccessKey|aws_secret_access_key)[\"']?\s*[:=]\s*[\"']?"),
@@ -844,7 +845,7 @@ _PASS1_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def _pass1_rule(matched: str) -> tuple[str, str]:
-    """``(rule_id, label)`` for one pass-1 match; ``label`` is ``""`` when none."""
+    """``(rule_id, label)`` for one pass-1 match; ``label`` is the prefix pass 1 keeps."""
     for pattern, rule in _AWS_LABEL_RULES:
         head = pattern.match(matched)
         if head is not None:
@@ -853,6 +854,35 @@ def _pass1_rule(matched: str) -> tuple[str, str]:
         if pattern.fullmatch(matched):
             return rule, ""
     return "credential_pattern", ""
+
+
+def _value_is_a_tag(text: str, start: int, end: int) -> bool:
+    """Whether the matched AWS value ``text[start:end]`` holds only a credential tag's bytes.
+
+    Only the matched bytes are read, never what follows them, so a tag is left alone
+    whatever comes next (a path's ``~<digest>``, a JSON ``\\n``). The value is a tag or
+    a start of one (the value class stops at the tag's space, or the end of the text
+    cuts it), with or without its space (a client joining two delivered pieces drops
+    it). A byte after the tag inside the value (``[REDACTED:credential]hunter2``)
+    makes it no tag. One exception: in a JSON-escaped quote (a redacted value
+    serialized into a string) the value class stops at the quote after the backslash,
+    so there the tag after that quote is read instead: cut by the end of the text, or
+    whole and closed by the escaped quote or a byte that ends a value.
+    """
+    value = text[start:end]
+    escape = value + text[end : end + 1]
+    quoted = escape in ('\\"', "\\'")
+    if quoted:
+        value = text[end + 1 : end + 1 + max(map(len, CREDENTIAL_REDACTION_TAGS)) + 2]
+    for tag in CREDENTIAL_REDACTION_TAGS:
+        for form in (tag, tag.replace(" ", "")):
+            if form.startswith(value):
+                return True
+            after = value[len(form) :]
+            ends = not after or after[0].isspace() or after[0] in "\"',}"
+            if quoted and value.startswith(form) and (ends or after.startswith(escape)):
+                return True
+    return False
 
 
 class CredentialMatch(NamedTuple):
@@ -901,7 +931,7 @@ def redact_credentials_with_records(
     for start, end, tag in spans:
         ordinal += sum(text.count(t, cursor, start) for t in CREDENTIAL_REDACTION_TAGS)
         rule, label = rules.get(start, ("credential_pattern", ""))
-        matches.append(CredentialMatch(ordinal, rule, label, text[start:end][len(label) :]))
+        matches.append(CredentialMatch(ordinal, rule, label, text[start:end]))
         ordinal += 1
         cursor = end
     return _splice(text, spans), warnings, matches
@@ -965,6 +995,10 @@ def _credential_redaction_plan(
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
         for m in _credential_matches(text):
+            rule, label = _pass1_rule(m.group())
+            start = m.start() + len(label)
+            if label and _value_is_a_tag(text, start, m.end()):
+                continue  # already redacted: a second run must not garble the tag
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -973,9 +1007,9 @@ def _credential_redaction_plan(
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
-            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[m.start()] = _pass1_rule(m.group())
+            warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+            taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
+            rules[start] = (rule, "")
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and

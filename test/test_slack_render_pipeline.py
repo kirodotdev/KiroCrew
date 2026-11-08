@@ -695,7 +695,8 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     def _assert_key_gone_and_markup_kept(self, text: str) -> None:
         assert self._SECRET_VALUE not in text
         assert self._SECRET_VALUE not in slack_mrkdwn_reading(text)
-        assert "SecretAccessKey" not in text
+        # The redactor keeps a credential's label and replaces only what follows it.
+        assert "SecretAccessKey:[REDACTED: credential]" in text
         assert f"<{self._URL}|the wiki>" in text
         assert "*so far*" in text
         assert "*runbook*" in text
