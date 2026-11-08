@@ -182,6 +182,43 @@ def strip_marker(text: str | None) -> str:
     return MARKER_RE.sub("", text)
 
 
+def strip_quoted_markers(text: str) -> str:
+    """Drop each render marker the model quoted from its reply.
+
+    The model reads the tool result with the marker at its front
+    (``mcp_gateway/apps.py::append_marker``), so a reply that repeats the result
+    carries the marker too, usually as ``[kirocrew-mcp-app:<id>] <result>`` on
+    one line. Nothing reads a marker from a reply: the app mounted from the tool
+    row. Each well-formed marker (:data:`MARKER_RE`) goes with the one space
+    after it; a line left blank by that goes too, with its newline. The last
+    line is kept empty instead, so the newline before it stays: a segment cut
+    can hold that line's words back and give them back after this ran. Every
+    other byte stays, a malformed ``[kirocrew-mcp-app:...]`` included.
+    """
+    if MARKER_RE.search(text) is None:
+        return text
+    lines = text.split("\n")
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        pieces: list[str] = []
+        pos = 0
+        for match in MARKER_RE.finditer(line):
+            pieces.append(line[pos : match.start()])
+            pos = match.end()
+            if line.startswith(" ", pos):
+                pos += 1
+        if not pieces:
+            kept.append(line)
+            continue
+        pieces.append(line[pos:])
+        rest = "".join(pieces)
+        if rest.strip():
+            kept.append(rest)
+        elif index == len(lines) - 1:
+            kept.append("")
+    return "\n".join(kept)
+
+
 def load_spool(spool_id: str) -> dict[str, Any] | None:
     """Load and parse the spool file for *spool_id*.
 
