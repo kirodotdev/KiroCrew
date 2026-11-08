@@ -53,6 +53,7 @@ function discordSpec(): BotChannelSpec {
       label: i18nT('pages.settings.discordPanel.open_developer_portal'),
       href: 'https://discord.com/developers/applications',
     },
+    tokenLabel: i18nT('pages.settings.discordPanel.token_label'),
     tokenDescription: i18nT('pages.settings.discordPanel.token_description'),
     tokenPlaceholder: i18nT('pages.settings.discordPanel.token_placeholder'),
     allowlistDescription: i18nT('pages.settings.discordPanel.allowlist_description'),

@@ -18445,6 +18445,7 @@
         "thread_warning": "话题模式会启用 Discord 的全局 Message Content intent。Discord 会投递机器人可见的每个服务器频道的内容；{{productName}} 会丢弃已批准话题之外的流量。任何能查看已批准话题的人都能读到代理回复和工具输出。",
         "threshold_description": "会话上下文超过此百分比时，提示使用 !compact 或 !new。",
         "token_description": "来自开发者门户的 Bot 页面（点击 Reset Token 查看一次）。",
+        "token_label": "Discord 机器人令牌",
         "token_placeholder": "粘贴 Discord 机器人令牌"
       },
       "displayPanel": {
@@ -19764,6 +19765,7 @@
         "show_thinking_description_summary": "每轮多花一条 Telegram 消息。",
         "show_thinking_label": "显示模型的推理过程",
         "token_description": "创建机器人后从 @BotFather 获取（形如 110201543:AAHdqT…）。",
+        "token_label": "Telegram 机器人令牌",
         "token_placeholder": "粘贴 Telegram 机器人令牌（123456:ABC-…）",
         "voice_replies_description": "按 voice_reply 提供方的设置，把每条回答除文本之外再发一条语音消息。默认关闭：Telegram 的频率上限按每个会话计算，因此每一轮会多花一条消息，而且语音合成可能尚未安装。简短的回答不会朗读，文本回答始终先送达。用 /voice on 或 /voice off 只改一个会话。",
         "voice_replies_description_summary": "每轮多花一条 Telegram 消息。",
@@ -19893,7 +19895,7 @@
       "weixinPanel": {
         "allowed_user_ids": "允许的用户 ID",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "允许的微信用户 ID。留空 = 全部拒绝（失败关闭）。",
-        "anyone_who_messages_the_bot": "任何向机器人发消息的人",
+        "anyone_who_messages_the_bot": "任何向代理发消息的人",
         "connect_via_qr": "通过二维码连接",
         "connected": "已连接",
         "created_for_you_when_you_turn_this_on_if_it_does": "开启此功能时若不存在会自动创建。",
@@ -19918,7 +19920,7 @@
         "waiting_for_scan": "等待扫码…",
         "wechat": "微信",
         "wechat_login_qr_code": "微信登录二维码",
-        "who_can_message_the_bot": "谁可以向机器人发消息",
+        "who_can_message_the_bot": "谁可以向代理发消息",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "无法确认二维码是否已扫描。仍在重试。"
       },

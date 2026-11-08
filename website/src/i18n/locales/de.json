@@ -18932,6 +18932,7 @@
         "thread_warning": "Der Thread-Modus aktiviert Discords globalen Message Content Intent. Discord liefert Inhalte aus jedem Server-Kanal, den der Bot sehen kann; {{productName}} verwirft Verkehr außerhalb genehmigter Threads. Alle, die einen genehmigten Thread sehen können, können Agentenantworten und Werkzeugausgaben lesen.",
         "threshold_description": "Zu !compact oder !new auffordern, wenn der Sitzungskontext diesen Prozentsatz überschreitet.",
         "token_description": "Von der Bot-Seite des Developer Portals (Reset Token, um es einmal anzuzeigen).",
+        "token_label": "Discord-Bot-Token",
         "token_placeholder": "Discord-Bot-Token einfügen"
       },
       "displayPanel": {
@@ -20267,6 +20268,7 @@
         "show_thinking_description_summary": "Kostet eine zusätzliche Telegram-Nachricht pro Runde.",
         "show_thinking_label": "Denkprozess des Modells posten",
         "token_description": "Von @BotFather, nachdem du deinen Bot erstellt hast (sieht aus wie 110201543:AAHdqT…).",
+        "token_label": "Telegram-Bot-Token",
         "token_placeholder": "Telegram-Bot-Token einfügen (123456:ABC-…)",
         "voice_replies_description": "Jede Antwort zusätzlich zum Text als Sprachnachricht senden, mit den Einstellungen des voice_reply-Anbieters. Standardmäßig aus: Das kostet eine zusätzliche Nachricht pro Zug im Ratenlimit, das Telegram pro Chat vergibt, und Text-to-Speech ist womöglich nicht installiert. Kurze Antworten werden nie vorgelesen, und die Textantwort kommt immer zuerst an. Mit /voice on oder /voice off lässt sich eine einzelne Unterhaltung umstellen.",
         "voice_replies_description_summary": "Kostet eine zusätzliche Telegram-Nachricht pro Runde.",
@@ -20396,7 +20398,7 @@
       "weixinPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "Erlaubte WeChat-Benutzer-IDs. Leer = alle ablehnen (fail closed).",
-        "anyone_who_messages_the_bot": "Jeder, der dem Bot schreibt",
+        "anyone_who_messages_the_bot": "Jeder, der dem Agenten schreibt",
         "connect_via_qr": "Per QR-Code verbinden",
         "connected": "Verbunden",
         "created_for_you_when_you_turn_this_on_if_it_does": "Wird beim Aktivieren dieser Einstellung angelegt, falls er noch nicht existiert.",
@@ -20421,7 +20423,7 @@
         "waiting_for_scan": "Warten auf Scan…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat-Anmelde-QR-Code",
-        "who_can_message_the_bot": "Wer dem Bot schreiben darf",
+        "who_can_message_the_bot": "Wer dem Agenten schreiben darf",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "Ob der Code gescannt wurde, konnte nicht geprüft werden. Es wird weiter versucht."
       },

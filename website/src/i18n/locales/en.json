@@ -11128,7 +11128,7 @@
       "weixinPanel": {
         "allowed_user_ids": "Allowed user IDs",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "Allowed WeChat user IDs. Empty = deny all (fail closed).",
-        "anyone_who_messages_the_bot": "Anyone who messages the bot",
+        "anyone_who_messages_the_bot": "Anyone who messages the agent",
         "connected": "Connected",
         "enable_the_wechat_channel": "Enable the WeChat channel",
         "group_chats_are_not_supported_ilink_bot_identiti": "Group chats are not supported: iLink bot identities do not receive ordinary WeChat group\n        events.",
@@ -11146,7 +11146,7 @@
         "waiting_for_a_code": "Waiting for a code…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat login QR code",
-        "who_can_message_the_bot": "Who can message the bot",
+        "who_can_message_the_bot": "Who can message the agent",
         "wxid": "wxid_…"
       },
       "remoteCrewPanel": {
