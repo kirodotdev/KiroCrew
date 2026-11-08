@@ -1108,6 +1108,7 @@ async def _run_chat(
             elif event.kind == EVENT_THINKING_CHUNK:
                 await _on_thinking_chunk(turn, event)
             elif event.kind == EVENT_TOOL_CALL:
+                await _release_held_text(turn, before_tool=True)
                 await _on_tool_call(turn, event)
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
                 await _on_tool_call_update(turn, event)
