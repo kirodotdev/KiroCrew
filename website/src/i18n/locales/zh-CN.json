@@ -15606,7 +15606,8 @@
           "active": "活跃",
           "error": "错误",
           "paused": "已暂停",
-          "synced": "已是最新"
+          "synced": "已是最新",
+          "syncing": "同步中"
         },
         "added_by_agent": "○ 由代理添加",
         "updates_when_the_agent_adds_a_document": "代理添加文档时更新；无需同步",

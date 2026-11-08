@@ -15606,7 +15606,8 @@
           "active": "활성",
           "error": "오류",
           "paused": "일시 중지됨",
-          "synced": "최신 상태"
+          "synced": "최신 상태",
+          "syncing": "동기화 중"
         },
         "added_by_agent": "○ 에이전트가 추가함",
         "updates_when_the_agent_adds_a_document": "에이전트가 문서를 추가하면 업데이트됩니다. 동기화할 항목이 없습니다",
