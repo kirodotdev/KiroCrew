@@ -3411,7 +3411,8 @@ mask; `test_agent_ipc.py` pins that for every enforced backend, beside `run/` an
 `ipc_pickup_held`, `ipc_peer_not_in_session`, `ipc_peer_unverified`,
 `ipc_capability_invalid`, `ipc_session_unbound`, `ipc_session_mismatch`,
 `ipc_route_not_served`, `ipc_secret_not_accepted`. Each denial and each redemption is
-SEL-recorded as `agent_ipc`.
+SEL-recorded as `agent_ipc`, and each granted internal-route request and session query
+as a `dashboard.token_auth` grant (`_log_auth`).
 
 Issuance and the client half: both array builders call `acp/ipc_pickup.py` -- the
 runtime's mirrored projection (`acp/runtime_session_setup._mirrored_session_mcp`, the
